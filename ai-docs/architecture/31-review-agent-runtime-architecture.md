@@ -107,7 +107,6 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-  actions: write
   id-token: write
 
 jobs:

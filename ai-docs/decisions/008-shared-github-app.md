@@ -27,8 +27,6 @@ metadata: read
 contents: write
 workflows: write
 pull_requests: write
-issues: write
-actions: write
 ```
 
 Every permission must be explained in onboarding. The accepted permission rationale is detailed in [ADR-014](./014-one-click-workflow-provisioning.md) and [GitHub Permission Matrix](../architecture/14-github-permission-matrix.md).

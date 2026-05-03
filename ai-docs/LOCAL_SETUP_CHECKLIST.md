@@ -97,9 +97,9 @@ Repository permissions:
 Metadata: Read-only
 Contents: Read and write
 Workflows: Read and write
-Actions: Read and write
 Pull requests: Read and write
-Issues: Read and write
+Issues: no access for minimal v1, unless SaaS setup/help comments are explicitly enabled later
+Actions: no access for minimal v1
 ```
 
 Organization/account permissions:
@@ -115,8 +115,8 @@ Why these are needed:
 - `contents: write` creates setup/update branch commits
 - `workflows: write` writes `.github/workflows/reviewrouter.yml`
 - `pull_requests: write` creates setup/update PRs
-- `issues: write` supports PR issue comments if SaaS comments are needed
-- `actions: write` supports future workflow rerun/management paths
+- `issues: write` is not required for minimal v1; the review workflow comments from customer CI with its own `GITHUB_TOKEN`
+- `actions: write` is not required for minimal v1; action health reports use GitHub Actions OIDC instead
 
 The app must still create PRs only. It must not push directly to default branches.
 

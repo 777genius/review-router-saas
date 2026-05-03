@@ -106,8 +106,6 @@ metadata: read
 contents: write
 workflows: write
 pull_requests: write
-issues: write
-actions: write
 ```
 
 Why each write permission exists:
@@ -115,12 +113,15 @@ Why each write permission exists:
 ```text
 contents: write      create setup/update branch commits
 workflows: write     modify .github/workflows/reviewrouter.yml
-pull_requests: write open setup/update PRs and post review state
-issues: write        PR issue comments and bot summary comments
-actions: write       rerun review workflow after /rr skip when needed
+pull_requests: write open setup/update PRs and read setup PR state
 ```
 
 The UI must explain that `workflows: write` is for ReviewRouter setup/update PRs, not for reading or running customer code in SaaS.
+
+Do not request `actions: write` in minimal v1. Runtime health reports use
+GitHub Actions OIDC. Do not request `issues: write` unless a SaaS-owned
+setup/help comment feature is explicitly enabled later; the review action posts
+review comments from customer CI with the repository `GITHUB_TOKEN`.
 
 ## Status and Comments
 

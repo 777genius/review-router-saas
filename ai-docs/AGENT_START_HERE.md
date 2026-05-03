@@ -243,8 +243,6 @@ metadata: read
 contents: write
 workflows: write
 pull_requests: write
-issues: write
-actions: write
 ```
 
 Workflow provisioning must:
