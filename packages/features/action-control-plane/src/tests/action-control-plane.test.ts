@@ -524,6 +524,7 @@ describe("action control plane", () => {
   it("rejects raw health payloads with extra fields, code, secrets, or oversized content", () => {
     const openAiToken = "s" + "k-" + "a".repeat(24);
     const githubToken = "github" + "_pat_" + "b".repeat(24);
+    const bearerToken = "opaque-session-token-1234567890";
 
     expect(() =>
       assertSafeActionHealthReport({
@@ -543,6 +544,20 @@ describe("action control plane", () => {
       assertSafeActionHealthReport({
         ...safeHealthReport(),
         safeErrorSummary: `GitHub returned token ${githubToken}`,
+      }),
+    ).toThrow("health_report_contains_secret_value");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        safeErrorSummary: `Authorization: Bearer ${bearerToken}`,
+      }),
+    ).toThrow("health_report_contains_secret_value");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        safeErrorSummary: "refresh_token=rotating-oauth-value",
       }),
     ).toThrow("health_report_contains_secret_value");
 

@@ -187,6 +187,8 @@ function looksLikeSecretValue(value: string): boolean {
     /\b[A-Za-z0-9_]*(token|secret|password|privateKey|apiKey|authJson)[A-Za-z0-9_]*\s*[:=]\s*\S+/i.test(
       value,
     ) ||
+    /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/i.test(value) ||
+    /\b(refresh[_-]?token|access[_-]?token)\b\s*[:=]\s*\S+/i.test(value) ||
     /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,})\b/.test(
       value,
     )

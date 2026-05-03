@@ -59,6 +59,34 @@ describe("audit log", () => {
           action: "support.viewed_repository",
           targetType: "repository",
           targetId: "repo_1",
+          metadata: { authorization: "Bearer opaque-session-token-1234567890" },
+        },
+        { auditLog },
+      ),
+    ).rejects.toThrow("audit_metadata_contains_secret");
+
+    await expect(
+      recordAuditEvent(
+        {
+          workspaceId: "workspace_1",
+          actor: "support:agent",
+          action: "support.viewed_repository",
+          targetType: "repository",
+          targetId: "repo_1",
+          metadata: { value: "refresh_token=rotating-oauth-value" },
+        },
+        { auditLog },
+      ),
+    ).rejects.toThrow("audit_metadata_contains_secret");
+
+    await expect(
+      recordAuditEvent(
+        {
+          workspaceId: "workspace_1",
+          actor: "support:agent",
+          action: "support.viewed_repository",
+          targetType: "repository",
+          targetId: "repo_1",
           metadata: { value: "```ts\nconsole.log('code')\n```" },
         },
         { auditLog },
