@@ -44,8 +44,14 @@ set +a
 info "Checking dev database..."
 psql "$(psql_url "$DATABASE_URL")" -v ON_ERROR_STOP=1 -Atc "select current_database()" >/dev/null
 
+info "Checking dev migration status..."
+pnpm --filter @reviewrouter/platform-db db:migrate:status >/dev/null
+
 info "Checking test database..."
 psql "$(psql_url "$TEST_DATABASE_URL")" -v ON_ERROR_STOP=1 -Atc "select current_database()" >/dev/null
+
+info "Checking test migration status..."
+DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @reviewrouter/platform-db db:migrate:status >/dev/null
 
 if [[ -n "${GITHUB_APP_PRIVATE_KEY_FILE:-}" ]]; then
   [[ -f "$GITHUB_APP_PRIVATE_KEY_FILE" ]] || fail "GITHUB_APP_PRIVATE_KEY_FILE does not exist: $GITHUB_APP_PRIVATE_KEY_FILE"

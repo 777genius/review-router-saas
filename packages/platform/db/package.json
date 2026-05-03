@@ -21,6 +21,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:generate": "prisma generate --config prisma.config.ts",
     "db:push": "prisma db push --config prisma.config.ts",
-    "db:migrate": "prisma migrate dev --config prisma.config.ts"
+    "db:migrate": "prisma migrate dev --config prisma.config.ts",
+    "db:migrate:deploy": "prisma migrate deploy --config prisma.config.ts",
+    "db:migrate:status": "prisma migrate status --config prisma.config.ts"
   }
 }

@@ -30,6 +30,15 @@ Local environment files:
 
 `.env.local` is ignored by git. `.local-secrets/` and `*.pem` files are ignored by git.
 
+Apply database migrations before running the app:
+
+```bash
+pnpm db:migrate:deploy
+pnpm db:migrate:smoke
+```
+
+`db:migrate:deploy` applies checked-in Prisma migrations to the configured local database. `db:migrate:smoke` creates a temporary fresh database, applies the migrations from zero, verifies critical tables/indexes, and drops the temporary database.
+
 Run:
 
 ```bash

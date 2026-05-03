@@ -22,9 +22,13 @@ The next implementation phase is [`Iteration 01 - Foundation`](./ai-docs/iterati
 ## Current Checks
 
 ```bash
+pnpm db:migrate:deploy
+pnpm db:migrate:smoke
 pnpm typecheck
+pnpm test
+pnpm lint
+pnpm format:check
 pnpm spike:test
 pnpm local:check
 git diff --check
-bash -n scripts/seed-codex-auth.sh
 ```

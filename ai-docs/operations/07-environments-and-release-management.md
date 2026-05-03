@@ -62,6 +62,8 @@ Before production release:
 - setup PR creation in staging repo
 - OIDC config fetch from staging workflow
 - health report ingestion
+- Prisma migrations apply to a fresh database with `pnpm db:migrate:smoke`
+- staging database is up to date with `pnpm db:migrate:deploy`
 
 ## Feature Flags
 
@@ -75,3 +77,18 @@ ENABLE_APP_BOT_TOKEN_IN_WORKFLOW
 ```
 
 Flags must fail closed for security-sensitive features.
+
+## Database Release Rule
+
+Release order for database-backed changes:
+
+```text
+1. merge reviewed Prisma migration
+2. run migrate deploy in staging
+3. run staging smoke tests
+4. deploy compatible app/worker code
+5. run production migrate deploy
+6. deploy production app/worker code
+```
+
+Do not deploy application code that depends on a schema change before `migrate deploy` has succeeded in that environment.

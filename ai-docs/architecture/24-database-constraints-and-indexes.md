@@ -15,7 +15,7 @@ RepositoryConnection.githubRepoId
 ReviewConfiguration(workspaceId, repoId normalized)
 ReviewConfigurationVersion(configurationId, version)
 GitHubWebhookDelivery.deliveryId
-ActionRunReport(repoId, githubRunId, githubRunAttempt)
+ActionRunHealthReport(repositoryId, githubRunId, githubRunAttempt)
 OutboxEvent.id
 JobExecution.idempotencyKey if separate table exists
 ```
@@ -41,7 +41,7 @@ ProviderSetupState(workspaceId, repoId, provider)
 GitHubWebhookDelivery(receivedAt, status)
 OutboxEvent(status, afterAt, createdAt)
 AuditEvent(workspaceId, createdAt)
-ActionRunReport(repoId, createdAt)
+ActionRunHealthReport(workspaceId, receivedAt)
 ```
 
 ## Soft Delete vs Hard Delete
@@ -62,3 +62,12 @@ Before public beta:
 - migration applies to seeded DB
 - rollback or forward-fix path documented
 - unique constraints tested for race conditions
+
+Current automation:
+
+```bash
+pnpm db:migrate:smoke
+pnpm local:check
+```
+
+`db:migrate:smoke` creates a temporary database and verifies the baseline migration, including the action health idempotency unique index.

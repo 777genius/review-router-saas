@@ -182,6 +182,8 @@ Backend foundation:
 - API error contract
 - database connection package
 - migration convention
+- checked-in Prisma baseline migration
+- migration smoke against a temporary fresh database
 - basic health route
 - example feature that proves domain/application/infrastructure/interface boundaries
 
@@ -193,7 +195,7 @@ Tests:
 - dependency-boundary smoke test
 - API health route test
 - UI wrapper render/accessibility smoke test
-- Prisma migration applies to empty DB
+- Prisma migration applies to empty DB through `pnpm db:migrate:smoke`
 
 Do not implement GitHub OAuth in this iteration beyond config placeholders.
 
