@@ -115,6 +115,8 @@ function sendActionError(
 
 function statusCodeForActionError(message: string): number {
   if (
+    message.startsWith("oidc_jti_required") ||
+    message.startsWith("oidc_replay_detected") ||
     message.includes("signature") ||
     message.includes("JWT") ||
     message.includes("token") ||
@@ -167,6 +169,8 @@ function safeActionErrorCode(message: string): string {
     return message;
   }
   if (
+    message.startsWith("oidc_jti_required") ||
+    message.startsWith("oidc_replay_detected") ||
     message.includes("signature") ||
     message.includes("JWT") ||
     message.includes("token") ||

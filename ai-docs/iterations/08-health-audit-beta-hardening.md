@@ -37,8 +37,10 @@ Make the product understandable and supportable for beta users.
 - Repository health marks old action health reports as stale so a repository does not stay `Ready` forever after the workflow stops reporting.
 - API `/health` accepts dependency checks and marks the service degraded when the database adapter cannot run a safe `SELECT 1` probe.
 - Action control-plane has DB-backed fixed-window rate limits for OIDC exchanges and action health reports, returning safe `rate_limited` errors.
+- Action control-plane has DB-backed OIDC `jti` replay protection in production API composition; duplicate tokens are returned as safe auth failures before issuing a session.
 - Dashboard mutations have DB-backed fixed-window rate limits for manual syncs, setup PRs, config saves, and outbox retries.
 - Expired rate-limit buckets are pruned by the worker in bounded periodic batches after outbox processing, and cleanup failures are logged without blocking critical jobs.
+- Expired OIDC replay nonces are pruned by the worker in bounded periodic batches after outbox processing, and cleanup failures are logged without blocking critical jobs.
 - Dashboard probes installed workflow files through a `RepositoryWorkflowProbePort` and `OctokitRepositoryWorkflowProbe`.
 - The workflow probe reads only `.github/workflows/reviewrouter.yml` metadata through the GitHub App installation token and returns safe states only:
   - `missing`

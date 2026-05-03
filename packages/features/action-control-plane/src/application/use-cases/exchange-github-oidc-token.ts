@@ -1,9 +1,13 @@
 import type { Clock } from "@reviewrouter/shared";
 import {
   actionSessionTtlSeconds,
+  buildActionOidcReplayNonceKey,
+  resolveActionOidcReplayNonceExpiresAt,
   validateOidcClaimsAgainstRepository,
   type ActionSessionClaims,
+  type GitHubActionsOidcClaims,
 } from "../../domain/action-control-plane.js";
+import type { ActionOidcReplayNonceStorePort } from "../ports/action-oidc-replay-nonce-store-port.js";
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
 import type { ActionRateLimitPolicyPort } from "../ports/action-rate-limit-policy-port.js";
@@ -16,6 +20,7 @@ export type ExchangeGitHubOidcTokenDependencies = {
   readonly sessions: ActionSessionTokenServicePort;
   readonly entitlements?: ActionEntitlementPolicyPort;
   readonly rateLimits?: ActionRateLimitPolicyPort;
+  readonly replayNonces?: ActionOidcReplayNonceStorePort;
   readonly clock: Clock;
 };
 
@@ -46,6 +51,13 @@ export async function exchangeGitHubOidcToken(
     repositoryId: repository.repositoryId,
     repositoryFullName: repository.fullName,
   });
+  const issuedAt = dependencies.clock.now();
+  await consumeOidcReplayNonceIfConfigured({
+    claims,
+    issuedAt,
+    replayNonces: dependencies.replayNonces,
+  });
+
   await dependencies.rateLimits?.assertOidcExchangeAllowed({
     workspaceId: repository.workspaceId,
     repositoryId: repository.repositoryId,
@@ -65,7 +77,6 @@ export async function exchangeGitHubOidcToken(
     protocolVersion: 1,
   };
 
-  const issuedAt = dependencies.clock.now();
   const session = await dependencies.sessions.sign({
     claims: sessionClaims,
     expiresInSeconds: actionSessionTtlSeconds,
@@ -77,4 +88,27 @@ export async function exchangeGitHubOidcToken(
     expiresAt: session.expiresAt.toISOString(),
     repository: repository.fullName,
   };
+}
+
+async function consumeOidcReplayNonceIfConfigured(input: {
+  readonly claims: GitHubActionsOidcClaims;
+  readonly issuedAt: Date;
+  readonly replayNonces: ActionOidcReplayNonceStorePort | undefined;
+}): Promise<void> {
+  if (!input.replayNonces) {
+    return;
+  }
+
+  const consumed = await input.replayNonces.tryConsumeNonce({
+    key: buildActionOidcReplayNonceKey(input.claims),
+    expiresAt: resolveActionOidcReplayNonceExpiresAt({
+      claims: input.claims,
+      now: input.issuedAt,
+    }),
+    now: input.issuedAt,
+  });
+
+  if (!consumed) {
+    throw new Error("oidc_replay_detected");
+  }
 }

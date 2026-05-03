@@ -27,6 +27,8 @@ Implemented baseline:
 - action OIDC exchange and health-report routes use DB-backed limits
 - dashboard mutations use DB-backed limits
 - expired buckets are removed by the worker in bounded periodic batches through `REVIEW_ROUTER_RATE_LIMIT_PRUNE_BATCH_SIZE` and `REVIEW_ROUTER_RATE_LIMIT_PRUNE_INTERVAL_MS`
+- action OIDC replay nonces live in Postgres so duplicate `jti` claims are rejected across multiple API instances
+- expired OIDC replay nonces are removed by the worker in bounded periodic batches through `REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_BATCH_SIZE` and `REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_INTERVAL_MS`
 
 ## Job Backpressure
 

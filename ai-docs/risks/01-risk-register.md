@@ -180,6 +180,7 @@ Mitigation:
 
 - strict issuer/audience/expiry validation
 - verify repository id maps to active selected repo
+- consume OIDC `jti` as a DB-backed replay nonce in production API composition
 - validate event/fork policy before returning secret-backed config metadata
 - OIDC contract tests with reject cases
 - use repository id where possible, not mutable repo name alone
@@ -326,6 +327,7 @@ Mitigation:
 - strict issuer/audience/signature/expiry checks
 - bounded JWKS cache with fail-closed behavior
 - short-lived action sessions scoped to repo/run/runAttempt
+- DB-backed `jti` replay nonce consumed before session issuance and before rate-limit capacity is spent
 - OIDC contract tests for reject cases
 
 ### R25 - SaaS outage blocks customer reviews unnecessarily

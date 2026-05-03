@@ -9,6 +9,7 @@ Allow ReviewRouter Action running in customer CI to fetch current SaaS-managed c
 - action-control-plane bounded context
 - GitHub Actions OIDC token exchange endpoint
 - OIDC JWT verification with JWKS cache, clock skew tolerance, and fail-closed behavior
+- OIDC replay protection using `jti` nonce consumption in production composition
 - short-lived action-session token scoping
 - short-lived action session token
 - versioned config fetch endpoint
@@ -39,6 +40,8 @@ Forbidden:
 - valid OIDC token accepted
 - JWKS unavailable fails closed without valid cached key
 - expired token and replay-sensitive cases handled
+- missing `jti` rejected when replay protection is configured
+- duplicate `jti` rejected before session issuance
 - wrong audience rejected
 - expired token rejected
 - repo mismatch rejected

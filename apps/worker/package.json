@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@reviewrouter/features-action-control-plane": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",

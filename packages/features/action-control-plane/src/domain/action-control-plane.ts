@@ -5,6 +5,7 @@ export const githubActionsOidcIssuer =
   "https://token.actions.githubusercontent.com";
 export const actionSessionAudience = "reviewrouter-action-api";
 export const actionSessionTtlSeconds = 15 * 60;
+export const actionOidcReplayNonceFallbackTtlSeconds = actionSessionTtlSeconds;
 export const allowedWorkflowPaths = [
   ".github/workflows/reviewrouter.yml",
 ] as const;
@@ -31,7 +32,7 @@ export const githubActionsOidcClaimsSchema = z.object({
   iat: z.number().optional(),
   nbf: z.number().optional(),
   exp: z.number().optional(),
-  jti: z.string().optional(),
+  jti: z.string().min(1).optional(),
 });
 
 export type GitHubActionsOidcClaims = z.infer<
@@ -226,6 +227,28 @@ export function validateOidcClaimsAgainstRepository(input: {
   ) {
     throw new Error("workflow_ref_not_allowed");
   }
+}
+
+export function buildActionOidcReplayNonceKey(
+  claims: GitHubActionsOidcClaims,
+): string {
+  if (!claims.jti) {
+    throw new Error("oidc_jti_required");
+  }
+  return `${claims.iss}:${claims.jti}`;
+}
+
+export function resolveActionOidcReplayNonceExpiresAt(input: {
+  readonly claims: GitHubActionsOidcClaims;
+  readonly now: Date;
+}): Date {
+  if (typeof input.claims.exp === "number" && input.claims.exp > 0) {
+    return new Date(input.claims.exp * 1000);
+  }
+
+  return new Date(
+    input.now.getTime() + actionOidcReplayNonceFallbackTtlSeconds * 1000,
+  );
 }
 
 export function isAllowedWorkflowRef(input: {

@@ -18,6 +18,7 @@ repository owner maps to active installation/workspace
 event name is allowed for requested operation
 workflow ref path is an approved ReviewRouter workflow file
 run id and run attempt are present
+`jti` is present when replay protection is enabled
 ```
 
 Prefer immutable IDs over names where claims provide them.
@@ -49,7 +50,18 @@ Controls:
 - action session scoped to repo/run/runAttempt
 - rate limit exchange by repo/run/IP
 - store exchange audit event
-- optionally remember token `jti` if available
+- consume token `jti` as a nonce before issuing a session
+
+Implemented baseline:
+
+- production API composition uses `PrismaActionOidcReplayNonceStore`
+- exchange fails closed with `oidc_jti_required` if replay protection is configured and GitHub claims do not include `jti`
+- nonce key is scoped as `<issuer>:<jti>` and expires at token `exp`, or the short action-session TTL fallback when `exp` is unavailable
+- duplicate nonce returns safe auth error `invalid_action_token`
+- replay rejection happens before rate-limit consumption, so retries with the same stolen token do not burn repo quota
+- worker prunes expired nonces in bounded batches through:
+  - `REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_BATCH_SIZE`
+  - `REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_INTERVAL_MS`
 
 ## Action Session Token
 
@@ -96,5 +108,7 @@ Do not return instructions that cause secret-backed provider execution in unsafe
 - repo id mismatch rejected
 - workflow ref outside `.github/workflows/reviewrouter.yml` rejected
 - removed installation rejected
+- missing `jti` rejected in production composition
+- duplicate `jti` rejected before rate limits/session issuance
 - fork context receives no secret-backed provider enablement
 - action session cannot call dashboard API

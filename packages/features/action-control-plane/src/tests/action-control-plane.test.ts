@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-config";
 import type { Clock } from "@reviewrouter/shared";
+import type {
+  ActionOidcReplayNonceCleanupPort,
+  ActionOidcReplayNonceStorePort,
+  ConsumeActionOidcReplayNonceInput,
+  DeleteExpiredActionOidcReplayNoncesInput,
+  DeleteExpiredActionOidcReplayNoncesResult,
+} from "../application/ports/action-oidc-replay-nonce-store-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../application/ports/action-control-plane-repository-port.js";
 import type { ActionEntitlementPolicyPort } from "../application/ports/action-entitlement-policy-port.js";
 import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
@@ -9,6 +16,7 @@ import type { ActionSessionTokenServicePort } from "../application/ports/action-
 import type { GitHubActionsOidcTokenVerifierPort } from "../application/ports/github-actions-oidc-token-verifier-port.js";
 import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-github-oidc-token.js";
 import { getActionRuntimeConfig } from "../application/use-cases/get-action-runtime-config.js";
+import { pruneExpiredActionOidcReplayNonces } from "../application/use-cases/prune-expired-action-oidc-replay-nonces.js";
 import { recordActionHealthReport } from "../application/use-cases/record-action-health-report.js";
 import {
   actionHealthReportMaxBytes,
@@ -159,6 +167,35 @@ class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
   }
 }
 
+class InMemoryActionOidcReplayNonceStore
+  implements ActionOidcReplayNonceStorePort, ActionOidcReplayNonceCleanupPort
+{
+  public readonly consumed = new Map<string, Date>();
+
+  async tryConsumeNonce(
+    input: ConsumeActionOidcReplayNonceInput,
+  ): Promise<boolean> {
+    if (this.consumed.has(input.key)) {
+      return false;
+    }
+    this.consumed.set(input.key, input.expiresAt);
+    return true;
+  }
+
+  async deleteExpiredNonces(
+    input: DeleteExpiredActionOidcReplayNoncesInput,
+  ): Promise<DeleteExpiredActionOidcReplayNoncesResult> {
+    const expiredKeys = [...this.consumed.entries()]
+      .filter(([, expiresAt]) => expiresAt <= input.expiredBefore)
+      .slice(0, input.limit)
+      .map(([key]) => key);
+    for (const key of expiredKeys) {
+      this.consumed.delete(key);
+    }
+    return { deleted: expiredKeys.length };
+  }
+}
+
 describe("action control plane", () => {
   it("exchanges valid GitHub OIDC claims for a scoped action session", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
@@ -270,6 +307,77 @@ describe("action control plane", () => {
         githubRunAttempt: "1",
       },
     ]);
+  });
+
+  it("rejects replayed GitHub OIDC tokens when replay protection is configured", async () => {
+    const replayNonces = new InMemoryActionOidcReplayNonceStore();
+    const dependencies = {
+      oidcVerifier: new StaticOidcVerifier(
+        githubOidcClaims({ jti: "nonce-1", exp: 1_777_777_777 }),
+      ),
+      repositories: new InMemoryActionControlPlaneRepository(),
+      sessions: new StaticSessionTokenService(),
+      replayNonces,
+      clock,
+    };
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({ repository: "777genius/example" });
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        dependencies,
+      ),
+    ).rejects.toThrow("oidc_replay_detected");
+    expect(
+      replayNonces.consumed.get(`${githubActionsOidcIssuer}:nonce-1`),
+    ).toEqual(new Date(1_777_777_777_000));
+  });
+
+  it("requires jti when replay protection is configured", async () => {
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(githubOidcClaims()),
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          replayNonces: new InMemoryActionOidcReplayNonceStore(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("oidc_jti_required");
+  });
+
+  it("does not spend rate-limit capacity on replayed OIDC tokens", async () => {
+    const rateLimits = new DenyingActionRateLimits();
+    const replayNonces = new InMemoryActionOidcReplayNonceStore();
+    await replayNonces.tryConsumeNonce({
+      key: `${githubActionsOidcIssuer}:nonce-2`,
+      expiresAt: new Date(fixedNow.getTime() + 60_000),
+      now: fixedNow,
+    });
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({ jti: "nonce-2" }),
+          ),
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          replayNonces,
+          rateLimits,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("oidc_replay_detected");
+    expect(rateLimits.oidcExchangeCalls).toEqual([]);
   });
 
   it("returns runtime config without secrets", async () => {
@@ -426,6 +534,28 @@ describe("action control plane", () => {
       providerHealth: "failed",
       safeErrorCategory: "provider_auth_invalid",
     });
+  });
+
+  it("prunes expired OIDC replay nonces through a narrow cleanup port", async () => {
+    const replayNonces = new InMemoryActionOidcReplayNonceStore();
+    await replayNonces.tryConsumeNonce({
+      key: "expired",
+      expiresAt: new Date(fixedNow.getTime() - 1),
+      now: fixedNow,
+    });
+    await replayNonces.tryConsumeNonce({
+      key: "active",
+      expiresAt: new Date(fixedNow.getTime() + 60_000),
+      now: fixedNow,
+    });
+
+    await expect(
+      pruneExpiredActionOidcReplayNonces(
+        { expiredBefore: fixedNow, limit: 100 },
+        { replayNonces },
+      ),
+    ).resolves.toEqual({ deleted: 1 });
+    expect([...replayNonces.consumed.keys()]).toEqual(["active"]);
   });
 
   it("signs and verifies short-lived action session tokens", async () => {

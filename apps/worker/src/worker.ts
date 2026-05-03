@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { config as loadDotenv } from "dotenv";
 import {
+  PrismaActionOidcReplayNonceStore,
+  pruneExpiredActionOidcReplayNonces,
+} from "@reviewrouter/features-action-control-plane";
+import {
   PrismaOutboxEventRepository,
   processOutboxBatch,
   type OutboxHandler,
@@ -48,6 +52,10 @@ async function main(): Promise<void> {
 
     const outbox = new PrismaOutboxEventRepository(prisma);
     const pruneRateLimits = createRateLimitMaintenance(prisma, clock);
+    const pruneActionOidcReplayNonces = createActionOidcReplayNonceMaintenance(
+      prisma,
+      clock,
+    );
     const limit = readPositiveIntegerEnv("REVIEW_ROUTER_OUTBOX_BATCH_SIZE", 25);
     const processingStaleAfterMs = readPositiveIntegerEnv(
       "REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS",
@@ -62,6 +70,7 @@ async function main(): Promise<void> {
         },
       );
       await pruneRateLimits();
+      await pruneActionOidcReplayNonces();
       return result;
     };
 
@@ -154,6 +163,46 @@ function createRateLimitMaintenance(
       }
     } catch (error: unknown) {
       logger.warn("ReviewRouter rate limit maintenance failed", {
+        safeErrorSummary: safeWorkerErrorSummary(error),
+      });
+    }
+  };
+}
+
+function createActionOidcReplayNonceMaintenance(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  const replayNonces = new PrismaActionOidcReplayNonceStore(prisma);
+  const limit = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_BATCH_SIZE",
+    500,
+  );
+  const intervalMs = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_INTERVAL_MS",
+    5 * 60 * 1000,
+  );
+  let lastAttemptAtMs = 0;
+
+  return async () => {
+    const now = clock.now();
+    if (now.getTime() - lastAttemptAtMs < intervalMs) {
+      return;
+    }
+    lastAttemptAtMs = now.getTime();
+
+    try {
+      const result = await pruneExpiredActionOidcReplayNonces(
+        { expiredBefore: now, limit },
+        { replayNonces },
+      );
+      if (result.deleted > 0) {
+        logger.info("ReviewRouter pruned expired action OIDC replay nonces", {
+          deleted: result.deleted,
+        });
+      }
+    } catch (error: unknown) {
+      logger.warn("ReviewRouter action OIDC replay nonce maintenance failed", {
         safeErrorSummary: safeWorkerErrorSummary(error),
       });
     }

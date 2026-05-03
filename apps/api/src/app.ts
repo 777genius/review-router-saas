@@ -4,6 +4,7 @@ import {
   JoseActionSessionTokenService,
   JoseGitHubActionsOidcTokenVerifier,
   PrismaActionControlPlaneRepository,
+  PrismaActionOidcReplayNonceStore,
   registerActionControlPlaneRoutes,
   type RegisterActionControlPlaneRoutesDependencies,
 } from "@reviewrouter/features-action-control-plane";
@@ -92,6 +93,7 @@ export async function createApiApp(
               new PrismaRateLimitStore(prisma),
               clock,
             ),
+            replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
             sessions: new JoseActionSessionTokenService(
               options.actionSessionSecret,
             ),

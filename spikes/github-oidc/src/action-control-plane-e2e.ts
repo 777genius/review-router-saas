@@ -3,6 +3,7 @@ import {
   githubActionsOidcIssuer,
   JoseActionSessionTokenService,
   PrismaActionControlPlaneRepository,
+  PrismaActionOidcReplayNonceStore,
   type GitHubActionsOidcClaims,
   type GitHubActionsOidcTokenVerifierPort,
 } from "../../../packages/features/action-control-plane/src/index.ts";
@@ -58,10 +59,12 @@ try {
   }
 
   const runId = `local-e2e-${Date.now()}`;
+  const oidcJti = `local-e2e-jti-${Date.now()}`;
   const app = await createApiApp({
     prisma,
     actionControlPlaneDependencies: {
       repositories: new PrismaActionControlPlaneRepository(prisma),
+      replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
       oidcVerifier: new StaticOidcVerifier({
         iss: githubActionsOidcIssuer,
         aud: defaultActionOidcAudience,
@@ -74,6 +77,8 @@ try {
         run_attempt: "1",
         workflow_ref: `${repository.fullName}/.github/workflows/reviewrouter.yml@refs/pull/1/merge`,
         actor: "reviewrouter-e2e",
+        exp: Math.floor(Date.now() / 1000) + 900,
+        jti: oidcJti,
       }),
       sessions: new JoseActionSessionTokenService(actionSessionSecret),
       clock: new SystemClock(),
@@ -90,6 +95,20 @@ try {
     throw new Error(`exchange failed: ${exchange.statusCode} ${exchange.body}`);
   }
   const session = exchange.json<{ readonly sessionToken: string }>();
+
+  const replay = await app.inject({
+    method: "POST",
+    url: "/api/action/exchange-token",
+    payload: { oidcToken: "local-e2e-oidc-token" },
+  });
+  if (
+    replay.statusCode !== 401 ||
+    replay.json<{ readonly error: string }>().error !== "invalid_action_token"
+  ) {
+    throw new Error(
+      `OIDC replay was not rejected: ${replay.statusCode} ${replay.body}`,
+    );
+  }
 
   const config = await app.inject({
     method: "GET",
@@ -190,6 +209,7 @@ try {
         ok: true,
         targetRepo,
         runId,
+        oidcJti,
         exchange: {
           repository: exchange.json<{ readonly repository: string }>()
             .repository,

@@ -3,6 +3,7 @@ import type {
   ActionControlPlaneRepositoryPort,
   ActionEntitlementPolicyPort,
   ActionHealthReport,
+  ActionOidcReplayNonceStorePort,
   ActionRateLimitPolicyPort,
   ActionRepositoryContext,
   GitHubActionsOidcClaims,
@@ -125,6 +126,10 @@ class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
 }
 
 class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
+  constructor(
+    private readonly overrides: Partial<GitHubActionsOidcClaims> = {},
+  ) {}
+
   async verify(): Promise<GitHubActionsOidcClaims> {
     return {
       iss: githubActionsOidcIssuer,
@@ -139,7 +144,20 @@ class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
       workflow_ref:
         "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
       actor: "777genius",
+      ...this.overrides,
     };
+  }
+}
+
+class InMemoryActionReplayNonces implements ActionOidcReplayNonceStorePort {
+  private readonly keys = new Set<string>();
+
+  async tryConsumeNonce(input: { readonly key: string }): Promise<boolean> {
+    if (this.keys.has(input.key)) {
+      return false;
+    }
+    this.keys.add(input.key);
+    return true;
   }
 }
 
@@ -324,6 +342,36 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("maps replayed action OIDC tokens to a safe auth error", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        replayNonces: new InMemoryActionReplayNonces(),
+        oidcVerifier: new StaticActionOidcVerifier({ jti: "replayed-jti" }),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(401);
+    expect(second.json()).toEqual({ error: "invalid_action_token" });
   });
 
   it("rejects unsafe or oversized action health reports without leaking payload values", async () => {

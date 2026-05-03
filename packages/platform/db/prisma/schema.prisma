@@ -303,6 +303,14 @@ model DistributedLock {
   @@index([expiresAt])
 }
 
+model ActionOidcReplayNonce {
+  key       String   @id
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
 enum WorkspaceRole {
   owner
   admin
