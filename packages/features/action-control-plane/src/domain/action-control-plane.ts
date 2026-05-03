@@ -5,6 +5,9 @@ export const githubActionsOidcIssuer =
   "https://token.actions.githubusercontent.com";
 export const actionSessionAudience = "reviewrouter-action-api";
 export const actionSessionTtlSeconds = 15 * 60;
+export const allowedWorkflowPaths = [
+  ".github/workflows/reviewrouter.yml",
+] as const;
 
 export const allowedActionEvents = [
   "pull_request",
@@ -195,4 +198,36 @@ export function validateOidcClaimsAgainstRepository(input: {
   ) {
     throw new Error("repository_owner_mismatch");
   }
+  if (
+    isAllowedWorkflowRef({
+      workflowRef: input.claims.workflow_ref,
+      repository: repository.fullName,
+    }) === false
+  ) {
+    throw new Error("workflow_ref_not_allowed");
+  }
+}
+
+export function isAllowedWorkflowRef(input: {
+  readonly workflowRef: string;
+  readonly repository: string;
+  readonly allowedPaths?: readonly string[];
+}): boolean {
+  const atIndex = input.workflowRef.indexOf("@");
+  if (atIndex <= 0) {
+    return false;
+  }
+
+  const workflowIdentity = input.workflowRef.slice(0, atIndex);
+  const repositoryPrefix = `${input.repository}/`;
+  if (
+    workflowIdentity.slice(0, repositoryPrefix.length).toLowerCase() !==
+    repositoryPrefix.toLowerCase()
+  ) {
+    return false;
+  }
+
+  const path = workflowIdentity.slice(repositoryPrefix.length);
+  const allowedPaths = input.allowedPaths ?? allowedWorkflowPaths;
+  return allowedPaths.includes(path);
 }

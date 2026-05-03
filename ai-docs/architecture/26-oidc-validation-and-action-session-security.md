@@ -16,7 +16,7 @@ exp/nbf/iat are valid with small clock skew tolerance
 repository id/name maps to active selected repository
 repository owner maps to active installation/workspace
 event name is allowed for requested operation
-workflow ref is acceptable if policy restricts workflow file path later
+workflow ref path is an approved ReviewRouter workflow file
 run id and run attempt are present
 ```
 
@@ -94,6 +94,7 @@ Do not return instructions that cause secret-backed provider execution in unsafe
 - expired token rejected
 - wrong audience rejected
 - repo id mismatch rejected
+- workflow ref outside `.github/workflows/reviewrouter.yml` rejected
 - removed installation rejected
 - fork context receives no secret-backed provider enablement
 - action session cannot call dashboard API

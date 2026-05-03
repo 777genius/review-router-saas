@@ -124,6 +124,7 @@ function statusCodeForActionError(message: string): number {
     message.includes("repository_not_registered") ||
     message.includes("repository_not_selected") ||
     message.includes("installation_not_active") ||
+    message.includes("workflow_ref_not_allowed") ||
     message.includes("mismatch")
   ) {
     return 403;

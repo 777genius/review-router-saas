@@ -141,6 +141,26 @@ describe("action control plane", () => {
     ).rejects.toThrow("repository_not_registered");
   });
 
+  it("rejects OIDC claims from non-ReviewRouter workflow files", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              workflow_ref:
+                "777genius/example/.github/workflows/deploy.yml@refs/heads/main",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
   it("returns runtime config without secrets", async () => {
     const config = await getActionRuntimeConfig(
       { sessionToken: "session" },
