@@ -17,7 +17,9 @@ import {
   findReviewConfiguration,
   PrismaReviewConfigurationRepository,
   safeDefaultReviewConfiguration,
+  type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import type { ProviderSecretKind } from "@reviewrouter/features-provider-setup";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -247,7 +249,7 @@ function WorkspaceCard({
   const primaryInstallation = workspace.installations[0];
   const providerGuidance = primaryRepository
     ? buildProviderSecretSetupGuidance({
-        provider: "codex_oauth",
+        provider: providerSecretKindForAuthMode(activeConfig.provider.authMode),
         repoFullName: primaryRepository.fullName,
         organizationLogin:
           primaryInstallation?.accountType === "Organization"
@@ -311,17 +313,23 @@ function WorkspaceCard({
       {providerGuidance ? (
         <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4">
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <Badge tone="success">Codex OAuth setup</Badge>
+            <Badge tone="success">
+              {providerSetupTitle(providerGuidance.provider)}
+            </Badge>
             <span className="text-xs uppercase tracking-[0.16em] text-emerald-100">
               {providerGuidance.recommendedScope.replaceAll("_", " ")}
             </span>
           </div>
           <p className="mb-4 text-sm leading-6 text-emerald-50">
-            Run this on a trusted machine where Codex CLI is already logged in.
-            The command writes directly to GitHub Actions secrets through{" "}
-            <code>gh</code>; ReviewRouter SaaS never receives{" "}
-            <code>CODEX_AUTH_JSON</code>.
+            {providerSetupIntro(providerGuidance.provider)}
           </p>
+          {providerGuidance.warnings.length > 0 ? (
+            <ul className="mb-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
+              {providerGuidance.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          ) : null}
           <div className="grid gap-3">
             {providerGuidance.commands.map((command) => (
               <div
@@ -607,6 +615,60 @@ function WorkspaceCard({
       </div>
     </Card>
   );
+}
+
+function providerSecretKindForAuthMode(
+  authMode: ReviewConfiguration["provider"]["authMode"],
+): ProviderSecretKind {
+  switch (authMode) {
+    case "codex_subscription_oauth":
+      return "codex_oauth";
+    case "codex_openai_api_key":
+      return "openai_api_key";
+    case "openrouter_api_key":
+      return "openrouter_api_key";
+  }
+}
+
+function providerSetupTitle(provider: ProviderSecretKind): string {
+  switch (provider) {
+    case "codex_oauth":
+      return "Codex OAuth setup";
+    case "openai_api_key":
+      return "OpenAI API key setup";
+    case "openrouter_api_key":
+      return "OpenRouter API key setup";
+  }
+}
+
+function providerSetupIntro(provider: ProviderSecretKind): React.ReactNode {
+  switch (provider) {
+    case "codex_oauth":
+      return (
+        <>
+          Run this on a trusted machine where Codex CLI is already logged in.
+          The command writes directly to GitHub Actions secrets through{" "}
+          <code>gh</code>; ReviewRouter SaaS never receives{" "}
+          <code>CODEX_AUTH_JSON</code>.
+        </>
+      );
+    case "openai_api_key":
+      return (
+        <>
+          Run this where <code>gh</code> is authenticated and paste the OpenAI
+          key when prompted. ReviewRouter SaaS never receives{" "}
+          <code>OPENAI_API_KEY</code>.
+        </>
+      );
+    case "openrouter_api_key":
+      return (
+        <>
+          Run this where <code>gh</code> is authenticated and paste the
+          OpenRouter key when prompted. ReviewRouter SaaS never receives{" "}
+          <code>OPENROUTER_API_KEY</code>.
+        </>
+      );
+  }
 }
 
 function DashboardNotice({

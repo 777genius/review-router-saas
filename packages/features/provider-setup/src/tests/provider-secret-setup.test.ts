@@ -37,4 +37,20 @@ describe("provider secret setup guidance", () => {
     );
     expect(guidance.commands[0]?.command).not.toContain("sk-");
   });
+
+  it("builds OpenRouter org selected-repository commands without embedding key values", () => {
+    const guidance = buildProviderSecretSetupGuidance({
+      provider: "openrouter_api_key",
+      repoFullName: "agent-teams-ai/tvaity",
+      organizationLogin: "agent-teams-ai",
+    });
+
+    expect(guidance.recommendedScope).toBe(
+      "organization_selected_repositories",
+    );
+    expect(guidance.commands[0]?.command).toBe(
+      "gh secret set OPENROUTER_API_KEY --org agent-teams-ai --repos tvaity --app actions",
+    );
+    expect(guidance.commands[0]?.command).not.toContain("sk-or-");
+  });
 });
