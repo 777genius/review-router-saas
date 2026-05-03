@@ -88,6 +88,8 @@ jobs:
         run: pnpm db:restore:smoke
 
       - name: Local readiness
+        env:
+          REVIEW_ROUTER_SKIP_ENV_FILE: "1"
         run: pnpm local:check
 
       - name: Unit tests

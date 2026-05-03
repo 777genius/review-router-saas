@@ -27,19 +27,19 @@ psql_url() {
   printf '%s' "$1" | sed -E 's/[?&]schema=[^&]*//'
 }
 
-if [[ ! -f .env.local ]]; then
-  fail ".env.local is missing. Copy .env.example to .env.local and fill local values."
+if [[ "${REVIEW_ROUTER_SKIP_ENV_FILE:-0}" != "1" && -f .env.local ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env.local
+  set +a
+else
+  info ".env.local is not loaded; using existing environment variables."
 fi
 
-set -a
-# shellcheck disable=SC1091
-. ./.env.local
-set +a
-
-[[ -n "${DATABASE_URL:-}" ]] || fail "DATABASE_URL is missing in .env.local"
-[[ -n "${TEST_DATABASE_URL:-}" ]] || fail "TEST_DATABASE_URL is missing in .env.local"
-[[ -n "${AUTH_SECRET:-}" ]] || fail "AUTH_SECRET is missing in .env.local"
-[[ -n "${GITHUB_WEBHOOK_SECRET:-}" ]] || fail "GITHUB_WEBHOOK_SECRET is missing in .env.local"
+[[ -n "${DATABASE_URL:-}" ]] || fail "DATABASE_URL is missing in environment or .env.local"
+[[ -n "${TEST_DATABASE_URL:-}" ]] || fail "TEST_DATABASE_URL is missing in environment or .env.local"
+[[ -n "${AUTH_SECRET:-}" ]] || fail "AUTH_SECRET is missing in environment or .env.local"
+[[ -n "${GITHUB_WEBHOOK_SECRET:-}" ]] || fail "GITHUB_WEBHOOK_SECRET is missing in environment or .env.local"
 
 info "Checking dev database..."
 psql "$(psql_url "$DATABASE_URL")" -v ON_ERROR_STOP=1 -Atc "select current_database()" >/dev/null
