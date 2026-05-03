@@ -1,0 +1,87 @@
+# Data Retention and Privacy
+
+## Privacy Promise
+
+ReviewRouter SaaS v1 stores metadata, not customer code.
+
+Do not store:
+
+- repository source code
+- pull request diffs
+- raw model prompts
+- raw model responses
+- Codex OAuth files
+- provider API keys
+
+## Stored Metadata
+
+Allowed metadata:
+
+- GitHub account/repo identifiers
+- repository visibility and default branch
+- installation status
+- configuration versions
+- workflow provisioning status
+- provider setup state
+- safe health report summaries
+- audit events
+- entitlements
+
+## Retention Defaults
+
+Initial defaults:
+
+```text
+Audit events: 180 days during beta, configurable later
+Webhook deliveries: 30 days
+Job execution records: 30 days
+Health reports: 90 days
+Config versions: retained while workspace exists
+Deleted workspace data: hard-delete async within 30 days unless legal hold later
+```
+
+## User-Facing Delete
+
+Workspace deletion should:
+
+- revoke or mark installations disconnected where possible
+- delete ReviewRouter metadata
+- schedule hard deletion
+- keep minimal legal/security logs only if required later
+
+## Telemetry Rules
+
+Telemetry must be metadata-only.
+
+Safe:
+
+```text
+review completed
+provider type
+duration bucket
+error category
+config version
+comment count
+finding severity counts
+```
+
+Unsafe:
+
+```text
+file contents
+code snippets
+diff patches
+prompt text
+model raw output
+secret values
+```
+
+## Privacy Review Trigger
+
+Any change that sends data from customer CI to SaaS must answer:
+
+1. Does it include code or diff?
+2. Does it include secrets or environment data?
+3. Is it needed for dashboard value?
+4. Can it be aggregated or categorized instead?
+5. Is retention defined?
