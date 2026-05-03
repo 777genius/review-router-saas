@@ -4,26 +4,29 @@ This file is the handoff guide for an implementation agent that has no prior con
 
 ## Current State
 
-This repository is currently a planning/spike repository for the ReviewRouter SaaS control plane.
+This repository is now an implemented local-beta ReviewRouter SaaS control plane, not just a planning spike.
 
 Implemented so far:
 
-- planning docs under `ai-docs/`
-- GitHub App/OIDC spike code under `spikes/github-oidc/`
+- planning and implementation handoff docs under `ai-docs/`
+- production monorepo skeleton with `apps/web`, `apps/api`, `apps/worker`, `packages/ui`, `packages/platform/*`, and `packages/features/*`
+- Prisma/Postgres schema, migrations, local readiness checks, and DB smoke scripts
+- GitHub App/OIDC spike and real smoke helpers under `spikes/github-oidc/`
+- GitHub webhook ingestion with signature verification, normalized metadata storage, idempotent delivery handling, and outbox sync requests
+- repository sync, dashboard repository health, workflow provisioning PR rendering, review config, provider setup guidance, action control-plane OIDC exchange, safe action health reports, entitlements, audit/outbox maintenance, and worker loop baseline
 - Codex OAuth secret seeding helper under `scripts/seed-codex-auth.sh`
-- TypeScript test/typecheck setup for the spike
+- unit, integration-style, and local DB E2E checks for the implemented beta paths
 
-Not implemented yet:
+Still not production-complete:
 
-- production monorepo skeleton
-- `apps/web`
-- `apps/api`
-- `apps/worker`
-- `packages/ui`
-- Prisma schema
-- production SaaS runtime
+- hosted deployment and real domain/callback URLs
+- payments
+- enterprise SSO
+- public production support/admin tooling
+- polished production onboarding launch flow
+- production release and compatibility automation for the separate `777genius/review-router` Action runtime
 
-The next implementation step is [Iteration 01 - Foundation](./iterations/01-foundation.md).
+The current implementation focus is beta hardening across [Iteration 08](./iterations/08-health-audit-beta-hardening.md), [Iteration 09](./iterations/09-entitlements-billing-boundary.md), [Iteration 10](./iterations/10-github-app-lifecycle-webhooks.md), and [Iteration 11](./iterations/11-provider-secret-onboarding.md). Prefer unverified `Done When` items in those iteration files before adding new product scope.
 
 For the full end-to-end build sequence, follow [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md).
 
@@ -120,17 +123,13 @@ Do not replace these choices without a new ADR.
 
 ## Current Implementation Order
 
-Follow [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md) and iterations in order:
+The foundation through core beta paths exists. Continue from the latest iteration docs and keep the same architectural boundaries:
 
-1. Foundation and monorepo skeleton.
-2. GitHub identity and App installation.
-3. Repository sync and workspace dashboard.
-4. Workflow provisioning PRs.
-5. Review config and provider setup.
-6. Action control-plane protocol with OIDC.
-7. Webhooks, jobs, locks, and outbox.
-8. Health, audit, and beta hardening.
-9. Free entitlements and future billing boundary.
+1. Close unverified quality gates in iterations 08-11.
+2. Prefer tests/E2E for already implemented flows over broad new features.
+3. Keep SaaS metadata-only: no code, diffs, prompts, model responses, or provider secrets in the control plane.
+4. Add behavior through feature application services and ports before adapters/UI.
+5. Update the matching iteration file when a baseline becomes implemented.
 
 Do not jump to billing, cloud execution, enterprise SSO, or managed review workers.
 
@@ -148,23 +147,25 @@ Do not jump to billing, cloud execution, enterprise SSO, or managed review worke
 
 ## Commands
 
-Baseline checks available now:
+Baseline checks:
 
 ```bash
 pnpm typecheck
-pnpm spike:test
+pnpm lint
+pnpm test
+pnpm build
+pnpm format:check
 pnpm local:check
 git diff --check
 bash -n scripts/seed-codex-auth.sh
 ```
 
-After the monorepo skeleton exists, add and use:
+Useful local DB E2E commands:
 
 ```bash
-pnpm lint
-pnpm test
-pnpm build
-pnpm db:migrate
+node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
+node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
+node scripts/run-with-env.mjs pnpm spike:action:e2e
 ```
 
 ## Backend Architecture Rules

@@ -45,3 +45,17 @@ Adapters:
 - repository add/remove changes eventually trigger full installation sync
 - duplicate GitHub deliveries do not duplicate outbox work
 - worker can process `installation.sync_requested@v1`
+
+## Implemented Baseline
+
+- GitHub webhook route verifies `x-hub-signature-256`, rejects invalid deliveries, and stores only normalized metadata plus a payload hash.
+- `installation.created` / active access changes upsert the installation, grant the installing sender owner access for the derived workspace, and enqueue `installation.sync_requested@v1`.
+- `installation_repositories.added|removed` keeps the installation active and enqueues a full installation repository sync.
+- `installation.deleted` marks the installation removed and immediately unselects connected repositories without calling GitHub.
+- Duplicate GitHub delivery IDs are idempotent before side effects.
+- Outbox worker has a registered `installation.sync_requested@v1` handler that validates payloads and delegates repository sync through ports.
+- Local DB E2E covers signed webhook delivery, duplicate suppression, outbox sync processing, repository creation/selection, uninstall unselection, and processed outbox state:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
+```

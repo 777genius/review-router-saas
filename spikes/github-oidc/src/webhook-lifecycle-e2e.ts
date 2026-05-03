@@ -1,5 +1,15 @@
 import { config as loadDotenv } from "dotenv";
 import { createApiApp } from "../../../apps/api/src/app.js";
+import {
+  PrismaOutboxEventRepository,
+  processOutboxBatch,
+} from "../../../packages/features/outbox/src/index.ts";
+import {
+  PrismaRepositoryConnectionRepository,
+  type GitHubRepositorySourcePort,
+  type GitHubRepositorySnapshot,
+} from "../../../packages/features/repositories/src/index.ts";
+import { createInstallationSyncRequestedHandler } from "../../../packages/features/repositories/src/infrastructure/outbox/installation-sync-requested-handler.ts";
 import { signGitHubWebhookPayload } from "../../../packages/features/github-installations/src/infrastructure/crypto/github-webhook-signature.js";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.js";
 
@@ -17,6 +27,8 @@ const repositoryId = BigInt(9876543210123);
 const senderGithubUserId = BigInt(777000001);
 const workspaceSlug = "gh-organization-reviewrouter-lifecycle-e2e";
 const prisma = createPrismaClient({ databaseUrl });
+const syncedAt = new Date("2026-05-03T17:30:00.000Z");
+const syncClock = { now: () => syncedAt };
 
 async function main(): Promise<void> {
   await cleanup();
@@ -114,19 +126,18 @@ async function main(): Promise<void> {
       "installation_repositories enqueues a second sync",
     );
 
-    await prisma.repositoryConnection.create({
-      data: {
-        workspaceId: activeInstallation.workspaceId,
-        installationId: activeInstallation.id,
-        githubRepositoryId: repositoryId,
-        owner: "reviewrouter-lifecycle-e2e",
-        name: "example",
-        fullName: "reviewrouter-lifecycle-e2e/example",
-        defaultBranch: "main",
-        visibility: "private",
-        selected: true,
-      },
-    });
+    const syncResult = await processInstallationSyncOutbox();
+    assert(syncResult.claimed === 2, "worker claims both sync events");
+    assert(syncResult.processed === 2, "worker processes both sync events");
+    const syncedRepository =
+      await prisma.repositoryConnection.findUniqueOrThrow({
+        where: { githubRepositoryId: repositoryId },
+      });
+    assert(syncedRepository.selected === true, "repository sync selects repo");
+    assert(
+      syncedRepository.lastSyncedAt?.toISOString() === syncedAt.toISOString(),
+      "repository sync records deterministic sync timestamp",
+    );
 
     await postWebhook(app, {
       deliveryId: "e2e-installation-deleted",
@@ -157,6 +168,7 @@ async function main(): Promise<void> {
       "deleted installation unselects repos",
     );
     await assertOutboxCount(2, "deleted installation does not enqueue sync");
+    await assertProcessedOutboxCount(2, "sync events stay processed");
 
     console.info("Webhook lifecycle E2E passed");
   } finally {
@@ -164,6 +176,36 @@ async function main(): Promise<void> {
     await cleanup();
     await prisma.$disconnect();
   }
+}
+
+async function processInstallationSyncOutbox(): Promise<{
+  readonly claimed: number;
+  readonly processed: number;
+}> {
+  const outbox = new PrismaOutboxEventRepository(prisma);
+  return processOutboxBatch(
+    {
+      limit: 10,
+      handlers: [
+        createInstallationSyncRequestedHandler({
+          github: new StaticGitHubRepositorySource([
+            {
+              githubRepositoryId: repositoryId.toString(),
+              owner: "reviewrouter-lifecycle-e2e",
+              name: "example",
+              fullName: "reviewrouter-lifecycle-e2e/example",
+              defaultBranch: "main",
+              visibility: "private",
+              archived: false,
+            },
+          ]),
+          repositories: new PrismaRepositoryConnectionRepository(prisma),
+          clock: syncClock,
+        }),
+      ],
+    },
+    { outbox, clock: syncClock },
+  );
 }
 
 async function postWebhook(
@@ -205,6 +247,33 @@ async function assertOutboxCount(
     },
   });
   assert(count === expected, `${message}; expected ${expected}, got ${count}`);
+}
+
+async function assertProcessedOutboxCount(
+  expected: number,
+  message: string,
+): Promise<void> {
+  const count = await prisma.outboxEvent.count({
+    where: {
+      idempotencyKey: {
+        startsWith: `installation:${installationId.toString()}:sync:`,
+      },
+      status: "processed",
+    },
+  });
+  assert(count === expected, `${message}; expected ${expected}, got ${count}`);
+}
+
+class StaticGitHubRepositorySource implements GitHubRepositorySourcePort {
+  constructor(
+    private readonly repositories: readonly GitHubRepositorySnapshot[],
+  ) {}
+
+  async listInstallationRepositories(): Promise<
+    readonly GitHubRepositorySnapshot[]
+  > {
+    return this.repositories;
+  }
 }
 
 async function cleanup(): Promise<void> {
