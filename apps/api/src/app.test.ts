@@ -166,6 +166,24 @@ describe("API app", () => {
     });
   });
 
+  it("marks health degraded when a dependency is degraded", async () => {
+    const app = await createApiApp({
+      healthDependencies: [
+        {
+          check: async () => ({ name: "database", status: "degraded" }),
+        },
+      ],
+    });
+    const response = await app.inject({ method: "GET", url: "/health" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      service: "review-router-api",
+      status: "degraded",
+      dependencies: [{ name: "database", status: "degraded" }],
+    });
+  });
+
   it("handles signed GitHub installation webhooks", async () => {
     const installations = new InMemoryInstallations();
     const deliveries = new InMemoryDeliveries();

@@ -16,7 +16,10 @@ import {
   type RegisterGitHubWebhookRoutesDependencies,
 } from "@reviewrouter/features-github-installations";
 import { PrismaOutboxEventRepository } from "@reviewrouter/features-outbox";
-import { registerSystemHealthRoutes } from "@reviewrouter/features-system-health";
+import {
+  registerSystemHealthRoutes,
+  type HealthDependencyPort,
+} from "@reviewrouter/features-system-health";
 import {
   createPrismaClient,
   type PrismaClient,
@@ -24,6 +27,7 @@ import {
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
+import { PrismaHealthDependency } from "./prisma-health-dependency.js";
 import { appRouter } from "./trpc.js";
 
 export type CreateApiAppOptions = {
@@ -33,6 +37,7 @@ export type CreateApiAppOptions = {
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
   readonly actionControlPlaneEnabled?: boolean;
+  readonly healthDependencies?: readonly HealthDependencyPort[];
   readonly prisma?: PrismaClient;
 };
 
@@ -47,7 +52,12 @@ export async function createApiApp(
       ? createPrismaClient()
       : undefined);
 
-  registerSystemHealthRoutes(app, new SystemClock());
+  registerSystemHealthRoutes(
+    app,
+    new SystemClock(),
+    options.healthDependencies ??
+      (prisma ? [new PrismaHealthDependency(prisma)] : []),
+  );
 
   const githubWebhookDependencies =
     options.githubWebhookDependencies ??
