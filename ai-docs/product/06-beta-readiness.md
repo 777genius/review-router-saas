@@ -27,17 +27,17 @@ Latest full-review validation:
 ```text
 Date: 2026-05-04
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
-Repo: 777genius/rr-saas-fresh-e2e-1777848830828
-Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/pull/1
-Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/pull/2
-Run: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/actions/runs/25293200638
+Repo: 777genius/rr-saas-fresh-e2e-1777851508064
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/actions/runs/25294139796
 Result: setup PR merged, workflow detected on main, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
 ```
 
 Latest local + DB beta gate:
 
 ```text
-Date: 2026-05-04 02:19 EEST
+Date: 2026-05-04 02:38 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 Result: passed.
 Coverage: local readiness, unit/integration tests, typecheck, lint, format, production build, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
