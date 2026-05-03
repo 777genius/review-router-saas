@@ -303,7 +303,7 @@ Adapters:
 - Octokit list installation repositories
 - Prisma repository storage
 - pg-boss sync job
-- Postgres advisory lock
+- Postgres lease lock
 - tRPC repo list/detail endpoints
 
 UI:
@@ -363,7 +363,7 @@ Adapters:
 - deterministic YAML renderer
 - Prisma provisioning repository
 - pg-boss provisioning job
-- Postgres advisory lock
+- Postgres lease lock
 - tRPC create setup PR mutation
 
 UI:
@@ -585,7 +585,7 @@ Adapters:
 - Fastify webhook routes
 - GitHub signature verifier
 - pg-boss queue
-- Postgres advisory locks
+- Postgres lease locks
 - Prisma delivery/outbox repositories
 
 Rules:

@@ -8,7 +8,7 @@ Accepted.
 
 Use Postgres-backed distributed coordination from day one:
 
-- advisory locks for cross-instance mutual exclusion
+- lease-table locks for cross-instance mutual exclusion
 - webhook delivery idempotency table
 - queue unique/singleton jobs
 - outbox pattern for reliable app events
@@ -60,4 +60,4 @@ Negative:
 
 - more code up front
 - requires careful job design
-- requires operational visibility for stuck locks/jobs
+- requires operational visibility for stuck leases/jobs

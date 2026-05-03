@@ -29,7 +29,7 @@ Use test Postgres for:
 - Prisma repositories
 - transactions
 - optimistic config versioning
-- advisory locks
+- lease locks
 - webhook delivery idempotency
 - webhook normalization excludes PR/comment bodies
 - outbox processing

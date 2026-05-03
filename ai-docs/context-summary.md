@@ -83,7 +83,7 @@ The paid value is not raw compute. The paid value is operational control:
 - PostgreSQL
 - Prisma ORM
 - pg-boss jobs
-- Postgres advisory locks
+- Postgres lease locks
 - Octokit
 - Zod
 - feature-first DDD/Clean Architecture

@@ -293,6 +293,16 @@ model RateLimitBucket {
   @@index([windowEndsAt])
 }
 
+model DistributedLock {
+  key       String   @id
+  owner     String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([expiresAt])
+}
+
 enum WorkspaceRole {
   owner
   admin

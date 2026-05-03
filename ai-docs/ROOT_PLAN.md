@@ -77,7 +77,7 @@ Public webhooks: plain Fastify routes
 DB: PostgreSQL
 ORM: Prisma
 Queue/jobs: pg-boss first, replaceable later
-Locks: Postgres advisory locks first, replaceable later
+Locks: Postgres lease table with owner-token release and TTL, replaceable later
 Action auth: GitHub Actions OIDC with short-lived action session token
 GitHub SDK: Octokit
 Validation: Zod

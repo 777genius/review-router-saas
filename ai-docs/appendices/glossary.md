@@ -34,7 +34,7 @@ A database-backed table of events written in the same transaction as state chang
 
 ## Distributed Lock
 
-A lock that works across multiple API/worker instances, implemented through Postgres advisory locks first.
+A lock that works across multiple API/worker instances, implemented through a Postgres lease table with owner-token release and TTL.
 
 ## `/rr skip`
 

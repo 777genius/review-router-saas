@@ -88,7 +88,7 @@ apps/worker instance 1..N
 Shared:
   PostgreSQL
   queue tables
-  advisory locks
+  lease locks
   object storage later if needed
 ```
 

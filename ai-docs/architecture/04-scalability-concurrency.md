@@ -51,8 +51,14 @@ export interface DistributedLock {
 Initial adapter:
 
 ```text
-PostgresAdvisoryLock
+PostgresLeaseLock
 ```
+
+Why not session advisory locks:
+
+- Prisma uses a connection pool, so separate `$queryRaw` calls can run on different DB connections.
+- Session-level advisory locks can leak or fail to unlock if acquire and release happen on different pooled connections.
+- ReviewRouter uses a DB lease table with owner token and TTL instead. It is safe across API/worker instances and does not keep a transaction open during GitHub API calls.
 
 Lock keys:
 
@@ -117,4 +123,5 @@ Preferred flow:
 - All side effects can retry.
 - Workflow provisioning has repo-level lock.
 - Installation sync has installation-level lock.
+- Lock leases have bounded TTL and owner-token release.
 - Audit writes are append-only.

@@ -29,7 +29,7 @@ import {
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
-import { PostgresAdvisoryLock } from "@reviewrouter/platform-locks";
+import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import {
   assertDashboardMutationAllowed,
   createGitHubAppInstallationOctokit,
@@ -68,7 +68,7 @@ export async function requestInstallationSyncAction(
     const clockNow = new Date();
     const deliveryBucket = Math.floor(clockNow.getTime() / 60_000);
 
-    const result = await new PostgresAdvisoryLock(prisma).withLock(
+    const result = await new PostgresLeaseLock(prisma).withLock(
       `installation:${githubInstallationId}:sync-request`,
       30_000,
       async () => {
@@ -154,9 +154,9 @@ export async function createSetupPullRequestAction(
       repositoryId,
     });
 
-    const pullRequest = await new PostgresAdvisoryLock(prisma).withLock(
+    const pullRequest = await new PostgresLeaseLock(prisma).withLock(
       `repo:${repositoryId}:workflow-provision`,
-      60_000,
+      5 * 60_000,
       async () =>
         provisionRepositoryReviewRouterWorkflow(
           {
@@ -300,7 +300,7 @@ export async function retryOutboxEventAction(
       eventId,
     });
     const outbox = new PrismaOutboxEventRepository(prisma);
-    const result = await new PostgresAdvisoryLock(prisma).withLock(
+    const result = await new PostgresLeaseLock(prisma).withLock(
       `outbox:${eventId}:retry`,
       30_000,
       async () =>

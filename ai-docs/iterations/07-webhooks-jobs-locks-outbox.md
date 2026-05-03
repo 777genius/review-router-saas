@@ -9,7 +9,7 @@ Make backend safe for duplicate GitHub webhooks and multiple worker instances.
 - GitHubWebhookDelivery table
 - webhook normalization into safe internal events
 - DistributedLock port
-- PostgresAdvisoryLock adapter
+- PostgresLeaseLock adapter
 - pg-boss queue integration
 - OutboxEvent table with event type/version
 - outbox worker
@@ -45,6 +45,7 @@ Make backend safe for duplicate GitHub webhooks and multiple worker instances.
 - If no outbox handlers are registered, the worker exits without claiming events. This prevents misconfigured deployments from turning pending side effects into dead letters.
 - Worker recovers stale `processing` events after `REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS` instead of leaving them stuck forever after a crash.
 - Dashboard exposes recent outbox failures and supports audited manual retry for `dead_letter` events.
+- Dashboard setup PR, manual sync, and outbox retry mutations use `PostgresLeaseLock`, a table-backed owner-token lease. This avoids session-level advisory-lock bugs with Prisma connection pooling.
 - Local DB E2E covers dead-letter retry and stale processing recovery:
 
 ```bash
@@ -58,3 +59,11 @@ GITHUB_APP_ID= GITHUB_APP_PRIVATE_KEY_FILE= REVIEW_ROUTER_WORKER_ONCE=1 node scr
 ```
 
 Expected: worker exits without claiming events.
+
+Distributed lock smoke:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:distributed-lock:e2e
+```
+
+Expected: active lease contention fails, released locks can be reacquired, and expired leases can be reclaimed.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advisoryLockId, InMemoryLock } from "./index.js";
+import { InMemoryLock, PostgresLeaseLock } from "./index.js";
 
 describe("distributed locks", () => {
   it("rejects lock contention in the in-memory adapter", async () => {
@@ -19,12 +19,17 @@ describe("distributed locks", () => {
     await first;
   });
 
-  it("maps lock keys to stable 64-bit advisory ids", () => {
-    expect(advisoryLockId("installation:129154876:sync")).toBe(
-      advisoryLockId("installation:129154876:sync"),
-    );
-    expect(advisoryLockId("installation:129154876:sync")).not.toBe(
-      advisoryLockId("installation:129154877:sync"),
-    );
+  it("rejects invalid lock input before touching Postgres", async () => {
+    const lock = new PostgresLeaseLock({} as never);
+
+    await expect(
+      lock.withLock("", 1_000, async () => undefined),
+    ).rejects.toThrow("distributed_lock_key_required");
+    await expect(
+      lock.withLock("repo:1:workflow-provision", 0, async () => undefined),
+    ).rejects.toThrow("distributed_lock_ttl_invalid");
+    await expect(
+      lock.withLock("x".repeat(501), 1_000, async () => undefined),
+    ).rejects.toThrow("distributed_lock_key_too_long");
   });
 });
