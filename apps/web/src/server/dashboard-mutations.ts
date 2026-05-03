@@ -3,7 +3,9 @@ import { App } from "@octokit/app";
 import { getServerSession } from "next-auth";
 import {
   assertWorkspaceMutationAllowed,
+  listVisibleWorkspaceScope,
   PrismaWorkspaceAccessRepository,
+  type VisibleWorkspaceScope,
 } from "@reviewrouter/features-auth";
 import { authOptions } from "../auth/auth-options";
 import { getPrisma } from "./prisma";
@@ -20,6 +22,10 @@ export type DashboardMutationStatus = {
   readonly githubLogin: string | null;
   readonly reason: "ready" | "disabled" | "signed_out";
 };
+
+export type DashboardWorkspaceScope =
+  | { readonly kind: "none"; readonly reason: "signed_out" }
+  | VisibleWorkspaceScope;
 
 export async function getDashboardMutationStatus(): Promise<DashboardMutationStatus> {
   const session = await getServerSession(authOptions);
@@ -80,6 +86,26 @@ export async function assertDashboardMutationAllowed(
   );
 
   return { githubUserId, githubLogin, actor: `user:${githubLogin}` };
+}
+
+export async function getDashboardWorkspaceScope(): Promise<DashboardWorkspaceScope> {
+  const session = await getServerSession(authOptions);
+  const githubUserId = session?.user?.githubUserId;
+  const githubLogin = session?.user?.githubLogin;
+  if (!githubUserId || !githubLogin) {
+    return { kind: "none", reason: "signed_out" };
+  }
+
+  return listVisibleWorkspaceScope(
+    {
+      githubUserId,
+      githubLogin,
+      localAdminGithubLogins: readCsvEnv(
+        "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
+      ),
+    },
+    { workspaceAccess: new PrismaWorkspaceAccessRepository(getPrisma()) },
+  );
 }
 
 export async function createGitHubAppInstallationOctokit(

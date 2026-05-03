@@ -1,5 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
-import type { WorkspaceAccessRepositoryPort } from "../../application/ports/workspace-access-repository-port";
+import type {
+  WorkspaceAccessGrant,
+  WorkspaceAccessRepositoryPort,
+} from "../../application/ports/workspace-access-repository-port";
 import type { WorkspaceAccessRole } from "../../domain/workspace-access";
 
 export class PrismaWorkspaceAccessRepository implements WorkspaceAccessRepositoryPort {
@@ -18,5 +21,25 @@ export class PrismaWorkspaceAccessRepository implements WorkspaceAccessRepositor
     });
 
     return member?.role ?? null;
+  }
+
+  async listWorkspaceRolesByGitHubUserId(input: {
+    readonly githubUserId: string;
+  }): Promise<readonly WorkspaceAccessGrant[]> {
+    const members = await this.prisma.workspaceMember.findMany({
+      where: {
+        user: { githubUserId: BigInt(input.githubUserId) },
+      },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        workspaceId: true,
+        role: true,
+      },
+    });
+
+    return members.map((member) => ({
+      workspaceId: member.workspaceId,
+      role: member.role,
+    }));
   }
 }

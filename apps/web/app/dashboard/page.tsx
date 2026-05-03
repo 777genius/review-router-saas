@@ -14,7 +14,10 @@ import {
   PrismaReviewConfigurationRepository,
   safeDefaultReviewConfiguration,
 } from "@reviewrouter/features-review-config";
-import { getDashboardMutationStatus } from "../../src/server/dashboard-mutations";
+import {
+  getDashboardMutationStatus,
+  getDashboardWorkspaceScope,
+} from "../../src/server/dashboard-mutations";
 import { getPrisma } from "../../src/server/prisma";
 import {
   createSetupPullRequestAction,
@@ -43,9 +46,23 @@ type DashboardWorkspace = {
   }[];
 };
 
-async function loadDashboardData() {
+async function loadDashboardData(
+  scope: Awaited<ReturnType<typeof getDashboardWorkspaceScope>>,
+) {
+  if (scope.kind === "none") {
+    return [];
+  }
+  if (scope.kind === "workspace_ids" && scope.workspaceIds.length === 0) {
+    return [];
+  }
+
   const prisma = getPrisma();
+  const workspaceWhere =
+    scope.kind === "workspace_ids"
+      ? { id: { in: [...scope.workspaceIds] } }
+      : undefined;
   const workspaces = await prisma.workspace.findMany({
+    ...(workspaceWhere ? { where: workspaceWhere } : {}),
     orderBy: { createdAt: "desc" },
     take: 10,
     include: {
@@ -149,8 +166,11 @@ type DashboardPageProps = {
 export default async function DashboardPage({
   searchParams,
 }: DashboardPageProps): Promise<React.ReactElement> {
-  const workspaces = await loadDashboardData();
-  const mutationStatus = await getDashboardMutationStatus();
+  const [mutationStatus, workspaceScope] = await Promise.all([
+    getDashboardMutationStatus(),
+    getDashboardWorkspaceScope(),
+  ]);
+  const workspaces = await loadDashboardData(workspaceScope);
   const params = searchParams ? await searchParams : {};
 
   return (

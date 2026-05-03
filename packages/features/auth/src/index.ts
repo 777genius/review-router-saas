@@ -6,6 +6,7 @@ export * from "./application/ports/workspace-membership-repository-port";
 export * from "./application/ports/workspace-access-repository-port";
 export * from "./application/use-cases/link-github-identity";
 export * from "./application/use-cases/assert-workspace-mutation-allowed";
+export * from "./application/use-cases/list-visible-workspace-scope";
 export * from "./infrastructure/prisma/prisma-user-repository";
 export * from "./infrastructure/prisma/prisma-workspace-membership-repository";
 export * from "./infrastructure/prisma/prisma-workspace-access-repository";

@@ -1,14 +1,25 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceAccessRepositoryPort } from "../application/ports/workspace-access-repository-port";
 import { assertWorkspaceMutationAllowed } from "../application/use-cases/assert-workspace-mutation-allowed";
+import { listVisibleWorkspaceScope } from "../application/use-cases/list-visible-workspace-scope";
 import type { WorkspaceAccessRole } from "../domain/workspace-access";
 import { canMutateWorkspace } from "../domain/workspace-access";
 
 class StaticWorkspaceAccess implements WorkspaceAccessRepositoryPort {
-  constructor(private readonly role: WorkspaceAccessRole | null) {}
+  constructor(
+    private readonly role: WorkspaceAccessRole | null,
+    private readonly workspaceIds: readonly string[] = [],
+  ) {}
 
   async findWorkspaceRoleByGitHubUserId(): Promise<WorkspaceAccessRole | null> {
     return this.role;
+  }
+
+  async listWorkspaceRolesByGitHubUserId() {
+    return this.workspaceIds.map((workspaceId) => ({
+      workspaceId,
+      role: "member" as const,
+    }));
   }
 }
 
@@ -56,5 +67,39 @@ describe("workspace access policy", () => {
         { workspaceAccess: new StaticWorkspaceAccess(null) },
       ),
     ).rejects.toThrow("workspace_mutation_forbidden:missing_role");
+  });
+
+  it("lists only member workspace ids unless local admin override applies", async () => {
+    await expect(
+      listVisibleWorkspaceScope(
+        {
+          githubUserId: "123",
+          githubLogin: "member",
+        },
+        {
+          workspaceAccess: new StaticWorkspaceAccess(null, [
+            "workspace_1",
+            "workspace_2",
+          ]),
+        },
+      ),
+    ).resolves.toEqual({
+      kind: "workspace_ids",
+      workspaceIds: ["workspace_1", "workspace_2"],
+    });
+
+    await expect(
+      listVisibleWorkspaceScope(
+        {
+          githubUserId: "123",
+          githubLogin: "777genius",
+          localAdminGithubLogins: ["777genius"],
+        },
+        { workspaceAccess: new StaticWorkspaceAccess(null) },
+      ),
+    ).resolves.toEqual({
+      kind: "all",
+      reason: "local_admin_override",
+    });
   });
 });
