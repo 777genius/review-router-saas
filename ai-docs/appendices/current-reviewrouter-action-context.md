@@ -108,3 +108,24 @@ skips setup PR creation when the workflow already uses the expected action ref.
 The GitHub workflow setup adapter also retries content write conflicts and
 re-reads open setup PRs after raced PR creation conflicts, so the dashboard lock
 is not the only duplicate-PR defense.
+
+## Fresh Repository End-to-End Smoke
+
+On 2026-05-04, a new public repository was created and exercised from scratch:
+
+```text
+Repo: 777genius/rr-saas-fresh-e2e-20260504010426
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-20260504010426/pull/1
+Setup result: merged generated ReviewRouter workflow
+Post-merge health: present, expectedActionRefFound=true
+Codex OAuth: seeded into repository Actions secret through scripts/seed-codex-auth.sh
+
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-20260504010426/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-20260504010426/actions/runs/25292193330
+Result: failed intentionally with 1 critical finding
+Inline: github-actions[bot] commented on auth.js:5
+Finding: Login bypass ignores requested email
+```
+
+This smoke proves the beta path works for a fresh repository with App-managed
+workflow provisioning and Codex OAuth running inside GitHub Actions.
