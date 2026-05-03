@@ -6,6 +6,11 @@ import {
   recordAuditEvent,
   PrismaAuditLogRepository,
 } from "@reviewrouter/features-audit-log";
+import {
+  assertWorkspaceFeatureEntitlement,
+  PrismaEntitlementRepository,
+  type EntitlementFeature,
+} from "@reviewrouter/features-entitlements";
 import { OutboxInstallationSyncRequester } from "@reviewrouter/features-github-installations";
 import {
   PrismaOutboxEventRepository,
@@ -49,6 +54,12 @@ export async function requestInstallationSyncAction(
     }
 
     const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "repository_dashboard",
+    });
     const clockNow = new Date();
     const deliveryBucket = Math.floor(clockNow.getTime() / 60_000);
 
@@ -119,6 +130,12 @@ export async function createSetupPullRequestAction(
     }
 
     const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "workflow_provisioning",
+    });
     const octokit = await createGitHubAppInstallationOctokit(
       repository.installation.githubInstallationId.toString(),
     );
@@ -179,6 +196,12 @@ export async function saveWorkspaceReviewConfigAction(
 
   try {
     const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "action_control_plane",
+    });
     const authMode = readFormString(
       formData,
       "providerAuthMode",
@@ -254,6 +277,12 @@ export async function retryOutboxEventAction(
 
   try {
     const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "repository_dashboard",
+    });
     const outbox = new PrismaOutboxEventRepository(prisma);
     const result = await new PostgresAdvisoryLock(prisma).withLock(
       `outbox:${eventId}:retry`,
@@ -289,6 +318,25 @@ export async function retryOutboxEventAction(
 
   revalidatePath("/dashboard");
   redirectWithParams(params);
+}
+
+async function assertDashboardEntitlement(input: {
+  readonly prisma: PrismaClient;
+  readonly workspaceId: string;
+  readonly actor: string;
+  readonly feature: EntitlementFeature;
+}): Promise<void> {
+  await assertWorkspaceFeatureEntitlement(
+    {
+      workspaceId: input.workspaceId,
+      actor: input.actor,
+      feature: input.feature,
+    },
+    {
+      entitlements: new PrismaEntitlementRepository(input.prisma),
+      auditLog: new PrismaAuditLogRepository(input.prisma),
+    },
+  );
 }
 
 async function loadStaticRuntimeEnv(input: {
@@ -332,6 +380,9 @@ function safeDashboardErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : "unknown_error";
   if (message.startsWith("workspace_mutation_forbidden:")) {
     return "workspace_mutation_forbidden";
+  }
+  if (message.startsWith("entitlement_denied:")) {
+    return "entitlement_denied";
   }
   if (
     [

@@ -806,6 +806,8 @@ function dashboardErrorText(error: string): string {
       return "Archived repositories cannot be provisioned.";
     case "installation_not_active":
       return "The GitHub App installation is not active.";
+    case "entitlement_denied":
+      return "This workspace plan does not allow that action. Check the plan status or feature flags.";
     default:
       return "GitHub operation failed. Check audit events or server logs for the safe error code.";
   }
