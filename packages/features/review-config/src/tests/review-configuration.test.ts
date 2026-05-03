@@ -1,9 +1,38 @@
 import { describe, expect, it } from "vitest";
 import {
+  findReviewConfiguration,
   mapConfigToRuntimeEnv,
   parseReviewConfiguration,
+  reviewConfigurationTargetKey,
+  saveReviewConfiguration,
   safeDefaultReviewConfiguration,
+  type PersistedReviewConfiguration,
+  type ReviewConfigurationRepositoryPort,
 } from "../index";
+
+class InMemoryReviewConfigurationRepository implements ReviewConfigurationRepositoryPort {
+  private readonly versions = new Map<string, PersistedReviewConfiguration[]>();
+
+  async findLatest(
+    target: Parameters<ReviewConfigurationRepositoryPort["findLatest"]>[0],
+  ) {
+    const records = this.versions.get(reviewConfigurationTargetKey(target));
+    return records?.at(-1) ?? null;
+  }
+
+  async saveNextVersion(
+    input: Parameters<ReviewConfigurationRepositoryPort["saveNextVersion"]>[0],
+  ) {
+    const key = reviewConfigurationTargetKey(input.target);
+    const records = this.versions.get(key) ?? [];
+    const persisted = {
+      version: records.length + 1,
+      config: input.config,
+    } satisfies PersistedReviewConfiguration;
+    this.versions.set(key, [...records, persisted]);
+    return persisted;
+  }
+}
 
 describe("review configuration", () => {
   it("maps safe default Codex OAuth config to runtime env without secrets", () => {
@@ -33,5 +62,42 @@ describe("review configuration", () => {
         limits: { inlineMaxComments: 500, targetTokensPerBatch: 50000 },
       }),
     ).toThrow();
+  });
+
+  it("versions workspace review configuration through the repository port", async () => {
+    const configurations = new InMemoryReviewConfigurationRepository();
+    const target = { scope: "workspace", workspaceId: "workspace_1" } as const;
+
+    await expect(
+      saveReviewConfiguration(
+        {
+          target,
+          config: safeDefaultReviewConfiguration,
+        },
+        { configurations },
+      ),
+    ).resolves.toMatchObject({ version: 1 });
+
+    const updated = await saveReviewConfiguration(
+      {
+        target,
+        config: {
+          ...safeDefaultReviewConfiguration,
+          provider: {
+            ...safeDefaultReviewConfiguration.provider,
+            reasoningEffort: "high",
+          },
+        },
+      },
+      { configurations },
+    );
+
+    expect(updated.version).toBe(2);
+    await expect(
+      findReviewConfiguration(target, { configurations }),
+    ).resolves.toMatchObject({
+      version: 2,
+      config: { provider: { reasoningEffort: "high" } },
+    });
   });
 });

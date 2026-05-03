@@ -9,6 +9,11 @@ import {
 import { OutboxInstallationSyncRequester } from "@reviewrouter/features-github-installations";
 import { PrismaOutboxEventRepository } from "@reviewrouter/features-outbox";
 import {
+  PrismaReviewConfigurationRepository,
+  saveReviewConfiguration,
+  type ReviewConfiguration,
+} from "@reviewrouter/features-review-config";
+import {
   OctokitWorkflowSetupGateway,
   PrismaWorkflowProvisioningRepository,
   PrismaWorkflowProvisioningTarget,
@@ -154,10 +159,92 @@ export async function createSetupPullRequestAction(
   redirectWithParams(params);
 }
 
+export async function saveWorkspaceReviewConfigAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  let params: Record<string, string>;
+
+  try {
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const authMode = readFormString(
+      formData,
+      "providerAuthMode",
+    ) as ReviewConfiguration["provider"]["authMode"];
+    const config: ReviewConfiguration = {
+      schemaVersion: 1,
+      provider: {
+        kind: authMode === "openrouter_api_key" ? "openrouter" : "codex",
+        authMode,
+        model: readFormString(formData, "model"),
+        reasoningEffort: readFormString(
+          formData,
+          "reasoningEffort",
+        ) as ReviewConfiguration["provider"]["reasoningEffort"],
+        agenticContext: readFormString(formData, "agenticContext") === "true",
+      },
+      blockingPolicy: {
+        failOnSeverity: readFormString(
+          formData,
+          "failOnSeverity",
+        ) as ReviewConfiguration["blockingPolicy"]["failOnSeverity"],
+      },
+      limits: {
+        inlineMaxComments: readFormNumber(formData, "inlineMaxComments"),
+        targetTokensPerBatch: readFormNumber(formData, "targetTokensPerBatch"),
+      },
+    };
+
+    const saved = await saveReviewConfiguration(
+      {
+        target: { scope: "workspace", workspaceId },
+        config,
+      },
+      {
+        configurations: new PrismaReviewConfigurationRepository(prisma),
+      },
+    );
+
+    await recordAuditEvent(
+      {
+        workspaceId,
+        actor: actor.actor,
+        action: "review_config.saved",
+        targetType: "workspace",
+        targetId: workspaceId,
+        metadata: {
+          version: saved.version,
+          providerKind: saved.config.provider.kind,
+          authMode: saved.config.provider.authMode,
+          model: saved.config.provider.model,
+          failOnSeverity: saved.config.blockingPolicy.failOnSeverity,
+        },
+      },
+      { auditLog: new PrismaAuditLogRepository(prisma) },
+    );
+
+    params = { notice: "review_config_saved", version: String(saved.version) };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
 function readFormString(formData: FormData, key: string): string {
   const value = formData.get(key);
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`missing_form_value:${key}`);
+  }
+  return value;
+}
+
+function readFormNumber(formData: FormData, key: string): number {
+  const value = Number(readFormString(formData, key));
+  if (!Number.isFinite(value)) {
+    throw new Error(`invalid_form_number:${key}`);
   }
   return value;
 }

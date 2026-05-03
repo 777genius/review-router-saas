@@ -12,6 +12,7 @@
     "@reviewrouter/features-provider-setup": "workspace:*",
     "@reviewrouter/features-repo-health": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",
+    "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-workflow-provisioning": "workspace:*",
     "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/platform-locks": "workspace:*",

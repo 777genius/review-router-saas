@@ -9,11 +9,17 @@ import {
   PrismaEntitlementRepository,
 } from "@reviewrouter/features-entitlements";
 import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
+import {
+  findReviewConfiguration,
+  PrismaReviewConfigurationRepository,
+  safeDefaultReviewConfiguration,
+} from "@reviewrouter/features-review-config";
 import { getDashboardMutationStatus } from "../../src/server/dashboard-mutations";
 import { getPrisma } from "../../src/server/prisma";
 import {
   createSetupPullRequestAction,
   requestInstallationSyncAction,
+  saveWorkspaceReviewConfigAction,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -69,6 +75,7 @@ async function loadDashboardData() {
   const repositoryStore = new PrismaRepositoryConnectionRepository(prisma);
   const healthStore = new PrismaRepositoryHealthRepository(prisma);
   const entitlementStore = new PrismaEntitlementRepository(prisma);
+  const reviewConfigStore = new PrismaReviewConfigurationRepository(prisma);
 
   return Promise.all(
     workspaces.map(
@@ -84,6 +91,7 @@ async function loadDashboardData() {
           ReturnType<typeof listWorkspaceRepositoryHealth>
         >[number][];
         entitlement: ReturnType<typeof freeBetaEntitlement>;
+        reviewConfig: Awaited<ReturnType<typeof findReviewConfiguration>>;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -99,6 +107,10 @@ async function loadDashboardData() {
               "777genius/review-router@v1",
           },
           { repositories: healthStore },
+        );
+        const reviewConfig = await findReviewConfiguration(
+          { scope: "workspace", workspaceId: workspace.id },
+          { configurations: reviewConfigStore },
         );
 
         return {
@@ -117,6 +129,7 @@ async function loadDashboardData() {
           repositories: repositories.slice(0, 8),
           entitlement,
           health,
+          reviewConfig,
         };
       },
     ),
@@ -188,6 +201,9 @@ function WorkspaceCard({
 }): React.ReactElement {
   const { workspace, repositoryCount, repositories, entitlement, health } =
     data;
+  const activeConfig =
+    data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
+  const activeConfigVersion = data.reviewConfig?.version ?? 1;
   const primaryRepository =
     repositories.find((repository) => repository.selected) ?? repositories[0];
   const primaryInstallation = workspace.installations[0];
@@ -288,6 +304,104 @@ function WorkspaceCard({
           </div>
         </div>
       ) : null}
+
+      <div className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <Badge tone="accent">Review config</Badge>
+          <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+            workspace default / v{activeConfigVersion}
+          </span>
+        </div>
+        <form
+          action={saveWorkspaceReviewConfigAction}
+          className="grid gap-3 md:grid-cols-3"
+        >
+          <input type="hidden" name="workspaceId" value={workspace.id} />
+          <label className="space-y-1 text-sm text-slate-300">
+            <span>Provider auth</span>
+            <select
+              name="providerAuthMode"
+              defaultValue={activeConfig.provider.authMode}
+              disabled={!mutationsEnabled}
+              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+            >
+              <option value="codex_subscription_oauth">Codex OAuth</option>
+              <option value="codex_openai_api_key">Codex API key</option>
+              <option value="openrouter_api_key">OpenRouter API key</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm text-slate-300">
+            <span>Model</span>
+            <input
+              name="model"
+              defaultValue={activeConfig.provider.model}
+              disabled={!mutationsEnabled}
+              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+            />
+          </label>
+          <label className="space-y-1 text-sm text-slate-300">
+            <span>Reasoning effort</span>
+            <select
+              name="reasoningEffort"
+              defaultValue={activeConfig.provider.reasoningEffort}
+              disabled={!mutationsEnabled}
+              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+            >
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm text-slate-300">
+            <span>Fail on severity</span>
+            <select
+              name="failOnSeverity"
+              defaultValue={activeConfig.blockingPolicy.failOnSeverity}
+              disabled={!mutationsEnabled}
+              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+            >
+              <option value="off">off</option>
+              <option value="critical">critical</option>
+              <option value="major">major</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm text-slate-300">
+            <span>Inline max comments</span>
+            <input
+              name="inlineMaxComments"
+              type="number"
+              min={0}
+              max={50}
+              defaultValue={activeConfig.limits.inlineMaxComments}
+              disabled={!mutationsEnabled}
+              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+            />
+          </label>
+          <label className="space-y-1 text-sm text-slate-300">
+            <span>Target tokens per batch</span>
+            <input
+              name="targetTokensPerBatch"
+              type="number"
+              min={4000}
+              max={200000}
+              step={1000}
+              defaultValue={activeConfig.limits.targetTokensPerBatch}
+              disabled={!mutationsEnabled}
+              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+            />
+          </label>
+          <input
+            type="hidden"
+            name="agenticContext"
+            value={String(activeConfig.provider.agenticContext)}
+          />
+          <div className="flex items-end">
+            <Button type="submit" variant="solid" disabled={!mutationsEnabled}>
+              Save config
+            </Button>
+          </div>
+        </form>
+      </div>
 
       {repositories.some((repository) => repository.visibility === "public") ? (
         <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
@@ -484,6 +598,8 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return repository
         ? `Setup PR is ready for ${repository}.`
         : "Setup PR is ready.";
+    case "review_config_saved":
+      return "Review configuration was saved. Future action runs can fetch it through OIDC.";
     default:
       return "Dashboard action completed.";
   }
