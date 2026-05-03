@@ -1,4 +1,4 @@
-import { Badge, Card, CodeBlock } from "@reviewrouter/ui";
+import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 
 const secretCommand = "bash scripts/seed-codex-auth.sh";
 
@@ -61,18 +61,10 @@ export default function SecurityPage(): React.ReactElement {
             Actions under the repository owner&apos;s control.
           </p>
           <div className="flex flex-wrap gap-3">
-            <a
-              href="/"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/40 bg-transparent px-4 text-sm font-medium tracking-wide text-cyan-100 transition hover:bg-cyan-300/10"
-            >
+            <LinkButton href="/" variant="outline">
               Back to overview
-            </a>
-            <a
-              href="/dashboard"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/50 bg-cyan-300 px-4 text-sm font-medium tracking-wide text-slate-950 shadow-[var(--rr-shadow-glow-cyan)] transition hover:bg-cyan-200"
-            >
-              Open dashboard
-            </a>
+            </LinkButton>
+            <LinkButton href="/dashboard">Open dashboard</LinkButton>
           </div>
         </div>
 

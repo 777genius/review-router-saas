@@ -1,4 +1,4 @@
-import { Badge, Card, CodeBlock } from "@reviewrouter/ui";
+import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 
 const readinessCommand = "pnpm beta:check";
 const fullSmokeCommand =
@@ -45,30 +45,19 @@ export default function HomePage(): React.ReactElement {
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <a
-              href="/dashboard"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/50 bg-cyan-300 px-4 text-sm font-medium tracking-wide text-slate-950 shadow-[var(--rr-shadow-glow-cyan)] transition hover:bg-cyan-200"
-            >
-              Open dashboard
-            </a>
-            <a
-              href="/getting-started"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/40 bg-transparent px-4 text-sm font-medium tracking-wide text-cyan-100 transition hover:bg-cyan-300/10"
-            >
+            <LinkButton href="/dashboard">Open dashboard</LinkButton>
+            <LinkButton href="/getting-started" variant="outline">
               Getting started
-            </a>
-            <a
+            </LinkButton>
+            <LinkButton
               href="https://github.com/777genius/review-router/tree/main/ai-docs"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/25 bg-transparent px-4 text-sm font-medium tracking-wide text-cyan-100 transition hover:bg-cyan-300/10"
+              variant="outline"
             >
               View architecture
-            </a>
-            <a
-              href="/security"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-lime-300/30 bg-lime-300/10 px-4 text-sm font-medium tracking-wide text-lime-100 transition hover:bg-lime-300/15"
-            >
+            </LinkButton>
+            <LinkButton href="/security" variant="soft" tone="success">
               Security model
-            </a>
+            </LinkButton>
           </div>
         </div>
         <Card className="space-y-4">

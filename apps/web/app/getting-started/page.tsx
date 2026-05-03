@@ -1,4 +1,4 @@
-import { Badge, Card, CodeBlock } from "@reviewrouter/ui";
+import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 
 const repoCodexCommand =
   "REVIEW_ROUTER_REPO=owner/repo bash scripts/seed-codex-auth.sh";
@@ -47,18 +47,10 @@ export default function GettingStartedPage(): React.ReactElement {
             credentials directly into GitHub Actions secrets.
           </p>
           <div className="flex flex-wrap gap-3">
-            <a
-              href="/dashboard"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/50 bg-cyan-300 px-4 text-sm font-medium tracking-wide text-slate-950 shadow-[var(--rr-shadow-glow-cyan)] transition hover:bg-cyan-200"
-            >
-              Open dashboard
-            </a>
-            <a
-              href="/security"
-              className="inline-flex h-10 items-center justify-center rounded-lg border border-lime-300/30 bg-lime-300/10 px-4 text-sm font-medium tracking-wide text-lime-100 transition hover:bg-lime-300/15"
-            >
+            <LinkButton href="/dashboard">Open dashboard</LinkButton>
+            <LinkButton href="/security" variant="soft" tone="success">
               Security model
-            </a>
+            </LinkButton>
           </div>
         </div>
 

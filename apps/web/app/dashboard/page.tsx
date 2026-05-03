@@ -1,4 +1,4 @@
-import { Badge, Button, Card } from "@reviewrouter/ui";
+import { Badge, Button, Card, LinkButton } from "@reviewrouter/ui";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
@@ -302,20 +302,14 @@ export default async function DashboardPage({
             </p>
             <div className="flex flex-wrap gap-3">
               {!mutationStatus.signedIn ? (
-                <a
-                  href="/api/auth/signin"
-                  className="inline-flex h-9 items-center justify-center rounded-lg border border-cyan-300/50 bg-cyan-300 px-3 text-sm font-medium text-slate-950 shadow-[var(--rr-shadow-glow-cyan)] transition hover:bg-cyan-200"
-                >
+                <LinkButton href="/api/auth/signin" size="sm">
                   Sign in with GitHub
-                </a>
+                </LinkButton>
               ) : null}
               {appInstallUrl ? (
-                <a
-                  href={appInstallUrl}
-                  className="inline-flex h-9 items-center justify-center rounded-lg border border-cyan-200/30 bg-cyan-300/10 px-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/15"
-                >
+                <LinkButton href={appInstallUrl} variant="soft" size="sm">
                   Install GitHub App
-                </a>
+                </LinkButton>
               ) : (
                 <span className="text-xs leading-5 text-slate-400">
                   Set GITHUB_APP_SLUG to show the local App install link.
