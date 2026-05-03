@@ -15,6 +15,8 @@ Add review configuration presets and provider setup guidance without storing sec
 - Codex OAuth guidance
 - OpenAI/OpenRouter secret guidance
 - generated workflow uses selected config
+- explicit agentic-context control; invalid boolean form values must be rejected,
+  not silently interpreted as disabled
 
 ## Important Defaults
 

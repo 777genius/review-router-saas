@@ -226,7 +226,7 @@ export async function saveWorkspaceReviewConfigAction(
           formData,
           "reasoningEffort",
         ) as ReviewConfiguration["provider"]["reasoningEffort"],
-        agenticContext: readFormString(formData, "agenticContext") === "true",
+        agenticContext: readFormBoolean(formData, "agenticContext"),
       },
       blockingPolicy: {
         failOnSeverity: readFormString(
@@ -386,6 +386,17 @@ function readFormNumber(formData: FormData, key: string): number {
   return value;
 }
 
+function readFormBoolean(formData: FormData, key: string): boolean {
+  const value = readFormString(formData, key);
+  if (value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  throw new Error(`invalid_form_boolean:${key}`);
+}
+
 function redirectWithParams(params: Record<string, string>): never {
   redirect(`/dashboard?${new URLSearchParams(params).toString()}`);
 }
@@ -400,6 +411,13 @@ function safeDashboardErrorCode(error: unknown): string {
   }
   if (message.startsWith("rate_limit_exceeded:")) {
     return "rate_limited";
+  }
+  if (
+    message.startsWith("missing_form_value:") ||
+    message.startsWith("invalid_form_number:") ||
+    message.startsWith("invalid_form_boolean:")
+  ) {
+    return "invalid_form";
   }
   if (
     [

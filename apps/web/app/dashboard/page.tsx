@@ -493,11 +493,18 @@ function WorkspaceCard({
               className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
             />
           </label>
-          <input
-            type="hidden"
-            name="agenticContext"
-            value={String(activeConfig.provider.agenticContext)}
-          />
+          <label className="space-y-1 text-sm text-slate-300">
+            <span>Agentic context</span>
+            <select
+              name="agenticContext"
+              defaultValue={String(activeConfig.provider.agenticContext)}
+              disabled={!mutationsEnabled}
+              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+            >
+              <option value="true">enabled</option>
+              <option value="false">disabled</option>
+            </select>
+          </label>
           <div className="flex items-end">
             <Button type="submit" variant="solid" disabled={!mutationsEnabled}>
               Save config
@@ -865,6 +872,8 @@ function dashboardErrorText(error: string): string {
       return "Another setup or sync operation is already running. Try again shortly.";
     case "rate_limited":
       return "Too many dashboard requests for this resource. Wait a bit before retrying.";
+    case "invalid_form":
+      return "The submitted form is invalid. Refresh the dashboard and try again.";
     case "server_misconfigured":
       return "Server setup is incomplete. Check GitHub App credentials and the public ReviewRouter API URL.";
     case "repository_not_selected":
