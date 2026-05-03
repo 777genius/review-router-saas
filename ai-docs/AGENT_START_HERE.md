@@ -150,14 +150,13 @@ Do not jump to billing, cloud execution, enterprise SSO, or managed review worke
 Baseline checks:
 
 ```bash
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm build
-pnpm format:check
-pnpm local:check
-git diff --check
-bash -n scripts/seed-codex-auth.sh
+pnpm beta:check
+```
+
+Include local DB E2E in the same gate:
+
+```bash
+REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 ```
 
 Useful local DB E2E commands:
@@ -175,6 +174,13 @@ Useful real GitHub E2E commands:
 ```bash
 node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
 REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+Or through the beta gate:
+
+```bash
+REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=setup pnpm beta:check
+REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 ```
 
 The first command creates a disposable repository, provisions and merges the

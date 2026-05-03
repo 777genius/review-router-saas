@@ -52,24 +52,13 @@ not rebuilding the foundation from scratch.
 Baseline:
 
 ```bash
-pnpm local:check
-pnpm test
-pnpm typecheck
-pnpm build
-pnpm lint
-pnpm format:check
-git diff --check
+pnpm beta:check
 ```
 
-Database and protocol smoke:
+Database and protocol smoke can be included:
 
 ```bash
-pnpm db:migrate:smoke
-node scripts/run-with-env.mjs pnpm spike:action:e2e
-node scripts/run-with-env.mjs pnpm spike:review-config:e2e
-node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
-node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
-node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
+REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 ```
 
 Real GitHub smoke helpers require a disposable GitHub App installation and
@@ -91,6 +80,13 @@ Full review E2E with Codex OAuth and a real inline finding:
 ```bash
 REVIEW_ROUTER_FRESH_E2E_MODE=review \
   node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+The same real GitHub smokes can be included in `beta:check`:
+
+```bash
+REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=setup pnpm beta:check
+REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 ```
 
 The fresh E2E script creates real GitHub repositories and does not delete them

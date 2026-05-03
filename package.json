@@ -14,6 +14,7 @@
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "local:check": "bash scripts/check-local-readiness.sh",
+    "beta:check": "bash scripts/check-beta-readiness.sh",
     "db:generate": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/platform-db db:generate",
     "db:push": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/platform-db db:push",
     "db:migrate": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/platform-db db:migrate",

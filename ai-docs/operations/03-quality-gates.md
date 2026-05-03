@@ -42,37 +42,25 @@ The default CI workflow must not require GitHub App private keys, Codex OAuth fi
 Before handing the MVP to a trusted tester, run:
 
 ```bash
-pnpm local:check
-pnpm test
-pnpm typecheck
-pnpm lint
-pnpm format:check
-pnpm build
-git diff --check
+pnpm beta:check
 ```
 
-Then run local DB/protocol smoke:
+Include local DB/protocol smoke:
 
 ```bash
-node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
-node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
-node scripts/run-with-env.mjs pnpm spike:rate-limit:e2e
-node scripts/run-with-env.mjs pnpm spike:distributed-lock:e2e
-node scripts/run-with-env.mjs pnpm spike:review-config:e2e
-node scripts/run-with-env.mjs pnpm spike:action:e2e
-node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
+REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 ```
 
 Then run at least one real GitHub smoke:
 
 ```bash
-node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=setup pnpm beta:check
 ```
 
 Before public demo or Reddit launch, run the full review smoke:
 
 ```bash
-REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 ```
 
 Passing setup-only smoke proves GitHub App installation, repository sync,
