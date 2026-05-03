@@ -25,7 +25,11 @@ const webhookSecret = "webhook-lifecycle-e2e-secret";
 const installationId = BigInt(900000000001);
 const repositoryId = BigInt(9876543210123);
 const senderGithubUserId = BigInt(777000001);
+const accountLogin = "reviewrouter-lifecycle-e2e";
+const renamedAccountLogin = "reviewrouter-lifecycle-e2e-renamed";
 const workspaceSlug = "gh-organization-reviewrouter-lifecycle-e2e";
+const renamedWorkspaceSlug =
+  "gh-organization-reviewrouter-lifecycle-e2e-renamed";
 const prisma = createPrismaClient({ databaseUrl });
 const syncedAt = new Date("2026-05-03T17:30:00.000Z");
 const syncClock = { now: () => syncedAt };
@@ -46,7 +50,7 @@ async function main(): Promise<void> {
         installation: {
           id: Number(installationId),
           account: {
-            login: "reviewrouter-lifecycle-e2e",
+            login: accountLogin,
             type: "Organization",
           },
           repository_selection: "selected",
@@ -68,6 +72,7 @@ async function main(): Promise<void> {
       activeInstallation.workspace.slug === workspaceSlug,
       "workspace slug is deterministic",
     );
+    const originalWorkspaceId = activeInstallation.workspaceId;
     const ownerMember = await prisma.workspaceMember.findFirst({
       where: {
         workspaceId: activeInstallation.workspaceId,
@@ -90,7 +95,7 @@ async function main(): Promise<void> {
         installation: {
           id: Number(installationId),
           account: {
-            login: "reviewrouter-lifecycle-e2e",
+            login: accountLogin,
             type: "Organization",
           },
           repository_selection: "selected",
@@ -104,6 +109,44 @@ async function main(): Promise<void> {
     await assertOutboxCount(1, "duplicate delivery does not duplicate outbox");
 
     await postWebhook(app, {
+      deliveryId: "e2e-installation-renamed",
+      eventName: "installation",
+      payload: {
+        action: "new_permissions_accepted",
+        installation: {
+          id: Number(installationId),
+          account: {
+            login: renamedAccountLogin,
+            type: "Organization",
+          },
+          repository_selection: "selected",
+        },
+        sender: {
+          id: Number(senderGithubUserId),
+          login: "reviewrouter-e2e-installer",
+        },
+      },
+    });
+    const renamedInstallation =
+      await prisma.gitHubInstallation.findUniqueOrThrow({
+        where: { githubInstallationId: installationId },
+        include: { workspace: true },
+      });
+    assert(
+      renamedInstallation.workspaceId === originalWorkspaceId,
+      "installation rename preserves workspace id",
+    );
+    assert(
+      renamedInstallation.accountLogin === renamedAccountLogin,
+      "installation login snapshot is updated",
+    );
+    assert(
+      renamedInstallation.workspace.slug === workspaceSlug,
+      "installation rename does not create a replacement workspace slug",
+    );
+    await assertOutboxCount(2, "rename/access event enqueues sync");
+
+    await postWebhook(app, {
       deliveryId: "e2e-installation-repositories",
       eventName: "installation_repositories",
       payload: {
@@ -114,7 +157,7 @@ async function main(): Promise<void> {
         installation: {
           id: Number(installationId),
           account: {
-            login: "reviewrouter-lifecycle-e2e",
+            login: renamedAccountLogin,
             type: "Organization",
           },
           repository_selection: "selected",
@@ -122,13 +165,13 @@ async function main(): Promise<void> {
       },
     });
     await assertOutboxCount(
-      2,
-      "installation_repositories enqueues a second sync",
+      3,
+      "installation_repositories enqueues another sync",
     );
 
     const syncResult = await processInstallationSyncOutbox();
-    assert(syncResult.claimed === 2, "worker claims both sync events");
-    assert(syncResult.processed === 2, "worker processes both sync events");
+    assert(syncResult.claimed === 3, "worker claims all sync events");
+    assert(syncResult.processed === 3, "worker processes all sync events");
     const syncedRepository =
       await prisma.repositoryConnection.findUniqueOrThrow({
         where: { githubRepositoryId: repositoryId },
@@ -147,7 +190,7 @@ async function main(): Promise<void> {
         installation: {
           id: Number(installationId),
           account: {
-            login: "reviewrouter-lifecycle-e2e",
+            login: renamedAccountLogin,
             type: "Organization",
           },
           repository_selection: "selected",
@@ -167,8 +210,8 @@ async function main(): Promise<void> {
       repository.selected === false,
       "deleted installation unselects repos",
     );
-    await assertOutboxCount(2, "deleted installation does not enqueue sync");
-    await assertProcessedOutboxCount(2, "sync events stay processed");
+    await assertOutboxCount(3, "deleted installation does not enqueue sync");
+    await assertProcessedOutboxCount(3, "sync events stay processed");
 
     console.info("Webhook lifecycle E2E passed");
   } finally {
@@ -191,9 +234,9 @@ async function processInstallationSyncOutbox(): Promise<{
           github: new StaticGitHubRepositorySource([
             {
               githubRepositoryId: repositoryId.toString(),
-              owner: "reviewrouter-lifecycle-e2e",
+              owner: renamedAccountLogin,
               name: "example",
-              fullName: "reviewrouter-lifecycle-e2e/example",
+              fullName: `${renamedAccountLogin}/example`,
               defaultBranch: "main",
               visibility: "private",
               archived: false,
@@ -294,6 +337,9 @@ async function cleanup(): Promise<void> {
     where: { githubInstallationId: installationId },
   });
   await prisma.workspace.deleteMany({ where: { slug: workspaceSlug } });
+  await prisma.workspace.deleteMany({
+    where: { slug: renamedWorkspaceSlug },
+  });
   await prisma.user.deleteMany({
     where: { githubUserId: senderGithubUserId },
   });

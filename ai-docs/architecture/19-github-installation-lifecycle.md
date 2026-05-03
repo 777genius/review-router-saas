@@ -73,6 +73,8 @@ If permissions are reduced:
 
 Repository identity must use GitHub repository id where possible.
 
+Installation workspace identity must use the immutable GitHub installation id once the installation exists. If GitHub account login changes, ReviewRouter updates the installation account snapshot and workspace display name, but it must not create a replacement workspace or move configs/audit/repositories to a new workspace only because the login-derived slug changed.
+
 On rename:
 
 - update owner/name/fullName

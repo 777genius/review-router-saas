@@ -14,32 +14,49 @@ export class PrismaGitHubInstallationRepository implements GitHubInstallationRep
   async upsertInstallation(
     snapshot: GitHubInstallationSnapshot,
   ): Promise<void> {
-    const workspace = await this.prisma.workspace.upsert({
-      where: { slug: workspaceSlugForInstallation(snapshot) },
-      update: { name: snapshot.accountLogin },
-      create: {
-        slug: workspaceSlugForInstallation(snapshot),
-        name: snapshot.accountLogin,
-      },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      const existingInstallation = await tx.gitHubInstallation.findUnique({
+        where: { githubInstallationId: BigInt(snapshot.githubInstallationId) },
+        select: { workspaceId: true },
+      });
+      const workspaceId = existingInstallation
+        ? existingInstallation.workspaceId
+        : (
+            await tx.workspace.upsert({
+              where: { slug: workspaceSlugForInstallation(snapshot) },
+              update: { name: snapshot.accountLogin },
+              create: {
+                slug: workspaceSlugForInstallation(snapshot),
+                name: snapshot.accountLogin,
+              },
+            })
+          ).id;
 
-    await this.prisma.gitHubInstallation.upsert({
-      where: { githubInstallationId: BigInt(snapshot.githubInstallationId) },
-      update: {
-        workspaceId: workspace.id,
-        accountLogin: snapshot.accountLogin,
-        accountType: snapshot.accountType,
-        repositorySelection: snapshot.repositorySelection,
-        status: snapshot.status,
-      },
-      create: {
-        workspaceId: workspace.id,
-        githubInstallationId: BigInt(snapshot.githubInstallationId),
-        accountLogin: snapshot.accountLogin,
-        accountType: snapshot.accountType,
-        repositorySelection: snapshot.repositorySelection,
-        status: snapshot.status,
-      },
+      if (existingInstallation) {
+        await tx.workspace.update({
+          where: { id: workspaceId },
+          data: { name: snapshot.accountLogin },
+        });
+      }
+
+      await tx.gitHubInstallation.upsert({
+        where: { githubInstallationId: BigInt(snapshot.githubInstallationId) },
+        update: {
+          workspaceId,
+          accountLogin: snapshot.accountLogin,
+          accountType: snapshot.accountType,
+          repositorySelection: snapshot.repositorySelection,
+          status: snapshot.status,
+        },
+        create: {
+          workspaceId,
+          githubInstallationId: BigInt(snapshot.githubInstallationId),
+          accountLogin: snapshot.accountLogin,
+          accountType: snapshot.accountType,
+          repositorySelection: snapshot.repositorySelection,
+          status: snapshot.status,
+        },
+      });
     });
   }
 
