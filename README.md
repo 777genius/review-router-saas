@@ -21,6 +21,8 @@ The next implementation phase is [`Iteration 01 - Foundation`](./ai-docs/iterati
 
 ## Current Checks
 
+CI runs the same local quality gates on pull requests and `main` pushes.
+
 ```bash
 pnpm db:migrate:deploy
 pnpm db:migrate:smoke
