@@ -3,19 +3,30 @@ export type RepositoryHealthStatus =
   | "setup_pr_open"
   | "missing_workflow"
   | "version_mismatch"
+  | "workflow_check_unavailable"
   | "provider_needs_setup"
   | "provider_unhealthy"
   | "needs_attention";
 
+export type RepositoryWorkflowCheck =
+  | { readonly status: "present"; readonly expectedActionRefFound: boolean }
+  | { readonly status: "missing" }
+  | { readonly status: "unavailable"; readonly reason: string };
+
 export type RepositoryHealthInput = {
   readonly repositoryId: string;
   readonly fullName: string;
+  readonly owner?: string;
+  readonly name?: string;
+  readonly defaultBranch?: string;
+  readonly githubInstallationId?: string;
   readonly setupStatus:
     | "not_configured"
     | "setup_pr_open"
     | "configured"
     | "needs_attention";
   readonly expectedActionRef: string;
+  readonly workflowCheck?: RepositoryWorkflowCheck;
   readonly workflowYaml?: string | null;
   readonly latestProviderHealth?:
     | "ok"
@@ -65,6 +76,33 @@ export function evaluateRepositoryHealth(
       input,
       "missing_workflow",
       "ReviewRouter workflow is not configured",
+      checkedAt,
+    );
+  }
+  if (input.workflowCheck?.status === "missing") {
+    return snapshot(
+      input,
+      "missing_workflow",
+      "ReviewRouter workflow file is missing from the default branch",
+      checkedAt,
+    );
+  }
+  if (
+    input.workflowCheck?.status === "present" &&
+    !input.workflowCheck.expectedActionRefFound
+  ) {
+    return snapshot(
+      input,
+      "version_mismatch",
+      "Workflow does not use the expected ReviewRouter action version",
+      checkedAt,
+    );
+  }
+  if (input.workflowCheck?.status === "unavailable") {
+    return snapshot(
+      input,
+      "workflow_check_unavailable",
+      "Workflow file could not be checked from GitHub",
       checkedAt,
     );
   }

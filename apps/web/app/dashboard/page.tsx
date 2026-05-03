@@ -2,6 +2,7 @@ import { Badge, Button, Card } from "@reviewrouter/ui";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
   listWorkspaceRepositoryHealth,
+  OctokitRepositoryWorkflowProbe,
   PrismaRepositoryHealthRepository,
 } from "@reviewrouter/features-repo-health";
 import {
@@ -21,6 +22,7 @@ import {
 } from "@reviewrouter/features-review-config";
 import type { ProviderSecretKind } from "@reviewrouter/features-provider-setup";
 import {
+  createGitHubAppInstallationOctokit,
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
 } from "../../src/server/dashboard-mutations";
@@ -98,6 +100,7 @@ async function loadDashboardData(
   });
   const repositoryStore = new PrismaRepositoryConnectionRepository(prisma);
   const healthStore = new PrismaRepositoryHealthRepository(prisma);
+  const workflowProbe = createDashboardWorkflowProbe();
   const entitlementStore = new PrismaEntitlementRepository(prisma);
   const reviewConfigStore = new PrismaReviewConfigurationRepository(prisma);
   const outboxStore = new PrismaOutboxEventRepository(prisma);
@@ -131,8 +134,12 @@ async function loadDashboardData(
             expectedActionRef:
               process.env.REVIEW_ROUTER_ACTION_REF ??
               "777genius/review-router@v1",
+            workflowProbeMaxRepositories: 8,
           },
-          { repositories: healthStore },
+          {
+            repositories: healthStore,
+            ...(workflowProbe ? { workflowProbe } : {}),
+          },
         );
         const reviewConfig = await findReviewConfiguration(
           { scope: "workspace", workspaceId: workspace.id },
@@ -165,6 +172,15 @@ async function loadDashboardData(
       },
     ),
   );
+}
+
+function createDashboardWorkflowProbe(): OctokitRepositoryWorkflowProbe | null {
+  if (!process.env.GITHUB_APP_ID || !process.env.GITHUB_APP_PRIVATE_KEY_FILE) {
+    return null;
+  }
+  return new OctokitRepositoryWorkflowProbe({
+    createRequester: createGitHubAppInstallationOctokit,
+  });
 }
 
 type DashboardWorkspaceData = Awaited<

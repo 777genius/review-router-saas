@@ -13,8 +13,14 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
       orderBy: { fullName: "asc" },
       select: {
         id: true,
+        owner: true,
+        name: true,
         fullName: true,
+        defaultBranch: true,
         setupStatus: true,
+        installation: {
+          select: { githubInstallationId: true },
+        },
         actionHealth: {
           orderBy: { receivedAt: "desc" },
           take: 1,
@@ -31,6 +37,11 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
       return {
         repositoryId: repository.id,
         fullName: repository.fullName,
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+        githubInstallationId:
+          repository.installation.githubInstallationId.toString(),
         setupStatus: repository.setupStatus,
         expectedActionRef: "",
         latestProviderHealth: latestHealth?.providerHealth ?? null,
