@@ -1,5 +1,6 @@
 export * from "./domain/github-installation.js";
 export * from "./domain/github-webhook.js";
+export * from "./domain/github-webhook-normalization.js";
 export * from "./application/ports/github-installation-repository-port.js";
 export * from "./application/ports/webhook-delivery-repository-port.js";
 export * from "./application/use-cases/handle-github-installation-webhook.js";

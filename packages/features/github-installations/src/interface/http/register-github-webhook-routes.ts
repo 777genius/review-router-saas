@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import rawBody from "fastify-raw-body";
 import { githubInstallationWebhookPayloadSchema } from "../../domain/github-webhook.js";
+import { hashGitHubWebhookPayload } from "../../domain/github-webhook-normalization.js";
 import { handleGitHubInstallationWebhook } from "../../application/use-cases/handle-github-installation-webhook.js";
 import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port.js";
 import type { WebhookDeliveryRepositoryPort } from "../../application/ports/webhook-delivery-repository-port.js";
@@ -50,7 +51,12 @@ export async function registerGitHubWebhookRoutes(
 
     const payload = githubInstallationWebhookPayloadSchema.parse(request.body);
     const result = await handleGitHubInstallationWebhook(
-      { deliveryId, eventName, payload },
+      {
+        deliveryId,
+        eventName,
+        payloadHash: hashGitHubWebhookPayload(rawPayload),
+        payload,
+      },
       dependencies,
     );
 

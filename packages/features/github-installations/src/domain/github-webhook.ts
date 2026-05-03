@@ -23,5 +23,6 @@ export type GitHubInstallationWebhookPayload = z.infer<
 export type GitHubWebhookEnvelope = {
   readonly deliveryId: string;
   readonly eventName: string;
+  readonly payloadHash?: string;
   readonly payload: GitHubInstallationWebhookPayload;
 };

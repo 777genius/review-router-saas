@@ -224,11 +224,18 @@ model GitHubWebhookDelivery {
   eventName      String
   action         String?
   installationId BigInt?
+  payloadHash    String?
+  normalizedEvent Json?
+  status         WebhookDeliveryStatus @default(received)
+  errorSummary   String?
   processedAt    DateTime?
+  receivedAt     DateTime  @default(now())
   createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
 
   @@index([eventName, createdAt])
   @@index([installationId])
+  @@index([status, receivedAt])
 }
 
 enum WorkspaceRole {
@@ -279,4 +286,11 @@ enum ActionProviderHealth {
   skipped
   failed
   degraded
+}
+
+enum WebhookDeliveryStatus {
+  received
+  processing
+  processed
+  failed
 }

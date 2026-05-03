@@ -42,14 +42,39 @@ class InMemoryInstallations implements GitHubInstallationRepositoryPort {
 }
 
 class InMemoryDeliveries implements WebhookDeliveryRepositoryPort {
-  public readonly deliveries = new Map<string, WebhookDeliveryRecord>();
+  public readonly deliveries = new Map<
+    string,
+    WebhookDeliveryRecord & {
+      readonly status: "processing" | "processed" | "failed";
+    }
+  >();
 
-  async wasProcessed(deliveryId: string): Promise<boolean> {
-    return this.deliveries.has(deliveryId);
+  async tryStartProcessing(delivery: WebhookDeliveryRecord): Promise<boolean> {
+    if (this.deliveries.has(delivery.deliveryId)) {
+      return false;
+    }
+    this.deliveries.set(delivery.deliveryId, {
+      ...delivery,
+      status: "processing",
+    });
+    return true;
   }
 
-  async recordProcessed(delivery: WebhookDeliveryRecord): Promise<void> {
-    this.deliveries.set(delivery.deliveryId, delivery);
+  async markProcessed(deliveryId: string): Promise<void> {
+    const existing = this.deliveries.get(deliveryId);
+    if (existing) {
+      this.deliveries.set(deliveryId, { ...existing, status: "processed" });
+    }
+  }
+
+  async markFailed(input: {
+    readonly deliveryId: string;
+    readonly errorSummary: string;
+  }): Promise<void> {
+    const existing = this.deliveries.get(input.deliveryId);
+    if (existing) {
+      this.deliveries.set(input.deliveryId, { ...existing, status: "failed" });
+    }
   }
 }
 

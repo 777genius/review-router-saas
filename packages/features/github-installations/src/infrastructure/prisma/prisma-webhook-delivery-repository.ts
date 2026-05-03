@@ -7,34 +7,60 @@ import type {
 export class PrismaWebhookDeliveryRepository implements WebhookDeliveryRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async wasProcessed(deliveryId: string): Promise<boolean> {
-    const existing = await this.prisma.gitHubWebhookDelivery.findUnique({
-      where: { deliveryId },
-      select: { id: true },
-    });
-    return existing !== null;
+  async tryStartProcessing(delivery: WebhookDeliveryRecord): Promise<boolean> {
+    try {
+      await this.prisma.gitHubWebhookDelivery.create({
+        data: {
+          deliveryId: delivery.deliveryId,
+          eventName: delivery.eventName,
+          action: delivery.action ?? null,
+          installationId: delivery.installationId
+            ? BigInt(delivery.installationId)
+            : null,
+          status: "processing",
+          ...(delivery.payloadHash
+            ? { payloadHash: delivery.payloadHash }
+            : {}),
+          ...(delivery.normalizedEvent
+            ? { normalizedEvent: delivery.normalizedEvent }
+            : {}),
+        },
+      });
+      return true;
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        return false;
+      }
+      throw error;
+    }
   }
 
-  async recordProcessed(delivery: WebhookDeliveryRecord): Promise<void> {
-    await this.prisma.gitHubWebhookDelivery.upsert({
-      where: { deliveryId: delivery.deliveryId },
-      update: {
-        eventName: delivery.eventName,
-        action: delivery.action ?? null,
-        installationId: delivery.installationId
-          ? BigInt(delivery.installationId)
-          : null,
-        processedAt: new Date(),
-      },
-      create: {
-        deliveryId: delivery.deliveryId,
-        eventName: delivery.eventName,
-        action: delivery.action ?? null,
-        installationId: delivery.installationId
-          ? BigInt(delivery.installationId)
-          : null,
-        processedAt: new Date(),
+  async markProcessed(deliveryId: string): Promise<void> {
+    await this.prisma.gitHubWebhookDelivery.update({
+      where: { deliveryId },
+      data: { status: "processed", processedAt: new Date() },
+    });
+  }
+
+  async markFailed(input: {
+    readonly deliveryId: string;
+    readonly errorSummary: string;
+  }): Promise<void> {
+    await this.prisma.gitHubWebhookDelivery.update({
+      where: { deliveryId: input.deliveryId },
+      data: {
+        status: "failed",
+        errorSummary: input.errorSummary.slice(0, 500),
       },
     });
   }
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === "P2002"
+  );
 }
