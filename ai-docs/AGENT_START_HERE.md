@@ -170,6 +170,18 @@ node scripts/run-with-env.mjs pnpm spike:review-config:e2e
 node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
 ```
 
+Useful real GitHub E2E commands:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+The first command creates a disposable repository, provisions and merges the
+setup PR, then verifies workflow health. The second also seeds Codex OAuth into
+the disposable repo, opens an intentional auth-bypass PR, waits for GitHub
+Actions, and verifies a failing ReviewRouter check plus inline finding.
+
 ## Backend Architecture Rules
 
 Feature layout:

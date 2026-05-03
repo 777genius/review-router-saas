@@ -723,6 +723,23 @@ After Iteration 06, this path should work in staging:
 
 This is the main confidence test before public beta hardening.
 
+Repeatable local/staging command:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+Full review smoke, including Codex OAuth seeding into the disposable repository
+and an intentional auth-bypass pull request:
+
+```bash
+REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+This command creates real GitHub repositories under the authenticated owner and
+does not delete them automatically. Use it only with a disposable account/org or
+clean up manually after validation.
+
 ## Autonomy Rules For Agents
 
 Make reasonable implementation decisions inside accepted architecture.

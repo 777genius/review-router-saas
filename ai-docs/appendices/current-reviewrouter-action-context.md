@@ -129,3 +129,21 @@ Finding: Login bypass ignores requested email
 
 This smoke proves the beta path works for a fresh repository with App-managed
 workflow provisioning and Codex OAuth running inside GitHub Actions.
+
+The same path is now automated:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+Latest automated full review smoke:
+
+```text
+Repo: 777genius/rr-saas-fresh-e2e-1777846695703
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777846695703/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777846695703/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777846695703/actions/runs/25292431784
+Result: failed intentionally with 1 critical finding
+Inline: auth.js:5, title "Login accepts any email"
+```
