@@ -1,5 +1,5 @@
-import type { NewOutboxEvent } from "../../domain/outbox-event.js";
-import type { OutboxEventRepositoryPort } from "../ports/outbox-event-repository-port.js";
+import type { NewOutboxEvent } from "../../domain/outbox-event";
+import type { OutboxEventRepositoryPort } from "../ports/outbox-event-repository-port";
 
 export async function enqueueOutboxEvent(
   event: NewOutboxEvent,

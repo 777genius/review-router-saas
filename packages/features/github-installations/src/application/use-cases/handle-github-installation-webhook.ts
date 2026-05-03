@@ -1,10 +1,10 @@
 import type { Clock } from "@reviewrouter/shared";
-import { installationStatusForAction } from "../../domain/github-installation.js";
-import type { GitHubWebhookEnvelope } from "../../domain/github-webhook.js";
-import { normalizeGitHubWebhookEvent } from "../../domain/github-webhook-normalization.js";
-import type { GitHubInstallationRepositoryPort } from "../ports/github-installation-repository-port.js";
-import type { InstallationSyncRequestPort } from "../ports/installation-sync-request-port.js";
-import type { WebhookDeliveryRepositoryPort } from "../ports/webhook-delivery-repository-port.js";
+import { installationStatusForAction } from "../../domain/github-installation";
+import type { GitHubWebhookEnvelope } from "../../domain/github-webhook";
+import { normalizeGitHubWebhookEvent } from "../../domain/github-webhook-normalization";
+import type { GitHubInstallationRepositoryPort } from "../ports/github-installation-repository-port";
+import type { InstallationSyncRequestPort } from "../ports/installation-sync-request-port";
+import type { WebhookDeliveryRepositoryPort } from "../ports/webhook-delivery-repository-port";
 
 export type HandleGitHubInstallationWebhookDependencies = {
   readonly installations: GitHubInstallationRepositoryPort;

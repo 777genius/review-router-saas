@@ -4,8 +4,8 @@ import {
   outboxHandlerKey,
   safeOutboxErrorSummary,
   type OutboxHandler,
-} from "../../domain/outbox-event.js";
-import type { OutboxEventRepositoryPort } from "../ports/outbox-event-repository-port.js";
+} from "../../domain/outbox-event";
+import type { OutboxEventRepositoryPort } from "../ports/outbox-event-repository-port";
 
 export type ProcessOutboxBatchResult = {
   readonly claimed: number;

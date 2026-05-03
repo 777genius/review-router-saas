@@ -2,7 +2,7 @@ import type { OutboxEventRepositoryPort } from "@reviewrouter/features-outbox";
 import type {
   InstallationSyncRequest,
   InstallationSyncRequestPort,
-} from "../../application/ports/installation-sync-request-port.js";
+} from "../../application/ports/installation-sync-request-port";
 
 export class OutboxInstallationSyncRequester implements InstallationSyncRequestPort {
   constructor(private readonly outbox: OutboxEventRepositoryPort) {}

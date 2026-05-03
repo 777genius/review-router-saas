@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { GitHubWebhookEnvelope } from "./github-webhook.js";
+import type { GitHubWebhookEnvelope } from "./github-webhook";
 
 export type NormalizedGitHubWebhookEvent =
   | {

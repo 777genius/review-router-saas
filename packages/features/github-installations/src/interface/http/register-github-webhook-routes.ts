@@ -1,12 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import rawBody from "fastify-raw-body";
-import { githubInstallationWebhookPayloadSchema } from "../../domain/github-webhook.js";
-import { hashGitHubWebhookPayload } from "../../domain/github-webhook-normalization.js";
-import { handleGitHubInstallationWebhook } from "../../application/use-cases/handle-github-installation-webhook.js";
-import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port.js";
-import type { WebhookDeliveryRepositoryPort } from "../../application/ports/webhook-delivery-repository-port.js";
-import type { InstallationSyncRequestPort } from "../../application/ports/installation-sync-request-port.js";
-import { verifyGitHubWebhookSignature } from "../../infrastructure/crypto/github-webhook-signature.js";
+import { githubInstallationWebhookPayloadSchema } from "../../domain/github-webhook";
+import { hashGitHubWebhookPayload } from "../../domain/github-webhook-normalization";
+import { handleGitHubInstallationWebhook } from "../../application/use-cases/handle-github-installation-webhook";
+import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port";
+import type { WebhookDeliveryRepositoryPort } from "../../application/ports/webhook-delivery-repository-port";
+import type { InstallationSyncRequestPort } from "../../application/ports/installation-sync-request-port";
+import { verifyGitHubWebhookSignature } from "../../infrastructure/crypto/github-webhook-signature";
 import type { Clock } from "@reviewrouter/shared";
 
 export type RegisterGitHubWebhookRoutesDependencies = {

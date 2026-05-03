@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { GitHubInstallationSnapshot } from "../domain/github-installation.js";
-import type { GitHubInstallationRepositoryPort } from "../application/ports/github-installation-repository-port.js";
+import type { GitHubInstallationSnapshot } from "../domain/github-installation";
+import type { GitHubInstallationRepositoryPort } from "../application/ports/github-installation-repository-port";
 import type {
   InstallationSyncRequest,
   InstallationSyncRequestPort,
-} from "../application/ports/installation-sync-request-port.js";
+} from "../application/ports/installation-sync-request-port";
 import type {
   WebhookDeliveryRecord,
   WebhookDeliveryRepositoryPort,
   WebhookDeliveryStatus,
-} from "../application/ports/webhook-delivery-repository-port.js";
-import { handleGitHubInstallationWebhook } from "../application/use-cases/handle-github-installation-webhook.js";
+} from "../application/ports/webhook-delivery-repository-port";
+import { handleGitHubInstallationWebhook } from "../application/use-cases/handle-github-installation-webhook";
 import type { Clock } from "@reviewrouter/shared";
 
 class InMemoryInstallations implements GitHubInstallationRepositoryPort {

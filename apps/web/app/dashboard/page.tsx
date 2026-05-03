@@ -1,4 +1,4 @@
-import { Badge, Card } from "@reviewrouter/ui";
+import { Badge, Button, Card } from "@reviewrouter/ui";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
   listWorkspaceRepositoryHealth,
@@ -9,7 +9,12 @@ import {
   PrismaEntitlementRepository,
 } from "@reviewrouter/features-entitlements";
 import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
+import { getDashboardMutationStatus } from "../../src/server/dashboard-mutations";
 import { getPrisma } from "../../src/server/prisma";
+import {
+  createSetupPullRequestAction,
+  requestInstallationSyncAction,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +25,7 @@ type DashboardWorkspace = {
   readonly installations: readonly {
     readonly accountLogin: string;
     readonly accountType: string;
+    readonly githubInstallationId: string;
     readonly status: string;
     readonly repositorySelection: string;
   }[];
@@ -43,6 +49,7 @@ async function loadDashboardData() {
         select: {
           accountLogin: true,
           accountType: true,
+          githubInstallationId: true,
           status: true,
           repositorySelection: true,
         },
@@ -95,7 +102,17 @@ async function loadDashboardData() {
         );
 
         return {
-          workspace,
+          workspace: {
+            id: workspace.id,
+            name: workspace.name,
+            slug: workspace.slug,
+            installations: workspace.installations.map((installation) => ({
+              ...installation,
+              githubInstallationId:
+                installation.githubInstallationId.toString(),
+            })),
+            auditEvents: workspace.auditEvents,
+          },
           repositoryCount: repositories.length,
           repositories: repositories.slice(0, 8),
           entitlement,
@@ -110,8 +127,18 @@ type DashboardWorkspaceData = Awaited<
   ReturnType<typeof loadDashboardData>
 >[number];
 
-export default async function DashboardPage(): Promise<React.ReactElement> {
+type DashboardPageProps = {
+  readonly searchParams?: Promise<
+    Record<string, string | string[] | undefined>
+  >;
+};
+
+export default async function DashboardPage({
+  searchParams,
+}: DashboardPageProps): Promise<React.ReactElement> {
   const workspaces = await loadDashboardData();
+  const mutationStatus = await getDashboardMutationStatus();
+  const params = searchParams ? await searchParams : {};
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-10">
@@ -127,6 +154,8 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
         </p>
       </section>
 
+      <DashboardNotice params={params} mutationStatus={mutationStatus} />
+
       <section className="grid gap-5">
         {workspaces.length === 0 ? (
           <Card className="space-y-3">
@@ -138,7 +167,11 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           </Card>
         ) : (
           workspaces.map((workspace) => (
-            <WorkspaceCard key={workspace.workspace.id} data={workspace} />
+            <WorkspaceCard
+              key={workspace.workspace.id}
+              data={workspace}
+              mutationsEnabled={mutationStatus.enabled}
+            />
           ))
         )}
       </section>
@@ -148,8 +181,10 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
 
 function WorkspaceCard({
   data,
+  mutationsEnabled,
 }: {
   readonly data: DashboardWorkspaceData;
+  readonly mutationsEnabled: boolean;
 }): React.ReactElement {
   const { workspace, repositoryCount, repositories, entitlement, health } =
     data;
@@ -187,16 +222,34 @@ function WorkspaceCard({
       <div className="grid gap-3 md:grid-cols-3">
         {workspace.installations.map((installation) => (
           <div
-            key={`${workspace.id}-${installation.accountLogin}`}
-            className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+            key={`${workspace.id}-${installation.githubInstallationId}`}
+            className="space-y-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
           >
-            <p className="text-sm font-semibold text-cyan-50">
-              {installation.accountLogin}
-            </p>
-            <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-              {installation.accountType} / {installation.status} /{" "}
-              {installation.repositorySelection}
-            </p>
+            <div>
+              <p className="text-sm font-semibold text-cyan-50">
+                {installation.accountLogin}
+              </p>
+              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                {installation.accountType} / {installation.status} /{" "}
+                {installation.repositorySelection}
+              </p>
+            </div>
+            <form action={requestInstallationSyncAction}>
+              <input type="hidden" name="workspaceId" value={workspace.id} />
+              <input
+                type="hidden"
+                name="githubInstallationId"
+                value={installation.githubInstallationId}
+              />
+              <Button
+                type="submit"
+                variant="outline"
+                size="sm"
+                disabled={!mutationsEnabled || installation.status !== "active"}
+              >
+                Sync repos
+              </Button>
+            </form>
           </div>
         ))}
       </div>
@@ -253,6 +306,7 @@ function WorkspaceCard({
               <th className="px-4 py-3">Default branch</th>
               <th className="px-4 py-3">Setup</th>
               <th className="px-4 py-3">Health</th>
+              <th className="px-4 py-3">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-cyan-200/10 text-slate-200">
@@ -278,6 +332,34 @@ function WorkspaceCard({
                     <span className="text-xs text-slate-400">
                       {repositoryHealth?.summary ?? "No health data"}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <form action={createSetupPullRequestAction}>
+                      <input
+                        type="hidden"
+                        name="workspaceId"
+                        value={workspace.id}
+                      />
+                      <input
+                        type="hidden"
+                        name="repositoryId"
+                        value={repository.id}
+                      />
+                      <Button
+                        type="submit"
+                        variant="soft"
+                        size="sm"
+                        disabled={
+                          !mutationsEnabled ||
+                          !repository.selected ||
+                          repository.archived
+                        }
+                      >
+                        {repository.setupStatus === "setup_pr_open"
+                          ? "Update PR"
+                          : "Setup PR"}
+                      </Button>
+                    </form>
                   </td>
                 </tr>
               );
@@ -312,4 +394,120 @@ function WorkspaceCard({
       </div>
     </Card>
   );
+}
+
+function DashboardNotice({
+  params,
+  mutationStatus,
+}: {
+  readonly params: Record<string, string | string[] | undefined>;
+  readonly mutationStatus: Awaited<
+    ReturnType<typeof getDashboardMutationStatus>
+  >;
+}): React.ReactElement | null {
+  const notice = readParam(params.notice);
+  const error = readParam(params.error);
+  if (notice) {
+    return (
+      <Card className="border-lime-300/25 bg-lime-300/10">
+        <Badge tone="success">Done</Badge>
+        <p className="mt-3 text-sm leading-6 text-lime-50">
+          {dashboardNoticeText(notice, readParam(params.repository))}
+          {params.pr ? (
+            <>
+              {" "}
+              <a
+                className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                href={readParam(params.pr)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open pull request
+              </a>
+            </>
+          ) : null}
+        </p>
+      </Card>
+    );
+  }
+  if (error) {
+    return (
+      <Card className="border-red-300/25 bg-red-300/10">
+        <Badge tone="danger">Action failed</Badge>
+        <p className="mt-3 text-sm leading-6 text-red-50">
+          {dashboardErrorText(error)}
+        </p>
+      </Card>
+    );
+  }
+  if (!mutationStatus.enabled) {
+    return (
+      <Card className="border-amber-300/25 bg-amber-300/10">
+        <Badge tone="warning">Read-only dashboard</Badge>
+        <p className="mt-3 text-sm leading-6 text-amber-50">
+          {mutationStatus.reason === "signed_out"
+            ? "Sign in with GitHub to request repository syncs or setup PRs."
+            : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 for local beta provisioning."}
+          {mutationStatus.reason === "signed_out" ? (
+            <>
+              {" "}
+              <a
+                className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                href="/api/auth/signin"
+              >
+                Sign in
+              </a>
+            </>
+          ) : null}
+        </p>
+      </Card>
+    );
+  }
+
+  return null;
+}
+
+function readParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+  return value ?? "";
+}
+
+function dashboardNoticeText(notice: string, repository: string): string {
+  switch (notice) {
+    case "sync_requested":
+      return "Repository sync was queued. Run the worker or wait for the worker to process the outbox.";
+    case "sync_already_requested":
+      return "Repository sync was already queued for this installation recently.";
+    case "setup_pr_ready":
+      return repository
+        ? `Setup PR is ready for ${repository}.`
+        : "Setup PR is ready.";
+    default:
+      return "Dashboard action completed.";
+  }
+}
+
+function dashboardErrorText(error: string): string {
+  switch (error) {
+    case "dashboard_mutations_disabled":
+      return "Dashboard mutations are disabled on this environment.";
+    case "dashboard_mutation_requires_sign_in":
+      return "Sign in with GitHub before changing repository setup.";
+    case "workspace_mutation_forbidden":
+      return "Your GitHub user is not an owner/admin for this workspace.";
+    case "operation_already_running":
+      return "Another setup or sync operation is already running. Try again shortly.";
+    case "server_misconfigured":
+      return "Server GitHub App credentials are missing. Check local environment settings.";
+    case "repository_not_selected":
+      return "This repository is no longer selected for the GitHub App installation.";
+    case "repository_archived":
+      return "Archived repositories cannot be provisioned.";
+    case "installation_not_active":
+      return "The GitHub App installation is not active.";
+    default:
+      return "GitHub operation failed. Check audit events or server logs for the safe error code.";
+  }
 }

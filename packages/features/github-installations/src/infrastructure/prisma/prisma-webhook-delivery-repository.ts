@@ -2,7 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import type {
   WebhookDeliveryRecord,
   WebhookDeliveryRepositoryPort,
-} from "../../application/ports/webhook-delivery-repository-port.js";
+} from "../../application/ports/webhook-delivery-repository-port";
 
 export class PrismaWebhookDeliveryRepository implements WebhookDeliveryRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}

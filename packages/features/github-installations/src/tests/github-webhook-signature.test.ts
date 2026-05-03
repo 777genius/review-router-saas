@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   signGitHubWebhookPayload,
   verifyGitHubWebhookSignature,
-} from "../infrastructure/crypto/github-webhook-signature.js";
+} from "../infrastructure/crypto/github-webhook-signature";
 
 describe("GitHub webhook signature", () => {
   it("accepts matching sha256 signatures", () => {

@@ -1,0 +1,195 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import {
+  recordAuditEvent,
+  PrismaAuditLogRepository,
+} from "@reviewrouter/features-audit-log";
+import { OutboxInstallationSyncRequester } from "@reviewrouter/features-github-installations";
+import { PrismaOutboxEventRepository } from "@reviewrouter/features-outbox";
+import {
+  OctokitWorkflowSetupGateway,
+  PrismaWorkflowProvisioningRepository,
+  PrismaWorkflowProvisioningTarget,
+  provisionRepositoryReviewRouterWorkflow,
+} from "@reviewrouter/features-workflow-provisioning";
+import { PostgresAdvisoryLock } from "@reviewrouter/platform-locks";
+import {
+  assertDashboardMutationAllowed,
+  createGitHubAppInstallationOctokit,
+} from "../../src/server/dashboard-mutations";
+import { getPrisma } from "../../src/server/prisma";
+
+export async function requestInstallationSyncAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  const githubInstallationId = readFormString(formData, "githubInstallationId");
+  const workspaceId = readFormString(formData, "workspaceId");
+  let params: Record<string, string>;
+
+  try {
+    const installation = await prisma.gitHubInstallation.findUnique({
+      where: { githubInstallationId: BigInt(githubInstallationId) },
+      select: { workspaceId: true, accountLogin: true },
+    });
+    if (!installation || installation.workspaceId !== workspaceId) {
+      throw new Error("installation_not_found");
+    }
+
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const clockNow = new Date();
+    const deliveryBucket = Math.floor(clockNow.getTime() / 60_000);
+
+    const result = await new PostgresAdvisoryLock(prisma).withLock(
+      `installation:${githubInstallationId}:sync-request`,
+      30_000,
+      async () => {
+        const syncRequester = new OutboxInstallationSyncRequester(
+          new PrismaOutboxEventRepository(prisma),
+        );
+        return syncRequester.requestInstallationSync({
+          githubInstallationId,
+          deliveryId: `dashboard-${githubInstallationId}-${deliveryBucket}`,
+          reason: "manual_dashboard_sync",
+          occurredAt: clockNow,
+        });
+      },
+    );
+
+    await recordAuditEvent(
+      {
+        workspaceId,
+        actor: actor.actor,
+        action: "installation.sync_requested",
+        targetType: "github_installation",
+        targetId: githubInstallationId,
+        metadata: {
+          source: "dashboard",
+          created: result.created,
+          accountLogin: installation.accountLogin,
+        },
+      },
+      { auditLog: new PrismaAuditLogRepository(prisma) },
+    );
+
+    params = {
+      notice: result.created ? "sync_requested" : "sync_already_requested",
+    };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function createSetupPullRequestAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  const repositoryId = readFormString(formData, "repositoryId");
+  const workspaceId = readFormString(formData, "workspaceId");
+  let params: Record<string, string>;
+
+  try {
+    const repository = await prisma.repositoryConnection.findUnique({
+      where: { id: repositoryId },
+      select: {
+        workspaceId: true,
+        fullName: true,
+        installation: {
+          select: { githubInstallationId: true },
+        },
+      },
+    });
+    if (!repository || repository.workspaceId !== workspaceId) {
+      throw new Error("repository_not_found");
+    }
+
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const octokit = await createGitHubAppInstallationOctokit(
+      repository.installation.githubInstallationId.toString(),
+    );
+
+    const pullRequest = await new PostgresAdvisoryLock(prisma).withLock(
+      `repo:${repositoryId}:workflow-provision`,
+      60_000,
+      async () =>
+        provisionRepositoryReviewRouterWorkflow(
+          {
+            repositoryId,
+            actionRef:
+              process.env.REVIEW_ROUTER_ACTION_REF ??
+              "777genius/review-router@v1",
+            apiUrl:
+              process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
+              process.env.REVIEW_ROUTER_API_URL ??
+              "http://localhost:4000",
+            runtimeConfigMode: "oidc",
+            actor: actor.actor,
+          },
+          {
+            targets: new PrismaWorkflowProvisioningTarget(prisma),
+            setupGateway: new OctokitWorkflowSetupGateway(octokit),
+            provisioning: new PrismaWorkflowProvisioningRepository(prisma),
+            auditLog: new PrismaAuditLogRepository(prisma),
+            enabled:
+              process.env.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING !== "0",
+          },
+        ),
+    );
+
+    params = {
+      notice: "setup_pr_ready",
+      repository: repository.fullName,
+      pr: pullRequest.url,
+    };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+function readFormString(formData: FormData, key: string): string {
+  const value = formData.get(key);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`missing_form_value:${key}`);
+  }
+  return value;
+}
+
+function redirectWithParams(params: Record<string, string>): never {
+  redirect(`/dashboard?${new URLSearchParams(params).toString()}`);
+}
+
+function safeDashboardErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown_error";
+  if (message.startsWith("workspace_mutation_forbidden:")) {
+    return "workspace_mutation_forbidden";
+  }
+  if (
+    [
+      "dashboard_mutations_disabled",
+      "dashboard_mutation_requires_sign_in",
+      "installation_not_found",
+      "repository_not_found",
+      "repository_not_selected",
+      "repository_archived",
+      "installation_not_active",
+      "workflow_provisioning_disabled",
+    ].includes(message)
+  ) {
+    return message;
+  }
+  if (message.startsWith("missing_env:")) {
+    return "server_misconfigured";
+  }
+  if (message.startsWith("distributed_lock_not_acquired:")) {
+    return "operation_already_running";
+  }
+  return "github_operation_failed";
+}

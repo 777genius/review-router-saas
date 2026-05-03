@@ -1,4 +1,4 @@
-import type { NewOutboxEvent, OutboxEvent } from "../../domain/outbox-event.js";
+import type { NewOutboxEvent, OutboxEvent } from "../../domain/outbox-event";
 
 export interface OutboxEventRepositoryPort {
   enqueue(event: NewOutboxEvent): Promise<{ readonly created: boolean }>;

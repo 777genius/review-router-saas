@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Clock } from "@reviewrouter/shared";
-import type { OutboxEventRepositoryPort } from "../application/ports/outbox-event-repository-port.js";
-import { enqueueOutboxEvent } from "../application/use-cases/enqueue-outbox-event.js";
-import { processOutboxBatch } from "../application/use-cases/process-outbox-batch.js";
+import type { OutboxEventRepositoryPort } from "../application/ports/outbox-event-repository-port";
+import { enqueueOutboxEvent } from "../application/use-cases/enqueue-outbox-event";
+import { processOutboxBatch } from "../application/use-cases/process-outbox-batch";
 import {
   OutboxHandlerError,
   type NewOutboxEvent,
   type OutboxEvent,
-} from "../domain/outbox-event.js";
+} from "../domain/outbox-event";
 
 const now = new Date("2026-05-03T12:00:00.000Z");
 const clock: Clock = { now: () => now };

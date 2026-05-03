@@ -11,7 +11,11 @@ import {
 const installationSyncRequestedPayloadSchema = z.object({
   installationId: z.string().min(1),
   reason: z
-    .enum(["installation_access_changed", "installation_repositories_changed"])
+    .enum([
+      "installation_access_changed",
+      "installation_repositories_changed",
+      "manual_dashboard_sync",
+    ])
     .optional(),
 });
 

@@ -19,6 +19,7 @@ export type ProvisionReviewRouterWorkflowDependencies = {
   readonly provisioning: WorkflowProvisioningRepositoryPort;
   readonly auditLog?: AuditLogRepositoryPort;
   readonly enabled?: boolean;
+  readonly actor?: string;
 };
 
 export async function provisionReviewRouterWorkflow(
@@ -41,7 +42,7 @@ export async function provisionReviewRouterWorkflow(
       await recordAuditEvent(
         {
           workspaceId: plan.workspaceId,
-          actor: "system:workflow-provisioning",
+          actor: dependencies.actor ?? "system:workflow-provisioning",
           action: "workflow.setup_pr_blocked",
           targetType: "repository",
           targetId: plan.repositoryId,
@@ -85,7 +86,7 @@ export async function provisionReviewRouterWorkflow(
       await recordAuditEvent(
         {
           workspaceId: plan.workspaceId,
-          actor: "system:workflow-provisioning",
+          actor: dependencies.actor ?? "system:workflow-provisioning",
           action: "workflow.setup_pr_opened",
           targetType: "repository",
           targetId: plan.repositoryId,
@@ -117,7 +118,7 @@ export async function provisionReviewRouterWorkflow(
       await recordAuditEvent(
         {
           workspaceId: plan.workspaceId,
-          actor: "system:workflow-provisioning",
+          actor: dependencies.actor ?? "system:workflow-provisioning",
           action: "workflow.setup_pr_failed",
           targetType: "repository",
           targetId: plan.repositoryId,

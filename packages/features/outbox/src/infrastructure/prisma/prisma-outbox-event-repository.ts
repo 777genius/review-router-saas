@@ -3,8 +3,8 @@ import type {
   NewOutboxEvent,
   OutboxEvent,
   OutboxEventStatus,
-} from "../../domain/outbox-event.js";
-import type { OutboxEventRepositoryPort } from "../../application/ports/outbox-event-repository-port.js";
+} from "../../domain/outbox-event";
+import type { OutboxEventRepositoryPort } from "../../application/ports/outbox-event-repository-port";
 
 export class PrismaOutboxEventRepository implements OutboxEventRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}

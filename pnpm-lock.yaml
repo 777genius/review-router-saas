@@ -165,12 +165,24 @@ importers:
 
   apps/web:
     dependencies:
+      '@octokit/app':
+        specifier: ^16.1.2
+        version: 16.1.2
+      '@reviewrouter/features-audit-log':
+        specifier: workspace:*
+        version: link:../../packages/features/audit-log
       '@reviewrouter/features-auth':
         specifier: workspace:*
         version: link:../../packages/features/auth
       '@reviewrouter/features-entitlements':
         specifier: workspace:*
         version: link:../../packages/features/entitlements
+      '@reviewrouter/features-github-installations':
+        specifier: workspace:*
+        version: link:../../packages/features/github-installations
+      '@reviewrouter/features-outbox':
+        specifier: workspace:*
+        version: link:../../packages/features/outbox
       '@reviewrouter/features-provider-setup':
         specifier: workspace:*
         version: link:../../packages/features/provider-setup
@@ -180,9 +192,15 @@ importers:
       '@reviewrouter/features-repositories':
         specifier: workspace:*
         version: link:../../packages/features/repositories
+      '@reviewrouter/features-workflow-provisioning':
+        specifier: workspace:*
+        version: link:../../packages/features/workflow-provisioning
       '@reviewrouter/platform-db':
         specifier: workspace:*
         version: link:../../packages/platform/db
+      '@reviewrouter/platform-locks':
+        specifier: workspace:*
+        version: link:../../packages/platform/locks
       '@reviewrouter/ui':
         specifier: workspace:*
         version: link:../../packages/ui

@@ -93,7 +93,7 @@ describe("installation sync requested outbox handler", () => {
     await handler.handle(
       outboxEvent({
         installationId: "129",
-        reason: "installation_repositories_changed",
+        reason: "manual_dashboard_sync",
       }),
     );
 

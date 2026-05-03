@@ -11,6 +11,11 @@ import type {
   WorkflowProvisioningRecord,
   WorkflowProvisioningRepositoryPort,
 } from "../application/ports/workflow-provisioning-repository-port";
+import type {
+  WorkflowProvisioningTarget,
+  WorkflowProvisioningTargetPort,
+} from "../application/ports/workflow-provisioning-target-port";
+import { provisionRepositoryReviewRouterWorkflow } from "../application/use-cases/provision-repository-reviewrouter-workflow";
 import { provisionReviewRouterWorkflow } from "../application/use-cases/provision-reviewrouter-workflow";
 
 class CapturingSetupGateway implements WorkflowSetupGatewayPort {
@@ -48,6 +53,26 @@ class CapturingAuditLog implements AuditLogRepositoryPort {
     this.events.push(event);
   }
 }
+
+class StaticWorkflowProvisioningTarget implements WorkflowProvisioningTargetPort {
+  constructor(private readonly target: WorkflowProvisioningTarget | null) {}
+
+  async findWorkflowProvisioningTarget(): Promise<WorkflowProvisioningTarget | null> {
+    return this.target;
+  }
+}
+
+const activeTarget = {
+  workspaceId: "workspace-1",
+  repositoryId: "repo-1",
+  owner: "777genius",
+  name: "example",
+  fullName: "777genius/example",
+  defaultBranch: "main",
+  selected: true,
+  archived: false,
+  installationStatus: "active",
+} satisfies WorkflowProvisioningTarget;
 
 describe("provisionReviewRouterWorkflow", () => {
   it("renders workflow and records setup PR state", async () => {
@@ -116,5 +141,61 @@ describe("provisionReviewRouterWorkflow", () => {
     expect(auditLog.events).toContainEqual(
       expect.objectContaining({ action: "workflow.setup_pr_blocked" }),
     );
+  });
+
+  it("provisions by repository id after validating target state", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+    const auditLog = new CapturingAuditLog();
+
+    await expect(
+      provisionRepositoryReviewRouterWorkflow(
+        {
+          repositoryId: "repo-1",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+          actor: "user:maintainer",
+        },
+        {
+          targets: new StaticWorkflowProvisioningTarget(activeTarget),
+          setupGateway: gateway,
+          provisioning,
+          auditLog,
+        },
+      ),
+    ).resolves.toMatchObject({ number: 1 });
+
+    expect(gateway.input).toMatchObject({
+      owner: "777genius",
+      repo: "example",
+      baseBranch: "main",
+    });
+    expect(auditLog.events[0]).toMatchObject({ actor: "user:maintainer" });
+  });
+
+  it("rejects invalid repository states before calling GitHub", async () => {
+    const gateway = new CapturingSetupGateway();
+
+    await expect(
+      provisionRepositoryReviewRouterWorkflow(
+        {
+          repositoryId: "repo-1",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+        },
+        {
+          targets: new StaticWorkflowProvisioningTarget({
+            ...activeTarget,
+            selected: false,
+          }),
+          setupGateway: gateway,
+          provisioning: new CapturingProvisioningRepository(),
+        },
+      ),
+    ).rejects.toThrow("repository_not_selected");
+
+    expect(gateway.input).toBeNull();
   });
 });

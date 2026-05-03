@@ -150,6 +150,7 @@ GITHUB_APP_CLIENT_ID
 GITHUB_APP_CLIENT_SECRET
 GITHUB_APP_SLUG
 GITHUB_APP_PRIVATE_KEY_FILE
+REVIEW_ROUTER_ACTION_REF
 ```
 
 For local private key path:
@@ -159,6 +160,16 @@ GITHUB_APP_PRIVATE_KEY_FILE="/Users/belief/dev/projects/review-router/.local-sec
 ```
 
 Use the same GitHub App client ID/secret for GitHub OAuth during local development unless a separate OAuth App is intentionally created later.
+
+For local dashboard provisioning buttons:
+
+```text
+REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS="1"
+REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING="1"
+REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS="your-github-login"
+```
+
+`REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS` is a local beta escape hatch for GitHub App-created workspaces that do not yet have explicit `WorkspaceMember` rows. Do not use it as a production authorization model.
 
 ## Human Action 6 - Install App On Test Repo
 

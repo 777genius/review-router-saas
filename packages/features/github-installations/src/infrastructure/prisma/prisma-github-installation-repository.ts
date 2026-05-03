@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
-import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port.js";
-import type { GitHubInstallationSnapshot } from "../../domain/github-installation.js";
+import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port";
+import type { GitHubInstallationSnapshot } from "../../domain/github-installation";
 
 function workspaceSlugForInstallation(
   snapshot: GitHubInstallationSnapshot,
