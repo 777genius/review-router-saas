@@ -88,6 +88,18 @@ Use safe checkout defaults:
 
 If a later step needs a token for GitHub API, pass it only to that step.
 
+## Template Input Validation
+
+Generated workflow rendering must validate values before producing YAML:
+
+- `actionRef` must be `owner/repo@ref` with no whitespace or shell/YAML syntax
+- `apiUrl` must parse as `http` or `https`
+- static env keys must match GitHub Actions env-name shape: `^[A-Z_][A-Z0-9_]*$`
+- env values must be JSON-quoted
+
+This protects the setup PR path from accidentally turning user/config input into
+extra YAML steps or permissions.
+
 ## Manual Trusted Review Later
 
 Future explicit flow:
@@ -106,3 +118,4 @@ Do not add this implicitly in v1 unless security is fully designed.
 - same-repo PR condition runs provider steps
 - generated workflow contains `id-token: write` when SaaS config sync is enabled
 - generated workflow uses minimal permissions for selected mode
+- unsafe action ref, API URL, or static env key is rejected before YAML rendering

@@ -11,9 +11,14 @@ export const defaultSetupBranch = "reviewrouter/setup";
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
+  assertSafeActionRef(options.actionRef);
+  assertSafeApiUrl(options.apiUrl);
   const staticRuntimeEnv = Object.entries(options.staticRuntimeEnv ?? {})
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `          ${key}: ${JSON.stringify(value)}`)
+    .map(([key, value]) => {
+      assertSafeEnvKey(key);
+      return `          ${key}: ${JSON.stringify(value)}`;
+    })
     .join("\n");
   const staticRuntimeEnvBlock = staticRuntimeEnv ? `\n${staticRuntimeEnv}` : "";
   const oidcStep =
@@ -73,4 +78,28 @@ ${oidcStep}      - name: Run ReviewRouter
           REVIEWROUTER_RUNTIME_CONFIG_MODE: ${options.runtimeConfigMode}
           REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
 `;
+}
+
+function assertSafeActionRef(actionRef: string): void {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[A-Za-z0-9_./-]+$/.test(actionRef)) {
+    throw new Error("invalid_workflow_action_ref");
+  }
+}
+
+function assertSafeApiUrl(apiUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error("invalid_workflow_api_url");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("invalid_workflow_api_url");
+  }
+}
+
+function assertSafeEnvKey(key: string): void {
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+    throw new Error("invalid_workflow_env_key");
+  }
 }

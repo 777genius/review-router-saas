@@ -24,4 +24,33 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');
     expect(workflow).toContain('CODEX_MODEL: "gpt-5.5"');
   });
+
+  it("rejects unsafe workflow template inputs before rendering YAML", () => {
+    expect(() =>
+      renderReviewRouterWorkflow({
+        actionRef: "777genius/review-router@v1\nrun: evil",
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+      }),
+    ).toThrow("invalid_workflow_action_ref");
+
+    expect(() =>
+      renderReviewRouterWorkflow({
+        actionRef: "777genius/review-router@v1",
+        apiUrl: "javascript:alert(1)",
+        runtimeConfigMode: "oidc",
+      }),
+    ).toThrow("invalid_workflow_api_url");
+
+    expect(() =>
+      renderReviewRouterWorkflow({
+        actionRef: "777genius/review-router@v1",
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "static",
+        staticRuntimeEnv: {
+          "BAD_KEY:\n          RUN": "evil",
+        },
+      }),
+    ).toThrow("invalid_workflow_env_key");
+  });
 });
