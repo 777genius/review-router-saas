@@ -81,6 +81,7 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - trusted-beta privacy, terms, and status draft pages
 - trusted-beta disconnect page covering App uninstall, workflow cleanup, secret deletion, and workspace deletion request path
 - trusted-beta fair-use page and deterministic repository sync cap
+- generated workflow security snapshot test
 
 ## Remaining Before Public Launch
 
