@@ -29,6 +29,19 @@ Limits can be generous, but they must exist.
 - health report size limit
 - dashboard mutation rate limit
 
+## Implemented Baseline
+
+- `features-rate-limits` owns fixed-window rate-limit domain logic and application ports.
+- `PrismaRateLimitStore` uses a DB-backed bucket table so limits work across multiple API instances.
+- Action control-plane checks rate limits before issuing GitHub Actions OIDC sessions and before accepting action health reports.
+- Action route errors map rate-limit denials to HTTP `429` with safe public error code `rate_limited`.
+
+Local DB smoke:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:rate-limit:e2e
+```
+
 ## User Experience
 
 Rate-limited users should see actionable messages:

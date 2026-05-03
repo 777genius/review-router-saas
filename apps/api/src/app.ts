@@ -24,9 +24,11 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
+import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
+import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
 import { appRouter } from "./trpc.js";
 
@@ -81,21 +83,28 @@ export async function createApiApp(
   const actionControlPlaneDependencies =
     options.actionControlPlaneDependencies ??
     (options.actionSessionSecret && prisma
-      ? {
-          repositories: new PrismaActionControlPlaneRepository(prisma),
-          entitlements: new PrismaActionEntitlementPolicy(prisma),
-          sessions: new JoseActionSessionTokenService(
-            options.actionSessionSecret,
-          ),
-          oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
-          clock: new SystemClock(),
-          ...(options.actionOidcAudience
-            ? { oidcAudience: options.actionOidcAudience }
-            : {}),
-          ...(options.actionControlPlaneEnabled === false
-            ? { controlPlaneEnabled: false }
-            : {}),
-        }
+      ? (() => {
+          const clock = new SystemClock();
+          return {
+            repositories: new PrismaActionControlPlaneRepository(prisma),
+            entitlements: new PrismaActionEntitlementPolicy(prisma),
+            rateLimits: new ActionRateLimitPolicy(
+              new PrismaRateLimitStore(prisma),
+              clock,
+            ),
+            sessions: new JoseActionSessionTokenService(
+              options.actionSessionSecret,
+            ),
+            oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
+            clock,
+            ...(options.actionOidcAudience
+              ? { oidcAudience: options.actionOidcAudience }
+              : {}),
+            ...(options.actionControlPlaneEnabled === false
+              ? { controlPlaneEnabled: false }
+              : {}),
+          };
+        })()
       : undefined);
 
   if (actionControlPlaneDependencies) {

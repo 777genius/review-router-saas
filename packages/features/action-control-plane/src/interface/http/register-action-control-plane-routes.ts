@@ -135,6 +135,9 @@ function statusCodeForActionError(message: string): number {
   ) {
     return 403;
   }
+  if (message.startsWith("rate_limit_exceeded:")) {
+    return 429;
+  }
   return 400;
 }
 
@@ -174,6 +177,9 @@ function safeActionErrorCode(message: string): string {
   }
   if (message.startsWith("health_report_")) {
     return message;
+  }
+  if (message.startsWith("rate_limit_exceeded:")) {
+    return "rate_limited";
   }
   return "invalid_action_request";
 }

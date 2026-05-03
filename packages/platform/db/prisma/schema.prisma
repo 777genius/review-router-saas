@@ -281,6 +281,18 @@ model WorkspaceEntitlement {
   @@index([plan, status])
 }
 
+model RateLimitBucket {
+  key          String   @id
+  count        Int
+  limit        Int
+  windowStart  DateTime
+  windowEndsAt DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@index([windowEndsAt])
+}
+
 enum WorkspaceRole {
   owner
   admin

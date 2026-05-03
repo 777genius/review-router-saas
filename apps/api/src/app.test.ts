@@ -3,6 +3,7 @@ import type {
   ActionControlPlaneRepositoryPort,
   ActionEntitlementPolicyPort,
   ActionHealthReport,
+  ActionRateLimitPolicyPort,
   ActionRepositoryContext,
   GitHubActionsOidcClaims,
   GitHubActionsOidcTokenVerifierPort,
@@ -147,6 +148,16 @@ class DenyingActionEntitlements implements ActionEntitlementPolicyPort {
     throw new Error(
       "entitlement_denied:action_control_plane:feature_not_enabled_for_plan",
     );
+  }
+}
+
+class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
+  async assertOidcExchangeAllowed(): Promise<void> {
+    throw new Error("rate_limit_exceeded:action:oidc_exchange:repo_1");
+  }
+
+  async assertHealthReportAllowed(): Promise<void> {
+    throw new Error("rate_limit_exceeded:action:health_report:repo_1");
   }
 }
 
@@ -395,5 +406,29 @@ describe("API app", () => {
     expect(response.json()).toEqual({
       error: "action_control_plane_entitlement_denied",
     });
+  });
+
+  it("maps action rate limit denial to a safe retryable error", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        rateLimits: new DenyingActionRateLimits(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.json()).toEqual({ error: "rate_limited" });
   });
 });

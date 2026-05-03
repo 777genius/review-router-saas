@@ -36,6 +36,7 @@ Make the product understandable and supportable for beta users.
 - Repository health evaluates setup status, workflow presence, expected action ref, provider setup state, and latest provider runtime health.
 - Repository health marks old action health reports as stale so a repository does not stay `Ready` forever after the workflow stops reporting.
 - API `/health` accepts dependency checks and marks the service degraded when the database adapter cannot run a safe `SELECT 1` probe.
+- Action control-plane has DB-backed fixed-window rate limits for OIDC exchanges and action health reports, returning safe `rate_limited` errors.
 - Dashboard probes installed workflow files through a `RepositoryWorkflowProbePort` and `OctokitRepositoryWorkflowProbe`.
 - The workflow probe reads only `.github/workflows/reviewrouter.yml` metadata through the GitHub App installation token and returns safe states only:
   - `missing`

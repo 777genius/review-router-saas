@@ -4,6 +4,7 @@ import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-co
 import type { Clock } from "@reviewrouter/shared";
 import type { ActionControlPlaneRepositoryPort } from "../application/ports/action-control-plane-repository-port.js";
 import type { ActionEntitlementPolicyPort } from "../application/ports/action-entitlement-policy-port.js";
+import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../application/ports/github-actions-oidc-token-verifier-port.js";
 import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-github-oidc-token.js";
@@ -119,6 +120,45 @@ class DenyingActionEntitlements implements ActionEntitlementPolicyPort {
   }
 }
 
+class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
+  public readonly oidcExchangeCalls: Array<{
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName: string;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+  }> = [];
+  public readonly healthReportCalls: Array<{
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName: string;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+  }> = [];
+
+  async assertOidcExchangeAllowed(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName: string;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+  }): Promise<void> {
+    this.oidcExchangeCalls.push(input);
+    throw new Error("rate_limit_exceeded:action:oidc_exchange:repo_1");
+  }
+
+  async assertHealthReportAllowed(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName: string;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+  }): Promise<void> {
+    this.healthReportCalls.push(input);
+    throw new Error("rate_limit_exceeded:action:health_report:repo_1");
+  }
+}
+
 describe("action control plane", () => {
   it("exchanges valid GitHub OIDC claims for a scoped action session", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
@@ -206,6 +246,32 @@ describe("action control plane", () => {
     ]);
   });
 
+  it("checks action rate limits before issuing sessions", async () => {
+    const rateLimits = new DenyingActionRateLimits();
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(githubOidcClaims()),
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          rateLimits,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("rate_limit_exceeded:action:oidc_exchange");
+    expect(rateLimits.oidcExchangeCalls).toEqual([
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        githubRunId: "1001",
+        githubRunAttempt: "1",
+      },
+    ]);
+  });
+
   it("returns runtime config without secrets", async () => {
     const config = await getActionRuntimeConfig(
       { sessionToken: "session" },
@@ -277,6 +343,34 @@ describe("action control plane", () => {
         safeErrorSummary: "```ts\nconsole.log('code')\n```",
       }),
     ).toThrow("health_report_contains_code_or_diff");
+  });
+
+  it("checks action rate limits before accepting health reports", async () => {
+    const rateLimits = new DenyingActionRateLimits();
+
+    await expect(
+      recordActionHealthReport(
+        {
+          sessionToken: "session",
+          report: safeHealthReport(),
+        },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          rateLimits,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("rate_limit_exceeded:action:health_report");
+    expect(rateLimits.healthReportCalls).toEqual([
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        githubRunId: "1001",
+        githubRunAttempt: "1",
+      },
+    ]);
   });
 
   it("rejects raw health payloads with extra fields, code, secrets, or oversized content", () => {

@@ -1,6 +1,7 @@
 export * from "./domain/action-control-plane.js";
 export * from "./application/ports/action-entitlement-policy-port.js";
 export * from "./application/ports/action-control-plane-repository-port.js";
+export * from "./application/ports/action-rate-limit-policy-port.js";
 export * from "./application/ports/action-session-token-service-port.js";
 export * from "./application/ports/github-actions-oidc-token-verifier-port.js";
 export * from "./application/use-cases/exchange-github-oidc-token.js";

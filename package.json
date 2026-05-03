@@ -27,7 +27,8 @@
     "db:migrate:status": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/platform-db db:migrate:status",
     "db:migrate:smoke": "node scripts/run-with-env.mjs node scripts/check-migration-smoke.mjs",
     "spike:outbox-maintenance:e2e": "tsx spikes/github-oidc/src/outbox-maintenance-e2e.ts",
-    "spike:repo-health:e2e": "tsx spikes/github-oidc/src/repo-health-workflow-e2e.ts"
+    "spike:repo-health:e2e": "tsx spikes/github-oidc/src/repo-health-workflow-e2e.ts",
+    "spike:rate-limit:e2e": "tsx spikes/github-oidc/src/rate-limit-e2e.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

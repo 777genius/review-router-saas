@@ -6,6 +6,7 @@ import {
 } from "../../domain/action-control-plane.js";
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
+import type { ActionRateLimitPolicyPort } from "../ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../ports/github-actions-oidc-token-verifier-port.js";
 
@@ -14,6 +15,7 @@ export type ExchangeGitHubOidcTokenDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
   readonly sessions: ActionSessionTokenServicePort;
   readonly entitlements?: ActionEntitlementPolicyPort;
+  readonly rateLimits?: ActionRateLimitPolicyPort;
   readonly clock: Clock;
 };
 
@@ -43,6 +45,13 @@ export async function exchangeGitHubOidcToken(
     workspaceId: repository.workspaceId,
     repositoryId: repository.repositoryId,
     repositoryFullName: repository.fullName,
+  });
+  await dependencies.rateLimits?.assertOidcExchangeAllowed({
+    workspaceId: repository.workspaceId,
+    repositoryId: repository.repositoryId,
+    repositoryFullName: repository.fullName,
+    githubRunId: claims.run_id,
+    githubRunAttempt: claims.run_attempt,
   });
 
   const sessionClaims: ActionSessionClaims = {

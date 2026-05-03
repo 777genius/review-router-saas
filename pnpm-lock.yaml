@@ -141,6 +141,9 @@ importers:
       '@reviewrouter/features-outbox':
         specifier: workspace:*
         version: link:../../packages/features/outbox
+      '@reviewrouter/features-rate-limits':
+        specifier: workspace:*
+        version: link:../../packages/features/rate-limits
       '@reviewrouter/features-system-health':
         specifier: workspace:*
         version: link:../../packages/features/system-health
@@ -354,6 +357,15 @@ importers:
       zod:
         specifier: ^4.4.2
         version: 4.4.2
+
+  packages/features/rate-limits:
+    dependencies:
+      '@prisma/client':
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
 
   packages/features/repo-health:
     dependencies:
