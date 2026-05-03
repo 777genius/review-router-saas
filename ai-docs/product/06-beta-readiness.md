@@ -43,6 +43,15 @@ Result: passed.
 Coverage: local readiness, unit/integration tests, typecheck, lint, format, production build, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
 ```
 
+Latest browser smoke:
+
+```text
+Date: 2026-05-04 02:20 EEST
+Command: local Next dev server + in-app browser DOM smoke
+Pages: /, /dashboard, /getting-started, /security, /fair-use, /disconnect, /privacy, /terms, /status, /support
+Result: all pages returned 200 with expected h1 content and no 404/500/runtime error text.
+```
+
 ## Public Beta Must Have
 
 - clear privacy statement: ReviewRouter SaaS does not store code, diffs, or Codex OAuth in v1
