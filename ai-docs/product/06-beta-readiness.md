@@ -52,6 +52,16 @@ Pages: /, /dashboard, /getting-started, /security, /fair-use, /disconnect, /priv
 Result: all pages returned 200 with expected h1 content and no 404/500/runtime error text.
 ```
 
+Latest fresh setup validation:
+
+```text
+Date: 2026-05-04
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=setup pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777850784656
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777850784656/pull/1
+Result: setup PR created and merged; workflow health changed from missing to present with expected action ref 777genius/review-router@main.
+```
+
 ## Public Beta Must Have
 
 - clear privacy statement: ReviewRouter SaaS does not store code, diffs, or Codex OAuth in v1
