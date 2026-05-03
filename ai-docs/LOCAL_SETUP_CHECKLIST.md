@@ -170,6 +170,10 @@ GITHUB_APP_PRIVATE_KEY_FILE
 REVIEW_ROUTER_ACTION_REF
 ```
 
+`REVIEW_ROUTER_ACTION_REF` is optional. Leave it unset to use the beta default
+`777genius/review-router@main`. Set it only for a smoke branch or a pinned
+release tag.
+
 For local private key path:
 
 ```text

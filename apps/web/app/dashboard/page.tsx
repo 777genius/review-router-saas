@@ -1,4 +1,5 @@
 import { Badge, Button, Card } from "@reviewrouter/ui";
+import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
   listWorkspaceRepositoryHealth,
@@ -159,9 +160,7 @@ async function loadDashboardData(
         const health = await listWorkspaceRepositoryHealth(
           {
             workspaceId: workspace.id,
-            expectedActionRef:
-              process.env.REVIEW_ROUTER_ACTION_REF ??
-              "777genius/review-router@v1",
+            expectedActionRef: resolveReviewRouterActionRef(),
             workflowProbeMaxRepositories: 8,
           },
           {

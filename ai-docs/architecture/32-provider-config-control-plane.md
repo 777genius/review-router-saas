@@ -97,7 +97,11 @@ Do not design the domain around only Codex. Codex is the first polished adapter,
 
 ## Mapping to Existing Runtime
 
-The existing `777genius/review-router@v1` runtime consumes env variables.
+The existing `777genius/review-router` runtime consumes env variables. During
+local beta, generated workflows default to `777genius/review-router@main` so
+test installations pick up runtime fixes immediately. Production can pin a
+release tag through `REVIEW_ROUTER_ACTION_VERSION` or override the whole ref
+through `REVIEW_ROUTER_ACTION_REF`.
 
 SaaS config maps to runtime env:
 

@@ -24,6 +24,7 @@ import {
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
 import type { PrismaClient } from "@reviewrouter/platform-db";
+import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import {
   OctokitWorkflowSetupGateway,
   PrismaWorkflowProvisioningRepository,
@@ -163,9 +164,7 @@ export async function createSetupPullRequestAction(
         provisionRepositoryReviewRouterWorkflow(
           {
             repositoryId,
-            actionRef:
-              process.env.REVIEW_ROUTER_ACTION_REF ??
-              "777genius/review-router@v1",
+            actionRef: resolveReviewRouterActionRef(),
             apiUrl: resolveWorkflowPublicApiUrl(),
             runtimeConfigMode: "oidc",
             staticRuntimeEnv,

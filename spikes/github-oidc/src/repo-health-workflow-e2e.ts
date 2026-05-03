@@ -1,3 +1,4 @@
+import { resolveReviewRouterActionRef } from "../../../packages/platform/config/src/index.ts";
 import { OctokitRepositoryWorkflowProbe } from "../../../packages/features/repo-health/src/index.ts";
 import { createGitHubApp, findInstallationForRepo } from "./github-app.js";
 import { loadAppProfile, loadEnvFiles, requiredEnv } from "./config.js";
@@ -10,8 +11,7 @@ if (!owner || !repo) {
   throw new Error("REVIEW_ROUTER_TARGET_REPO must be owner/repo");
 }
 
-const expectedActionRef =
-  process.env.REVIEW_ROUTER_ACTION_REF ?? "777genius/review-router@v1";
+const expectedActionRef = resolveReviewRouterActionRef();
 const workflowPath =
   process.env.REVIEW_ROUTER_WORKFLOW_PATH ??
   ".github/workflows/reviewrouter.yml";

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { Octokit } from "@octokit/rest";
+import { resolveReviewRouterActionRef } from "../../../packages/platform/config/src/index.ts";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
 import {
   OctokitWorkflowSetupGateway,
@@ -20,8 +21,7 @@ const [owner, repo] = targetRepo.split("/");
 if (!owner || !repo)
   throw new Error("REVIEW_ROUTER_TARGET_REPO must be owner/repo");
 
-const actionRef =
-  process.env.REVIEW_ROUTER_ACTION_REF ?? "777genius/review-router@v1";
+const actionRef = resolveReviewRouterActionRef();
 const apiUrl = process.env.REVIEW_ROUTER_API_URL ?? "http://localhost:4000";
 const setupAuth =
   process.env.REVIEW_ROUTER_SETUP_AUTH === "gh-user" ? "gh-user" : "app";

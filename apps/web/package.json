@@ -16,6 +16,7 @@
     "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-support-diagnostics": "workspace:*",
     "@reviewrouter/features-workflow-provisioning": "workspace:*",
+    "@reviewrouter/platform-config": "workspace:*",
     "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/platform-locks": "workspace:*",
     "@reviewrouter/ui": "workspace:*",

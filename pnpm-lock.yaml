@@ -210,6 +210,9 @@ importers:
       '@reviewrouter/features-workflow-provisioning':
         specifier: workspace:*
         version: link:../../packages/features/workflow-provisioning
+      '@reviewrouter/platform-config':
+        specifier: workspace:*
+        version: link:../../packages/platform/config
       '@reviewrouter/platform-db':
         specifier: workspace:*
         version: link:../../packages/platform/db

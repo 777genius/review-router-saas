@@ -14,6 +14,7 @@ The existing ReviewRouter action work includes or targets:
 - ReviewRouter branding
 - future SaaS runtime config fetch through GitHub Actions OIDC
 - action version modes: stable/release/main
+- SaaS beta default action ref: `777genius/review-router@main`
 - strict JSON findings from Codex
 - read-only agentic Codex context mode
 - deterministic diff seed
@@ -55,3 +56,30 @@ SaaS owns:
 - Review comments need clear severity and concrete impact.
 - Large/generated files need explicit filtering/summarization.
 - Codex can read related files in read-only agentic mode, but deterministic context still matters.
+
+## Latest Real E2E Validation
+
+On 2026-05-03, the separate action runtime was validated against a real public
+smoke repository:
+
+```text
+Repo: 777genius/review-router-saas-e2e
+PR: https://github.com/777genius/review-router-saas-e2e/pull/2
+Run: https://github.com/777genius/review-router-saas-e2e/actions/runs/25291239594
+Action ref: 777genius/review-router@main
+Provider: Codex OAuth subscription, gpt-5.4-mini
+Result: workflow failed intentionally with 1 critical finding
+Inline: github-actions[bot] commented on auth.js:5
+```
+
+The earlier run against the same PR proved setup/auth worked but exposed a
+runtime bug: Codex produced one finding and the post-processing filter dropped
+it. The action runtime was fixed in `777genius/review-router`:
+
+```text
+18a224e fix: preserve authentication bypass findings
+45a5813 fix: harden auth query finding classification
+```
+
+Keep SaaS-generated beta workflows on `@main` until a release tag is cut from a
+runtime that includes those fixes.

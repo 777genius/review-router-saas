@@ -61,7 +61,7 @@ The final beta should support this path:
 8. User merges setup PR.
 9. User seeds provider credentials directly into GitHub Secrets or trusted runner.
 10. User opens or updates a pull request.
-11. GitHub Actions runs `777genius/review-router@v1`.
+11. GitHub Actions runs `777genius/review-router@main` during beta, or a pinned release tag when `REVIEW_ROUTER_ACTION_VERSION` is set.
 12. Action fetches runtime config from SaaS through GitHub Actions OIDC.
 13. If SaaS is unavailable, action uses static workflow config.
 14. Action runs provider review inside customer CI.
@@ -381,7 +381,8 @@ Workflow rules:
 - include fork PR secret guard
 - include `id-token: write`
 - set `permissions` explicitly
-- use `777genius/review-router@v1`
+- use `777genius/review-router@main` by default during beta
+- allow `REVIEW_ROUTER_ACTION_VERSION` / `REVIEW_ROUTER_ACTION_REF` override for pinned releases and smoke branches
 - default model `gpt-5.5`
 - default effort `medium`
 - default fail severity `critical`
@@ -403,7 +404,7 @@ If blocked:
 
 - if `workflows: write` is missing, finish renderer snapshots, error classification, and UI permission copy
 - if real PR creation is blocked, keep mocked Octokit integration tests and a gated E2E checklist
-- if action version resolution is blocked, default to `777genius/review-router@v1` and keep resolver behind a port
+- if action version resolution is blocked, default to `777genius/review-router@main` during beta and keep resolver behind a port
 
 ## Iteration 05 - Review Config And Provider Setup
 
