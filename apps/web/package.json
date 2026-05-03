@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@reviewrouter/features-auth": "workspace:*",
+    "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/ui": "workspace:*",
     "@tanstack/react-query": "^5.100.8",

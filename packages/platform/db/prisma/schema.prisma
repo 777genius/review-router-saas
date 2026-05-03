@@ -77,7 +77,10 @@ model RepositoryConnection {
   fullName             String
   defaultBranch        String
   visibility           RepositoryVisibility
+  selected             Boolean                @default(true)
+  archived             Boolean                @default(false)
   setupStatus          RepositorySetupStatus  @default(not_configured)
+  lastSyncedAt         DateTime?
   createdAt            DateTime               @default(now())
   updatedAt            DateTime               @updatedAt
 
@@ -85,7 +88,9 @@ model RepositoryConnection {
   installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, fullName])
+  @@index([installationId])
   @@index([workspaceId, setupStatus])
+  @@index([workspaceId, selected, fullName])
 }
 
 model AuditEvent {

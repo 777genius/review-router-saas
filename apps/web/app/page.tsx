@@ -18,7 +18,12 @@ export default function HomePage(): React.ReactElement {
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button>Start local setup</Button>
+            <a
+              href="/dashboard"
+              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/50 bg-cyan-300 px-4 text-sm font-medium tracking-wide text-slate-950 shadow-[var(--rr-shadow-glow-cyan)] transition hover:bg-cyan-200"
+            >
+              Open dashboard
+            </a>
             <Button variant="outline">View architecture</Button>
           </div>
         </div>

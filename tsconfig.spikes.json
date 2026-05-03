@@ -1,7 +1,15 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "paths": {
+      "@reviewrouter/features-repositories": [
+        "./packages/features/repositories/src/index.ts"
+      ],
+      "@reviewrouter/platform-db": ["./packages/platform/db/src/index.ts"],
+      "@reviewrouter/shared": ["./packages/shared/src/index.ts"]
+    }
   },
   "include": ["spikes/**/*.ts"],
   "exclude": ["node_modules", "dist", ".next"]
