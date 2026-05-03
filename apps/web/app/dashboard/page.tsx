@@ -150,6 +150,17 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
                   ))}
                 </div>
 
+                {repositories.some(
+                  (repository) => repository.visibility === "public",
+                ) ? (
+                  <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+                    Public repository warning: fork pull requests are skipped by
+                    default for secret-backed providers. Maintainers can add a
+                    trusted rerun flow later, but v1 keeps provider secrets out
+                    of untrusted fork code paths.
+                  </div>
+                ) : null}
+
                 <div className="overflow-hidden rounded-xl border border-cyan-200/10">
                   <table className="w-full text-left text-sm">
                     <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">

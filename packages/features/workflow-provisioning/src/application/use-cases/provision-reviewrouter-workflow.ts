@@ -18,6 +18,7 @@ export type ProvisionReviewRouterWorkflowDependencies = {
   readonly setupGateway: WorkflowSetupGatewayPort;
   readonly provisioning: WorkflowProvisioningRepositoryPort;
   readonly auditLog?: AuditLogRepositoryPort;
+  readonly enabled?: boolean;
 };
 
 export async function provisionReviewRouterWorkflow(
@@ -25,6 +26,33 @@ export async function provisionReviewRouterWorkflow(
   dependencies: ProvisionReviewRouterWorkflowDependencies,
 ) {
   const plan = createProvisionWorkflowPlan(input);
+  if (dependencies.enabled === false) {
+    await dependencies.provisioning.markFailed({
+      workspaceId: plan.workspaceId,
+      repositoryId: plan.repositoryId,
+      status: "failed",
+      branch: plan.setupBranch,
+      workflowPath: plan.workflowPath,
+      actionVersion: plan.actionRef,
+      pullRequestUrl: null,
+      errorMessage: "workflow_provisioning_disabled",
+    });
+    if (dependencies.auditLog) {
+      await recordAuditEvent(
+        {
+          workspaceId: plan.workspaceId,
+          actor: "system:workflow-provisioning",
+          action: "workflow.setup_pr_blocked",
+          targetType: "repository",
+          targetId: plan.repositoryId,
+          metadata: { reason: "workflow_provisioning_disabled" },
+        },
+        { auditLog: dependencies.auditLog },
+      );
+    }
+    throw new Error("workflow_provisioning_disabled");
+  }
+
   const workflowYaml = renderReviewRouterWorkflow({
     actionRef: plan.actionRef,
     apiUrl: plan.apiUrl,

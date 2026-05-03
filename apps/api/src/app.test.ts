@@ -234,4 +234,28 @@ describe("API app", () => {
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
   });
+
+  it("can disable action control plane with a kill switch", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+        controlPlaneEnabled: false,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: "action_control_plane_disabled" });
+  });
 });

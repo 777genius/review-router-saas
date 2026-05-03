@@ -86,4 +86,35 @@ describe("provisionReviewRouterWorkflow", () => {
       }),
     );
   });
+
+  it("blocks setup PR creation when workflow provisioning is disabled", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+    const auditLog = new CapturingAuditLog();
+
+    await expect(
+      provisionReviewRouterWorkflow(
+        {
+          workspaceId: "workspace-1",
+          repositoryId: "repo-1",
+          owner: "777genius",
+          name: "example",
+          defaultBranch: "main",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+        },
+        { setupGateway: gateway, provisioning, auditLog, enabled: false },
+      ),
+    ).rejects.toThrow("workflow_provisioning_disabled");
+
+    expect(gateway.input).toBeNull();
+    expect(provisioning.failed).toMatchObject({
+      status: "failed",
+      errorMessage: "workflow_provisioning_disabled",
+    });
+    expect(auditLog.events).toContainEqual(
+      expect.objectContaining({ action: "workflow.setup_pr_blocked" }),
+    );
+  });
 });

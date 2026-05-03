@@ -22,6 +22,7 @@ export type RegisterActionControlPlaneRoutesDependencies =
     GetActionRuntimeConfigDependencies &
     RecordActionHealthReportDependencies & {
       readonly oidcAudience?: string;
+      readonly controlPlaneEnabled?: boolean;
     };
 
 const exchangeBodySchema = z.object({
@@ -34,6 +35,9 @@ export async function registerActionControlPlaneRoutes(
   dependencies: RegisterActionControlPlaneRoutesDependencies,
 ): Promise<void> {
   app.post("/api/action/exchange-token", async (request, reply) => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return reply.code(503).send({ error: "action_control_plane_disabled" });
+    }
     try {
       const body = exchangeBodySchema.parse(request.body);
       const result = await exchangeGitHubOidcToken(
@@ -53,6 +57,9 @@ export async function registerActionControlPlaneRoutes(
   });
 
   app.get("/api/action/config", async (request, reply) => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return reply.code(503).send({ error: "action_control_plane_disabled" });
+    }
     try {
       const result: ActionRuntimeConfigResponse = await getActionRuntimeConfig(
         { sessionToken: readBearerToken(request) },
@@ -65,6 +72,9 @@ export async function registerActionControlPlaneRoutes(
   });
 
   app.post("/api/action/health-report", async (request, reply) => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return reply.code(503).send({ error: "action_control_plane_disabled" });
+    }
     try {
       const result = await recordActionHealthReport(
         { sessionToken: readBearerToken(request), report: request.body },

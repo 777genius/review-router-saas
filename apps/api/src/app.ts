@@ -28,6 +28,7 @@ export type CreateApiAppOptions = {
   readonly actionControlPlaneDependencies?: RegisterActionControlPlaneRoutesDependencies;
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
+  readonly actionControlPlaneEnabled?: boolean;
   readonly prisma?: PrismaClient;
 };
 
@@ -70,6 +71,9 @@ export async function createApiApp(
           clock: new SystemClock(),
           ...(options.actionOidcAudience
             ? { oidcAudience: options.actionOidcAudience }
+            : {}),
+          ...(options.actionControlPlaneEnabled === false
+            ? { controlPlaneEnabled: false }
             : {}),
         }
       : undefined);

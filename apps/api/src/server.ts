@@ -18,6 +18,9 @@ const app = await createApiApp({
   ...(process.env.REVIEW_ROUTER_ACTION_OIDC_AUDIENCE
     ? { actionOidcAudience: process.env.REVIEW_ROUTER_ACTION_OIDC_AUDIENCE }
     : {}),
+  ...(process.env.REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE === "1"
+    ? { actionControlPlaneEnabled: false }
+    : {}),
 });
 
 await app.listen({ port, host });
