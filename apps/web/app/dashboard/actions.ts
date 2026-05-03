@@ -36,6 +36,7 @@ import {
 } from "../../src/server/dashboard-mutations";
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
 import { getPrisma } from "../../src/server/prisma";
+import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
 
 export async function requestInstallationSyncAction(
   formData: FormData,
@@ -164,10 +165,7 @@ export async function createSetupPullRequestAction(
             actionRef:
               process.env.REVIEW_ROUTER_ACTION_REF ??
               "777genius/review-router@v1",
-            apiUrl:
-              process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
-              process.env.REVIEW_ROUTER_API_URL ??
-              "http://localhost:4000",
+            apiUrl: resolveWorkflowPublicApiUrl(),
             runtimeConfigMode: "oidc",
             staticRuntimeEnv,
             actor: actor.actor,
@@ -417,7 +415,14 @@ function safeDashboardErrorCode(error: unknown): string {
   ) {
     return message;
   }
-  if (message.startsWith("missing_env:")) {
+  if (
+    message.startsWith("missing_env:") ||
+    [
+      "invalid_workflow_api_url",
+      "invalid_workflow_action_ref",
+      "invalid_workflow_env_key",
+    ].includes(message)
+  ) {
     return "server_misconfigured";
   }
   if (message.startsWith("distributed_lock_not_acquired:")) {

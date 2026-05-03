@@ -32,6 +32,8 @@ repo:{repoId}:workflow-provision
 - do not use `pull_request_target` for default review execution
 - skip secret-backed provider execution for fork PRs by default
 - show permissions failure clearly
+- in production, do not create setup PRs unless the public ReviewRouter API URL
+  is explicitly configured and safe
 
 ## Tests
 
@@ -40,6 +42,8 @@ repo:{repoId}:workflow-provision
 - setup PR creation with mocked GitHub API
 - duplicate click does not create duplicate PR
 - permission error is persisted and shown
+- production API URL resolver rejects missing/unsafe URLs before workflow
+  rendering
 
 ## Done When
 

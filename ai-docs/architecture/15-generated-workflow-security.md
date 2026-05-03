@@ -101,6 +101,13 @@ Generated workflow rendering must validate values before producing YAML:
 This protects the setup PR path from accidentally turning user/config input into
 extra YAML steps or permissions.
 
+Dashboard workflow provisioning must also fail closed in production when no
+public API URL is configured. Local development may default to
+`http://localhost:4000`, but production must require
+`REVIEW_ROUTER_PUBLIC_API_URL` or `REVIEW_ROUTER_API_URL` and reject localhost,
+plain remote HTTP, credentials, query strings, and fragments before a setup PR
+is created.
+
 ## Manual Trusted Review Later
 
 Future explicit flow:
