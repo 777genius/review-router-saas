@@ -1,5 +1,8 @@
 import type { Clock } from "@reviewrouter/shared";
-import { assertSafeActionHealthReport } from "../../domain/action-control-plane.js";
+import {
+  assertSafeActionHealthReport,
+  validateActionSessionAgainstRepository,
+} from "../../domain/action-control-plane.js";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
 import type { ActionRateLimitPolicyPort } from "../ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
@@ -19,6 +22,15 @@ export async function recordActionHealthReport(
     token: input.sessionToken,
     now: dependencies.clock.now(),
   });
+  const repository =
+    await dependencies.repositories.findSelectedRepositoryByGithubId(
+      session.githubRepositoryId,
+    );
+  if (!repository) {
+    throw new Error("repository_not_registered");
+  }
+  validateActionSessionAgainstRepository({ session, repository });
+
   await dependencies.rateLimits?.assertHealthReportAllowed({
     workspaceId: session.workspaceId,
     repositoryId: session.repositoryId,

@@ -229,6 +229,30 @@ export function validateOidcClaimsAgainstRepository(input: {
   }
 }
 
+export function validateActionSessionAgainstRepository(input: {
+  readonly session: ActionSessionClaims;
+  readonly repository: ActionRepositoryContext;
+}): void {
+  const repository = input.repository;
+  if (repository.selected !== true) {
+    throw new Error("repository_not_selected");
+  }
+  if (repository.installationStatus !== "active") {
+    throw new Error("installation_not_active");
+  }
+  if (input.session.githubRepositoryId !== repository.githubRepositoryId) {
+    throw new Error("repository_id_mismatch");
+  }
+  if (input.session.repositoryId !== repository.repositoryId) {
+    throw new Error("repository_id_mismatch");
+  }
+  if (
+    input.session.repository.toLowerCase() !== repository.fullName.toLowerCase()
+  ) {
+    throw new Error("repository_name_mismatch");
+  }
+}
+
 export function buildActionOidcReplayNonceKey(
   claims: GitHubActionsOidcClaims,
 ): string {

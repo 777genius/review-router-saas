@@ -421,6 +421,22 @@ describe("action control plane", () => {
     ).rejects.toThrow("entitlement_denied:action_control_plane");
   });
 
+  it("revalidates repository state before returning runtime config", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.repository = { ...repositoryContext, selected: false };
+
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session" },
+        {
+          repositories,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("repository_not_selected");
+  });
+
   it("records safe health reports and rejects code/diff payloads", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     await recordActionHealthReport(
@@ -480,6 +496,29 @@ describe("action control plane", () => {
         githubRunAttempt: "1",
       },
     ]);
+  });
+
+  it("revalidates repository identity before accepting health reports", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.repository = {
+      ...repositoryContext,
+      fullName: "777genius/renamed-example",
+    };
+
+    await expect(
+      recordActionHealthReport(
+        {
+          sessionToken: "session",
+          report: safeHealthReport(),
+        },
+        {
+          repositories,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("repository_name_mismatch");
+    expect(repositories.healthReports).toHaveLength(0);
   });
 
   it("rejects raw health payloads with extra fields, code, secrets, or oversized content", () => {

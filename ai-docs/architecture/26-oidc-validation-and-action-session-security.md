@@ -79,12 +79,19 @@ Token claims should include:
 ```text
 workspaceId
 repoId
+githubRepositoryId
+repositoryFullName
 githubRunId
 githubRunAttempt
 protocolVersion
 exp
 aud: reviewrouter-action-api
 ```
+
+Config and health endpoints must re-read current repository state by immutable
+GitHub repository id before serving or accepting data. A valid short-lived
+session is not enough if the repository was unselected, the installation was
+removed, or the repository identity no longer matches the session.
 
 ## Fork and Unsafe Context
 
@@ -108,6 +115,7 @@ Do not return instructions that cause secret-backed provider execution in unsafe
 - repo id mismatch rejected
 - workflow ref outside `.github/workflows/reviewrouter.yml` rejected
 - removed installation rejected
+- config/health reject sessions after repository unselection or identity drift
 - missing `jti` rejected in production composition
 - duplicate `jti` rejected before rate limits/session issuance
 - fork context receives no secret-backed provider enablement
