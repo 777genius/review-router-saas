@@ -25,7 +25,9 @@ import {
 } from "@reviewrouter/features-review-config";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
+import { OctokitRepositoryWorkflowProbe } from "@reviewrouter/features-repo-health";
 import {
+  defaultWorkflowPath,
   OctokitWorkflowSetupGateway,
   PrismaWorkflowProvisioningRepository,
   PrismaWorkflowProvisioningTarget,
@@ -39,6 +41,7 @@ import {
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
 import { getPrisma } from "../../src/server/prisma";
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
+import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-readiness";
 
 export async function requestInstallationSyncAction(
   formData: FormData,
@@ -127,7 +130,10 @@ export async function createSetupPullRequestAction(
       where: { id: repositoryId },
       select: {
         workspaceId: true,
+        owner: true,
+        name: true,
         fullName: true,
+        defaultBranch: true,
         installation: {
           select: { githubInstallationId: true },
         },
@@ -151,41 +157,80 @@ export async function createSetupPullRequestAction(
     const octokit = await createGitHubAppInstallationOctokit(
       repository.installation.githubInstallationId.toString(),
     );
-    const staticRuntimeEnv = await loadStaticRuntimeEnv({
-      prisma,
-      workspaceId,
-      repositoryId,
-    });
-
-    const pullRequest = await new PostgresLeaseLock(prisma).withLock(
-      `repo:${repositoryId}:workflow-provision`,
-      5 * 60_000,
-      async () =>
-        provisionRepositoryReviewRouterWorkflow(
-          {
-            repositoryId,
-            actionRef: resolveReviewRouterActionRef(),
-            apiUrl: resolveWorkflowPublicApiUrl(),
-            runtimeConfigMode: "oidc",
-            staticRuntimeEnv,
-            actor: actor.actor,
-          },
-          {
-            targets: new PrismaWorkflowProvisioningTarget(prisma),
-            setupGateway: new OctokitWorkflowSetupGateway(octokit),
-            provisioning: new PrismaWorkflowProvisioningRepository(prisma),
-            auditLog: new PrismaAuditLogRepository(prisma),
-            enabled:
-              process.env.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING !== "0",
-          },
-        ),
+    const actionRef = resolveReviewRouterActionRef();
+    const workflowReady = await isWorkflowSetupAlreadyCurrent(
+      {
+        githubInstallationId:
+          repository.installation.githubInstallationId.toString(),
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+        actionRef,
+      },
+      {
+        workflowProbe: new OctokitRepositoryWorkflowProbe({
+          createRequester: async () => octokit,
+        }),
+      },
     );
 
-    params = {
-      notice: "setup_pr_ready",
-      repository: repository.fullName,
-      pr: pullRequest.url,
-    };
+    if (workflowReady) {
+      await recordAuditEvent(
+        {
+          workspaceId,
+          actor: actor.actor,
+          action: "workflow.setup_pr_skipped",
+          targetType: "repository",
+          targetId: repositoryId,
+          metadata: {
+            reason: "workflow_already_current",
+            actionVersion: actionRef,
+            workflowPath: defaultWorkflowPath,
+          },
+        },
+        { auditLog: new PrismaAuditLogRepository(prisma) },
+      );
+      params = {
+        notice: "workflow_already_current",
+        repository: repository.fullName,
+      };
+    } else {
+      const staticRuntimeEnv = await loadStaticRuntimeEnv({
+        prisma,
+        workspaceId,
+        repositoryId,
+      });
+
+      const pullRequest = await new PostgresLeaseLock(prisma).withLock(
+        `repo:${repositoryId}:workflow-provision`,
+        5 * 60_000,
+        async () =>
+          provisionRepositoryReviewRouterWorkflow(
+            {
+              repositoryId,
+              actionRef,
+              apiUrl: resolveWorkflowPublicApiUrl(),
+              runtimeConfigMode: "oidc",
+              staticRuntimeEnv,
+              actor: actor.actor,
+            },
+            {
+              targets: new PrismaWorkflowProvisioningTarget(prisma),
+              setupGateway: new OctokitWorkflowSetupGateway(octokit),
+              provisioning: new PrismaWorkflowProvisioningRepository(prisma),
+              auditLog: new PrismaAuditLogRepository(prisma),
+              enabled:
+                process.env.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING !== "0",
+            },
+          ),
+      );
+
+      params = {
+        notice: "setup_pr_ready",
+        repository: repository.fullName,
+        pr: pullRequest.url,
+      };
+    }
   } catch (error) {
     params = { error: safeDashboardErrorCode(error) };
   }

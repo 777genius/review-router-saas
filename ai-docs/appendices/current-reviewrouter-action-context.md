@@ -89,3 +89,22 @@ fixed in `777genius/review-router`:
 
 Keep SaaS-generated beta workflows on `@main` until a release tag is cut from a
 runtime that includes those fixes.
+
+## Latest SaaS Setup Guard Validation
+
+On 2026-05-04, the smoke repository was re-synced through the real GitHub App
+installation and probed through the SaaS repo-health path:
+
+```text
+Repo: 777genius/review-router-saas-e2e
+Installation: 129154876
+Expected action ref: 777genius/review-router@main
+Workflow check: present, expectedActionRefFound=true
+Repository sync: 245 repos seen/upserted
+```
+
+The dashboard setup action now probes the default branch before provisioning and
+skips setup PR creation when the workflow already uses the expected action ref.
+The GitHub workflow setup adapter also retries content write conflicts and
+re-reads open setup PRs after raced PR creation conflicts, so the dashboard lock
+is not the only duplicate-PR defense.

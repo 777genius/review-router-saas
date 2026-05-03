@@ -24,6 +24,16 @@ Use lock:
 repo:{repoId}:workflow-provision
 ```
 
+The GitHub adapter must still be safe when the lock is bypassed, expires, or
+two app instances race. Required adapter behavior:
+
+- tolerate an existing setup branch
+- avoid rewriting an identical workflow file
+- retry once after GitHub content write conflicts
+- re-read open setup PRs if PR creation returns a conflict/422 race
+- avoid offering dashboard setup when the default branch workflow already uses
+  the expected ReviewRouter action ref
+
 ## Safety
 
 - create PR by default

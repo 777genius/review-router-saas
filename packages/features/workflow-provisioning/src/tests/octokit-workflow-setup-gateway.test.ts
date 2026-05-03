@@ -9,8 +9,29 @@ type RequestCall = {
 
 class FakeRequester {
   public readonly calls: RequestCall[] = [];
+  private contentReadCount = 0;
+  private pullReadCount = 0;
+  private putFailureConsumed = false;
+  private postPullFailureConsumed = false;
 
-  constructor(private readonly existingWorkflowYaml: string | null) {}
+  constructor(
+    private readonly existingWorkflowYaml:
+      | string
+      | null
+      | readonly (string | null)[],
+    private readonly options: {
+      readonly pullRequestResponses?: readonly (readonly {
+        readonly html_url: string;
+        readonly number: number;
+      }[])[];
+      readonly postPullRequest?: {
+        readonly html_url: string;
+        readonly number: number;
+      };
+      readonly failPutOnceStatus?: number;
+      readonly failPostPullOnceStatus?: number;
+    } = {},
+  ) {}
 
   async request(route: string, parameters?: Record<string, unknown>) {
     this.calls.push(parameters ? { route, parameters } : { route });
@@ -22,7 +43,8 @@ class FakeRequester {
       return { data: {} };
     }
     if (route === "GET /repos/{owner}/{repo}/contents/{path}") {
-      if (this.existingWorkflowYaml === null) {
+      const existingWorkflowYaml = this.nextExistingWorkflowYaml();
+      if (existingWorkflowYaml === null) {
         throw Object.assign(new Error("not found"), { status: 404 });
       }
       return {
@@ -30,25 +52,71 @@ class FakeRequester {
           type: "file",
           sha: "workflow-sha",
           encoding: "base64",
-          content: Buffer.from(this.existingWorkflowYaml).toString("base64"),
+          content: Buffer.from(existingWorkflowYaml).toString("base64"),
         },
       };
     }
     if (route === "PUT /repos/{owner}/{repo}/contents/{path}") {
+      if (this.options.failPutOnceStatus && this.putFailureConsumed === false) {
+        this.putFailureConsumed = true;
+        throw Object.assign(new Error("write conflict"), {
+          status: this.options.failPutOnceStatus,
+        });
+      }
       return { data: {} };
     }
     if (route === "GET /repos/{owner}/{repo}/pulls") {
       return {
-        data: [
-          {
-            html_url: "https://github.com/777genius/example/pull/10",
-            number: 10,
-          },
-        ],
+        data: this.nextPullRequestResponse(),
+      };
+    }
+    if (route === "POST /repos/{owner}/{repo}/pulls") {
+      if (
+        this.options.failPostPullOnceStatus &&
+        this.postPullFailureConsumed === false
+      ) {
+        this.postPullFailureConsumed = true;
+        throw Object.assign(new Error("pull request already exists"), {
+          status: this.options.failPostPullOnceStatus,
+        });
+      }
+      return {
+        data: this.options.postPullRequest ?? {
+          html_url: "https://github.com/777genius/example/pull/11",
+          number: 11,
+        },
       };
     }
 
     throw new Error(`unexpected_route:${route}`);
+  }
+
+  private nextExistingWorkflowYaml(): string | null {
+    const values = this.existingWorkflowYaml;
+    if (typeof values === "string" || values === null) {
+      return values;
+    }
+    const index = Math.min(this.contentReadCount, values.length - 1);
+    this.contentReadCount += 1;
+    return values[index] ?? null;
+  }
+
+  private nextPullRequestResponse(): readonly {
+    readonly html_url: string;
+    readonly number: number;
+  }[] {
+    const responses = this.options.pullRequestResponses;
+    if (!responses) {
+      return [
+        {
+          html_url: "https://github.com/777genius/example/pull/10",
+          number: 10,
+        },
+      ];
+    }
+    const index = Math.min(this.pullReadCount, responses.length - 1);
+    this.pullReadCount += 1;
+    return responses[index] ?? [];
   }
 }
 
@@ -89,5 +157,61 @@ describe("OctokitWorkflowSetupGateway", () => {
       sha: "workflow-sha",
       content: Buffer.from(setupInput.workflowYaml).toString("base64"),
     });
+  });
+
+  it("re-reads workflow content once when GitHub reports a write conflict", async () => {
+    const requester = new FakeRequester([null, setupInput.workflowYaml], {
+      failPutOnceStatus: 409,
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({ number: 10 });
+
+    expect(
+      requester.calls.filter(
+        (call) => call.route === "GET /repos/{owner}/{repo}/contents/{path}",
+      ),
+    ).toHaveLength(2);
+    expect(
+      requester.calls.filter(
+        (call) => call.route === "PUT /repos/{owner}/{repo}/contents/{path}",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("re-reads open setup PRs when pull request creation races", async () => {
+    const requester = new FakeRequester(setupInput.workflowYaml, {
+      pullRequestResponses: [
+        [],
+        [
+          {
+            html_url: "https://github.com/777genius/example/pull/12",
+            number: 12,
+          },
+        ],
+      ],
+      failPostPullOnceStatus: 422,
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({
+      number: 12,
+      url: "https://github.com/777genius/example/pull/12",
+    });
+
+    expect(
+      requester.calls.filter(
+        (call) => call.route === "GET /repos/{owner}/{repo}/pulls",
+      ),
+    ).toHaveLength(2);
+    expect(
+      requester.calls.filter(
+        (call) => call.route === "POST /repos/{owner}/{repo}/pulls",
+      ),
+    ).toHaveLength(1);
   });
 });

@@ -711,6 +711,9 @@ function WorkspaceCard({
               const setupPullRequestUrl = safeGitHubDashboardLink(
                 repositoryProvisioning?.pullRequestUrl ?? "",
               );
+              const workflowCurrent = workflowSetupAlreadyCurrent(
+                repositoryHealth?.status,
+              );
               return (
                 <tr
                   key={repository.id}
@@ -766,12 +769,15 @@ function WorkspaceCard({
                         disabled={
                           !mutationsEnabled ||
                           !repository.selected ||
-                          repository.archived
+                          repository.archived ||
+                          workflowCurrent
                         }
                       >
-                        {repository.setupStatus === "setup_pr_open"
-                          ? "Update PR"
-                          : "Setup PR"}
+                        {workflowCurrent
+                          ? "Installed"
+                          : repository.setupStatus === "setup_pr_open"
+                            ? "Update PR"
+                            : "Setup PR"}
                       </Button>
                     </form>
                   </td>
@@ -1097,6 +1103,10 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return repository
         ? `Setup PR is ready for ${repository}.`
         : "Setup PR is ready.";
+    case "workflow_already_current":
+      return repository
+        ? `ReviewRouter workflow is already current for ${repository}.`
+        : "ReviewRouter workflow is already current.";
     case "review_config_saved":
       return "Review configuration was saved. Future action runs can fetch it through OIDC.";
     case "repository_review_config_saved":
@@ -1116,6 +1126,15 @@ function dashboardNoticeText(notice: string, repository: string): string {
     default:
       return "Dashboard action completed.";
   }
+}
+
+function workflowSetupAlreadyCurrent(status: string | undefined): boolean {
+  return [
+    "healthy",
+    "provider_needs_setup",
+    "provider_unhealthy",
+    "provider_report_stale",
+  ].includes(status ?? "");
 }
 
 function dashboardErrorText(error: string): string {

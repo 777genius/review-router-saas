@@ -9,7 +9,7 @@ type GitHubRequester = {
   request: (
     route: string,
     parameters?: Record<string, unknown>,
-  ) => Promise<{ data: any }>;
+  ) => Promise<{ data: unknown }>;
 };
 
 function getErrorStatus(error: unknown): number {
@@ -32,7 +32,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         ref: `heads/${input.baseBranch}`,
       },
     );
-    const sha = Array.isArray(ref.object) ? ref.object[0]?.sha : ref.object.sha;
+    const sha = parseGitRefSha(ref);
 
     try {
       await this.octokit.request("POST /repos/{owner}/{repo}/git/refs", {
@@ -45,8 +45,53 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       if (getErrorStatus(error) !== 422) throw error;
     }
 
-    let existingSha: string | undefined;
-    let existingContent: string | null = null;
+    await this.createOrUpdateWorkflowFile(input);
+
+    const pullRequest = await this.getOrCreateSetupPullRequest(input);
+
+    return {
+      url: pullRequest.html_url,
+      number: pullRequest.number,
+      branch: input.setupBranch,
+    };
+  }
+
+  private async createOrUpdateWorkflowFile(
+    input: WorkflowSetupGatewayInput,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const existing = await this.readWorkflowFile(input);
+      if (existing.content === input.workflowYaml) {
+        return;
+      }
+
+      try {
+        await this.octokit.request(
+          "PUT /repos/{owner}/{repo}/contents/{path}",
+          {
+            owner: input.owner,
+            repo: input.repo,
+            path: input.workflowPath,
+            branch: input.setupBranch,
+            ...(existing.sha ? { sha: existing.sha } : {}),
+            message: "chore: add ReviewRouter workflow",
+            content: Buffer.from(input.workflowYaml).toString("base64"),
+          },
+        );
+        return;
+      } catch (error: unknown) {
+        if (attempt === 0 && isGitHubWriteConflict(error)) {
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async readWorkflowFile(input: WorkflowSetupGatewayInput): Promise<{
+    readonly sha: string | null;
+    readonly content: string | null;
+  }> {
     try {
       const { data: existing } = await this.octokit.request(
         "GET /repos/{owner}/{repo}/contents/{path}",
@@ -57,40 +102,27 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
           ref: input.setupBranch,
         },
       );
-      if (!Array.isArray(existing) && existing.type === "file") {
-        existingSha = existing.sha;
-        existingContent = decodeBase64Content(existing.content);
-      }
+      return parseWorkflowFile(existing);
     } catch (error: unknown) {
-      if (getErrorStatus(error) !== 404) throw error;
+      if (getErrorStatus(error) === 404) {
+        return { sha: null, content: null };
+      }
+      throw error;
+    }
+  }
+
+  private async getOrCreateSetupPullRequest(
+    input: WorkflowSetupGatewayInput,
+  ): Promise<GitHubPullRequest> {
+    const existing = await this.findOpenSetupPullRequest(input);
+    if (existing) {
+      return existing;
     }
 
-    if (existingContent !== input.workflowYaml) {
-      await this.octokit.request("PUT /repos/{owner}/{repo}/contents/{path}", {
-        owner: input.owner,
-        repo: input.repo,
-        path: input.workflowPath,
-        branch: input.setupBranch,
-        sha: existingSha,
-        message: "chore: add ReviewRouter workflow",
-        content: Buffer.from(input.workflowYaml).toString("base64"),
-      });
-    }
-
-    const existingPrs = await this.octokit.request(
-      "GET /repos/{owner}/{repo}/pulls",
-      {
-        owner: input.owner,
-        repo: input.repo,
-        head: `${input.owner}:${input.setupBranch}`,
-        state: "open",
-      },
-    );
-
-    const pullRequest =
-      existingPrs.data[0] ??
-      (
-        await this.octokit.request("POST /repos/{owner}/{repo}/pulls", {
+    try {
+      const { data } = await this.octokit.request(
+        "POST /repos/{owner}/{repo}/pulls",
+        {
           owner: input.owner,
           repo: input.repo,
           title: "chore: add ReviewRouter workflow",
@@ -105,15 +137,101 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
             "- skips secret-backed review for fork pull requests by default",
             "- uses GitHub OIDC for SaaS runtime config",
           ].join("\n"),
-        })
-      ).data;
-
-    return {
-      url: pullRequest.html_url,
-      number: pullRequest.number,
-      branch: input.setupBranch,
-    };
+        },
+      );
+      return parsePullRequest(data);
+    } catch (error: unknown) {
+      if (!isGitHubWriteConflict(error)) {
+        throw error;
+      }
+      const racedPullRequest = await this.findOpenSetupPullRequest(input);
+      if (racedPullRequest) {
+        return racedPullRequest;
+      }
+      throw error;
+    }
   }
+
+  private async findOpenSetupPullRequest(
+    input: WorkflowSetupGatewayInput,
+  ): Promise<GitHubPullRequest | null> {
+    const { data } = await this.octokit.request(
+      "GET /repos/{owner}/{repo}/pulls",
+      {
+        owner: input.owner,
+        repo: input.repo,
+        head: `${input.owner}:${input.setupBranch}`,
+        state: "open",
+      },
+    );
+    return Array.isArray(data) && data[0] ? parsePullRequest(data[0]) : null;
+  }
+}
+
+type GitHubPullRequest = {
+  readonly html_url: string;
+  readonly number: number;
+};
+
+function parseWorkflowFile(data: unknown): {
+  readonly sha: string | null;
+  readonly content: string | null;
+} {
+  if (Array.isArray(data) || typeof data !== "object" || data === null) {
+    return { sha: null, content: null };
+  }
+  const file = data as {
+    readonly type?: unknown;
+    readonly sha?: unknown;
+    readonly content?: unknown;
+  };
+  if (file.type !== "file" || typeof file.sha !== "string") {
+    return { sha: null, content: null };
+  }
+  return {
+    sha: file.sha,
+    content: decodeBase64Content(file.content),
+  };
+}
+
+function parseGitRefSha(data: unknown): string {
+  if (typeof data !== "object" || data === null) {
+    throw new Error("github_ref_response_invalid");
+  }
+  const ref = data as { readonly object?: unknown };
+  const object = Array.isArray(ref.object) ? ref.object[0] : ref.object;
+  if (typeof object !== "object" || object === null) {
+    throw new Error("github_ref_response_invalid");
+  }
+  const gitObject = object as { readonly sha?: unknown };
+  if (typeof gitObject.sha !== "string") {
+    throw new Error("github_ref_response_invalid");
+  }
+  return gitObject.sha;
+}
+
+function parsePullRequest(data: unknown): GitHubPullRequest {
+  if (typeof data !== "object" || data === null) {
+    throw new Error("github_pull_request_response_invalid");
+  }
+  const pullRequest = data as {
+    readonly html_url?: unknown;
+    readonly number?: unknown;
+  };
+  if (
+    typeof pullRequest.html_url !== "string" ||
+    typeof pullRequest.number !== "number"
+  ) {
+    throw new Error("github_pull_request_response_invalid");
+  }
+  return {
+    html_url: pullRequest.html_url,
+    number: pullRequest.number,
+  };
+}
+
+function isGitHubWriteConflict(error: unknown): boolean {
+  return [409, 422].includes(getErrorStatus(error));
 }
 
 function decodeBase64Content(content: unknown): string | null {

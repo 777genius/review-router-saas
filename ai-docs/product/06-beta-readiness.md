@@ -26,7 +26,7 @@
 - backup restore tested once
 - webhook signature verification tested
 - duplicate webhook test
-- workflow provisioning concurrency test
+- workflow provisioning concurrency test for GitHub write conflicts and raced PR creation
 - OIDC token reject tests
 - generated workflow security snapshot test
 
@@ -44,5 +44,5 @@
 - storing Codex OAuth in SaaS
 - storing repo code/diff in SaaS
 - unscoped repository access bug
-- setup PR can be duplicated by repeated clicks
+- setup PR can be duplicated by repeated clicks or GitHub API races
 - invalid webhook signature accepted
