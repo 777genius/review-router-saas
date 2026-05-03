@@ -59,26 +59,32 @@ SaaS owns:
 
 ## Latest Real E2E Validation
 
-On 2026-05-03, the separate action runtime was validated against a real public
-smoke repository:
+On 2026-05-03, the SaaS provisioning path and separate action runtime were
+validated against a real public smoke repository:
 
 ```text
 Repo: 777genius/review-router-saas-e2e
-PR: https://github.com/777genius/review-router-saas-e2e/pull/2
-Run: https://github.com/777genius/review-router-saas-e2e/actions/runs/25291239594
+Setup PR: https://github.com/777genius/review-router-saas-e2e/pull/3
+Setup result: merged generated workflow update from @v1 to @main
+Health check: expectedActionRefFound=true for 777genius/review-router@main
+
+Clean smoke PR: https://github.com/777genius/review-router-saas-e2e/pull/4
+Run: https://github.com/777genius/review-router-saas-e2e/actions/runs/25291639232
 Action ref: 777genius/review-router@main
+Action SHA: 37a04a039951ecf342f6221af3438105399e00ff
 Provider: Codex OAuth subscription, gpt-5.4-mini
 Result: workflow failed intentionally with 1 critical finding
 Inline: github-actions[bot] commented on auth.js:5
 ```
 
-The earlier run against the same PR proved setup/auth worked but exposed a
-runtime bug: Codex produced one finding and the post-processing filter dropped
-it. The action runtime was fixed in `777genius/review-router`:
+Earlier real runs proved setup/auth worked but exposed runtime bugs where Codex
+produced one finding and post-processing dropped it. The action runtime was
+fixed in `777genius/review-router`:
 
 ```text
 18a224e fix: preserve authentication bypass findings
 45a5813 fix: harden auth query finding classification
+37a04a0 fix: keep privileged default user findings
 ```
 
 Keep SaaS-generated beta workflows on `@main` until a release tag is cut from a
