@@ -51,6 +51,14 @@ Expected result:
 Local readiness check passed.
 ```
 
+Start local services with the root scripts so `.env.local` is injected from the repository root:
+
+```bash
+pnpm web:dev
+pnpm api:dev
+pnpm worker:dev
+```
+
 ## Human Action 1 - Create Local GitHub App
 
 Create a GitHub App for local development:

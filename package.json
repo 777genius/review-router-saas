@@ -4,7 +4,10 @@
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "dev": "turbo run dev --parallel",
+    "dev": "node scripts/run-with-env.mjs turbo run dev --parallel",
+    "web:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/web dev",
+    "api:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/api dev",
+    "worker:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/worker dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck && tsc --noEmit -p tsconfig.spikes.json",
     "test": "vitest run",
