@@ -14,5 +14,8 @@ export async function linkGitHubIdentity(
 ): Promise<AuthenticatedPrincipal> {
   const principal = await dependencies.users.upsertGitHubUser(identity);
   await dependencies.memberships?.ensurePersonalWorkspaceOwner(principal);
+  await dependencies.memberships?.ensureGitHubUserInstallationWorkspaceOwners(
+    principal,
+  );
   return principal;
 }

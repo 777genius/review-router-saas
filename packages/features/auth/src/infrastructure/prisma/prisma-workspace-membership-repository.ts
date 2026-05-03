@@ -43,6 +43,66 @@ export class PrismaWorkspaceMembershipRepository implements WorkspaceMembershipR
       },
     });
 
-    return { workspaceId: workspace.id, role: "owner" };
+    return {
+      workspaceId: workspace.id,
+      workspaceSlug: workspace.slug,
+      role: "owner",
+      source: "personal",
+    };
+  }
+
+  async ensureGitHubUserInstallationWorkspaceOwners(
+    principal: AuthenticatedPrincipal,
+  ): Promise<readonly WorkspaceMembership[]> {
+    const installations = await this.prisma.gitHubInstallation.findMany({
+      where: {
+        accountType: "User",
+        status: "active",
+        accountLogin: {
+          equals: principal.githubLogin,
+          mode: "insensitive",
+        },
+      },
+      select: {
+        workspace: {
+          select: {
+            id: true,
+            slug: true,
+          },
+        },
+      },
+    });
+
+    const memberships: WorkspaceMembership[] = [];
+    for (const installation of installations) {
+      const workspaceId = installation.workspace.id;
+      await this.prisma.workspaceMember.upsert({
+        where: {
+          workspaceId_userId: {
+            workspaceId,
+            userId: principal.userId,
+          },
+        },
+        update: {
+          githubLogin: principal.githubLogin,
+          role: "owner",
+        },
+        create: {
+          workspaceId,
+          userId: principal.userId,
+          githubLogin: principal.githubLogin,
+          role: "owner",
+        },
+      });
+
+      memberships.push({
+        workspaceId,
+        workspaceSlug: installation.workspace.slug,
+        role: "owner",
+        source: "github_user_installation",
+      });
+    }
+
+    return memberships;
   }
 }

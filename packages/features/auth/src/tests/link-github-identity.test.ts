@@ -28,16 +28,31 @@ class InMemoryUserRepository implements UserRepositoryPort {
 }
 
 class InMemoryMembershipRepository implements WorkspaceMembershipRepositoryPort {
-  public calls = 0;
+  public personalWorkspaceOwnerCalls = 0;
+  public installationWorkspaceOwnerCalls = 0;
 
   async ensurePersonalWorkspaceOwner(
     principal: AuthenticatedPrincipal,
   ): Promise<WorkspaceMembership> {
-    this.calls += 1;
+    this.personalWorkspaceOwnerCalls += 1;
     return {
       workspaceId: `workspace-${principal.githubUserId}`,
       role: "owner",
+      source: "personal",
     };
+  }
+
+  async ensureGitHubUserInstallationWorkspaceOwners(
+    principal: AuthenticatedPrincipal,
+  ): Promise<readonly WorkspaceMembership[]> {
+    this.installationWorkspaceOwnerCalls += 1;
+    return [
+      {
+        workspaceId: `gh-user-installation-${principal.githubLogin}`,
+        role: "owner",
+        source: "github_user_installation",
+      },
+    ];
   }
 }
 
@@ -57,6 +72,7 @@ describe("linkGitHubIdentity", () => {
 
     expect(renamed.userId).toBe(first.userId);
     expect(renamed.githubLogin).toBe("new-login");
-    expect(memberships.calls).toBe(2);
+    expect(memberships.personalWorkspaceOwnerCalls).toBe(2);
+    expect(memberships.installationWorkspaceOwnerCalls).toBe(2);
   });
 });
