@@ -1,0 +1,48 @@
+import type { PrismaClient } from "@prisma/client";
+import type {
+  RepositoryWorkflowProvisioningSummary,
+  WorkflowProvisioningQueryPort,
+} from "../../application/ports/workflow-provisioning-query-port";
+
+export class PrismaWorkflowProvisioningQuery implements WorkflowProvisioningQueryPort {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async listLatestForRepositories(input: {
+    readonly workspaceId: string;
+    readonly repositoryIds: readonly string[];
+  }): Promise<readonly RepositoryWorkflowProvisioningSummary[]> {
+    if (input.repositoryIds.length === 0) {
+      return [];
+    }
+
+    const rows = await this.prisma.workflowProvisioning.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        repositoryId: { in: [...input.repositoryIds] },
+      },
+      orderBy: [{ repositoryId: "asc" }, { updatedAt: "desc" }],
+    });
+
+    const latestByRepository = new Map<
+      string,
+      RepositoryWorkflowProvisioningSummary
+    >();
+    for (const row of rows) {
+      if (latestByRepository.has(row.repositoryId)) {
+        continue;
+      }
+      latestByRepository.set(row.repositoryId, {
+        repositoryId: row.repositoryId,
+        status: row.status,
+        branch: row.branch,
+        workflowPath: row.workflowPath,
+        actionVersion: row.actionVersion,
+        pullRequestUrl: row.pullRequestUrl,
+        errorMessage: row.errorMessage,
+        updatedAt: row.updatedAt,
+      });
+    }
+
+    return [...latestByRepository.values()];
+  }
+}

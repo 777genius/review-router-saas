@@ -108,6 +108,11 @@ public API URL is configured. Local development may default to
 plain remote HTTP, credentials, query strings, and fragments before a setup PR
 is created.
 
+Workflow provisioning failures stored in DB/audit must be safe summaries, not
+raw adapter exception text. GitHub API failures should be reduced to status
+categories such as `github_api_error:403`; raw messages can contain request
+context and must stay out of dashboard-visible state.
+
 ## Manual Trusted Review Later
 
 Future explicit flow:

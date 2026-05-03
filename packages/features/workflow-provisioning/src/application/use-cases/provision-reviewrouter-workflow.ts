@@ -105,7 +105,7 @@ export async function provisionReviewRouterWorkflow(
 
     return pullRequest;
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = safeWorkflowProvisioningErrorSummary(error);
     await dependencies.provisioning.markFailed({
       workspaceId: plan.workspaceId,
       repositoryId: plan.repositoryId,
@@ -136,4 +136,31 @@ export async function provisionReviewRouterWorkflow(
     }
     throw error;
   }
+}
+
+function safeWorkflowProvisioningErrorSummary(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (
+    [
+      "invalid_workflow_action_ref",
+      "invalid_workflow_api_url",
+      "invalid_workflow_env_key",
+      "workflow_provisioning_disabled",
+    ].includes(message)
+  ) {
+    return message;
+  }
+
+  const status = getHttpStatus(error);
+  if (status >= 400 && status <= 599) {
+    return `github_api_error:${status}`;
+  }
+
+  return "workflow_provisioning_failed";
+}
+
+function getHttpStatus(error: unknown): number {
+  return typeof error === "object" && error !== null && "status" in error
+    ? Number(error.status)
+    : 0;
 }

@@ -21,8 +21,13 @@ import { provisionReviewRouterWorkflow } from "../application/use-cases/provisio
 class CapturingSetupGateway implements WorkflowSetupGatewayPort {
   public input: WorkflowSetupGatewayInput | null = null;
 
+  constructor(private readonly failure: Error | null = null) {}
+
   async createOrUpdateSetupPullRequest(input: WorkflowSetupGatewayInput) {
     this.input = input;
+    if (this.failure) {
+      throw this.failure;
+    }
     return {
       url: "https://github.com/777genius/example/pull/1",
       number: 1,
@@ -150,6 +155,40 @@ describe("provisionReviewRouterWorkflow", () => {
     expect(auditLog.events).toContainEqual(
       expect.objectContaining({ action: "workflow.setup_pr_blocked" }),
     );
+  });
+
+  it("persists safe GitHub failure summaries without raw adapter details", async () => {
+    const rawToken = "ghs_sensitive_token";
+    const gateway = new CapturingSetupGateway(
+      Object.assign(new Error(`GitHub failed with ${rawToken}`), {
+        status: 403,
+      }),
+    );
+    const provisioning = new CapturingProvisioningRepository();
+    const auditLog = new CapturingAuditLog();
+
+    await expect(
+      provisionReviewRouterWorkflow(
+        {
+          workspaceId: "workspace-1",
+          repositoryId: "repo-1",
+          owner: "777genius",
+          name: "example",
+          defaultBranch: "main",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+        },
+        { setupGateway: gateway, provisioning, auditLog },
+      ),
+    ).rejects.toThrow(rawToken);
+
+    expect(provisioning.failed?.errorMessage).toBe("github_api_error:403");
+    expect(auditLog.events[0]?.metadata).toMatchObject({
+      errorSummary: "github_api_error:403",
+    });
+    expect(JSON.stringify(provisioning.failed)).not.toContain(rawToken);
+    expect(JSON.stringify(auditLog.events)).not.toContain(rawToken);
   });
 
   it("provisions by repository id after validating target state", async () => {

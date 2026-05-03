@@ -15,6 +15,10 @@ import {
   PrismaOutboxEventRepository,
 } from "@reviewrouter/features-outbox";
 import {
+  listRepositoryWorkflowProvisioning,
+  PrismaWorkflowProvisioningQuery,
+} from "@reviewrouter/features-workflow-provisioning";
+import {
   findReviewConfiguration,
   PrismaReviewConfigurationRepository,
   safeDefaultReviewConfiguration,
@@ -120,6 +124,9 @@ async function loadDashboardData(
         health: readonly Awaited<
           ReturnType<typeof listWorkspaceRepositoryHealth>
         >[number][];
+        provisioning: readonly Awaited<
+          ReturnType<typeof listRepositoryWorkflowProvisioning>
+        >[number][];
         entitlement: ReturnType<typeof freeBetaEntitlement>;
         reviewConfig: Awaited<ReturnType<typeof findReviewConfiguration>>;
         outboxFailures: Awaited<ReturnType<typeof listWorkspaceOutboxFailures>>;
@@ -151,6 +158,13 @@ async function loadDashboardData(
           { workspaceId: workspace.id, limit: 5 },
           { outbox: outboxStore },
         );
+        const provisioning = await listRepositoryWorkflowProvisioning(
+          {
+            workspaceId: workspace.id,
+            repositoryIds: repositories.map((repository) => repository.id),
+          },
+          { provisioning: new PrismaWorkflowProvisioningQuery(prisma) },
+        );
 
         return {
           workspace: {
@@ -166,6 +180,7 @@ async function loadDashboardData(
           },
           repositoryCount: repositories.length,
           repositories: repositories.slice(0, 8),
+          provisioning,
           entitlement,
           health,
           reviewConfig,
@@ -280,6 +295,7 @@ function WorkspaceCard({
     repositories,
     entitlement,
     health,
+    provisioning,
     outboxFailures,
   } = data;
   const activeConfig =
@@ -576,6 +592,12 @@ function WorkspaceCard({
               const repositoryHealth = health.find(
                 (item) => item.repositoryId === repository.id,
               );
+              const repositoryProvisioning = provisioning.find(
+                (item) => item.repositoryId === repository.id,
+              );
+              const setupPullRequestUrl = safeGitHubDashboardLink(
+                repositoryProvisioning?.pullRequestUrl ?? "",
+              );
               return (
                 <tr
                   key={repository.id}
@@ -586,7 +608,24 @@ function WorkspaceCard({
                   </td>
                   <td className="px-4 py-3">{repository.visibility}</td>
                   <td className="px-4 py-3">{repository.defaultBranch}</td>
-                  <td className="px-4 py-3">{repository.setupStatus}</td>
+                  <td className="px-4 py-3">
+                    <span className="block">{repository.setupStatus}</span>
+                    {setupPullRequestUrl ? (
+                      <a
+                        className="text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                        href={setupPullRequestUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open setup PR
+                      </a>
+                    ) : null}
+                    {repositoryProvisioning?.errorMessage ? (
+                      <span className="block text-xs text-red-200">
+                        {repositoryProvisioning.errorMessage.slice(0, 120)}
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-3">
                     <span className="block text-cyan-100">
                       {repositoryHealth?.status ?? "unknown"}
@@ -827,7 +866,7 @@ function dashboardErrorText(error: string): string {
     case "rate_limited":
       return "Too many dashboard requests for this resource. Wait a bit before retrying.";
     case "server_misconfigured":
-      return "Server GitHub App credentials are missing. Check local environment settings.";
+      return "Server setup is incomplete. Check GitHub App credentials and the public ReviewRouter API URL.";
     case "repository_not_selected":
       return "This repository is no longer selected for the GitHub App installation.";
     case "repository_archived":
