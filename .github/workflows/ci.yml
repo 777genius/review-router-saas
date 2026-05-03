@@ -98,6 +98,27 @@ jobs:
       - name: GitHub/OIDC contract tests
         run: pnpm spike:test
 
+      - name: Webhook lifecycle DB E2E
+        run: node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
+
+      - name: Outbox maintenance DB E2E
+        run: node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
+
+      - name: Rate limit DB E2E
+        run: node scripts/run-with-env.mjs pnpm spike:rate-limit:e2e
+
+      - name: Distributed lock DB E2E
+        run: node scripts/run-with-env.mjs pnpm spike:distributed-lock:e2e
+
+      - name: Review config DB E2E
+        run: node scripts/run-with-env.mjs pnpm spike:review-config:e2e
+
+      - name: Action control plane DB E2E
+        run: node scripts/run-with-env.mjs pnpm spike:action:e2e
+
+      - name: Support diagnostics DB E2E
+        run: node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
+
       - name: Lint
         run: pnpm lint
 
