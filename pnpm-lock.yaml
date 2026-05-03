@@ -204,6 +204,9 @@ importers:
       '@reviewrouter/features-review-config':
         specifier: workspace:*
         version: link:../../packages/features/review-config
+      '@reviewrouter/features-support-diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/features/support-diagnostics
       '@reviewrouter/features-workflow-provisioning':
         specifier: workspace:*
         version: link:../../packages/features/workflow-provisioning
@@ -411,6 +414,15 @@ importers:
       zod:
         specifier: ^4.4.2
         version: 4.4.2
+
+  packages/features/support-diagnostics:
+    dependencies:
+      '@prisma/client':
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-audit-log':
+        specifier: workspace:*
+        version: link:../audit-log
 
   packages/features/system-health:
     dependencies:

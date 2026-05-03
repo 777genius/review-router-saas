@@ -9,6 +9,7 @@ import {
   freeBetaEntitlement,
   PrismaEntitlementRepository,
 } from "@reviewrouter/features-entitlements";
+import { PrismaAuditLogRepository } from "@reviewrouter/features-audit-log";
 import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import {
   listWorkspaceOutboxFailures,
@@ -24,6 +25,10 @@ import {
   safeDefaultReviewConfiguration,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import {
+  getWorkspaceSupportDiagnostics,
+  PrismaSupportDiagnosticsRepository,
+} from "@reviewrouter/features-support-diagnostics";
 import type { ProviderSecretKind } from "@reviewrouter/features-provider-setup";
 import {
   createGitHubAppInstallationOctokit,
@@ -65,6 +70,10 @@ type DashboardWorkspace = {
 
 async function loadDashboardData(
   scope: Awaited<ReturnType<typeof getDashboardWorkspaceScope>>,
+  supportAudit?: {
+    readonly actor: string;
+    readonly reason: "local_admin_override" | "workspace_admin";
+  },
 ) {
   if (scope.kind === "none") {
     return [];
@@ -112,6 +121,7 @@ async function loadDashboardData(
   const entitlementStore = new PrismaEntitlementRepository(prisma);
   const reviewConfigStore = new PrismaReviewConfigurationRepository(prisma);
   const outboxStore = new PrismaOutboxEventRepository(prisma);
+  const diagnosticsStore = new PrismaSupportDiagnosticsRepository(prisma);
 
   return Promise.all(
     workspaces.map(
@@ -136,6 +146,9 @@ async function loadDashboardData(
           readonly config: Awaited<ReturnType<typeof findReviewConfiguration>>;
         }[];
         outboxFailures: Awaited<ReturnType<typeof listWorkspaceOutboxFailures>>;
+        supportDiagnostics: Awaited<
+          ReturnType<typeof getWorkspaceSupportDiagnostics>
+        >;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -184,6 +197,19 @@ async function loadDashboardData(
           },
           { provisioning: new PrismaWorkflowProvisioningQuery(prisma) },
         );
+        const supportDiagnostics = await getWorkspaceSupportDiagnostics(
+          {
+            workspaceId: workspace.id,
+            checkedAt: new Date(),
+            ...(supportAudit ? { audit: supportAudit } : {}),
+          },
+          {
+            diagnostics: diagnosticsStore,
+            ...(supportAudit
+              ? { auditLog: new PrismaAuditLogRepository(prisma) }
+              : {}),
+          },
+        );
 
         return {
           workspace: {
@@ -205,6 +231,7 @@ async function loadDashboardData(
           reviewConfig,
           repositoryConfigs,
           outboxFailures,
+          supportDiagnostics,
         };
       },
     ),
@@ -237,7 +264,16 @@ export default async function DashboardPage({
     getDashboardMutationStatus(),
     getDashboardWorkspaceScope(),
   ]);
-  const workspaces = await loadDashboardData(workspaceScope);
+  const supportAudit =
+    workspaceScope.kind === "all" &&
+    workspaceScope.reason === "local_admin_override" &&
+    mutationStatus.githubLogin
+      ? {
+          actor: `support:${mutationStatus.githubLogin}`,
+          reason: "local_admin_override" as const,
+        }
+      : undefined;
+  const workspaces = await loadDashboardData(workspaceScope, supportAudit);
   const params = searchParams ? await searchParams : {};
   const appInstallUrl = getGitHubAppInstallUrl();
 
@@ -318,6 +354,7 @@ function WorkspaceCard({
     provisioning,
     repositoryConfigs,
     outboxFailures,
+    supportDiagnostics,
   } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
@@ -552,6 +589,45 @@ function WorkspaceCard({
         </div>
       ) : null}
 
+      {supportDiagnostics ? (
+        <div className="rounded-xl border border-magenta-300/20 bg-fuchsia-400/10 p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <Badge tone="accent">Support diagnostics</Badge>
+            <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+              metadata only / no code, diffs, prompts, or secrets
+            </span>
+          </div>
+          <div className="grid gap-3 text-sm md:grid-cols-4">
+            <SupportMetric
+              label="Repositories"
+              value={`${supportDiagnostics.repositoryCounts.selected}/${supportDiagnostics.repositoryCounts.total}`}
+              hint={`${supportDiagnostics.repositoryCounts.notConfigured} missing workflow`}
+            />
+            <SupportMetric
+              label="Provider"
+              value={`${supportDiagnostics.providerCounts.configured} configured`}
+              hint={`${supportDiagnostics.providerCounts.missing + supportDiagnostics.providerCounts.staleOrInvalid} need setup`}
+            />
+            <SupportMetric
+              label="Outbox"
+              value={`${supportDiagnostics.outboxCounts.deadLetter} dead-letter`}
+              hint={`${supportDiagnostics.outboxCounts.pending} pending`}
+            />
+            <SupportMetric
+              label="Workflow PRs"
+              value={`${supportDiagnostics.workflowProvisioningCounts.setup_pr_open ?? 0} open`}
+              hint={`${supportDiagnostics.workflowProvisioningCounts.failed ?? 0} failed`}
+            />
+          </div>
+          {supportDiagnostics.recentAuditActions.length > 0 ? (
+            <p className="mt-3 text-xs leading-5 text-slate-400">
+              Recent audit actions:{" "}
+              {supportDiagnostics.recentAuditActions.slice(0, 4).join(", ")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Badge tone={outboxFailures.length > 0 ? "warning" : "success"}>
@@ -732,6 +808,26 @@ function WorkspaceCard({
         )}
       </div>
     </Card>
+  );
+}
+
+function SupportMetric({
+  label,
+  value,
+  hint,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly hint: string;
+}): React.ReactElement {
+  return (
+    <div className="rounded-lg border border-fuchsia-200/10 bg-slate-950/70 p-3">
+      <p className="text-xs uppercase tracking-[0.16em] text-fuchsia-100">
+        {label}
+      </p>
+      <p className="mt-2 text-lg font-semibold text-cyan-50">{value}</p>
+      <p className="mt-1 text-xs text-slate-400">{hint}</p>
+    </div>
   );
 }
 

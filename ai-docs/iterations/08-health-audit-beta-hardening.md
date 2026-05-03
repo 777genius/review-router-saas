@@ -31,6 +31,23 @@ Make the product understandable and supportable for beta users.
 - support can debug without reading code or secrets
 - support/admin access is audited
 
+## Support Diagnostics Baseline
+
+- `features-support-diagnostics` exposes a metadata-only workspace diagnostics
+  read model through a repository port.
+- The diagnostics snapshot summarizes installation states, repository setup
+  states, provider setup/health counts, workflow provisioning states, outbox
+  dead letters, and recent audit action names.
+- It intentionally excludes repository code, diffs, prompts, model responses,
+  provider secrets, webhook raw payloads, and raw workflow YAML.
+- When loaded through local admin override, dashboard records
+  `support.diagnostics_viewed` with counts only.
+- Local DB smoke:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
+```
+
 ## Implemented Baseline
 
 - Repository health evaluates setup status, workflow presence, expected action ref, provider setup state, and latest provider runtime health.

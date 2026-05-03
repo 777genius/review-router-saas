@@ -17,7 +17,7 @@ export function renderReviewRouterWorkflow(
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => {
       assertSafeEnvKey(key);
-      return `          ${key}: ${JSON.stringify(value)}`;
+      return `      ${key}: ${JSON.stringify(value)}`;
     })
     .join("\n");
   const staticRuntimeEnvBlock = staticRuntimeEnv ? `\n${staticRuntimeEnv}` : "";
@@ -27,9 +27,6 @@ export function renderReviewRouterWorkflow(
       - name: Fetch ReviewRouter runtime config
         if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         shell: bash
-        env:
-          REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
-          REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
         run: |
           set -euo pipefail
           if [ -z "\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "\${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
@@ -58,6 +55,11 @@ jobs:
     name: review
     runs-on: ubuntu-latest
     if: \${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    env:
+      REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
+      REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
+      REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
+      REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
     steps:
       - name: Checkout pull request code
         uses: actions/checkout@v6
@@ -69,14 +71,50 @@ jobs:
         shell: bash
         run: |
           echo "ReviewRouter skipped this fork pull request because secret-backed provider execution is disabled by default."
+
+      - name: Setup Node.js for Codex CLI
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Codex CLI
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        shell: bash
+        run: npm install -g @openai/codex@0.125.0
+
+      - name: Restore Codex subscription auth
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.REVIEW_AUTH_MODE == 'codex-oauth' }}
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+        run: |
+          set -euo pipefail
+          if [ -z "\${CODEX_AUTH_JSON:-}" ]; then
+            echo "::error::CODEX_AUTH_JSON secret is missing. Re-seed Codex auth from a trusted machine or switch this repository to OpenAI API-key mode."
+            exit 1
+          fi
+          export CODEX_HOME="\${CODEX_HOME:-$HOME/.codex}"
+          mkdir -p "$CODEX_HOME"
+          chmod 700 "$CODEX_HOME"
+          printf '%s' "$CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"
+          chmod 600 "$CODEX_HOME/auth.json"
+          if [ -n "\${CODEX_CONFIG_TOML:-}" ]; then
+            printf '%s' "$CODEX_CONFIG_TOML" > "$CODEX_HOME/config.toml"
+            chmod 600 "$CODEX_HOME/config.toml"
+          fi
+
 ${oidcStep}      - name: Run ReviewRouter
         if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: ${options.actionRef}
         env:
-          REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
-          REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
-          REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
-          REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
+          GITHUB_TOKEN: \${{ github.token }}
+          PR_NUMBER: \${{ github.event.pull_request.number }}
+          CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+          OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
 `;
 }
 

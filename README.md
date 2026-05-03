@@ -67,6 +67,7 @@ Database and protocol smoke:
 pnpm db:migrate:smoke
 node scripts/run-with-env.mjs pnpm spike:action:e2e
 node scripts/run-with-env.mjs pnpm spike:review-config:e2e
+node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
 node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
 node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
 ```

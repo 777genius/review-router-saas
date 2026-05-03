@@ -28,6 +28,7 @@ Every pull request and `main` push must run:
 - unit tests
 - GitHub/OIDC contract tests that do not require real secrets
 - local DB smoke for repository config override -> clear -> workspace fallback
+- local DB smoke for support diagnostics access audit and safe metadata summary
 - lint
 - format check
 - typecheck

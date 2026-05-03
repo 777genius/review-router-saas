@@ -15,6 +15,7 @@ describe("renderReviewRouterWorkflow", () => {
 
     expect(workflow).toContain("pull_request:");
     expect(workflow).not.toContain("pull_request_target");
+    expect(workflow).not.toContain("env:\n        run:");
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain(
@@ -27,8 +28,26 @@ describe("renderReviewRouterWorkflow", () => {
       "github.event_name != 'pull_request' || github.event.pull_request.draft == false",
     );
     expect(workflow).toContain("uses: 777genius/review-router@v1");
+    expect(workflow).toContain("uses: actions/setup-node@v6");
+    expect(workflow).toContain('node-version: "24"');
+    expect(workflow).toContain("npm install -g @openai/codex@0.125.0");
+    expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
+    expect(workflow).toContain(
+      "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
+    );
+    expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
+    expect(workflow).toContain(
+      "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}",
+    );
+    expect(workflow).toContain(
+      "CODEX_AUTH_JSON secret is missing. Re-seed Codex auth",
+    );
     expect(workflow).toContain(
       'REVIEWROUTER_API_URL: "https://app.reviewrouter.dev"',
+    );
+    expect(workflow).toContain("GITHUB_TOKEN: ${{ github.token }}");
+    expect(workflow).toContain(
+      "PR_NUMBER: ${{ github.event.pull_request.number }}",
     );
     expect(workflow).toContain('REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"');
     expect(workflow).toContain('REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"');
