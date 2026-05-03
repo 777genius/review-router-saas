@@ -78,6 +78,7 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
       seen: input.repositories.length,
       upserted: input.repositories.length,
       unselected: unselected.count,
+      skippedDueToLimit: 0,
     };
   }
 

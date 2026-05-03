@@ -41,6 +41,9 @@ export function createInstallationSyncRequestedHandler(
         github: dependencies.github,
         repositories: dependencies.repositories,
         clock: dependencies.clock,
+        ...(dependencies.syncPolicy
+          ? { syncPolicy: dependencies.syncPolicy }
+          : {}),
       });
     },
   };

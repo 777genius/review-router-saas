@@ -38,6 +38,9 @@ export default function TermsPage(): React.ReactElement {
             <LinkButton href="/support" variant="ghost">
               Support
             </LinkButton>
+            <LinkButton href="/fair-use" variant="ghost">
+              Fair use
+            </LinkButton>
           </div>
         </div>
 

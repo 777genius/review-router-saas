@@ -80,6 +80,7 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - trusted-beta support page with safe report template and secret redaction rules
 - trusted-beta privacy, terms, and status draft pages
 - trusted-beta disconnect page covering App uninstall, workflow cleanup, secret deletion, and workspace deletion request path
+- trusted-beta fair-use page and deterministic repository sync cap
 
 ## Remaining Before Public Launch
 
@@ -89,7 +90,7 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - run one restore drill against the chosen production backup target
 - replace beta draft legal/status pages with reviewed production text
 - define production support contact and hosted incident status channel
-- decide public beta limits and abuse policy text
+- tune public beta limits after trusted tester feedback
 
 ## Not Required For First Private Beta
 

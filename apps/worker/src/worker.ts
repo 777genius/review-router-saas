@@ -127,6 +127,12 @@ function createOutboxHandlers(
       }),
       repositories: new PrismaRepositoryConnectionRepository(prisma),
       clock,
+      syncPolicy: {
+        maxRepositories: readPositiveIntegerEnv(
+          "REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC",
+          250,
+        ),
+      },
     }),
   ];
 }

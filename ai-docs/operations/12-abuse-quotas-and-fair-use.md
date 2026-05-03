@@ -9,12 +9,12 @@ Even without cloud review execution, SaaS endpoints can be abused through webhoo
 Initial soft limits should exist even if not exposed as billing:
 
 ```text
-max workspaces per user
-max repositories selected per workspace
-max setup PR attempts per repo per hour
-max health reports per repo per hour
-max OIDC exchanges per repo/run
-max full installation syncs per installation per hour
+max workspaces per user: 3
+max repositories per workspace sync: 250
+max setup PR attempts per repo per hour: 5
+max review config saves per workspace per hour: 60
+max full installation syncs per installation per 15 minutes: 10
+max health reports and OIDC exchanges: DB-backed action rate limits
 ```
 
 Limits can be generous, but they must exist.
@@ -39,6 +39,7 @@ Limits can be generous, but they must exist.
 - Dashboard rate-limit denials are mapped to a safe `rate_limited` UI error without exposing bucket keys.
 - The worker periodically prunes expired DB rate-limit buckets, so the fixed-window table does not grow forever.
 - Cleanup is bounded by `REVIEW_ROUTER_RATE_LIMIT_PRUNE_BATCH_SIZE`, throttled by `REVIEW_ROUTER_RATE_LIMIT_PRUNE_INTERVAL_MS`, and logs only aggregate deleted counts.
+- Installation repository sync applies `REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC` before persistence, default `250`, using deterministic full-name ordering when the GitHub installation exceeds the cap.
 
 Local DB smoke:
 

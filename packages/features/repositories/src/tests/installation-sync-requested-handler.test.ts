@@ -42,6 +42,7 @@ class CapturingRepositoryStore implements RepositoryConnectionRepositoryPort {
       seen: input.repositories.length,
       upserted: input.repositories.length,
       unselected: 0,
+      skippedDueToLimit: 0,
     };
   }
 

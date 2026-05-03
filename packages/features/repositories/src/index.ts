@@ -1,4 +1,5 @@
 export * from "./domain/repository-connection";
+export * from "./domain/repository-sync-policy";
 export * from "./application/ports/github-repository-source-port";
 export * from "./application/ports/repository-connection-repository-port";
 export * from "./application/use-cases/sync-installation-repositories";

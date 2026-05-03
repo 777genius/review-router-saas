@@ -44,6 +44,9 @@ export default function StatusPage(): React.ReactElement {
             <LinkButton href="/privacy" variant="outline">
               Privacy draft
             </LinkButton>
+            <LinkButton href="/fair-use" variant="ghost">
+              Fair use
+            </LinkButton>
           </div>
         </div>
 

@@ -27,4 +27,5 @@ export type RepositorySyncResult = {
   readonly seen: number;
   readonly upserted: number;
   readonly unselected: number;
+  readonly skippedDueToLimit: number;
 };

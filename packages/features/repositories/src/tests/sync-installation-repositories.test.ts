@@ -38,6 +38,7 @@ class CapturingRepositoryStore implements RepositoryConnectionRepositoryPort {
       seen: input.repositories.length,
       upserted: input.repositories.length,
       unselected: 0,
+      skippedDueToLimit: 0,
     };
   }
 
@@ -76,9 +77,53 @@ describe("syncInstallationRepositories", () => {
       seen: 1,
       upserted: 1,
       unselected: 0,
+      skippedDueToLimit: 0,
     });
     expect(store.lastInput?.syncedAt.toISOString()).toBe(
       "2026-05-03T15:00:00.000Z",
     );
   });
+
+  it("applies a deterministic repository sync limit before persistence", async () => {
+    const repositories = [
+      repositorySnapshot("3", "zeta"),
+      repositorySnapshot("1", "alpha"),
+      repositorySnapshot("2", "beta"),
+    ];
+    const store = new CapturingRepositoryStore();
+
+    const result = await syncInstallationRepositories("129154876", {
+      github: new StaticGitHubSource(repositories),
+      repositories: store,
+      clock: fixedClock,
+      syncPolicy: { maxRepositories: 2 },
+    });
+
+    expect(result).toEqual({
+      installationId: "129154876",
+      seen: 3,
+      upserted: 2,
+      unselected: 0,
+      skippedDueToLimit: 1,
+    });
+    expect(store.lastInput?.repositories.map((repo) => repo.fullName)).toEqual([
+      "777genius/alpha",
+      "777genius/beta",
+    ]);
+  });
 });
+
+function repositorySnapshot(
+  githubRepositoryId: string,
+  name: string,
+): GitHubRepositorySnapshot {
+  return {
+    githubRepositoryId,
+    owner: "777genius",
+    name,
+    fullName: `777genius/${name}`,
+    defaultBranch: "main",
+    visibility: "public",
+    archived: false,
+  };
+}
