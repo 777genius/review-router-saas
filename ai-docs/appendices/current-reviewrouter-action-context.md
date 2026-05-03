@@ -140,10 +140,11 @@ REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:git
 Latest automated full review smoke:
 
 ```text
-Repo: 777genius/rr-saas-fresh-e2e-1777847651970
-Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777847651970/pull/1
-Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777847651970/pull/2
-Run: https://github.com/777genius/rr-saas-fresh-e2e-1777847651970/actions/runs/25292768712
+Date: 2026-05-04
+Repo: 777genius/rr-saas-fresh-e2e-1777848830828
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/actions/runs/25293200638
 Result: failed intentionally with 1 critical finding
 Inline: auth.js:5, title "Authentication bypass"
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check

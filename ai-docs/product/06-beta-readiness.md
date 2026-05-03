@@ -22,6 +22,18 @@ Validated on real GitHub repositories:
 The current MVP is showable to trusted testers when the latest full-review
 smoke passes after the latest action/runtime provisioning change.
 
+Latest full-review validation:
+
+```text
+Date: 2026-05-04
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777848830828
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/actions/runs/25293200638
+Result: setup PR merged, workflow detected on main, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
+```
+
 ## Public Beta Must Have
 
 - clear privacy statement: ReviewRouter SaaS does not store code, diffs, or Codex OAuth in v1
