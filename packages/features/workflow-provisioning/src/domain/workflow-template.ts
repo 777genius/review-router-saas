@@ -13,6 +13,7 @@ export function renderReviewRouterWorkflow(
 ): string {
   assertSafeActionRef(options.actionRef);
   assertSafeApiUrl(options.apiUrl);
+  const actionVersion = extractActionVersion(options.actionRef);
   const staticRuntimeEnv = Object.entries(options.staticRuntimeEnv ?? {})
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => {
@@ -57,6 +58,7 @@ jobs:
     if: \${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
+      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(actionVersion)}
       REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
@@ -122,6 +124,14 @@ function assertSafeActionRef(actionRef: string): void {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[A-Za-z0-9_./-]+$/.test(actionRef)) {
     throw new Error("invalid_workflow_action_ref");
   }
+}
+
+function extractActionVersion(actionRef: string): string {
+  const atIndex = actionRef.lastIndexOf("@");
+  if (atIndex <= 0 || atIndex === actionRef.length - 1) {
+    throw new Error("invalid_workflow_action_ref");
+  }
+  return actionRef.slice(atIndex + 1);
 }
 
 function assertSafeApiUrl(apiUrl: string): void {

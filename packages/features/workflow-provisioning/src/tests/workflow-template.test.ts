@@ -37,6 +37,7 @@ describe("renderReviewRouterWorkflow", () => {
           if: \${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
           env:
             REVIEWROUTER_API_URL: "https://app.reviewrouter.dev"
+            REVIEWROUTER_ACTION_VERSION: "v1"
             REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
             REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"
             REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
@@ -158,6 +159,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain(
       'REVIEWROUTER_API_URL: "https://app.reviewrouter.dev"',
     );
+    expect(workflow).toContain('REVIEWROUTER_ACTION_VERSION: "v1"');
     expect(workflow).toContain("GITHUB_TOKEN: ${{ github.token }}");
     expect(workflow).toContain(
       "PR_NUMBER: ${{ github.event.pull_request.number }}",
