@@ -16,6 +16,7 @@
     "db:migrate": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/platform-db db:migrate",
     "spike:github:list-installations": "tsx spikes/github-oidc/src/list-installations.ts",
     "spike:github:sync-repositories": "tsx spikes/github-oidc/src/sync-installation-repositories.ts",
+    "spike:github:provision-workflow": "tsx spikes/github-oidc/src/provision-workflow.ts",
     "spike:github:create-setup-pr": "tsx spikes/github-oidc/src/create-setup-pr.ts",
     "spike:server": "tsx spikes/github-oidc/src/server.ts",
     "spike:test": "vitest run spikes/github-oidc/tests"
