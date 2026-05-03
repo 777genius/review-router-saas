@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",
-    "@reviewrouter/platform-logger": "workspace:*"
+    "@reviewrouter/platform-db": "workspace:*",
+    "@reviewrouter/platform-logger": "workspace:*",
+    "@reviewrouter/shared": "workspace:*"
   },
   "scripts": {
     "dev": "tsx watch src/worker.ts",

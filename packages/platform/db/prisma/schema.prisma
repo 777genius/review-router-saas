@@ -238,6 +238,33 @@ model GitHubWebhookDelivery {
   @@index([status, receivedAt])
 }
 
+model OutboxEvent {
+  id                   String            @id @default(cuid())
+  type                 String
+  version              Int
+  idempotencyKey       String            @unique
+  workspaceId          String?
+  repositoryId         String?
+  aggregateId          String?
+  payload              Json
+  status               OutboxEventStatus @default(pending)
+  attempts             Int               @default(0)
+  maxAttempts          Int               @default(5)
+  nextAttemptAt        DateTime?
+  processedAt          DateTime?
+  deadLetteredAt       DateTime?
+  lastErrorCode        String?
+  safeLastErrorSummary String?
+  occurredAt           DateTime
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @default(now()) @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([workspaceId, status])
+  @@index([repositoryId, status])
+  @@index([type, version, status])
+}
+
 enum WorkspaceRole {
   owner
   admin
@@ -293,4 +320,12 @@ enum WebhookDeliveryStatus {
   processing
   processed
   failed
+}
+
+enum OutboxEventStatus {
+  pending
+  processing
+  retry_wait
+  processed
+  dead_letter
 }
