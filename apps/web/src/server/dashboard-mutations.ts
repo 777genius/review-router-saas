@@ -7,6 +7,7 @@ import {
   PrismaWorkspaceAccessRepository,
   type VisibleWorkspaceScope,
 } from "@reviewrouter/features-auth";
+import { getAuthEnvironmentStatus } from "../auth/auth-env";
 import { authOptions } from "../auth/auth-options";
 import { getPrisma } from "./prisma";
 
@@ -20,7 +21,7 @@ export type DashboardMutationStatus = {
   readonly enabled: boolean;
   readonly signedIn: boolean;
   readonly githubLogin: string | null;
-  readonly reason: "ready" | "disabled" | "signed_out";
+  readonly reason: "ready" | "disabled" | "signed_out" | "auth_misconfigured";
 };
 
 export type DashboardWorkspaceScope =
@@ -28,6 +29,15 @@ export type DashboardWorkspaceScope =
   | VisibleWorkspaceScope;
 
 export async function getDashboardMutationStatus(): Promise<DashboardMutationStatus> {
+  if (!getAuthEnvironmentStatus().configured) {
+    return {
+      enabled: false,
+      signedIn: false,
+      githubLogin: null,
+      reason: "auth_misconfigured",
+    };
+  }
+
   const session = await getServerSession(authOptions);
   const signedIn = Boolean(
     session?.user?.githubUserId && session.user.githubLogin,
@@ -60,6 +70,10 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
 export async function assertDashboardMutationAllowed(
   workspaceId: string,
 ): Promise<DashboardMutationActor> {
+  if (!getAuthEnvironmentStatus().configured) {
+    throw new Error("dashboard_auth_misconfigured");
+  }
+
   if (!dashboardMutationsEnabled()) {
     throw new Error("dashboard_mutations_disabled");
   }
@@ -89,6 +103,10 @@ export async function assertDashboardMutationAllowed(
 }
 
 export async function getDashboardWorkspaceScope(): Promise<DashboardWorkspaceScope> {
+  if (!getAuthEnvironmentStatus().configured) {
+    return { kind: "none", reason: "signed_out" };
+  }
+
   const session = await getServerSession(authOptions);
   const githubUserId = session?.user?.githubUserId;
   const githubLogin = session?.user?.githubLogin;

@@ -7,18 +7,15 @@ import {
   PrismaWorkspaceMembershipRepository,
 } from "@reviewrouter/features-auth";
 import { getPrisma } from "../server/prisma";
-
-function readAuthEnv(name: string): string {
-  return process.env[name] ?? `missing-${name.toLowerCase()}`;
-}
+import { readOptionalAuthEnv } from "./auth-env";
 
 export const authOptions: NextAuthOptions = {
-  secret: readAuthEnv("AUTH_SECRET"),
+  secret: readOptionalAuthEnv("AUTH_SECRET"),
   session: { strategy: "jwt" },
   providers: [
     GitHubProvider({
-      clientId: readAuthEnv("GITHUB_APP_CLIENT_ID"),
-      clientSecret: readAuthEnv("GITHUB_APP_CLIENT_SECRET"),
+      clientId: readOptionalAuthEnv("GITHUB_APP_CLIENT_ID"),
+      clientSecret: readOptionalAuthEnv("GITHUB_APP_CLIENT_SECRET"),
       authorization: {
         params: {
           scope: "read:user user:email",

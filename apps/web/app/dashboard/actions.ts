@@ -607,6 +607,7 @@ function safeDashboardErrorCode(error: unknown): string {
   if (
     [
       "dashboard_mutations_disabled",
+      "dashboard_auth_misconfigured",
       "dashboard_mutation_requires_sign_in",
       "installation_not_found",
       "repository_not_found",

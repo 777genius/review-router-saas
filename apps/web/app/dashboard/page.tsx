@@ -963,7 +963,9 @@ function DashboardNotice({
         <p className="mt-3 text-sm leading-6 text-amber-50">
           {mutationStatus.reason === "signed_out"
             ? "Sign in with GitHub to request repository syncs or setup PRs."
-            : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 for local beta provisioning."}
+            : mutationStatus.reason === "auth_misconfigured"
+              ? "GitHub OAuth is not configured. Set AUTH_SECRET, GITHUB_APP_CLIENT_ID, and GITHUB_APP_CLIENT_SECRET before using the dashboard."
+              : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 for local beta provisioning."}
           {mutationStatus.reason === "signed_out" ? (
             <>
               {" "}
@@ -1025,6 +1027,8 @@ function dashboardErrorText(error: string): string {
   switch (error) {
     case "dashboard_mutations_disabled":
       return "Dashboard mutations are disabled on this environment.";
+    case "dashboard_auth_misconfigured":
+      return "GitHub OAuth is not configured. Set AUTH_SECRET, GITHUB_APP_CLIENT_ID, and GITHUB_APP_CLIENT_SECRET.";
     case "dashboard_mutation_requires_sign_in":
       return "Sign in with GitHub before changing repository setup.";
     case "workspace_mutation_forbidden":

@@ -58,6 +58,17 @@ features/auth/
       auth-router.ts
 ```
 
+Current beta implementation:
+
+- `features/auth` owns normalized identity, workspace access policy, and Prisma
+  ports/adapters for users and workspace membership.
+- `apps/web/src/auth/auth-options.ts` is the Auth.js edge adapter.
+- `apps/web/src/auth/auth-env.ts` exposes an explicit readiness check so build
+  imports stay safe while dashboard mutations fail closed when OAuth env is
+  missing.
+- `apps/web/src/server/dashboard-mutations.ts` converts the Auth.js session into
+  normalized `githubUserId`/`githubLogin` inputs before calling auth use cases.
+
 ## Dependency Direction
 
 ```text

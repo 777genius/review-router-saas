@@ -88,6 +88,15 @@ Audit important auth/admin events:
 
 Use Auth.js for GitHub OAuth in the beta scaffold, but only inside interface/infrastructure adapters. Domain and application layers depend on ReviewRouter-owned ports and normalized principal/session types.
 
+Local/build behavior:
+
+- Auth.js options stay import-safe for local builds even when OAuth env is
+  missing.
+- Dashboard mutations fail closed with `dashboard_auth_misconfigured` until
+  `AUTH_SECRET`, `GITHUB_APP_CLIENT_ID`, and `GITHUB_APP_CLIENT_SECRET` are set.
+- The dashboard must not show a misleading working sign-in flow when GitHub
+  OAuth credentials are absent.
+
 See:
 
 - [Auth Provider Boundary](./30-auth-provider-boundary.md)
