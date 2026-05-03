@@ -18,6 +18,7 @@
     "spike:github:sync-repositories": "tsx spikes/github-oidc/src/sync-installation-repositories.ts",
     "spike:github:provision-workflow": "tsx spikes/github-oidc/src/provision-workflow.ts",
     "spike:github:create-setup-pr": "tsx spikes/github-oidc/src/create-setup-pr.ts",
+    "spike:action:e2e": "tsx spikes/github-oidc/src/action-control-plane-e2e.ts",
     "spike:server": "tsx spikes/github-oidc/src/server.ts",
     "spike:test": "vitest run spikes/github-oidc/tests"
   },

@@ -129,6 +129,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@reviewrouter/features-action-control-plane':
+        specifier: workspace:*
+        version: link:../../packages/features/action-control-plane
       '@reviewrouter/features-github-installations':
         specifier: workspace:*
         version: link:../../packages/features/github-installations
@@ -216,6 +219,21 @@ importers:
       '@reviewrouter/platform-logger':
         specifier: workspace:*
         version: link:../../packages/platform/logger
+
+  packages/features/action-control-plane:
+    dependencies:
+      '@reviewrouter/features-review-config':
+        specifier: workspace:*
+        version: link:../review-config
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
 
   packages/features/auth:
     dependencies:

@@ -1,0 +1,273 @@
+import { describe, expect, it } from "vitest";
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
+import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-config";
+import type { Clock } from "@reviewrouter/shared";
+import type { ActionControlPlaneRepositoryPort } from "../application/ports/action-control-plane-repository-port.js";
+import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
+import type { GitHubActionsOidcTokenVerifierPort } from "../application/ports/github-actions-oidc-token-verifier-port.js";
+import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-github-oidc-token.js";
+import { getActionRuntimeConfig } from "../application/use-cases/get-action-runtime-config.js";
+import { recordActionHealthReport } from "../application/use-cases/record-action-health-report.js";
+import {
+  assertSafeActionHealthReport,
+  defaultActionOidcAudience,
+  githubActionsOidcIssuer,
+  type ActionHealthReport,
+  type ActionRepositoryContext,
+  type ActionSessionClaims,
+  type GitHubActionsOidcClaims,
+} from "../domain/action-control-plane.js";
+import { JoseGitHubActionsOidcTokenVerifier } from "../infrastructure/oidc/jose-github-actions-oidc-token-verifier.js";
+import { JoseActionSessionTokenService } from "../infrastructure/session/jose-action-session-token-service.js";
+
+const fixedNow = new Date("2026-05-03T12:00:00.000Z");
+const clock: Clock = { now: () => fixedNow };
+
+const repositoryContext: ActionRepositoryContext = {
+  workspaceId: "workspace_1",
+  repositoryId: "repo_1",
+  githubRepositoryId: "123456",
+  fullName: "777genius/example",
+  owner: "777genius",
+  selected: true,
+  installationStatus: "active",
+};
+
+const sessionClaims: ActionSessionClaims = {
+  workspaceId: "workspace_1",
+  repositoryId: "repo_1",
+  githubRepositoryId: "123456",
+  repository: "777genius/example",
+  githubRunId: "1001",
+  githubRunAttempt: "1",
+  eventName: "pull_request",
+  protocolVersion: 1,
+};
+
+class InMemoryActionControlPlaneRepository implements ActionControlPlaneRepositoryPort {
+  public healthReports: ActionHealthReport[] = [];
+  public repository: ActionRepositoryContext | null = repositoryContext;
+
+  async findSelectedRepositoryByGithubId(
+    githubRepositoryId: string,
+  ): Promise<ActionRepositoryContext | null> {
+    if (githubRepositoryId !== this.repository?.githubRepositoryId) {
+      return null;
+    }
+    return this.repository;
+  }
+
+  async findRuntimeReviewConfiguration() {
+    return { version: 7, config: safeDefaultReviewConfiguration };
+  }
+
+  async recordHealthReport(input: {
+    readonly report: ActionHealthReport;
+  }): Promise<void> {
+    this.healthReports.push(input.report);
+  }
+}
+
+class StaticOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
+  constructor(private readonly claims: GitHubActionsOidcClaims) {}
+
+  async verify(): Promise<GitHubActionsOidcClaims> {
+    return this.claims;
+  }
+}
+
+class StaticSessionTokenService implements ActionSessionTokenServicePort {
+  public signedClaims: ActionSessionClaims | null = null;
+
+  async sign(input: {
+    readonly claims: ActionSessionClaims;
+    readonly expiresInSeconds: number;
+    readonly issuedAt: Date;
+  }) {
+    this.signedClaims = input.claims;
+    return {
+      token: "signed-session-token",
+      expiresAt: new Date(
+        input.issuedAt.getTime() + input.expiresInSeconds * 1000,
+      ),
+    };
+  }
+
+  async verify(): Promise<ActionSessionClaims> {
+    return sessionClaims;
+  }
+}
+
+describe("action control plane", () => {
+  it("exchanges valid GitHub OIDC claims for a scoped action session", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    const sessions = new StaticSessionTokenService();
+    const result = await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(githubOidcClaims()),
+        repositories: repository,
+        sessions,
+        clock,
+      },
+    );
+
+    expect(result).toMatchObject({
+      sessionToken: "signed-session-token",
+      repository: "777genius/example",
+    });
+    expect(sessions.signedClaims).toMatchObject({
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      githubRunId: "1001",
+      protocolVersion: 1,
+    });
+  });
+
+  it("rejects OIDC claims for a different repository id", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({ repository_id: "999999" }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("repository_not_registered");
+  });
+
+  it("returns runtime config without secrets", async () => {
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService(),
+        clock,
+      },
+    );
+
+    expect(config).toMatchObject({
+      protocolVersion: 1,
+      configVersion: 7,
+      provider: {
+        model: "gpt-5.5",
+        reasoningEffort: "medium",
+        secretBackedProviderEnabled: true,
+      },
+      runtimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth",
+        CODEX_MODEL: "gpt-5.5",
+      },
+    });
+    expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("records safe health reports and rejects code/diff payloads", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    await recordActionHealthReport(
+      {
+        sessionToken: "session",
+        report: {
+          actionVersion: "v1",
+          configVersion: 7,
+          providerSetupState: "configured",
+          providerHealth: "ok",
+          safeErrorCategory: "none",
+        },
+      },
+      {
+        repositories: repository,
+        sessions: new StaticSessionTokenService(),
+        clock,
+      },
+    );
+
+    expect(repository.healthReports).toHaveLength(1);
+    expect(() =>
+      assertSafeActionHealthReport({
+        actionVersion: "v1",
+        configVersion: 7,
+        providerSetupState: "configured",
+        providerHealth: "failed",
+        safeErrorCategory: "runtime_error",
+        safeErrorSummary: "```ts\nconsole.log('code')\n```",
+      }),
+    ).toThrow("health_report_contains_code_or_diff");
+  });
+
+  it("signs and verifies short-lived action session tokens", async () => {
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const signed = await sessions.sign({
+      claims: sessionClaims,
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+
+    await expect(
+      sessions.verify({ token: signed.token, now: fixedNow }),
+    ).resolves.toMatchObject(sessionClaims);
+    await expect(
+      sessions.verify({
+        token: signed.token,
+        now: new Date(fixedNow.getTime() + 120_000),
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("verifies GitHub Actions OIDC JWTs with JWKS and rejects wrong audience", async () => {
+    const { privateKey, publicKey } = await generateKeyPair("RS256");
+    const publicJwk = await exportJWK(publicKey);
+    const jwks = createLocalJWKSet({ keys: [{ ...publicJwk, kid: "kid-1" }] });
+    const verifier = new JoseGitHubActionsOidcTokenVerifier({ jwks });
+    const issuedAtSeconds = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT(stripUndefined(githubOidcClaims()))
+      .setProtectedHeader({ alg: "RS256", kid: "kid-1" })
+      .setIssuer(githubActionsOidcIssuer)
+      .setAudience(defaultActionOidcAudience)
+      .setIssuedAt(issuedAtSeconds)
+      .setExpirationTime(issuedAtSeconds + 60)
+      .sign(privateKey);
+
+    await expect(
+      verifier.verify({ token, audience: defaultActionOidcAudience }),
+    ).resolves.toMatchObject({ repository: "777genius/example" });
+    await expect(
+      verifier.verify({ token, audience: "wrong-audience" }),
+    ).rejects.toThrow();
+  });
+});
+
+function githubOidcClaims(
+  overrides: Partial<GitHubActionsOidcClaims> = {},
+): GitHubActionsOidcClaims {
+  return {
+    iss: githubActionsOidcIssuer,
+    aud: defaultActionOidcAudience,
+    sub: "repo:777genius/example:pull_request",
+    repository: "777genius/example",
+    repository_id: "123456",
+    repository_owner: "777genius",
+    event_name: "pull_request",
+    run_id: "1001",
+    run_attempt: "1",
+    workflow_ref:
+      "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
+    actor: "777genius",
+    ...overrides,
+  };
+}
+
+function stripUndefined<T extends Record<string, unknown>>(
+  input: T,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
+  );
+}

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@reviewrouter/features-action-control-plane": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
     "@reviewrouter/features-system-health": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",

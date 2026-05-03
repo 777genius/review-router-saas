@@ -4,6 +4,9 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "paths": {
+      "@reviewrouter/features-action-control-plane": [
+        "./packages/features/action-control-plane/src/index.ts"
+      ],
       "@reviewrouter/features-repositories": [
         "./packages/features/repositories/src/index.ts"
       ],

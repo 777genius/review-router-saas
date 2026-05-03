@@ -1,11 +1,24 @@
 import { describe, expect, it } from "vitest";
 import type {
+  ActionControlPlaneRepositoryPort,
+  ActionHealthReport,
+  ActionRepositoryContext,
+  GitHubActionsOidcClaims,
+  GitHubActionsOidcTokenVerifierPort,
+} from "@reviewrouter/features-action-control-plane";
+import {
+  defaultActionOidcAudience,
+  githubActionsOidcIssuer,
+  JoseActionSessionTokenService,
+} from "@reviewrouter/features-action-control-plane";
+import type {
   GitHubInstallationRepositoryPort,
   GitHubInstallationSnapshot,
   WebhookDeliveryRecord,
   WebhookDeliveryRepositoryPort,
 } from "@reviewrouter/features-github-installations";
 import { signGitHubWebhookPayload } from "@reviewrouter/features-github-installations";
+import type { Clock } from "@reviewrouter/shared";
 import { createApiApp } from "./app.js";
 
 class InMemoryInstallations implements GitHubInstallationRepositoryPort {
@@ -39,6 +52,60 @@ class InMemoryDeliveries implements WebhookDeliveryRepositoryPort {
     this.deliveries.set(delivery.deliveryId, delivery);
   }
 }
+
+class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
+  public readonly healthReports: ActionHealthReport[] = [];
+
+  async findSelectedRepositoryByGithubId(
+    githubRepositoryId: string,
+  ): Promise<ActionRepositoryContext | null> {
+    if (githubRepositoryId !== "123456") {
+      return null;
+    }
+    return {
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      githubRepositoryId: "123456",
+      fullName: "777genius/example",
+      owner: "777genius",
+      selected: true,
+      installationStatus: "active",
+    };
+  }
+
+  async findRuntimeReviewConfiguration() {
+    return null;
+  }
+
+  async recordHealthReport(input: {
+    readonly report: ActionHealthReport;
+  }): Promise<void> {
+    this.healthReports.push(input.report);
+  }
+}
+
+class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
+  async verify(): Promise<GitHubActionsOidcClaims> {
+    return {
+      iss: githubActionsOidcIssuer,
+      aud: defaultActionOidcAudience,
+      sub: "repo:777genius/example:pull_request",
+      repository: "777genius/example",
+      repository_id: "123456",
+      repository_owner: "777genius",
+      event_name: "pull_request",
+      run_id: "1001",
+      run_attempt: "1",
+      workflow_ref:
+        "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
+      actor: "777genius",
+    };
+  }
+}
+
+const fixedClock: Clock = {
+  now: () => new Date("2026-05-03T12:00:00.000Z"),
+};
 
 describe("API app", () => {
   it("serves health status", async () => {
@@ -90,5 +157,56 @@ describe("API app", () => {
       accountLogin: "777genius",
       repositorySelection: "all",
     });
+  });
+
+  it("serves action OIDC exchange, config fetch, and safe health report", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const session = exchange.json<{ sessionToken: string }>();
+
+    const config = await app.inject({
+      method: "GET",
+      url: "/api/action/config",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+    });
+    expect(config.statusCode).toBe(200);
+    expect(config.json()).toMatchObject({
+      protocolVersion: 1,
+      provider: { model: "gpt-5.5" },
+      runtimeEnv: { REVIEW_AUTH_MODE: "codex-oauth" },
+    });
+
+    const health = await app.inject({
+      method: "POST",
+      url: "/api/action/health-report",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        actionVersion: "v1",
+        configVersion: 1,
+        providerSetupState: "configured",
+        providerHealth: "ok",
+        safeErrorCategory: "none",
+      },
+    });
+
+    expect(health.statusCode).toBe(200);
+    expect(repositories.healthReports).toHaveLength(1);
   });
 });

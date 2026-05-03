@@ -69,6 +69,7 @@ ${oidcStep}      - name: Run ReviewRouter
         uses: ${options.actionRef}
         env:
           REVIEWROUTER_API_URL: ${options.apiUrl}
+          REVIEWROUTER_OIDC_AUDIENCE: reviewrouter
           REVIEWROUTER_RUNTIME_CONFIG_MODE: ${options.runtimeConfigMode}
           REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
 `;

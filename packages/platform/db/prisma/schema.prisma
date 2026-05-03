@@ -19,6 +19,7 @@ model Workspace {
   provisioning  WorkflowProvisioning[]
   reviewConfigs ReviewConfiguration[]
   providerSetup ProviderSetupState[]
+  actionHealth  ActionRunHealthReport[]
   auditEvents   AuditEvent[]
 }
 
@@ -92,6 +93,7 @@ model RepositoryConnection {
   provisioning WorkflowProvisioning[]
   reviewConfigs ReviewConfiguration[]
   providerSetup ProviderSetupState[]
+  actionHealth ActionRunHealthReport[]
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
@@ -127,6 +129,7 @@ model ReviewConfigurationVersion {
   agenticContext    Boolean  @default(true)
   failOnSeverity    String
   inlineMaxComments Int
+  targetTokensPerBatch Int
   createdAt         DateTime @default(now())
 
   configuration ReviewConfiguration @relation(fields: [configurationId], references: [id], onDelete: Cascade)
@@ -151,6 +154,31 @@ model ProviderSetupState {
 
   @@unique([workspaceId, targetKey, providerKind, authMode])
   @@index([workspaceId, state])
+}
+
+model ActionRunHealthReport {
+  id                 String   @id @default(cuid())
+  workspaceId        String
+  repositoryId       String
+  githubRunId        String
+  githubRunAttempt   String
+  eventName          String
+  actionVersion      String
+  configVersion      Int
+  providerSetupState ProviderSecretState
+  providerHealth     ActionProviderHealth
+  safeErrorCategory  String
+  safeErrorSummary   String?
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  receivedAt         DateTime
+  createdAt          DateTime @default(now())
+
+  workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, receivedAt])
+  @@index([repositoryId, githubRunId, githubRunAttempt])
 }
 
 model WorkflowProvisioning {
@@ -244,4 +272,11 @@ enum ProviderSecretState {
   configured
   stale_or_invalid
   unavailable_in_fork_pr
+}
+
+enum ActionProviderHealth {
+  ok
+  skipped
+  failed
+  degraded
 }

@@ -16,6 +16,8 @@ export const runtimeEnvSchema = z.object({
   GITHUB_APP_PRIVATE_KEY_FILE: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   REVIEW_ROUTER_ACTION_VERSION: z.string().default("v1"),
+  REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: z.string().default("reviewrouter"),
+  REVIEW_ROUTER_ACTION_SESSION_SECRET: z.string().min(32).optional(),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high"])

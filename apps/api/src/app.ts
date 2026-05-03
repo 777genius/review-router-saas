@@ -1,6 +1,13 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
 import {
+  JoseActionSessionTokenService,
+  JoseGitHubActionsOidcTokenVerifier,
+  PrismaActionControlPlaneRepository,
+  registerActionControlPlaneRoutes,
+  type RegisterActionControlPlaneRoutesDependencies,
+} from "@reviewrouter/features-action-control-plane";
+import {
   PrismaGitHubInstallationRepository,
   PrismaWebhookDeliveryRepository,
   registerGitHubWebhookRoutes,
@@ -18,6 +25,9 @@ import { appRouter } from "./trpc.js";
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
   readonly githubWebhookDependencies?: RegisterGitHubWebhookRoutesDependencies;
+  readonly actionControlPlaneDependencies?: RegisterActionControlPlaneRoutesDependencies;
+  readonly actionSessionSecret?: string;
+  readonly actionOidcAudience?: string;
   readonly prisma?: PrismaClient;
 };
 
@@ -28,7 +38,9 @@ export async function createApiApp(
   const app = Fastify({ logger: false });
   const prisma =
     options.prisma ??
-    (options.githubWebhookSecret ? createPrismaClient() : undefined);
+    (options.githubWebhookSecret || options.actionSessionSecret
+      ? createPrismaClient()
+      : undefined);
 
   registerSystemHealthRoutes(app, new SystemClock());
 
@@ -44,6 +56,26 @@ export async function createApiApp(
 
   if (githubWebhookDependencies) {
     await registerGitHubWebhookRoutes(app, githubWebhookDependencies);
+  }
+
+  const actionControlPlaneDependencies =
+    options.actionControlPlaneDependencies ??
+    (options.actionSessionSecret && prisma
+      ? {
+          repositories: new PrismaActionControlPlaneRepository(prisma),
+          sessions: new JoseActionSessionTokenService(
+            options.actionSessionSecret,
+          ),
+          oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
+          clock: new SystemClock(),
+          ...(options.actionOidcAudience
+            ? { oidcAudience: options.actionOidcAudience }
+            : {}),
+        }
+      : undefined);
+
+  if (actionControlPlaneDependencies) {
+    await registerActionControlPlaneRoutes(app, actionControlPlaneDependencies);
   }
 
   app.register(fastifyTRPCPlugin, {
