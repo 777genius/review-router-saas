@@ -93,9 +93,10 @@ If a later step needs a token for GitHub API, pass it only to that step.
 Generated workflow rendering must validate values before producing YAML:
 
 - `actionRef` must be `owner/repo@ref` with no whitespace or shell/YAML syntax
-- `apiUrl` must parse as `http` or `https`
+- `apiUrl` must parse as `https`, or `http` only for localhost development
+- `apiUrl` must not include username, password, query, or fragment
 - static env keys must match GitHub Actions env-name shape: `^[A-Z_][A-Z0-9_]*$`
-- env values must be JSON-quoted
+- env values, including first-party ReviewRouter values, must be JSON-quoted
 
 This protects the setup PR path from accidentally turning user/config input into
 extra YAML steps or permissions.

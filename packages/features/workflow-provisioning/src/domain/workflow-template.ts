@@ -28,8 +28,8 @@ export function renderReviewRouterWorkflow(
         if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         shell: bash
         env:
-          REVIEWROUTER_API_URL: ${options.apiUrl}
-          REVIEWROUTER_OIDC_AUDIENCE: reviewrouter
+          REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
+          REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
         run: |
           set -euo pipefail
           if [ -z "\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "\${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
@@ -73,9 +73,9 @@ ${oidcStep}      - name: Run ReviewRouter
         if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: ${options.actionRef}
         env:
-          REVIEWROUTER_API_URL: ${options.apiUrl}
-          REVIEWROUTER_OIDC_AUDIENCE: reviewrouter
-          REVIEWROUTER_RUNTIME_CONFIG_MODE: ${options.runtimeConfigMode}
+          REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
+          REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
+          REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
           REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
 `;
 }
@@ -93,9 +93,31 @@ function assertSafeApiUrl(apiUrl: string): void {
   } catch {
     throw new Error("invalid_workflow_api_url");
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error("invalid_workflow_api_url");
   }
+  if (parsed.protocol === "https:") {
+    return;
+  }
+  if (parsed.protocol === "http:" && isLocalhost(parsed.hostname)) {
+    return;
+  }
+
+  throw new Error("invalid_workflow_api_url");
+}
+
+function isLocalhost(hostname: string): boolean {
+  if (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1"
+  ) {
+    return true;
+  }
+  if (hostname.endsWith(".localhost")) {
+    return true;
+  }
+  return false;
 }
 
 function assertSafeEnvKey(key: string): void {
