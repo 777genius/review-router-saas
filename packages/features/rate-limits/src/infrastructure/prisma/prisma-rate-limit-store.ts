@@ -2,6 +2,9 @@ import type { PrismaClient } from "@prisma/client";
 import { createRateLimitDecision } from "../../domain/rate-limit";
 import type {
   ConsumeFixedWindowRateLimitInput,
+  DeleteExpiredRateLimitBucketsInput,
+  DeleteExpiredRateLimitBucketsResult,
+  RateLimitCleanupStorePort,
   RateLimitStorePort,
 } from "../../application/ports/rate-limit-store-port";
 
@@ -11,7 +14,13 @@ type RateLimitRow = {
   readonly windowEndsAt: Date;
 };
 
-export class PrismaRateLimitStore implements RateLimitStorePort {
+type DeletedRateLimitBucketRow = {
+  readonly key: string;
+};
+
+export class PrismaRateLimitStore
+  implements RateLimitStorePort, RateLimitCleanupStorePort
+{
   constructor(private readonly prisma: PrismaClient) {}
 
   async consumeFixedWindow(
@@ -63,5 +72,24 @@ export class PrismaRateLimitStore implements RateLimitStorePort {
       count: row.count,
       resetAt: row.windowEndsAt,
     });
+  }
+
+  async deleteExpiredBuckets(
+    input: DeleteExpiredRateLimitBucketsInput,
+  ): Promise<DeleteExpiredRateLimitBucketsResult> {
+    const rows = await this.prisma.$queryRaw<DeletedRateLimitBucketRow[]>`
+      WITH expired AS (
+        SELECT "key"
+        FROM "RateLimitBucket"
+        WHERE "windowEndsAt" <= ${input.expiredBefore}
+        ORDER BY "windowEndsAt" ASC
+        LIMIT ${input.limit}
+      )
+      DELETE FROM "RateLimitBucket"
+      USING expired
+      WHERE "RateLimitBucket"."key" = expired."key"
+      RETURNING "RateLimitBucket"."key"
+    `;
+    return { deleted: rows.length };
   }
 }

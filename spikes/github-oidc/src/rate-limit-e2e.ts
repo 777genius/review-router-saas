@@ -1,6 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import {
   assertRateLimit,
+  pruneExpiredRateLimitBuckets,
   PrismaRateLimitStore,
   RateLimitExceededError,
 } from "../../../packages/features/rate-limits/src/index.ts";
@@ -17,6 +18,8 @@ if (!databaseUrl) {
 const prisma = createPrismaClient({ databaseUrl });
 const rateLimits = new PrismaRateLimitStore(prisma);
 const key = `rate-limit-e2e:${Date.now()}`;
+const expiredKey = `${key}:expired`;
+const activeKey = `${key}:active`;
 const rule = { key, limit: 2, windowMs: 60_000 };
 let now = new Date("2026-05-03T12:00:30.000Z");
 const clock = { now: () => now };
@@ -46,6 +49,44 @@ try {
     throw new Error(`unexpected reset decision: ${JSON.stringify(afterReset)}`);
   }
 
+  await prisma.rateLimitBucket.createMany({
+    data: [
+      {
+        key: expiredKey,
+        count: 1,
+        limit: 10,
+        windowStart: new Date("2026-05-03T11:58:00.000Z"),
+        windowEndsAt: new Date("2026-05-03T11:59:00.000Z"),
+      },
+      {
+        key: activeKey,
+        count: 1,
+        limit: 10,
+        windowStart: new Date("2026-05-03T12:00:00.000Z"),
+        windowEndsAt: new Date("2026-05-03T12:01:00.000Z"),
+      },
+    ],
+  });
+  const prune = await pruneExpiredRateLimitBuckets(
+    { expiredBefore: new Date("2026-05-03T12:00:00.000Z"), limit: 10 },
+    { rateLimits },
+  );
+  const expired = await prisma.rateLimitBucket.findUnique({
+    where: { key: expiredKey },
+  });
+  const active = await prisma.rateLimitBucket.findUnique({
+    where: { key: activeKey },
+  });
+  if (prune.deleted !== 1 || expired || !active) {
+    throw new Error(
+      `unexpected prune result: ${JSON.stringify({
+        prune,
+        expiredExists: Boolean(expired),
+        activeExists: Boolean(active),
+      })}`,
+    );
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -54,12 +95,15 @@ try {
         first,
         second,
         afterReset,
+        prune,
       },
       null,
       2,
     ),
   );
 } finally {
-  await prisma.rateLimitBucket.deleteMany({ where: { key } });
+  await prisma.rateLimitBucket.deleteMany({
+    where: { key: { in: [key, expiredKey, activeKey] } },
+  });
   await prisma.$disconnect();
 }

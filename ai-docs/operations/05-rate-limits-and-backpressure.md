@@ -21,6 +21,13 @@ Protect public endpoints:
 - OIDC exchange endpoint by repo/run and IP-aware limits
 - dashboard API by session/workspace limits
 
+Implemented baseline:
+
+- fixed-window buckets live in Postgres so limits work across multiple API/web instances
+- action OIDC exchange and health-report routes use DB-backed limits
+- dashboard mutations use DB-backed limits
+- expired buckets are removed by the worker in bounded periodic batches through `REVIEW_ROUTER_RATE_LIMIT_PRUNE_BATCH_SIZE` and `REVIEW_ROUTER_RATE_LIMIT_PRUNE_INTERVAL_MS`
+
 ## Job Backpressure
 
 Worker queues should expose:

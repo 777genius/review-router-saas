@@ -37,12 +37,16 @@ Limits can be generous, but they must exist.
 - Action route errors map rate-limit denials to HTTP `429` with safe public error code `rate_limited`.
 - Dashboard mutations use the same DB-backed rate-limit package for manual installation syncs, setup PR creation, review config saves, and dead-letter retries.
 - Dashboard rate-limit denials are mapped to a safe `rate_limited` UI error without exposing bucket keys.
+- The worker periodically prunes expired DB rate-limit buckets, so the fixed-window table does not grow forever.
+- Cleanup is bounded by `REVIEW_ROUTER_RATE_LIMIT_PRUNE_BATCH_SIZE`, throttled by `REVIEW_ROUTER_RATE_LIMIT_PRUNE_INTERVAL_MS`, and logs only aggregate deleted counts.
 
 Local DB smoke:
 
 ```bash
 node scripts/run-with-env.mjs pnpm spike:rate-limit:e2e
 ```
+
+The smoke covers fixed-window blocking, reset behavior, and expired-bucket pruning against the local Postgres database.
 
 ## User Experience
 

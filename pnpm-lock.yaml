@@ -258,6 +258,9 @@ importers:
       '@reviewrouter/features-outbox':
         specifier: workspace:*
         version: link:../../packages/features/outbox
+      '@reviewrouter/features-rate-limits':
+        specifier: workspace:*
+        version: link:../../packages/features/rate-limits
       '@reviewrouter/features-repositories':
         specifier: workspace:*
         version: link:../../packages/features/repositories

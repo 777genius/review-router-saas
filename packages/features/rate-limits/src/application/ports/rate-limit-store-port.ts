@@ -8,8 +8,23 @@ export type ConsumeFixedWindowRateLimitInput = {
   readonly now: Date;
 };
 
+export type DeleteExpiredRateLimitBucketsInput = {
+  readonly expiredBefore: Date;
+  readonly limit: number;
+};
+
+export type DeleteExpiredRateLimitBucketsResult = {
+  readonly deleted: number;
+};
+
 export interface RateLimitStorePort {
   consumeFixedWindow(
     input: ConsumeFixedWindowRateLimitInput,
   ): Promise<RateLimitDecision>;
+}
+
+export interface RateLimitCleanupStorePort {
+  deleteExpiredBuckets(
+    input: DeleteExpiredRateLimitBucketsInput,
+  ): Promise<DeleteExpiredRateLimitBucketsResult>;
 }

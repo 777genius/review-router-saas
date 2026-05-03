@@ -6,6 +6,10 @@ import {
   type OutboxHandler,
 } from "@reviewrouter/features-outbox";
 import {
+  PrismaRateLimitStore,
+  pruneExpiredRateLimitBuckets,
+} from "@reviewrouter/features-rate-limits";
+import {
   OctokitGitHubRepositorySource,
   PrismaRepositoryConnectionRepository,
 } from "@reviewrouter/features-repositories";
@@ -43,19 +47,23 @@ async function main(): Promise<void> {
     }
 
     const outbox = new PrismaOutboxEventRepository(prisma);
+    const pruneRateLimits = createRateLimitMaintenance(prisma, clock);
     const limit = readPositiveIntegerEnv("REVIEW_ROUTER_OUTBOX_BATCH_SIZE", 25);
     const processingStaleAfterMs = readPositiveIntegerEnv(
       "REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS",
       15 * 60 * 1000,
     );
-    const processBatch = () =>
-      processOutboxBatch(
+    const processBatch = async () => {
+      const result = await processOutboxBatch(
         { limit, handlers, processingStaleAfterMs },
         {
           outbox,
           clock,
         },
       );
+      await pruneRateLimits();
+      return result;
+    };
 
     if (process.env.REVIEW_ROUTER_WORKER_ONCE === "1") {
       const result = await processBatch();
@@ -112,6 +120,44 @@ function createOutboxHandlers(
       clock,
     }),
   ];
+}
+
+function createRateLimitMaintenance(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  const rateLimits = new PrismaRateLimitStore(prisma);
+  const limit = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_RATE_LIMIT_PRUNE_BATCH_SIZE",
+    500,
+  );
+  const intervalMs = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_RATE_LIMIT_PRUNE_INTERVAL_MS",
+    5 * 60 * 1000,
+  );
+  let lastAttemptAtMs = 0;
+
+  return async () => {
+    const now = clock.now();
+    if (now.getTime() - lastAttemptAtMs < intervalMs) {
+      return;
+    }
+    lastAttemptAtMs = now.getTime();
+
+    try {
+      const result = await pruneExpiredRateLimitBuckets(
+        { expiredBefore: now, limit },
+        { rateLimits },
+      );
+      if (result.deleted > 0) {
+        logger.info("ReviewRouter pruned expired rate limit buckets", result);
+      }
+    } catch (error: unknown) {
+      logger.warn("ReviewRouter rate limit maintenance failed", {
+        safeErrorSummary: safeWorkerErrorSummary(error),
+      });
+    }
+  };
 }
 
 function createShutdownSignal(): AbortSignal {
