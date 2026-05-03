@@ -147,3 +147,14 @@ Run: https://github.com/777genius/rr-saas-fresh-e2e-1777846695703/actions/runs/2
 Result: failed intentionally with 1 critical finding
 Inline: auth.js:5, title "Login accepts any email"
 ```
+
+Latest setup-only smoke after workflow provisioning fail-closed hardening:
+
+```text
+Repo: 777genius/rr-saas-fresh-e2e-1777847561393
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777847561393/pull/1
+Result: setup PR merged successfully
+Post-merge health: present, expectedActionRefFound=true
+Action ref: 777genius/review-router@main
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=setup pnpm beta:check
+```
