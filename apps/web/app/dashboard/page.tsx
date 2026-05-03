@@ -10,6 +10,10 @@ import {
 } from "@reviewrouter/features-entitlements";
 import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import {
+  listWorkspaceOutboxFailures,
+  PrismaOutboxEventRepository,
+} from "@reviewrouter/features-outbox";
+import {
   findReviewConfiguration,
   PrismaReviewConfigurationRepository,
   safeDefaultReviewConfiguration,
@@ -22,6 +26,7 @@ import { getPrisma } from "../../src/server/prisma";
 import {
   createSetupPullRequestAction,
   requestInstallationSyncAction,
+  retryOutboxEventAction,
   saveWorkspaceReviewConfigAction,
 } from "./actions";
 
@@ -93,6 +98,7 @@ async function loadDashboardData(
   const healthStore = new PrismaRepositoryHealthRepository(prisma);
   const entitlementStore = new PrismaEntitlementRepository(prisma);
   const reviewConfigStore = new PrismaReviewConfigurationRepository(prisma);
+  const outboxStore = new PrismaOutboxEventRepository(prisma);
 
   return Promise.all(
     workspaces.map(
@@ -109,6 +115,7 @@ async function loadDashboardData(
         >[number][];
         entitlement: ReturnType<typeof freeBetaEntitlement>;
         reviewConfig: Awaited<ReturnType<typeof findReviewConfiguration>>;
+        outboxFailures: Awaited<ReturnType<typeof listWorkspaceOutboxFailures>>;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -129,6 +136,10 @@ async function loadDashboardData(
           { scope: "workspace", workspaceId: workspace.id },
           { configurations: reviewConfigStore },
         );
+        const outboxFailures = await listWorkspaceOutboxFailures(
+          { workspaceId: workspace.id, limit: 5 },
+          { outbox: outboxStore },
+        );
 
         return {
           workspace: {
@@ -147,6 +158,7 @@ async function loadDashboardData(
           entitlement,
           health,
           reviewConfig,
+          outboxFailures,
         };
       },
     ),
@@ -219,8 +231,14 @@ function WorkspaceCard({
   readonly data: DashboardWorkspaceData;
   readonly mutationsEnabled: boolean;
 }): React.ReactElement {
-  const { workspace, repositoryCount, repositories, entitlement, health } =
-    data;
+  const {
+    workspace,
+    repositoryCount,
+    repositories,
+    entitlement,
+    health,
+    outboxFailures,
+  } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
   const activeConfigVersion = data.reviewConfig?.version ?? 1;
@@ -431,6 +449,67 @@ function WorkspaceCard({
         </div>
       ) : null}
 
+      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Badge tone={outboxFailures.length > 0 ? "warning" : "success"}>
+            Operational queue
+          </Badge>
+          <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+            dead letters / retries
+          </span>
+        </div>
+        {outboxFailures.length === 0 ? (
+          <p className="text-sm leading-6 text-slate-400">
+            No stuck or failed background events for this workspace.
+          </p>
+        ) : (
+          <div className="grid gap-3">
+            {outboxFailures.map((event) => (
+              <div
+                key={event.id}
+                className="grid gap-3 rounded-lg border border-amber-200/10 bg-amber-300/10 p-3 md:grid-cols-[1fr_auto]"
+              >
+                <div>
+                  <p className="text-sm font-semibold text-amber-50">
+                    {event.type}@v{event.version} / {event.status}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-300">
+                    Attempts {event.attempts}/{event.maxAttempts}
+                    {event.lastErrorCode ? ` - ${event.lastErrorCode}` : ""}
+                  </p>
+                  {event.safeLastErrorSummary ? (
+                    <p className="mt-1 text-xs leading-5 text-slate-400">
+                      {event.safeLastErrorSummary}
+                    </p>
+                  ) : null}
+                  <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                    Updated {event.updatedAt.toISOString()}
+                  </p>
+                </div>
+                <form action={retryOutboxEventAction} className="self-center">
+                  <input
+                    type="hidden"
+                    name="workspaceId"
+                    value={workspace.id}
+                  />
+                  <input type="hidden" name="eventId" value={event.id} />
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    size="sm"
+                    disabled={
+                      !mutationsEnabled || event.status !== "dead_letter"
+                    }
+                  >
+                    Retry
+                  </Button>
+                </form>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="overflow-hidden rounded-xl border border-cyan-200/10">
         <table className="w-full text-left text-sm">
           <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
@@ -620,6 +699,12 @@ function dashboardNoticeText(notice: string, repository: string): string {
         : "Setup PR is ready.";
     case "review_config_saved":
       return "Review configuration was saved. Future action runs can fetch it through OIDC.";
+    case "outbox_retry_queued":
+      return "Failed background event was queued for retry. Run the worker or wait for it to process.";
+    case "outbox_retry_not_found":
+      return "Failed background event was not found for this workspace.";
+    case "outbox_retry_not_dead_letter":
+      return "Background event is no longer in dead-letter state and was not manually retried.";
     default:
       return "Dashboard action completed.";
   }

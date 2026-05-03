@@ -33,6 +33,7 @@ export async function runOutboxWorkerLoop(
 ): Promise<OutboxWorkerLoopResult> {
   const total = {
     iterations: 0,
+    recoveredStale: 0,
     claimed: 0,
     processed: 0,
     retried: 0,
@@ -44,6 +45,7 @@ export async function runOutboxWorkerLoop(
     total.iterations += 1;
     try {
       const result = await dependencies.processor.processBatch();
+      total.recoveredStale += result.recoveredStale;
       total.claimed += result.claimed;
       total.processed += result.processed;
       total.retried += result.retried;
@@ -54,7 +56,9 @@ export async function runOutboxWorkerLoop(
       );
 
       const delayMs =
-        result.claimed > 0 ? input.busyDelayMs : input.idleDelayMs;
+        result.claimed > 0 || result.recoveredStale > 0
+          ? input.busyDelayMs
+          : input.idleDelayMs;
       if (shouldContinue(input, total.iterations)) {
         await dependencies.sleep(delayMs, input.signal);
       }

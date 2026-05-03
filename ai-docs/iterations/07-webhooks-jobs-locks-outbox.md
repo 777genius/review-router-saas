@@ -43,6 +43,13 @@ Make backend safe for duplicate GitHub webhooks and multiple worker instances.
 - Worker polling uses separate busy/idle/error delays.
 - Unexpected worker errors are logged through a redacted safe summary.
 - If no outbox handlers are registered, the worker exits without claiming events. This prevents misconfigured deployments from turning pending side effects into dead letters.
+- Worker recovers stale `processing` events after `REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS` instead of leaving them stuck forever after a crash.
+- Dashboard exposes recent outbox failures and supports audited manual retry for `dead_letter` events.
+- Local DB E2E covers dead-letter retry and stale processing recovery:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
+```
 
 Current smoke:
 

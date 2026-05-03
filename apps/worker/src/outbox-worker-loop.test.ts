@@ -30,6 +30,7 @@ class MemoryLogger implements Logger {
 }
 
 const result = (claimed: number) => ({
+  recoveredStale: 0,
   claimed,
   processed: claimed,
   retried: 0,
@@ -64,6 +65,7 @@ describe("outbox worker loop", () => {
 
     expect(summary).toEqual({
       iterations: 3,
+      recoveredStale: 0,
       claimed: 3,
       processed: 3,
       retried: 0,
@@ -71,6 +73,43 @@ describe("outbox worker loop", () => {
       errors: 0,
     });
     expect(sleeps).toEqual([10, 100]);
+  });
+
+  it("uses busy delay after stale event recovery", async () => {
+    const logger = new MemoryLogger();
+    const sleeps: number[] = [];
+    const batches = [
+      {
+        recoveredStale: 1,
+        claimed: 0,
+        processed: 0,
+        retried: 0,
+        deadLettered: 0,
+      },
+      result(0),
+    ];
+
+    const summary = await runOutboxWorkerLoop(
+      {
+        signal: new AbortController().signal,
+        busyDelayMs: 10,
+        idleDelayMs: 100,
+        errorDelayMs: 1000,
+        maxIterations: 2,
+      },
+      {
+        logger,
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+        },
+        processor: {
+          processBatch: async () => batches.shift() ?? result(0),
+        },
+      },
+    );
+
+    expect(summary.recoveredStale).toBe(1);
+    expect(sleeps).toEqual([10]);
   });
 
   it("logs safe errors and continues polling", async () => {

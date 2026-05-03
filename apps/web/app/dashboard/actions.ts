@@ -7,7 +7,10 @@ import {
   PrismaAuditLogRepository,
 } from "@reviewrouter/features-audit-log";
 import { OutboxInstallationSyncRequester } from "@reviewrouter/features-github-installations";
-import { PrismaOutboxEventRepository } from "@reviewrouter/features-outbox";
+import {
+  PrismaOutboxEventRepository,
+  retryDeadLetterOutboxEvent,
+} from "@reviewrouter/features-outbox";
 import {
   PrismaReviewConfigurationRepository,
   resolveReviewRuntimeEnv,
@@ -233,6 +236,53 @@ export async function saveWorkspaceReviewConfigAction(
     );
 
     params = { notice: "review_config_saved", version: String(saved.version) };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function retryOutboxEventAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const eventId = readFormString(formData, "eventId");
+  let params: Record<string, string>;
+
+  try {
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const outbox = new PrismaOutboxEventRepository(prisma);
+    const result = await new PostgresAdvisoryLock(prisma).withLock(
+      `outbox:${eventId}:retry`,
+      30_000,
+      async () =>
+        retryDeadLetterOutboxEvent(
+          { workspaceId, eventId },
+          { outbox, clock: { now: () => new Date() } },
+        ),
+    );
+
+    await recordAuditEvent(
+      {
+        workspaceId,
+        actor: actor.actor,
+        action: "outbox.retry_requested",
+        targetType: "outbox_event",
+        targetId: eventId,
+        metadata: { result },
+      },
+      { auditLog: new PrismaAuditLogRepository(prisma) },
+    );
+
+    params = {
+      notice:
+        result.status === "queued"
+          ? "outbox_retry_queued"
+          : `outbox_retry_${result.status}`,
+    };
   } catch (error) {
     params = { error: safeDashboardErrorCode(error) };
   }

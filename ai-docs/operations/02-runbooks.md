@@ -51,3 +51,24 @@ Steps:
 4. verify installation token minting
 5. revoke old private key
 6. record audit/ops event
+
+## Outbox Dead Letter Or Stuck Processing
+
+Check:
+
+1. dashboard `Operational queue` section for the workspace
+2. `OutboxEvent.status`, `lastErrorCode`, and `safeLastErrorSummary`
+3. worker logs for redacted safe error summaries
+4. GitHub App permissions or external state if the error is permission-related
+5. whether the worker is running with at least one registered handler
+
+Recovery:
+
+1. fix the underlying cause first
+2. for `dead_letter`, click `Retry` in dashboard or call the maintenance use case
+3. for stale `processing`, let worker recovery requeue it after `REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS`
+4. run the worker and verify the event reaches `processed`
+5. check audit for `outbox.retry_requested` when manual retry was used
+
+Do not manually edit payload JSON in production. If payload migration is needed,
+ship an explicit versioned migration or a new handler version.

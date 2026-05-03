@@ -1,5 +1,6 @@
 import type { Clock } from "@reviewrouter/shared";
 import {
+  defaultOutboxProcessingStaleAfterMs,
   nextOutboxRetryAt,
   outboxHandlerKey,
   safeOutboxErrorSummary,
@@ -8,6 +9,7 @@ import {
 import type { OutboxEventRepositoryPort } from "../ports/outbox-event-repository-port";
 
 export type ProcessOutboxBatchResult = {
+  readonly recoveredStale: number;
   readonly claimed: number;
   readonly processed: number;
   readonly retried: number;
@@ -18,6 +20,7 @@ export async function processOutboxBatch(
   input: {
     readonly limit: number;
     readonly handlers: readonly OutboxHandler[];
+    readonly processingStaleAfterMs?: number;
   },
   dependencies: {
     readonly outbox: OutboxEventRepositoryPort;
@@ -25,6 +28,15 @@ export async function processOutboxBatch(
   },
 ): Promise<ProcessOutboxBatchResult> {
   const now = dependencies.clock.now();
+  const processingStaleAfterMs =
+    input.processingStaleAfterMs ?? defaultOutboxProcessingStaleAfterMs;
+  const recoveredStale = await dependencies.outbox.recoverStaleProcessing({
+    staleBefore: new Date(now.getTime() - processingStaleAfterMs),
+    nextAttemptAt: now,
+    limit: input.limit,
+    errorCode: "processing_stale",
+    safeErrorSummary: `Processing exceeded ${processingStaleAfterMs}ms and was requeued for retry.`,
+  });
   const events = await dependencies.outbox.claimDue({
     limit: input.limit,
     now,
@@ -84,5 +96,11 @@ export async function processOutboxBatch(
     }
   }
 
-  return { claimed: events.length, processed, retried, deadLettered };
+  return {
+    recoveredStale: recoveredStale.recovered,
+    claimed: events.length,
+    processed,
+    retried,
+    deadLettered,
+  };
 }

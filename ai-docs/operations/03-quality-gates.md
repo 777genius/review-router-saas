@@ -51,6 +51,7 @@ The default CI workflow must not require GitHub App private keys, Codex OAuth fi
 - concurrent provisioning cannot create duplicate PRs
 - external failures persist actionable error summary
 - tests cover retry or duplicate scenario for critical jobs
+- outbox dead-letter retry and stale processing recovery have DB-backed smoke coverage
 
 ## UX Gate
 

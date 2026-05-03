@@ -1,23 +1,33 @@
 import { describe, expect, it } from "vitest";
 import type { Clock } from "@reviewrouter/shared";
 import type { OutboxEventRepositoryPort } from "../application/ports/outbox-event-repository-port";
+import type { OutboxMaintenanceRepositoryPort } from "../application/ports/outbox-maintenance-repository-port";
 import { enqueueOutboxEvent } from "../application/use-cases/enqueue-outbox-event";
+import { listWorkspaceOutboxFailures } from "../application/use-cases/list-workspace-outbox-failures";
 import { processOutboxBatch } from "../application/use-cases/process-outbox-batch";
+import { retryDeadLetterOutboxEvent } from "../application/use-cases/retry-dead-letter-outbox-event";
 import {
   OutboxHandlerError,
+  type OutboxFailure,
+  type OutboxFailureStatus,
   type NewOutboxEvent,
   type OutboxEvent,
+  type OutboxEventStatus,
+  type RetryDeadLetterOutboxEventResult,
 } from "../domain/outbox-event";
 
 const now = new Date("2026-05-03T12:00:00.000Z");
 const clock: Clock = { now: () => now };
 
-class InMemoryOutboxRepository implements OutboxEventRepositoryPort {
+class InMemoryOutboxRepository
+  implements OutboxEventRepositoryPort, OutboxMaintenanceRepositoryPort
+{
   public readonly events = new Map<
     string,
     OutboxEvent & {
       readonly lastErrorCode?: string;
       readonly safeLastErrorSummary?: string;
+      readonly updatedAt: Date;
     }
   >();
 
@@ -43,8 +53,37 @@ class InMemoryOutboxRepository implements OutboxEventRepositoryPort {
       maxAttempts: event.maxAttempts ?? 5,
       nextAttemptAt: null,
       occurredAt: event.occurredAt,
+      updatedAt: event.occurredAt,
     });
     return { created: true };
+  }
+
+  async recoverStaleProcessing(input: {
+    readonly staleBefore: Date;
+    readonly nextAttemptAt: Date;
+    readonly limit: number;
+    readonly errorCode: string;
+    readonly safeErrorSummary: string;
+  }): Promise<{ readonly recovered: number }> {
+    const stale = [...this.events.values()]
+      .filter(
+        (event) =>
+          event.status === "processing" && event.updatedAt < input.staleBefore,
+      )
+      .slice(0, input.limit);
+
+    for (const event of stale) {
+      this.events.set(event.idempotencyKey, {
+        ...event,
+        status: "retry_wait",
+        nextAttemptAt: input.nextAttemptAt,
+        lastErrorCode: input.errorCode,
+        safeLastErrorSummary: input.safeErrorSummary,
+        updatedAt: input.nextAttemptAt,
+      });
+    }
+
+    return { recovered: stale.length };
   }
 
   async claimDue(input: {
@@ -66,6 +105,7 @@ class InMemoryOutboxRepository implements OutboxEventRepositoryPort {
         status: "processing",
         attempts: event.attempts + 1,
         nextAttemptAt: null,
+        updatedAt: input.now,
       });
     }
     return due.map((event) => ({
@@ -77,7 +117,7 @@ class InMemoryOutboxRepository implements OutboxEventRepositoryPort {
   }
 
   async markProcessed(input: { readonly id: string }): Promise<void> {
-    this.updateById(input.id, { status: "processed" });
+    this.updateById(input.id, { status: "processed", updatedAt: now });
   }
 
   async markRetry(input: {
@@ -91,6 +131,7 @@ class InMemoryOutboxRepository implements OutboxEventRepositoryPort {
       nextAttemptAt: input.nextAttemptAt,
       lastErrorCode: input.errorCode,
       safeLastErrorSummary: input.safeErrorSummary,
+      updatedAt: input.nextAttemptAt,
     });
   }
 
@@ -103,7 +144,67 @@ class InMemoryOutboxRepository implements OutboxEventRepositoryPort {
       status: "dead_letter",
       lastErrorCode: input.errorCode,
       safeLastErrorSummary: input.safeErrorSummary,
+      updatedAt: now,
     });
+  }
+
+  async listWorkspaceFailures(input: {
+    readonly workspaceId: string;
+    readonly limit: number;
+  }): Promise<readonly OutboxFailure[]> {
+    return [...this.events.values()]
+      .filter(
+        (event) =>
+          event.workspaceId === input.workspaceId &&
+          ["processing", "retry_wait", "dead_letter"].includes(event.status),
+      )
+      .slice(0, input.limit)
+      .map((event) => ({
+        id: event.id,
+        type: event.type,
+        version: event.version,
+        workspaceId: event.workspaceId,
+        repositoryId: event.repositoryId,
+        status: event.status as OutboxFailureStatus,
+        attempts: event.attempts,
+        maxAttempts: event.maxAttempts,
+        nextAttemptAt: event.nextAttemptAt,
+        lastErrorCode: event.lastErrorCode ?? null,
+        safeLastErrorSummary: event.safeLastErrorSummary ?? null,
+        occurredAt: event.occurredAt,
+        updatedAt: event.updatedAt,
+      }));
+  }
+
+  async retryDeadLetter(input: {
+    readonly workspaceId: string;
+    readonly eventId: string;
+    readonly retriedAt: Date;
+  }): Promise<RetryDeadLetterOutboxEventResult> {
+    const existing = [...this.events.values()].find(
+      (event) =>
+        event.id === input.eventId && event.workspaceId === input.workspaceId,
+    );
+    if (!existing) {
+      return { status: "not_found" };
+    }
+    if (existing.status !== "dead_letter") {
+      return {
+        status: "not_dead_letter",
+        currentStatus: existing.status as OutboxEventStatus,
+      };
+    }
+    const { lastErrorCode, safeLastErrorSummary, ...cleanExisting } = existing;
+    void lastErrorCode;
+    void safeLastErrorSummary;
+    this.events.set(existing.idempotencyKey, {
+      ...cleanExisting,
+      status: "pending",
+      attempts: 0,
+      nextAttemptAt: null,
+      updatedAt: input.retriedAt,
+    });
+    return { status: "queued" };
   }
 
   private updateById(
@@ -111,6 +212,7 @@ class InMemoryOutboxRepository implements OutboxEventRepositoryPort {
     patch: Partial<OutboxEvent> & {
       readonly lastErrorCode?: string;
       readonly safeLastErrorSummary?: string;
+      readonly updatedAt?: Date;
     },
   ): void {
     const existing = [...this.events.values()].find((event) => event.id === id);
@@ -166,6 +268,7 @@ describe("outbox", () => {
     );
 
     expect(result).toEqual({
+      recoveredStale: 0,
       claimed: 1,
       processed: 1,
       retried: 0,
@@ -255,6 +358,7 @@ describe("outbox", () => {
       maxAttempts: 5,
       nextAttemptAt: null,
       occurredAt: now,
+      updatedAt: now,
     });
 
     await expect(
@@ -283,5 +387,102 @@ describe("outbox", () => {
       status: "dead_letter",
       lastErrorCode: "permission_denied",
     });
+  });
+
+  it("recovers stale processing events before claiming due work", async () => {
+    const outbox = new InMemoryOutboxRepository();
+    outbox.events.set("repo:stale", {
+      id: "repo:stale",
+      type: "repo.workflow_provision_requested",
+      version: 1,
+      idempotencyKey: "repo:stale",
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      aggregateId: null,
+      payload: { repoId: "repo_1" },
+      status: "processing",
+      attempts: 1,
+      maxAttempts: 5,
+      nextAttemptAt: null,
+      occurredAt: now,
+      updatedAt: new Date(now.getTime() - 120_000),
+    });
+
+    const result = await processOutboxBatch(
+      {
+        limit: 10,
+        processingStaleAfterMs: 60_000,
+        handlers: [
+          {
+            type: "repo.workflow_provision_requested",
+            version: 1,
+            handle: async () => undefined,
+          },
+        ],
+      },
+      { outbox, clock },
+    );
+
+    expect(result).toEqual({
+      recoveredStale: 1,
+      claimed: 1,
+      processed: 1,
+      retried: 0,
+      deadLettered: 0,
+    });
+    expect(outbox.events.get("repo:stale")).toMatchObject({
+      status: "processed",
+      attempts: 2,
+    });
+  });
+
+  it("lists and retries dead-letter events inside a workspace", async () => {
+    const outbox = new InMemoryOutboxRepository();
+    outbox.events.set("repo:dead", {
+      id: "event_dead",
+      type: "repo.workflow_provision_requested",
+      version: 1,
+      idempotencyKey: "repo:dead",
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      aggregateId: null,
+      payload: { repoId: "repo_1" },
+      status: "dead_letter",
+      attempts: 5,
+      maxAttempts: 5,
+      nextAttemptAt: null,
+      occurredAt: now,
+      updatedAt: now,
+      lastErrorCode: "permission_denied",
+      safeLastErrorSummary: "Permission denied",
+    });
+
+    await expect(
+      listWorkspaceOutboxFailures(
+        { workspaceId: "workspace_1", limit: 10 },
+        { outbox },
+      ),
+    ).resolves.toMatchObject([
+      {
+        id: "event_dead",
+        status: "dead_letter",
+        lastErrorCode: "permission_denied",
+      },
+    ]);
+
+    await expect(
+      retryDeadLetterOutboxEvent(
+        { workspaceId: "workspace_1", eventId: "event_dead" },
+        { outbox, clock },
+      ),
+    ).resolves.toEqual({ status: "queued" });
+
+    const retried = outbox.events.get("repo:dead");
+    expect(retried).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
+    expect(retried).not.toHaveProperty("lastErrorCode");
+    expect(retried).not.toHaveProperty("safeLastErrorSummary");
   });
 });

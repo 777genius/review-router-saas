@@ -2,6 +2,13 @@ import type { NewOutboxEvent, OutboxEvent } from "../../domain/outbox-event";
 
 export interface OutboxEventRepositoryPort {
   enqueue(event: NewOutboxEvent): Promise<{ readonly created: boolean }>;
+  recoverStaleProcessing(input: {
+    readonly staleBefore: Date;
+    readonly nextAttemptAt: Date;
+    readonly limit: number;
+    readonly errorCode: string;
+    readonly safeErrorSummary: string;
+  }): Promise<{ readonly recovered: number }>;
   claimDue(input: {
     readonly limit: number;
     readonly now: Date;

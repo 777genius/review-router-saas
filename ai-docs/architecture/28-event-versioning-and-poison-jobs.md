@@ -31,6 +31,7 @@ Do not silently parse unknown event versions as latest.
 - handler records attempts and last error
 - handler has max attempts
 - handler can schedule retry with backoff
+- stale `processing` events must recover automatically after a conservative timeout
 
 ## Poison Jobs
 
@@ -45,6 +46,17 @@ mark as dead_letter or failed_permanent
 surface safe summary in support dashboard
 require manual retry after fix
 ```
+
+Manual retry must be explicit, authorized, and audited. It should reset a
+`dead_letter` event to `pending`, reset attempts, and let the normal worker path
+process it again. Do not mutate the payload during retry.
+
+Stale `processing` recovery is different from manual retry:
+
+- it only applies to events claimed by a worker but not completed before timeout
+- it requeues as `retry_wait` with a safe `processing_stale` summary
+- it should use a high enough timeout to avoid duplicate long-running work
+- it must remain idempotent because more than one worker can attempt recovery
 
 ## Dead Letter Fields
 
@@ -76,3 +88,4 @@ During rolling deploys:
 - transient GitHub rate limit retries with backoff
 - permanent permission error stops retrying and is user-visible
 - manual retry works after state is fixed
+- stale processing event is recovered and then processed

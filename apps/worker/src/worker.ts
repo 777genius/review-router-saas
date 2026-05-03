@@ -44,9 +44,13 @@ async function main(): Promise<void> {
 
     const outbox = new PrismaOutboxEventRepository(prisma);
     const limit = readPositiveIntegerEnv("REVIEW_ROUTER_OUTBOX_BATCH_SIZE", 25);
+    const processingStaleAfterMs = readPositiveIntegerEnv(
+      "REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS",
+      15 * 60 * 1000,
+    );
     const processBatch = () =>
       processOutboxBatch(
-        { limit, handlers },
+        { limit, handlers, processingStaleAfterMs },
         {
           outbox,
           clock,

@@ -28,6 +28,30 @@ export const outboxEventSchema = z.object({
 
 export type OutboxEvent = z.infer<typeof outboxEventSchema>;
 
+export const outboxFailureStatusSchema = z.enum([
+  "processing",
+  "retry_wait",
+  "dead_letter",
+]);
+
+export type OutboxFailureStatus = z.infer<typeof outboxFailureStatusSchema>;
+
+export type OutboxFailure = {
+  readonly id: string;
+  readonly type: string;
+  readonly version: number;
+  readonly workspaceId: string | null;
+  readonly repositoryId: string | null;
+  readonly status: OutboxFailureStatus;
+  readonly attempts: number;
+  readonly maxAttempts: number;
+  readonly nextAttemptAt: Date | null;
+  readonly lastErrorCode: string | null;
+  readonly safeLastErrorSummary: string | null;
+  readonly occurredAt: Date;
+  readonly updatedAt: Date;
+};
+
 export type NewOutboxEvent = {
   readonly type: string;
   readonly version: number;
@@ -56,6 +80,16 @@ export type OutboxHandler = {
   readonly version: number;
   handle(event: OutboxEvent): Promise<void>;
 };
+
+export type RetryDeadLetterOutboxEventResult =
+  | { readonly status: "queued" }
+  | { readonly status: "not_found" }
+  | {
+      readonly status: "not_dead_letter";
+      readonly currentStatus: OutboxEventStatus;
+    };
+
+export const defaultOutboxProcessingStaleAfterMs = 15 * 60 * 1000;
 
 export function outboxHandlerKey(type: string, version: number): string {
   return `${type}@v${version}`;
