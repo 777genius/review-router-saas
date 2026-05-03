@@ -54,6 +54,9 @@ export default function SupportPage(): React.ReactElement {
             <LinkButton href="/status" variant="ghost">
               Status
             </LinkButton>
+            <LinkButton href="/disconnect" variant="ghost">
+              Disconnect
+            </LinkButton>
           </div>
         </div>
 

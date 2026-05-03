@@ -38,6 +38,9 @@ export default function PrivacyPage(): React.ReactElement {
             <LinkButton href="/support" variant="ghost">
               Support
             </LinkButton>
+            <LinkButton href="/disconnect" variant="ghost">
+              Disconnect
+            </LinkButton>
           </div>
         </div>
 

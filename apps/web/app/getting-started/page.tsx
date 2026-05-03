@@ -57,6 +57,9 @@ export default function GettingStartedPage(): React.ReactElement {
             <LinkButton href="/privacy" variant="ghost">
               Privacy
             </LinkButton>
+            <LinkButton href="/disconnect" variant="ghost">
+              Disconnect
+            </LinkButton>
           </div>
         </div>
 

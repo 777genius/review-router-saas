@@ -79,6 +79,7 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - repeatable full review E2E script with Codex OAuth
 - trusted-beta support page with safe report template and secret redaction rules
 - trusted-beta privacy, terms, and status draft pages
+- trusted-beta disconnect page covering App uninstall, workflow cleanup, secret deletion, and workspace deletion request path
 
 ## Remaining Before Public Launch
 
