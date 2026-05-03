@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { loadRuntimeEnv, resolveReviewRouterActionRef } from "./index";
+import {
+  isWorkflowProvisioningEnabled,
+  loadRuntimeEnv,
+  resolveReviewRouterActionRef,
+} from "./index";
 
 describe("platform config", () => {
   it("defaults beta workflow provisioning to live ReviewRouter main", () => {
@@ -35,5 +39,20 @@ describe("platform config", () => {
     expect(resolveReviewRouterActionRef(env)).toBe(
       "777genius/review-router@main",
     );
+  });
+
+  it("requires explicit workflow provisioning enablement and lets disable win", () => {
+    expect(isWorkflowProvisioningEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(
+      isWorkflowProvisioningEnabled({
+        REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isWorkflowProvisioningEnabled({
+        REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
+        REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
   });
 });

@@ -24,7 +24,10 @@ import {
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
 import type { PrismaClient } from "@reviewrouter/platform-db";
-import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
+import {
+  isWorkflowProvisioningEnabled,
+  resolveReviewRouterActionRef,
+} from "@reviewrouter/platform-config";
 import { OctokitRepositoryWorkflowProbe } from "@reviewrouter/features-repo-health";
 import {
   defaultWorkflowPath,
@@ -219,8 +222,7 @@ export async function createSetupPullRequestAction(
               setupGateway: new OctokitWorkflowSetupGateway(octokit),
               provisioning: new PrismaWorkflowProvisioningRepository(prisma),
               auditLog: new PrismaAuditLogRepository(prisma),
-              enabled:
-                process.env.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING !== "0",
+              enabled: isWorkflowProvisioningEnabled(),
             },
           ),
       );
