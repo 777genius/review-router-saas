@@ -34,6 +34,15 @@ Run: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/actions/runs/2
 Result: setup PR merged, workflow detected on main, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
 ```
 
+Latest local + DB beta gate:
+
+```text
+Date: 2026-05-04 02:19 EEST
+Command: REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
+Result: passed.
+Coverage: local readiness, unit/integration tests, typecheck, lint, format, production build, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
+```
+
 ## Public Beta Must Have
 
 - clear privacy statement: ReviewRouter SaaS does not store code, diffs, or Codex OAuth in v1
