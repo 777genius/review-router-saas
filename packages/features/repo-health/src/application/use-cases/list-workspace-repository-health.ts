@@ -15,6 +15,7 @@ export async function listWorkspaceRepositoryHealth(
     readonly expectedActionRef: string;
     readonly workflowPath?: string;
     readonly workflowProbeMaxRepositories?: number;
+    readonly actionHealthStaleAfterMs?: number;
     readonly checkedAt?: Date;
   },
   dependencies: {
@@ -31,6 +32,9 @@ export async function listWorkspaceRepositoryHealth(
     repositories.map((repository) => ({
       ...repository,
       expectedActionRef: input.expectedActionRef,
+      ...(input.actionHealthStaleAfterMs !== undefined
+        ? { actionHealthStaleAfterMs: input.actionHealthStaleAfterMs }
+        : {}),
     })),
     {
       workflowPath: input.workflowPath ?? defaultRepositoryHealthWorkflowPath,

@@ -6,7 +6,10 @@ export type RepositoryHealthStatus =
   | "workflow_check_unavailable"
   | "provider_needs_setup"
   | "provider_unhealthy"
+  | "provider_report_stale"
   | "needs_attention";
+
+export const defaultActionHealthStaleAfterMs = 24 * 60 * 60 * 1000;
 
 export type RepositoryWorkflowCheck =
   | { readonly status: "present"; readonly expectedActionRefFound: boolean }
@@ -41,6 +44,8 @@ export type RepositoryHealthInput = {
     | "stale_or_invalid"
     | "unavailable_in_fork_pr"
     | null;
+  readonly latestActionHealthReceivedAt?: Date | null;
+  readonly actionHealthStaleAfterMs?: number;
 };
 
 export type RepositoryHealthSnapshot = {
@@ -138,8 +143,31 @@ export function evaluateRepositoryHealth(
       checkedAt,
     );
   }
+  if (isActionHealthReportStale(input, checkedAt)) {
+    return snapshot(
+      input,
+      "provider_report_stale",
+      "No recent action health report from the installed workflow",
+      checkedAt,
+    );
+  }
 
   return snapshot(input, "healthy", "Ready", checkedAt);
+}
+
+function isActionHealthReportStale(
+  input: RepositoryHealthInput,
+  checkedAt: Date,
+): boolean {
+  if (!input.latestActionHealthReceivedAt) {
+    return false;
+  }
+  const staleAfterMs =
+    input.actionHealthStaleAfterMs ?? defaultActionHealthStaleAfterMs;
+  return (
+    checkedAt.getTime() - input.latestActionHealthReceivedAt.getTime() >
+    staleAfterMs
+  );
 }
 
 function snapshot(

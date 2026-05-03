@@ -27,6 +27,7 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
           select: {
             providerHealth: true,
             providerSetupState: true,
+            receivedAt: true,
           },
         },
       },
@@ -46,6 +47,7 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
         expectedActionRef: "",
         latestProviderHealth: latestHealth?.providerHealth ?? null,
         latestProviderSetupState: latestHealth?.providerSetupState ?? null,
+        latestActionHealthReceivedAt: latestHealth?.receivedAt ?? null,
       };
     });
   }

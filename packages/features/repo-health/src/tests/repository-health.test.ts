@@ -95,6 +95,25 @@ describe("repository health", () => {
         latestProviderHealth: "failed",
       }),
     ).toMatchObject({ status: "provider_unhealthy" });
+
+    expect(
+      evaluateRepositoryHealth(
+        {
+          repositoryId: "repo_1",
+          fullName: "777genius/example",
+          setupStatus: "configured",
+          expectedActionRef: "777genius/review-router@v1",
+          latestProviderSetupState: "configured",
+          latestProviderHealth: "ok",
+          latestActionHealthReceivedAt: new Date("2026-05-02T00:00:00.000Z"),
+          actionHealthStaleAfterMs: 60 * 60 * 1000,
+        },
+        new Date("2026-05-03T00:00:00.000Z"),
+      ),
+    ).toMatchObject({
+      status: "provider_report_stale",
+      summary: "No recent action health report from the installed workflow",
+    });
   });
 
   it("enriches configured repositories with workflow probe metadata", async () => {
@@ -158,6 +177,35 @@ describe("repository health", () => {
       expect.objectContaining({
         repositoryId: "repo_1",
         status: "workflow_check_unavailable",
+      }),
+    ]);
+  });
+
+  it("applies stale action health thresholds in workspace health", async () => {
+    const repositories = new InMemoryHealthRepository([
+      {
+        ...healthInput("repo_1", "configured"),
+        latestProviderSetupState: "configured",
+        latestProviderHealth: "ok",
+        latestActionHealthReceivedAt: new Date("2026-05-03T10:00:00.000Z"),
+      },
+    ]);
+
+    const health = await listWorkspaceRepositoryHealth(
+      {
+        workspaceId: "workspace_1",
+        expectedActionRef: "777genius/review-router@v1",
+        workflowProbeMaxRepositories: 0,
+        actionHealthStaleAfterMs: 30 * 60 * 1000,
+        checkedAt: new Date("2026-05-03T11:00:01.000Z"),
+      },
+      { repositories },
+    );
+
+    expect(health).toEqual([
+      expect.objectContaining({
+        repositoryId: "repo_1",
+        status: "provider_report_stale",
       }),
     ]);
   });
