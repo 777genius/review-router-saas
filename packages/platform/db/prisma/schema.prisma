@@ -178,8 +178,8 @@ model ActionRunHealthReport {
   workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
+  @@unique([repositoryId, githubRunId, githubRunAttempt])
   @@index([workspaceId, receivedAt])
-  @@index([repositoryId, githubRunId, githubRunAttempt])
 }
 
 model WorkflowProvisioning {

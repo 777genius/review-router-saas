@@ -79,8 +79,42 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
         : {}),
     };
 
-    await this.prisma.actionRunHealthReport.create({
-      data: {
+    const data = {
+      workspaceId: input.session.workspaceId,
+      repositoryId: input.session.repositoryId,
+      githubRunId: input.session.githubRunId,
+      githubRunAttempt: input.session.githubRunAttempt,
+      eventName: input.session.eventName,
+      actionVersion: input.report.actionVersion,
+      configVersion: input.report.configVersion,
+      providerSetupState: input.report.providerSetupState,
+      providerHealth: input.report.providerHealth,
+      safeErrorCategory: input.report.safeErrorCategory,
+      receivedAt: input.receivedAt,
+      ...optionalData,
+    };
+
+    await this.prisma.actionRunHealthReport.upsert({
+      where: {
+        repositoryId_githubRunId_githubRunAttempt: {
+          repositoryId: input.session.repositoryId,
+          githubRunId: input.session.githubRunId,
+          githubRunAttempt: input.session.githubRunAttempt,
+        },
+      },
+      update: {
+        eventName: data.eventName,
+        actionVersion: data.actionVersion,
+        configVersion: data.configVersion,
+        providerSetupState: data.providerSetupState,
+        providerHealth: data.providerHealth,
+        safeErrorCategory: data.safeErrorCategory,
+        safeErrorSummary: data.safeErrorSummary ?? null,
+        startedAt: data.startedAt ?? null,
+        finishedAt: data.finishedAt ?? null,
+        receivedAt: data.receivedAt,
+      },
+      create: {
         workspaceId: input.session.workspaceId,
         repositoryId: input.session.repositoryId,
         githubRunId: input.session.githubRunId,

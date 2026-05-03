@@ -118,18 +118,49 @@ try {
   if (health.statusCode !== 200) {
     throw new Error(`health failed: ${health.statusCode} ${health.body}`);
   }
+  const healthRetry = await app.inject({
+    method: "POST",
+    url: "/api/action/health-report",
+    headers: { authorization: `Bearer ${session.sessionToken}` },
+    payload: {
+      actionVersion: "local-e2e",
+      configVersion: config.json<{ readonly configVersion: number }>()
+        .configVersion,
+      providerSetupState: "configured",
+      providerHealth: "degraded",
+      safeErrorCategory: "runtime_error",
+      safeErrorSummary: "provider returned a retryable local e2e error",
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+    },
+  });
+  if (healthRetry.statusCode !== 200) {
+    throw new Error(
+      `health retry failed: ${healthRetry.statusCode} ${healthRetry.body}`,
+    );
+  }
 
-  const recorded = await prisma.actionRunHealthReport.findFirst({
+  const recordedReports = await prisma.actionRunHealthReport.findMany({
     where: { repositoryId: repository.id, githubRunId: runId },
     select: {
       id: true,
       providerHealth: true,
       providerSetupState: true,
       configVersion: true,
+      safeErrorSummary: true,
     },
   });
+  const recorded = recordedReports[0];
   if (!recorded) {
     throw new Error("health report was not recorded");
+  }
+  if (recordedReports.length !== 1) {
+    throw new Error(
+      `health report was not idempotent; got ${recordedReports.length} rows`,
+    );
+  }
+  if (recorded.providerHealth !== "degraded") {
+    throw new Error("health retry did not update the existing report");
   }
 
   console.log(
