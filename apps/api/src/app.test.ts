@@ -293,6 +293,66 @@ describe("API app", () => {
     expect(response.json()).toEqual({ error: "invalid_webhook_payload" });
   });
 
+  it("ignores signed unsupported GitHub webhook events without parsing payloads", async () => {
+    const secret = "webhook-secret";
+    const deliveries = new InMemoryDeliveries();
+    const app = await createApiApp({
+      githubWebhookDependencies: {
+        webhookSecret: secret,
+        installations: new InMemoryInstallations(),
+        deliveries,
+        clock: fixedClock,
+      },
+    });
+    const payload = JSON.stringify({ zen: "Non-legacy is the best legacy." });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-ping",
+        "x-github-event": "ping",
+        "x-hub-signature-256": signGitHubWebhookPayload(payload, secret),
+      },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      processed: false,
+      ignored: true,
+      eventName: "ping",
+    });
+    expect(deliveries.deliveries.size).toBe(0);
+  });
+
+  it("rejects unsupported GitHub webhook events before ignore when signature is invalid", async () => {
+    const app = await createApiApp({
+      githubWebhookDependencies: {
+        webhookSecret: "webhook-secret",
+        installations: new InMemoryInstallations(),
+        deliveries: new InMemoryDeliveries(),
+        clock: fixedClock,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: JSON.stringify({ zen: "unsafe" }),
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-unsigned-ping",
+        "x-github-event": "ping",
+        "x-hub-signature-256": "sha256=invalid",
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "invalid_signature" });
+  });
+
   it("serves action OIDC exchange, config fetch, and safe health report", async () => {
     const repositories = new InMemoryActionRepositories();
     const app = await createApiApp({

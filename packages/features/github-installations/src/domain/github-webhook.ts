@@ -46,3 +46,16 @@ export type GitHubWebhookEnvelope = {
   readonly payloadHash?: string;
   readonly payload: GitHubInstallationWebhookPayload;
 };
+
+export const supportedGitHubInstallationWebhookEvents = [
+  "installation",
+  "installation_repositories",
+] as const;
+
+export function isSupportedGitHubInstallationWebhookEvent(
+  eventName: string,
+): eventName is (typeof supportedGitHubInstallationWebhookEvents)[number] {
+  return supportedGitHubInstallationWebhookEvents.includes(
+    eventName as (typeof supportedGitHubInstallationWebhookEvents)[number],
+  );
+}

@@ -1,6 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import rawBody from "fastify-raw-body";
-import { githubInstallationWebhookPayloadSchema } from "../../domain/github-webhook";
+import {
+  githubInstallationWebhookPayloadSchema,
+  isSupportedGitHubInstallationWebhookEvent,
+} from "../../domain/github-webhook";
 import { hashGitHubWebhookPayload } from "../../domain/github-webhook-normalization";
 import { handleGitHubInstallationWebhook } from "../../application/use-cases/handle-github-installation-webhook";
 import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port";
@@ -53,6 +56,11 @@ export async function registerGitHubWebhookRoutes(
       }) === false
     ) {
       return reply.code(401).send({ error: "invalid_signature" });
+    }
+    if (!isSupportedGitHubInstallationWebhookEvent(eventName)) {
+      return reply
+        .code(202)
+        .send({ processed: false, ignored: true, eventName });
     }
 
     const parsedPayload = githubInstallationWebhookPayloadSchema.safeParse(

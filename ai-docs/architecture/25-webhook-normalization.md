@@ -17,11 +17,12 @@ Do not store full raw webhook payloads by default.
 ```text
 1. receive webhook
 2. verify signature
-3. compute payload hash
-4. extract safe normalized fields
-5. store GitHubWebhookDelivery
-6. enqueue job with normalized event id/type
-7. discard raw payload
+3. ignore unsupported event types with `202` and no persistence
+4. compute payload hash for supported event types
+5. extract safe normalized fields
+6. store GitHubWebhookDelivery
+7. enqueue job with normalized event id/type
+8. discard raw payload
 ```
 
 ## Normalized Event Examples
@@ -93,5 +94,5 @@ If a feature requires storing user content:
 - raw webhook body is not persisted
 - normalized event excludes PR body/comment body
 - duplicate delivery id dedupes before enqueueing duplicate job
-- unsupported event stores safe ignored status
+- unsupported signed event is ignored after signature verification and is not persisted
 - payload hash is stored for debugging without storing payload

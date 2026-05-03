@@ -49,6 +49,7 @@ Adapters:
 ## Implemented Baseline
 
 - GitHub webhook route verifies `x-hub-signature-256`, rejects invalid deliveries, and stores only normalized metadata plus a payload hash.
+- Signed unsupported GitHub webhook events, including setup `ping`, are ignored with `202` after signature verification and are not persisted.
 - `installation.created` / active access changes upsert the installation, grant the installing sender owner access for the derived workspace, and enqueue `installation.sync_requested@v1`.
 - `installation_repositories.added|removed` keeps the installation active and enqueues a full installation repository sync.
 - `installation.deleted` marks the installation removed and immediately unselects connected repositories without calling GitHub.
