@@ -78,6 +78,7 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - repeatable fresh repository E2E script
 - repeatable full review E2E script with Codex OAuth
 - trusted-beta support page with safe report template and secret redaction rules
+- trusted-beta privacy, terms, and status draft pages
 
 ## Remaining Before Public Launch
 
@@ -85,8 +86,8 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - configure production GitHub App callback/setup URLs
 - choose production database and backup target
 - run one restore drill against the chosen production backup target
-- write customer-facing terms/privacy
-- define support contact and incident status page/channel
+- replace beta draft legal/status pages with reviewed production text
+- define production support contact and hosted incident status channel
 - decide public beta limits and abuse policy text
 
 ## Not Required For First Private Beta

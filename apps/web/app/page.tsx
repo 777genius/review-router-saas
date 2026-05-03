@@ -61,6 +61,9 @@ export default function HomePage(): React.ReactElement {
             <LinkButton href="/support" variant="ghost">
               Support
             </LinkButton>
+            <LinkButton href="/status" variant="ghost">
+              Status
+            </LinkButton>
           </div>
         </div>
         <Card className="space-y-4">

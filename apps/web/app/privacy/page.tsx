@@ -1,0 +1,120 @@
+import { Badge, Card, LinkButton } from "@reviewrouter/ui";
+
+const collectedMetadata = [
+  "GitHub account login, avatar URL, and GitHub user id after sign-in",
+  "workspace, installation, repository, and selected-repository metadata",
+  "workflow setup PR URLs, action refs, config versions, and safe health summaries",
+  "audit events for setup, config, support diagnostics, and operational actions",
+] as const;
+
+const notCollectedByDefault = [
+  "repository source code",
+  "pull request diffs, prompts, or model responses",
+  "Codex auth.json, refresh tokens, OpenAI API keys, or OpenRouter keys",
+  "raw GitHub webhook payload bodies after normalization",
+] as const;
+
+export default function PrivacyPage(): React.ReactElement {
+  return (
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-12">
+      <section className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
+        <div className="space-y-5">
+          <Badge tone="accent">Privacy draft</Badge>
+          <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
+            Metadata control plane, not code custody.
+          </h1>
+          <p className="max-w-2xl text-lg leading-8 text-slate-300">
+            This trusted-beta privacy draft documents the intended v1 behavior.
+            It is product guidance, not final legal text. Final public launch
+            still needs review under the production domain and company details.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            <LinkButton href="/security" variant="soft" tone="success">
+              Security model
+            </LinkButton>
+            <LinkButton href="/terms" variant="outline">
+              Terms draft
+            </LinkButton>
+            <LinkButton href="/support" variant="ghost">
+              Support
+            </LinkButton>
+          </div>
+        </div>
+
+        <Card className="space-y-4">
+          <Badge tone="success">Core claim</Badge>
+          <h2 className="text-2xl font-semibold text-cyan-50">
+            Review execution stays in customer CI by default.
+          </h2>
+          <p className="text-sm leading-6 text-slate-300">
+            ReviewRouter SaaS stores metadata needed for setup, config, health,
+            audit, and support diagnostics. Provider credentials and review
+            workloads stay in GitHub Actions or a trusted customer runner.
+          </p>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-2">
+        <Card className="space-y-4">
+          <Badge tone="neutral">Stored metadata</Badge>
+          <h2 className="text-2xl font-semibold text-cyan-50">
+            What the SaaS may store
+          </h2>
+          <ul className="grid gap-3 text-sm leading-6 text-slate-300">
+            {collectedMetadata.map((item) => (
+              <li
+                key={item}
+                className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+              >
+                {item}
+              </li>
+            ))}
+          </ul>
+        </Card>
+
+        <Card className="space-y-4 border-lime-300/20">
+          <Badge tone="success">Not stored by default</Badge>
+          <h2 className="text-2xl font-semibold text-cyan-50">
+            What should not enter the SaaS
+          </h2>
+          <ul className="grid gap-3 text-sm leading-6 text-slate-300">
+            {notCollectedByDefault.map((item) => (
+              <li
+                key={item}
+                className="rounded-xl border border-lime-300/10 bg-lime-300/5 p-3"
+              >
+                {item}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      </section>
+
+      <section className="grid gap-4 md:grid-cols-3">
+        <Card className="space-y-3">
+          <Badge tone="warning">Retention</Badge>
+          <p className="text-sm leading-6 text-slate-300">
+            Trusted-beta metadata retention is operational. Public launch needs
+            a published retention window and workspace deletion process.
+          </p>
+        </Card>
+        <Card className="space-y-3">
+          <Badge tone="warning">Deletion</Badge>
+          <p className="text-sm leading-6 text-slate-300">
+            Uninstalling the GitHub App stops future access. Workspace metadata
+            deletion should be requested through the support path until an owner
+            self-serve deletion flow exists.
+          </p>
+        </Card>
+        <Card className="space-y-3">
+          <Badge tone="warning">Subprocessors</Badge>
+          <p className="text-sm leading-6 text-slate-300">
+            Local beta has no hosted subprocessors beyond GitHub and local
+            development infrastructure. Production must publish the actual
+            hosting, database, logging, and email providers.
+          </p>
+        </Card>
+      </section>
+    </main>
+  );
+}

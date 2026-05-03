@@ -54,6 +54,9 @@ export default function GettingStartedPage(): React.ReactElement {
             <LinkButton href="/support" variant="ghost">
               Support
             </LinkButton>
+            <LinkButton href="/privacy" variant="ghost">
+              Privacy
+            </LinkButton>
           </div>
         </div>
 
