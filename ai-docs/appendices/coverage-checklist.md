@@ -70,6 +70,9 @@ This checklist is used to verify that the planning docs captured the current dir
 - Agent handoff guide for implementation agents.
 - End-to-end implementation playbook from planning repo to public beta.
 - Local setup checklist and local readiness check.
+- Repeatable fresh repository setup E2E.
+- Repeatable full review E2E with Codex OAuth and real inline comment assertion.
+- Runbooks for fresh repository E2E failures and Codex auth reseeding.
 - Dashboard frontend stack.
 - Base UI wrapper convention.
 - Frontend Clean Architecture and SOLID boundaries.

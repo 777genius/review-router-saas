@@ -80,6 +80,22 @@ REVIEW_ROUTER_TARGET_REPO=owner/repo \
   node scripts/run-with-env.mjs pnpm spike:repo-health:e2e
 ```
 
+Fresh repository E2E:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+Full review E2E with Codex OAuth and a real inline finding:
+
+```bash
+REVIEW_ROUTER_FRESH_E2E_MODE=review \
+  node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+The fresh E2E script creates real GitHub repositories and does not delete them
+automatically. Use a disposable owner/repo name and clean up manually when done.
+
 ## Architecture Boundary
 
 Feature packages follow Clean Architecture:

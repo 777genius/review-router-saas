@@ -37,6 +37,52 @@ Every pull request and `main` push must run:
 
 The default CI workflow must not require GitHub App private keys, Codex OAuth files, provider API keys, ngrok, or real customer repositories. Real GitHub E2E remains a local/staging smoke step because it depends on a disposable GitHub App installation and selected test repository.
 
+## Local Beta Gate
+
+Before handing the MVP to a trusted tester, run:
+
+```bash
+pnpm local:check
+pnpm test
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm build
+git diff --check
+```
+
+Then run local DB/protocol smoke:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
+node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
+node scripts/run-with-env.mjs pnpm spike:rate-limit:e2e
+node scripts/run-with-env.mjs pnpm spike:distributed-lock:e2e
+node scripts/run-with-env.mjs pnpm spike:review-config:e2e
+node scripts/run-with-env.mjs pnpm spike:action:e2e
+node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
+```
+
+Then run at least one real GitHub smoke:
+
+```bash
+node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+Before public demo or Reddit launch, run the full review smoke:
+
+```bash
+REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+```
+
+Passing setup-only smoke proves GitHub App installation, repository sync,
+workflow provisioning PR creation/merge, and workflow health probing. Passing
+full-review smoke proves Codex OAuth seeding, customer-CI execution, action
+runtime config, blocking status, and inline comments.
+
+Do not mark the MVP as showable if the latest full-review smoke is older than
+the latest action runtime or workflow provisioning change.
+
 ## Security Gate
 
 - no secrets in logs
@@ -61,3 +107,5 @@ The default CI workflow must not require GitHub App private keys, Codex OAuth fi
 - setup flow explains where credentials are stored
 - dashboard shows install health clearly
 - no misleading token/cost data for Codex OAuth subscription mode
+- runbooks explain how to recover from failed setup PR, missing workflow,
+  missing provider secret, and absent inline comments
