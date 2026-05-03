@@ -18,7 +18,13 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain(
-      "github.event.pull_request.head.repo.full_name != github.repository",
+      "github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository",
+    );
+    expect(workflow).toContain(
+      "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(workflow).toContain(
+      "github.event_name != 'pull_request' || github.event.pull_request.draft == false",
     );
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');

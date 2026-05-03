@@ -25,7 +25,7 @@ export function renderReviewRouterWorkflow(
     options.runtimeConfigMode === "oidc"
       ? `
       - name: Fetch ReviewRouter runtime config
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         shell: bash
         env:
           REVIEWROUTER_API_URL: ${options.apiUrl}
@@ -57,7 +57,7 @@ jobs:
   review:
     name: review
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    if: \${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     steps:
       - name: Checkout pull request code
         uses: actions/checkout@v6
@@ -65,12 +65,12 @@ jobs:
           persist-credentials: false
 
       - name: Skip fork pull requests
-        if: github.event.pull_request.head.repo.full_name != github.repository
+        if: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         shell: bash
         run: |
           echo "ReviewRouter skipped this fork pull request because secret-backed provider execution is disabled by default."
 ${oidcStep}      - name: Run ReviewRouter
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: ${options.actionRef}
         env:
           REVIEWROUTER_API_URL: ${options.apiUrl}
