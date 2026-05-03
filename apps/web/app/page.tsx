@@ -1,6 +1,7 @@
 import { Badge, Button, Card, CodeBlock } from "@reviewrouter/ui";
 
-const setupCommand = "pnpm local:check && pnpm typecheck && pnpm test";
+const readinessCommand =
+  "pnpm local:check && pnpm test && pnpm typecheck && pnpm build";
 
 export default function HomePage(): React.ReactElement {
   return (
@@ -30,14 +31,14 @@ export default function HomePage(): React.ReactElement {
         <Card className="space-y-4">
           <Badge tone="success">Local foundation</Badge>
           <h2 className="text-2xl font-semibold text-cyan-50">
-            Iteration 01 status
+            Local beta baseline
           </h2>
           <p className="text-sm leading-6 text-slate-300">
-            The foundation slice proves the monorepo, UI tokens, Base UI
-            wrappers, Zustand UI state, Fastify health route, and feature
-            boundaries.
+            The control plane now covers GitHub App webhooks, repository sync,
+            workflow setup PRs, OIDC runtime config, metadata-only health,
+            provider setup guidance, entitlements, and worker outbox recovery.
           </p>
-          <CodeBlock code={setupCommand} />
+          <CodeBlock code={readinessCommand} />
         </Card>
       </section>
     </main>
