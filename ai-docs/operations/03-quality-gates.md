@@ -10,6 +10,14 @@ Before merging any feature:
 - no Prisma leakage outside infrastructure
 - no GitHub SDK usage in use cases directly
 
+Automated guardrail:
+
+```bash
+pnpm test -- packages/shared/src/tests/architecture-boundaries.test.ts
+```
+
+This test scans `packages/features/*/src/domain` and `packages/features/*/src/application` so adapter/framework imports fail before review. If a legitimate new adapter is added, put it under `infrastructure` or `interface` and expose it through an application port.
+
 ## CI Gate
 
 Every pull request and `main` push must run:
