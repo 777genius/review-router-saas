@@ -6,6 +6,10 @@ import {
   PrismaWorkflowProvisioningRepository,
   provisionReviewRouterWorkflow,
 } from "../../../packages/features/workflow-provisioning/src/index.ts";
+import {
+  PrismaReviewConfigurationRepository,
+  resolveReviewRuntimeEnv,
+} from "../../../packages/features/review-config/src/index.ts";
 import { createGitHubApp, findInstallationForRepo } from "./github-app.js";
 import { loadAppProfile, loadEnvFiles, requiredEnv } from "./config.js";
 
@@ -63,6 +67,12 @@ try {
     );
   }
 
+  const staticRuntimeEnv = await loadStaticRuntimeEnv({
+    prisma,
+    workspaceId: repository.workspaceId,
+    repositoryId: repository.id,
+  });
+
   const pullRequest = await provisionReviewRouterWorkflow(
     {
       workspaceId: repository.workspaceId,
@@ -73,6 +83,7 @@ try {
       actionRef,
       apiUrl,
       runtimeConfigMode: "oidc",
+      staticRuntimeEnv,
     },
     {
       setupGateway: new OctokitWorkflowSetupGateway(octokit),
@@ -89,4 +100,21 @@ try {
   );
 } finally {
   await prisma.$disconnect();
+}
+
+async function loadStaticRuntimeEnv(input: {
+  readonly prisma: ReturnType<typeof createPrismaClient>;
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+}): Promise<Record<string, string>> {
+  const configurations = new PrismaReviewConfigurationRepository(input.prisma);
+  const resolved = await resolveReviewRuntimeEnv(
+    {
+      scope: "repository",
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+    },
+    { configurations },
+  );
+  return resolved.runtimeEnv;
 }

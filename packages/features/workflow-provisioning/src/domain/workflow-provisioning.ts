@@ -15,6 +15,7 @@ export type ProvisionWorkflowInput = {
   readonly actionRef: string;
   readonly apiUrl: string;
   readonly runtimeConfigMode: "oidc" | "static";
+  readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly setupBranch?: string;
   readonly workflowPath?: string;
 };

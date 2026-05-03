@@ -90,6 +90,11 @@ describe("provisionReviewRouterWorkflow", () => {
         actionRef: "777genius/review-router@v1",
         apiUrl: "https://app.reviewrouter.dev",
         runtimeConfigMode: "oidc",
+        staticRuntimeEnv: {
+          CODEX_MODEL: "gpt-5.4-mini",
+          FAIL_ON_SEVERITY: "major",
+          REVIEW_AUTH_MODE: "codex-oauth",
+        },
       },
       { setupGateway: gateway, provisioning, auditLog },
     );
@@ -99,6 +104,10 @@ describe("provisionReviewRouterWorkflow", () => {
       ".github/workflows/reviewrouter.yml",
     );
     expect(gateway.input?.workflowYaml).toContain("name: ReviewRouter");
+    expect(gateway.input?.workflowYaml).toContain(
+      'CODEX_MODEL: "gpt-5.4-mini"',
+    );
+    expect(gateway.input?.workflowYaml).toContain('FAIL_ON_SEVERITY: "major"');
     expect(provisioning.opened).toMatchObject({
       status: "setup_pr_open",
       branch: "reviewrouter/setup",
@@ -155,6 +164,10 @@ describe("provisionReviewRouterWorkflow", () => {
           actionRef: "777genius/review-router@v1",
           apiUrl: "https://app.reviewrouter.dev",
           runtimeConfigMode: "oidc",
+          staticRuntimeEnv: {
+            CODEX_MODEL: "gpt-5.4-mini",
+            FAIL_ON_SEVERITY: "off",
+          },
           actor: "user:maintainer",
         },
         {
@@ -171,6 +184,10 @@ describe("provisionReviewRouterWorkflow", () => {
       repo: "example",
       baseBranch: "main",
     });
+    expect(gateway.input?.workflowYaml).toContain(
+      'CODEX_MODEL: "gpt-5.4-mini"',
+    );
+    expect(gateway.input?.workflowYaml).toContain('FAIL_ON_SEVERITY: "off"');
     expect(auditLog.events[0]).toMatchObject({ actor: "user:maintainer" });
   });
 

@@ -58,7 +58,9 @@ export async function provisionReviewRouterWorkflow(
     actionRef: plan.actionRef,
     apiUrl: plan.apiUrl,
     runtimeConfigMode: plan.runtimeConfigMode,
-    staticRuntimeEnv: mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
+    staticRuntimeEnv:
+      plan.staticRuntimeEnv ??
+      mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
   });
 
   try {

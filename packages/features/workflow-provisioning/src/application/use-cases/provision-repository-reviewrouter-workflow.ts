@@ -9,6 +9,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly actionRef: string;
   readonly apiUrl: string;
   readonly runtimeConfigMode: "oidc" | "static";
+  readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly actor?: string;
 };
 
@@ -49,6 +50,9 @@ export async function provisionRepositoryReviewRouterWorkflow(
       actionRef: input.actionRef,
       apiUrl: input.apiUrl,
       runtimeConfigMode: input.runtimeConfigMode,
+      ...(input.staticRuntimeEnv
+        ? { staticRuntimeEnv: input.staticRuntimeEnv }
+        : {}),
     },
     {
       setupGateway: dependencies.setupGateway,

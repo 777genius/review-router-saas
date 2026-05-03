@@ -4,6 +4,8 @@ import {
   mapConfigToRuntimeEnv,
   parseReviewConfiguration,
   reviewConfigurationTargetKey,
+  resolveReviewConfiguration,
+  resolveReviewRuntimeEnv,
   saveReviewConfiguration,
   safeDefaultReviewConfiguration,
   type PersistedReviewConfiguration,
@@ -98,6 +100,71 @@ describe("review configuration", () => {
     ).resolves.toMatchObject({
       version: 2,
       config: { provider: { reasoningEffort: "high" } },
+    });
+  });
+
+  it("resolves repository config before workspace default and safe default", async () => {
+    const configurations = new InMemoryReviewConfigurationRepository();
+    const workspaceTarget = {
+      scope: "workspace",
+      workspaceId: "workspace_1",
+    } as const;
+    const repositoryTarget = {
+      scope: "repository",
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+    } as const;
+
+    await expect(
+      resolveReviewConfiguration(repositoryTarget, { configurations }),
+    ).resolves.toMatchObject({
+      source: "default",
+      config: { provider: { model: "gpt-5.5" } },
+    });
+
+    await saveReviewConfiguration(
+      {
+        target: workspaceTarget,
+        config: {
+          ...safeDefaultReviewConfiguration,
+          provider: {
+            ...safeDefaultReviewConfiguration.provider,
+            model: "gpt-5.4",
+          },
+        },
+      },
+      { configurations },
+    );
+    await expect(
+      resolveReviewConfiguration(repositoryTarget, { configurations }),
+    ).resolves.toMatchObject({
+      source: "workspace",
+      config: { provider: { model: "gpt-5.4" } },
+    });
+
+    await saveReviewConfiguration(
+      {
+        target: repositoryTarget,
+        config: {
+          ...safeDefaultReviewConfiguration,
+          provider: {
+            ...safeDefaultReviewConfiguration.provider,
+            model: "gpt-5.4-mini",
+          },
+          blockingPolicy: { failOnSeverity: "major" },
+        },
+      },
+      { configurations },
+    );
+
+    await expect(
+      resolveReviewRuntimeEnv(repositoryTarget, { configurations }),
+    ).resolves.toMatchObject({
+      source: "repository",
+      runtimeEnv: {
+        CODEX_MODEL: "gpt-5.4-mini",
+        FAIL_ON_SEVERITY: "major",
+      },
     });
   });
 });

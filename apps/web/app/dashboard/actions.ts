@@ -10,9 +10,11 @@ import { OutboxInstallationSyncRequester } from "@reviewrouter/features-github-i
 import { PrismaOutboxEventRepository } from "@reviewrouter/features-outbox";
 import {
   PrismaReviewConfigurationRepository,
+  resolveReviewRuntimeEnv,
   saveReviewConfiguration,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   OctokitWorkflowSetupGateway,
   PrismaWorkflowProvisioningRepository,
@@ -117,6 +119,11 @@ export async function createSetupPullRequestAction(
     const octokit = await createGitHubAppInstallationOctokit(
       repository.installation.githubInstallationId.toString(),
     );
+    const staticRuntimeEnv = await loadStaticRuntimeEnv({
+      prisma,
+      workspaceId,
+      repositoryId,
+    });
 
     const pullRequest = await new PostgresAdvisoryLock(prisma).withLock(
       `repo:${repositoryId}:workflow-provision`,
@@ -133,6 +140,7 @@ export async function createSetupPullRequestAction(
               process.env.REVIEW_ROUTER_API_URL ??
               "http://localhost:4000",
             runtimeConfigMode: "oidc",
+            staticRuntimeEnv,
             actor: actor.actor,
           },
           {
@@ -231,6 +239,23 @@ export async function saveWorkspaceReviewConfigAction(
 
   revalidatePath("/dashboard");
   redirectWithParams(params);
+}
+
+async function loadStaticRuntimeEnv(input: {
+  readonly prisma: PrismaClient;
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+}): Promise<Record<string, string>> {
+  const configurations = new PrismaReviewConfigurationRepository(input.prisma);
+  const resolved = await resolveReviewRuntimeEnv(
+    {
+      scope: "repository",
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+    },
+    { configurations },
+  );
+  return resolved.runtimeEnv;
 }
 
 function readFormString(formData: FormData, key: string): string {
