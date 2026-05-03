@@ -46,6 +46,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
     }
 
     let existingSha: string | undefined;
+    let existingContent: string | null = null;
     try {
       const { data: existing } = await this.octokit.request(
         "GET /repos/{owner}/{repo}/contents/{path}",
@@ -58,20 +59,23 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       );
       if (!Array.isArray(existing) && existing.type === "file") {
         existingSha = existing.sha;
+        existingContent = decodeBase64Content(existing.content);
       }
     } catch (error: unknown) {
       if (getErrorStatus(error) !== 404) throw error;
     }
 
-    await this.octokit.request("PUT /repos/{owner}/{repo}/contents/{path}", {
-      owner: input.owner,
-      repo: input.repo,
-      path: input.workflowPath,
-      branch: input.setupBranch,
-      sha: existingSha,
-      message: "chore: add ReviewRouter workflow",
-      content: Buffer.from(input.workflowYaml).toString("base64"),
-    });
+    if (existingContent !== input.workflowYaml) {
+      await this.octokit.request("PUT /repos/{owner}/{repo}/contents/{path}", {
+        owner: input.owner,
+        repo: input.repo,
+        path: input.workflowPath,
+        branch: input.setupBranch,
+        sha: existingSha,
+        message: "chore: add ReviewRouter workflow",
+        content: Buffer.from(input.workflowYaml).toString("base64"),
+      });
+    }
 
     const existingPrs = await this.octokit.request(
       "GET /repos/{owner}/{repo}/pulls",
@@ -110,4 +114,11 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       branch: input.setupBranch,
     };
   }
+}
+
+function decodeBase64Content(content: unknown): string | null {
+  if (typeof content !== "string") {
+    return null;
+  }
+  return Buffer.from(content.replaceAll("\n", ""), "base64").toString("utf8");
 }
