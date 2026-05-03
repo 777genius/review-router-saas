@@ -58,6 +58,9 @@ export default function HomePage(): React.ReactElement {
             <LinkButton href="/security" variant="soft" tone="success">
               Security model
             </LinkButton>
+            <LinkButton href="/support" variant="ghost">
+              Support
+            </LinkButton>
           </div>
         </div>
         <Card className="space-y-4">

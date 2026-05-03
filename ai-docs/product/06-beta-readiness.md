@@ -42,7 +42,7 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - install flow tested on fresh org/repo
 - clear fork PR behavior
 - clear Codex OAuth reseed guidance
-- support contact/channel
+- support contact/channel or trusted-beta support path
 - basic status/incident communication path
 - terms/privacy draft before public users beyond trusted testers
 
@@ -77,6 +77,7 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 - local backup/restore smoke for metadata database
 - repeatable fresh repository E2E script
 - repeatable full review E2E script with Codex OAuth
+- trusted-beta support page with safe report template and secret redaction rules
 
 ## Remaining Before Public Launch
 
