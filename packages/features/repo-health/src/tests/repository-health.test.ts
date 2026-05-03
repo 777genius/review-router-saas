@@ -72,6 +72,35 @@ describe("repository health", () => {
         },
       }),
     ).toMatchObject({ status: "workflow_check_unavailable" });
+
+    expect(
+      evaluateRepositoryHealth({
+        repositoryId: "repo_1",
+        fullName: "777genius/example",
+        setupStatus: "setup_pr_open",
+        expectedActionRef: "777genius/review-router@v1",
+        workflowCheck: {
+          status: "present",
+          expectedActionRefFound: true,
+        },
+      }),
+    ).toMatchObject({
+      status: "healthy",
+      summary: "Ready",
+    });
+
+    expect(
+      evaluateRepositoryHealth({
+        repositoryId: "repo_1",
+        fullName: "777genius/example",
+        setupStatus: "not_configured",
+        expectedActionRef: "777genius/review-router@v1",
+        workflowCheck: {
+          status: "present",
+          expectedActionRefFound: true,
+        },
+      }),
+    ).toMatchObject({ status: "healthy" });
   });
 
   it("surfaces provider setup and runtime health", () => {
@@ -150,6 +179,35 @@ describe("repository health", () => {
         repositoryId: "repo_3",
         status: "missing_workflow",
       }),
+    ]);
+  });
+
+  it("probes stale setup statuses so merged setup PRs are recognized", async () => {
+    const repositories = new InMemoryHealthRepository([
+      healthInput("repo_1", "setup_pr_open"),
+      healthInput("repo_2", "not_configured"),
+    ]);
+    const probe = new CapturingWorkflowProbe({
+      repo_1: { status: "present", expectedActionRefFound: true },
+      repo_2: { status: "present", expectedActionRefFound: true },
+    });
+
+    const health = await listWorkspaceRepositoryHealth(
+      {
+        workspaceId: "workspace_1",
+        expectedActionRef: "777genius/review-router@v1",
+        workflowProbeMaxRepositories: 2,
+      },
+      { repositories, workflowProbe: probe },
+    );
+
+    expect(probe.inputs.map((input) => input.name)).toEqual([
+      "repo-1",
+      "repo-2",
+    ]);
+    expect(health).toEqual([
+      expect.objectContaining({ repositoryId: "repo_1", status: "healthy" }),
+      expect.objectContaining({ repositoryId: "repo_2", status: "healthy" }),
     ]);
   });
 

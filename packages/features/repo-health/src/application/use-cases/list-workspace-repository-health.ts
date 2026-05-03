@@ -121,7 +121,7 @@ function shouldProbeWorkflow(
   readonly defaultBranch: string;
 } {
   return (
-    repository.setupStatus === "configured" &&
+    repository.setupStatus !== "needs_attention" &&
     Boolean(repository.githubInstallationId) &&
     Boolean(repository.owner) &&
     Boolean(repository.name) &&

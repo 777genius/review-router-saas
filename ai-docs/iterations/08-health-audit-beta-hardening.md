@@ -42,6 +42,9 @@ Make the product understandable and supportable for beta users.
 - Expired rate-limit buckets are pruned by the worker in bounded periodic batches after outbox processing, and cleanup failures are logged without blocking critical jobs.
 - Expired OIDC replay nonces are pruned by the worker in bounded periodic batches after outbox processing, and cleanup failures are logged without blocking critical jobs.
 - Dashboard probes installed workflow files through a `RepositoryWorkflowProbePort` and `OctokitRepositoryWorkflowProbe`.
+- Workflow probe results can override stale setup status: if the setup PR was
+  merged but DB still says `setup_pr_open` or `not_configured`, a present
+  workflow with the expected action ref is treated as installed for health.
 - The workflow probe reads only `.github/workflows/reviewrouter.yml` metadata through the GitHub App installation token and returns safe states only:
   - `missing`
   - `present + expectedActionRefFound`

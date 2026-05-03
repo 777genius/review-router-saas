@@ -68,30 +68,6 @@ export function evaluateRepositoryHealth(
       checkedAt,
     );
   }
-  if (input.setupStatus === "setup_pr_open") {
-    return snapshot(
-      input,
-      "setup_pr_open",
-      "Setup pull request is open",
-      checkedAt,
-    );
-  }
-  if (input.setupStatus === "not_configured") {
-    return snapshot(
-      input,
-      "missing_workflow",
-      "ReviewRouter workflow is not configured",
-      checkedAt,
-    );
-  }
-  if (input.workflowCheck?.status === "missing") {
-    return snapshot(
-      input,
-      "missing_workflow",
-      "ReviewRouter workflow file is missing from the default branch",
-      checkedAt,
-    );
-  }
   if (
     input.workflowCheck?.status === "present" &&
     !input.workflowCheck.expectedActionRefFound
@@ -103,13 +79,8 @@ export function evaluateRepositoryHealth(
       checkedAt,
     );
   }
-  if (input.workflowCheck?.status === "unavailable") {
-    return snapshot(
-      input,
-      "workflow_check_unavailable",
-      "Workflow file could not be checked from GitHub",
-      checkedAt,
-    );
+  if (input.workflowCheck?.status === "present") {
+    return evaluateInstalledWorkflowHealth(input, checkedAt);
   }
   if (input.workflowYaml !== undefined && input.workflowYaml !== null) {
     if (!input.workflowYaml.includes(input.expectedActionRef)) {
@@ -120,7 +91,48 @@ export function evaluateRepositoryHealth(
         checkedAt,
       );
     }
+    return evaluateInstalledWorkflowHealth(input, checkedAt);
   }
+  if (input.setupStatus === "setup_pr_open") {
+    return snapshot(
+      input,
+      "setup_pr_open",
+      "Setup pull request is open",
+      checkedAt,
+    );
+  }
+  if (input.workflowCheck?.status === "missing") {
+    return snapshot(
+      input,
+      "missing_workflow",
+      "ReviewRouter workflow file is missing from the default branch",
+      checkedAt,
+    );
+  }
+  if (input.workflowCheck?.status === "unavailable") {
+    return snapshot(
+      input,
+      "workflow_check_unavailable",
+      "Workflow file could not be checked from GitHub",
+      checkedAt,
+    );
+  }
+  if (input.setupStatus === "not_configured") {
+    return snapshot(
+      input,
+      "missing_workflow",
+      "ReviewRouter workflow is not configured",
+      checkedAt,
+    );
+  }
+
+  return evaluateInstalledWorkflowHealth(input, checkedAt);
+}
+
+function evaluateInstalledWorkflowHealth(
+  input: RepositoryHealthInput,
+  checkedAt: Date,
+): RepositoryHealthSnapshot {
   if (
     input.latestProviderSetupState === "missing" ||
     input.latestProviderSetupState === "stale_or_invalid"
