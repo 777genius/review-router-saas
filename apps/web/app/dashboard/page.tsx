@@ -33,6 +33,7 @@ import {
   retryOutboxEventAction,
   saveWorkspaceReviewConfigAction,
 } from "./actions";
+import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 
 export const dynamic = "force-dynamic";
 
@@ -202,6 +203,7 @@ export default async function DashboardPage({
   ]);
   const workspaces = await loadDashboardData(workspaceScope);
   const params = searchParams ? await searchParams : {};
+  const appInstallUrl = getGitHubAppInstallUrl();
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-10">
@@ -227,6 +229,28 @@ export default async function DashboardPage({
               Sign in with GitHub and install the ReviewRouter App to create a
               workspace and start syncing repositories.
             </p>
+            <div className="flex flex-wrap gap-3">
+              {!mutationStatus.signedIn ? (
+                <a
+                  href="/api/auth/signin"
+                  className="inline-flex h-9 items-center justify-center rounded-lg border border-cyan-300/50 bg-cyan-300 px-3 text-sm font-medium text-slate-950 shadow-[var(--rr-shadow-glow-cyan)] transition hover:bg-cyan-200"
+                >
+                  Sign in with GitHub
+                </a>
+              ) : null}
+              {appInstallUrl ? (
+                <a
+                  href={appInstallUrl}
+                  className="inline-flex h-9 items-center justify-center rounded-lg border border-cyan-200/30 bg-cyan-300/10 px-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/15"
+                >
+                  Install GitHub App
+                </a>
+              ) : (
+                <span className="text-xs leading-5 text-slate-400">
+                  Set GITHUB_APP_SLUG to show the local App install link.
+                </span>
+              )}
+            </div>
           </Card>
         ) : (
           workspaces.map((workspace) => (

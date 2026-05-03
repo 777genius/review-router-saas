@@ -40,3 +40,9 @@ Allow users to sign in and connect a GitHub App installation.
 - user can log in
 - dashboard shows connected GitHub account/workspace
 - installing the GitHub App creates/updates installation record
+
+## Implemented Baseline
+
+- Dashboard exposes a GitHub sign-in CTA and a GitHub App install CTA when `GITHUB_APP_SLUG` is configured.
+- The App install URL is generated from a strict slug-only helper to avoid unsafe external redirects.
+- GitHub App installation webhooks create/update installation records and grant the installing sender owner access for the derived workspace.
