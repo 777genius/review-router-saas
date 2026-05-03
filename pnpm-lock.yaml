@@ -165,6 +165,9 @@ importers:
       '@reviewrouter/features-auth':
         specifier: workspace:*
         version: link:../../packages/features/auth
+      '@reviewrouter/features-entitlements':
+        specifier: workspace:*
+        version: link:../../packages/features/entitlements
       '@reviewrouter/features-repo-health':
         specifier: workspace:*
         version: link:../../packages/features/repo-health
@@ -264,6 +267,18 @@ importers:
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
+  packages/features/entitlements:
+    dependencies:
+      '@prisma/client':
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-audit-log':
+        specifier: workspace:*
+        version: link:../audit-log
       zod:
         specifier: ^4.4.2
         version: 4.4.2

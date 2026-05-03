@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@reviewrouter/features-auth": "workspace:*",
+    "@reviewrouter/features-entitlements": "workspace:*",
     "@reviewrouter/features-repo-health": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/platform-db": "workspace:*",

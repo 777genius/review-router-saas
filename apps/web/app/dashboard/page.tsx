@@ -4,6 +4,10 @@ import {
   listWorkspaceRepositoryHealth,
   PrismaRepositoryHealthRepository,
 } from "@reviewrouter/features-repo-health";
+import {
+  freeBetaEntitlement,
+  PrismaEntitlementRepository,
+} from "@reviewrouter/features-entitlements";
 import { getPrisma } from "../../src/server/prisma";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +58,7 @@ async function loadDashboardData() {
   });
   const repositoryStore = new PrismaRepositoryConnectionRepository(prisma);
   const healthStore = new PrismaRepositoryHealthRepository(prisma);
+  const entitlementStore = new PrismaEntitlementRepository(prisma);
 
   return Promise.all(
     workspaces.map(
@@ -68,10 +73,14 @@ async function loadDashboardData() {
         health: readonly Awaited<
           ReturnType<typeof listWorkspaceRepositoryHealth>
         >[number][];
+        entitlement: ReturnType<typeof freeBetaEntitlement>;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
         );
+        const entitlement =
+          (await entitlementStore.findWorkspaceEntitlement(workspace.id)) ??
+          freeBetaEntitlement(workspace.id);
         const health = await listWorkspaceRepositoryHealth(
           {
             workspaceId: workspace.id,
@@ -86,6 +95,7 @@ async function loadDashboardData() {
           workspace,
           repositoryCount: repositories.length,
           repositories: repositories.slice(0, 8),
+          entitlement,
           health,
         };
       },
@@ -121,7 +131,13 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           </Card>
         ) : (
           workspaces.map(
-            ({ workspace, repositoryCount, repositories, health }) => (
+            ({
+              workspace,
+              repositoryCount,
+              repositories,
+              entitlement,
+              health,
+            }) => (
               <Card key={workspace.id} className="space-y-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -130,7 +146,13 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
                     </h2>
                     <p className="text-sm text-slate-400">{workspace.slug}</p>
                   </div>
-                  <Badge tone="success">{repositoryCount} repositories</Badge>
+                  <div className="flex flex-wrap gap-2">
+                    <Badge tone="success">{repositoryCount} repositories</Badge>
+                    <Badge tone="accent">
+                      {entitlement.plan.replace("_", " ")} /{" "}
+                      {entitlement.status}
+                    </Badge>
+                  </div>
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-3">

@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import type { AuditLogRepositoryPort } from "../../application/ports/audit-log-repository-port.js";
-import type { AuditEventInput } from "../../domain/audit-event.js";
+import type { AuditLogRepositoryPort } from "../../application/ports/audit-log-repository-port";
+import type { AuditEventInput } from "../../domain/audit-event";
 
 export class PrismaAuditLogRepository implements AuditLogRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}

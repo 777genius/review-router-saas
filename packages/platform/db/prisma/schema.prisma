@@ -21,6 +21,7 @@ model Workspace {
   providerSetup ProviderSetupState[]
   actionHealth  ActionRunHealthReport[]
   auditEvents   AuditEvent[]
+  entitlement   WorkspaceEntitlement?
 }
 
 model User {
@@ -263,6 +264,21 @@ model OutboxEvent {
   @@index([workspaceId, status])
   @@index([repositoryId, status])
   @@index([type, version, status])
+}
+
+model WorkspaceEntitlement {
+  id          String   @id @default(cuid())
+  workspaceId String   @unique
+  plan        String   @default("free_beta")
+  status      String   @default("active")
+  limits      Json
+  flags       Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([plan, status])
 }
 
 enum WorkspaceRole {

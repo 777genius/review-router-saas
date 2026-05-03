@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { AuditLogRepositoryPort } from "../application/ports/audit-log-repository-port.js";
-import { recordAuditEvent } from "../application/use-cases/record-audit-event.js";
-import type { AuditEventInput } from "../domain/audit-event.js";
+import type { AuditLogRepositoryPort } from "../application/ports/audit-log-repository-port";
+import { recordAuditEvent } from "../application/use-cases/record-audit-event";
+import type { AuditEventInput } from "../domain/audit-event";
 
 class InMemoryAuditLog implements AuditLogRepositoryPort {
   public readonly events: AuditEventInput[] = [];

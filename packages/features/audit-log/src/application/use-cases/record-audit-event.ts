@@ -2,8 +2,8 @@ import {
   auditEventSchema,
   sanitizeAuditMetadata,
   type AuditEventInput,
-} from "../../domain/audit-event.js";
-import type { AuditLogRepositoryPort } from "../ports/audit-log-repository-port.js";
+} from "../../domain/audit-event";
+import type { AuditLogRepositoryPort } from "../ports/audit-log-repository-port";
 
 export async function recordAuditEvent(
   input: AuditEventInput,
