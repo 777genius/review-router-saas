@@ -1,3 +1,8 @@
+import {
+  collectPayloadStrings,
+  looksLikeCodeOrDiff,
+  looksLikeSecretValue,
+} from "@reviewrouter/shared";
 import { z } from "zod";
 
 export const auditEventSchema = z.object({
@@ -18,8 +23,8 @@ export function sanitizeAuditMetadata(
   if (Buffer.byteLength(serialized, "utf8") > 4096) {
     throw new Error("audit_metadata_too_large");
   }
-  for (const value of collectStrings(metadata)) {
-    if (looksLikeSecret(value)) {
+  for (const value of collectPayloadStrings(metadata)) {
+    if (looksLikeSecretValue(value)) {
       throw new Error("audit_metadata_contains_secret");
     }
     if (looksLikeCodeOrDiff(value)) {
@@ -27,36 +32,4 @@ export function sanitizeAuditMetadata(
     }
   }
   return JSON.parse(serialized) as Record<string, unknown>;
-}
-
-function collectStrings(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value)) return value.flatMap(collectStrings);
-  if (value && typeof value === "object") {
-    return Object.entries(value).flatMap(([key, entry]) => [
-      key,
-      ...(typeof entry === "string" ? [`${key}=${entry}`] : []),
-      ...collectStrings(entry),
-    ]);
-  }
-  return [];
-}
-
-function looksLikeSecret(value: string): boolean {
-  return (
-    /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(value) ||
-    /\b[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)[A-Z0-9_]*\s*[:=]\s*\S+/i.test(
-      value,
-    ) ||
-    /\b[A-Za-z0-9_]*(token|secret|password|privateKey|apiKey|authJson)[A-Za-z0-9_]*\s*[:=]\s*\S+/i.test(
-      value,
-    ) ||
-    /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/i.test(value) ||
-    /\b(refresh[_-]?token|access[_-]?token)\b\s*[:=]\s*\S+/i.test(value) ||
-    /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,})\b/.test(value)
-  );
-}
-
-function looksLikeCodeOrDiff(value: string): boolean {
-  return /```|diff --git|@@\s+-\d+|^\+\+\+\s|^---\s/m.test(value);
 }

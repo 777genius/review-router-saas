@@ -1,3 +1,8 @@
+import {
+  collectPayloadStrings,
+  looksLikeCodeOrDiff,
+  looksLikeSecretValue,
+} from "@reviewrouter/shared";
 import { z } from "zod";
 
 export const defaultActionOidcAudience = "reviewrouter";
@@ -137,7 +142,7 @@ export function assertSafeActionHealthReport(
     throw new Error("health_report_too_large");
   }
 
-  for (const value of collectStrings(payload)) {
+  for (const value of collectPayloadStrings(payload)) {
     if (looksLikeCodeOrDiff(value)) {
       throw new Error("health_report_contains_code_or_diff");
     }
@@ -149,50 +154,12 @@ export function assertSafeActionHealthReport(
   return actionHealthReportSchema.parse(payload);
 }
 
-function collectStrings(value: unknown): string[] {
-  if (typeof value === "string") {
-    return [value];
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap(collectStrings);
-  }
-  if (value && typeof value === "object") {
-    return Object.entries(value).flatMap(([key, entry]) => [
-      key,
-      ...(typeof entry === "string" ? [`${key}=${entry}`] : []),
-      ...collectStrings(entry),
-    ]);
-  }
-  return [];
-}
-
 function serializeHealthReportPayload(payload: unknown): string {
   const serialized = JSON.stringify(payload);
   if (typeof serialized !== "string") {
     throw new Error("health_report_invalid_payload");
   }
   return serialized;
-}
-
-function looksLikeCodeOrDiff(value: string): boolean {
-  return /```|diff --git|@@\s+-\d+|^\+\+\+\s|^---\s/m.test(value);
-}
-
-function looksLikeSecretValue(value: string): boolean {
-  return (
-    /BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY/.test(value) ||
-    /\b[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)[A-Z0-9_]*\s*[:=]\s*\S+/i.test(
-      value,
-    ) ||
-    /\b[A-Za-z0-9_]*(token|secret|password|privateKey|apiKey|authJson)[A-Za-z0-9_]*\s*[:=]\s*\S+/i.test(
-      value,
-    ) ||
-    /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/i.test(value) ||
-    /\b(refresh[_-]?token|access[_-]?token)\b\s*[:=]\s*\S+/i.test(value) ||
-    /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,})\b/.test(
-      value,
-    )
-  );
 }
 
 export function validateOidcClaimsAgainstRepository(input: {
