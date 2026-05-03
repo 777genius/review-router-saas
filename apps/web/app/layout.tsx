@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "ReviewRouter",
   description: "AI review control plane for GitHub pull requests.",
+  icons: [{ rel: "icon", url: "/icon.svg", type: "image/svg+xml" }],
 };
 
 export default function RootLayout({

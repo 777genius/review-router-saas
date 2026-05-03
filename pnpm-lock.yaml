@@ -171,6 +171,9 @@ importers:
       '@reviewrouter/features-entitlements':
         specifier: workspace:*
         version: link:../../packages/features/entitlements
+      '@reviewrouter/features-provider-setup':
+        specifier: workspace:*
+        version: link:../../packages/features/provider-setup
       '@reviewrouter/features-repo-health':
         specifier: workspace:*
         version: link:../../packages/features/repo-health
@@ -318,6 +321,12 @@ importers:
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
+  packages/features/provider-setup:
+    dependencies:
       zod:
         specifier: ^4.4.2
         version: 4.4.2
