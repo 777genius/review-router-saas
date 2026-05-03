@@ -19,16 +19,33 @@ model Workspace {
   auditEvents   AuditEvent[]
 }
 
+model User {
+  id           String   @id @default(cuid())
+  githubUserId BigInt   @unique
+  githubLogin  String
+  primaryEmail String?
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships WorkspaceMember[]
+
+  @@index([githubLogin])
+}
+
 model WorkspaceMember {
   id          String        @id @default(cuid())
   workspaceId String
-  githubLogin String
+  userId      String?
+  githubLogin String?
   role        WorkspaceRole
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  @@unique([workspaceId, userId])
   @@unique([workspaceId, githubLogin])
   @@index([workspaceId, role])
 }
@@ -87,6 +104,19 @@ model AuditEvent {
   @@index([workspaceId, action])
 }
 
+model GitHubWebhookDelivery {
+  id             String    @id @default(cuid())
+  deliveryId     String    @unique
+  eventName      String
+  action         String?
+  installationId BigInt?
+  processedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([eventName, createdAt])
+  @@index([installationId])
+}
+
 enum WorkspaceRole {
   owner
   admin
@@ -94,10 +124,12 @@ enum WorkspaceRole {
 }
 
 enum GitHubInstallationStatus {
+  pending
   active
   suspended
   removed
   permission_error
+  sync_error
 }
 
 enum RepositoryVisibility {

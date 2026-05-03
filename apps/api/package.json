@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@reviewrouter/features-github-installations": "workspace:*",
     "@reviewrouter/features-system-health": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",
+    "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/platform-logger": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "@trpc/server": "^11.17.0",

@@ -11,6 +11,7 @@ export const runtimeEnvSchema = z.object({
   AUTH_SECRET: z.string().min(16),
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_CLIENT_ID: z.string().optional(),
+  GITHUB_APP_CLIENT_SECRET: z.string().optional(),
   GITHUB_APP_SLUG: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY_FILE: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
