@@ -1066,7 +1066,7 @@ function DashboardNotice({
             ? "Sign in with GitHub to request repository syncs or setup PRs."
             : mutationStatus.reason === "auth_misconfigured"
               ? "GitHub OAuth is not configured. Set AUTH_SECRET, GITHUB_APP_CLIENT_ID, and GITHUB_APP_CLIENT_SECRET before using the dashboard."
-              : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 for local beta provisioning."}
+              : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 and REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING=1 for local beta provisioning."}
           {mutationStatus.reason === "signed_out" ? (
             <>
               {" "}
@@ -1163,6 +1163,8 @@ function dashboardErrorText(error: string): string {
       return "The GitHub App installation is not active.";
     case "entitlement_denied":
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
+    case "workflow_provisioning_disabled":
+      return "Workflow provisioning is disabled. Set REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING=1 in a trusted local or beta environment.";
     default:
       return "GitHub operation failed. Check audit events or server logs for the safe error code.";
   }
