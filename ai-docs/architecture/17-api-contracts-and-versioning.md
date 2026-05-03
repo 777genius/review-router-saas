@@ -114,3 +114,5 @@ Action API errors should be structured:
 ```
 
 No stack traces or sensitive internals in API responses.
+
+Legacy `/api/action/*` aliases may keep `{ "error": "safe_code" }` while the existing Action runtime migrates. New `/api/action/v1/*` clients must use the structured format.

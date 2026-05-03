@@ -103,7 +103,8 @@ try {
   });
   if (
     replay.statusCode !== 401 ||
-    replay.json<{ readonly error: string }>().error !== "invalid_action_token"
+    replay.json<{ readonly error: { readonly code: string } }>().error.code !==
+      "invalid_action_token"
   ) {
     throw new Error(
       `OIDC replay was not rejected: ${replay.statusCode} ${replay.body}`,

@@ -31,84 +31,99 @@ const exchangeBodySchema = z.object({
   audience: z.string().min(1).optional(),
 });
 
+type ActionErrorFormat = "legacy" | "v1";
+
 export async function registerActionControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: RegisterActionControlPlaneRoutesDependencies,
 ): Promise<void> {
-  const exchangeHandler = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<unknown> => {
-    if (dependencies.controlPlaneEnabled === false) {
-      return reply.code(503).send({ error: "action_control_plane_disabled" });
-    }
-    try {
-      const body = exchangeBodySchema.parse(request.body);
-      const result = await exchangeGitHubOidcToken(
-        {
-          oidcToken: body.oidcToken,
-          audience:
-            body.audience ??
-            dependencies.oidcAudience ??
-            defaultActionOidcAudience,
-        },
-        dependencies,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendActionError(reply, error);
-    }
-  };
+  const createExchangeHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = exchangeBodySchema.parse(request.body);
+        const result = await exchangeGitHubOidcToken(
+          {
+            oidcToken: body.oidcToken,
+            audience:
+              body.audience ??
+              dependencies.oidcAudience ??
+              defaultActionOidcAudience,
+          },
+          dependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
 
-  const configHandler = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<unknown> => {
-    if (dependencies.controlPlaneEnabled === false) {
-      return reply.code(503).send({ error: "action_control_plane_disabled" });
-    }
-    try {
-      const result: ActionRuntimeConfigResponse = await getActionRuntimeConfig(
-        { sessionToken: readBearerToken(request) },
-        dependencies,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendActionError(reply, error);
-    }
-  };
+  const createConfigHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const result: ActionRuntimeConfigResponse =
+          await getActionRuntimeConfig(
+            { sessionToken: readBearerToken(request) },
+            dependencies,
+          );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
 
-  const healthReportHandler = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<unknown> => {
-    if (dependencies.controlPlaneEnabled === false) {
-      return reply.code(503).send({ error: "action_control_plane_disabled" });
-    }
-    try {
-      const result = await recordActionHealthReport(
-        { sessionToken: readBearerToken(request), report: request.body },
-        dependencies,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendActionError(reply, error);
-    }
-  };
+  const createHealthReportHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const result = await recordActionHealthReport(
+          { sessionToken: readBearerToken(request), report: request.body },
+          dependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
 
-  app.post("/api/action/exchange-token", exchangeHandler);
-  app.post("/api/action/v1/session/exchange", exchangeHandler);
-  app.get("/api/action/config", configHandler);
-  app.get("/api/action/v1/config", configHandler);
+  app.post("/api/action/exchange-token", createExchangeHandler("legacy"));
+  app.post("/api/action/v1/session/exchange", createExchangeHandler("v1"));
+  app.get("/api/action/config", createConfigHandler("legacy"));
+  app.get("/api/action/v1/config", createConfigHandler("v1"));
   app.post(
     "/api/action/health-report",
     { bodyLimit: actionHealthReportMaxBytes },
-    healthReportHandler,
+    createHealthReportHandler("legacy"),
   );
   app.post(
     "/api/action/v1/health-report",
     { bodyLimit: actionHealthReportMaxBytes },
-    healthReportHandler,
+    createHealthReportHandler("v1"),
   );
 }
 
@@ -127,10 +142,35 @@ function readBearerToken(request: FastifyRequest): string {
 function sendActionError(
   reply: { code(statusCode: number): { send(payload: unknown): unknown } },
   error: unknown,
+  format: ActionErrorFormat,
 ): unknown {
   const message = error instanceof Error ? error.message : "unknown_error";
   const statusCode = statusCodeForActionError(message);
-  return reply.code(statusCode).send({ error: safeActionErrorCode(message) });
+  return sendActionErrorCode(
+    reply,
+    safeActionErrorCode(message),
+    statusCode,
+    format,
+  );
+}
+
+function sendActionErrorCode(
+  reply: { code(statusCode: number): { send(payload: unknown): unknown } },
+  code: string,
+  statusCode: number,
+  format: ActionErrorFormat,
+): unknown {
+  if (format === "legacy") {
+    return reply.code(statusCode).send({ error: code });
+  }
+
+  return reply.code(statusCode).send({
+    error: {
+      code,
+      message: safeActionErrorMessage(code),
+      retryable: isRetryableActionError(code),
+    },
+  });
 }
 
 function statusCodeForActionError(message: string): number {
@@ -206,4 +246,40 @@ function safeActionErrorCode(message: string): string {
     return "rate_limited";
   }
   return "invalid_action_request";
+}
+
+function safeActionErrorMessage(code: string): string {
+  switch (code) {
+    case "action_control_plane_disabled":
+      return "ReviewRouter action control plane is temporarily disabled.";
+    case "repository_not_registered":
+      return "Repository is not registered in ReviewRouter.";
+    case "repository_not_selected":
+      return "Repository is not selected in ReviewRouter.";
+    case "installation_not_active":
+      return "GitHub App installation is not active for this repository.";
+    case "workflow_ref_not_allowed":
+      return "Workflow file is not allowed to fetch ReviewRouter runtime config.";
+    case "action_control_plane_entitlement_denied":
+      return "Action control plane is not enabled for this workspace.";
+    case "action_repository_mismatch":
+      return "GitHub OIDC repository claims do not match the selected repository.";
+    case "missing_action_session_token":
+      return "Action session token is missing.";
+    case "invalid_action_session_token":
+      return "Action session token is invalid or expired.";
+    case "invalid_action_token":
+      return "GitHub Actions OIDC token is invalid, expired, or already used.";
+    case "rate_limited":
+      return "Action control plane request was rate limited; retry later.";
+    default:
+      if (code.startsWith("health_report_")) {
+        return "Action health report was rejected by ReviewRouter safety checks.";
+      }
+      return "Action control plane request is invalid.";
+  }
+}
+
+function isRetryableActionError(code: string): boolean {
+  return code === "rate_limited" || code === "action_control_plane_disabled";
 }

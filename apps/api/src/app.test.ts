@@ -468,6 +468,34 @@ describe("API app", () => {
     expect(second.json()).toEqual({ error: "invalid_action_token" });
   });
 
+  it("returns structured safe errors from versioned action endpoints", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/config",
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({
+      error: {
+        code: "missing_action_session_token",
+        message: "Action session token is missing.",
+        retryable: false,
+      },
+    });
+  });
+
   it("rejects unsafe or oversized action health reports without leaking payload values", async () => {
     const repositories = new InMemoryActionRepositories();
     const app = await createApiApp({
