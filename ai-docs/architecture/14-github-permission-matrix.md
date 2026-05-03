@@ -8,15 +8,15 @@ If a permission cannot be explained clearly, do not request it until a feature n
 
 ## Expected v1 Permissions
 
-| Permission    |     Access | Why                                                                                                                     |
-| ------------- | ---------: | ----------------------------------------------------------------------------------------------------------------------- |
-| Metadata      |       Read | Required baseline for GitHub Apps and repository identity.                                                              |
-| Contents      | Read/Write | Create setup/update branch and workflow/config files through PR.                                                        |
-| Pull requests | Read/Write | Create setup/update PRs and read PR state for provisioning.                                                             |
-| Issues        | Read/Write | PR comments use the issues comments API in GitHub. Needed if SaaS posts setup/help comments.                            |
-| Workflows     |      Write | Required to create or update `.github/workflows/reviewrouter.yml` through the GitHub App.                               |
-| Actions       |      Write | Required for workflow-related App capabilities and future workflow run management paths. Keep usage audited and narrow. |
-| Checks        |     Not v1 | Only needed if SaaS creates check runs directly. v1 avoids this because the action handles status.                      |
+| Permission    |     Access | Why                                                                                                     |
+| ------------- | ---------: | ------------------------------------------------------------------------------------------------------- |
+| Metadata      |       Read | Required baseline for GitHub Apps and repository identity.                                              |
+| Contents      | Read/Write | Create setup/update branch and workflow/config files through PR.                                        |
+| Pull requests | Read/Write | Create setup/update PRs and read setup PR state for provisioning.                                       |
+| Workflows     |      Write | Required to create or update `.github/workflows/reviewrouter.yml` through the GitHub App.               |
+| Issues        |     Not v1 | Only needed if SaaS posts issue-style setup/help comments. The review action comments from customer CI. |
+| Actions       |     Not v1 | Only needed if SaaS later manages workflow runs. v1 avoids it because runtime health reports use OIDC.  |
+| Checks        |     Not v1 | Only needed if SaaS creates check runs directly. v1 avoids this because the action handles status.      |
 
 ## Permissions to Avoid in v1
 

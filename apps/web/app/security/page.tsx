@@ -32,17 +32,10 @@ const permissionRows = [
     "workflows: write",
     "Open PRs that add or update the ReviewRouter workflow.",
   ],
+  ["pull_requests: write", "Create setup PRs and read setup PR state."],
   [
-    "pull_requests: write",
-    "Create setup PRs and future setup/update comments.",
-  ],
-  [
-    "issues: write",
-    "Support issue-style comments where GitHub models PR comments as issues.",
-  ],
-  [
-    "actions: write",
-    "Support action health and future workflow maintenance flows.",
+    "issues: write (optional)",
+    "Only needed if the SaaS posts setup/help comments. The review action can comment from CI with the repository GITHUB_TOKEN.",
   ],
 ] as const;
 
