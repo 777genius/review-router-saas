@@ -84,6 +84,9 @@ jobs:
       - name: Migration smoke test
         run: pnpm db:migrate:smoke
 
+      - name: Backup restore smoke test
+        run: pnpm db:restore:smoke
+
       - name: Local readiness
         run: pnpm local:check
 
@@ -107,3 +110,6 @@ jobs:
 
       - name: Whitespace check
         run: git diff --check
+
+      - name: Codex auth seeding shell syntax
+        run: bash -n scripts/seed-codex-auth.sh
