@@ -1,3 +1,7 @@
+import {
+  mapConfigToRuntimeEnv,
+  safeDefaultReviewConfiguration,
+} from "@reviewrouter/features-review-config";
 import { renderReviewRouterWorkflow } from "../../domain/workflow-template";
 import {
   createProvisionWorkflowPlan,
@@ -20,6 +24,7 @@ export async function provisionReviewRouterWorkflow(
     actionRef: plan.actionRef,
     apiUrl: plan.apiUrl,
     runtimeConfigMode: plan.runtimeConfigMode,
+    staticRuntimeEnv: mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
   });
 
   try {

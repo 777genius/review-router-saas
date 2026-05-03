@@ -17,6 +17,8 @@ model Workspace {
   installations GitHubInstallation[]
   repositories  RepositoryConnection[]
   provisioning  WorkflowProvisioning[]
+  reviewConfigs ReviewConfiguration[]
+  providerSetup ProviderSetupState[]
   auditEvents   AuditEvent[]
 }
 
@@ -88,11 +90,67 @@ model RepositoryConnection {
   workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
   provisioning WorkflowProvisioning[]
+  reviewConfigs ReviewConfiguration[]
+  providerSetup ProviderSetupState[]
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
   @@index([workspaceId, setupStatus])
   @@index([workspaceId, selected, fullName])
+}
+
+model ReviewConfiguration {
+  id          String              @id @default(cuid())
+  workspaceId String
+  repositoryId String?
+  targetKey   String
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  workspace  Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection? @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  versions   ReviewConfigurationVersion[]
+
+  @@unique([workspaceId, targetKey])
+  @@index([workspaceId, repositoryId])
+}
+
+model ReviewConfigurationVersion {
+  id                String   @id @default(cuid())
+  configurationId   String
+  version           Int
+  schemaVersion     Int      @default(1)
+  providerKind      String
+  providerAuthMode  String
+  model             String
+  reasoningEffort   String
+  agenticContext    Boolean  @default(true)
+  failOnSeverity    String
+  inlineMaxComments Int
+  createdAt         DateTime @default(now())
+
+  configuration ReviewConfiguration @relation(fields: [configurationId], references: [id], onDelete: Cascade)
+
+  @@unique([configurationId, version])
+  @@index([configurationId, createdAt])
+}
+
+model ProviderSetupState {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  repositoryId String?
+  targetKey    String
+  providerKind String
+  authMode     String
+  state        ProviderSecretState @default(unknown)
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
+
+  workspace  Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection? @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, targetKey, providerKind, authMode])
+  @@index([workspaceId, state])
 }
 
 model WorkflowProvisioning {
@@ -178,4 +236,12 @@ enum WorkflowProvisioningStatus {
   setup_pr_open
   configured
   failed
+}
+
+enum ProviderSecretState {
+  unknown
+  missing
+  configured
+  stale_or_invalid
+  unavailable_in_fork_pr
 }

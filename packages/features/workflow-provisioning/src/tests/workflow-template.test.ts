@@ -7,6 +7,10 @@ describe("renderReviewRouterWorkflow", () => {
       actionRef: "777genius/review-router@v1",
       apiUrl: "https://app.reviewrouter.dev",
       runtimeConfigMode: "oidc",
+      staticRuntimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth",
+        CODEX_MODEL: "gpt-5.5",
+      },
     });
 
     expect(workflow).toContain("pull_request:");
@@ -17,5 +21,7 @@ describe("renderReviewRouterWorkflow", () => {
       "github.event.pull_request.head.repo.full_name != github.repository",
     );
     expect(workflow).toContain("uses: 777genius/review-router@v1");
+    expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');
+    expect(workflow).toContain('CODEX_MODEL: "gpt-5.5"');
   });
 });
