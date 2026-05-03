@@ -88,7 +88,7 @@ try {
 
   const exchange = await app.inject({
     method: "POST",
-    url: "/api/action/exchange-token",
+    url: "/api/action/v1/session/exchange",
     payload: { oidcToken: "local-e2e-oidc-token" },
   });
   if (exchange.statusCode !== 200) {
@@ -98,7 +98,7 @@ try {
 
   const replay = await app.inject({
     method: "POST",
-    url: "/api/action/exchange-token",
+    url: "/api/action/v1/session/exchange",
     payload: { oidcToken: "local-e2e-oidc-token" },
   });
   if (
@@ -112,7 +112,7 @@ try {
 
   const config = await app.inject({
     method: "GET",
-    url: "/api/action/config",
+    url: "/api/action/v1/config",
     headers: { authorization: `Bearer ${session.sessionToken}` },
   });
   if (config.statusCode !== 200) {
@@ -121,7 +121,7 @@ try {
 
   const health = await app.inject({
     method: "POST",
-    url: "/api/action/health-report",
+    url: "/api/action/v1/health-report",
     headers: { authorization: `Bearer ${session.sessionToken}` },
     payload: {
       actionVersion: "local-e2e",
@@ -139,7 +139,7 @@ try {
   }
   const healthRetry = await app.inject({
     method: "POST",
-    url: "/api/action/health-report",
+    url: "/api/action/v1/health-report",
     headers: { authorization: `Bearer ${session.sessionToken}` },
     payload: {
       actionVersion: "local-e2e",
@@ -162,7 +162,7 @@ try {
   const openAiToken = "s" + "k-" + "e2e".repeat(8);
   const rejectedHealth = await app.inject({
     method: "POST",
-    url: "/api/action/health-report",
+    url: "/api/action/v1/health-report",
     headers: { authorization: `Bearer ${session.sessionToken}` },
     payload: {
       actionVersion: "local-e2e",

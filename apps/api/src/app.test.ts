@@ -369,15 +369,19 @@ describe("API app", () => {
 
     const exchange = await app.inject({
       method: "POST",
-      url: "/api/action/exchange-token",
+      url: "/api/action/v1/session/exchange",
       payload: { oidcToken: "opaque-github-oidc-token" },
     });
     expect(exchange.statusCode).toBe(200);
     const session = exchange.json<{ sessionToken: string }>();
+    expect(exchange.json()).toMatchObject({
+      protocolVersion: 1,
+      repository: "777genius/example",
+    });
 
     const config = await app.inject({
       method: "GET",
-      url: "/api/action/config",
+      url: "/api/action/v1/config",
       headers: { authorization: `Bearer ${session.sessionToken}` },
     });
     expect(config.statusCode).toBe(200);
@@ -389,7 +393,7 @@ describe("API app", () => {
 
     const health = await app.inject({
       method: "POST",
-      url: "/api/action/health-report",
+      url: "/api/action/v1/health-report",
       headers: { authorization: `Bearer ${session.sessionToken}` },
       payload: {
         actionVersion: "v1",
@@ -402,6 +406,36 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("keeps legacy action endpoints available for current action compatibility", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+
+    const config = await app.inject({
+      method: "GET",
+      url: "/api/action/config",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+    });
+    expect(config.statusCode).toBe(200);
   });
 
   it("maps replayed action OIDC tokens to a safe auth error", async () => {

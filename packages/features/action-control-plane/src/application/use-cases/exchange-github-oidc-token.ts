@@ -28,6 +28,7 @@ export async function exchangeGitHubOidcToken(
   input: { readonly oidcToken: string; readonly audience: string },
   dependencies: ExchangeGitHubOidcTokenDependencies,
 ): Promise<{
+  readonly protocolVersion: 1;
   readonly sessionToken: string;
   readonly expiresAt: string;
   readonly repository: string;
@@ -84,6 +85,7 @@ export async function exchangeGitHubOidcToken(
   });
 
   return {
+    protocolVersion: 1,
     sessionToken: session.token,
     expiresAt: session.expiresAt.toISOString(),
     repository: repository.fullName,

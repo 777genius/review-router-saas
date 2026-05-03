@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   actionHealthReportMaxBytes,
@@ -35,7 +35,10 @@ export async function registerActionControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: RegisterActionControlPlaneRoutesDependencies,
 ): Promise<void> {
-  app.post("/api/action/exchange-token", async (request, reply) => {
+  const exchangeHandler = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
     if (dependencies.controlPlaneEnabled === false) {
       return reply.code(503).send({ error: "action_control_plane_disabled" });
     }
@@ -55,9 +58,12 @@ export async function registerActionControlPlaneRoutes(
     } catch (error) {
       return sendActionError(reply, error);
     }
-  });
+  };
 
-  app.get("/api/action/config", async (request, reply) => {
+  const configHandler = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
     if (dependencies.controlPlaneEnabled === false) {
       return reply.code(503).send({ error: "action_control_plane_disabled" });
     }
@@ -70,25 +76,39 @@ export async function registerActionControlPlaneRoutes(
     } catch (error) {
       return sendActionError(reply, error);
     }
-  });
+  };
 
+  const healthReportHandler = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return reply.code(503).send({ error: "action_control_plane_disabled" });
+    }
+    try {
+      const result = await recordActionHealthReport(
+        { sessionToken: readBearerToken(request), report: request.body },
+        dependencies,
+      );
+      return reply.send(result);
+    } catch (error) {
+      return sendActionError(reply, error);
+    }
+  };
+
+  app.post("/api/action/exchange-token", exchangeHandler);
+  app.post("/api/action/v1/session/exchange", exchangeHandler);
+  app.get("/api/action/config", configHandler);
+  app.get("/api/action/v1/config", configHandler);
   app.post(
     "/api/action/health-report",
     { bodyLimit: actionHealthReportMaxBytes },
-    async (request, reply) => {
-      if (dependencies.controlPlaneEnabled === false) {
-        return reply.code(503).send({ error: "action_control_plane_disabled" });
-      }
-      try {
-        const result = await recordActionHealthReport(
-          { sessionToken: readBearerToken(request), report: request.body },
-          dependencies,
-        );
-        return reply.send(result);
-      } catch (error) {
-        return sendActionError(reply, error);
-      }
-    },
+    healthReportHandler,
+  );
+  app.post(
+    "/api/action/v1/health-report",
+    { bodyLimit: actionHealthReportMaxBytes },
+    healthReportHandler,
   );
 }
 

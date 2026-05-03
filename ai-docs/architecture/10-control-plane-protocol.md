@@ -43,7 +43,7 @@ GitHub Actions job
 Endpoint:
 
 ```text
-GET /api/action/config
+GET /api/action/v1/config
 ```
 
 Response should include:
@@ -72,7 +72,7 @@ Do not include secrets.
 Endpoint:
 
 ```text
-POST /api/action/health-report
+POST /api/action/v1/health-report
 ```
 
 Allowed fields:
@@ -139,3 +139,7 @@ If OIDC exchange fails:
 ## Why This Matters
 
 This is the main bridge that makes ReviewRouter a real SaaS control plane while preserving the privacy claim that review execution and code stay in the customer's CI/CD.
+
+## Compatibility
+
+Current implementation exposes the versioned v1 endpoints and keeps legacy `/api/action/*` aliases during local beta so the existing Action runtime can migrate without a flag day.

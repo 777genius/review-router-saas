@@ -32,6 +32,16 @@ Use explicit protocol version:
 /api/action/v1/health-report
 ```
 
+Local beta compatibility:
+
+```text
+/api/action/exchange-token
+/api/action/config
+/api/action/health-report
+```
+
+Legacy aliases must stay backward compatible until the Action runtime has moved to v1 endpoints and a release deprecation window has passed.
+
 The action should send:
 
 ```text

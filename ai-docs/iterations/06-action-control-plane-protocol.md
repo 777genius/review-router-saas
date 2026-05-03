@@ -14,6 +14,7 @@ Allow ReviewRouter Action running in customer CI to fetch current SaaS-managed c
 - short-lived action session token
 - versioned config fetch endpoint
 - versioned health report endpoint with strict payload size/schema limits
+- legacy unversioned aliases retained during local beta Action runtime migration
 - server-side code/diff/secret-looking payload rejection
 - generated workflow includes `id-token: write`
 - static config fallback when OIDC/SaaS unavailable

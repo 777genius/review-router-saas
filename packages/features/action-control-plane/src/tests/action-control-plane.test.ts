@@ -211,6 +211,7 @@ describe("action control plane", () => {
     );
 
     expect(result).toMatchObject({
+      protocolVersion: 1,
       sessionToken: "signed-session-token",
       repository: "777genius/example",
     });
