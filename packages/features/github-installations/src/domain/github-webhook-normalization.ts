@@ -10,6 +10,8 @@ export type NormalizedGitHubWebhookEvent =
       readonly accountLogin: string;
       readonly accountType: string;
       readonly repositorySelection: string;
+      readonly senderGithubUserId?: string;
+      readonly senderGithubLogin?: string;
     }
   | {
       readonly type: "github.installation_repositories";
@@ -39,6 +41,12 @@ export function normalizeGitHubWebhookEvent(
       accountLogin: envelope.payload.installation.account.login,
       accountType: envelope.payload.installation.account.type,
       repositorySelection: envelope.payload.installation.repository_selection,
+      ...(envelope.payload.sender
+        ? {
+            senderGithubUserId: String(envelope.payload.sender.id),
+            senderGithubLogin: envelope.payload.sender.login,
+          }
+        : {}),
     };
   }
 

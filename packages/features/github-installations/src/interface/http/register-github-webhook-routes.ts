@@ -5,6 +5,7 @@ import { hashGitHubWebhookPayload } from "../../domain/github-webhook-normalizat
 import { handleGitHubInstallationWebhook } from "../../application/use-cases/handle-github-installation-webhook";
 import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port";
 import type { WebhookDeliveryRepositoryPort } from "../../application/ports/webhook-delivery-repository-port";
+import type { InstallationWorkspaceOwnerGrantPort } from "../../application/ports/installation-workspace-owner-grant-port";
 import type { InstallationSyncRequestPort } from "../../application/ports/installation-sync-request-port";
 import { verifyGitHubWebhookSignature } from "../../infrastructure/crypto/github-webhook-signature";
 import type { Clock } from "@reviewrouter/shared";
@@ -13,6 +14,7 @@ export type RegisterGitHubWebhookRoutesDependencies = {
   readonly webhookSecret: string;
   readonly installations: GitHubInstallationRepositoryPort;
   readonly deliveries: WebhookDeliveryRepositoryPort;
+  readonly ownerGrants?: InstallationWorkspaceOwnerGrantPort;
   readonly syncRequests?: InstallationSyncRequestPort;
   readonly clock: Clock;
 };

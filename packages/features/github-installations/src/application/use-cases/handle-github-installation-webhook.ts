@@ -3,12 +3,14 @@ import { installationStatusForAction } from "../../domain/github-installation";
 import type { GitHubWebhookEnvelope } from "../../domain/github-webhook";
 import { normalizeGitHubWebhookEvent } from "../../domain/github-webhook-normalization";
 import type { GitHubInstallationRepositoryPort } from "../ports/github-installation-repository-port";
+import type { InstallationWorkspaceOwnerGrantPort } from "../ports/installation-workspace-owner-grant-port";
 import type { InstallationSyncRequestPort } from "../ports/installation-sync-request-port";
 import type { WebhookDeliveryRepositoryPort } from "../ports/webhook-delivery-repository-port";
 
 export type HandleGitHubInstallationWebhookDependencies = {
   readonly installations: GitHubInstallationRepositoryPort;
   readonly deliveries: WebhookDeliveryRepositoryPort;
+  readonly ownerGrants?: InstallationWorkspaceOwnerGrantPort;
   readonly syncRequests?: InstallationSyncRequestPort;
   readonly clock: Clock;
 };
@@ -74,6 +76,7 @@ export async function handleGitHubInstallationWebhook(
         status,
       });
       if (status === "active") {
+        await grantInstallationSenderOwner(envelope, dependencies);
         await dependencies.syncRequests?.requestInstallationSync({
           githubInstallationId: installationId,
           deliveryId: envelope.deliveryId,
@@ -92,6 +95,23 @@ export async function handleGitHubInstallationWebhook(
     });
     throw error;
   }
+}
+
+async function grantInstallationSenderOwner(
+  envelope: GitHubWebhookEnvelope,
+  dependencies: HandleGitHubInstallationWebhookDependencies,
+): Promise<void> {
+  const sender = envelope.payload.sender;
+  if (!sender || !dependencies.ownerGrants) {
+    return;
+  }
+
+  await dependencies.ownerGrants.grantInstallationActorOwner({
+    githubInstallationId: String(envelope.payload.installation.id),
+    githubUserId: String(sender.id),
+    githubLogin: sender.login,
+    avatarUrl: sender.avatar_url ?? null,
+  });
 }
 
 function safeErrorSummary(error: unknown): string {

@@ -19,9 +19,18 @@ const installationRepositorySchema = z
   })
   .passthrough();
 
+const senderSchema = z
+  .object({
+    id: z.number().int().positive(),
+    login: z.string().min(1),
+    avatar_url: z.string().url().nullable().optional(),
+  })
+  .passthrough();
+
 export const githubInstallationWebhookPayloadSchema = z.object({
   action: z.string().min(1),
   installation: installationSchema,
+  sender: senderSchema.optional(),
   repository_selection: z.string().min(1).optional(),
   repositories_added: z.array(installationRepositorySchema).default([]),
   repositories_removed: z.array(installationRepositorySchema).default([]),

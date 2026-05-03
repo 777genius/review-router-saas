@@ -10,6 +10,7 @@ import {
 import {
   OutboxInstallationSyncRequester,
   PrismaGitHubInstallationRepository,
+  PrismaInstallationWorkspaceOwnerGrant,
   PrismaWebhookDeliveryRepository,
   registerGitHubWebhookRoutes,
   type RegisterGitHubWebhookRoutesDependencies,
@@ -53,6 +54,7 @@ export async function createApiApp(
       ? {
           webhookSecret: options.githubWebhookSecret,
           installations: new PrismaGitHubInstallationRepository(prisma),
+          ownerGrants: new PrismaInstallationWorkspaceOwnerGrant(prisma),
           deliveries: new PrismaWebhookDeliveryRepository(prisma),
           syncRequests: new OutboxInstallationSyncRequester(
             new PrismaOutboxEventRepository(prisma),

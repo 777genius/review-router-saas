@@ -14,6 +14,8 @@ import {
 import type {
   GitHubInstallationRepositoryPort,
   GitHubInstallationSnapshot,
+  InstallationWorkspaceOwnerGrant,
+  InstallationWorkspaceOwnerGrantPort,
   WebhookDeliveryRecord,
   WebhookDeliveryRepositoryPort,
 } from "@reviewrouter/features-github-installations";
@@ -75,6 +77,16 @@ class InMemoryDeliveries implements WebhookDeliveryRepositoryPort {
     if (existing) {
       this.deliveries.set(input.deliveryId, { ...existing, status: "failed" });
     }
+  }
+}
+
+class InMemoryOwnerGrants implements InstallationWorkspaceOwnerGrantPort {
+  public readonly grants: InstallationWorkspaceOwnerGrant[] = [];
+
+  async grantInstallationActorOwner(
+    grant: InstallationWorkspaceOwnerGrant,
+  ): Promise<void> {
+    this.grants.push(grant);
   }
 }
 
@@ -147,11 +159,13 @@ describe("API app", () => {
   it("handles signed GitHub installation webhooks", async () => {
     const installations = new InMemoryInstallations();
     const deliveries = new InMemoryDeliveries();
+    const ownerGrants = new InMemoryOwnerGrants();
     const secret = "webhook-secret";
     const app = await createApiApp({
       githubWebhookDependencies: {
         webhookSecret: secret,
         installations,
+        ownerGrants,
         deliveries,
         clock: fixedClock,
       },
@@ -163,6 +177,7 @@ describe("API app", () => {
         account: { login: "777genius", type: "User" },
         repository_selection: "all",
       },
+      sender: { id: 777, login: "777genius" },
     });
 
     const response = await app.inject({
@@ -183,6 +198,14 @@ describe("API app", () => {
       accountLogin: "777genius",
       repositorySelection: "all",
     });
+    expect(ownerGrants.grants).toEqual([
+      {
+        githubInstallationId: "129154876",
+        githubUserId: "777",
+        githubLogin: "777genius",
+        avatarUrl: null,
+      },
+    ]);
   });
 
   it("serves action OIDC exchange, config fetch, and safe health report", async () => {

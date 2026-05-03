@@ -14,6 +14,7 @@ if (!databaseUrl) {
 const webhookSecret = "webhook-lifecycle-e2e-secret";
 const installationId = BigInt(900000000001);
 const repositoryId = BigInt(9876543210123);
+const senderGithubUserId = BigInt(777000001);
 const workspaceSlug = "gh-organization-reviewrouter-lifecycle-e2e";
 const prisma = createPrismaClient({ databaseUrl });
 
@@ -38,6 +39,10 @@ async function main(): Promise<void> {
           },
           repository_selection: "selected",
         },
+        sender: {
+          id: Number(senderGithubUserId),
+          login: "reviewrouter-e2e-installer",
+        },
       },
     });
 
@@ -50,6 +55,18 @@ async function main(): Promise<void> {
     assert(
       activeInstallation.workspace.slug === workspaceSlug,
       "workspace slug is deterministic",
+    );
+    const ownerMember = await prisma.workspaceMember.findFirst({
+      where: {
+        workspaceId: activeInstallation.workspaceId,
+        user: { githubUserId: senderGithubUserId },
+      },
+      select: { role: true, githubLogin: true },
+    });
+    assert(ownerMember?.role === "owner", "webhook sender is workspace owner");
+    assert(
+      ownerMember.githubLogin === "reviewrouter-e2e-installer",
+      "webhook sender login is stored as snapshot",
     );
     await assertOutboxCount(1, "created installation enqueues one sync");
 
@@ -65,6 +82,10 @@ async function main(): Promise<void> {
             type: "Organization",
           },
           repository_selection: "selected",
+        },
+        sender: {
+          id: Number(senderGithubUserId),
+          login: "reviewrouter-e2e-installer",
         },
       },
     });
@@ -204,6 +225,9 @@ async function cleanup(): Promise<void> {
     where: { githubInstallationId: installationId },
   });
   await prisma.workspace.deleteMany({ where: { slug: workspaceSlug } });
+  await prisma.user.deleteMany({
+    where: { githubUserId: senderGithubUserId },
+  });
 }
 
 function assert(condition: boolean, message: string): asserts condition {

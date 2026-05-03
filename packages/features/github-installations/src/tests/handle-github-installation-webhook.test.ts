@@ -6,6 +6,10 @@ import type {
   InstallationSyncRequestPort,
 } from "../application/ports/installation-sync-request-port";
 import type {
+  InstallationWorkspaceOwnerGrant,
+  InstallationWorkspaceOwnerGrantPort,
+} from "../application/ports/installation-workspace-owner-grant-port";
+import type {
   WebhookDeliveryRecord,
   WebhookDeliveryRepositoryPort,
   WebhookDeliveryStatus,
@@ -43,6 +47,16 @@ class InMemorySyncRequests implements InstallationSyncRequestPort {
   ): Promise<{ readonly created: boolean }> {
     this.requests.push(input);
     return { created: true };
+  }
+}
+
+class InMemoryOwnerGrants implements InstallationWorkspaceOwnerGrantPort {
+  public readonly grants: InstallationWorkspaceOwnerGrant[] = [];
+
+  async grantInstallationActorOwner(
+    grant: InstallationWorkspaceOwnerGrant,
+  ): Promise<void> {
+    this.grants.push(grant);
   }
 }
 
@@ -93,6 +107,7 @@ describe("handleGitHubInstallationWebhook", () => {
     const installations = new InMemoryInstallations();
     const deliveries = new InMemoryDeliveries();
     const syncRequests = new InMemorySyncRequests();
+    const ownerGrants = new InMemoryOwnerGrants();
     const envelope = {
       deliveryId: "delivery-1",
       eventName: "installation",
@@ -104,6 +119,11 @@ describe("handleGitHubInstallationWebhook", () => {
           account: { login: "agent-teams-ai", type: "Organization" },
           repository_selection: "selected",
         },
+        sender: {
+          id: 777,
+          login: "777genius",
+          avatar_url: "https://avatars.githubusercontent.com/u/777?v=4",
+        },
         repositories_added: [],
         repositories_removed: [],
       },
@@ -112,12 +132,14 @@ describe("handleGitHubInstallationWebhook", () => {
     const first = await handleGitHubInstallationWebhook(envelope, {
       installations,
       deliveries,
+      ownerGrants,
       syncRequests,
       clock: fixedClock,
     });
     const second = await handleGitHubInstallationWebhook(envelope, {
       installations,
       deliveries,
+      ownerGrants,
       syncRequests,
       clock: fixedClock,
     });
@@ -135,8 +157,18 @@ describe("handleGitHubInstallationWebhook", () => {
         type: "github.installation",
         version: 1,
         installationId: "129",
+        senderGithubUserId: "777",
+        senderGithubLogin: "777genius",
       },
     });
+    expect(ownerGrants.grants).toEqual([
+      {
+        githubInstallationId: "129",
+        githubUserId: "777",
+        githubLogin: "777genius",
+        avatarUrl: "https://avatars.githubusercontent.com/u/777?v=4",
+      },
+    ]);
     expect(syncRequests.requests).toEqual([
       {
         githubInstallationId: "129",

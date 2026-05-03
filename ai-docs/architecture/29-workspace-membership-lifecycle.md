@@ -50,8 +50,16 @@ GitHub org membership can change outside ReviewRouter.
 v1 policy:
 
 - ReviewRouter membership is explicit after initial owner setup
+- signed GitHub installation webhook `sender` becomes initial workspace owner when the App is installed or reactivated
+- this owner grant is keyed by immutable `sender.id`; login is only a display snapshot
 - GitHub App installation access does not automatically grant dashboard access to every org member
 - future org membership sync can suggest/remediate access
+
+Why:
+
+- the webhook is signed by GitHub and proves who performed the installation event
+- it avoids requiring broad `read:org` OAuth scopes for basic onboarding
+- it keeps tenant access explicit and auditable after the first owner is established
 
 ## Repository-Level Access Later
 
