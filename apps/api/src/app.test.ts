@@ -247,6 +247,34 @@ describe("API app", () => {
     ]);
   });
 
+  it("rejects signed GitHub webhooks with invalid payload shape safely", async () => {
+    const secret = "webhook-secret";
+    const app = await createApiApp({
+      githubWebhookDependencies: {
+        webhookSecret: secret,
+        installations: new InMemoryInstallations(),
+        deliveries: new InMemoryDeliveries(),
+        clock: fixedClock,
+      },
+    });
+    const payload = JSON.stringify({ action: "created" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-invalid-payload",
+        "x-github-event": "installation",
+        "x-hub-signature-256": signGitHubWebhookPayload(payload, secret),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "invalid_webhook_payload" });
+  });
+
   it("serves action OIDC exchange, config fetch, and safe health report", async () => {
     const repositories = new InMemoryActionRepositories();
     const app = await createApiApp({

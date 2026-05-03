@@ -55,13 +55,19 @@ export async function registerGitHubWebhookRoutes(
       return reply.code(401).send({ error: "invalid_signature" });
     }
 
-    const payload = githubInstallationWebhookPayloadSchema.parse(request.body);
+    const parsedPayload = githubInstallationWebhookPayloadSchema.safeParse(
+      request.body,
+    );
+    if (!parsedPayload.success) {
+      return reply.code(400).send({ error: "invalid_webhook_payload" });
+    }
+
     const result = await handleGitHubInstallationWebhook(
       {
         deliveryId,
         eventName,
         payloadHash: hashGitHubWebhookPayload(rawPayload),
-        payload,
+        payload: parsedPayload.data,
       },
       dependencies,
     );
