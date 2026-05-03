@@ -84,6 +84,9 @@ Scenarios:
 - merge or inspect generated workflow
 - trigger PR workflow manually or via test PR
 - verify dashboard health metadata if OIDC protocol enabled
+- verify repository review config override wins over workspace default, then
+  clearing the override falls back to workspace default through the real action
+  config API
 
 ## Regression Tests for Critical Bugs
 

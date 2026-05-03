@@ -33,3 +33,12 @@ export async function findReviewConfiguration(
 ): Promise<PersistedReviewConfiguration | null> {
   return dependencies.configurations.findLatest(target);
 }
+
+export async function clearReviewConfiguration(
+  target: ReviewConfigurationTarget,
+  dependencies: {
+    readonly configurations: ReviewConfigurationRepositoryPort;
+  },
+): Promise<boolean> {
+  return dependencies.configurations.deleteTarget(target);
+}

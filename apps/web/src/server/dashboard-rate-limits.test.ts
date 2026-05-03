@@ -82,6 +82,20 @@ describe("DashboardRateLimitPolicy", () => {
       "dashboard:review_config_save:workspace_1:workspace",
     ]);
   });
+
+  it("supports repository-scoped limits for repository review config saves", async () => {
+    const store = new InMemoryRateLimitStore();
+    const policy = new DashboardRateLimitPolicy(store, staticClock());
+
+    await policy.assertReviewConfigSaveAllowed({
+      workspaceId: "workspace_1",
+      resourceId: "repo_1",
+    });
+
+    expect(store.keys).toEqual([
+      "dashboard:review_config_save:workspace_1:repo_1",
+    ]);
+  });
 });
 
 function staticClock(): Clock {

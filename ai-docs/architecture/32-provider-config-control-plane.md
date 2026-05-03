@@ -123,6 +123,10 @@ openrouter_api_key:
 
 ## Dashboard UX
 
+Workspace default settings and per-repository overrides are both first-class.
+The dashboard should make inheritance explicit so users understand whether a
+repo uses the workspace default or its own override.
+
 Per repository settings:
 
 ```text
@@ -134,6 +138,34 @@ Inline comment limit
 Blocking threshold
 Discussion replies
 PR summary update
+```
+
+Repository override behavior:
+
+```text
+no repository config
+  -> show "inherits workspace default"
+  -> action runtime resolves workspace config
+
+save repository override
+  -> create next version for targetKey repo:<repositoryId>
+  -> action runtime resolves repository config first
+
+clear repository override
+  -> delete repo:<repositoryId> target
+  -> action runtime falls back to workspace config
+```
+
+Dashboard safety checks before save/clear:
+
+```text
+workspace ownership/admin authorization
+repository belongs to workspace
+repository selected for App installation
+repository not archived
+installation active
+rate limit per workspace/repository target
+audit event for save/clear
 ```
 
 Default beta values:

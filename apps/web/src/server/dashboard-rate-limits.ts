@@ -51,11 +51,12 @@ export class DashboardRateLimitPolicy {
 
   async assertReviewConfigSaveAllowed(input: {
     readonly workspaceId: string;
+    readonly resourceId?: string;
   }): Promise<void> {
     await this.assertOperationAllowed({
       operation: "review_config_save",
       workspaceId: input.workspaceId,
-      resourceId: "workspace",
+      resourceId: input.resourceId ?? "workspace",
       ...dashboardMutationLimits.reviewConfigSave,
     });
   }

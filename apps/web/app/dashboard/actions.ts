@@ -17,6 +17,7 @@ import {
   retryDeadLetterOutboxEvent,
 } from "@reviewrouter/features-outbox";
 import {
+  clearReviewConfiguration,
   PrismaReviewConfigurationRepository,
   resolveReviewRuntimeEnv,
   saveReviewConfiguration,
@@ -212,33 +213,7 @@ export async function saveWorkspaceReviewConfigAction(
     await createDashboardRateLimitPolicy(prisma).assertReviewConfigSaveAllowed({
       workspaceId,
     });
-    const authMode = readFormString(
-      formData,
-      "providerAuthMode",
-    ) as ReviewConfiguration["provider"]["authMode"];
-    const config: ReviewConfiguration = {
-      schemaVersion: 1,
-      provider: {
-        kind: authMode === "openrouter_api_key" ? "openrouter" : "codex",
-        authMode,
-        model: readFormString(formData, "model"),
-        reasoningEffort: readFormString(
-          formData,
-          "reasoningEffort",
-        ) as ReviewConfiguration["provider"]["reasoningEffort"],
-        agenticContext: readFormBoolean(formData, "agenticContext"),
-      },
-      blockingPolicy: {
-        failOnSeverity: readFormString(
-          formData,
-          "failOnSeverity",
-        ) as ReviewConfiguration["blockingPolicy"]["failOnSeverity"],
-      },
-      limits: {
-        inlineMaxComments: readFormNumber(formData, "inlineMaxComments"),
-        targetTokensPerBatch: readFormNumber(formData, "targetTokensPerBatch"),
-      },
-    };
+    const config = readReviewConfigurationForm(formData);
 
     const saved = await saveReviewConfiguration(
       {
@@ -269,6 +244,139 @@ export async function saveWorkspaceReviewConfigAction(
     );
 
     params = { notice: "review_config_saved", version: String(saved.version) };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function saveRepositoryReviewConfigAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const repositoryId = readFormString(formData, "repositoryId");
+  let params: Record<string, string>;
+
+  try {
+    const repository = await loadRepositoryForWorkspace({
+      prisma,
+      workspaceId,
+      repositoryId,
+    });
+    assertRepositoryConfigMutable(repository);
+
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "action_control_plane",
+    });
+    await createDashboardRateLimitPolicy(prisma).assertReviewConfigSaveAllowed({
+      workspaceId,
+      resourceId: repositoryId,
+    });
+    const config = readReviewConfigurationForm(formData);
+
+    const saved = await saveReviewConfiguration(
+      {
+        target: { scope: "repository", workspaceId, repositoryId },
+        config,
+      },
+      {
+        configurations: new PrismaReviewConfigurationRepository(prisma),
+      },
+    );
+
+    await recordAuditEvent(
+      {
+        workspaceId,
+        actor: actor.actor,
+        action: "review_config.saved",
+        targetType: "repository",
+        targetId: repositoryId,
+        metadata: {
+          repository: repository.fullName,
+          version: saved.version,
+          providerKind: saved.config.provider.kind,
+          authMode: saved.config.provider.authMode,
+          model: saved.config.provider.model,
+          failOnSeverity: saved.config.blockingPolicy.failOnSeverity,
+        },
+      },
+      { auditLog: new PrismaAuditLogRepository(prisma) },
+    );
+
+    params = {
+      notice: "repository_review_config_saved",
+      repository: repository.fullName,
+      version: String(saved.version),
+    };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function clearRepositoryReviewConfigAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const repositoryId = readFormString(formData, "repositoryId");
+  let params: Record<string, string>;
+
+  try {
+    const repository = await loadRepositoryForWorkspace({
+      prisma,
+      workspaceId,
+      repositoryId,
+    });
+    assertRepositoryConfigMutable(repository);
+
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "action_control_plane",
+    });
+    await createDashboardRateLimitPolicy(prisma).assertReviewConfigSaveAllowed({
+      workspaceId,
+      resourceId: repositoryId,
+    });
+
+    const cleared = await clearReviewConfiguration(
+      { scope: "repository", workspaceId, repositoryId },
+      {
+        configurations: new PrismaReviewConfigurationRepository(prisma),
+      },
+    );
+
+    await recordAuditEvent(
+      {
+        workspaceId,
+        actor: actor.actor,
+        action: "review_config.cleared",
+        targetType: "repository",
+        targetId: repositoryId,
+        metadata: {
+          repository: repository.fullName,
+          cleared,
+        },
+      },
+      { auditLog: new PrismaAuditLogRepository(prisma) },
+    );
+
+    params = {
+      notice: "repository_review_config_cleared",
+      repository: repository.fullName,
+    };
   } catch (error) {
     params = { error: safeDashboardErrorCode(error) };
   }
@@ -353,6 +461,52 @@ async function assertDashboardEntitlement(input: {
   );
 }
 
+async function loadRepositoryForWorkspace(input: {
+  readonly prisma: PrismaClient;
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+}): Promise<{
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly fullName: string;
+  readonly selected: boolean;
+  readonly archived: boolean;
+  readonly installation: { readonly status: string };
+}> {
+  const repository = await input.prisma.repositoryConnection.findUnique({
+    where: { id: input.repositoryId },
+    select: {
+      id: true,
+      workspaceId: true,
+      fullName: true,
+      selected: true,
+      archived: true,
+      installation: { select: { status: true } },
+    },
+  });
+  if (!repository || repository.workspaceId !== input.workspaceId) {
+    throw new Error("repository_not_found");
+  }
+
+  return repository;
+}
+
+function assertRepositoryConfigMutable(input: {
+  readonly selected: boolean;
+  readonly archived: boolean;
+  readonly installation: { readonly status: string };
+}): void {
+  if (!input.selected) {
+    throw new Error("repository_not_selected");
+  }
+  if (input.archived) {
+    throw new Error("repository_archived");
+  }
+  if (input.installation.status !== "active") {
+    throw new Error("installation_not_active");
+  }
+}
+
 async function loadStaticRuntimeEnv(input: {
   readonly prisma: PrismaClient;
   readonly workspaceId: string;
@@ -368,6 +522,37 @@ async function loadStaticRuntimeEnv(input: {
     { configurations },
   );
   return resolved.runtimeEnv;
+}
+
+function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
+  const authMode = readFormString(
+    formData,
+    "providerAuthMode",
+  ) as ReviewConfiguration["provider"]["authMode"];
+
+  return {
+    schemaVersion: 1,
+    provider: {
+      kind: authMode === "openrouter_api_key" ? "openrouter" : "codex",
+      authMode,
+      model: readFormString(formData, "model"),
+      reasoningEffort: readFormString(
+        formData,
+        "reasoningEffort",
+      ) as ReviewConfiguration["provider"]["reasoningEffort"],
+      agenticContext: readFormBoolean(formData, "agenticContext"),
+    },
+    blockingPolicy: {
+      failOnSeverity: readFormString(
+        formData,
+        "failOnSeverity",
+      ) as ReviewConfiguration["blockingPolicy"]["failOnSeverity"],
+    },
+    limits: {
+      inlineMaxComments: readFormNumber(formData, "inlineMaxComments"),
+      targetTokensPerBatch: readFormNumber(formData, "targetTokensPerBatch"),
+    },
+  };
 }
 
 function readFormString(formData: FormData, key: string): string {

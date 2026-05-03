@@ -58,6 +58,7 @@ The paid value is not raw compute. The paid value is operational control:
 - easy GitHub App install
 - one dashboard for many repos
 - central policies
+- per-repository provider/model/effort overrides with workspace inheritance
 - config rollout
 - workflow update PRs
 - audit logs
@@ -104,3 +105,12 @@ ReviewRouter dashboard should feel like a cyberpunk-future command center:
 ReviewRouter should position as:
 
 > Privacy-first AI code review routing for teams that want Codex, OpenAI, OpenRouter, and other providers while keeping review execution inside their own CI/CD.
+
+## Latest Implementation State
+
+- Review config is versioned and resolves in order:
+  repository override -> workspace default -> safe default.
+- Dashboard can save workspace defaults, save repository overrides, and clear a
+  repository override back to workspace inheritance.
+- Runtime config fetch revalidates the action session against the stored
+  repository by immutable GitHub repository id before returning config.

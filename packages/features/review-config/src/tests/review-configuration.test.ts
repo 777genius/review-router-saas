@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   findReviewConfiguration,
+  clearReviewConfiguration,
   mapConfigToRuntimeEnv,
   parseReviewConfiguration,
   reviewConfigurationTargetKey,
@@ -33,6 +34,12 @@ class InMemoryReviewConfigurationRepository implements ReviewConfigurationReposi
     } satisfies PersistedReviewConfiguration;
     this.versions.set(key, [...records, persisted]);
     return persisted;
+  }
+
+  async deleteTarget(
+    target: Parameters<ReviewConfigurationRepositoryPort["deleteTarget"]>[0],
+  ) {
+    return this.versions.delete(reviewConfigurationTargetKey(target));
   }
 }
 
@@ -166,5 +173,64 @@ describe("review configuration", () => {
         FAIL_ON_SEVERITY: "major",
       },
     });
+  });
+
+  it("clears repository overrides and falls back to workspace config", async () => {
+    const configurations = new InMemoryReviewConfigurationRepository();
+    const workspaceTarget = {
+      scope: "workspace",
+      workspaceId: "workspace_1",
+    } as const;
+    const repositoryTarget = {
+      scope: "repository",
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+    } as const;
+
+    await saveReviewConfiguration(
+      {
+        target: workspaceTarget,
+        config: {
+          ...safeDefaultReviewConfiguration,
+          provider: {
+            ...safeDefaultReviewConfiguration.provider,
+            model: "gpt-5.4",
+          },
+        },
+      },
+      { configurations },
+    );
+    await saveReviewConfiguration(
+      {
+        target: repositoryTarget,
+        config: {
+          ...safeDefaultReviewConfiguration,
+          provider: {
+            ...safeDefaultReviewConfiguration.provider,
+            model: "gpt-5.4-mini",
+          },
+        },
+      },
+      { configurations },
+    );
+
+    await expect(
+      resolveReviewConfiguration(repositoryTarget, { configurations }),
+    ).resolves.toMatchObject({
+      source: "repository",
+      config: { provider: { model: "gpt-5.4-mini" } },
+    });
+    await expect(
+      clearReviewConfiguration(repositoryTarget, { configurations }),
+    ).resolves.toBe(true);
+    await expect(
+      resolveReviewConfiguration(repositoryTarget, { configurations }),
+    ).resolves.toMatchObject({
+      source: "workspace",
+      config: { provider: { model: "gpt-5.4" } },
+    });
+    await expect(
+      clearReviewConfiguration(repositoryTarget, { configurations }),
+    ).resolves.toBe(false);
   });
 });

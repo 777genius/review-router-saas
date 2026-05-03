@@ -15,4 +15,6 @@ export interface ReviewConfigurationRepositoryPort {
     readonly target: ReviewConfigurationTarget;
     readonly config: ReviewConfiguration;
   }): Promise<PersistedReviewConfiguration>;
+
+  deleteTarget(target: ReviewConfigurationTarget): Promise<boolean>;
 }

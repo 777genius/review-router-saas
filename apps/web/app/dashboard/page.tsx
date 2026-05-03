@@ -32,9 +32,11 @@ import {
 } from "../../src/server/dashboard-mutations";
 import { getPrisma } from "../../src/server/prisma";
 import {
+  clearRepositoryReviewConfigAction,
   createSetupPullRequestAction,
   requestInstallationSyncAction,
   retryOutboxEventAction,
+  saveRepositoryReviewConfigAction,
   saveWorkspaceReviewConfigAction,
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
@@ -129,6 +131,10 @@ async function loadDashboardData(
         >[number][];
         entitlement: ReturnType<typeof freeBetaEntitlement>;
         reviewConfig: Awaited<ReturnType<typeof findReviewConfiguration>>;
+        repositoryConfigs: readonly {
+          readonly repositoryId: string;
+          readonly config: Awaited<ReturnType<typeof findReviewConfiguration>>;
+        }[];
         outboxFailures: Awaited<ReturnType<typeof listWorkspaceOutboxFailures>>;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
@@ -153,6 +159,19 @@ async function loadDashboardData(
         const reviewConfig = await findReviewConfiguration(
           { scope: "workspace", workspaceId: workspace.id },
           { configurations: reviewConfigStore },
+        );
+        const repositoryConfigs = await Promise.all(
+          repositories.map(async (repository) => ({
+            repositoryId: repository.id,
+            config: await findReviewConfiguration(
+              {
+                scope: "repository",
+                workspaceId: workspace.id,
+                repositoryId: repository.id,
+              },
+              { configurations: reviewConfigStore },
+            ),
+          })),
         );
         const outboxFailures = await listWorkspaceOutboxFailures(
           { workspaceId: workspace.id, limit: 5 },
@@ -184,6 +203,7 @@ async function loadDashboardData(
           entitlement,
           health,
           reviewConfig,
+          repositoryConfigs,
           outboxFailures,
         };
       },
@@ -296,6 +316,7 @@ function WorkspaceCard({
     entitlement,
     health,
     provisioning,
+    repositoryConfigs,
     outboxFailures,
   } = data;
   const activeConfig =
@@ -304,9 +325,18 @@ function WorkspaceCard({
   const primaryRepository =
     repositories.find((repository) => repository.selected) ?? repositories[0];
   const primaryInstallation = workspace.installations[0];
+  const primaryRepositoryConfig = primaryRepository
+    ? repositoryConfigs.find(
+        (item) => item.repositoryId === primaryRepository.id,
+      )?.config
+    : null;
+  const primaryEffectiveConfig =
+    primaryRepositoryConfig?.config ?? activeConfig;
   const providerGuidance = primaryRepository
     ? buildProviderSecretSetupGuidance({
-        provider: providerSecretKindForAuthMode(activeConfig.provider.authMode),
+        provider: providerSecretKindForAuthMode(
+          primaryEffectiveConfig.provider.authMode,
+        ),
         repoFullName: primaryRepository.fullName,
         organizationLogin:
           primaryInstallation?.accountType === "Organization"
@@ -415,103 +445,104 @@ function WorkspaceCard({
             workspace default / v{activeConfigVersion}
           </span>
         </div>
-        <form
+        <ReviewConfigForm
           action={saveWorkspaceReviewConfigAction}
-          className="grid gap-3 md:grid-cols-3"
-        >
-          <input type="hidden" name="workspaceId" value={workspace.id} />
-          <label className="space-y-1 text-sm text-slate-300">
-            <span>Provider auth</span>
-            <select
-              name="providerAuthMode"
-              defaultValue={activeConfig.provider.authMode}
-              disabled={!mutationsEnabled}
-              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-            >
-              <option value="codex_subscription_oauth">Codex OAuth</option>
-              <option value="codex_openai_api_key">Codex API key</option>
-              <option value="openrouter_api_key">OpenRouter API key</option>
-            </select>
-          </label>
-          <label className="space-y-1 text-sm text-slate-300">
-            <span>Model</span>
-            <input
-              name="model"
-              defaultValue={activeConfig.provider.model}
-              disabled={!mutationsEnabled}
-              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-            />
-          </label>
-          <label className="space-y-1 text-sm text-slate-300">
-            <span>Reasoning effort</span>
-            <select
-              name="reasoningEffort"
-              defaultValue={activeConfig.provider.reasoningEffort}
-              disabled={!mutationsEnabled}
-              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-            >
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-            </select>
-          </label>
-          <label className="space-y-1 text-sm text-slate-300">
-            <span>Fail on severity</span>
-            <select
-              name="failOnSeverity"
-              defaultValue={activeConfig.blockingPolicy.failOnSeverity}
-              disabled={!mutationsEnabled}
-              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-            >
-              <option value="off">off</option>
-              <option value="critical">critical</option>
-              <option value="major">major</option>
-            </select>
-          </label>
-          <label className="space-y-1 text-sm text-slate-300">
-            <span>Inline max comments</span>
-            <input
-              name="inlineMaxComments"
-              type="number"
-              min={0}
-              max={50}
-              defaultValue={activeConfig.limits.inlineMaxComments}
-              disabled={!mutationsEnabled}
-              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-            />
-          </label>
-          <label className="space-y-1 text-sm text-slate-300">
-            <span>Target tokens per batch</span>
-            <input
-              name="targetTokensPerBatch"
-              type="number"
-              min={4000}
-              max={200000}
-              step={1000}
-              defaultValue={activeConfig.limits.targetTokensPerBatch}
-              disabled={!mutationsEnabled}
-              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-            />
-          </label>
-          <label className="space-y-1 text-sm text-slate-300">
-            <span>Agentic context</span>
-            <select
-              name="agenticContext"
-              defaultValue={String(activeConfig.provider.agenticContext)}
-              disabled={!mutationsEnabled}
-              className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-            >
-              <option value="true">enabled</option>
-              <option value="false">disabled</option>
-            </select>
-          </label>
-          <div className="flex items-end">
-            <Button type="submit" variant="solid" disabled={!mutationsEnabled}>
-              Save config
-            </Button>
-          </div>
-        </form>
+          config={activeConfig}
+          hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
+          mutationsEnabled={mutationsEnabled}
+          submitLabel="Save workspace default"
+        />
       </div>
+
+      {repositories.length > 0 ? (
+        <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Badge tone="accent">Repository overrides</Badge>
+            <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+              optional per-repository provider/model/effort
+            </span>
+          </div>
+          <div className="grid gap-3">
+            {repositories.map((repository) => {
+              const repositoryConfig = repositoryConfigs.find(
+                (item) => item.repositoryId === repository.id,
+              )?.config;
+              const effectiveConfig = repositoryConfig?.config ?? activeConfig;
+              const configVersion =
+                repositoryConfig?.version ?? activeConfigVersion;
+
+              return (
+                <details
+                  key={`${repository.id}-review-config`}
+                  className="rounded-lg border border-cyan-200/10 bg-cyan-300/5 p-3"
+                >
+                  <summary className="cursor-pointer list-none">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-cyan-50">
+                          {repository.fullName}
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          {repositoryConfig
+                            ? `Repository override / v${configVersion}`
+                            : `Inherits workspace default / v${configVersion}`}
+                        </p>
+                      </div>
+                      <Badge tone={repositoryConfig ? "warning" : "success"}>
+                        {repositoryConfig ? "override" : "inherits"}
+                      </Badge>
+                    </div>
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    <ReviewConfigForm
+                      action={saveRepositoryReviewConfigAction}
+                      config={effectiveConfig}
+                      hiddenFields={[
+                        { name: "workspaceId", value: workspace.id },
+                        { name: "repositoryId", value: repository.id },
+                      ]}
+                      mutationsEnabled={
+                        mutationsEnabled &&
+                        repository.selected &&
+                        !repository.archived
+                      }
+                      submitLabel={
+                        repositoryConfig ? "Update override" : "Save override"
+                      }
+                    />
+                    {repositoryConfig ? (
+                      <form action={clearRepositoryReviewConfigAction}>
+                        <input
+                          type="hidden"
+                          name="workspaceId"
+                          value={workspace.id}
+                        />
+                        <input
+                          type="hidden"
+                          name="repositoryId"
+                          value={repository.id}
+                        />
+                        <Button
+                          type="submit"
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            !mutationsEnabled ||
+                            !repository.selected ||
+                            repository.archived
+                          }
+                        >
+                          Inherit workspace default
+                        </Button>
+                      </form>
+                    ) : null}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {repositories.some((repository) => repository.visibility === "public") ? (
         <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
@@ -704,6 +735,128 @@ function WorkspaceCard({
   );
 }
 
+type DashboardFormAction = (formData: FormData) => void | Promise<void>;
+
+function ReviewConfigForm({
+  action,
+  config,
+  hiddenFields,
+  mutationsEnabled,
+  submitLabel,
+}: {
+  readonly action: DashboardFormAction;
+  readonly config: ReviewConfiguration;
+  readonly hiddenFields: readonly {
+    readonly name: string;
+    readonly value: string;
+  }[];
+  readonly mutationsEnabled: boolean;
+  readonly submitLabel: string;
+}): React.ReactElement {
+  return (
+    <form action={action} className="grid gap-3 md:grid-cols-3">
+      {hiddenFields.map((field) => (
+        <input
+          key={`${field.name}:${field.value}`}
+          type="hidden"
+          name={field.name}
+          value={field.value}
+        />
+      ))}
+      <label className="space-y-1 text-sm text-slate-300">
+        <span>Provider auth</span>
+        <select
+          name="providerAuthMode"
+          defaultValue={config.provider.authMode}
+          disabled={!mutationsEnabled}
+          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+        >
+          <option value="codex_subscription_oauth">Codex OAuth</option>
+          <option value="codex_openai_api_key">Codex API key</option>
+          <option value="openrouter_api_key">OpenRouter API key</option>
+        </select>
+      </label>
+      <label className="space-y-1 text-sm text-slate-300">
+        <span>Model</span>
+        <input
+          name="model"
+          defaultValue={config.provider.model}
+          disabled={!mutationsEnabled}
+          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+        />
+      </label>
+      <label className="space-y-1 text-sm text-slate-300">
+        <span>Reasoning effort</span>
+        <select
+          name="reasoningEffort"
+          defaultValue={config.provider.reasoningEffort}
+          disabled={!mutationsEnabled}
+          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+        >
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+        </select>
+      </label>
+      <label className="space-y-1 text-sm text-slate-300">
+        <span>Fail on severity</span>
+        <select
+          name="failOnSeverity"
+          defaultValue={config.blockingPolicy.failOnSeverity}
+          disabled={!mutationsEnabled}
+          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+        >
+          <option value="off">off</option>
+          <option value="critical">critical</option>
+          <option value="major">major</option>
+        </select>
+      </label>
+      <label className="space-y-1 text-sm text-slate-300">
+        <span>Inline max comments</span>
+        <input
+          name="inlineMaxComments"
+          type="number"
+          min={0}
+          max={50}
+          defaultValue={config.limits.inlineMaxComments}
+          disabled={!mutationsEnabled}
+          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+        />
+      </label>
+      <label className="space-y-1 text-sm text-slate-300">
+        <span>Target tokens per batch</span>
+        <input
+          name="targetTokensPerBatch"
+          type="number"
+          min={4000}
+          max={200000}
+          step={1000}
+          defaultValue={config.limits.targetTokensPerBatch}
+          disabled={!mutationsEnabled}
+          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+        />
+      </label>
+      <label className="space-y-1 text-sm text-slate-300">
+        <span>Agentic context</span>
+        <select
+          name="agenticContext"
+          defaultValue={String(config.provider.agenticContext)}
+          disabled={!mutationsEnabled}
+          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
+        >
+          <option value="true">enabled</option>
+          <option value="false">disabled</option>
+        </select>
+      </label>
+      <div className="flex items-end">
+        <Button type="submit" variant="solid" disabled={!mutationsEnabled}>
+          {submitLabel}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function providerSecretKindForAuthMode(
   authMode: ReviewConfiguration["provider"]["authMode"],
 ): ProviderSecretKind {
@@ -849,6 +1002,14 @@ function dashboardNoticeText(notice: string, repository: string): string {
         : "Setup PR is ready.";
     case "review_config_saved":
       return "Review configuration was saved. Future action runs can fetch it through OIDC.";
+    case "repository_review_config_saved":
+      return repository
+        ? `Repository review configuration was saved for ${repository}.`
+        : "Repository review configuration was saved.";
+    case "repository_review_config_cleared":
+      return repository
+        ? `${repository} now inherits the workspace review configuration.`
+        : "Repository override was cleared.";
     case "outbox_retry_queued":
       return "Failed background event was queued for retry. Run the worker or wait for it to process.";
     case "outbox_retry_not_found":

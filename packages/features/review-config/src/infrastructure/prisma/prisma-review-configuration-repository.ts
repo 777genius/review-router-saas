@@ -99,6 +99,17 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
       return toPersistedConfiguration(saved);
     });
   }
+
+  async deleteTarget(target: ReviewConfigurationTarget): Promise<boolean> {
+    const result = await this.prisma.reviewConfiguration.deleteMany({
+      where: {
+        workspaceId: target.workspaceId,
+        targetKey: reviewConfigurationTargetKey(target),
+      },
+    });
+
+    return result.count > 0;
+  }
 }
 
 const versionSelect = {
