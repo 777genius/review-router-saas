@@ -1,12 +1,16 @@
+import type { Clock } from "@reviewrouter/shared";
 import { installationStatusForAction } from "../../domain/github-installation.js";
 import type { GitHubWebhookEnvelope } from "../../domain/github-webhook.js";
 import { normalizeGitHubWebhookEvent } from "../../domain/github-webhook-normalization.js";
 import type { GitHubInstallationRepositoryPort } from "../ports/github-installation-repository-port.js";
+import type { InstallationSyncRequestPort } from "../ports/installation-sync-request-port.js";
 import type { WebhookDeliveryRepositoryPort } from "../ports/webhook-delivery-repository-port.js";
 
 export type HandleGitHubInstallationWebhookDependencies = {
   readonly installations: GitHubInstallationRepositoryPort;
   readonly deliveries: WebhookDeliveryRepositoryPort;
+  readonly syncRequests?: InstallationSyncRequestPort;
+  readonly clock: Clock;
 };
 
 export type HandleGitHubInstallationWebhookResult = {
@@ -33,6 +37,26 @@ export async function handleGitHubInstallationWebhook(
   }
 
   try {
+    if (envelope.eventName === "installation_repositories") {
+      await dependencies.installations.upsertInstallation({
+        githubInstallationId: installationId,
+        accountLogin: envelope.payload.installation.account.login,
+        accountType: envelope.payload.installation.account.type,
+        repositorySelection:
+          envelope.payload.repository_selection ??
+          envelope.payload.installation.repository_selection,
+        status: "active",
+      });
+      await dependencies.syncRequests?.requestInstallationSync({
+        githubInstallationId: installationId,
+        deliveryId: envelope.deliveryId,
+        reason: "installation_repositories_changed",
+        occurredAt: dependencies.clock.now(),
+      });
+      await dependencies.deliveries.markProcessed(envelope.deliveryId);
+      return { processed: true, status: "active" };
+    }
+
     const status = installationStatusForAction(envelope.payload.action);
     if (envelope.eventName !== "installation" || status === null) {
       await dependencies.deliveries.markProcessed(envelope.deliveryId);
@@ -49,6 +73,14 @@ export async function handleGitHubInstallationWebhook(
         repositorySelection: envelope.payload.installation.repository_selection,
         status,
       });
+      if (status === "active") {
+        await dependencies.syncRequests?.requestInstallationSync({
+          githubInstallationId: installationId,
+          deliveryId: envelope.deliveryId,
+          reason: "installation_access_changed",
+          occurredAt: dependencies.clock.now(),
+        });
+      }
     }
 
     await dependencies.deliveries.markProcessed(envelope.deliveryId);

@@ -7,12 +7,18 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./outbox": {
+      "types": "./src/infrastructure/outbox/installation-sync-requested-handler.ts",
+      "default": "./src/infrastructure/outbox/installation-sync-requested-handler.ts"
     }
   },
   "dependencies": {
     "@octokit/app": "^16.1.2",
     "@prisma/client": "^7.8.0",
-    "@reviewrouter/shared": "workspace:*"
+    "@reviewrouter/features-outbox": "workspace:*",
+    "@reviewrouter/shared": "workspace:*",
+    "zod": "^4.4.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

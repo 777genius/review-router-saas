@@ -44,9 +44,23 @@ export class PrismaGitHubInstallationRepository implements GitHubInstallationRep
   }
 
   async markInstallationRemoved(githubInstallationId: string): Promise<void> {
-    await this.prisma.gitHubInstallation.updateMany({
-      where: { githubInstallationId: BigInt(githubInstallationId) },
-      data: { status: "removed" },
+    await this.prisma.$transaction(async (tx) => {
+      const installation = await tx.gitHubInstallation.findUnique({
+        where: { githubInstallationId: BigInt(githubInstallationId) },
+        select: { id: true },
+      });
+      if (!installation) {
+        return;
+      }
+
+      await tx.gitHubInstallation.update({
+        where: { id: installation.id },
+        data: { status: "removed" },
+      });
+      await tx.repositoryConnection.updateMany({
+        where: { installationId: installation.id },
+        data: { selected: false },
+      });
     });
   }
 }

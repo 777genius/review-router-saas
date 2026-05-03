@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@prisma/client": "^7.8.0",
+    "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "fastify": "^5.8.5",
     "fastify-raw-body": "5.0.0",

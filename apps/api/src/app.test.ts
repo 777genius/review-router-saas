@@ -153,6 +153,7 @@ describe("API app", () => {
         webhookSecret: secret,
         installations,
         deliveries,
+        clock: fixedClock,
       },
     });
     const payload = JSON.stringify({

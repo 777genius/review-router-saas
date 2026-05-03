@@ -11,9 +11,20 @@ const installationSchema = z.object({
   repository_selection: z.string().min(1).default("selected"),
 });
 
+const installationRepositorySchema = z
+  .object({
+    id: z.number().int().positive(),
+    name: z.string().min(1).optional(),
+    full_name: z.string().min(1).optional(),
+  })
+  .passthrough();
+
 export const githubInstallationWebhookPayloadSchema = z.object({
   action: z.string().min(1),
   installation: installationSchema,
+  repository_selection: z.string().min(1).optional(),
+  repositories_added: z.array(installationRepositorySchema).default([]),
+  repositories_removed: z.array(installationRepositorySchema).default([]),
 });
 
 export type GitHubInstallationWebhookPayload = z.infer<

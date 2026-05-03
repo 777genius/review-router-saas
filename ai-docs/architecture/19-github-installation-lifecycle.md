@@ -35,14 +35,15 @@ SaaS should prefer GitHub selected-repository installs for trust and least privi
 
 When GitHub sends repository removed event:
 
-- mark RepositoryConnection as unselected/unavailable
+- enqueue full installation repository sync through outbox
+- mark RepositoryConnection as unselected/unavailable after sync confirms it is absent
 - block workflow provisioning
 - keep audit/history metadata
 - show clear dashboard status
 
 When repository is added back:
 
-- resync metadata
+- enqueue full installation repository sync through outbox
 - do not automatically re-enable review if previous state was intentionally disabled by ReviewRouter user
 
 ## App Uninstall
@@ -57,6 +58,8 @@ When app is uninstalled:
 - do not delete customer data immediately unless user requests workspace deletion
 - reject future OIDC config fetches for repos under removed installation
 - note that existing workflow files remain in the customer repo until they remove them
+
+Implementation note: do not rely on GitHub API after `installation.deleted`. The installation token may no longer be mintable, so the webhook handler must immediately mark the installation `removed` and set linked repositories `selected=false`.
 
 ## Permission Changes
 
@@ -100,3 +103,4 @@ installed_selected_repos_empty
 - repository rename preserves config by GitHub repo id
 - permission reduction surfaces health error
 - repeated installation events are idempotent
+- signed lifecycle E2E runs against local Postgres test DB via `pnpm spike:webhook-lifecycle:e2e`

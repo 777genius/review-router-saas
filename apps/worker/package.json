@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@reviewrouter/features-outbox": "workspace:*",
+    "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",
     "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/platform-logger": "workspace:*",

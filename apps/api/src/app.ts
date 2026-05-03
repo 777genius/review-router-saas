@@ -8,11 +8,13 @@ import {
   type RegisterActionControlPlaneRoutesDependencies,
 } from "@reviewrouter/features-action-control-plane";
 import {
+  OutboxInstallationSyncRequester,
   PrismaGitHubInstallationRepository,
   PrismaWebhookDeliveryRepository,
   registerGitHubWebhookRoutes,
   type RegisterGitHubWebhookRoutesDependencies,
 } from "@reviewrouter/features-github-installations";
+import { PrismaOutboxEventRepository } from "@reviewrouter/features-outbox";
 import { registerSystemHealthRoutes } from "@reviewrouter/features-system-health";
 import {
   createPrismaClient,
@@ -52,6 +54,10 @@ export async function createApiApp(
           webhookSecret: options.githubWebhookSecret,
           installations: new PrismaGitHubInstallationRepository(prisma),
           deliveries: new PrismaWebhookDeliveryRepository(prisma),
+          syncRequests: new OutboxInstallationSyncRequester(
+            new PrismaOutboxEventRepository(prisma),
+          ),
+          clock: new SystemClock(),
         }
       : undefined);
 

@@ -5,12 +5,16 @@ import { hashGitHubWebhookPayload } from "../../domain/github-webhook-normalizat
 import { handleGitHubInstallationWebhook } from "../../application/use-cases/handle-github-installation-webhook.js";
 import type { GitHubInstallationRepositoryPort } from "../../application/ports/github-installation-repository-port.js";
 import type { WebhookDeliveryRepositoryPort } from "../../application/ports/webhook-delivery-repository-port.js";
+import type { InstallationSyncRequestPort } from "../../application/ports/installation-sync-request-port.js";
 import { verifyGitHubWebhookSignature } from "../../infrastructure/crypto/github-webhook-signature.js";
+import type { Clock } from "@reviewrouter/shared";
 
 export type RegisterGitHubWebhookRoutesDependencies = {
   readonly webhookSecret: string;
   readonly installations: GitHubInstallationRepositoryPort;
   readonly deliveries: WebhookDeliveryRepositoryPort;
+  readonly syncRequests?: InstallationSyncRequestPort;
+  readonly clock: Clock;
 };
 
 type RawBodyRequest = FastifyRequest & { readonly rawBody?: Buffer };

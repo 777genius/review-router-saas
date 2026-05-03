@@ -21,6 +21,7 @@ If an external account, GitHub org, secret, or real E2E dependency blocks a task
 7. [Iteration 07 - Webhooks, Jobs, Locks, and Outbox](./07-webhooks-jobs-locks-outbox.md)
 8. [Iteration 08 - Health, Audit, and Beta Hardening](./08-health-audit-beta-hardening.md)
 9. [Iteration 09 - Free Entitlements and Future Billing Boundary](./09-entitlements-billing-boundary.md)
+10. [Iteration 10 - GitHub App Lifecycle Webhooks](./10-github-app-lifecycle-webhooks.md)
 
 ## Quality Gate Before Public Beta
 

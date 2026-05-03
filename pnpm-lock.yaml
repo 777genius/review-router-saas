@@ -135,6 +135,9 @@ importers:
       '@reviewrouter/features-github-installations':
         specifier: workspace:*
         version: link:../../packages/features/github-installations
+      '@reviewrouter/features-outbox':
+        specifier: workspace:*
+        version: link:../../packages/features/outbox
       '@reviewrouter/features-system-health':
         specifier: workspace:*
         version: link:../../packages/features/system-health
@@ -222,6 +225,9 @@ importers:
       '@reviewrouter/features-outbox':
         specifier: workspace:*
         version: link:../../packages/features/outbox
+      '@reviewrouter/features-repositories':
+        specifier: workspace:*
+        version: link:../../packages/features/repositories
       '@reviewrouter/platform-config':
         specifier: workspace:*
         version: link:../../packages/platform/config
@@ -288,6 +294,9 @@ importers:
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-outbox':
+        specifier: workspace:*
+        version: link:../outbox
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -327,9 +336,15 @@ importers:
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-outbox':
+        specifier: workspace:*
+        version: link:../outbox
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
 
   packages/features/review-config:
     dependencies:
