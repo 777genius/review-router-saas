@@ -62,6 +62,7 @@ smoke passes after the latest action/runtime provisioning change.
 - OIDC action session exchange and replay guard tests
 - action health metadata reporting
 - provider setup guidance without SaaS secret custody
+- local backup/restore smoke for metadata database
 - repeatable fresh repository E2E script
 - repeatable full review E2E script with Codex OAuth
 
@@ -70,7 +71,7 @@ smoke passes after the latest action/runtime provisioning change.
 - deploy web/API/worker behind real HTTPS URLs
 - configure production GitHub App callback/setup URLs
 - choose production database and backup target
-- run one backup restore drill
+- run one restore drill against the chosen production backup target
 - write customer-facing terms/privacy
 - define support contact and incident status page/channel
 - decide public beta limits and abuse policy text

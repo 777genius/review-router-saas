@@ -61,6 +61,10 @@ Database and protocol smoke can be included:
 REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 ```
 
+The DB gate includes migration smoke, backup/restore smoke, webhook lifecycle,
+outbox recovery, rate limits, distributed locks, runtime config, and support
+diagnostics.
+
 Real GitHub smoke helpers require a disposable GitHub App installation and
 selected test repository:
 

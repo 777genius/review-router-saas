@@ -31,6 +31,8 @@ run_step "whitespace check" git diff --check
 run_step "Codex secret seeding shell syntax" bash -n scripts/seed-codex-auth.sh
 
 if [[ "${REVIEW_ROUTER_BETA_CHECK_DB_E2E:-0}" == "1" ]]; then
+  run_step "migration smoke" run_pnpm db:migrate:smoke
+  run_step "backup restore smoke" run_pnpm db:restore:smoke
   run_step "webhook lifecycle DB E2E" run_with_env spike:webhook-lifecycle:e2e
   run_step "outbox maintenance DB E2E" run_with_env spike:outbox-maintenance:e2e
   run_step "rate limit DB E2E" run_with_env spike:rate-limit:e2e

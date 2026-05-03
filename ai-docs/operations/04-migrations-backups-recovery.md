@@ -29,6 +29,7 @@ Safe local commands:
 pnpm db:migrate:deploy
 pnpm db:migrate:status
 pnpm db:migrate:smoke
+pnpm db:restore:smoke
 ```
 
 Do not use `pnpm db:push` for production-like environments. Keep it only as an explicit local escape hatch during spikes, and replace any resulting schema change with a reviewed migration before merging.
@@ -61,6 +62,18 @@ Beta minimum:
 - daily backups
 - point-in-time recovery if provider supports it
 - test restore before public beta
+
+Local restore drill:
+
+```bash
+pnpm db:restore:smoke
+```
+
+The smoke creates a temporary custom-format `pg_dump` from `DATABASE_URL` or
+`REVIEW_ROUTER_BACKUP_SOURCE_URL`, restores it into a disposable database,
+verifies critical tables/indexes and metadata row counts, then drops the
+disposable database and deletes the temporary dump. It must not print table
+data, secrets, provider tokens, repository code, prompts, or diffs.
 
 ## Recovery Objectives
 
