@@ -10,6 +10,7 @@
     "@reviewrouter/features-github-installations": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-provider-setup": "workspace:*",
+    "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-repo-health": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",

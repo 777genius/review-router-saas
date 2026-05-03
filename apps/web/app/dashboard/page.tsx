@@ -798,6 +798,8 @@ function dashboardErrorText(error: string): string {
       return "Your GitHub user is not an owner/admin for this workspace.";
     case "operation_already_running":
       return "Another setup or sync operation is already running. Try again shortly.";
+    case "rate_limited":
+      return "Too many dashboard requests for this resource. Wait a bit before retrying.";
     case "server_misconfigured":
       return "Server GitHub App credentials are missing. Check local environment settings.";
     case "repository_not_selected":

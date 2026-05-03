@@ -35,6 +35,8 @@ Limits can be generous, but they must exist.
 - `PrismaRateLimitStore` uses a DB-backed bucket table so limits work across multiple API instances.
 - Action control-plane checks rate limits before issuing GitHub Actions OIDC sessions and before accepting action health reports.
 - Action route errors map rate-limit denials to HTTP `429` with safe public error code `rate_limited`.
+- Dashboard mutations use the same DB-backed rate-limit package for manual installation syncs, setup PR creation, review config saves, and dead-letter retries.
+- Dashboard rate-limit denials are mapped to a safe `rate_limited` UI error without exposing bucket keys.
 
 Local DB smoke:
 

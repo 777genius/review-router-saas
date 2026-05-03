@@ -192,6 +192,9 @@ importers:
       '@reviewrouter/features-provider-setup':
         specifier: workspace:*
         version: link:../../packages/features/provider-setup
+      '@reviewrouter/features-rate-limits':
+        specifier: workspace:*
+        version: link:../../packages/features/rate-limits
       '@reviewrouter/features-repo-health':
         specifier: workspace:*
         version: link:../../packages/features/repo-health

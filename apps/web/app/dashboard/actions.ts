@@ -34,6 +34,7 @@ import {
   assertDashboardMutationAllowed,
   createGitHubAppInstallationOctokit,
 } from "../../src/server/dashboard-mutations";
+import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
 import { getPrisma } from "../../src/server/prisma";
 
 export async function requestInstallationSyncAction(
@@ -59,6 +60,10 @@ export async function requestInstallationSyncAction(
       workspaceId,
       actor: actor.actor,
       feature: "repository_dashboard",
+    });
+    await createDashboardRateLimitPolicy(prisma).assertInstallationSyncAllowed({
+      workspaceId,
+      githubInstallationId,
     });
     const clockNow = new Date();
     const deliveryBucket = Math.floor(clockNow.getTime() / 60_000);
@@ -136,6 +141,10 @@ export async function createSetupPullRequestAction(
       actor: actor.actor,
       feature: "workflow_provisioning",
     });
+    await createDashboardRateLimitPolicy(prisma).assertWorkflowSetupPrAllowed({
+      workspaceId,
+      repositoryId,
+    });
     const octokit = await createGitHubAppInstallationOctokit(
       repository.installation.githubInstallationId.toString(),
     );
@@ -201,6 +210,9 @@ export async function saveWorkspaceReviewConfigAction(
       workspaceId,
       actor: actor.actor,
       feature: "action_control_plane",
+    });
+    await createDashboardRateLimitPolicy(prisma).assertReviewConfigSaveAllowed({
+      workspaceId,
     });
     const authMode = readFormString(
       formData,
@@ -282,6 +294,10 @@ export async function retryOutboxEventAction(
       workspaceId,
       actor: actor.actor,
       feature: "repository_dashboard",
+    });
+    await createDashboardRateLimitPolicy(prisma).assertOutboxRetryAllowed({
+      workspaceId,
+      eventId,
     });
     const outbox = new PrismaOutboxEventRepository(prisma);
     const result = await new PostgresAdvisoryLock(prisma).withLock(
@@ -383,6 +399,9 @@ function safeDashboardErrorCode(error: unknown): string {
   }
   if (message.startsWith("entitlement_denied:")) {
     return "entitlement_denied";
+  }
+  if (message.startsWith("rate_limit_exceeded:")) {
+    return "rate_limited";
   }
   if (
     [
