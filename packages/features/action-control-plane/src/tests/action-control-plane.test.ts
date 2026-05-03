@@ -9,6 +9,7 @@ import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-githu
 import { getActionRuntimeConfig } from "../application/use-cases/get-action-runtime-config.js";
 import { recordActionHealthReport } from "../application/use-cases/record-action-health-report.js";
 import {
+  actionHealthReportMaxBytes,
   assertSafeActionHealthReport,
   defaultActionOidcAudience,
   githubActionsOidcIssuer,
@@ -220,6 +221,61 @@ describe("action control plane", () => {
     ).toThrow("health_report_contains_code_or_diff");
   });
 
+  it("rejects raw health payloads with extra fields, code, secrets, or oversized content", () => {
+    const openAiToken = "s" + "k-" + "a".repeat(24);
+    const githubToken = "github" + "_pat_" + "b".repeat(24);
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        extraTelemetry: "harmless but not allowed",
+      }),
+    ).toThrow(/Unrecognized key/);
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        rawOutput: `OPENAI_API_KEY=${openAiToken}`,
+      }),
+    ).toThrow("health_report_contains_secret_value");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        safeErrorSummary: `GitHub returned token ${githubToken}`,
+      }),
+    ).toThrow("health_report_contains_secret_value");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        rawDiff: "diff --git a/src/app.ts b/src/app.ts",
+      }),
+    ).toThrow("health_report_contains_code_or_diff");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        ignoredButLarge: "x".repeat(actionHealthReportMaxBytes),
+      }),
+    ).toThrow("health_report_too_large");
+  });
+
+  it("accepts actionable but metadata-only auth guidance", () => {
+    expect(
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        providerHealth: "failed",
+        safeErrorCategory: "provider_auth_invalid",
+        safeErrorSummary:
+          "Codex auth appears stale. Re-seed auth.json on the trusted runner or GitHub Secret.",
+      }),
+    ).toMatchObject({
+      providerHealth: "failed",
+      safeErrorCategory: "provider_auth_invalid",
+    });
+  });
+
   it("signs and verifies short-lived action session tokens", async () => {
     const sessions = new JoseActionSessionTokenService(
       "0123456789abcdef0123456789abcdef",
@@ -281,6 +337,16 @@ function githubOidcClaims(
       "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
     actor: "777genius",
     ...overrides,
+  };
+}
+
+function safeHealthReport(): ActionHealthReport {
+  return {
+    actionVersion: "v1",
+    configVersion: 7,
+    providerSetupState: "configured",
+    providerHealth: "ok",
+    safeErrorCategory: "none",
   };
 }
 

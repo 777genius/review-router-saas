@@ -140,6 +140,27 @@ try {
     );
   }
 
+  const openAiToken = "s" + "k-" + "e2e".repeat(8);
+  const rejectedHealth = await app.inject({
+    method: "POST",
+    url: "/api/action/health-report",
+    headers: { authorization: `Bearer ${session.sessionToken}` },
+    payload: {
+      actionVersion: "local-e2e",
+      configVersion: config.json<{ readonly configVersion: number }>()
+        .configVersion,
+      providerSetupState: "configured",
+      providerHealth: "failed",
+      safeErrorCategory: "runtime_error",
+      rawProviderOutput: `OPENAI_API_KEY=${openAiToken}`,
+    },
+  });
+  if (rejectedHealth.statusCode !== 400) {
+    throw new Error(
+      `unsafe health report was accepted: ${rejectedHealth.statusCode} ${rejectedHealth.body}`,
+    );
+  }
+
   const recordedReports = await prisma.actionRunHealthReport.findMany({
     where: { repositoryId: repository.id, githubRunId: runId },
     select: {

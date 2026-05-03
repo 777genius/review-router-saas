@@ -95,45 +95,48 @@ export type ActionRuntimeConfigResponse = z.infer<
   typeof actionRuntimeConfigResponseSchema
 >;
 
-export const actionHealthReportSchema = z.object({
-  actionVersion: z.string().min(1).max(80),
-  configVersion: z.number().int().min(1),
-  providerSetupState: z.enum([
-    "unknown",
-    "missing",
-    "configured",
-    "stale_or_invalid",
-    "unavailable_in_fork_pr",
-  ]),
-  providerHealth: z.enum(["ok", "skipped", "failed", "degraded"]),
-  safeErrorCategory: z
-    .enum([
-      "none",
-      "oidc_unavailable",
-      "config_unavailable",
-      "provider_auth_missing",
-      "provider_auth_invalid",
-      "provider_rate_limited",
-      "runtime_error",
-    ])
-    .default("none"),
-  safeErrorSummary: z.string().max(500).optional(),
-  startedAt: z.string().datetime().optional(),
-  finishedAt: z.string().datetime().optional(),
-});
+export const actionHealthReportMaxBytes = 64 * 1024;
+
+export const actionHealthReportSchema = z
+  .object({
+    actionVersion: z.string().min(1).max(80),
+    configVersion: z.number().int().min(1),
+    providerSetupState: z.enum([
+      "unknown",
+      "missing",
+      "configured",
+      "stale_or_invalid",
+      "unavailable_in_fork_pr",
+    ]),
+    providerHealth: z.enum(["ok", "skipped", "failed", "degraded"]),
+    safeErrorCategory: z
+      .enum([
+        "none",
+        "oidc_unavailable",
+        "config_unavailable",
+        "provider_auth_missing",
+        "provider_auth_invalid",
+        "provider_rate_limited",
+        "runtime_error",
+      ])
+      .default("none"),
+    safeErrorSummary: z.string().max(2_000).optional(),
+    startedAt: z.string().datetime().optional(),
+    finishedAt: z.string().datetime().optional(),
+  })
+  .strict();
 
 export type ActionHealthReport = z.infer<typeof actionHealthReportSchema>;
 
 export function assertSafeActionHealthReport(
   payload: unknown,
 ): ActionHealthReport {
-  const report = actionHealthReportSchema.parse(payload);
-  const serialized = JSON.stringify(report);
-  if (Buffer.byteLength(serialized, "utf8") > 4096) {
+  const serialized = serializeHealthReportPayload(payload);
+  if (Buffer.byteLength(serialized, "utf8") > actionHealthReportMaxBytes) {
     throw new Error("health_report_too_large");
   }
 
-  for (const value of collectStrings(report)) {
+  for (const value of collectStrings(payload)) {
     if (looksLikeCodeOrDiff(value)) {
       throw new Error("health_report_contains_code_or_diff");
     }
@@ -142,7 +145,7 @@ export function assertSafeActionHealthReport(
     }
   }
 
-  return report;
+  return actionHealthReportSchema.parse(payload);
 }
 
 function collectStrings(value: unknown): string[] {
@@ -153,9 +156,21 @@ function collectStrings(value: unknown): string[] {
     return value.flatMap(collectStrings);
   }
   if (value && typeof value === "object") {
-    return Object.values(value).flatMap(collectStrings);
+    return Object.entries(value).flatMap(([key, entry]) => [
+      key,
+      ...(typeof entry === "string" ? [`${key}=${entry}`] : []),
+      ...collectStrings(entry),
+    ]);
   }
   return [];
+}
+
+function serializeHealthReportPayload(payload: unknown): string {
+  const serialized = JSON.stringify(payload);
+  if (typeof serialized !== "string") {
+    throw new Error("health_report_invalid_payload");
+  }
+  return serialized;
 }
 
 function looksLikeCodeOrDiff(value: string): boolean {
@@ -168,7 +183,12 @@ function looksLikeSecretValue(value: string): boolean {
     /\b[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)[A-Z0-9_]*\s*[:=]\s*\S+/i.test(
       value,
     ) ||
-    /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,})\b/.test(value)
+    /\b[A-Za-z0-9_]*(token|secret|password|privateKey|apiKey|authJson)[A-Za-z0-9_]*\s*[:=]\s*\S+/i.test(
+      value,
+    ) ||
+    /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,})\b/.test(
+      value,
+    )
   );
 }
 
