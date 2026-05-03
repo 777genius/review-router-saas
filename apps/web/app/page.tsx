@@ -52,8 +52,14 @@ export default function HomePage(): React.ReactElement {
               Open dashboard
             </a>
             <a
-              href="https://github.com/777genius/review-router/tree/main/ai-docs"
+              href="/getting-started"
               className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/40 bg-transparent px-4 text-sm font-medium tracking-wide text-cyan-100 transition hover:bg-cyan-300/10"
+            >
+              Getting started
+            </a>
+            <a
+              href="https://github.com/777genius/review-router/tree/main/ai-docs"
+              className="inline-flex h-10 items-center justify-center rounded-lg border border-cyan-300/25 bg-transparent px-4 text-sm font-medium tracking-wide text-cyan-100 transition hover:bg-cyan-300/10"
             >
               View architecture
             </a>
