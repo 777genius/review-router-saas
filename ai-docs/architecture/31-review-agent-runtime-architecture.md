@@ -182,6 +182,23 @@ SaaS returns runtime config, not secrets:
 ```
 
 The Action maps this to environment variables expected by the current runtime.
+Only safe runtime keys are accepted from SaaS config. Keys that look like tokens,
+secrets, API keys, private keys, passwords, or auth JSON are rejected before
+being written to `process.env`. Provider credentials must still come from
+GitHub Secrets or a trusted runner, never from SaaS runtime config.
+
+Current migration state:
+
+```text
+Implemented:
+  OIDC config fetch in Action runtime
+  static workflow fallback
+  action-version header and workflow env
+  unit tests for fallback, blocked versions, and unsafe runtimeEnv rejection
+
+Still requires hosted HTTPS SaaS for true GitHub-hosted OIDC E2E:
+  GitHub-hosted runner -> public ReviewRouter API -> config exchange
+```
 
 ## Provider Secret Sources
 

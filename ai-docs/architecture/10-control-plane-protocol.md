@@ -142,4 +142,15 @@ This is the main bridge that makes ReviewRouter a real SaaS control plane while 
 
 ## Compatibility
 
-Current implementation exposes the versioned v1 endpoints and keeps legacy `/api/action/*` aliases during local beta so the existing Action runtime can migrate without a flag day.
+Current implementation exposes the versioned v1 endpoints and keeps legacy `/api/action/*` aliases during local beta.
+
+The current `777genius/review-router` Action runtime now attempts the OIDC config flow when `REVIEWROUTER_RUNTIME_CONFIG_MODE=oidc`:
+
+```text
+request GitHub OIDC token
+  -> POST /api/action/v1/session/exchange
+  -> GET /api/action/v1/config
+  -> map safe runtimeEnv keys into the existing review runtime
+```
+
+Generated workflows also pass `REVIEWROUTER_ACTION_VERSION` extracted from the installed action ref. The SaaS uses that version for compatibility policy and can block unsafe old runtime versions. If the SaaS endpoint is unreachable and `REVIEWROUTER_STATIC_CONFIG_FALLBACK=true`, the Action keeps running from the static workflow snapshot.

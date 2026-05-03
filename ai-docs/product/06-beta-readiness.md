@@ -27,6 +27,18 @@ Latest full-review validation:
 ```text
 Date: 2026-05-04
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777852435110
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777852435110/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777852435110/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777852435110/actions/runs/25294449535
+Result: setup PR merged, workflow detected on main, new `777genius/review-router@main` action runtime ran from the generated static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
+```
+
+Previous full-review validation:
+
+```text
+Date: 2026-05-04
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 Repo: 777genius/rr-saas-fresh-e2e-1777851508064
 Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/pull/1
 Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/pull/2
