@@ -34,6 +34,7 @@ import {
   saveWorkspaceReviewConfigAction,
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
+import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 
 export const dynamic = "force-dynamic";
 
@@ -723,17 +724,18 @@ function DashboardNotice({
   const notice = readParam(params.notice);
   const error = readParam(params.error);
   if (notice) {
+    const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
     return (
       <Card className="border-lime-300/25 bg-lime-300/10">
         <Badge tone="success">Done</Badge>
         <p className="mt-3 text-sm leading-6 text-lime-50">
           {dashboardNoticeText(notice, readParam(params.repository))}
-          {params.pr ? (
+          {pullRequestUrl ? (
             <>
               {" "}
               <a
                 className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                href={readParam(params.pr)}
+                href={pullRequestUrl}
                 target="_blank"
                 rel="noreferrer"
               >
