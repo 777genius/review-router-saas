@@ -180,9 +180,7 @@ Example:
   <Dialog.Trigger asChild>
     <Button>Open</Button>
   </Dialog.Trigger>
-  <Dialog.Content title="Provider setup">
-    ...
-  </Dialog.Content>
+  <Dialog.Content title="Provider setup">...</Dialog.Content>
 </Dialog.Root>
 ```
 

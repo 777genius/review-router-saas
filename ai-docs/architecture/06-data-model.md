@@ -183,7 +183,6 @@ createdAt
 processedAt nullable
 ```
 
-
 ### ActionSession
 
 Can be implemented as signed JWT only, but persisted sessions are useful for audit/debug in beta. If persisted, keep short retention.

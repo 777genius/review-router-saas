@@ -1,0 +1,15 @@
+{
+  "name": "@reviewrouter/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@reviewrouter/platform-config": "workspace:*",
+    "@reviewrouter/platform-logger": "workspace:*"
+  },
+  "scripts": {
+    "dev": "tsx watch src/worker.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

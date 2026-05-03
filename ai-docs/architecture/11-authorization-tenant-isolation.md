@@ -26,13 +26,13 @@ Every tenant-owned table should include `workspaceId` directly or through a requ
 Application layer should expose explicit policies:
 
 ```ts
-canViewWorkspace(userId, workspaceId)
-canManageWorkspace(userId, workspaceId)
-canViewRepository(userId, repoId)
-canManageRepository(userId, repoId)
-canInstallWorkflow(userId, repoId)
-canUpdateReviewConfig(userId, scope)
-canViewAuditLog(userId, workspaceId)
+canViewWorkspace(userId, workspaceId);
+canManageWorkspace(userId, workspaceId);
+canViewRepository(userId, repoId);
+canManageRepository(userId, repoId);
+canInstallWorkflow(userId, repoId);
+canUpdateReviewConfig(userId, scope);
+canViewAuditLog(userId, workspaceId);
 ```
 
 Do not scatter role checks across tRPC routers and React components.
@@ -71,13 +71,13 @@ Every repository query should include workspace scope.
 Bad:
 
 ```ts
-findRepoById(repoId)
+findRepoById(repoId);
 ```
 
 Good:
 
 ```ts
-findRepoForWorkspace(workspaceId, repoId)
+findRepoForWorkspace(workspaceId, repoId);
 ```
 
 ## Tests Required

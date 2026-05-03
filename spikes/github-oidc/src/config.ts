@@ -1,8 +1,8 @@
-import { readFileSync, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
-import dotenv from 'dotenv';
-import { z } from 'zod';
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+import dotenv from "dotenv";
+import { z } from "zod";
 
 const appProfileSchema = z.object({
   APP_ID: z.coerce.number().int().positive(),
@@ -18,18 +18,20 @@ export type AppProfile = z.infer<typeof appProfileSchema> & {
 };
 
 export function expandHome(input: string): string {
-  if (input === '~') return homedir();
-  if (input.startsWith('~/')) return resolve(homedir(), input.slice(2));
+  if (input === "~") return homedir();
+  if (input.startsWith("~/")) return resolve(homedir(), input.slice(2));
   return input;
 }
 
 export function loadEnvFiles(): void {
-  dotenv.config({ path: '.env.local', override: false });
-  dotenv.config({ path: '.env', override: false });
+  dotenv.config({ path: ".env.local", override: false });
+  dotenv.config({ path: ".env", override: false });
 }
 
-export function loadAppProfile(profileArg = process.env.REVIEW_ROUTER_APP_PROFILE): AppProfile {
-  const defaultPath = '~/.config/review-router/apps/review-router-ai.env';
+export function loadAppProfile(
+  profileArg = process.env.REVIEW_ROUTER_APP_PROFILE,
+): AppProfile {
+  const defaultPath = "~/.config/review-router/apps/review-router-ai.env";
   const profilePath = expandHome(profileArg || defaultPath);
   if (!existsSync(profilePath)) {
     throw new Error(`GitHub App profile not found: ${profilePath}`);
@@ -45,7 +47,7 @@ export function loadAppProfile(profileArg = process.env.REVIEW_ROUTER_APP_PROFIL
   return {
     ...profile,
     APP_PRIVATE_KEY_FILE: keyPath,
-    privateKey: readFileSync(keyPath, 'utf8'),
+    privateKey: readFileSync(keyPath, "utf8"),
     profilePath,
   };
 }

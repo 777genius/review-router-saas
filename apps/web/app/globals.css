@@ -1,0 +1,30 @@
+@import "@reviewrouter/ui/tokens.css";
+@import "tailwindcss";
+
+html {
+  color-scheme: dark;
+  background: var(--rr-color-void);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(0, 229, 255, 0.18),
+      transparent 34rem
+    ),
+    radial-gradient(
+      circle at bottom right,
+      rgba(255, 43, 214, 0.14),
+      transparent 30rem
+    ),
+    linear-gradient(135deg, var(--rr-color-void), var(--rr-color-bg));
+  color: var(--rr-color-text);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}

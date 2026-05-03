@@ -62,15 +62,15 @@ Future enterprise sharing can add an explicit transfer/share flow, not implicit 
 Bad:
 
 ```ts
-repositoryRepository.findById(repoId)
-configRepository.findByRepoId(repoId)
+repositoryRepository.findById(repoId);
+configRepository.findByRepoId(repoId);
 ```
 
 Good:
 
 ```ts
-repositoryRepository.findSelectedByWorkspaceAndRepoId(workspaceId, repoId)
-configRepository.findCurrentForWorkspaceRepository(workspaceId, repoId)
+repositoryRepository.findSelectedByWorkspaceAndRepoId(workspaceId, repoId);
+configRepository.findCurrentForWorkspaceRepository(workspaceId, repoId);
 ```
 
 Every repository lookup in application services must include `workspaceId` unless it is resolving an OIDC token by immutable `githubRepositoryId` and then deriving workspace from the active connection.

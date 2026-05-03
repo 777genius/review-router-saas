@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from "zod";
 
 const secretPatterns = [
   /gh[pousr]_[A-Za-z0-9_]{20,}/,
@@ -17,11 +17,11 @@ const codeDiffPatterns = [
 ];
 
 export const healthReportSchema = z.object({
-  protocolVersion: z.literal('v1'),
+  protocolVersion: z.literal("v1"),
   actionVersion: z.string().min(1).max(100),
   configVersion: z.number().int().nonnegative(),
-  configSource: z.enum(['saas', 'static', 'fallback']),
-  status: z.enum(['started', 'succeeded', 'failed', 'skipped']),
+  configSource: z.enum(["saas", "static", "fallback"]),
+  status: z.enum(["started", "succeeded", "failed", "skipped"]),
   providerTypes: z.array(z.string().max(80)).max(10).default([]),
   safeErrorCode: z.string().max(120).optional(),
   safeErrorSummary: z.string().max(2_000).optional(),
@@ -31,14 +31,15 @@ export type HealthReport = z.infer<typeof healthReportSchema>;
 
 export function assertPrivacySafeString(value: string): void {
   for (const pattern of [...secretPatterns, ...codeDiffPatterns]) {
-    if (pattern.test(value)) throw new Error('payload contains prohibited secret/code-like content');
+    if (pattern.test(value))
+      throw new Error("payload contains prohibited secret/code-like content");
   }
 }
 
 export function parseHealthReport(input: unknown): HealthReport {
   const serialized = JSON.stringify(input);
-  if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
-    throw new Error('health report exceeds 64 KB limit');
+  if (Buffer.byteLength(serialized, "utf8") > 64 * 1024) {
+    throw new Error("health report exceeds 64 KB limit");
   }
   assertPrivacySafeString(serialized);
   return healthReportSchema.parse(input);

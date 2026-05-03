@@ -68,12 +68,12 @@ Rules:
 
 Use four explicit state categories.
 
-| State type | Tool | Examples |
-| --- | --- | --- |
-| Server state | TanStack Query through tRPC | repo setup status, installation state, health checks |
-| URL state | nuqs | tabs, filters, pagination, selected repo |
-| Form state | React Hook Form + Zod | provider config, policy settings, invites |
-| Client UI state | Zustand | sidebar, command palette, onboarding drawer |
+| State type      | Tool                        | Examples                                             |
+| --------------- | --------------------------- | ---------------------------------------------------- |
+| Server state    | TanStack Query through tRPC | repo setup status, installation state, health checks |
+| URL state       | nuqs                        | tabs, filters, pagination, selected repo             |
+| Form state      | React Hook Form + Zod       | provider config, policy settings, invites            |
+| Client UI state | Zustand                     | sidebar, command palette, onboarding drawer          |
 
 Do not mirror server state into Zustand. If a component needs server data, it should use a query or receive query-derived props.
 

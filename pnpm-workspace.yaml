@@ -1,0 +1,6 @@
+packages:
+  - apps/*
+  - packages/ui
+  - packages/shared
+  - packages/platform/*
+  - packages/features/*

@@ -85,7 +85,6 @@ Fallback self-managed mode:
 
 A real spike confirmed that a lower-permission App cannot write workflow files. GitHub requires workflow write capability for `.github/workflows/*` changes. We accept that permission cost to make SaaS onboarding one-click, but still create PRs only and never push directly to the default branch.
 
-
 Workflow should reference selected action version:
 
 ```text
@@ -138,7 +137,6 @@ SaaS should clearly explain the difference:
 GitHub App bot: cleaner identity and audit, needs app token wiring
 GitHub Actions bot: simpler setup, generic identity
 ```
-
 
 ## Action Runtime Config Through OIDC
 

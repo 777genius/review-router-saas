@@ -153,7 +153,6 @@ Main invariants:
 - invalid signatures are rejected
 - webhook processing must be fast and enqueue work
 
-
 ### action-control-plane
 
 Responsibilities:

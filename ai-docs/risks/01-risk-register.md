@@ -198,7 +198,6 @@ Mitigation:
 - application authorization policy for every mutation
 - audit admin/config/workflow actions
 
-
 ### R15 - Same-repository PR secret exposure
 
 Severity: high.
@@ -250,7 +249,6 @@ Mitigation:
 - support actions are limited and audited
 - no code/diff/secret access
 - customer-visible support access history later
-
 
 ### R19 - Sensitive user content stored as metadata
 
@@ -304,7 +302,6 @@ Mitigation:
 - payload limits
 - support controls to pause workspace jobs
 
-
 ### R23 - Async jobs require raw webhook payloads
 
 Severity: high.
@@ -317,7 +314,6 @@ Mitigation:
 - jobs consume normalized event ids
 - raw payload storage disabled by default
 - tests assert PR/comment bodies are not persisted
-
 
 ### R24 - OIDC validation edge-case bypass
 

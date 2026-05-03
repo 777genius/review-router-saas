@@ -1,4 +1,7 @@
-export function renderSpikeWorkflow(options: { audience: string; endpointUrl: string }): string {
+export function renderSpikeWorkflow(options: {
+  audience: string;
+  endpointUrl: string;
+}): string {
   return `name: ReviewRouter SaaS Spike
 
 on:

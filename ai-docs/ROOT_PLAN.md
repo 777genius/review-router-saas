@@ -47,7 +47,6 @@ ReviewRouter Action = review runtime executed in customer repo
 28. Telemetry/tracing must not capture request bodies, code, diffs, prompts, secrets, or raw webhook payloads.
 29. Workspace membership, invites, and ownership transfer must preserve at least one owner and audit every role change.
 
-
 ## Validated Technical Spike
 
 A real GitHub App + GitHub Actions OIDC spike has been implemented and run against a smoke repository. Results are documented in [`spikes/github-app-oidc-reality-spike.md`](./spikes/github-app-oidc-reality-spike.md).

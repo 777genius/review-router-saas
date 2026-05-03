@@ -1,0 +1,114 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       WorkspaceMember[]
+  installations GitHubInstallation[]
+  repositories  RepositoryConnection[]
+  auditEvents   AuditEvent[]
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  githubLogin String
+  role        WorkspaceRole
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, githubLogin])
+  @@index([workspaceId, role])
+}
+
+model GitHubInstallation {
+  id                   String                    @id @default(cuid())
+  workspaceId          String
+  githubInstallationId BigInt                    @unique
+  accountLogin         String
+  accountType          String
+  repositorySelection  String
+  status               GitHubInstallationStatus  @default(active)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+
+  workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repositories RepositoryConnection[]
+
+  @@index([workspaceId, status])
+}
+
+model RepositoryConnection {
+  id                   String                 @id @default(cuid())
+  workspaceId          String
+  installationId       String
+  githubRepositoryId   BigInt                 @unique
+  owner                String
+  name                 String
+  fullName             String
+  defaultBranch        String
+  visibility           RepositoryVisibility
+  setupStatus          RepositorySetupStatus  @default(not_configured)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, fullName])
+  @@index([workspaceId, setupStatus])
+}
+
+model AuditEvent {
+  id          String   @id @default(cuid())
+  workspaceId String
+  actor       String
+  action      String
+  targetType  String
+  targetId    String
+  metadata    Json
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, action])
+}
+
+enum WorkspaceRole {
+  owner
+  admin
+  member
+}
+
+enum GitHubInstallationStatus {
+  active
+  suspended
+  removed
+  permission_error
+}
+
+enum RepositoryVisibility {
+  public
+  private
+  internal
+}
+
+enum RepositorySetupStatus {
+  not_configured
+  setup_pr_open
+  configured
+  needs_attention
+}

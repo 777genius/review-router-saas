@@ -1,0 +1,47 @@
+{
+  "name": "@reviewrouter/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./button": {
+      "types": "./src/button/index.ts",
+      "default": "./src/button/index.ts"
+    },
+    "./card": {
+      "types": "./src/card/index.ts",
+      "default": "./src/card/index.ts"
+    },
+    "./badge": {
+      "types": "./src/badge/index.ts",
+      "default": "./src/badge/index.ts"
+    },
+    "./code-block": {
+      "types": "./src/code-block/index.ts",
+      "default": "./src/code-block/index.ts"
+    },
+    "./dialog": {
+      "types": "./src/dialog/index.ts",
+      "default": "./src/dialog/index.ts"
+    },
+    "./tokens.css": "./src/tokens/tokens.css"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.4.1",
+    "clsx": "^2.1.1",
+    "react": "^19.2.5",
+    "tailwind-variants": "^3.2.2"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

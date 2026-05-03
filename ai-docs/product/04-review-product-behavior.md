@@ -35,7 +35,7 @@ Desired sections:
 
 Preferred style:
 
-```text
+````text
 _🔴 Critical_ | _⚡ Quick win_
 
 **Title.**
@@ -47,11 +47,13 @@ Explanation with concrete impact and relevant context.
 
 ```diff
 ...
-```
+````
+
 </details>
 
 <sub>If this is intentionally accepted, a maintainer can reply `/rr skip`.</sub>
-```
+
+````
 
 Do not include fragile or misleading reaction-based instructions.
 
@@ -61,7 +63,7 @@ Use deterministic command-based override:
 
 ```text
 /rr skip [optional reason]
-```
+````
 
 Rules:
 
