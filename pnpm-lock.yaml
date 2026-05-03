@@ -165,6 +165,9 @@ importers:
       '@reviewrouter/features-auth':
         specifier: workspace:*
         version: link:../../packages/features/auth
+      '@reviewrouter/features-repo-health':
+        specifier: workspace:*
+        version: link:../../packages/features/repo-health
       '@reviewrouter/features-repositories':
         specifier: workspace:*
         version: link:../../packages/features/repositories
@@ -244,6 +247,15 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/features/audit-log:
+    dependencies:
+      '@prisma/client':
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
   packages/features/auth:
     dependencies:
       '@prisma/client':
@@ -286,6 +298,12 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/features/repo-health:
+    dependencies:
+      '@prisma/client':
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+
   packages/features/repositories:
     dependencies:
       '@octokit/app':
@@ -315,6 +333,9 @@ importers:
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-audit-log':
+        specifier: workspace:*
+        version: link:../audit-log
       '@reviewrouter/features-review-config':
         specifier: workspace:*
         version: link:../review-config

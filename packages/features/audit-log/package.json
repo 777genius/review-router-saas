@@ -1,5 +1,5 @@
 {
-  "name": "@reviewrouter/features-workflow-provisioning",
+  "name": "@reviewrouter/features-audit-log",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,9 +11,7 @@
   },
   "dependencies": {
     "@prisma/client": "^7.8.0",
-    "@reviewrouter/features-audit-log": "workspace:*",
-    "@reviewrouter/features-review-config": "workspace:*",
-    "@reviewrouter/shared": "workspace:*"
+    "zod": "^4.4.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

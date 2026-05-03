@@ -1,5 +1,9 @@
 import { Badge, Card } from "@reviewrouter/ui";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
+import {
+  listWorkspaceRepositoryHealth,
+  PrismaRepositoryHealthRepository,
+} from "@reviewrouter/features-repo-health";
 import { getPrisma } from "../../src/server/prisma";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +16,12 @@ type DashboardWorkspace = {
     readonly accountLogin: string;
     readonly status: string;
     readonly repositorySelection: string;
+  }[];
+  readonly auditEvents: readonly {
+    readonly action: string;
+    readonly actor: string;
+    readonly targetType: string;
+    readonly createdAt: Date;
   }[];
 };
 
@@ -30,9 +40,20 @@ async function loadDashboardData() {
           repositorySelection: true,
         },
       },
+      auditEvents: {
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: {
+          action: true,
+          actor: true,
+          targetType: true,
+          createdAt: true,
+        },
+      },
     },
   });
   const repositoryStore = new PrismaRepositoryConnectionRepository(prisma);
+  const healthStore = new PrismaRepositoryHealthRepository(prisma);
 
   return Promise.all(
     workspaces.map(
@@ -44,15 +65,28 @@ async function loadDashboardData() {
         repositories: readonly Awaited<
           ReturnType<typeof repositoryStore.listWorkspaceRepositories>
         >[number][];
+        health: readonly Awaited<
+          ReturnType<typeof listWorkspaceRepositoryHealth>
+        >[number][];
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
+        );
+        const health = await listWorkspaceRepositoryHealth(
+          {
+            workspaceId: workspace.id,
+            expectedActionRef:
+              process.env.REVIEW_ROUTER_ACTION_REF ??
+              "777genius/review-router@v1",
+          },
+          { repositories: healthStore },
         );
 
         return {
           workspace,
           repositoryCount: repositories.length,
           repositories: repositories.slice(0, 8),
+          health,
         };
       },
     ),
@@ -86,65 +120,113 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
             </p>
           </Card>
         ) : (
-          workspaces.map(({ workspace, repositoryCount, repositories }) => (
-            <Card key={workspace.id} className="space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-2xl font-semibold text-cyan-50">
-                    {workspace.name}
-                  </h2>
-                  <p className="text-sm text-slate-400">{workspace.slug}</p>
-                </div>
-                <Badge tone="success">{repositoryCount} repositories</Badge>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-3">
-                {workspace.installations.map((installation) => (
-                  <div
-                    key={`${workspace.id}-${installation.accountLogin}`}
-                    className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
-                  >
-                    <p className="text-sm font-semibold text-cyan-50">
-                      {installation.accountLogin}
-                    </p>
-                    <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                      {installation.status} / {installation.repositorySelection}
-                    </p>
+          workspaces.map(
+            ({ workspace, repositoryCount, repositories, health }) => (
+              <Card key={workspace.id} className="space-y-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-2xl font-semibold text-cyan-50">
+                      {workspace.name}
+                    </h2>
+                    <p className="text-sm text-slate-400">{workspace.slug}</p>
                   </div>
-                ))}
-              </div>
+                  <Badge tone="success">{repositoryCount} repositories</Badge>
+                </div>
 
-              <div className="overflow-hidden rounded-xl border border-cyan-200/10">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
-                    <tr>
-                      <th className="px-4 py-3">Repository</th>
-                      <th className="px-4 py-3">Visibility</th>
-                      <th className="px-4 py-3">Default branch</th>
-                      <th className="px-4 py-3">Setup</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-cyan-200/10 text-slate-200">
-                    {repositories.map((repository) => (
-                      <tr
-                        key={repository.id}
-                        className={repository.selected ? "" : "opacity-50"}
-                      >
-                        <td className="px-4 py-3 font-medium">
-                          {repository.fullName}
-                        </td>
-                        <td className="px-4 py-3">{repository.visibility}</td>
-                        <td className="px-4 py-3">
-                          {repository.defaultBranch}
-                        </td>
-                        <td className="px-4 py-3">{repository.setupStatus}</td>
+                <div className="grid gap-3 md:grid-cols-3">
+                  {workspace.installations.map((installation) => (
+                    <div
+                      key={`${workspace.id}-${installation.accountLogin}`}
+                      className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+                    >
+                      <p className="text-sm font-semibold text-cyan-50">
+                        {installation.accountLogin}
+                      </p>
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                        {installation.status} /{" "}
+                        {installation.repositorySelection}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-cyan-200/10">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
+                      <tr>
+                        <th className="px-4 py-3">Repository</th>
+                        <th className="px-4 py-3">Visibility</th>
+                        <th className="px-4 py-3">Default branch</th>
+                        <th className="px-4 py-3">Setup</th>
+                        <th className="px-4 py-3">Health</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          ))
+                    </thead>
+                    <tbody className="divide-y divide-cyan-200/10 text-slate-200">
+                      {repositories.map((repository) => {
+                        const repositoryHealth = health.find(
+                          (item) => item.repositoryId === repository.id,
+                        );
+                        return (
+                          <tr
+                            key={repository.id}
+                            className={repository.selected ? "" : "opacity-50"}
+                          >
+                            <td className="px-4 py-3 font-medium">
+                              {repository.fullName}
+                            </td>
+                            <td className="px-4 py-3">
+                              {repository.visibility}
+                            </td>
+                            <td className="px-4 py-3">
+                              {repository.defaultBranch}
+                            </td>
+                            <td className="px-4 py-3">
+                              {repository.setupStatus}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="block text-cyan-100">
+                                {repositoryHealth?.status ?? "unknown"}
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                {repositoryHealth?.summary ?? "No health data"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+                  <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
+                    Recent audit
+                  </p>
+                  {workspace.auditEvents.length === 0 ? (
+                    <p className="text-sm text-slate-400">
+                      No audit events yet.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2 text-sm text-slate-300">
+                      {workspace.auditEvents.map((event) => (
+                        <li
+                          key={`${event.action}-${event.targetType}-${event.createdAt.toISOString()}`}
+                          className="flex flex-wrap items-center justify-between gap-2"
+                        >
+                          <span>
+                            {event.action} by {event.actor}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {event.createdAt.toISOString()}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </Card>
+            ),
+          )
         )}
       </section>
     </main>

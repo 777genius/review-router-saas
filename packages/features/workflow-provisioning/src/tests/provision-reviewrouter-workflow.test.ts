@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type {
+  AuditEventInput,
+  AuditLogRepositoryPort,
+} from "@reviewrouter/features-audit-log";
+import type {
   WorkflowSetupGatewayInput,
   WorkflowSetupGatewayPort,
 } from "../application/ports/workflow-setup-gateway-port";
@@ -37,10 +41,19 @@ class CapturingProvisioningRepository implements WorkflowProvisioningRepositoryP
   }
 }
 
+class CapturingAuditLog implements AuditLogRepositoryPort {
+  public readonly events: AuditEventInput[] = [];
+
+  async append(event: AuditEventInput): Promise<void> {
+    this.events.push(event);
+  }
+}
+
 describe("provisionReviewRouterWorkflow", () => {
   it("renders workflow and records setup PR state", async () => {
     const gateway = new CapturingSetupGateway();
     const provisioning = new CapturingProvisioningRepository();
+    const auditLog = new CapturingAuditLog();
 
     const pullRequest = await provisionReviewRouterWorkflow(
       {
@@ -53,7 +66,7 @@ describe("provisionReviewRouterWorkflow", () => {
         apiUrl: "https://app.reviewrouter.dev",
         runtimeConfigMode: "oidc",
       },
-      { setupGateway: gateway, provisioning },
+      { setupGateway: gateway, provisioning, auditLog },
     );
 
     expect(pullRequest.url).toContain("/pull/1");
@@ -66,5 +79,11 @@ describe("provisionReviewRouterWorkflow", () => {
       branch: "reviewrouter/setup",
       actionVersion: "777genius/review-router@v1",
     });
+    expect(auditLog.events).toContainEqual(
+      expect.objectContaining({
+        action: "workflow.setup_pr_opened",
+        targetId: "repo-1",
+      }),
+    );
   });
 });
