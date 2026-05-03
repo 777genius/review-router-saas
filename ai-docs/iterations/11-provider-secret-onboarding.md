@@ -35,3 +35,27 @@ The dashboard renders generated commands, but does not collect or submit secret 
 
 - a user can understand where provider credentials live from the dashboard
 - generated commands are deterministic and safe to copy
+
+## Implemented Baseline
+
+- `features-provider-setup` generates provider setup guidance without embedding secret values.
+- Dashboard renders provider-specific commands for the primary selected repository.
+- Codex OAuth setup uses `scripts/seed-codex-auth.sh` instead of asking users to paste `auth.json` into the SaaS UI.
+- The seed script supports:
+  - repository Actions secret
+  - organization selected-repository Actions secret
+  - custom `CODEX_HOME` / auth file paths
+  - optional `CODEX_CONFIG_TOML`
+  - dry-run mode
+- The seed script validates `auth.json` before writing secrets:
+  - JSON parses
+  - `auth_mode = chatgpt`
+  - `tokens.refresh_token` exists
+- Shell-level tests use a fake `gh` binary and temporary fake Codex home to verify commands do not leak the auth JSON/token in output.
+
+## Verification
+
+```bash
+bash -n scripts/seed-codex-auth.sh
+pnpm test -- spikes/github-oidc/tests/seed-codex-auth.test.ts
+```
