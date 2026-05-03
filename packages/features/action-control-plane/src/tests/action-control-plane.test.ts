@@ -29,6 +29,7 @@ import {
   type GitHubActionsOidcClaims,
 } from "../domain/action-control-plane.js";
 import { JoseGitHubActionsOidcTokenVerifier } from "../infrastructure/oidc/jose-github-actions-oidc-token-verifier.js";
+import { StaticActionRuntimeCompatibilityPolicy } from "../infrastructure/config/static-action-runtime-compatibility-policy.js";
 import { JoseActionSessionTokenService } from "../infrastructure/session/jose-action-session-token-service.js";
 
 const fixedNow = new Date("2026-05-03T12:00:00.000Z");
@@ -405,6 +406,22 @@ describe("action control plane", () => {
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("blocks runtime config for known-bad action versions", async () => {
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session", actionVersion: "v0.9.0" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          compatibility: new StaticActionRuntimeCompatibilityPolicy({
+            blockedActionVersions: ["v0.9.0"],
+          }),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("action_version_blocked:v0.9.0");
   });
 
   it("checks action control plane entitlements before returning config", async () => {

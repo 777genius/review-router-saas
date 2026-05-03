@@ -25,6 +25,7 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: z.string().default("reviewrouter"),
   REVIEW_ROUTER_ACTION_SESSION_SECRET: z.string().min(32).optional(),
   REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS: z.string().default(""),
   REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),

@@ -174,6 +174,9 @@ REVIEW_ROUTER_ACTION_REF
 `777genius/review-router@main`. Set it only for a smoke branch or a pinned
 release tag.
 
+`REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS` is optional. Use it only to simulate or
+mitigate a known-bad installed Action version during compatibility testing.
+
 For local private key path:
 
 ```text

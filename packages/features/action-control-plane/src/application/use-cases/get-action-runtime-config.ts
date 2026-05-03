@@ -9,17 +9,19 @@ import {
 } from "../../domain/action-control-plane.js";
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
+import type { ActionRuntimeCompatibilityPolicyPort } from "../ports/action-runtime-compatibility-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
 
 export type GetActionRuntimeConfigDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
   readonly sessions: ActionSessionTokenServicePort;
   readonly entitlements?: ActionEntitlementPolicyPort;
+  readonly compatibility?: ActionRuntimeCompatibilityPolicyPort;
   readonly clock: Clock;
 };
 
 export async function getActionRuntimeConfig(
-  input: { readonly sessionToken: string },
+  input: { readonly sessionToken: string; readonly actionVersion?: string },
   dependencies: GetActionRuntimeConfigDependencies,
 ): Promise<ActionRuntimeConfigResponse> {
   const session = await dependencies.sessions.verify({
@@ -39,6 +41,10 @@ export async function getActionRuntimeConfig(
     workspaceId: session.workspaceId,
     repositoryId: session.repositoryId,
     repositoryFullName: session.repository,
+  });
+  await dependencies.compatibility?.assertRuntimeConfigAllowed({
+    protocolVersion: 1,
+    ...(input.actionVersion ? { actionVersion: input.actionVersion } : {}),
   });
 
   const record = await dependencies.repositories.findRuntimeReviewConfiguration(

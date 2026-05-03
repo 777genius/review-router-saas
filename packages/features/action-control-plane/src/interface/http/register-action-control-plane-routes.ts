@@ -78,9 +78,13 @@ export async function registerActionControlPlaneRoutes(
         );
       }
       try {
+        const actionVersion = readActionVersion(request);
         const result: ActionRuntimeConfigResponse =
           await getActionRuntimeConfig(
-            { sessionToken: readBearerToken(request) },
+            {
+              sessionToken: readBearerToken(request),
+              ...(actionVersion ? { actionVersion } : {}),
+            },
             dependencies,
           );
         return reply.send(result);
@@ -137,6 +141,14 @@ function readBearerToken(request: FastifyRequest): string {
     throw new Error("invalid_action_session_token");
   }
   return match[1];
+}
+
+function readActionVersion(request: FastifyRequest): string | undefined {
+  const header = request.headers["x-reviewrouter-action-version"];
+  if (typeof header === "string") {
+    return z.string().trim().min(1).max(80).parse(header);
+  }
+  return undefined;
 }
 
 function sendActionError(
@@ -200,6 +212,9 @@ function statusCodeForActionError(message: string): number {
   if (message.startsWith("rate_limit_exceeded:")) {
     return 429;
   }
+  if (message.startsWith("action_version_blocked:")) {
+    return 426;
+  }
   return 400;
 }
 
@@ -245,6 +260,9 @@ function safeActionErrorCode(message: string): string {
   if (message.startsWith("rate_limit_exceeded:")) {
     return "rate_limited";
   }
+  if (message.startsWith("action_version_blocked:")) {
+    return "action_version_blocked";
+  }
   return "invalid_action_request";
 }
 
@@ -272,6 +290,8 @@ function safeActionErrorMessage(code: string): string {
       return "GitHub Actions OIDC token is invalid, expired, or already used.";
     case "rate_limited":
       return "Action control plane request was rate limited; retry later.";
+    case "action_version_blocked":
+      return "Installed ReviewRouter Action version is blocked and must be updated.";
     default:
       if (code.startsWith("health_report_")) {
         return "Action health report was rejected by ReviewRouter safety checks.";

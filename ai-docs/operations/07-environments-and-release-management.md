@@ -78,12 +78,18 @@ Critical flags:
 
 ```text
 REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE
+REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS
 REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS
 ```
 
 Flags must fail closed for security-sensitive features.
+
+`REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS` is a comma-separated exact-match
+blocklist for known-bad installed Action versions, for example
+`v1.0.0,main-bad-sha`. It should be used as an emergency stopgap and followed
+by a workflow update PR.
 
 ## Database Release Rule
 

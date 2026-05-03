@@ -6,6 +6,7 @@ import {
   PrismaActionControlPlaneRepository,
   PrismaActionOidcReplayNonceStore,
   registerActionControlPlaneRoutes,
+  StaticActionRuntimeCompatibilityPolicy,
   type RegisterActionControlPlaneRoutesDependencies,
 } from "@reviewrouter/features-action-control-plane";
 import {
@@ -94,6 +95,11 @@ export async function createApiApp(
               clock,
             ),
             replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
+            compatibility: new StaticActionRuntimeCompatibilityPolicy({
+              blockedActionVersions: parseCommaSeparatedEnv(
+                process.env.REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS,
+              ),
+            }),
             sessions: new JoseActionSessionTokenService(
               options.actionSessionSecret,
             ),
@@ -129,4 +135,11 @@ export async function createApiApp(
   }
 
   return app;
+}
+
+function parseCommaSeparatedEnv(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }

@@ -14,6 +14,7 @@ import {
   defaultActionOidcAudience,
   githubActionsOidcIssuer,
   JoseActionSessionTokenService,
+  StaticActionRuntimeCompatibilityPolicy,
 } from "@reviewrouter/features-action-control-plane";
 import type {
   GitHubInstallationRepositoryPort,
@@ -491,6 +492,48 @@ describe("API app", () => {
       error: {
         code: "missing_action_session_token",
         message: "Action session token is missing.",
+        retryable: false,
+      },
+    });
+  });
+
+  it("returns structured update-required errors for blocked action versions", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        compatibility: new StaticActionRuntimeCompatibilityPolicy({
+          blockedActionVersions: ["v0.9.0"],
+        }),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const session = exchange.json<{ sessionToken: string }>();
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/config",
+      headers: {
+        authorization: `Bearer ${session.sessionToken}`,
+        "x-reviewrouter-action-version": "v0.9.0",
+      },
+    });
+
+    expect(response.statusCode).toBe(426);
+    expect(response.json()).toEqual({
+      error: {
+        code: "action_version_blocked",
+        message:
+          "Installed ReviewRouter Action version is blocked and must be updated.",
         retryable: false,
       },
     });

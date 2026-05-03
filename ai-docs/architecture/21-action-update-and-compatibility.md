@@ -53,6 +53,24 @@ SaaS needs a safety mechanism:
 - optionally force static safe fallback
 - disable OIDC config fetch through feature flag
 
+## Implemented Beta Baseline
+
+Runtime config fetch accepts `x-reviewrouter-action-version` from the installed
+Action. The control plane can reject exact known-bad versions through
+`REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS`, a comma-separated server-side list.
+
+When a blocked version asks for config, versioned endpoints return:
+
+```text
+HTTP 426
+error.code = action_version_blocked
+retryable = false
+```
+
+This is intentionally exact-match only in the local beta. Semantic version
+ranges and automatic update PRs remain a later layer because they need a vetted
+release channel and migration policy.
+
 ## Update PR Flow
 
 Dashboard should support:
