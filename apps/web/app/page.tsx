@@ -57,6 +57,12 @@ export default function HomePage(): React.ReactElement {
             >
               View architecture
             </a>
+            <a
+              href="/security"
+              className="inline-flex h-10 items-center justify-center rounded-lg border border-lime-300/30 bg-lime-300/10 px-4 text-sm font-medium tracking-wide text-lime-100 transition hover:bg-lime-300/15"
+            >
+              Security model
+            </a>
           </div>
         </div>
         <Card className="space-y-4">
