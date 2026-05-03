@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@reviewrouter/features-action-control-plane": "workspace:*",
+    "@reviewrouter/features-entitlements": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-system-health": "workspace:*",

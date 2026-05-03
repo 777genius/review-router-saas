@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   ActionControlPlaneRepositoryPort,
+  ActionEntitlementPolicyPort,
   ActionHealthReport,
   ActionRepositoryContext,
   GitHubActionsOidcClaims,
@@ -138,6 +139,14 @@ class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
         "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
       actor: "777genius",
     };
+  }
+}
+
+class DenyingActionEntitlements implements ActionEntitlementPolicyPort {
+  async assertActionControlPlaneAllowed(): Promise<void> {
+    throw new Error(
+      "entitlement_denied:action_control_plane:feature_not_enabled_for_plan",
+    );
   }
 }
 
@@ -342,5 +351,31 @@ describe("API app", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({ error: "action_control_plane_disabled" });
+  });
+
+  it("maps action control plane entitlement denial to a safe error", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        entitlements: new DenyingActionEntitlements(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({
+      error: "action_control_plane_entitlement_denied",
+    });
   });
 });

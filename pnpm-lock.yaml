@@ -132,6 +132,9 @@ importers:
       '@reviewrouter/features-action-control-plane':
         specifier: workspace:*
         version: link:../../packages/features/action-control-plane
+      '@reviewrouter/features-entitlements':
+        specifier: workspace:*
+        version: link:../../packages/features/entitlements
       '@reviewrouter/features-github-installations':
         specifier: workspace:*
         version: link:../../packages/features/github-installations

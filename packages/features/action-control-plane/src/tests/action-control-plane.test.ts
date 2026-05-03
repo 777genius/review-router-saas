@@ -3,6 +3,7 @@ import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-config";
 import type { Clock } from "@reviewrouter/shared";
 import type { ActionControlPlaneRepositoryPort } from "../application/ports/action-control-plane-repository-port.js";
+import type { ActionEntitlementPolicyPort } from "../application/ports/action-entitlement-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../application/ports/github-actions-oidc-token-verifier-port.js";
 import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-github-oidc-token.js";
@@ -99,6 +100,25 @@ class StaticSessionTokenService implements ActionSessionTokenServicePort {
   }
 }
 
+class DenyingActionEntitlements implements ActionEntitlementPolicyPort {
+  public readonly calls: Array<{
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName?: string;
+  }> = [];
+
+  async assertActionControlPlaneAllowed(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName?: string;
+  }): Promise<void> {
+    this.calls.push(input);
+    throw new Error(
+      "entitlement_denied:action_control_plane:feature_not_enabled_for_plan",
+    );
+  }
+}
+
 describe("action control plane", () => {
   it("exchanges valid GitHub OIDC claims for a scoped action session", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
@@ -162,6 +182,30 @@ describe("action control plane", () => {
     ).rejects.toThrow("workflow_ref_not_allowed");
   });
 
+  it("checks action control plane entitlements before issuing sessions", async () => {
+    const entitlements = new DenyingActionEntitlements();
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(githubOidcClaims()),
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          entitlements,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("entitlement_denied:action_control_plane");
+    expect(entitlements.calls).toEqual([
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+      },
+    ]);
+  });
+
   it("returns runtime config without secrets", async () => {
     const config = await getActionRuntimeConfig(
       { sessionToken: "session" },
@@ -186,6 +230,20 @@ describe("action control plane", () => {
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("checks action control plane entitlements before returning config", async () => {
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          entitlements: new DenyingActionEntitlements(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("entitlement_denied:action_control_plane");
   });
 
   it("records safe health reports and rejects code/diff payloads", async () => {

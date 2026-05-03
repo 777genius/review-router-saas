@@ -130,6 +130,7 @@ function statusCodeForActionError(message: string): number {
     message.includes("repository_not_selected") ||
     message.includes("installation_not_active") ||
     message.includes("workflow_ref_not_allowed") ||
+    message.includes("entitlement_denied") ||
     message.includes("mismatch")
   ) {
     return 403;
@@ -149,6 +150,9 @@ function safeActionErrorCode(message: string): string {
   }
   if (message.includes("workflow_ref_not_allowed")) {
     return "workflow_ref_not_allowed";
+  }
+  if (message.includes("entitlement_denied")) {
+    return "action_control_plane_entitlement_denied";
   }
   if (message.includes("mismatch")) {
     return "action_repository_mismatch";

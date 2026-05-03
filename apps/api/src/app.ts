@@ -23,6 +23,7 @@ import {
 } from "@reviewrouter/platform-db";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
+import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { appRouter } from "./trpc.js";
 
 export type CreateApiAppOptions = {
@@ -72,6 +73,7 @@ export async function createApiApp(
     (options.actionSessionSecret && prisma
       ? {
           repositories: new PrismaActionControlPlaneRepository(prisma),
+          entitlements: new PrismaActionEntitlementPolicy(prisma),
           sessions: new JoseActionSessionTokenService(
             options.actionSessionSecret,
           ),
