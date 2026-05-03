@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  actionHealthReportMaxBytes,
   defaultActionOidcAudience,
   type ActionRuntimeConfigResponse,
 } from "../../domain/action-control-plane.js";
@@ -71,20 +72,24 @@ export async function registerActionControlPlaneRoutes(
     }
   });
 
-  app.post("/api/action/health-report", async (request, reply) => {
-    if (dependencies.controlPlaneEnabled === false) {
-      return reply.code(503).send({ error: "action_control_plane_disabled" });
-    }
-    try {
-      const result = await recordActionHealthReport(
-        { sessionToken: readBearerToken(request), report: request.body },
-        dependencies,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendActionError(reply, error);
-    }
-  });
+  app.post(
+    "/api/action/health-report",
+    { bodyLimit: actionHealthReportMaxBytes },
+    async (request, reply) => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return reply.code(503).send({ error: "action_control_plane_disabled" });
+      }
+      try {
+        const result = await recordActionHealthReport(
+          { sessionToken: readBearerToken(request), report: request.body },
+          dependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error);
+      }
+    },
+  );
 }
 
 function readBearerToken(request: FastifyRequest): string {
@@ -105,7 +110,7 @@ function sendActionError(
 ): unknown {
   const message = error instanceof Error ? error.message : "unknown_error";
   const statusCode = statusCodeForActionError(message);
-  return reply.code(statusCode).send({ error: message });
+  return reply.code(statusCode).send({ error: safeActionErrorCode(message) });
 }
 
 function statusCodeForActionError(message: string): number {
@@ -130,4 +135,41 @@ function statusCodeForActionError(message: string): number {
     return 403;
   }
   return 400;
+}
+
+function safeActionErrorCode(message: string): string {
+  if (message.includes("repository_not_registered")) {
+    return "repository_not_registered";
+  }
+  if (message.includes("repository_not_selected")) {
+    return "repository_not_selected";
+  }
+  if (message.includes("installation_not_active")) {
+    return "installation_not_active";
+  }
+  if (message.includes("workflow_ref_not_allowed")) {
+    return "workflow_ref_not_allowed";
+  }
+  if (message.includes("mismatch")) {
+    return "action_repository_mismatch";
+  }
+  if (
+    message.startsWith("missing_action_session") ||
+    message.startsWith("invalid_action_session")
+  ) {
+    return message;
+  }
+  if (
+    message.includes("signature") ||
+    message.includes("JWT") ||
+    message.includes("token") ||
+    message.includes("audience") ||
+    message.includes("issuer")
+  ) {
+    return "invalid_action_token";
+  }
+  if (message.startsWith("health_report_")) {
+    return message;
+  }
+  return "invalid_action_request";
 }

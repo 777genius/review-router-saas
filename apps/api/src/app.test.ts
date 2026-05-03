@@ -7,6 +7,7 @@ import type {
   GitHubActionsOidcTokenVerifierPort,
 } from "@reviewrouter/features-action-control-plane";
 import {
+  actionHealthReportMaxBytes,
   defaultActionOidcAudience,
   githubActionsOidcIssuer,
   JoseActionSessionTokenService,
@@ -257,6 +258,66 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("rejects unsafe or oversized action health reports without leaking payload values", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/exchange-token",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const session = exchange.json<{ sessionToken: string }>();
+    const openAiToken = "s" + "k-" + "z".repeat(24);
+
+    const unsafe = await app.inject({
+      method: "POST",
+      url: "/api/action/health-report",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        actionVersion: "v1",
+        configVersion: 1,
+        providerSetupState: "configured",
+        providerHealth: "failed",
+        safeErrorCategory: "runtime_error",
+        rawProviderOutput: `OPENAI_API_KEY=${openAiToken}`,
+      },
+    });
+    expect(unsafe.statusCode).toBe(400);
+    expect(unsafe.json()).toEqual({
+      error: "health_report_contains_secret_value",
+    });
+    expect(unsafe.body).not.toContain(openAiToken);
+
+    const oversized = await app.inject({
+      method: "POST",
+      url: "/api/action/health-report",
+      headers: {
+        authorization: `Bearer ${session.sessionToken}`,
+        "content-type": "application/json",
+      },
+      payload: JSON.stringify({
+        actionVersion: "v1",
+        configVersion: 1,
+        providerSetupState: "configured",
+        providerHealth: "failed",
+        safeErrorCategory: "runtime_error",
+        safeErrorSummary: "x".repeat(actionHealthReportMaxBytes),
+      }),
+    });
+    expect(oversized.statusCode).toBe(413);
+    expect(repositories.healthReports).toHaveLength(0);
   });
 
   it("can disable action control plane with a kill switch", async () => {

@@ -89,6 +89,10 @@ safe error summary
 startedAt/finishedAt
 ```
 
+The route must enforce the health report request size limit before application
+logic runs. Error responses must return stable safe error codes, not raw thrown
+exception messages, provider output, prompts, code, diffs, or secret values.
+
 Forbidden fields:
 
 ```text

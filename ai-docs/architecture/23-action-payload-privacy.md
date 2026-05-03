@@ -55,6 +55,9 @@ provider summary JSON: 16 KB
 ```
 
 Reject oversized payloads with structured error.
+For health reports, enforce the 64 KB limit at the HTTP route/body parser layer
+and again inside domain validation. The domain check protects direct use-case
+calls and tests; the route limit prevents wasteful oversized JSON parsing.
 
 ## Redaction
 
@@ -91,5 +94,6 @@ unknown
 - health report with code-like diff is rejected
 - health report with PEM/API-key-like string is rejected
 - oversized report is rejected
+- oversized report is rejected by route-level body limit before persistence
 - safe summary is accepted
 - action redacts known secret patterns before send
