@@ -40,7 +40,14 @@ release - pinned explicit tag selected by user
 main - live updates, opt-in only
 ```
 
-SaaS-generated workflows should write explicit release tags by default. The UI may call this `stable`, but the workflow should not depend on a mutable stable tag unless the user explicitly chooses that behavior. `main` is useful for internal/test repos but riskier for customers.
+Public production SaaS-generated workflows should write explicit release tags by
+default. The UI may call this `stable`, but the workflow should not depend on a
+mutable stable tag unless the user explicitly chooses that behavior.
+
+Local/private beta is the temporary exception: generated workflows default to
+`777genius/review-router@main` so smoke repositories receive runtime fixes
+immediately. Before public launch, change `REVIEW_ROUTER_ACTION_VERSION` to the
+vetted release tag and smoke that release.
 
 ## Rollback
 

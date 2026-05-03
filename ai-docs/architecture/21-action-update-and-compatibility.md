@@ -14,9 +14,16 @@ main - live development channel, opt-in only
 
 ## SaaS Default
 
-Default to `stable` in SaaS UI, but write an explicit release tag into the generated workflow. Do not rely on a mutable `stable` tag by default.
+Production default: use `stable` in SaaS UI, but write an explicit vetted
+release tag into the generated workflow. Do not rely on a mutable `stable` tag
+by default.
 
-`main` should be visible as an opt-in choice for internal/test repos.
+Local/private beta default: use `777genius/review-router@main` until the runtime
+release process is stable. This is an explicit beta tradeoff, not the production
+supply-chain policy.
+
+`main` should remain visible as an opt-in choice for internal/test repos after
+public launch.
 
 ## Compatibility Contract
 
