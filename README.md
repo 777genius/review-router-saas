@@ -1,10 +1,37 @@
 # ReviewRouter
 
-ReviewRouter SaaS planning and spike repository.
+ReviewRouter is a local-beta SaaS control plane for AI pull request review.
 
-This repo starts as a documentation-first project. The implementation will be built from the plans and architecture notes in [`ai-docs`](./ai-docs/README.md).
+The product does not run customer review workloads in the cloud by default.
+Customer code, diffs, provider secrets, and Codex OAuth files stay inside the
+customer GitHub Actions environment. The SaaS owns GitHub App onboarding,
+repository sync, workflow setup PRs, dashboard-managed review config, audit,
+health, and safe provider setup guidance.
 
-Current product direction: ReviewRouter is a SaaS control plane for AI pull request review. Review execution runs in the customer's CI/CD by default, while the SaaS owns onboarding, GitHub App integration, policies, workflow provisioning, audit, and configuration.
+## Current State
+
+Implemented local-beta baseline:
+
+- GitHub App installation and webhook ingestion
+- repository sync and dashboard repository health
+- workflow setup PR provisioning
+- GitHub Actions OIDC action session exchange
+- versioned workspace default and repository override review config
+- Codex OAuth, Codex API-key, and OpenRouter setup guidance without secret
+  custody
+- safe action health reports and repo-health rollups
+- audit log, entitlements, outbox, worker loop, rate limits, and DB-backed
+  smoke checks
+- Codex OAuth secret seeding helper at `scripts/seed-codex-auth.sh`
+
+Not production-complete yet:
+
+- hosted deployment/domain/callback URLs
+- public onboarding polish
+- payments
+- enterprise SSO
+- production support/admin tooling
+- release automation for the separate `777genius/review-router` Action runtime
 
 ## Start Here
 
@@ -14,23 +41,52 @@ New implementation agents should read:
 2. [`ai-docs/ROOT_PLAN.md`](./ai-docs/ROOT_PLAN.md)
 3. [`ai-docs/IMPLEMENTATION_PLAYBOOK.md`](./ai-docs/IMPLEMENTATION_PLAYBOOK.md)
 4. [`ai-docs/LOCAL_SETUP_CHECKLIST.md`](./ai-docs/LOCAL_SETUP_CHECKLIST.md)
-5. [`ai-docs/appendices/blocker-handling.md`](./ai-docs/appendices/blocker-handling.md)
-6. [`ai-docs/iterations/00-roadmap.md`](./ai-docs/iterations/00-roadmap.md)
+5. [`ai-docs/iterations/00-roadmap.md`](./ai-docs/iterations/00-roadmap.md)
+6. [`ai-docs/appendices/blocker-handling.md`](./ai-docs/appendices/blocker-handling.md)
 
-The next implementation phase is [`Iteration 01 - Foundation`](./ai-docs/iterations/01-foundation.md).
+The current implementation focus is beta hardening across iterations 08-11,
+not rebuilding the foundation from scratch.
 
-## Current Checks
+## Local Checks
 
-CI runs the same local quality gates on pull requests and `main` pushes.
+Baseline:
 
 ```bash
-pnpm db:migrate:deploy
-pnpm db:migrate:smoke
-pnpm typecheck
+pnpm local:check
 pnpm test
+pnpm typecheck
+pnpm build
 pnpm lint
 pnpm format:check
-pnpm spike:test
-pnpm local:check
 git diff --check
 ```
+
+Database and protocol smoke:
+
+```bash
+pnpm db:migrate:smoke
+node scripts/run-with-env.mjs pnpm spike:action:e2e
+node scripts/run-with-env.mjs pnpm spike:review-config:e2e
+node scripts/run-with-env.mjs pnpm spike:webhook-lifecycle:e2e
+node scripts/run-with-env.mjs pnpm spike:outbox-maintenance:e2e
+```
+
+Real GitHub smoke helpers require a disposable GitHub App installation and
+selected test repository:
+
+```bash
+REVIEW_ROUTER_TARGET_REPO=owner/repo \
+  node scripts/run-with-env.mjs pnpm spike:repo-health:e2e
+```
+
+## Architecture Boundary
+
+Feature packages follow Clean Architecture:
+
+```text
+domain <- application <- interface/adapters
+application -> ports <- infrastructure
+```
+
+The web dashboard composes features at the edge. Domain/application packages do
+not import Prisma, Octokit, Fastify, tRPC, Next.js, or Auth.js directly.
