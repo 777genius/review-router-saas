@@ -8,6 +8,21 @@ const env = loadEnvFile(envFile, process.env);
 const expectedRepo = String(
   env.REVIEW_ROUTER_GITHUB_APP_EXPECT_REPO ?? "",
 ).trim();
+const checkMode = String(
+  env.REVIEW_ROUTER_GITHUB_APP_CHECK_MODE ?? "local",
+).trim();
+const requireHostedWebhooks =
+  checkMode === "hosted" ||
+  isTrue(env.REVIEW_ROUTER_GITHUB_APP_REQUIRE_HOSTED_WEBHOOKS);
+
+const requiredPermissions = {
+  contents: "write",
+  workflows: "write",
+  pull_requests: "write",
+  issues: "write",
+  metadata: "read",
+};
+const requiredWebhookEvents = ["installation", "installation_repositories"];
 
 const errors = [];
 const warnings = [];
@@ -50,6 +65,8 @@ async function checkGitHubApp() {
       `GITHUB_APP_SLUG does not match authenticated App slug ${actualSlug}.`,
     );
   }
+  assertPermissions(appData.permissions ?? {});
+  assertWebhookEvents(appData.events ?? []);
 
   const installations = await listInstallations(app);
   if (installations.length === 0) {
@@ -80,6 +97,8 @@ async function checkGitHubApp() {
           id: actualId,
           slug: actualSlug || appSlug,
           owner: appData.owner?.login ?? null,
+          permissions: pickPermissions(appData.permissions ?? {}),
+          events: appData.events ?? [],
         },
         installations: installations.map((installation) => ({
           id: installation.id,
@@ -98,6 +117,54 @@ async function checkGitHubApp() {
       null,
       2,
     ),
+  );
+}
+
+function assertPermissions(actualPermissions) {
+  for (const [permission, requiredAccess] of Object.entries(
+    requiredPermissions,
+  )) {
+    const actualAccess = actualPermissions[permission];
+    if (!permissionSatisfies(actualAccess, requiredAccess)) {
+      errors.push(
+        `GitHub App permission ${permission} must be ${requiredAccess}; current value is ${actualAccess ?? "missing"}.`,
+      );
+    }
+  }
+}
+
+function assertWebhookEvents(actualEvents) {
+  const actual = new Set(actualEvents);
+  const missingEvents = requiredWebhookEvents.filter(
+    (eventName) => !actual.has(eventName),
+  );
+  if (missingEvents.length === 0) {
+    return;
+  }
+
+  const message = `GitHub App webhook events are missing: ${missingEvents.join(", ")}. Hosted lifecycle sync needs these events.`;
+  if (requireHostedWebhooks) {
+    errors.push(message);
+  } else {
+    warnings.push(
+      `${message} Local setup PR E2E can still pass without webhooks.`,
+    );
+  }
+}
+
+function permissionSatisfies(actualAccess, requiredAccess) {
+  if (requiredAccess === "read") {
+    return actualAccess === "read" || actualAccess === "write";
+  }
+  return actualAccess === requiredAccess;
+}
+
+function pickPermissions(permissions) {
+  return Object.fromEntries(
+    Object.keys(requiredPermissions).map((permission) => [
+      permission,
+      permissions[permission] ?? null,
+    ]),
   );
 }
 
@@ -176,6 +243,12 @@ function isNotFoundOrForbidden(error) {
     error !== null &&
     "status" in error &&
     (Number(error.status) === 403 || Number(error.status) === 404)
+  );
+}
+
+function isTrue(value) {
+  return ["1", "true", "TRUE", "yes", "YES", "y", "Y"].includes(
+    String(value ?? ""),
   );
 }
 

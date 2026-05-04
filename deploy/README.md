@@ -87,6 +87,23 @@ Setup URL:     https://<web-host>/dashboard
 Webhook URL:   https://<api-host>/webhooks/github
 ```
 
+Required repository permissions:
+
+```text
+Contents: write
+Workflows: write
+Pull requests: write
+Issues: write
+Metadata: read
+```
+
+Required webhook event subscriptions:
+
+```text
+Installation
+Installation repositories
+```
+
 Set `REVIEW_ROUTER_PUBLIC_API_URL` to the same public HTTPS API host. Generated
 customer workflows use this URL for OIDC/config/health-report calls. Production
 workflow provisioning rejects localhost and non-HTTPS URLs.
@@ -100,6 +117,13 @@ Before deploying with a prepared staging/prod env file:
 
 ```bash
 REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm hosted:check
+```
+
+Before inviting hosted testers, verify that the GitHub App credentials, required
+permissions, and hosted lifecycle webhook events are actually configured:
+
+```bash
+REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted pnpm github-app:check
 ```
 
 The hosted readiness gate rejects localhost/non-HTTPS public URLs, placeholder

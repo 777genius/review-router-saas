@@ -210,6 +210,20 @@ To prove the App can read one repository:
 REVIEW_ROUTER_GITHUB_APP_EXPECT_REPO=owner/repo pnpm github-app:check
 ```
 
+For hosted readiness, make lifecycle webhook event subscriptions a hard
+requirement:
+
+```bash
+REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted pnpm github-app:check
+```
+
+Hosted mode requires these App webhook events:
+
+```text
+installation
+installation_repositories
+```
+
 ### Action Runtime Gate
 
 Run in `/Users/belief/dev/projects/review-router-action`:

@@ -139,10 +139,11 @@ Coverage: local readiness, 169 unit/integration tests, architecture boundary che
 Latest GitHub App credential smoke:
 
 ```text
-Date: 2026-05-04 10:49 EEST
+Date: 2026-05-04 10:55 EEST
 Command: REVIEW_ROUTER_GITHUB_APP_EXPECT_REPO=777genius/rr-saas-fresh-e2e-1777880754438 pnpm github-app:check
 Result: passed.
-Coverage: local GitHub App private key authenticated as app id 3586778 / slug reviewrouter-local-777genius, installation 129154876 was visible, and the App installation token could read the latest disposable E2E repository.
+Coverage: local GitHub App private key authenticated as app id 3586778 / slug reviewrouter-local-777genius, required setup permissions were present, installation 129154876 was visible, and the App installation token could read the latest disposable E2E repository.
+Warning: current local App is missing hosted lifecycle webhook subscriptions `installation` and `installation_repositories`. This is acceptable for local setup PR E2E, but `REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted pnpm github-app:check` correctly fails until hosted App webhook events are enabled.
 ```
 
 Latest hosted readiness gate smoke:
