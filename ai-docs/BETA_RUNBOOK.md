@@ -347,6 +347,17 @@ The smoke test for the gate itself runs in `pnpm beta:check`:
 pnpm hosted:check:smoke
 ```
 
+After each hosted web deploy, run the live web smoke:
+
+```bash
+pnpm hosted:web:check
+```
+
+This checks `/dashboard` on the public web URL, verifies that Next CSS assets
+load, confirms the GitHub App install CTA points at the configured App slug, and
+exercises the GitHub post-install redirect notice. It exists because a page can
+return HTTP 200 while still degrading to an unstyled text-only shell.
+
 Before calling the app public-beta ready, run the full public-beta doctor:
 
 ```bash
@@ -354,9 +365,9 @@ REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm public-beta:check
 ```
 
 This combines hosted env validation, hosted GitHub App credential and
-permission validation, production build, and compiled runtime smoke. It is
-expected to fail until public HTTPS env values and hosted GitHub App credentials
-are configured.
+permission validation, live hosted web smoke, production build, and compiled
+runtime smoke. It is expected to fail until public HTTPS env values and hosted
+GitHub App credentials are configured.
 
 The public-beta doctor intentionally uses the same
 `REVIEW_ROUTER_HOSTED_ENV_FILE` for both hosted env validation and GitHub App

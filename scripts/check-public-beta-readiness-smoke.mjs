@@ -41,6 +41,11 @@ try {
     `node scripts/check-github-app-readiness.mjs hosted=${hostedEnvFile} appEnv=${hostedEnvFile} mode=hosted`,
     "GitHub App readiness must use the same hosted env file in hosted mode",
   );
+  assertIncludes(
+    calls,
+    `node scripts/check-hosted-web.mjs hosted=${hostedEnvFile}`,
+    "hosted web smoke must use REVIEW_ROUTER_HOSTED_ENV_FILE",
+  );
 
   console.log("Public beta readiness smoke passed.");
 } finally {

@@ -19,6 +19,10 @@ REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted \
   REVIEW_ROUTER_GITHUB_APP_ENV_FILE="$HOSTED_ENV_FILE" \
   node scripts/check-github-app-readiness.mjs
 
+info "hosted web smoke"
+REVIEW_ROUTER_HOSTED_ENV_FILE="$HOSTED_ENV_FILE" \
+  node scripts/check-hosted-web.mjs
+
 info "production runtime smoke"
 pnpm build
 pnpm runtime:smoke
