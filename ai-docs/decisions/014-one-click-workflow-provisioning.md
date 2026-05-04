@@ -15,13 +15,15 @@ metadata: read
 contents: write
 workflows: write
 pull_requests: write
+issues: write
 ```
 
 `workflows: write` is needed only because ReviewRouter writes `.github/workflows/reviewrouter.yml`. It is not needed for the review engine itself.
 
-`issues: write` and `actions: write` are not required for minimal v1
-provisioning. Only add them later behind a specific product feature and updated
-permission copy.
+`issues: write` is included for PR summary/setup/help conversations when
+App-bot identity or SaaS guidance is used. `actions: write` is not required for
+minimal v1 provisioning. Only add it later behind a specific product feature and
+updated permission copy.
 
 ## Rationale
 

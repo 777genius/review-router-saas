@@ -74,13 +74,15 @@ metadata: read
 contents: write
 workflows: write
 pull_requests: write
+issues: write
 ```
 
 These permissions are for the shared GitHub App control plane. Review execution still runs in the customer's workflow. The App creates setup/update PRs and should never push directly to the default branch.
 
-Do not request broader App permissions for future ideas. `issues: write` and
-`actions: write` can be added later only with a concrete feature, audit path,
-and updated onboarding copy.
+`issues: write` is included only for PR summary/setup/help conversations when
+App-bot identity or SaaS guidance is used. Do not request broader App
+permissions for future ideas. `actions: write` can be added later only with a
+concrete feature, audit path, and updated onboarding copy.
 
 ## Logging Rules
 

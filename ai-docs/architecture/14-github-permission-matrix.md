@@ -14,7 +14,7 @@ If a permission cannot be explained clearly, do not request it until a feature n
 | Contents      | Read/Write | Create setup/update branch and workflow/config files through PR.                                        |
 | Pull requests | Read/Write | Create setup/update PRs and read setup PR state for provisioning.                                       |
 | Workflows     |      Write | Required to create or update `.github/workflows/reviewrouter.yml` through the GitHub App.               |
-| Issues        |     Not v1 | Only needed if SaaS posts issue-style setup/help comments. The review action comments from customer CI. |
+| Issues        |      Write | Support issue-style PR summary/setup/help conversations when App-bot identity or SaaS guidance is used. |
 | Actions       |     Not v1 | Only needed if SaaS later manages workflow runs. v1 avoids it because runtime health reports use OIDC.  |
 | Checks        |     Not v1 | Only needed if SaaS creates check runs directly. v1 avoids this because the action handles status.      |
 
@@ -46,7 +46,7 @@ If workflow permission looks too strong for a customer, fallback options:
 Example:
 
 ```text
-ReviewRouter needs Contents write only to open a pull request that adds or updates `.github/workflows/reviewrouter.yml`. It does not push directly to your default branch.
+ReviewRouter needs Contents and Workflows write to open a pull request that adds or updates `.github/workflows/reviewrouter.yml`. It needs Issues write for PR summary/setup/help conversations when App-bot identity or SaaS guidance is enabled. It does not push directly to your default branch.
 ```
 
 ## Review Cadence
