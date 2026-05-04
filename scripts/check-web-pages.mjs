@@ -3,17 +3,35 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
+const configuredWebUrl = (
+  process.env.REVIEW_ROUTER_WEB_URL || "http://localhost:3000"
+).replace(/\/$/, "");
+const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
+
 const pages = [
-  ["/", "Review routing for AI pull request checks"],
-  ["/dashboard", "Dashboard"],
-  ["/getting-started", "Getting started"],
-  ["/security", "Designed to avoid code and secret custody"],
-  ["/fair-use", "Fair use"],
-  ["/disconnect", "Disconnect"],
-  ["/privacy", "Privacy draft"],
-  ["/terms", "Terms draft"],
-  ["/status", "Trusted beta is usable"],
-  ["/support", "Trusted beta support"],
+  ["/", ["Review routing for AI pull request checks"]],
+  ["/dashboard", ["Dashboard"]],
+  [
+    "/getting-started",
+    [
+      "Getting started",
+      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_REPO=owner/repo bash`,
+      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`,
+    ],
+  ],
+  [
+    "/security",
+    [
+      "Designed to avoid code and secret custody",
+      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_REPO=owner/repo bash`,
+    ],
+  ],
+  ["/fair-use", ["Fair use"]],
+  ["/disconnect", ["Disconnect"]],
+  ["/privacy", ["Privacy draft"]],
+  ["/terms", ["Terms draft"]],
+  ["/status", ["Trusted beta is usable"]],
+  ["/support", ["Trusted beta support"]],
 ];
 
 const redirectChecks = [
@@ -80,7 +98,7 @@ const waitForServer = async () => {
 try {
   await waitForServer();
 
-  for (const [path, expectedText] of pages) {
+  for (const [path, expectedTexts] of pages) {
     const url = `${baseUrl}${path}`;
     const response = await fetch(url);
     if (!response.ok) {
@@ -88,8 +106,10 @@ try {
     }
 
     const html = await response.text();
-    if (!html.includes(expectedText)) {
-      await fail(`${path} did not include expected text: ${expectedText}`);
+    for (const expectedText of expectedTexts) {
+      if (!html.includes(expectedText)) {
+        await fail(`${path} did not include expected text: ${expectedText}`);
+      }
     }
   }
 
