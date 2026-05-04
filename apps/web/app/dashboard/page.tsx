@@ -282,10 +282,10 @@ export default async function DashboardPage({
   const appInstallUrl = getGitHubAppInstallUrl();
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-10">
-      <section className="space-y-3">
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-4 py-10 sm:px-6">
+      <section className="min-w-0 space-y-3">
         <Badge tone="accent">Dashboard</Badge>
-        <h1 className="text-4xl font-semibold tracking-tight text-cyan-50 md:text-6xl">
+        <h1 className="break-words text-4xl font-semibold tracking-tight text-cyan-50 md:text-6xl">
           Connected repositories
         </h1>
         <p className="max-w-3xl text-base leading-7 text-slate-300">
@@ -315,56 +315,10 @@ export default async function DashboardPage({
 
       <section className="grid gap-5">
         {workspaces.length === 0 ? (
-          <Card className="space-y-5">
-            <Badge tone="warning">No workspace yet</Badge>
-            <div className="space-y-2">
-              <h2 className="text-2xl font-semibold text-cyan-50">
-                Start with one selected repository.
-              </h2>
-              <p className="max-w-3xl text-sm leading-6 text-slate-300">
-                Sign in with GitHub, install the ReviewRouter App on selected
-                repositories, then return here to create a setup PR. Provider
-                credentials are seeded later directly into GitHub Actions
-                secrets, not into ReviewRouter SaaS.
-              </p>
-            </div>
-            <ol className="grid gap-3 text-sm leading-6 text-slate-300 md:grid-cols-3">
-              {[
-                "Sign in with GitHub",
-                "Install App on selected repositories",
-                "Create and merge setup PR",
-              ].map((step, index) => (
-                <li
-                  key={step}
-                  className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
-                >
-                  <span className="mb-2 inline-flex h-7 w-7 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-300/10 text-xs font-semibold text-cyan-100">
-                    {index + 1}
-                  </span>
-                  <span className="block">{step}</span>
-                </li>
-              ))}
-            </ol>
-            <div className="flex flex-wrap gap-3 pt-1">
-              {!mutationStatus.signedIn ? (
-                <LinkButton href="/api/auth/signin" size="sm">
-                  Sign in with GitHub
-                </LinkButton>
-              ) : null}
-              {appInstallUrl ? (
-                <LinkButton href={appInstallUrl} variant="soft" size="sm">
-                  Install GitHub App
-                </LinkButton>
-              ) : (
-                <span className="text-xs leading-5 text-slate-400">
-                  Set GITHUB_APP_SLUG to show the local App install link.
-                </span>
-              )}
-              <LinkButton href="/getting-started" variant="outline" size="sm">
-                Read setup guide
-              </LinkButton>
-            </div>
-          </Card>
+          <EmptyDashboardState
+            appInstallUrl={appInstallUrl}
+            signedIn={mutationStatus.signedIn}
+          />
         ) : (
           workspaces.map((workspace) => (
             <WorkspaceCard
@@ -376,6 +330,147 @@ export default async function DashboardPage({
         )}
       </section>
     </main>
+  );
+}
+
+function EmptyDashboardState({
+  appInstallUrl,
+  signedIn,
+}: {
+  readonly appInstallUrl: string | null;
+  readonly signedIn: boolean;
+}): React.ReactElement {
+  return (
+    <section className="grid min-w-0 max-w-full gap-6 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1fr)_minmax(0,1fr)]">
+      <Card className="min-w-0 max-w-full space-y-8 overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_22px_70px_rgba(0,0,0,0.42)] sm:p-6 lg:row-span-2">
+        <div className="space-y-3">
+          <Badge tone="accent">Get started</Badge>
+          <h2 className="break-words text-2xl font-semibold text-cyan-50">
+            Start with one selected repository.
+          </h2>
+          <p className="text-sm leading-6 text-slate-400">
+            Guided setup, not a generic empty state. Connect one repository,
+            seed provider credentials into GitHub Actions, then let reviews run
+            in customer CI.
+          </p>
+        </div>
+        <ol className="grid gap-4">
+          {[
+            {
+              accent: "bg-cyan-300",
+              description: "Authorize the dashboard to map your installations.",
+              title: "Sign in with GitHub",
+            },
+            {
+              accent: "bg-fuchsia-400",
+              description:
+                "Install ReviewRouter only on repositories you select.",
+              title: "Install on selected repos",
+            },
+            {
+              accent: "bg-lime-300",
+              description: "Merge the generated workflow setup pull request.",
+              title: "Merge setup PR",
+            },
+          ].map((step) => (
+            <li
+              key={step.title}
+              className="grid min-w-0 gap-3 rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4 sm:grid-cols-[1.25rem_minmax(0,1fr)]"
+            >
+              <span
+                className={`${step.accent} mt-1 h-5 w-5 rounded-full shadow-[0_0_24px_rgba(0,229,255,0.24)]`}
+              />
+              <span className="min-w-0 space-y-1">
+                <span className="block break-words text-base font-semibold text-cyan-50">
+                  {step.title}
+                </span>
+                <span className="block text-sm leading-6 text-slate-400">
+                  {step.description}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      </Card>
+
+      <Card className="relative min-w-0 max-w-full overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_18px_60px_rgba(0,0,0,0.34)] sm:p-6">
+        <div className="absolute right-6 top-6 hidden h-16 w-16 place-items-center rounded-xl border border-cyan-300/35 bg-cyan-300/5 md:grid">
+          <span className="block h-8 w-4 rotate-45 border-b-4 border-r-4 border-lime-300" />
+        </div>
+        <div className="min-w-0 max-w-sm space-y-3 pr-0 md:pr-20">
+          <Badge tone="accent">Secret boundary</Badge>
+          <h2 className="break-words text-xl font-semibold text-cyan-50">
+            Credentials never enter SaaS.
+          </h2>
+          <p className="text-sm leading-6 text-slate-400">
+            Provider setup is seeded into GitHub Actions secrets. ReviewRouter
+            stores install metadata, configuration, and health state only.
+          </p>
+        </div>
+      </Card>
+
+      <Card className="min-w-0 max-w-full space-y-5 overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_18px_60px_rgba(0,0,0,0.34)] sm:p-6">
+        <div className="space-y-3">
+          <Badge tone="accent">Runtime</Badge>
+          <h2 className="break-words text-xl font-semibold text-cyan-50">
+            Reviews run in customer CI.
+          </h2>
+          <p className="text-sm leading-6 text-slate-400">
+            GitHub Actions fetches config through OIDC and runs provider
+            commands inside the repository workflow.
+          </p>
+        </div>
+        <span className="inline-flex rounded-xl border border-lime-300/25 bg-lime-300/10 px-5 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-lime-100">
+          Read only
+        </span>
+      </Card>
+
+      <Card className="grid min-w-0 max-w-full gap-6 overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_22px_70px_rgba(0,0,0,0.42)] sm:p-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-center lg:col-span-2">
+        <div className="min-w-0 space-y-3">
+          <Badge tone="accent">Repository surface</Badge>
+          <h2 className="break-words text-3xl font-semibold tracking-tight text-cyan-50">
+            No workspace yet
+          </h2>
+          <p className="max-w-3xl text-sm leading-6 text-slate-400">
+            Once connected, this area becomes a repository table with provider,
+            model, effort, workflow health, setup PR state, and action reports.
+          </p>
+        </div>
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap md:justify-end">
+          {!signedIn ? (
+            <LinkButton
+              href="/api/auth/signin"
+              size="sm"
+              className="w-full sm:w-auto"
+            >
+              Sign in with GitHub
+            </LinkButton>
+          ) : null}
+          {appInstallUrl ? (
+            <LinkButton
+              href={appInstallUrl}
+              variant="soft"
+              size="sm"
+              className="w-full sm:w-auto"
+            >
+              Install GitHub App
+            </LinkButton>
+          ) : (
+            <span className="max-w-xs text-xs leading-5 text-slate-400">
+              Set GITHUB_APP_SLUG to show the local App install link.
+            </span>
+          )}
+          <LinkButton
+            href="/getting-started"
+            variant="outline"
+            size="sm"
+            className="w-full sm:w-auto"
+          >
+            Setup guide
+          </LinkButton>
+        </div>
+      </Card>
+    </section>
   );
 }
 
