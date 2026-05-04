@@ -1,5 +1,6 @@
 @import "@reviewrouter/ui/tokens.css";
 @import "tailwindcss";
+@source "../../../packages/ui/src";
 
 html {
   color-scheme: dark;
@@ -83,6 +84,12 @@ canvas {
 
 .rr-button-primary {
   border-color: transparent !important;
-  background: linear-gradient(135deg, #00f0ff 0%, #ff00ff 100%) !important;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.38), transparent 24%),
+    linear-gradient(135deg, #49eeff 0%, #7aa7ff 48%, #e83cff 100%) !important;
   color: #0a0a0f !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    0 16px 36px -22px rgba(0, 240, 255, 0.86),
+    0 16px 36px -24px rgba(255, 0, 255, 0.78);
 }

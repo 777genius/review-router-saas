@@ -1,7 +1,7 @@
 import { tv } from "tailwind-variants";
 
 export const buttonStyles = tv({
-  base: "inline-flex items-center justify-center rounded-xl border font-medium tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+  base: "inline-flex shrink-0 items-center justify-center rounded-xl border font-semibold leading-none tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
   variants: {
     variant: {
       solid:
@@ -20,9 +20,9 @@ export const buttonStyles = tv({
       danger: "border-red-300/40 text-red-100",
     },
     size: {
-      sm: "h-10 px-4 text-sm",
-      md: "h-11 px-5 text-sm",
-      lg: "h-12 px-6 text-base",
+      sm: "min-h-10 px-4 py-2 text-sm",
+      md: "min-h-11 px-5 py-2.5 text-sm",
+      lg: "min-h-12 px-7 py-3 text-base",
     },
   },
   defaultVariants: {
