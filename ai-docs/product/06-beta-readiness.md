@@ -25,6 +25,26 @@ Validated on real GitHub repositories:
 The current MVP is showable to trusted testers when the latest full-review
 smoke passes after the latest action/runtime provisioning change.
 
+Latest local beta gate:
+
+```text
+Date: 2026-05-04 20:35 EEST
+Command: pnpm beta:check
+Result: passed.
+Coverage: local readiness, 188 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke, post-install dashboard smoke, installer redirect check, whitespace, shell syntax, GitHub App manifest smoke, hosted readiness smoke, and public beta readiness smoke.
+```
+
+Latest hosted GitHub App credential smoke:
+
+```text
+Date: 2026-05-04 20:30 EEST
+Command: REVIEW_ROUTER_GITHUB_APP_ENV_FILE=.env.production pnpm github-app:check
+Result: credentials passed, required permissions present, no installations yet.
+App: id 3599233 / slug review-router-ai / owner 777genius.
+Install URL: https://github.com/apps/review-router-ai/installations/new
+Public beta setup PR E2E remains blocked until this App is installed on at least one selected test repository.
+```
+
 Latest full-review validation:
 
 ```text
@@ -153,7 +173,7 @@ Run: https://github.com/777genius/rr-saas-fresh-e2e-1777883214101/actions/runs/2
 Result: setup PR merged, workflow detected on main, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5 with title "Login ignores requested email".
 ```
 
-Latest local beta gate:
+Previous local beta gate:
 
 ```text
 Date: 2026-05-04 11:14 EEST
@@ -162,7 +182,7 @@ Result: passed.
 Coverage: local readiness, 171 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer command assertions and installer redirect check, whitespace, shell syntax, hosted readiness smoke, public beta readiness smoke.
 ```
 
-Latest GitHub App credential smoke:
+Previous local GitHub App credential smoke:
 
 ```text
 Date: 2026-05-04 10:55 EEST
