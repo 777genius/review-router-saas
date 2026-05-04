@@ -97,6 +97,25 @@ jobs:
             echo "::error::CODEX_AUTH_JSON secret is missing. Re-seed Codex auth from a trusted machine or switch this repository to OpenAI API-key mode."
             exit 1
           fi
+          node - <<'NODE'
+          const payload = process.env.CODEX_AUTH_JSON || '';
+          const fail = (message) => {
+            console.error('::error::' + message);
+            process.exit(1);
+          };
+          let auth;
+          try {
+            auth = JSON.parse(payload);
+          } catch (error) {
+            fail('CODEX_AUTH_JSON is not valid JSON. Re-seed Codex auth from a trusted machine. ' + error.message);
+          }
+          if (auth.auth_mode !== 'chatgpt') {
+            fail('CODEX_AUTH_JSON auth_mode must be chatgpt. Re-seed with Codex CLI subscription login or switch this repo to API-key mode.');
+          }
+          if (!auth.tokens || typeof auth.tokens.refresh_token !== 'string' || auth.tokens.refresh_token.length === 0) {
+            fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+          }
+          NODE
           export CODEX_HOME="\${CODEX_HOME:-$HOME/.codex}"
           mkdir -p "$CODEX_HOME"
           chmod 700 "$CODEX_HOME"

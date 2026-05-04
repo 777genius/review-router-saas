@@ -47,6 +47,10 @@ import {
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
+import {
+  describeRepositoryHealth,
+  summarizeWorkspaceHealth,
+} from "../../src/server/repository-health-view";
 
 export const dynamic = "force-dynamic";
 
@@ -374,6 +378,12 @@ function WorkspaceCard({
             : null,
       })
     : null;
+  const workspaceHealth = summarizeWorkspaceHealth(
+    repositories.map(
+      (repository) =>
+        health.find((item) => item.repositoryId === repository.id)?.status,
+    ),
+  );
 
   return (
     <Card className="space-y-5">
@@ -386,6 +396,7 @@ function WorkspaceCard({
         </div>
         <div className="flex flex-wrap gap-2">
           <Badge tone="success">{repositoryCount} repositories</Badge>
+          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
           <Badge tone="accent">
             {entitlement.plan.replace("_", " ")} / {entitlement.status}
           </Badge>
@@ -582,6 +593,21 @@ function WorkspaceCard({
         </div>
       ) : null}
 
+      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <Badge tone={workspaceHealth.tone}>Readiness</Badge>
+          <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+            {workspaceHealth.ready} ready / {workspaceHealth.needsSetup} setup /{" "}
+            {workspaceHealth.needsAttention} attention /{" "}
+            {workspaceHealth.unknown} unknown
+          </span>
+        </div>
+        <p className="text-sm leading-6 text-slate-300">
+          This is metadata-only repository health. It does not include code,
+          diffs, prompts, or provider output.
+        </p>
+      </div>
+
       {supportDiagnostics ? (
         <div className="rounded-xl border border-magenta-300/20 bg-fuchsia-400/10 p-4">
           <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -699,6 +725,10 @@ function WorkspaceCard({
               const repositoryHealth = health.find(
                 (item) => item.repositoryId === repository.id,
               );
+              const healthView = describeRepositoryHealth(
+                repositoryHealth?.status,
+                repositoryHealth?.summary,
+              );
               const repositoryProvisioning = provisioning.find(
                 (item) => item.repositoryId === repository.id,
               );
@@ -737,11 +767,12 @@ function WorkspaceCard({
                     ) : null}
                   </td>
                   <td className="px-4 py-3">
-                    <span className="block text-cyan-100">
-                      {repositoryHealth?.status ?? "unknown"}
+                    <Badge tone={healthView.tone}>{healthView.label}</Badge>
+                    <span className="mt-2 block text-xs leading-5 text-slate-300">
+                      {healthView.summary}
                     </span>
-                    <span className="text-xs text-slate-400">
-                      {repositoryHealth?.summary ?? "No health data"}
+                    <span className="mt-1 block text-xs leading-5 text-slate-500">
+                      Next: {healthView.nextAction}
                     </span>
                   </td>
                   <td className="px-4 py-3">
