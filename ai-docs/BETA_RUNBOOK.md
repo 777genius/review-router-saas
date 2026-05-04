@@ -238,7 +238,7 @@ Default hosted URLs:
 
 ```text
 Callback URL: https://reviewrouter.site/api/auth/callback/github
-Setup URL: https://reviewrouter.site/dashboard
+Setup URL: https://reviewrouter.site/setup
 Webhook URL: https://api.reviewrouter.site/webhooks/github
 ```
 
@@ -249,7 +249,7 @@ the user authorization callback instead of the setup URL, while ReviewRouter's
 beta flow intentionally uses:
 
 ```text
-Install App -> Setup URL /dashboard -> Sign in with GitHub if needed
+Install App -> Setup URL /setup -> Sign in with GitHub if needed
 ```
 
 ```bash

@@ -32,7 +32,7 @@ const manifest = {
   },
   redirect_url: callbackUrl,
   callback_urls: [`${webUrl}/api/auth/callback/github`],
-  setup_url: `${webUrl}/dashboard`,
+  setup_url: `${webUrl}/setup`,
   setup_on_update: true,
   request_oauth_on_install: false,
   public: true,
@@ -215,7 +215,7 @@ function printPlan() {
   console.log(`Web URL: ${webUrl}`);
   console.log(`API URL: ${apiUrl}`);
   console.log(`Callback URL: ${webUrl}/api/auth/callback/github`);
-  console.log(`Setup URL: ${webUrl}/dashboard`);
+  console.log(`Setup URL: ${webUrl}/setup`);
   console.log(`Webhook URL: ${apiUrl}/webhooks/github`);
   console.log(`Output dir: ${outputDir}`);
 }

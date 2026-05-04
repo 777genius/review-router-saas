@@ -108,7 +108,7 @@ Set these URLs on the GitHub App used for hosted beta:
 
 ```text
 Callback URL: https://reviewrouter.site/api/auth/callback/github
-Setup URL:    https://reviewrouter.site/dashboard
+Setup URL:    https://reviewrouter.site/setup
 Webhook URL:  https://api.reviewrouter.site/webhooks/github
 ```
 

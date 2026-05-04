@@ -57,7 +57,7 @@ if (expectedAppSlug) {
 await assertFirstStylesheetLoads(dashboard.html);
 
 const installNotice = await fetchHtml(
-  "/dashboard?installation_id=123&setup_action=install",
+  "/setup?installation_id=123&setup_action=install",
 );
 assertIncludes(
   installNotice.html,
@@ -76,17 +76,17 @@ assertIncludes(
 );
 assertIncludes(
   installNotice.html,
-  "Sign in to finish setup",
+  "Sign in with GitHub",
   "install redirect dashboard must promote sign-in over reinstall",
 );
 assertIncludes(
   installNotice.html,
-  "callbackUrl=%2Fdashboard%3Finstallation_id%3D123%26setup_action%3Dinstall",
+  "callbackUrl=%2Fsetup%3Finstallation_id%3D123%26setup_action%3Dinstall",
   "install redirect sign-in must return users to the setup handoff page",
 );
 assertIncludes(
   installNotice.html,
-  "Authorize dashboard access for this GitHub user.",
+  "One sign-in finishes the handoff.",
   "install redirect dashboard must show sign-in as the next onboarding step",
 );
 assertNotIncludes(
@@ -97,12 +97,12 @@ assertNotIncludes(
 assertBefore(
   installNotice.html,
   "GitHub App installed",
-  "Finish ReviewRouter setup.",
+  "Finish repository setup.",
   "install redirect notice should appear before onboarding hero",
 );
 
 const invalidNotice = await fetchHtml(
-  "/dashboard?installation_id=abc&setup_action=install",
+  "/setup?installation_id=abc&setup_action=install",
 );
 assertNotIncludes(
   invalidNotice.html,

@@ -19,11 +19,7 @@ if (result.status !== 0) {
 
 const manifest = parseManifest(result.stdout);
 
-assertEqual(
-  manifest.setup_url,
-  "https://reviewrouter.site/dashboard",
-  "setup_url",
-);
+assertEqual(manifest.setup_url, "https://reviewrouter.site/setup", "setup_url");
 assertEqual(
   manifest.hook_attributes?.url,
   "https://api.reviewrouter.site/webhooks/github",

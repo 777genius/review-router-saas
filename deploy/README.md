@@ -90,7 +90,7 @@ For hosted beta, configure the GitHub App with the deployed URLs:
 
 ```text
 Callback URL:  https://<web-host>/api/auth/callback/github
-Setup URL:     https://<web-host>/dashboard
+Setup URL:     https://<web-host>/setup
 Webhook URL:   https://<api-host>/webhooks/github
 ```
 

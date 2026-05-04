@@ -1,4 +1,5 @@
-import { Badge, Button, Card, LinkButton } from "@reviewrouter/ui";
+import { redirect } from "next/navigation";
+import { Badge, Button, Card, LinkButton, SelectField } from "@reviewrouter/ui";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
@@ -266,10 +267,20 @@ type DashboardPageProps = {
 export default async function DashboardPage({
   searchParams,
 }: DashboardPageProps): Promise<React.ReactElement> {
+  const params = searchParams ? await searchParams : {};
   const [mutationStatus, workspaceScope] = await Promise.all([
     getDashboardMutationStatus(),
     getDashboardWorkspaceScope(),
   ]);
+  const appSetupNotice = buildGitHubAppSetupNotice({
+    installationId: readParam(params.installation_id),
+    setupAction: readParam(params.setup_action),
+    signedIn: mutationStatus.signedIn,
+  });
+  if (appSetupNotice) {
+    redirect(`/setup?${setupQueryString(params)}`);
+  }
+
   const supportAudit =
     workspaceScope.kind === "all" &&
     workspaceScope.reason === "local_admin_override" &&
@@ -280,14 +291,8 @@ export default async function DashboardPage({
         }
       : undefined;
   const workspaces = await loadDashboardData(workspaceScope, supportAudit);
-  const params = searchParams ? await searchParams : {};
   const appInstallUrl = getGitHubAppInstallUrl();
   const dashboardSignInHref = buildDashboardSignInHref(params);
-  const appSetupNotice = buildGitHubAppSetupNotice({
-    installationId: readParam(params.installation_id),
-    setupAction: readParam(params.setup_action),
-    signedIn: mutationStatus.signedIn,
-  });
 
   if (workspaces.length === 0) {
     return (
@@ -310,66 +315,40 @@ export default async function DashboardPage({
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-10 px-4 py-12 sm:px-6 md:py-16">
-      <section className="grid min-w-0 gap-10 lg:min-h-[58vh] lg:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.75fr)] lg:items-center">
-        <div className="min-w-0 space-y-8">
-          <div className="space-y-5">
-            <div className="flex items-center gap-4">
-              <LogoMark size="md" />
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
+      <section className="rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/75 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-8">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div className="min-w-0 space-y-4">
+            <div className="flex items-center gap-3">
+              <LogoMark size="sm" />
               <Badge tone="accent">Dashboard</Badge>
             </div>
-            <h1 className="max-w-3xl break-words bg-[image:var(--rr-gradient-brand)] bg-clip-text text-5xl font-extrabold leading-[1.05] tracking-[-0.04em] text-transparent md:text-7xl">
-              Connected repositories
-            </h1>
-            <p className="max-w-2xl text-lg leading-8 text-[#8892b0]">
-              Repository sync is App-driven. The dashboard reads normalized
-              installation and repository metadata, not code, diffs, PR bodies,
-              or commit messages.
-            </p>
+            <div className="space-y-3">
+              <h1 className="max-w-3xl break-words text-4xl font-extrabold leading-[1.05] tracking-[-0.04em] text-cyan-50 md:text-6xl">
+                Connected repositories
+              </h1>
+              <p className="max-w-2xl text-base leading-7 text-[#a0a8c0]">
+                Pick a repository, create the setup PR, then seed provider
+                secrets directly into GitHub Actions. Advanced policy and
+                diagnostics stay collapsed until you need them.
+              </p>
+            </div>
           </div>
 
-          <div className="flex max-w-2xl flex-wrap gap-3">
+          <div className="flex flex-wrap gap-3 lg:justify-end">
             {appInstallUrl ? (
               <LinkButton href={appInstallUrl} size="lg" className="min-w-44">
-                Install GitHub App
+                Add repositories
               </LinkButton>
             ) : null}
-            <LinkButton
-              href="/getting-started"
-              variant="outline"
-              size="md"
-              className="min-w-32"
-            >
-              Setup guide
+            <LinkButton href="/setup" variant="outline" size="md">
+              Setup flow
             </LinkButton>
-            <LinkButton
-              href="/security"
-              variant="outline"
-              size="md"
-              className="min-w-36"
-            >
-              Security model
+            <LinkButton href="/security" variant="ghost" size="md">
+              Security
             </LinkButton>
-            <LinkButton
-              href="/status"
-              variant="outline"
-              size="md"
-              className="min-w-24"
-            >
-              Status
-            </LinkButton>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-4 font-mono text-xs text-[#8892b0]">
-            <span className="text-cyan-100">CI runtime</span>
-            <span className="h-4 w-px bg-cyan-300/20" />
-            <span>No code custody</span>
-            <span className="h-4 w-px bg-cyan-300/20" />
-            <span>Metadata control plane</span>
           </div>
         </div>
-
-        <DashboardHeroDemo />
       </section>
 
       <DashboardNotice
@@ -527,101 +506,6 @@ function OnboardingDashboard({
   );
 }
 
-function DashboardHeroDemo(): React.ReactElement {
-  const agents = [
-    {
-      name: "Codex",
-      accent: "border-cyan-300 text-cyan-100",
-      dot: "bg-cyan-300",
-    },
-    {
-      name: "OpenRouter",
-      accent: "border-fuchsia-400 text-fuchsia-200",
-      dot: "bg-fuchsia-400",
-    },
-    {
-      name: "Policy",
-      accent: "border-lime-300 text-lime-100",
-      dot: "bg-lime-300",
-    },
-  ] as const;
-  const lanes = [
-    { label: "Diff", color: "text-slate-400", cards: ["PR files"] },
-    { label: "Review", color: "text-cyan-100", cards: ["Agent context"] },
-    { label: "Gate", color: "text-amber-100", cards: ["Severity policy"] },
-    { label: "Done", color: "text-lime-100", cards: ["Inline comments"] },
-  ] as const;
-
-  return (
-    <div className="relative">
-      <div className="absolute -inset-1 rounded-[1.4rem] bg-[linear-gradient(135deg,rgba(0,240,255,0.2),rgba(255,0,255,0.18),rgba(57,255,20,0.08))] opacity-50 blur-2xl" />
-      <Card className="relative z-10 min-h-[330px] rounded-[1rem] border-cyan-300/[0.15] bg-[#0a0a0f]/95 p-4 shadow-[0_20px_60px_rgba(0,0,0,0.6),0_0_30px_rgba(0,240,255,0.05),inset_0_1px_0_rgba(0,240,255,0.1)]">
-        <div className="flex min-h-[300px] flex-col gap-4">
-          <div className="flex items-center justify-between gap-3">
-            <span className="font-mono text-sm font-bold tracking-[0.08em] text-[#e0e6ff]">
-              ReviewRouter
-            </span>
-            <span className="inline-flex items-center gap-2 rounded-full border border-lime-300/20 bg-lime-300/10 px-3 py-1 font-mono text-[0.65rem] font-bold tracking-[0.12em] text-lime-100">
-              <span className="h-1.5 w-1.5 rounded-full bg-lime-300 shadow-[0_0_8px_rgba(57,255,20,0.8)]" />
-              LIVE
-            </span>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-3">
-            {agents.map((agent) => (
-              <div
-                key={agent.name}
-                className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2"
-              >
-                <span
-                  className={`grid h-7 w-7 shrink-0 place-items-center rounded-full border ${agent.accent} bg-black/30`}
-                >
-                  <span className={`h-2 w-2 rounded-full ${agent.dot}`} />
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold text-[#a0a8c0]">
-                  {agent.name}
-                </span>
-                <span className={`h-1.5 w-1.5 rounded-full ${agent.dot}`} />
-              </div>
-            ))}
-          </div>
-
-          <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
-            {lanes.map((lane) => (
-              <div key={lane.label} className="flex min-w-0 flex-col gap-2">
-                <span
-                  className={`font-mono text-[0.62rem] font-bold uppercase tracking-[0.1em] ${lane.color}`}
-                >
-                  {lane.label}
-                </span>
-                <div className="min-h-24 rounded-lg border border-white/[0.05] bg-white/[0.025] p-2">
-                  {lane.cards.map((card) => (
-                    <div
-                      key={card}
-                      className="rounded-md border-l-2 border-cyan-300 bg-white/[0.04] px-2 py-2 font-mono text-[0.68rem] leading-4 text-[#c8d6e5]"
-                    >
-                      {card}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="rounded-lg border border-cyan-300/[0.08] bg-black/30 px-3 py-2">
-            <div className="flex items-center gap-2">
-              <span className="h-3.5 w-3.5 rounded-full border border-lime-300/50 bg-lime-300/10" />
-              <span className="font-mono text-xs text-[#a0a8c0]">
-                Waiting for selected repository...
-              </span>
-            </div>
-          </div>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
 function WorkspaceCard({
   data,
   mutationsEnabled,
@@ -691,187 +575,258 @@ function WorkspaceCard({
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
-        {workspace.installations.map((installation) => (
-          <div
-            key={`${workspace.id}-${installation.githubInstallationId}`}
-            className="space-y-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
+          <p className="mt-3 text-sm leading-6 text-slate-300">
+            {workspaceHealth.ready} ready / {workspaceHealth.needsSetup} need
+            setup / {workspaceHealth.needsAttention} need attention. Start by
+            creating a setup PR for one selected repository.
+          </p>
+        </div>
+        {appInstallUrlForWorkspace(primaryInstallation) ? (
+          <LinkButton
+            href={appInstallUrlForWorkspace(primaryInstallation) ?? "#"}
+            variant="outline"
+            className="md:justify-self-end"
           >
+            Manage App access
+          </LinkButton>
+        ) : null}
+      </div>
+
+      <RepositoryTable
+        workspace={workspace}
+        repositories={repositories}
+        health={health}
+        provisioning={provisioning}
+        mutationsEnabled={mutationsEnabled}
+      />
+
+      <details className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+        <summary className="cursor-pointer list-none">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-cyan-50">
-                {installation.accountLogin}
-              </p>
-              <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                {installation.accountType} / {installation.status} /{" "}
-                {installation.repositorySelection}
+              <Badge tone="accent">GitHub App connection</Badge>
+              <p className="mt-2 text-sm text-slate-400">
+                Installation sync and repository selection.
               </p>
             </div>
-            <form action={requestInstallationSyncAction}>
-              <input type="hidden" name="workspaceId" value={workspace.id} />
-              <input
-                type="hidden"
-                name="githubInstallationId"
-                value={installation.githubInstallationId}
-              />
-              <Button
-                type="submit"
-                variant="outline"
-                size="sm"
-                disabled={!mutationsEnabled || installation.status !== "active"}
-              >
-                Sync repos
-              </Button>
-            </form>
+            <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
+              details
+            </span>
           </div>
-        ))}
-      </div>
+        </summary>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          {workspace.installations.map((installation) => (
+            <div
+              key={`${workspace.id}-${installation.githubInstallationId}`}
+              className="space-y-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+            >
+              <div>
+                <p className="text-sm font-semibold text-cyan-50">
+                  {installation.accountLogin}
+                </p>
+                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                  {installation.accountType} / {installation.status} /{" "}
+                  {installation.repositorySelection}
+                </p>
+              </div>
+              <form action={requestInstallationSyncAction}>
+                <input type="hidden" name="workspaceId" value={workspace.id} />
+                <input
+                  type="hidden"
+                  name="githubInstallationId"
+                  value={installation.githubInstallationId}
+                />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    !mutationsEnabled || installation.status !== "active"
+                  }
+                >
+                  Sync repos
+                </Button>
+              </form>
+            </div>
+          ))}
+        </div>
+      </details>
 
       {providerGuidance ? (
-        <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <Badge tone="success">
-              {providerSetupTitle(providerGuidance.provider)}
-            </Badge>
-            <span className="text-xs uppercase tracking-[0.16em] text-emerald-100">
-              {providerGuidance.recommendedScope.replaceAll("_", " ")}
-            </span>
-          </div>
-          <p className="mb-4 text-sm leading-6 text-emerald-50">
-            {providerSetupIntro(providerGuidance.provider)}
-          </p>
-          {providerGuidance.warnings.length > 0 ? (
-            <ul className="mb-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
-              {providerGuidance.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          ) : null}
-          <div className="grid gap-3">
-            {providerGuidance.commands.map((command) => (
-              <div
-                key={command.title}
-                className="rounded-lg border border-emerald-200/10 bg-slate-950/80 p-3"
-              >
-                <p className="text-sm font-semibold text-emerald-50">
-                  {command.title}
+        <details className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+          <summary className="cursor-pointer list-none">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <Badge tone="success">
+                  {providerSetupTitle(providerGuidance.provider)}
+                </Badge>
+                <p className="mt-2 text-sm leading-6 text-emerald-50">
+                  Credentials stay in GitHub Actions secrets. Open this when you
+                  are ready to seed the selected provider.
                 </p>
-                <p className="mt-1 text-xs leading-5 text-slate-400">
-                  {command.description}
-                </p>
-                <pre className="mt-3 overflow-x-auto rounded-md bg-black/40 p-3 text-xs text-cyan-100">
-                  <code>{command.command}</code>
-                </pre>
               </div>
-            ))}
+              <span className="font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
+                {providerGuidance.recommendedScope.replaceAll("_", " ")}
+              </span>
+            </div>
+          </summary>
+          <div className="mt-4">
+            <p className="mb-4 text-sm leading-6 text-emerald-50">
+              {providerSetupIntro(providerGuidance.provider)}
+            </p>
+            {providerGuidance.warnings.length > 0 ? (
+              <ul className="mb-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
+                {providerGuidance.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            ) : null}
+            <div className="grid gap-3">
+              {providerGuidance.commands.map((command) => (
+                <div
+                  key={command.title}
+                  className="rounded-lg border border-emerald-200/10 bg-slate-950/80 p-3"
+                >
+                  <p className="text-sm font-semibold text-emerald-50">
+                    {command.title}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-400">
+                    {command.description}
+                  </p>
+                  <pre className="mt-3 overflow-x-auto rounded-md bg-black/40 p-3 text-xs text-cyan-100">
+                    <code>{command.command}</code>
+                  </pre>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        </details>
       ) : null}
 
-      <div className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4">
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <Badge tone="accent">Review config</Badge>
-          <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-            workspace default / v{activeConfigVersion}
-          </span>
-        </div>
-        <ReviewConfigForm
-          action={saveWorkspaceReviewConfigAction}
-          config={activeConfig}
-          hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
-          mutationsEnabled={mutationsEnabled}
-          submitLabel="Save workspace default"
-        />
-      </div>
-
-      {repositories.length > 0 ? (
-        <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <Badge tone="accent">Repository overrides</Badge>
-            <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-              optional per-repository provider/model/effort
+      <details className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+        <summary className="cursor-pointer list-none">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <Badge tone="accent">Review policy</Badge>
+              <p className="mt-2 text-sm text-slate-400">
+                Workspace defaults and optional per-repository overrides.
+              </p>
+            </div>
+            <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
+              v{activeConfigVersion}
             </span>
           </div>
-          <div className="grid gap-3">
-            {repositories.map((repository) => {
-              const repositoryConfig = repositoryConfigs.find(
-                (item) => item.repositoryId === repository.id,
-              )?.config;
-              const effectiveConfig = repositoryConfig?.config ?? activeConfig;
-              const configVersion =
-                repositoryConfig?.version ?? activeConfigVersion;
-
-              return (
-                <details
-                  key={`${repository.id}-review-config`}
-                  className="rounded-lg border border-cyan-200/10 bg-cyan-300/5 p-3"
-                >
-                  <summary className="cursor-pointer list-none">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-semibold text-cyan-50">
-                          {repository.fullName}
-                        </p>
-                        <p className="text-xs text-slate-400">
-                          {repositoryConfig
-                            ? `Repository override / v${configVersion}`
-                            : `Inherits workspace default / v${configVersion}`}
-                        </p>
-                      </div>
-                      <Badge tone={repositoryConfig ? "warning" : "success"}>
-                        {repositoryConfig ? "override" : "inherits"}
-                      </Badge>
-                    </div>
-                  </summary>
-                  <div className="mt-4 space-y-3">
-                    <ReviewConfigForm
-                      action={saveRepositoryReviewConfigAction}
-                      config={effectiveConfig}
-                      hiddenFields={[
-                        { name: "workspaceId", value: workspace.id },
-                        { name: "repositoryId", value: repository.id },
-                      ]}
-                      mutationsEnabled={
-                        mutationsEnabled &&
-                        repository.selected &&
-                        !repository.archived
-                      }
-                      submitLabel={
-                        repositoryConfig ? "Update override" : "Save override"
-                      }
-                    />
-                    {repositoryConfig ? (
-                      <form action={clearRepositoryReviewConfigAction}>
-                        <input
-                          type="hidden"
-                          name="workspaceId"
-                          value={workspace.id}
-                        />
-                        <input
-                          type="hidden"
-                          name="repositoryId"
-                          value={repository.id}
-                        />
-                        <Button
-                          type="submit"
-                          variant="outline"
-                          size="sm"
-                          disabled={
-                            !mutationsEnabled ||
-                            !repository.selected ||
-                            repository.archived
-                          }
-                        >
-                          Inherit workspace default
-                        </Button>
-                      </form>
-                    ) : null}
-                  </div>
-                </details>
-              );
-            })}
+        </summary>
+        <div className="mt-4">
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Badge tone="accent">Workspace default</Badge>
+            <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+              v{activeConfigVersion}
+            </span>
           </div>
+          <ReviewConfigForm
+            action={saveWorkspaceReviewConfigAction}
+            config={activeConfig}
+            hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
+            mutationsEnabled={mutationsEnabled}
+            submitLabel="Save workspace default"
+          />
         </div>
-      ) : null}
+
+        {repositories.length > 0 ? (
+          <div className="mt-4 rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Badge tone="accent">Repository overrides</Badge>
+              <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                optional per-repository provider/model/effort
+              </span>
+            </div>
+            <div className="grid gap-3">
+              {repositories.map((repository) => {
+                const repositoryConfig = repositoryConfigs.find(
+                  (item) => item.repositoryId === repository.id,
+                )?.config;
+                const effectiveConfig =
+                  repositoryConfig?.config ?? activeConfig;
+                const configVersion =
+                  repositoryConfig?.version ?? activeConfigVersion;
+
+                return (
+                  <details
+                    key={`${repository.id}-review-config`}
+                    className="rounded-lg border border-cyan-200/10 bg-cyan-300/5 p-3"
+                  >
+                    <summary className="cursor-pointer list-none">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-cyan-50">
+                            {repository.fullName}
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            {repositoryConfig
+                              ? `Repository override / v${configVersion}`
+                              : `Inherits workspace default / v${configVersion}`}
+                          </p>
+                        </div>
+                        <Badge tone={repositoryConfig ? "warning" : "success"}>
+                          {repositoryConfig ? "override" : "inherits"}
+                        </Badge>
+                      </div>
+                    </summary>
+                    <div className="mt-4 space-y-3">
+                      <ReviewConfigForm
+                        action={saveRepositoryReviewConfigAction}
+                        config={effectiveConfig}
+                        hiddenFields={[
+                          { name: "workspaceId", value: workspace.id },
+                          { name: "repositoryId", value: repository.id },
+                        ]}
+                        mutationsEnabled={
+                          mutationsEnabled &&
+                          repository.selected &&
+                          !repository.archived
+                        }
+                        submitLabel={
+                          repositoryConfig ? "Update override" : "Save override"
+                        }
+                      />
+                      {repositoryConfig ? (
+                        <form action={clearRepositoryReviewConfigAction}>
+                          <input
+                            type="hidden"
+                            name="workspaceId"
+                            value={workspace.id}
+                          />
+                          <input
+                            type="hidden"
+                            name="repositoryId"
+                            value={repository.id}
+                          />
+                          <Button
+                            type="submit"
+                            variant="outline"
+                            size="sm"
+                            disabled={
+                              !mutationsEnabled ||
+                              !repository.selected ||
+                              repository.archived
+                            }
+                          >
+                            Inherit workspace default
+                          </Button>
+                        </form>
+                      ) : null}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </details>
 
       {repositories.some((repository) => repository.visibility === "public") ? (
         <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
@@ -1001,13 +956,73 @@ function WorkspaceCard({
         )}
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-cyan-200/10">
-        <table className="w-full text-left text-sm">
+      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+        <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
+          Recent audit
+        </p>
+        {workspace.auditEvents.length === 0 ? (
+          <p className="text-sm text-slate-400">No audit events yet.</p>
+        ) : (
+          <ul className="space-y-2 text-sm text-slate-300">
+            {workspace.auditEvents.map((event) => (
+              <li
+                key={`${event.action}-${event.targetType}-${event.createdAt.toISOString()}`}
+                className="flex flex-wrap items-center justify-between gap-2"
+              >
+                <span>
+                  {event.action} by {event.actor}
+                </span>
+                <span className="text-xs text-slate-500">
+                  {event.createdAt.toISOString()}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function RepositoryTable({
+  workspace,
+  repositories,
+  health,
+  provisioning,
+  mutationsEnabled,
+}: {
+  readonly workspace: DashboardWorkspace;
+  readonly repositories: DashboardWorkspaceData["repositories"];
+  readonly health: DashboardWorkspaceData["health"];
+  readonly provisioning: DashboardWorkspaceData["provisioning"];
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  if (repositories.length === 0) {
+    return (
+      <div className="rounded-2xl border border-cyan-200/10 bg-slate-950/60 p-5">
+        <Badge tone="warning">No repositories yet</Badge>
+        <p className="mt-3 text-sm leading-6 text-slate-300">
+          GitHub has not delivered selected repositories to ReviewRouter yet.
+          Use sync after the installation webhook arrives, or update App access
+          if no repositories were selected.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-cyan-200/10 bg-slate-950/55">
+      <div className="border-b border-cyan-200/10 p-4">
+        <Badge tone="accent">Repositories</Badge>
+        <p className="mt-2 text-sm text-slate-400">
+          Main actions live here. Policy and diagnostics are below.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[860px] text-left text-sm">
           <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
             <tr>
               <th className="px-4 py-3">Repository</th>
-              <th className="px-4 py-3">Visibility</th>
-              <th className="px-4 py-3">Default branch</th>
               <th className="px-4 py-3">Setup</th>
               <th className="px-4 py-3">Health</th>
               <th className="px-4 py-3">Action</th>
@@ -1036,16 +1051,22 @@ function WorkspaceCard({
                   key={repository.id}
                   className={repository.selected ? "" : "opacity-50"}
                 >
-                  <td className="px-4 py-3 font-medium">
-                    {repository.fullName}
+                  <td className="px-4 py-4 align-top">
+                    <p className="font-medium text-cyan-50">
+                      {repository.fullName}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {repository.visibility} / {repository.defaultBranch}
+                      {repository.archived ? " / archived" : ""}
+                    </p>
                   </td>
-                  <td className="px-4 py-3">{repository.visibility}</td>
-                  <td className="px-4 py-3">{repository.defaultBranch}</td>
-                  <td className="px-4 py-3">
-                    <span className="block">{repository.setupStatus}</span>
+                  <td className="px-4 py-4 align-top">
+                    <span className="block text-sm">
+                      {repository.setupStatus.replaceAll("_", " ")}
+                    </span>
                     {setupPullRequestUrl ? (
                       <a
-                        className="text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                        className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
                         href={setupPullRequestUrl}
                         target="_blank"
                         rel="noreferrer"
@@ -1054,12 +1075,12 @@ function WorkspaceCard({
                       </a>
                     ) : null}
                     {repositoryProvisioning?.errorMessage ? (
-                      <span className="block text-xs text-red-200">
+                      <span className="mt-1 block text-xs text-red-200">
                         {repositoryProvisioning.errorMessage.slice(0, 120)}
                       </span>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-4 align-top">
                     <Badge tone={healthView.tone}>{healthView.label}</Badge>
                     <span className="mt-2 block text-xs leading-5 text-slate-300">
                       {healthView.summary}
@@ -1075,14 +1096,8 @@ function WorkspaceCard({
                         )}
                       </span>
                     ) : null}
-                    {repositoryHealth?.latestActionHealthReceivedAt ? (
-                      <span className="mt-1 block text-[11px] uppercase tracking-[0.12em] text-slate-500">
-                        Reported{" "}
-                        {repositoryHealth.latestActionHealthReceivedAt.toISOString()}
-                      </span>
-                    ) : null}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-4 align-top">
                     <form action={createSetupPullRequestAction}>
                       <input
                         type="hidden"
@@ -1109,7 +1124,7 @@ function WorkspaceCard({
                           ? "Installed"
                           : repository.setupStatus === "setup_pr_open"
                             ? "Update PR"
-                            : "Setup PR"}
+                            : "Create setup PR"}
                       </Button>
                     </form>
                   </td>
@@ -1119,32 +1134,7 @@ function WorkspaceCard({
           </tbody>
         </table>
       </div>
-
-      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
-        <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
-          Recent audit
-        </p>
-        {workspace.auditEvents.length === 0 ? (
-          <p className="text-sm text-slate-400">No audit events yet.</p>
-        ) : (
-          <ul className="space-y-2 text-sm text-slate-300">
-            {workspace.auditEvents.map((event) => (
-              <li
-                key={`${event.action}-${event.targetType}-${event.createdAt.toISOString()}`}
-                className="flex flex-wrap items-center justify-between gap-2"
-              >
-                <span>
-                  {event.action} by {event.actor}
-                </span>
-                <span className="text-xs text-slate-500">
-                  {event.createdAt.toISOString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </Card>
+    </div>
   );
 }
 
@@ -1210,6 +1200,53 @@ function countLabel(value: number | null, label: string): string | null {
 
 type DashboardFormAction = (formData: FormData) => void | Promise<void>;
 
+const providerAuthOptions = [
+  {
+    value: "codex_subscription_oauth",
+    label: "Codex OAuth",
+    description: "Uses the user's Codex subscription in GitHub Actions.",
+  },
+  {
+    value: "codex_openai_api_key",
+    label: "Codex API key",
+    description: "Uses OPENAI_API_KEY from GitHub Actions secrets.",
+  },
+  {
+    value: "openrouter_api_key",
+    label: "OpenRouter API key",
+    description: "Uses OPENROUTER_API_KEY from GitHub Actions secrets.",
+  },
+] as const;
+
+const reasoningEffortOptions = [
+  { value: "low", label: "Low", description: "Faster and cheaper." },
+  { value: "medium", label: "Medium", description: "Balanced default." },
+  { value: "high", label: "High", description: "Deeper review pass." },
+] as const;
+
+const failOnSeverityOptions = [
+  { value: "off", label: "Off", description: "Never fail the check." },
+  {
+    value: "critical",
+    label: "Critical",
+    description: "Block only critical findings.",
+  },
+  { value: "major", label: "Major", description: "Block major and critical." },
+] as const;
+
+const agenticContextOptions = [
+  {
+    value: "true",
+    label: "Enabled",
+    description: "Codex can read related files in read-only sandbox.",
+  },
+  {
+    value: "false",
+    label: "Disabled",
+    description: "Use supplied diff and deterministic context only.",
+  },
+] as const;
+
 function ReviewConfigForm({
   action,
   config,
@@ -1236,19 +1273,13 @@ function ReviewConfigForm({
           value={field.value}
         />
       ))}
-      <label className="space-y-1 text-sm text-slate-300">
-        <span>Provider auth</span>
-        <select
-          name="providerAuthMode"
-          defaultValue={config.provider.authMode}
-          disabled={!mutationsEnabled}
-          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-        >
-          <option value="codex_subscription_oauth">Codex OAuth</option>
-          <option value="codex_openai_api_key">Codex API key</option>
-          <option value="openrouter_api_key">OpenRouter API key</option>
-        </select>
-      </label>
+      <SelectField
+        name="providerAuthMode"
+        label="Provider auth"
+        defaultValue={config.provider.authMode}
+        disabled={!mutationsEnabled}
+        options={providerAuthOptions}
+      />
       <label className="space-y-1 text-sm text-slate-300">
         <span>Model</span>
         <input
@@ -1258,32 +1289,20 @@ function ReviewConfigForm({
           className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
         />
       </label>
-      <label className="space-y-1 text-sm text-slate-300">
-        <span>Reasoning effort</span>
-        <select
-          name="reasoningEffort"
-          defaultValue={config.provider.reasoningEffort}
-          disabled={!mutationsEnabled}
-          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-        >
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-        </select>
-      </label>
-      <label className="space-y-1 text-sm text-slate-300">
-        <span>Fail on severity</span>
-        <select
-          name="failOnSeverity"
-          defaultValue={config.blockingPolicy.failOnSeverity}
-          disabled={!mutationsEnabled}
-          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-        >
-          <option value="off">off</option>
-          <option value="critical">critical</option>
-          <option value="major">major</option>
-        </select>
-      </label>
+      <SelectField
+        name="reasoningEffort"
+        label="Reasoning effort"
+        defaultValue={config.provider.reasoningEffort}
+        disabled={!mutationsEnabled}
+        options={reasoningEffortOptions}
+      />
+      <SelectField
+        name="failOnSeverity"
+        label="Fail on severity"
+        defaultValue={config.blockingPolicy.failOnSeverity}
+        disabled={!mutationsEnabled}
+        options={failOnSeverityOptions}
+      />
       <label className="space-y-1 text-sm text-slate-300">
         <span>Inline max comments</span>
         <input
@@ -1309,18 +1328,13 @@ function ReviewConfigForm({
           className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
         />
       </label>
-      <label className="space-y-1 text-sm text-slate-300">
-        <span>Agentic context</span>
-        <select
-          name="agenticContext"
-          defaultValue={String(config.provider.agenticContext)}
-          disabled={!mutationsEnabled}
-          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-        >
-          <option value="true">enabled</option>
-          <option value="false">disabled</option>
-        </select>
-      </label>
+      <SelectField
+        name="agenticContext"
+        label="Agentic context"
+        defaultValue={String(config.provider.agenticContext)}
+        disabled={!mutationsEnabled}
+        options={agenticContextOptions}
+      />
       <div className="flex items-end">
         <Button type="submit" variant="solid" disabled={!mutationsEnabled}>
           {submitLabel}
@@ -1522,6 +1536,17 @@ function buildDashboardSignInHref(
   return `/api/auth/signin?callbackUrl=${encodeURIComponent(callbackPath)}`;
 }
 
+function setupQueryString(
+  params: Record<string, string | string[] | undefined>,
+): string {
+  const query = new URLSearchParams();
+  for (const key of ["installation_id", "setup_action"]) {
+    const value = readParam(params[key]);
+    if (value) query.set(key, value);
+  }
+  return query.toString();
+}
+
 function dashboardNoticeText(notice: string, repository: string): string {
   switch (notice) {
     case "sync_requested":
@@ -1564,6 +1589,14 @@ function workflowSetupAlreadyCurrent(status: string | undefined): boolean {
     "provider_unhealthy",
     "provider_report_stale",
   ].includes(status ?? "");
+}
+
+function appInstallUrlForWorkspace(
+  installation: DashboardWorkspace["installations"][number] | undefined,
+): string | null {
+  if (!installation?.githubInstallationId) return null;
+  if (!/^\d+$/.test(installation.githubInstallationId)) return null;
+  return `https://github.com/settings/installations/${installation.githubInstallationId}`;
 }
 
 function dashboardErrorText(error: string): string {

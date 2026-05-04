@@ -7,12 +7,6 @@ const configuredWebUrl = (
   process.env.REVIEW_ROUTER_WEB_URL || "http://localhost:3000"
 ).replace(/\/$/, "");
 const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
-const configuredApiUrl = (
-  process.env.REVIEW_ROUTER_WEB_SMOKE_EXPECTED_API_URL ??
-  "https://api.reviewrouter.site"
-).replace(/\/$/, "");
-const apiDemoUrl = `${configuredApiUrl}/docs`;
-
 const commonTexts = [
   "ReviewRouter",
   "Getting started",
@@ -23,11 +17,9 @@ const commonTexts = [
 ];
 
 const pages = [
-  [
-    "/",
-    ["Review routing for AI pull request checks", "View API demo", apiDemoUrl],
-  ],
+  ["/", ["Review routing for AI pull request checks", "View API demo"]],
   ["/dashboard", ["GitHub setup", "Install GitHub App"]],
+  ["/setup", ["Finish repository setup", "Sign in with GitHub"]],
   [
     "/getting-started",
     [
@@ -47,7 +39,7 @@ const pages = [
   ["/disconnect", ["Disconnect"]],
   ["/privacy", ["Privacy draft"]],
   ["/terms", ["Terms draft"]],
-  ["/status", ["Hosted API demo is live", apiDemoUrl]],
+  ["/status", ["Hosted API demo is live", "API demo"]],
   ["/support", ["Trusted beta support"]],
 ];
 
@@ -137,12 +129,32 @@ try {
     }
   }
 
-  const postInstallResponse = await fetch(
+  const dashboardRedirectResponse = await fetch(
     `${baseUrl}/dashboard?installation_id=123&setup_action=install`,
+    { redirect: "manual" },
+  );
+  if (![301, 302, 303, 307, 308].includes(dashboardRedirectResponse.status)) {
+    await fail(
+      `/dashboard post-install returned HTTP ${dashboardRedirectResponse.status}; expected redirect`,
+    );
+  }
+  const dashboardRedirectLocation =
+    dashboardRedirectResponse.headers.get("location");
+  if (
+    dashboardRedirectLocation !==
+    "/setup?installation_id=123&setup_action=install"
+  ) {
+    await fail(
+      `/dashboard post-install redirected to ${dashboardRedirectLocation}; expected /setup?installation_id=123&setup_action=install`,
+    );
+  }
+
+  const postInstallResponse = await fetch(
+    `${baseUrl}/setup?installation_id=123&setup_action=install`,
   );
   if (!postInstallResponse.ok) {
     await fail(
-      `/dashboard post-install returned HTTP ${postInstallResponse.status}`,
+      `/setup post-install returned HTTP ${postInstallResponse.status}`,
     );
   }
   const postInstallHtml = await postInstallResponse.text();
@@ -153,17 +165,17 @@ try {
   );
   assertIncludes(
     postInstallHtml,
-    "Sign in to finish setup",
+    "Sign in with GitHub",
     "post-install dashboard did not include primary sign-in CTA",
   );
   assertIncludes(
     postInstallHtml,
-    "callbackUrl=%2Fdashboard%3Finstallation_id%3D123%26setup_action%3Dinstall",
+    "callbackUrl=%2Fsetup%3Finstallation_id%3D123%26setup_action%3Dinstall",
     "post-install sign-in must return users to the setup handoff page",
   );
   assertIncludes(
     postInstallHtml,
-    "Authorize dashboard access for this GitHub user.",
+    "One sign-in finishes the handoff.",
     "post-install dashboard did not show sign-in as the next onboarding step",
   );
   assertNotIncludes(
@@ -174,7 +186,7 @@ try {
   assertBefore(
     postInstallHtml,
     "GitHub App installed",
-    "Finish ReviewRouter setup.",
+    "Finish repository setup.",
     "post-install notice should appear before onboarding hero",
   );
 
