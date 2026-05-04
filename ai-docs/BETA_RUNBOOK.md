@@ -217,6 +217,12 @@ The helper opens GitHub, submits the ReviewRouter manifest, receives the
 temporary manifest code on a localhost callback, converts it through GitHub's
 manifest conversion API, then saves a local `.env` profile and `.pem` private
 key under `.local-secrets/github-apps/`. It does not print generated secrets.
+After conversion it prints the App install URL, settings URL, and optional logo
+URL. The logo is a manual GitHub settings step:
+
+```text
+Logo URL: https://i.imgur.com/Yz9XIQM.png
+```
 
 Apply the generated profile to local development env without printing secrets:
 

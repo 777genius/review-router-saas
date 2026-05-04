@@ -23,6 +23,7 @@ const state = randomBytes(24).toString("base64url");
 const outputDir = resolve(
   String(args["output-dir"] ?? ".local-secrets/github-apps"),
 );
+const reviewRouterLogoUrl = "https://i.imgur.com/Yz9XIQM.png";
 const noOpen = Boolean(args["no-open"]);
 const dryRun = Boolean(args["dry-run"]);
 
@@ -232,9 +233,17 @@ function printSavedSummary(app, saved) {
   console.log(
     `App URL: ${app.html_url ?? `https://github.com/apps/${saved.slug}`}`,
   );
+  console.log(
+    `Install URL: https://github.com/apps/${saved.slug}/installations/new`,
+  );
+  console.log(`Settings URL: ${buildAppSettingsUrl(app, saved.slug)}`);
   console.log("\nSaved local files:");
   console.log(`Env profile: ${saved.envFile}`);
   console.log(`Private key: ${saved.pemFile}`);
+  console.log("\nOptional logo:");
+  console.log(
+    `Upload this image in GitHub App settings: ${reviewRouterLogoUrl}`,
+  );
   console.log("\nRender env source:");
   console.log(
     `REVIEW_ROUTER_HOSTED_ENV_FILE=${saved.envFile} pnpm hosted:check`,
@@ -295,6 +304,15 @@ function slugify(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function buildAppSettingsUrl(app, slug) {
+  const safeSlug = encodeURIComponent(slug);
+  const appOwner = String(app.owner?.login ?? owner ?? "").trim();
+  if (appOwner && owner) {
+    return `https://github.com/organizations/${encodeURIComponent(appOwner)}/settings/apps/${safeSlug}`;
+  }
+  return `https://github.com/settings/apps/${safeSlug}`;
 }
 
 function escapeHtml(value) {
