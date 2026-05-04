@@ -8,12 +8,12 @@ import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url"
 import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { getPrisma } from "../../src/server/prisma";
 import {
-  createSetupPullRequestAction,
   requestInstallationSyncAction,
 } from "../dashboard/actions";
 import { FormSubmitButton } from "../form-submit-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
+import { RepositoryPicker } from "./repository-picker";
 
 export const dynamic = "force-dynamic";
 
@@ -210,64 +210,13 @@ function SignedInSetup({
             page or open the dashboard.
           </p>
         ) : (
-          <div className="mt-5 grid gap-3">
-            {installation.repositories.map((repository) => (
-              <div
-                key={repository.id}
-                className="grid gap-3 rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
-              >
-                <div className="min-w-0">
-                  <p className="truncate font-medium text-cyan-50">
-                    {repository.fullName}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {repository.visibility} / {repository.defaultBranch} /{" "}
-                    {repository.setupStatus.replaceAll("_", " ")}
-                  </p>
-                  {repository.setupPullRequestUrl ? (
-                    <a
-                      className="mt-2 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                      href={repository.setupPullRequestUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open existing setup PR
-                    </a>
-                  ) : null}
-                </div>
-                <form action={createSetupPullRequestAction}>
-                  <input
-                    type="hidden"
-                    name="workspaceId"
-                    value={installation.workspace.id}
-                  />
-                  <SetupReturnFields
-                    installationId={installation.githubInstallationId}
-                    setupAction={setupAction}
-                  />
-                  <input
-                    type="hidden"
-                    name="repositoryId"
-                    value={repository.id}
-                  />
-                  <FormSubmitButton
-                    size="sm"
-                    disabled={
-                      !mutationsEnabled ||
-                      !repository.selected ||
-                      repository.archived
-                    }
-                    idleLabel={setupPrButtonLabel(repository.setupStatus)}
-                    pendingLabel={
-                      repository.setupStatus === "setup_pr_open"
-                        ? "Updating setup PR..."
-                        : "Creating setup PR..."
-                    }
-                  />
-                </form>
-              </div>
-            ))}
-          </div>
+          <RepositoryPicker
+            workspaceId={installation.workspace.id}
+            installationId={installation.githubInstallationId}
+            setupAction={setupAction}
+            mutationsEnabled={mutationsEnabled}
+            repositories={installation.repositories}
+          />
         )}
       </Card>
     </div>
@@ -353,12 +302,6 @@ function SetupReturnFields({
       />
     </>
   );
-}
-
-function setupPrButtonLabel(setupStatus: string): string {
-  return setupStatus === "setup_pr_open"
-    ? "Update setup PR"
-    : "Create setup PR";
 }
 
 function buildSetupResultNotice(
@@ -486,7 +429,6 @@ async function loadSetupInstallation(input: {
       },
       repositories: {
         orderBy: [{ selected: "desc" }, { fullName: "asc" }],
-        take: 6,
         select: {
           id: true,
           fullName: true,

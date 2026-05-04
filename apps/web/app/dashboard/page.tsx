@@ -265,6 +265,8 @@ type DashboardPageProps = {
   >;
 };
 
+type DashboardSection = "repositories" | "setup" | "policy" | "diagnostics";
+
 export default async function DashboardPage({
   searchParams,
 }: DashboardPageProps): Promise<React.ReactElement> {
@@ -294,6 +296,7 @@ export default async function DashboardPage({
   const workspaces = await loadDashboardData(workspaceScope, supportAudit);
   const appInstallUrl = getGitHubAppInstallUrl();
   const dashboardSignInHref = buildDashboardSignInHref(params);
+  const selectedSection = resolveDashboardSection(params);
 
   if (workspaces.length === 0) {
     return (
@@ -352,19 +355,14 @@ export default async function DashboardPage({
         </div>
       </section>
 
-      <DashboardNotice
-        params={params}
-        mutationStatus={mutationStatus}
-        appSetupNotice={appSetupNotice}
-        signInHref={dashboardSignInHref}
-      />
-
       <section className="grid gap-5">
         {workspaces.map((workspace) => (
           <WorkspaceCard
             key={workspace.workspace.id}
             data={workspace}
             mutationsEnabled={mutationStatus.enabled}
+            selectedSection={selectedSection}
+            params={params}
           />
         ))}
       </section>
@@ -507,12 +505,101 @@ function OnboardingDashboard({
   );
 }
 
+function DashboardSectionNav({
+  workspace,
+  repositoryCount,
+  entitlement,
+  workspaceHealth,
+  selectedSection,
+}: {
+  readonly workspace: DashboardWorkspace;
+  readonly repositoryCount: number;
+  readonly entitlement: DashboardWorkspaceData["entitlement"];
+  readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
+  readonly selectedSection: DashboardSection;
+}): React.ReactElement {
+  const items: readonly {
+    readonly section: DashboardSection;
+    readonly label: string;
+    readonly description: string;
+  }[] = [
+    {
+      section: "repositories",
+      label: "Repositories",
+      description: "Setup PRs and health",
+    },
+    {
+      section: "setup",
+      label: "Setup",
+      description: "App sync and secrets",
+    },
+    {
+      section: "policy",
+      label: "Policy",
+      description: "Provider, model, gates",
+    },
+    {
+      section: "diagnostics",
+      label: "Diagnostics",
+      description: "Queue, audit, support",
+    },
+  ];
+
+  return (
+    <aside className="border-b border-cyan-200/10 bg-slate-950/45 p-5 lg:border-b-0 lg:border-r lg:p-6">
+      <div className="lg:sticky lg:top-24">
+        <p className="truncate text-lg font-semibold text-cyan-50">
+          {workspace.name}
+        </p>
+        <p className="mt-1 truncate text-xs text-slate-500">
+          {workspace.slug}
+        </p>
+        <div className="mt-4 grid gap-2">
+          <Badge tone="success">{repositoryCount} repos</Badge>
+          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
+          <Badge tone="accent">
+            {entitlement.plan.replace("_", " ")} / {entitlement.status}
+          </Badge>
+        </div>
+        <nav className="mt-6 grid gap-2" aria-label="Dashboard sections">
+          {items.map((item) => {
+            const active = selectedSection === item.section;
+            return (
+              <a
+                key={item.section}
+                href={dashboardSectionHref(item.section)}
+                className={[
+                  "rounded-2xl border p-3 transition",
+                  active
+                    ? "border-cyan-300/35 bg-cyan-300/10 text-cyan-50 shadow-[0_0_34px_-24px_rgba(0,240,255,0.9)]"
+                    : "border-cyan-200/10 bg-white/[0.03] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/[0.06]",
+                ].join(" ")}
+              >
+                <span className="block font-mono text-xs font-semibold uppercase tracking-[0.16em]">
+                  {item.label}
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-slate-400">
+                  {item.description}
+                </span>
+              </a>
+            );
+          })}
+        </nav>
+      </div>
+    </aside>
+  );
+}
+
 function WorkspaceCard({
   data,
   mutationsEnabled,
+  selectedSection,
+  params,
 }: {
   readonly data: DashboardWorkspaceData;
   readonly mutationsEnabled: boolean;
+  readonly selectedSection: DashboardSection;
+  readonly params: Record<string, string | string[] | undefined>;
 }): React.ReactElement {
   const {
     workspace,
@@ -559,7 +646,16 @@ function WorkspaceCard({
   );
 
   return (
-    <Card className="space-y-5">
+    <Card className="overflow-hidden p-0">
+      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <DashboardSectionNav
+          workspace={workspace}
+          repositoryCount={repositoryCount}
+          entitlement={entitlement}
+          workspaceHealth={workspaceHealth}
+          selectedSection={selectedSection}
+        />
+        <div className="space-y-5 p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-2xl font-semibold text-cyan-50">
@@ -576,6 +672,10 @@ function WorkspaceCard({
         </div>
       </div>
 
+      <WorkspaceActionNotice params={params} />
+
+      {selectedSection === "repositories" ? (
+        <>
       <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
         <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
           <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
@@ -603,8 +703,15 @@ function WorkspaceCard({
         provisioning={provisioning}
         mutationsEnabled={mutationsEnabled}
       />
+        </>
+      ) : null}
 
-      <details className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+      {selectedSection === "setup" ? (
+        <>
+      <details
+        open
+        className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
+      >
         <summary className="cursor-pointer list-none">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -657,7 +764,10 @@ function WorkspaceCard({
       </details>
 
       {providerGuidance ? (
-        <details className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4">
+        <details
+          open
+          className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4"
+        >
           <summary className="cursor-pointer list-none">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -706,8 +816,14 @@ function WorkspaceCard({
           </div>
         </details>
       ) : null}
+        </>
+      ) : null}
 
-      <details className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+      {selectedSection === "policy" ? (
+      <details
+        open
+        className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
+      >
         <summary className="cursor-pointer list-none">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -828,8 +944,10 @@ function WorkspaceCard({
           </div>
         ) : null}
       </details>
+      ) : null}
 
-      {repositories.some((repository) => repository.visibility === "public") ? (
+      {selectedSection === "repositories" &&
+      repositories.some((repository) => repository.visibility === "public") ? (
         <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
           Public repository warning: fork pull requests are skipped by default
           for secret-backed providers. Maintainers can add a trusted rerun flow
@@ -837,6 +955,8 @@ function WorkspaceCard({
         </div>
       ) : null}
 
+      {selectedSection === "diagnostics" ? (
+        <>
       <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Badge tone={workspaceHealth.tone}>Readiness</Badge>
@@ -981,6 +1101,10 @@ function WorkspaceCard({
           </ul>
         )}
       </div>
+        </>
+      ) : null}
+        </div>
+      </div>
     </Card>
   );
 }
@@ -1056,10 +1180,17 @@ function RepositoryTable({
                     <p className="font-medium text-cyan-50">
                       {repository.fullName}
                     </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {repository.visibility} / {repository.defaultBranch}
-                      {repository.archived ? " / archived" : ""}
-                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <RepositoryVisibilityBadge
+                        visibility={repository.visibility}
+                      />
+                      <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
+                        {repository.defaultBranch}
+                      </span>
+                      {repository.archived ? (
+                        <Badge tone="warning">Archived</Badge>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="px-4 py-4 align-top">
                     <span className="block text-sm">
@@ -1200,6 +1331,78 @@ function countLabel(value: number | null, label: string): string | null {
     return null;
   }
   return `${value} ${label}`;
+}
+
+function WorkspaceActionNotice({
+  params,
+}: {
+  readonly params: Record<string, string | string[] | undefined>;
+}): React.ReactElement | null {
+  const notice = readParam(params.notice);
+  const error = readParam(params.error);
+  if (!notice && !error) return null;
+
+  const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
+  const tone = error ? "danger" : "success";
+  const title = error ? "Action failed" : "Done";
+  const body = error
+    ? dashboardErrorText(error)
+    : dashboardNoticeText(notice, readParam(params.repository));
+
+  return (
+    <div
+      className={[
+        "rounded-2xl border p-4 text-sm leading-6",
+        error
+          ? "border-red-300/25 bg-red-300/10 text-red-50"
+          : "border-lime-300/25 bg-lime-300/10 text-lime-50",
+      ].join(" ")}
+    >
+      <div className="grid gap-3 md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center">
+        <Badge tone={tone}>{title}</Badge>
+        <p>{body}</p>
+        {pullRequestUrl ? (
+          <LinkButton
+            href={pullRequestUrl}
+            target="_blank"
+            rel="noreferrer"
+            size="sm"
+          >
+            Open pull request
+          </LinkButton>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function RepositoryVisibilityBadge({
+  visibility,
+}: {
+  readonly visibility: string;
+}): React.ReactElement {
+  const normalized = visibility.toLowerCase();
+  const icon =
+    normalized === "private" ? "🔒" : normalized === "internal" ? "🏢" : "◎";
+  const label =
+    normalized === "private"
+      ? "Private"
+      : normalized === "internal"
+        ? "Internal"
+        : "Public";
+  const tone =
+    normalized === "private"
+      ? "warning"
+      : normalized === "internal"
+        ? "accent"
+        : "success";
+
+  return (
+    <Badge tone={tone} className="gap-1.5 px-2.5 py-1 text-[0.62rem]">
+      <span aria-hidden="true">{icon}</span>
+      <span>{label}</span>
+    </Badge>
+  );
 }
 
 type DashboardFormAction = (formData: FormData) => void | Promise<void>;
@@ -1516,6 +1719,45 @@ function readParam(value: string | string[] | undefined): string {
     return value[0] ?? "";
   }
   return value ?? "";
+}
+
+function resolveDashboardSection(
+  params: Record<string, string | string[] | undefined>,
+): DashboardSection {
+  const explicit = readParam(params.section);
+  if (isDashboardSection(explicit)) return explicit;
+
+  const notice = readParam(params.notice);
+  if (
+    [
+      "setup_pr_ready",
+      "workflow_already_current",
+      "sync_requested",
+      "sync_already_requested",
+    ].includes(notice)
+  ) {
+    return "setup";
+  }
+  if (
+    [
+      "review_config_saved",
+      "repository_review_config_saved",
+      "repository_review_config_cleared",
+    ].includes(notice)
+  ) {
+    return "policy";
+  }
+  if (notice.startsWith("outbox_retry_")) return "diagnostics";
+  if (readParam(params.error)) return "setup";
+  return "repositories";
+}
+
+function isDashboardSection(value: string): value is DashboardSection {
+  return ["repositories", "setup", "policy", "diagnostics"].includes(value);
+}
+
+function dashboardSectionHref(section: DashboardSection): string {
+  return `/dashboard?section=${section}`;
 }
 
 function buildDashboardSignInHref(
