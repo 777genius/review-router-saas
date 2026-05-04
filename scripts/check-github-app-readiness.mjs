@@ -30,6 +30,7 @@ const warnings = [];
 const appId = requireValue("GITHUB_APP_ID");
 const appSlug = requireValue("GITHUB_APP_SLUG");
 const privateKey = readPrivateKey();
+let diagnostics = null;
 
 if (errors.length === 0) {
   try {
@@ -42,6 +43,7 @@ if (errors.length === 0) {
 if (errors.length > 0) {
   console.error("ReviewRouter GitHub App readiness failed:");
   for (const error of errors) console.error(`- ${error}`);
+  printFixHints();
   if (warnings.length > 0) {
     console.error("Warnings:");
     for (const warning of warnings) console.error(`- ${warning}`);
@@ -89,35 +91,35 @@ async function checkGitHubApp() {
     }
   }
 
-  console.log(
-    JSON.stringify(
-      {
-        ok: errors.length === 0,
-        app: {
-          id: actualId,
-          slug: actualSlug || appSlug,
-          owner: appData.owner?.login ?? null,
-          permissions: pickPermissions(appData.permissions ?? {}),
-          events: appData.events ?? [],
-        },
-        installations: installations.map((installation) => ({
-          id: installation.id,
-          account: installation.account?.login ?? null,
-          accountType: installation.account?.type ?? null,
-          repositorySelection: installation.repository_selection,
-        })),
-        expectedRepo: expectedRepo
-          ? {
-              fullName: expectedRepo,
-              installationId: expectedRepoInstallation?.id ?? null,
-            }
-          : null,
-        warnings,
-      },
-      null,
-      2,
-    ),
-  );
+  diagnostics = {
+    ok: errors.length === 0,
+    app: {
+      id: actualId,
+      slug: actualSlug || appSlug,
+      owner: appData.owner?.login ?? null,
+      ownerType: appData.owner?.type ?? null,
+      permissions: pickPermissions(appData.permissions ?? {}),
+      events: appData.events ?? [],
+      settingsUrl: buildAppSettingsUrl(appData.owner, actualSlug || appSlug),
+    },
+    installations: installations.map((installation) => ({
+      id: installation.id,
+      account: installation.account?.login ?? null,
+      accountType: installation.account?.type ?? null,
+      repositorySelection: installation.repository_selection,
+    })),
+    expectedRepo: expectedRepo
+      ? {
+          fullName: expectedRepo,
+          installationId: expectedRepoInstallation?.id ?? null,
+        }
+      : null,
+    warnings,
+  };
+
+  if (errors.length === 0) {
+    console.log(JSON.stringify(diagnostics, null, 2));
+  }
 }
 
 function assertPermissions(actualPermissions) {
@@ -152,6 +154,26 @@ function assertWebhookEvents(actualEvents) {
   }
 }
 
+function printFixHints() {
+  const missingEventsError = errors.some((error) =>
+    error.startsWith("GitHub App webhook events are missing:"),
+  );
+  if (!missingEventsError) {
+    return;
+  }
+
+  const settingsUrl = diagnostics?.app?.settingsUrl || settingsUrlFromSlug();
+  console.error("How to fix:");
+  console.error(`- Open GitHub App settings: ${settingsUrl}`);
+  console.error("- Go to Webhook.");
+  console.error(
+    "- Enable these events: Installation, Installation repositories.",
+  );
+  console.error(
+    "- Re-run: REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted pnpm github-app:check",
+  );
+}
+
 function permissionSatisfies(actualAccess, requiredAccess) {
   if (requiredAccess === "read") {
     return actualAccess === "read" || actualAccess === "write";
@@ -166,6 +188,19 @@ function pickPermissions(permissions) {
       permissions[permission] ?? null,
     ]),
   );
+}
+
+function buildAppSettingsUrl(owner, slug) {
+  const safeSlug = encodeURIComponent(slug);
+  if (owner?.type === "Organization" && owner.login) {
+    return `https://github.com/organizations/${encodeURIComponent(owner.login)}/settings/apps/${safeSlug}`;
+  }
+  return `https://github.com/settings/apps/${safeSlug}`;
+}
+
+function settingsUrlFromSlug() {
+  const slug = String(appSlug || "<github-app-slug>").trim();
+  return `https://github.com/settings/apps/${encodeURIComponent(slug)}`;
 }
 
 async function listInstallations(app) {
