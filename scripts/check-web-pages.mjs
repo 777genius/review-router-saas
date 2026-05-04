@@ -27,7 +27,7 @@ const pages = [
     "/",
     ["Review routing for AI pull request checks", "View API demo", apiDemoUrl],
   ],
-  ["/dashboard", ["Dashboard", "Start with one selected repository"]],
+  ["/dashboard", ["GitHub setup", "Install GitHub App"]],
   [
     "/getting-started",
     [

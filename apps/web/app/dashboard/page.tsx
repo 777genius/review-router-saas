@@ -281,6 +281,22 @@ export default async function DashboardPage({
   const params = searchParams ? await searchParams : {};
   const appInstallUrl = getGitHubAppInstallUrl();
 
+  if (workspaces.length === 0) {
+    return (
+      <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 md:py-16">
+        <OnboardingDashboard
+          appInstallUrl={appInstallUrl}
+          signedIn={mutationStatus.signedIn}
+        />
+        <DashboardNotice
+          params={params}
+          mutationStatus={mutationStatus}
+          showReadOnlyHint={false}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-10 px-4 py-12 sm:px-6 md:py-16">
       <section className="grid min-w-0 gap-10 lg:min-h-[58vh] lg:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.75fr)] lg:items-center">
@@ -349,22 +365,121 @@ export default async function DashboardPage({
       <DashboardNotice params={params} mutationStatus={mutationStatus} />
 
       <section className="grid gap-5">
-        {workspaces.length === 0 ? (
-          <EmptyDashboardState
-            appInstallUrl={appInstallUrl}
-            signedIn={mutationStatus.signedIn}
+        {workspaces.map((workspace) => (
+          <WorkspaceCard
+            key={workspace.workspace.id}
+            data={workspace}
+            mutationsEnabled={mutationStatus.enabled}
           />
-        ) : (
-          workspaces.map((workspace) => (
-            <WorkspaceCard
-              key={workspace.workspace.id}
-              data={workspace}
-              mutationsEnabled={mutationStatus.enabled}
-            />
-          ))
-        )}
+        ))}
       </section>
     </main>
+  );
+}
+
+function OnboardingDashboard({
+  appInstallUrl,
+  signedIn,
+}: {
+  readonly appInstallUrl: string | null;
+  readonly signedIn: boolean;
+}): React.ReactElement {
+  return (
+    <section className="grid min-h-[72vh] items-center">
+      <div className="relative">
+        <div className="absolute -inset-6 rounded-[2.5rem] bg-[radial-gradient(circle_at_20%_20%,rgba(0,240,255,0.18),transparent_34%),radial-gradient(circle_at_80%_30%,rgba(255,0,255,0.16),transparent_30%),radial-gradient(circle_at_50%_90%,rgba(57,255,20,0.08),transparent_32%)] blur-2xl" />
+        <Card className="relative overflow-hidden rounded-[2rem] border-cyan-300/[0.16] bg-[#0a0a0f]/90 p-6 shadow-[0_30px_90px_rgba(0,0,0,0.55),0_0_80px_-40px_rgba(0,240,255,0.85)] sm:p-10">
+          <div className="absolute right-0 top-0 h-56 w-56 rounded-full bg-cyan-300/10 blur-3xl" />
+          <div className="relative mx-auto grid max-w-3xl justify-items-center gap-8 text-center">
+            <div className="grid justify-items-center gap-4">
+              <span className="grid h-16 w-16 place-items-center rounded-2xl border border-white/[0.08] bg-white/[0.06] font-mono text-xl font-black text-cyan-100 shadow-[0_0_36px_rgba(0,240,255,0.18)]">
+                RR
+              </span>
+              <Badge tone="accent">GitHub setup</Badge>
+            </div>
+
+            <div className="space-y-5">
+              <h1 className="bg-[image:var(--rr-gradient-brand)] bg-clip-text text-5xl font-extrabold leading-[1.02] tracking-[-0.05em] text-transparent md:text-7xl">
+                Connect ReviewRouter.
+              </h1>
+              <p className="mx-auto max-w-2xl text-lg leading-8 text-[#a0a8c0]">
+                Install the GitHub App on selected repositories. ReviewRouter
+                will sync metadata, create the setup PR, and keep provider
+                secrets inside GitHub Actions.
+              </p>
+            </div>
+
+            <div className="grid w-full max-w-xl gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+              {appInstallUrl ? (
+                <LinkButton
+                  href={appInstallUrl}
+                  size="lg"
+                  className="h-16 rounded-2xl px-8 text-lg font-semibold"
+                >
+                  Install GitHub App
+                </LinkButton>
+              ) : (
+                <LinkButton
+                  href="/api/auth/signin"
+                  size="lg"
+                  className="h-16 rounded-2xl px-8 text-lg font-semibold"
+                >
+                  Sign in with GitHub
+                </LinkButton>
+              )}
+              {!signedIn ? (
+                <LinkButton
+                  href="/api/auth/signin"
+                  variant="outline"
+                  size="lg"
+                  className="h-16 rounded-2xl px-8"
+                >
+                  Sign in
+                </LinkButton>
+              ) : (
+                <LinkButton
+                  href="/getting-started"
+                  variant="outline"
+                  size="lg"
+                  className="h-16 rounded-2xl px-8"
+                >
+                  Setup guide
+                </LinkButton>
+              )}
+            </div>
+
+            <div className="grid w-full gap-3 text-left sm:grid-cols-3">
+              {[
+                ["1", "Install App", "Choose only the repositories to review."],
+                ["2", "Create setup PR", "ReviewRouter opens a workflow PR."],
+                ["3", "Seed provider", "Codex or API keys stay in GitHub."],
+              ].map(([step, title, body]) => (
+                <div
+                  key={step}
+                  className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4"
+                >
+                  <span className="font-mono text-xs font-bold text-cyan-100">
+                    STEP {step}
+                  </span>
+                  <h2 className="mt-3 text-base font-bold text-[#e0e6ff]">
+                    {title}
+                  </h2>
+                  <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
+                    {body}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap justify-center gap-4 font-mono text-xs text-[#8892b0]">
+              <span className="text-cyan-100">No code custody</span>
+              <span>Runs in customer CI</span>
+              <span>Selected repositories only</span>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </section>
   );
 }
 
@@ -460,146 +575,6 @@ function DashboardHeroDemo(): React.ReactElement {
         </div>
       </Card>
     </div>
-  );
-}
-
-function EmptyDashboardState({
-  appInstallUrl,
-  signedIn,
-}: {
-  readonly appInstallUrl: string | null;
-  readonly signedIn: boolean;
-}): React.ReactElement {
-  return (
-    <section className="grid min-w-0 max-w-full gap-5 md:grid-cols-2 lg:grid-cols-3">
-      <Card className="group min-w-0 max-w-full space-y-8 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-cyan-300/50 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,240,255,0.55),0_0_50px_-20px_rgba(0,240,255,0.75)] sm:p-7 lg:row-span-2">
-        <div className="space-y-4">
-          <Badge tone="accent">Get started</Badge>
-          <h2 className="break-words text-3xl font-bold leading-tight tracking-[-0.02em] text-[#e0e6ff]">
-            Start with one selected repository.
-          </h2>
-          <p className="max-w-md text-base leading-7 text-[#8892b0]">
-            Guided setup, not a generic empty state. Connect one repository,
-            seed provider credentials into GitHub Actions, then let reviews run
-            in customer CI.
-          </p>
-        </div>
-        <ol className="grid gap-4">
-          {[
-            {
-              accent: "bg-cyan-300",
-              description: "Authorize the dashboard to map your installations.",
-              title: "Sign in with GitHub",
-            },
-            {
-              accent: "bg-fuchsia-400",
-              description:
-                "Install ReviewRouter only on repositories you select.",
-              title: "Install on selected repos",
-            },
-            {
-              accent: "bg-lime-300",
-              description: "Merge the generated workflow setup pull request.",
-              title: "Merge setup PR",
-            },
-          ].map((step) => (
-            <li
-              key={step.title}
-              className="grid min-w-0 gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.03] p-5 sm:grid-cols-[1.5rem_minmax(0,1fr)]"
-            >
-              <span
-                className={`${step.accent} mt-1 h-6 w-6 rounded-full shadow-[0_0_28px_rgba(0,240,255,0.24)]`}
-              />
-              <span className="min-w-0 space-y-1">
-                <span className="block break-words text-lg font-bold text-[#e0e6ff]">
-                  {step.title}
-                </span>
-                <span className="block text-sm leading-6 text-[#94a3b8]">
-                  {step.description}
-                </span>
-              </span>
-            </li>
-          ))}
-        </ol>
-      </Card>
-
-      <Card className="group min-w-0 max-w-full space-y-5 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-cyan-300/50 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,240,255,0.55),0_0_50px_-20px_rgba(0,240,255,0.75)] sm:p-7">
-        <div className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-300/10 text-cyan-100 transition duration-300 group-hover:scale-110 group-hover:bg-cyan-300/20">
-          <span className="h-4 w-4 rounded-full border border-cyan-300" />
-        </div>
-        <h2 className="break-words text-xl font-bold leading-snug text-[#e2e8f0]">
-          Credentials never enter SaaS.
-        </h2>
-        <p className="text-sm leading-6 text-[#94a3b8]">
-          Provider setup is seeded into GitHub Actions secrets. ReviewRouter
-          stores install metadata, configuration, and health state only.
-        </p>
-      </Card>
-
-      <Card className="group flex min-w-0 max-w-full flex-col justify-between gap-6 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-fuchsia-400/50 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,0,255,0.5),0_0_50px_-20px_rgba(255,0,255,0.75)] sm:p-7">
-        <div className="space-y-5">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-fuchsia-400/10 text-fuchsia-200 transition duration-300 group-hover:scale-110 group-hover:bg-fuchsia-400/20">
-            <span className="h-4 w-4 rounded border border-fuchsia-300" />
-          </div>
-          <h2 className="break-words text-xl font-bold leading-snug text-[#e2e8f0]">
-            Reviews run in customer CI.
-          </h2>
-          <p className="text-sm leading-6 text-[#94a3b8]">
-            GitHub Actions fetches config through OIDC and runs provider
-            commands inside the repository workflow.
-          </p>
-        </div>
-        <span className="inline-flex w-fit rounded-full border border-lime-300/20 bg-lime-300/10 px-4 py-2 font-mono text-[0.65rem] font-bold uppercase tracking-[0.16em] text-lime-100">
-          Read only
-        </span>
-      </Card>
-
-      <Card className="group grid min-w-0 max-w-full gap-6 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-lime-300/40 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(57,255,20,0.35),0_0_50px_-20px_rgba(57,255,20,0.65)] sm:p-7 md:grid-cols-[minmax(0,1fr)_auto] md:items-center lg:col-span-2">
-        <div className="min-w-0 space-y-3">
-          <Badge tone="success">Repository surface</Badge>
-          <h2 className="break-words text-3xl font-bold tracking-[-0.02em] text-[#e2e8f0]">
-            No workspace yet
-          </h2>
-          <p className="max-w-3xl text-sm leading-6 text-[#94a3b8]">
-            Once connected, this area becomes a repository table with provider,
-            model, effort, workflow health, setup PR state, and action reports.
-          </p>
-        </div>
-        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap md:justify-end">
-          {!signedIn ? (
-            <LinkButton
-              href="/api/auth/signin"
-              size="sm"
-              className="w-full sm:w-auto"
-            >
-              Sign in with GitHub
-            </LinkButton>
-          ) : null}
-          {appInstallUrl ? (
-            <LinkButton
-              href={appInstallUrl}
-              variant="soft"
-              size="sm"
-              className="w-full sm:w-auto"
-            >
-              Install GitHub App
-            </LinkButton>
-          ) : (
-            <span className="max-w-xs text-xs leading-5 text-slate-400">
-              Set GITHUB_APP_SLUG to show the local App install link.
-            </span>
-          )}
-          <LinkButton
-            href="/getting-started"
-            variant="outline"
-            size="sm"
-            className="w-full sm:w-auto"
-          >
-            Setup guide
-          </LinkButton>
-        </div>
-      </Card>
-    </section>
   );
 }
 
@@ -1368,11 +1343,13 @@ function providerSetupIntro(provider: ProviderSecretKind): React.ReactNode {
 function DashboardNotice({
   params,
   mutationStatus,
+  showReadOnlyHint = true,
 }: {
   readonly params: Record<string, string | string[] | undefined>;
   readonly mutationStatus: Awaited<
     ReturnType<typeof getDashboardMutationStatus>
   >;
+  readonly showReadOnlyHint?: boolean;
 }): React.ReactElement | null {
   const notice = readParam(params.notice);
   const error = readParam(params.error);
@@ -1414,7 +1391,7 @@ function DashboardNotice({
       </Card>
     );
   }
-  if (!mutationStatus.enabled) {
+  if (!mutationStatus.enabled && showReadOnlyHint) {
     return (
       <Card className="rounded-[2rem] border-amber-300/25 bg-amber-300/10 p-6 shadow-[0_18px_58px_rgba(251,191,36,0.08)] sm:p-7">
         <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
