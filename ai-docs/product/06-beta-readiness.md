@@ -28,6 +28,19 @@ smoke passes after the latest action/runtime provisioning change.
 Latest full-review validation:
 
 ```text
+Date: 2026-05-04 09:28 EEST
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777876068729
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777876068729/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777876068729/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777876068729/actions/runs/25304464905
+Result: setup PR merged, workflow detected on main, latest `777genius/review-router@main` action bundle ran from static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5 with title "Login check ignores the supplied email".
+Note: action health-report POST is implemented and unit-tested, but true GitHub-hosted OIDC/health-report E2E requires a public HTTPS ReviewRouter API instead of local http://localhost:4000.
+```
+
+Previous full-review validation:
+
+```text
 Date: 2026-05-04 08:58 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 Repo: 777genius/rr-saas-fresh-e2e-1777874235486
