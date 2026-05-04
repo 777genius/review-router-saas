@@ -19,7 +19,7 @@
 ## Security
 
 1. Should onboarding recommend selected repositories by default even though the App can support all repositories?
-2. What is the minimal safe reporting payload from action to SaaS?
+2. Which future action telemetry fields can be added without weakening the no-code/no-diff boundary?
 3. How should support debug access be controlled before paid enterprise roles exist?
 4. How should trusted rerun for fork PRs work without weakening secret safety?
 
