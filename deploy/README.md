@@ -87,6 +87,10 @@ Setup URL:     https://<web-host>/dashboard
 Webhook URL:   https://<api-host>/webhooks/github
 ```
 
+Set `REVIEW_ROUTER_PUBLIC_API_URL` to the same public HTTPS API host. Generated
+customer workflows use this URL for OIDC/config/health-report calls. Production
+workflow provisioning rejects localhost and non-HTTPS URLs.
+
 Enable setup redirect after installation updates so users return to the
 dashboard when repositories are added or removed.
 
