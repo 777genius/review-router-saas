@@ -3,11 +3,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { loadEnvFile } from "./lib/env-file.mjs";
 
 const envFile = process.env.REVIEW_ROUTER_HOSTED_ENV_FILE || ".env.production";
-const env = existsSync(envFile)
-  ? loadEnvFile(envFile, process.env)
-  : process.env;
+const envFileExists = existsSync(envFile);
+const env = envFileExists ? loadEnvFile(envFile, process.env) : process.env;
 const errors = [];
 const warnings = [];
+
+if (!envFileExists) {
+  warnings.push(
+    `Hosted env file ${envFile} was not found; checking process.env only. Set REVIEW_ROUTER_HOSTED_ENV_FILE or create ${envFile} from deploy/env.production.example.`,
+  );
+}
 
 requireEqual("NODE_ENV", "production");
 requirePostgresUrl("DATABASE_URL", { allowLocalhost: false });
