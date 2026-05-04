@@ -136,6 +136,15 @@ Result: passed.
 Coverage: local readiness, 169 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer command assertions and installer redirect check, whitespace, shell syntax, hosted readiness smoke.
 ```
 
+Latest GitHub App credential smoke:
+
+```text
+Date: 2026-05-04 10:49 EEST
+Command: REVIEW_ROUTER_GITHUB_APP_EXPECT_REPO=777genius/rr-saas-fresh-e2e-1777880754438 pnpm github-app:check
+Result: passed.
+Coverage: local GitHub App private key authenticated as app id 3586778 / slug reviewrouter-local-777genius, installation 129154876 was visible, and the App installation token could read the latest disposable E2E repository.
+```
+
 Latest hosted readiness gate smoke:
 
 ```text

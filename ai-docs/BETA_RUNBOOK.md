@@ -194,6 +194,22 @@ REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 
 Use after action runtime, generated workflow, provider setup, review config, or review output behavior changes.
 
+### GitHub App Credential Smoke
+
+```bash
+pnpm github-app:check
+```
+
+Use after changing local/staging GitHub App credentials. It authenticates with
+the App private key, compares `GITHUB_APP_ID` and `GITHUB_APP_SLUG` with the
+actual App, and lists installations without printing secrets.
+
+To prove the App can read one repository:
+
+```bash
+REVIEW_ROUTER_GITHUB_APP_EXPECT_REPO=owner/repo pnpm github-app:check
+```
+
 ### Action Runtime Gate
 
 Run in `/Users/belief/dev/projects/review-router-action`:
