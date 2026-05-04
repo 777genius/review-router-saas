@@ -282,33 +282,68 @@ export default async function DashboardPage({
   const appInstallUrl = getGitHubAppInstallUrl();
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-4 py-10 sm:px-6">
-      <section className="min-w-0 space-y-3">
-        <Badge tone="accent">Dashboard</Badge>
-        <h1 className="break-words text-4xl font-semibold tracking-tight text-cyan-50 md:text-6xl">
-          Connected repositories
-        </h1>
-        <p className="max-w-3xl text-base leading-7 text-slate-300">
-          Repository sync is App-driven. The dashboard reads normalized
-          installation and repository metadata, not code, diffs, PR bodies, or
-          commit messages.
-        </p>
-        <div className="flex flex-wrap gap-3 pt-2">
-          <LinkButton href="/getting-started" variant="outline" size="sm">
-            Setup guide
-          </LinkButton>
-          <LinkButton href="/security" variant="soft" tone="success" size="sm">
-            Security model
-          </LinkButton>
-          <LinkButton href="/status" variant="ghost" size="sm">
-            Status
-          </LinkButton>
-          {appInstallUrl ? (
-            <LinkButton href={appInstallUrl} size="sm">
-              Install GitHub App
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-10 px-4 py-12 sm:px-6 md:py-16">
+      <section className="grid min-w-0 gap-10 lg:min-h-[58vh] lg:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.75fr)] lg:items-center">
+        <div className="min-w-0 space-y-8">
+          <div className="space-y-5">
+            <div className="flex items-center gap-4">
+              <span className="grid h-14 w-14 place-items-center rounded-2xl border border-white/[0.06] bg-white/[0.05] font-mono text-lg font-black text-cyan-100 shadow-[0_0_32px_rgba(0,240,255,0.12)]">
+                RR
+              </span>
+              <Badge tone="accent">Dashboard</Badge>
+            </div>
+            <h1 className="max-w-3xl break-words bg-[image:var(--rr-gradient-brand)] bg-clip-text text-5xl font-extrabold leading-[1.05] tracking-[-0.04em] text-transparent md:text-7xl">
+              Connected repositories
+            </h1>
+            <p className="max-w-2xl text-lg leading-8 text-[#8892b0]">
+              Repository sync is App-driven. The dashboard reads normalized
+              installation and repository metadata, not code, diffs, PR bodies,
+              or commit messages.
+            </p>
+          </div>
+
+          <div className="flex max-w-2xl flex-wrap gap-3">
+            {appInstallUrl ? (
+              <LinkButton href={appInstallUrl} size="lg" className="min-w-44">
+                Install GitHub App
+              </LinkButton>
+            ) : null}
+            <LinkButton
+              href="/getting-started"
+              variant="outline"
+              size="md"
+              className="min-w-32"
+            >
+              Setup guide
             </LinkButton>
-          ) : null}
+            <LinkButton
+              href="/security"
+              variant="outline"
+              size="md"
+              className="min-w-36"
+            >
+              Security model
+            </LinkButton>
+            <LinkButton
+              href="/status"
+              variant="outline"
+              size="md"
+              className="min-w-24"
+            >
+              Status
+            </LinkButton>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 font-mono text-xs text-[#8892b0]">
+            <span className="text-cyan-100">CI runtime</span>
+            <span className="h-4 w-px bg-cyan-300/20" />
+            <span>No code custody</span>
+            <span className="h-4 w-px bg-cyan-300/20" />
+            <span>Metadata control plane</span>
+          </div>
         </div>
+
+        <DashboardHeroDemo />
       </section>
 
       <DashboardNotice params={params} mutationStatus={mutationStatus} />
@@ -333,6 +368,101 @@ export default async function DashboardPage({
   );
 }
 
+function DashboardHeroDemo(): React.ReactElement {
+  const agents = [
+    {
+      name: "Codex",
+      accent: "border-cyan-300 text-cyan-100",
+      dot: "bg-cyan-300",
+    },
+    {
+      name: "OpenRouter",
+      accent: "border-fuchsia-400 text-fuchsia-200",
+      dot: "bg-fuchsia-400",
+    },
+    {
+      name: "Policy",
+      accent: "border-lime-300 text-lime-100",
+      dot: "bg-lime-300",
+    },
+  ] as const;
+  const lanes = [
+    { label: "Diff", color: "text-slate-400", cards: ["PR files"] },
+    { label: "Review", color: "text-cyan-100", cards: ["Agent context"] },
+    { label: "Gate", color: "text-amber-100", cards: ["Severity policy"] },
+    { label: "Done", color: "text-lime-100", cards: ["Inline comments"] },
+  ] as const;
+
+  return (
+    <div className="relative">
+      <div className="absolute -inset-1 rounded-[1.4rem] bg-[linear-gradient(135deg,rgba(0,240,255,0.2),rgba(255,0,255,0.18),rgba(57,255,20,0.08))] opacity-50 blur-2xl" />
+      <Card className="relative z-10 min-h-[330px] rounded-[1rem] border-cyan-300/[0.15] bg-[#0a0a0f]/95 p-4 shadow-[0_20px_60px_rgba(0,0,0,0.6),0_0_30px_rgba(0,240,255,0.05),inset_0_1px_0_rgba(0,240,255,0.1)]">
+        <div className="flex min-h-[300px] flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-mono text-sm font-bold tracking-[0.08em] text-[#e0e6ff]">
+              ReviewRouter
+            </span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-lime-300/20 bg-lime-300/10 px-3 py-1 font-mono text-[0.65rem] font-bold tracking-[0.12em] text-lime-100">
+              <span className="h-1.5 w-1.5 rounded-full bg-lime-300 shadow-[0_0_8px_rgba(57,255,20,0.8)]" />
+              LIVE
+            </span>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            {agents.map((agent) => (
+              <div
+                key={agent.name}
+                className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2"
+              >
+                <span
+                  className={`grid h-7 w-7 shrink-0 place-items-center rounded-full border ${agent.accent} bg-black/30`}
+                >
+                  <span className={`h-2 w-2 rounded-full ${agent.dot}`} />
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs font-semibold text-[#a0a8c0]">
+                  {agent.name}
+                </span>
+                <span className={`h-1.5 w-1.5 rounded-full ${agent.dot}`} />
+              </div>
+            ))}
+          </div>
+
+          <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
+            {lanes.map((lane) => (
+              <div key={lane.label} className="flex min-w-0 flex-col gap-2">
+                <span
+                  className={`font-mono text-[0.62rem] font-bold uppercase tracking-[0.1em] ${lane.color}`}
+                >
+                  {lane.label}
+                </span>
+                <div className="min-h-24 rounded-lg border border-white/[0.05] bg-white/[0.025] p-2">
+                  {lane.cards.map((card) => (
+                    <div
+                      key={card}
+                      className="rounded-md border-l-2 border-cyan-300 bg-white/[0.04] px-2 py-2 font-mono text-[0.68rem] leading-4 text-[#c8d6e5]"
+                    >
+                      {card}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-lg border border-cyan-300/[0.08] bg-black/30 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="h-3.5 w-3.5 rounded-full border border-lime-300/50 bg-lime-300/10" />
+              <span className="font-mono text-xs text-[#a0a8c0]">
+                Waiting for selected repository...
+              </span>
+            </div>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function EmptyDashboardState({
   appInstallUrl,
   signedIn,
@@ -341,14 +471,14 @@ function EmptyDashboardState({
   readonly signedIn: boolean;
 }): React.ReactElement {
   return (
-    <section className="grid min-w-0 max-w-full gap-6 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1fr)_minmax(0,1fr)]">
-      <Card className="min-w-0 max-w-full space-y-8 overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_22px_70px_rgba(0,0,0,0.42)] sm:p-6 lg:row-span-2">
-        <div className="space-y-3">
+    <section className="grid min-w-0 max-w-full gap-5 md:grid-cols-2 lg:grid-cols-3">
+      <Card className="group min-w-0 max-w-full space-y-8 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-cyan-300/50 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,240,255,0.55),0_0_50px_-20px_rgba(0,240,255,0.75)] sm:p-7 lg:row-span-2">
+        <div className="space-y-4">
           <Badge tone="accent">Get started</Badge>
-          <h2 className="break-words text-2xl font-semibold text-cyan-50">
+          <h2 className="break-words text-3xl font-bold leading-tight tracking-[-0.02em] text-[#e0e6ff]">
             Start with one selected repository.
           </h2>
-          <p className="text-sm leading-6 text-slate-400">
+          <p className="max-w-md text-base leading-7 text-[#8892b0]">
             Guided setup, not a generic empty state. Connect one repository,
             seed provider credentials into GitHub Actions, then let reviews run
             in customer CI.
@@ -375,16 +505,16 @@ function EmptyDashboardState({
           ].map((step) => (
             <li
               key={step.title}
-              className="grid min-w-0 gap-3 rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4 sm:grid-cols-[1.25rem_minmax(0,1fr)]"
+              className="grid min-w-0 gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.03] p-5 sm:grid-cols-[1.5rem_minmax(0,1fr)]"
             >
               <span
-                className={`${step.accent} mt-1 h-5 w-5 rounded-full shadow-[0_0_24px_rgba(0,229,255,0.24)]`}
+                className={`${step.accent} mt-1 h-6 w-6 rounded-full shadow-[0_0_28px_rgba(0,240,255,0.24)]`}
               />
               <span className="min-w-0 space-y-1">
-                <span className="block break-words text-base font-semibold text-cyan-50">
+                <span className="block break-words text-lg font-bold text-[#e0e6ff]">
                   {step.title}
                 </span>
-                <span className="block text-sm leading-6 text-slate-400">
+                <span className="block text-sm leading-6 text-[#94a3b8]">
                   {step.description}
                 </span>
               </span>
@@ -393,45 +523,44 @@ function EmptyDashboardState({
         </ol>
       </Card>
 
-      <Card className="relative min-w-0 max-w-full overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_18px_60px_rgba(0,0,0,0.34)] sm:p-6">
-        <div className="absolute right-6 top-6 hidden h-16 w-16 place-items-center rounded-xl border border-cyan-300/35 bg-cyan-300/5 md:grid">
-          <span className="block h-8 w-4 rotate-45 border-b-4 border-r-4 border-lime-300" />
+      <Card className="group min-w-0 max-w-full space-y-5 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-cyan-300/50 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(0,240,255,0.55),0_0_50px_-20px_rgba(0,240,255,0.75)] sm:p-7">
+        <div className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-300/10 text-cyan-100 transition duration-300 group-hover:scale-110 group-hover:bg-cyan-300/20">
+          <span className="h-4 w-4 rounded-full border border-cyan-300" />
         </div>
-        <div className="min-w-0 max-w-sm space-y-3 pr-0 md:pr-20">
-          <Badge tone="accent">Secret boundary</Badge>
-          <h2 className="break-words text-xl font-semibold text-cyan-50">
-            Credentials never enter SaaS.
-          </h2>
-          <p className="text-sm leading-6 text-slate-400">
-            Provider setup is seeded into GitHub Actions secrets. ReviewRouter
-            stores install metadata, configuration, and health state only.
-          </p>
-        </div>
+        <h2 className="break-words text-xl font-bold leading-snug text-[#e2e8f0]">
+          Credentials never enter SaaS.
+        </h2>
+        <p className="text-sm leading-6 text-[#94a3b8]">
+          Provider setup is seeded into GitHub Actions secrets. ReviewRouter
+          stores install metadata, configuration, and health state only.
+        </p>
       </Card>
 
-      <Card className="min-w-0 max-w-full space-y-5 overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_18px_60px_rgba(0,0,0,0.34)] sm:p-6">
-        <div className="space-y-3">
-          <Badge tone="accent">Runtime</Badge>
-          <h2 className="break-words text-xl font-semibold text-cyan-50">
+      <Card className="group flex min-w-0 max-w-full flex-col justify-between gap-6 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-fuchsia-400/50 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,0,255,0.5),0_0_50px_-20px_rgba(255,0,255,0.75)] sm:p-7">
+        <div className="space-y-5">
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-fuchsia-400/10 text-fuchsia-200 transition duration-300 group-hover:scale-110 group-hover:bg-fuchsia-400/20">
+            <span className="h-4 w-4 rounded border border-fuchsia-300" />
+          </div>
+          <h2 className="break-words text-xl font-bold leading-snug text-[#e2e8f0]">
             Reviews run in customer CI.
           </h2>
-          <p className="text-sm leading-6 text-slate-400">
+          <p className="text-sm leading-6 text-[#94a3b8]">
             GitHub Actions fetches config through OIDC and runs provider
             commands inside the repository workflow.
           </p>
         </div>
-        <span className="inline-flex rounded-xl border border-lime-300/25 bg-lime-300/10 px-5 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-lime-100">
+        <span className="inline-flex w-fit rounded-full border border-lime-300/20 bg-lime-300/10 px-4 py-2 font-mono text-[0.65rem] font-bold uppercase tracking-[0.16em] text-lime-100">
           Read only
         </span>
       </Card>
 
-      <Card className="grid min-w-0 max-w-full gap-6 overflow-hidden border-cyan-200/10 bg-slate-950/80 p-5 shadow-[0_22px_70px_rgba(0,0,0,0.42)] sm:p-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-center lg:col-span-2">
+      <Card className="group grid min-w-0 max-w-full gap-6 rounded-2xl p-6 transition duration-300 hover:-translate-y-1 hover:border-lime-300/40 hover:shadow-[0_16px_32px_-10px_rgba(0,0,0,0.4),0_0_0_1px_rgba(57,255,20,0.35),0_0_50px_-20px_rgba(57,255,20,0.65)] sm:p-7 md:grid-cols-[minmax(0,1fr)_auto] md:items-center lg:col-span-2">
         <div className="min-w-0 space-y-3">
-          <Badge tone="accent">Repository surface</Badge>
-          <h2 className="break-words text-3xl font-semibold tracking-tight text-cyan-50">
+          <Badge tone="success">Repository surface</Badge>
+          <h2 className="break-words text-3xl font-bold tracking-[-0.02em] text-[#e2e8f0]">
             No workspace yet
           </h2>
-          <p className="max-w-3xl text-sm leading-6 text-slate-400">
+          <p className="max-w-3xl text-sm leading-6 text-[#94a3b8]">
             Once connected, this area becomes a repository table with provider,
             model, effort, workflow health, setup PR state, and action reports.
           </p>
@@ -1250,59 +1379,65 @@ function DashboardNotice({
   if (notice) {
     const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
     return (
-      <Card className="border-lime-300/25 bg-lime-300/10">
-        <Badge tone="success">Done</Badge>
-        <p className="mt-3 text-sm leading-6 text-lime-50">
-          {dashboardNoticeText(notice, readParam(params.repository))}
-          {pullRequestUrl ? (
-            <>
-              {" "}
-              <a
-                className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                href={pullRequestUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open pull request
-              </a>
-            </>
-          ) : null}
-        </p>
+      <Card className="rounded-[2rem] border-lime-300/25 bg-lime-300/10 p-6 shadow-[0_18px_58px_rgba(190,255,61,0.08)] sm:p-7">
+        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
+          <Badge tone="success">Done</Badge>
+          <p className="text-sm leading-7 text-lime-50">
+            {dashboardNoticeText(notice, readParam(params.repository))}
+            {pullRequestUrl ? (
+              <>
+                {" "}
+                <a
+                  className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                  href={pullRequestUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open pull request
+                </a>
+              </>
+            ) : null}
+          </p>
+        </div>
       </Card>
     );
   }
   if (error) {
     return (
-      <Card className="border-red-300/25 bg-red-300/10">
-        <Badge tone="danger">Action failed</Badge>
-        <p className="mt-3 text-sm leading-6 text-red-50">
-          {dashboardErrorText(error)}
-        </p>
+      <Card className="rounded-[2rem] border-red-300/25 bg-red-300/10 p-6 shadow-[0_18px_58px_rgba(248,113,113,0.08)] sm:p-7">
+        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
+          <Badge tone="danger">Action failed</Badge>
+          <p className="text-sm leading-7 text-red-50">
+            {dashboardErrorText(error)}
+          </p>
+        </div>
       </Card>
     );
   }
   if (!mutationStatus.enabled) {
     return (
-      <Card className="border-amber-300/25 bg-amber-300/10">
-        <Badge tone="warning">Read-only dashboard</Badge>
-        <p className="mt-3 text-sm leading-6 text-amber-50">
-          {mutationStatus.reason === "signed_out"
-            ? "Sign in with GitHub to request repository syncs or setup PRs."
-            : mutationStatus.reason === "auth_misconfigured"
-              ? "GitHub OAuth is not configured. Set AUTH_SECRET, GITHUB_APP_CLIENT_ID, and GITHUB_APP_CLIENT_SECRET before using the dashboard."
-              : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 and REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING=1 for local beta provisioning."}
-          {mutationStatus.reason === "signed_out" ? (
-            <>
-              {" "}
-              <a
-                className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                href="/api/auth/signin"
-              >
-                Sign in
-              </a>
-            </>
-          ) : null}
-        </p>
+      <Card className="rounded-[2rem] border-amber-300/25 bg-amber-300/10 p-6 shadow-[0_18px_58px_rgba(251,191,36,0.08)] sm:p-7">
+        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
+          <Badge tone="warning">Read-only dashboard</Badge>
+          <p className="text-sm leading-7 text-amber-50">
+            {mutationStatus.reason === "signed_out"
+              ? "Sign in with GitHub to request repository syncs or setup PRs."
+              : mutationStatus.reason === "auth_misconfigured"
+                ? "GitHub OAuth is not configured. Set AUTH_SECRET, GITHUB_APP_CLIENT_ID, and GITHUB_APP_CLIENT_SECRET before using the dashboard."
+                : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 and REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING=1 for local beta provisioning."}
+            {mutationStatus.reason === "signed_out" ? (
+              <>
+                {" "}
+                <a
+                  className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                  href="/api/auth/signin"
+                >
+                  Sign in
+                </a>
+              </>
+            ) : null}
+          </p>
+        </div>
       </Card>
     );
   }

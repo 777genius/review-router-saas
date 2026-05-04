@@ -1,16 +1,16 @@
 import { tv } from "tailwind-variants";
 
 export const buttonStyles = tv({
-  base: "inline-flex items-center justify-center rounded-lg border font-medium tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+  base: "inline-flex items-center justify-center rounded-xl border font-medium tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
   variants: {
     variant: {
       solid:
-        "border-cyan-300/50 bg-cyan-300 text-slate-950 shadow-[var(--rr-shadow-glow-cyan)] hover:bg-cyan-200",
-      soft: "border-cyan-300/25 bg-cyan-300/10 text-cyan-100 hover:bg-cyan-300/15",
+        "rr-button-primary border-transparent text-slate-950 shadow-[0_4px_20px_rgba(0,240,255,0.3)] hover:shadow-[0_6px_30px_rgba(0,240,255,0.5)]",
+      soft: "border-cyan-300/20 bg-cyan-300/[0.06] text-cyan-100 hover:bg-cyan-300/[0.1]",
       outline:
-        "border-cyan-300/40 bg-transparent text-cyan-100 hover:bg-cyan-300/10",
+        "border-cyan-300/30 bg-transparent text-cyan-100 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06]",
       ghost:
-        "border-transparent bg-transparent text-cyan-100 hover:bg-cyan-300/10",
+        "border-transparent bg-transparent text-cyan-100 hover:bg-cyan-300/[0.06]",
     },
     tone: {
       neutral: "",
@@ -20,9 +20,9 @@ export const buttonStyles = tv({
       danger: "border-red-300/40 text-red-100",
     },
     size: {
-      sm: "h-9 px-3 text-sm",
-      md: "h-10 px-4 text-sm",
-      lg: "h-12 px-5 text-base",
+      sm: "h-10 px-4 text-sm",
+      md: "h-11 px-5 text-sm",
+      lg: "h-12 px-6 text-base",
     },
   },
   defaultVariants: {

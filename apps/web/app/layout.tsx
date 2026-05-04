@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { reviewRouterApiDemoUrl } from "./public-urls";
 
@@ -22,11 +23,25 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+const inter = Inter({
+  subsets: ["latin"],
+  weight: ["400", "600", "700", "800"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const jetBrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "600", "700"],
+  variable: "--font-mono",
+  display: "swap",
+});
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>): React.ReactElement {
   return (
-    <html lang="en">
+    <html lang="en" className={`${inter.variable} ${jetBrainsMono.variable}`}>
       <body>
         <a
           href="#content"
@@ -34,37 +49,37 @@ export default function RootLayout({
         >
           Skip to content
         </a>
-        <header className="sticky top-0 z-40 border-b border-cyan-200/10 bg-slate-950/78 backdrop-blur-xl">
-          <div className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-3 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between">
+        <header className="sticky top-0 z-40 border-b border-cyan-300/[0.08] bg-[#0a0a0f]/90 backdrop-blur-xl">
+          <div className="mx-auto flex min-h-16 w-full min-w-0 max-w-6xl flex-col gap-3 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between md:py-0">
             <a href="/" className="group flex min-w-0 items-center gap-3">
-              <span className="grid h-10 w-10 place-items-center rounded-2xl border border-cyan-300/30 bg-cyan-300/10 text-sm font-black text-cyan-100 shadow-[var(--rr-shadow-glow-cyan)]">
+              <span className="grid h-10 w-10 place-items-center rounded-xl border border-white/[0.06] bg-white/[0.05] font-mono text-sm font-black text-cyan-100 shadow-[0_0_28px_rgba(0,240,255,0.12)]">
                 RR
               </span>
               <span className="min-w-0">
-                <span className="block text-sm font-semibold uppercase tracking-[0.24em] text-cyan-100">
+                <span className="block font-mono text-sm font-semibold tracking-[0.18em] text-cyan-100">
                   ReviewRouter
                 </span>
-                <span className="block text-xs text-slate-400">
+                <span className="block text-xs text-[#8892b0]">
                   Reviews run in customer CI
                 </span>
               </span>
             </a>
             <nav
               aria-label="Primary navigation"
-              className="grid w-full min-w-0 grid-cols-2 gap-2 text-sm sm:flex sm:flex-wrap sm:items-center sm:gap-1 md:w-auto md:justify-end"
+              className="grid w-full min-w-0 grid-cols-2 gap-2 font-mono text-xs uppercase tracking-[0.16em] sm:flex sm:flex-wrap sm:items-center sm:gap-1 md:w-auto md:justify-end"
             >
               {primaryNav.map((item) => (
                 <a
                   key={item.href}
                   href={item.href}
-                  className="min-w-0 rounded-lg px-2 py-2 text-slate-300 transition hover:bg-cyan-300/10 hover:text-cyan-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 sm:px-3"
+                  className="min-w-0 rounded-lg px-2 py-2 text-slate-200 transition hover:bg-cyan-300/[0.06] hover:text-cyan-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 sm:px-3"
                 >
                   {item.label}
                 </a>
               ))}
               <a
                 href={reviewRouterApiDemoUrl}
-                className="min-w-0 rounded-lg border border-lime-300/30 bg-lime-300/10 px-2 py-2 font-medium text-lime-100 transition hover:bg-lime-300/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lime-300 sm:px-3"
+                className="min-w-0 rounded-lg border border-cyan-300/25 bg-cyan-300/[0.03] px-2 py-2 font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 sm:px-3"
               >
                 API demo
               </a>

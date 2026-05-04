@@ -12,20 +12,58 @@ body {
   min-height: 100vh;
   width: 100%;
   overflow-x: hidden;
+  background: rgb(10, 10, 15);
+  color: var(--rr-color-text);
+  font-family: var(--font-inter), "Inter", "Segoe UI", system-ui, sans-serif;
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  content: "";
   background:
+    linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px),
     radial-gradient(
-      circle at top left,
-      rgba(0, 229, 255, 0.18),
+      circle at 82% -10%,
+      rgba(0, 240, 255, 0.13),
       transparent 34rem
     ),
     radial-gradient(
-      circle at bottom right,
-      rgba(255, 43, 214, 0.14),
+      circle at 7% 42%,
+      rgba(255, 0, 255, 0.1),
       transparent 30rem
     ),
-    linear-gradient(135deg, var(--rr-color-void), var(--rr-color-bg));
-  color: var(--rr-color-text);
-  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    radial-gradient(
+      circle at 90% 92%,
+      rgba(57, 255, 20, 0.05),
+      transparent 26rem
+    ),
+    rgb(10, 10, 15);
+  background-size:
+    60px 60px,
+    60px 60px,
+    auto,
+    auto,
+    auto,
+    auto;
+}
+
+body::after {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 240, 255, 0.008) 2px,
+    rgba(0, 240, 255, 0.008) 4px
+  );
 }
 
 * {
@@ -37,4 +75,14 @@ svg,
 video,
 canvas {
   max-width: 100%;
+}
+
+.font-mono {
+  font-family: var(--font-mono), "JetBrains Mono", "Fira Code", monospace;
+}
+
+.rr-button-primary {
+  border-color: transparent !important;
+  background: linear-gradient(135deg, #00f0ff 0%, #ff00ff 100%) !important;
+  color: #0a0a0f !important;
 }
