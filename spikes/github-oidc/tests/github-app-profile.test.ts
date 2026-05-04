@@ -35,6 +35,8 @@ describe("use-github-app-profile.mjs", () => {
     const env = await readFile(fixture.envFile, "utf8");
     expect(env).toContain('GITHUB_APP_ID="123456"');
     expect(env).toContain('GITHUB_APP_SLUG="review-router-test"');
+    expect(env).toContain(`GITHUB_APP_PRIVATE_KEY_FILE="${fixture.keyFile}"`);
+    expect(env).not.toContain("GITHUB_APP_PRIVATE_KEY=");
     expect(env).toContain(`REVIEW_ROUTER_APP_PROFILE="${fixture.profileFile}"`);
     expect(env).toContain('REVIEW_ROUTER_WEB_URL="http://localhost:3000"');
     expect(env).not.toContain("https://reviewrouter-web.onrender.com");
@@ -71,6 +73,7 @@ describe("use-github-app-profile.mjs", () => {
 async function createFixture(): Promise<{
   readonly clientSecret: string;
   readonly envFile: string;
+  readonly keyFile: string;
   readonly profileFile: string;
   readonly webhookSecret: string;
 }> {
@@ -115,9 +118,10 @@ async function createFixture(): Promise<{
       'REVIEW_ROUTER_API_URL="http://localhost:4000"',
       'GITHUB_APP_ID="old"',
       'GITHUB_APP_SLUG="old"',
+      'GITHUB_APP_PRIVATE_KEY="old-inline-key-that-must-be-removed"',
       "",
     ].join("\n"),
   );
 
-  return { clientSecret, envFile, profileFile, webhookSecret };
+  return { clientSecret, envFile, keyFile, profileFile, webhookSecret };
 }

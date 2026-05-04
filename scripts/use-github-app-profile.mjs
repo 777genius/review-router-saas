@@ -57,7 +57,7 @@ if (includeUrls) {
   }
 }
 
-writeFileSync(envFile, mergeEnv(target, updates));
+writeFileSync(envFile, mergeEnv(target, updates, ["GITHUB_APP_PRIVATE_KEY"]));
 
 console.log(`Applied GitHub App profile to ${envFile}.`);
 console.log(`Profile: ${profilePath}`);
@@ -83,16 +83,18 @@ function resolveProfilePath(value) {
   return resolved;
 }
 
-function mergeEnv(existing, updatesToApply) {
+function mergeEnv(existing, updatesToApply, keysToRemove = []) {
+  const remove = new Set(keysToRemove);
   const lines = existing.split(/\r?\n/);
   const seen = new Set();
-  const updated = lines.map((line) => {
+  const updated = lines.flatMap((line) => {
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
-    if (!match) return line;
+    if (!match) return [line];
     const key = match[1];
-    if (!(key in updatesToApply)) return line;
+    if (remove.has(key)) return [];
+    if (!(key in updatesToApply)) return [line];
     seen.add(key);
-    return `${key}=${quoteEnvValue(updatesToApply[key])}`;
+    return [`${key}=${quoteEnvValue(updatesToApply[key])}`];
   });
 
   const additions = Object.entries(updatesToApply)
