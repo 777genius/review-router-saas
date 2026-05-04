@@ -22,6 +22,7 @@ env:
   GITHUB_WEBHOOK_SECRET: ci-webhook-secret-not-used-for-production
   REVIEW_ROUTER_WEB_URL: http://localhost:3000
   REVIEW_ROUTER_API_URL: http://localhost:4000
+  REVIEW_ROUTER_PUBLIC_API_URL: http://localhost:4000
   REVIEW_ROUTER_ACTION_REF: 777genius/review-router@v1
   REVIEW_ROUTER_ACTION_VERSION: v1
   REVIEW_ROUTER_DEFAULT_MODEL: gpt-5.5
@@ -90,6 +91,15 @@ jobs:
       - name: Local readiness
         env:
           REVIEW_ROUTER_SKIP_ENV_FILE: "1"
+          REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1"
+          GITHUB_APP_CLIENT_ID: ci-client-id
+          GITHUB_APP_CLIENT_SECRET: ci-client-secret
+          GITHUB_APP_ID: "1"
+          GITHUB_APP_SLUG: reviewrouter-ci
+          GITHUB_APP_PRIVATE_KEY: |
+            -----BEGIN PRIVATE KEY-----
+            ci-placeholder
+            -----END PRIVATE KEY-----
         run: pnpm local:check
 
       - name: Unit tests
@@ -130,6 +140,12 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Compiled runtime smoke
+        run: pnpm runtime:smoke
+
+      - name: Web page smoke
+        run: pnpm web:smoke
 
       - name: Whitespace check
         run: git diff --check
