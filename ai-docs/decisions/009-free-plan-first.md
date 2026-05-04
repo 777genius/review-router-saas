@@ -15,12 +15,20 @@ The first goal is adoption, validation, and feedback. Payment can be added later
 ## v1 Free Entitlement
 
 ```text
-plan: free
-max workspaces: configurable later
-max repos: soft limit later
+plan: free_beta
+max workspaces per GitHub user: 3
+max repositories per workspace sync: 250
+setup PR attempts: 5 per repository per hour
+installation syncs: 10 per installation per 15 minutes
+review config saves: 60 per workspace per hour
 cloud execution: unavailable
 advanced audit/policies: available during beta, may become paid later
 ```
+
+These values are centralized in `freeBetaLimits` from
+`@reviewrouter/features-entitlements`. Product copy, dashboard mutation rate
+limits, and entitlement defaults should read from that policy instead of
+duplicating numbers.
 
 ## Future Paid Value
 
