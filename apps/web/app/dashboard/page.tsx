@@ -386,7 +386,7 @@ export default async function DashboardPage({
         </div>
       </section>
 
-      <section className="grid gap-5">
+      <section id="dashboard-workspace" className="grid gap-5 scroll-mt-28">
         {workspaces.map((workspace) => (
           <WorkspaceCard
             key={workspace.workspace.id}
@@ -735,7 +735,10 @@ function WorkspaceCard({
           workspaceHealth={workspaceHealth}
           selectedSection={selectedSection}
         />
-        <div className="space-y-5 p-5 sm:p-6">
+        <div
+          id="dashboard-section-content"
+          className="space-y-5 scroll-mt-28 p-5 sm:p-6"
+        >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-2xl font-semibold text-cyan-50">
@@ -1998,7 +2001,7 @@ function isDashboardSection(value: string): value is DashboardSection {
 }
 
 function dashboardSectionHref(section: DashboardSection): string {
-  return `/dashboard?section=${section}`;
+  return `/dashboard?section=${section}#dashboard-section-content`;
 }
 
 function buildDashboardSignInCallbackUrl(
