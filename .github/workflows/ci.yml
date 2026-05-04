@@ -161,3 +161,9 @@ jobs:
 
       - name: Local bootstrap shell syntax
         run: bash -n scripts/bootstrap-local.sh
+
+      - name: Public beta readiness shell syntax
+        run: bash -n scripts/check-public-beta-readiness.sh
+
+      - name: GitHub App readiness script syntax
+        run: node --check scripts/check-github-app-readiness.mjs
