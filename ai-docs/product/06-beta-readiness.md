@@ -143,10 +143,10 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 Latest local beta gate:
 
 ```text
-Date: 2026-05-04 10:45 EEST
+Date: 2026-05-04 11:14 EEST
 Command: pnpm beta:check
 Result: passed.
-Coverage: local readiness, 169 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer command assertions and installer redirect check, whitespace, shell syntax, hosted readiness smoke.
+Coverage: local readiness, 169 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer command assertions and installer redirect check, whitespace, shell syntax, hosted readiness smoke, public beta readiness smoke.
 ```
 
 Latest GitHub App credential smoke:
