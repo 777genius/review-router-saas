@@ -128,16 +128,16 @@ Run: https://github.com/777genius/rr-saas-fresh-e2e-1777852435110/actions/runs/2
 Result: setup PR merged, workflow detected on main, new `777genius/review-router@main` action runtime ran from the generated static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
 ```
 
-Previous full-review validation:
+Latest full-review validation:
 
 ```text
-Date: 2026-05-04
+Date: 2026-05-04 11:27 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
-Repo: 777genius/rr-saas-fresh-e2e-1777851508064
-Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/pull/1
-Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/pull/2
-Run: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/actions/runs/25294139796
-Result: setup PR merged, workflow detected on main, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
+Repo: 777genius/rr-saas-fresh-e2e-1777883214101
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777883214101/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777883214101/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777883214101/actions/runs/25308892488
+Result: setup PR merged, workflow detected on main, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5 with title "Login ignores requested email".
 ```
 
 Latest local beta gate:

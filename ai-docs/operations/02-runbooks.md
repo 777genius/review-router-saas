@@ -70,7 +70,7 @@ setup PR URL, review PR URL, run URL, and safe error summary when available.
 If App installation is not found:
 
 1. check the GitHub App is installed for the owner or selected repository
-2. check the App has `contents`, `workflows`, `pull_requests`, `issues`, `actions`, and `metadata` permissions
+2. check the App has `contents`, `workflows`, `pull_requests`, `issues`, and `metadata` permissions
 3. wait one minute and rerun, because GitHub installation visibility can lag
 4. run `node scripts/run-with-env.mjs pnpm spike:github:list-installations`
 
