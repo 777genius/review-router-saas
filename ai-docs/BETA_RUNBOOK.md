@@ -403,6 +403,11 @@ The smoke test for this wiring runs in `pnpm beta:check`:
 pnpm public-beta:check:smoke
 ```
 
+`pnpm beta:check` also runs `pnpm github-app:manifest:smoke` to guard the
+manifest helper. This catches unsafe regressions such as enabling OAuth during
+installation, adding unsupported lifecycle `default_events`, or dropping setup
+permissions.
+
 ## What To Work On Next Without User Input
 
 If there is no hosted HTTPS environment yet, keep improving local/private beta.

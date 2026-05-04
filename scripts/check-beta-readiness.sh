@@ -35,6 +35,7 @@ run_step "Codex secret seeding shell syntax" bash -n scripts/seed-codex-auth.sh
 run_step "local bootstrap shell syntax" bash -n scripts/bootstrap-local.sh
 run_step "public beta readiness shell syntax" bash -n scripts/check-public-beta-readiness.sh
 run_step "GitHub App readiness script syntax" node --check scripts/check-github-app-readiness.mjs
+run_step "GitHub App manifest smoke" run_pnpm github-app:manifest:smoke
 run_step "hosted readiness smoke" run_pnpm hosted:check:smoke
 run_step "public beta readiness smoke" run_pnpm public-beta:check:smoke
 

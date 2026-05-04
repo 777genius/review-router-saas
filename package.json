@@ -51,6 +51,7 @@
     "architecture:check": "node scripts/check-architecture-boundaries.mjs",
     "github-app:check": "node scripts/run-with-env.mjs node scripts/check-github-app-readiness.mjs",
     "github-app:create": "node scripts/create-github-app-manifest.mjs",
+    "github-app:manifest:smoke": "node scripts/check-github-app-manifest-smoke.mjs",
     "github-app:use-profile": "node scripts/use-github-app-profile.mjs",
     "public-beta:check": "bash scripts/check-public-beta-readiness.sh",
     "deploy:render:hosted-beta": "node scripts/deploy-render-hosted-beta.mjs",
