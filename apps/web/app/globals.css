@@ -85,7 +85,11 @@ canvas {
 .rr-button-primary {
   border-color: transparent !important;
   background:
-    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.38), transparent 24%),
+    radial-gradient(
+      circle at 22% 18%,
+      rgba(255, 255, 255, 0.38),
+      transparent 24%
+    ),
     linear-gradient(135deg, #49eeff 0%, #7aa7ff 48%, #e83cff 100%) !important;
   color: #0a0a0f !important;
   box-shadow:

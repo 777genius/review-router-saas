@@ -5,12 +5,11 @@ import "./globals.css";
 import { reviewRouterApiDemoUrl, reviewRouterWebUrl } from "./public-urls";
 
 const primaryNav = [
-  { href: "/", label: "Overview" },
-  { href: "/getting-started", label: "Getting started" },
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/status", label: "Status" },
+  { href: "/setup", label: "Setup" },
+  { href: "/getting-started", label: "Guide" },
   { href: "/security", label: "Security" },
-  { href: "/support", label: "Support" },
+  { href: "/status", label: "Status" },
 ] as const;
 
 export const metadata: Metadata = {
@@ -115,6 +114,9 @@ export default function RootLayout({
               by default.
             </p>
             <div className="flex flex-wrap gap-3">
+              <a className="text-cyan-100 hover:underline" href="/support">
+                Support
+              </a>
               <a className="text-cyan-100 hover:underline" href="/privacy">
                 Privacy
               </a>

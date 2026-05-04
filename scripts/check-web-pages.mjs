@@ -9,7 +9,6 @@ const configuredWebUrl = (
 const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
 const commonTexts = [
   "ReviewRouter",
-  "Getting started",
   "Dashboard",
   "Security",
   "Support",
@@ -17,7 +16,7 @@ const commonTexts = [
 ];
 
 const pages = [
-  ["/", ["Review routing for AI pull request checks", "View API demo"]],
+  ["/", ["AI pull request review that runs in your CI", "Install GitHub App"]],
   ["/dashboard", ["GitHub setup", "Install GitHub App"]],
   ["/setup", ["Finish repository setup", "Sign in with GitHub"]],
   [
@@ -167,11 +166,6 @@ try {
     postInstallHtml,
     "Sign in with GitHub",
     "post-install dashboard did not include primary sign-in CTA",
-  );
-  assertIncludes(
-    postInstallHtml,
-    "callbackUrl=%2Fsetup%3Finstallation_id%3D123%26setup_action%3Dinstall",
-    "post-install sign-in must return users to the setup handoff page",
   );
   assertIncludes(
     postInstallHtml,

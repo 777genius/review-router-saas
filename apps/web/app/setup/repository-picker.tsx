@@ -155,7 +155,9 @@ function RepositoryRow({
         <input type="hidden" name="repositoryId" value={repository.id} />
         <FormSubmitButton
           size="sm"
-          disabled={!mutationsEnabled || !repository.selected || repository.archived}
+          disabled={
+            !mutationsEnabled || !repository.selected || repository.archived
+          }
           idleLabel={setupPrButtonLabel(repository.setupStatus)}
           pendingLabel={
             repository.setupStatus === "setup_pr_open"

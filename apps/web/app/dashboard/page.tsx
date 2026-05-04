@@ -1957,6 +1957,9 @@ function appInstallUrlForWorkspace(
 ): string | null {
   if (!installation?.githubInstallationId) return null;
   if (!/^\d+$/.test(installation.githubInstallationId)) return null;
+  if (installation.accountType === "Organization") {
+    return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.githubInstallationId}`;
+  }
   return `https://github.com/settings/installations/${installation.githubInstallationId}`;
 }
 

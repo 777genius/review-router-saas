@@ -86,6 +86,14 @@ export default async function SetupPage({
               >
                 Sync repositories
               </LinkButton>
+            ) : appInstallUrl ? (
+              <LinkButton
+                href={appInstallUrl}
+                size="lg"
+                className="min-w-44 rounded-2xl"
+              >
+                Install or manage App
+              </LinkButton>
             ) : (
               <LinkButton
                 href="/dashboard"
@@ -98,12 +106,12 @@ export default async function SetupPage({
             )}
             {appInstallUrl && !installation ? (
               <LinkButton
-                href={appInstallUrl}
+                href="/dashboard"
                 variant="outline"
                 size="lg"
                 className="min-w-36 rounded-2xl"
               >
-                Manage App
+                Open dashboard
               </LinkButton>
             ) : null}
           </div>
