@@ -37,6 +37,32 @@ The Render MCP/API can create individual services, but the current MCP server
 does not create a new Blueprint from a repository. Use the Render Dashboard for
 the first Blueprint connection, then keep `render.yaml` as the source of truth.
 
+## API Deploy Helper
+
+If Render already has GitHub access to the private repository, the hosted beta
+resources can be created or re-synced from the CLI without printing secrets:
+
+```bash
+export RENDER_OWNER_ID=tea-d11m6c0dl3ps73cuh2gg
+export RENDER_ENVIRONMENT_ID=evm-d7s67t0g4nts73d4l40g
+export RENDER_REPO=https://github.com/777genius/review-router-saas
+export REVIEW_ROUTER_WEB_URL=https://reviewrouter-web.onrender.com
+export REVIEW_ROUTER_API_URL=https://reviewrouter-api.onrender.com
+REVIEW_ROUTER_RENDER_ENV_FILE=.env.local pnpm deploy:render:hosted-beta
+```
+
+The helper creates or reuses `reviewrouter-db`, `reviewrouter-web`,
+`reviewrouter-api`, and `reviewrouter-worker`, syncs service env vars,
+links resources to the Render environment when possible, and triggers deploys.
+It intentionally does not log secret values.
+
+Current hosted beta resources created by this helper:
+
+- Web: https://reviewrouter-web.onrender.com
+- API: https://reviewrouter-api.onrender.com
+- Worker: `reviewrouter-worker`
+- Postgres: `reviewrouter-db`
+
 ## Required Manual Values
 
 During or immediately after Blueprint sync, fill these environment variables in
