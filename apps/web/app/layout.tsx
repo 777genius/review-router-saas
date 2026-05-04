@@ -19,8 +19,10 @@ export const metadata: Metadata = {
   description: "AI review control plane for GitHub pull requests.",
   icons: {
     icon: [
+      { url: "/favicon.ico", type: "image/x-icon" },
       { url: "/review-router-icon.png", type: "image/png", sizes: "512x512" },
     ],
+    shortcut: [{ url: "/favicon.ico", type: "image/x-icon" }],
     apple: [
       { url: "/review-router-icon.png", type: "image/png", sizes: "512x512" },
     ],
