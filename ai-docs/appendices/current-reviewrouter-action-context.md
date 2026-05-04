@@ -140,6 +140,19 @@ REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:git
 Latest automated full review smoke:
 
 ```text
+Date: 2026-05-04 08:58 EEST
+Repo: 777genius/rr-saas-fresh-e2e-1777874235486
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777874235486/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777874235486/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777874235486/actions/runs/25303510196
+Result: failed intentionally with 1 critical finding
+Inline: auth.js:5, title "Authentication ignores the supplied email"
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+```
+
+Previous automated full review smoke:
+
+```text
 Date: 2026-05-04
 Repo: 777genius/rr-saas-fresh-e2e-1777848830828
 Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777848830828/pull/1

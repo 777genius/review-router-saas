@@ -28,6 +28,19 @@ smoke passes after the latest action/runtime provisioning change.
 Latest full-review validation:
 
 ```text
+Date: 2026-05-04 08:58 EEST
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777874235486
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777874235486/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777874235486/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777874235486/actions/runs/25303510196
+Result: setup PR merged, workflow detected on main, latest `777genius/review-router@main` action bundle ran from static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5 with title "Authentication ignores the supplied email".
+Note: action health-report POST is implemented and unit-tested, but true GitHub-hosted OIDC/health-report E2E requires a public HTTPS ReviewRouter API instead of local http://localhost:4000.
+```
+
+Previous full-review validation:
+
+```text
 Date: 2026-05-04
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 Repo: 777genius/rr-saas-fresh-e2e-1777852871545
@@ -65,19 +78,19 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 Latest local + DB beta gate:
 
 ```text
-Date: 2026-05-04 02:38 EEST
+Date: 2026-05-04 08:56 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 Result: passed.
-Coverage: local readiness, unit/integration tests, typecheck, lint, format, production build, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
+Coverage: stricter local readiness, unit/integration tests, typecheck, lint, format, production build, automated 10-page web smoke, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
 ```
 
 Latest browser smoke:
 
 ```text
-Date: 2026-05-04 02:20 EEST
-Command: local Next dev server + in-app browser DOM smoke
+Date: 2026-05-04 08:55 EEST
+Command: pnpm build && pnpm web:smoke
 Pages: /, /dashboard, /getting-started, /security, /fair-use, /disconnect, /privacy, /terms, /status, /support
-Result: all pages returned 200 with expected h1 content and no 404/500/runtime error text.
+Result: production Next server returned 200 for all pages and each page included expected text.
 ```
 
 Latest fresh setup validation:
