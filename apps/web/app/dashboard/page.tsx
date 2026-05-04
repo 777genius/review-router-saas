@@ -46,6 +46,7 @@ import {
   saveWorkspaceReviewConfigAction,
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
+import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 import {
   describeRepositoryHealth,
@@ -1353,6 +1354,11 @@ function DashboardNotice({
 }): React.ReactElement | null {
   const notice = readParam(params.notice);
   const error = readParam(params.error);
+  const appSetupNotice = buildGitHubAppSetupNotice({
+    installationId: readParam(params.installation_id),
+    setupAction: readParam(params.setup_action),
+    signedIn: mutationStatus.signedIn,
+  });
   if (notice) {
     const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
     return (
@@ -1386,6 +1392,29 @@ function DashboardNotice({
           <Badge tone="danger">Action failed</Badge>
           <p className="text-sm leading-7 text-red-50">
             {dashboardErrorText(error)}
+          </p>
+        </div>
+      </Card>
+    );
+  }
+  if (appSetupNotice) {
+    return (
+      <Card className="rounded-[2rem] border-cyan-300/25 bg-cyan-300/10 p-6 shadow-[0_18px_58px_rgba(0,240,255,0.08)] sm:p-7">
+        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
+          <Badge tone="accent">{appSetupNotice.title}</Badge>
+          <p className="text-sm leading-7 text-cyan-50">
+            {appSetupNotice.body}
+            {!mutationStatus.signedIn ? (
+              <>
+                {" "}
+                <a
+                  className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                  href="/api/auth/signin"
+                >
+                  Sign in
+                </a>
+              </>
+            ) : null}
           </p>
         </div>
       </Card>
