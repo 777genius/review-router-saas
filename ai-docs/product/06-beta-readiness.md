@@ -104,10 +104,10 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 Latest local beta gate:
 
 ```text
-Date: 2026-05-04 09:18 EEST
+Date: 2026-05-04 10:03 EEST
 Command: pnpm beta:check
 Result: passed.
-Coverage: local readiness, unit/integration tests, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke, whitespace, shell syntax.
+Coverage: local readiness, 164 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer command assertions and installer redirect check, whitespace, shell syntax, hosted readiness smoke.
 ```
 
 Latest hosted readiness gate smoke:
@@ -122,19 +122,19 @@ Coverage: valid hosted env passes; SaaS env containing provider API key fails; l
 Latest local + DB beta gate:
 
 ```text
-Date: 2026-05-04 09:12 EEST
+Date: 2026-05-04 09:55 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 Result: passed.
-Coverage: stricter local readiness, unit/integration tests, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
+Coverage: stricter local readiness, 160 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer redirect check, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
 ```
 
 Latest browser smoke:
 
 ```text
-Date: 2026-05-04 08:55 EEST
-Command: pnpm build && pnpm web:smoke
+Date: 2026-05-04 10:03 EEST
+Command: pnpm web:smoke
 Pages: /, /dashboard, /getting-started, /security, /fair-use, /disconnect, /privacy, /terms, /status, /support
-Result: production Next server returned 200 for all pages and each page included expected text.
+Result: production Next server returned 200 for all pages; getting-started/security included the configured Codex installer commands; /install/codex returned the expected redirect to the raw GitHub seed script.
 ```
 
 Latest fresh setup validation:
