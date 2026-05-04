@@ -1,3 +1,5 @@
+/* global fetch */
+
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -79,7 +81,7 @@ class RenderClient {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await response.text();
-    let data = null;
+    let data;
     try {
       data = text ? JSON.parse(text) : null;
     } catch {
@@ -204,7 +206,7 @@ async function ensureDatabase(client, { ownerId, environmentId }) {
 async function waitForDatabase(client, databaseId) {
   for (let attempt = 0; attempt < 90; attempt += 1) {
     const postgres = await client.request("GET", `/postgres/${databaseId}`);
-    let connectionInfo = null;
+    let connectionInfo;
     try {
       connectionInfo = await client.request(
         "GET",

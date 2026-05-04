@@ -1,8 +1,12 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 
-const readinessCommand = "pnpm beta:check";
 const fullSmokeCommand =
   "REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check";
+const apiDemoUrl = `${(
+  process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
+  process.env.REVIEW_ROUTER_API_URL ??
+  "http://localhost:4000"
+).replace(/\/+$/, "")}/docs`;
 
 const trustCards = [
   {
@@ -64,19 +68,29 @@ export default function HomePage(): React.ReactElement {
             <LinkButton href="/status" variant="ghost">
               Status
             </LinkButton>
+            <LinkButton href={apiDemoUrl} variant="soft" tone="success">
+              API demo
+            </LinkButton>
           </div>
         </div>
         <Card className="space-y-4">
-          <Badge tone="success">Local foundation</Badge>
+          <Badge tone="success">Hosted API demo</Badge>
           <h2 className="text-2xl font-semibold text-cyan-50">
-            Local beta baseline
+            Open the live control-plane surface.
           </h2>
           <p className="text-sm leading-6 text-slate-300">
-            The control plane now covers GitHub App webhooks, repository sync,
-            workflow setup PRs, OIDC runtime config, metadata-only health,
-            provider setup guidance, entitlements, and worker outbox recovery.
+            The hosted API exposes health, readiness, OpenAPI, Markdown, and a
+            browser-friendly demo page. It is safe to show because it explains
+            exactly what the SaaS does and does not store.
           </p>
-          <CodeBlock code={readinessCommand} />
+          <div className="flex flex-wrap gap-3">
+            <LinkButton href={apiDemoUrl} size="sm">
+              View API demo
+            </LinkButton>
+            <LinkButton href="/getting-started" variant="outline" size="sm">
+              Install guide
+            </LinkButton>
+          </div>
         </Card>
       </section>
 

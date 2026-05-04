@@ -293,19 +293,59 @@ export default async function DashboardPage({
           installation and repository metadata, not code, diffs, PR bodies, or
           commit messages.
         </p>
+        <div className="flex flex-wrap gap-3 pt-2">
+          <LinkButton href="/getting-started" variant="outline" size="sm">
+            Setup guide
+          </LinkButton>
+          <LinkButton href="/security" variant="soft" tone="success" size="sm">
+            Security model
+          </LinkButton>
+          <LinkButton href="/status" variant="ghost" size="sm">
+            Status
+          </LinkButton>
+          {appInstallUrl ? (
+            <LinkButton href={appInstallUrl} size="sm">
+              Install GitHub App
+            </LinkButton>
+          ) : null}
+        </div>
       </section>
 
       <DashboardNotice params={params} mutationStatus={mutationStatus} />
 
       <section className="grid gap-5">
         {workspaces.length === 0 ? (
-          <Card className="space-y-3">
+          <Card className="space-y-5">
             <Badge tone="warning">No workspace yet</Badge>
-            <p className="text-sm leading-6 text-slate-300">
-              Sign in with GitHub and install the ReviewRouter App to create a
-              workspace and start syncing repositories.
-            </p>
-            <div className="flex flex-wrap gap-3">
+            <div className="space-y-2">
+              <h2 className="text-2xl font-semibold text-cyan-50">
+                Start with one selected repository.
+              </h2>
+              <p className="max-w-3xl text-sm leading-6 text-slate-300">
+                Sign in with GitHub, install the ReviewRouter App on selected
+                repositories, then return here to create a setup PR. Provider
+                credentials are seeded later directly into GitHub Actions
+                secrets, not into ReviewRouter SaaS.
+              </p>
+            </div>
+            <ol className="grid gap-3 text-sm leading-6 text-slate-300 md:grid-cols-3">
+              {[
+                "Sign in with GitHub",
+                "Install App on selected repositories",
+                "Create and merge setup PR",
+              ].map((step, index) => (
+                <li
+                  key={step}
+                  className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+                >
+                  <span className="mb-2 inline-flex h-7 w-7 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-300/10 text-xs font-semibold text-cyan-100">
+                    {index + 1}
+                  </span>
+                  <span className="block">{step}</span>
+                </li>
+              ))}
+            </ol>
+            <div className="flex flex-wrap gap-3 pt-1">
               {!mutationStatus.signedIn ? (
                 <LinkButton href="/api/auth/signin" size="sm">
                   Sign in with GitHub
@@ -320,6 +360,9 @@ export default async function DashboardPage({
                   Set GITHUB_APP_SLUG to show the local App install link.
                 </span>
               )}
+              <LinkButton href="/getting-started" variant="outline" size="sm">
+                Read setup guide
+              </LinkButton>
             </div>
           </Card>
         ) : (

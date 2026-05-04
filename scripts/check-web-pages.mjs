@@ -8,9 +8,18 @@ const configuredWebUrl = (
 ).replace(/\/$/, "");
 const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
 
+const commonTexts = [
+  "ReviewRouter",
+  "Getting started",
+  "Dashboard",
+  "Security",
+  "Support",
+  "API demo",
+];
+
 const pages = [
-  ["/", ["Review routing for AI pull request checks"]],
-  ["/dashboard", ["Dashboard"]],
+  ["/", ["Review routing for AI pull request checks", "View API demo"]],
+  ["/dashboard", ["Dashboard", "Start with one selected repository"]],
   [
     "/getting-started",
     [
@@ -30,7 +39,7 @@ const pages = [
   ["/disconnect", ["Disconnect"]],
   ["/privacy", ["Privacy draft"]],
   ["/terms", ["Terms draft"]],
-  ["/status", ["Trusted beta is usable"]],
+  ["/status", ["Hosted API demo is live"]],
   ["/support", ["Trusted beta support"]],
 ];
 
@@ -106,6 +115,13 @@ try {
     }
 
     const html = await response.text();
+    for (const expectedText of commonTexts) {
+      if (!html.includes(expectedText)) {
+        await fail(
+          `${path} did not include shared navigation text: ${expectedText}`,
+        );
+      }
+    }
     for (const expectedText of expectedTexts) {
       if (!html.includes(expectedText)) {
         await fail(`${path} did not include expected text: ${expectedText}`);
