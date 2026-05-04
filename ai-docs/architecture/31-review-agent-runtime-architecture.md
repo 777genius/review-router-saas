@@ -194,10 +194,12 @@ Implemented:
   OIDC config fetch in Action runtime
   static workflow fallback
   action-version header and workflow env
+  metadata-only health report POST after success, skip, blocking finding, or runtime failure
   unit tests for fallback, blocked versions, and unsafe runtimeEnv rejection
+  unit tests for health report payload classification and non-blocking report failures
 
 Still requires hosted HTTPS SaaS for true GitHub-hosted OIDC E2E:
-  GitHub-hosted runner -> public ReviewRouter API -> config exchange
+  GitHub-hosted runner -> public ReviewRouter API -> config exchange -> health report
 ```
 
 ## Provider Secret Sources

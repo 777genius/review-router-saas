@@ -27,6 +27,19 @@ Latest full-review validation:
 ```text
 Date: 2026-05-04
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777852871545
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777852871545/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777852871545/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777852871545/actions/runs/25294602854
+Result: setup PR merged, workflow detected on main, latest `777genius/review-router@main` action bundle ran from static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
+Note: action health-report POST is implemented and unit-tested, but true GitHub-hosted OIDC/health-report E2E requires a public HTTPS ReviewRouter API instead of local http://localhost:4000.
+```
+
+Previous full-review validation:
+
+```text
+Date: 2026-05-04
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 Repo: 777genius/rr-saas-fresh-e2e-1777852435110
 Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777852435110/pull/1
 Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777852435110/pull/2
