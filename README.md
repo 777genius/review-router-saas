@@ -91,9 +91,11 @@ REVIEW_ROUTER_API_URL=https://reviewrouter-api.onrender.com pnpm hosted:api-demo
 Public demo endpoints:
 
 ```text
+GET /       - public API index with demo, docs, and dashboard links
 GET /health - liveness plus dependency health
 GET /ready  - compact readiness response for demos and uptime checks
-GET /demo   - public control-plane capability summary
+GET /demo   - public control-plane capability summary, quick start, security boundaries
+GET /openapi.json - machine-readable public API surface
 ```
 
 Use a real staging/prod env file or host-provided environment variables. The

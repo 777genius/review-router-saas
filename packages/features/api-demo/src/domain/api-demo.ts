@@ -15,9 +15,49 @@ export type ApiDemoProvider = {
   readonly sentToSaas: false;
 };
 
+export type ApiDemoQuickStartStep = {
+  readonly order: number;
+  readonly title: string;
+  readonly description: string;
+  readonly command?: string;
+};
+
+export type ApiDemoSecurityBoundary = {
+  readonly topic: string;
+  readonly guarantee: string;
+};
+
+export type ApiDemoSampleRequest = {
+  readonly title: string;
+  readonly command: string;
+  readonly expectedSignal: string;
+};
+
+export type ApiDemoMaturity = {
+  readonly stage: "hosted_beta";
+  readonly readyFor: readonly string[];
+  readonly knownLimitations: readonly string[];
+};
+
+export type ApiDemoIndexDocument = {
+  readonly service: "review-router-api";
+  readonly product: "ReviewRouter";
+  readonly status: "ok";
+  readonly summary: string;
+  readonly links: {
+    readonly health: string;
+    readonly ready: string;
+    readonly demo: string;
+    readonly openapi: string;
+    readonly dashboard: string;
+    readonly docs: string;
+  };
+};
+
 export type ApiDemoDocument = {
   readonly service: "review-router-api";
   readonly product: "ReviewRouter";
+  readonly contractVersion: "2026-05-04";
   readonly status: "demo_ready";
   readonly checkedAt: Date;
   readonly summary: string;
@@ -34,12 +74,37 @@ export type ApiDemoDocument = {
   };
   readonly providers: readonly ApiDemoProvider[];
   readonly endpoints: readonly ApiDemoEndpoint[];
+  readonly quickStart: readonly ApiDemoQuickStartStep[];
+  readonly sampleRequests: readonly ApiDemoSampleRequest[];
+  readonly securityBoundaries: readonly ApiDemoSecurityBoundary[];
+  readonly maturity: ApiDemoMaturity;
   readonly links: {
     readonly dashboard: string;
     readonly gettingStarted: string;
     readonly docs: string;
+    readonly openapi: string;
   };
 };
+
+export function buildApiDemoIndex(input: {
+  readonly webUrl: string;
+  readonly apiUrl: string;
+}): ApiDemoIndexDocument {
+  return {
+    service: "review-router-api",
+    product: "ReviewRouter",
+    status: "ok",
+    summary: "Public API entrypoint for the ReviewRouter hosted control plane.",
+    links: {
+      health: `${input.apiUrl}/health`,
+      ready: `${input.apiUrl}/ready`,
+      demo: `${input.apiUrl}/demo`,
+      openapi: `${input.apiUrl}/openapi.json`,
+      dashboard: `${input.webUrl}/dashboard`,
+      docs: "https://github.com/777genius/review-router-saas",
+    },
+  };
+}
 
 export function buildApiDemoDocument(input: {
   readonly checkedAt: Date;
@@ -52,6 +117,7 @@ export function buildApiDemoDocument(input: {
   return {
     service: "review-router-api",
     product: "ReviewRouter",
+    contractVersion: "2026-05-04",
     status: "demo_ready",
     checkedAt: input.checkedAt,
     summary:
@@ -121,6 +187,12 @@ export function buildApiDemoDocument(input: {
         auth: "public",
       },
       {
+        method: "GET",
+        path: "/openapi.json",
+        purpose: "Machine-readable API surface for public demo endpoints.",
+        auth: "public",
+      },
+      {
         method: "POST",
         path: "/webhooks/github",
         purpose: "GitHub App lifecycle webhooks for installation sync.",
@@ -146,10 +218,207 @@ export function buildApiDemoDocument(input: {
         auth: "github_actions_oidc_session",
       },
     ],
+    quickStart: [
+      {
+        order: 1,
+        title: "Install the GitHub App",
+        description:
+          "Connect ReviewRouter to selected repositories from the dashboard.",
+      },
+      {
+        order: 2,
+        title: "Choose provider credentials",
+        description:
+          "Store Codex OAuth, OpenAI API key, or OpenRouter API key in GitHub Actions secrets. The hosted control plane does not receive those credentials.",
+      },
+      {
+        order: 3,
+        title: "Provision the workflow",
+        description:
+          "Create a small GitHub Actions workflow that calls the ReviewRouter Action and fetches metadata-only runtime config from this API.",
+      },
+      {
+        order: 4,
+        title: "Open a pull request",
+        description:
+          "Review comments are posted from the installed GitHub App while model execution remains inside the repository workflow.",
+      },
+    ],
+    sampleRequests: [
+      {
+        title: "Check service health",
+        command: `curl -fsS ${input.apiUrl}/health | jq .`,
+        expectedSignal: "status is ok and database dependency is ok",
+      },
+      {
+        title: "Inspect demo contract",
+        command: `curl -fsS ${input.apiUrl}/demo | jq .`,
+        expectedSignal:
+          "executionModel.reviewRunsIn is customer_github_actions",
+      },
+      {
+        title: "Inspect OpenAPI metadata",
+        command: `curl -fsS ${input.apiUrl}/openapi.json | jq .info`,
+        expectedSignal: "OpenAPI document title is ReviewRouter API",
+      },
+    ],
+    securityBoundaries: [
+      {
+        topic: "Repository code",
+        guarantee:
+          "Pull request diffs and source files are reviewed in the customer's GitHub Actions job, not uploaded to the SaaS control plane by default.",
+      },
+      {
+        topic: "Provider credentials",
+        guarantee:
+          "Codex OAuth auth.json and provider API keys remain GitHub Actions secrets owned by the target repository or organization.",
+      },
+      {
+        topic: "Runtime access",
+        guarantee:
+          "Workflow runtime config access uses GitHub Actions OIDC and short-lived ReviewRouter action sessions.",
+      },
+      {
+        topic: "Telemetry",
+        guarantee:
+          "Health reports are metadata-only and intended for setup diagnostics, not model prompt or response storage.",
+      },
+    ],
+    maturity: {
+      stage: "hosted_beta",
+      readyFor: [
+        "dashboard walkthrough",
+        "API smoke demo",
+        "selected repository beta installs",
+        "metadata-only action control-plane demo",
+      ],
+      knownLimitations: [
+        "GitHub App lifecycle events must be enabled in the App settings before full install sync works.",
+        "Public production should pin the GitHub Action to a release tag instead of main.",
+      ],
+    },
     links: {
       dashboard: `${input.webUrl}/dashboard`,
       gettingStarted: `${input.webUrl}/getting-started`,
       docs: "https://github.com/777genius/review-router-saas",
+      openapi: `${input.apiUrl}/openapi.json`,
+    },
+  };
+}
+
+export function buildApiDemoOpenApiDocument(input: {
+  readonly apiUrl: string;
+}): Record<string, unknown> {
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "ReviewRouter API",
+      version: "2026-05-04",
+      summary:
+        "Hosted control-plane API for ReviewRouter. Reviews run in customer GitHub Actions.",
+    },
+    servers: [{ url: input.apiUrl }],
+    paths: {
+      "/": {
+        get: {
+          summary: "API index",
+          responses: {
+            "200": { description: "Public ReviewRouter API index." },
+          },
+        },
+      },
+      "/health": {
+        get: {
+          summary: "Service and dependency health",
+          responses: {
+            "200": { description: "Service is healthy." },
+          },
+        },
+      },
+      "/ready": {
+        get: {
+          summary: "Compact readiness check",
+          responses: {
+            "200": { description: "Service is ready." },
+          },
+        },
+      },
+      "/demo": {
+        get: {
+          summary: "Public hosted beta capability summary",
+          responses: {
+            "200": { description: "ReviewRouter hosted beta demo document." },
+          },
+        },
+      },
+      "/openapi.json": {
+        get: {
+          summary: "OpenAPI document",
+          responses: {
+            "200": { description: "OpenAPI 3.1 document." },
+          },
+        },
+      },
+      "/webhooks/github": {
+        post: {
+          summary: "GitHub App lifecycle webhook",
+          security: [{ githubWebhookSignature: [] }],
+          responses: {
+            "202": { description: "Webhook accepted." },
+            "401": { description: "Invalid GitHub webhook signature." },
+          },
+        },
+      },
+      "/api/action/v1/session/exchange": {
+        post: {
+          summary: "GitHub Actions OIDC exchange",
+          security: [{ githubActionsOidc: [] }],
+          responses: {
+            "200": { description: "Short-lived action session issued." },
+            "401": { description: "Invalid GitHub Actions OIDC token." },
+          },
+        },
+      },
+      "/api/action/v1/config": {
+        get: {
+          summary: "Runtime review configuration",
+          security: [{ reviewRouterActionSession: [] }],
+          responses: {
+            "200": { description: "Repository runtime config." },
+            "401": { description: "Invalid action session." },
+          },
+        },
+      },
+      "/api/action/v1/health-report": {
+        post: {
+          summary: "Metadata-only action health report",
+          security: [{ reviewRouterActionSession: [] }],
+          responses: {
+            "202": { description: "Health report accepted." },
+            "401": { description: "Invalid action session." },
+          },
+        },
+      },
+    },
+    components: {
+      securitySchemes: {
+        githubWebhookSignature: {
+          type: "apiKey",
+          in: "header",
+          name: "x-hub-signature-256",
+        },
+        githubActionsOidc: {
+          type: "http",
+          scheme: "bearer",
+          description: "GitHub Actions OIDC JWT.",
+        },
+        reviewRouterActionSession: {
+          type: "http",
+          scheme: "bearer",
+          description:
+            "Short-lived ReviewRouter session returned by the OIDC exchange endpoint.",
+        },
+      },
     },
   };
 }

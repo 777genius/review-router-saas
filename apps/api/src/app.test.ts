@@ -185,6 +185,23 @@ const fixedClock: Clock = {
 };
 
 describe("API app", () => {
+  it("serves a public API index for demos", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({ method: "GET", url: "/" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      service: "review-router-api",
+      product: "ReviewRouter",
+      status: "ok",
+      links: {
+        health: "https://reviewrouter-api.onrender.com/health",
+        demo: "https://reviewrouter-api.onrender.com/demo",
+        openapi: "https://reviewrouter-api.onrender.com/openapi.json",
+      },
+    });
+  });
+
   it("serves a small readiness response for API demos", async () => {
     const app = await createApiApp();
     const response = await app.inject({ method: "GET", url: "/ready" });
@@ -204,6 +221,7 @@ describe("API app", () => {
     expect(response.json()).toMatchObject({
       service: "review-router-api",
       product: "ReviewRouter",
+      contractVersion: "2026-05-04",
       status: "demo_ready",
       executionModel: {
         reviewRunsIn: "customer_github_actions",
@@ -213,10 +231,33 @@ describe("API app", () => {
       },
     });
     expect(response.body).toContain("/api/action/v1/session/exchange");
+    expect(response.body).toContain("Choose provider credentials");
+    expect(response.body).toContain("Runtime access");
     expect(response.body).toContain("repository source code");
     expect(response.body).toContain("Codex OAuth auth.json");
     expect(response.body).not.toContain("CODEX_AUTH_JSON=");
     expect(response.body).not.toContain("OPENAI_API_KEY=");
+  });
+
+  it("serves an OpenAPI document for public API demos", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({
+      method: "GET",
+      url: "/openapi.json",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      openapi: "3.1.0",
+      info: {
+        title: "ReviewRouter API",
+        version: "2026-05-04",
+      },
+      paths: {
+        "/demo": {},
+        "/api/action/v1/session/exchange": {},
+      },
+    });
   });
 
   it("serves health status", async () => {
