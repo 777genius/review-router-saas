@@ -234,25 +234,26 @@ Use after changing local/staging GitHub App credentials. It authenticates with
 the App private key, compares `GITHUB_APP_ID` and `GITHUB_APP_SLUG` with the
 actual App, and lists installations without printing secrets.
 
+The manifest helper intentionally does not set `default_events` for
+`installation` or `installation_repositories`. GitHub delivers both lifecycle
+events to all GitHub Apps by default and does not allow manual subscription to
+them in an App manifest.
+
 To prove the App can read one repository:
 
 ```bash
 REVIEW_ROUTER_GITHUB_APP_EXPECT_REPO=owner/repo pnpm github-app:check
 ```
 
-For hosted readiness, make lifecycle webhook event subscriptions a hard
-requirement:
+For hosted readiness, run the check in hosted mode:
 
 ```bash
 REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted pnpm github-app:check
 ```
 
-Hosted mode requires these App webhook events:
-
-```text
-installation
-installation_repositories
-```
+Hosted mode validates credentials, permissions, and installation visibility.
+After installing the App, verify lifecycle delivery in the GitHub App
+`Advanced` webhook delivery log if repository sync does not update.
 
 ### Action Runtime Gate
 
@@ -342,10 +343,10 @@ Before calling the app public-beta ready, run the full public-beta doctor:
 REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm public-beta:check
 ```
 
-This combines hosted env validation, hosted GitHub App permission/event
-validation, production build, and compiled runtime smoke. It is expected to fail
-until public HTTPS env values and hosted GitHub App lifecycle webhook events are
-configured.
+This combines hosted env validation, hosted GitHub App credential and
+permission validation, production build, and compiled runtime smoke. It is
+expected to fail until public HTTPS env values and hosted GitHub App credentials
+are configured.
 
 The public-beta doctor intentionally uses the same
 `REVIEW_ROUTER_HOSTED_ENV_FILE` for both hosted env validation and GitHub App

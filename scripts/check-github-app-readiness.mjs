@@ -11,9 +11,7 @@ const expectedRepo = String(
 const checkMode = String(
   env.REVIEW_ROUTER_GITHUB_APP_CHECK_MODE ?? "local",
 ).trim();
-const requireHostedWebhooks =
-  checkMode === "hosted" ||
-  isTrue(env.REVIEW_ROUTER_GITHUB_APP_REQUIRE_HOSTED_WEBHOOKS);
+const isHostedMode = checkMode === "hosted";
 
 const requiredPermissions = {
   contents: "write",
@@ -22,7 +20,6 @@ const requiredPermissions = {
   issues: "write",
   metadata: "read",
 };
-const requiredWebhookEvents = ["installation", "installation_repositories"];
 
 const errors = [];
 const warnings = [];
@@ -43,7 +40,6 @@ if (errors.length === 0) {
 if (errors.length > 0) {
   console.error("ReviewRouter GitHub App readiness failed:");
   for (const error of errors) console.error(`- ${error}`);
-  printFixHints();
   if (warnings.length > 0) {
     console.error("Warnings:");
     for (const warning of warnings) console.error(`- ${warning}`);
@@ -68,7 +64,7 @@ async function checkGitHubApp() {
     );
   }
   assertPermissions(appData.permissions ?? {});
-  assertWebhookEvents(appData.events ?? []);
+  warnAboutLifecycleEvents(appData.events ?? []);
 
   const installations = await listInstallations(app);
   if (installations.length === 0) {
@@ -100,6 +96,8 @@ async function checkGitHubApp() {
       ownerType: appData.owner?.type ?? null,
       permissions: pickPermissions(appData.permissions ?? {}),
       events: appData.events ?? [],
+      lifecycleEvents:
+        "installation and installation_repositories are delivered by GitHub Apps by default",
       settingsUrl: buildAppSettingsUrl(appData.owner, actualSlug || appSlug),
     },
     installations: installations.map((installation) => ({
@@ -135,43 +133,19 @@ function assertPermissions(actualPermissions) {
   }
 }
 
-function assertWebhookEvents(actualEvents) {
+function warnAboutLifecycleEvents(actualEvents) {
   const actual = new Set(actualEvents);
-  const missingEvents = requiredWebhookEvents.filter(
-    (eventName) => !actual.has(eventName),
-  );
-  if (missingEvents.length === 0) {
-    return;
-  }
-
-  const message = `GitHub App webhook events are missing: ${missingEvents.join(", ")}. Hosted lifecycle sync needs these events.`;
-  if (requireHostedWebhooks) {
-    errors.push(message);
-  } else {
+  if (actual.has("installation") || actual.has("installation_repositories")) {
     warnings.push(
-      `${message} Local setup PR E2E can still pass without webhooks.`,
+      "GitHub returned installation lifecycle events in appData.events, but they are default GitHub App events and should not be configured in the manifest.",
     );
   }
-}
 
-function printFixHints() {
-  const missingEventsError = errors.some((error) =>
-    error.startsWith("GitHub App webhook events are missing:"),
-  );
-  if (!missingEventsError) {
-    return;
+  if (isHostedMode) {
+    warnings.push(
+      "Hosted lifecycle sync relies on GitHub's default installation and installation_repositories events. Verify actual deliveries in the GitHub App Advanced webhook delivery log after installation.",
+    );
   }
-
-  const settingsUrl = diagnostics?.app?.settingsUrl || settingsUrlFromSlug();
-  console.error("How to fix:");
-  console.error(`- Open GitHub App settings: ${settingsUrl}`);
-  console.error("- Go to Webhook.");
-  console.error(
-    "- Enable these events: Installation, Installation repositories.",
-  );
-  console.error(
-    "- Re-run: REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted pnpm github-app:check",
-  );
 }
 
 function permissionSatisfies(actualAccess, requiredAccess) {
@@ -196,11 +170,6 @@ function buildAppSettingsUrl(owner, slug) {
     return `https://github.com/organizations/${encodeURIComponent(owner.login)}/settings/apps/${safeSlug}`;
   }
   return `https://github.com/settings/apps/${safeSlug}`;
-}
-
-function settingsUrlFromSlug() {
-  const slug = String(appSlug || "<github-app-slug>").trim();
-  return `https://github.com/settings/apps/${encodeURIComponent(slug)}`;
 }
 
 async function listInstallations(app) {
@@ -278,12 +247,6 @@ function isNotFoundOrForbidden(error) {
     error !== null &&
     "status" in error &&
     (Number(error.status) === 403 || Number(error.status) === 404)
-  );
-}
-
-function isTrue(value) {
-  return ["1", "true", "TRUE", "yes", "YES", "y", "Y"].includes(
-    String(value ?? ""),
   );
 }
 

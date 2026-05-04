@@ -48,7 +48,6 @@ const manifest = {
     pull_requests: "write",
     workflows: "write",
   },
-  default_events: ["installation", "installation_repositories"],
 };
 
 if (dryRun) {

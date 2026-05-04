@@ -22,9 +22,9 @@ const statusTiers = [
   },
   {
     label: "GitHub App lifecycle",
-    state: "One manual setting remains",
-    tone: "warning" as const,
-    body: "Full hosted install sync still depends on enabling installation and installation_repositories webhook events in the GitHub App settings.",
+    state: "Default lifecycle events",
+    tone: "success" as const,
+    body: "GitHub delivers installation and installation_repositories lifecycle events to Apps by default. Hosted sync verification now focuses on webhook delivery logs and OIDC health.",
   },
   {
     label: "Production",
@@ -45,7 +45,6 @@ const provenCapabilities = [
 ] as const;
 
 const publicBetaBlockers = [
-  "Enable GitHub App lifecycle webhook events: installation and installation_repositories.",
   "Run GitHub-hosted OIDC config fetch and health report E2E against hosted API.",
   "Pin the ReviewRouter Action to a release tag before broad public production installs.",
   "Provision production status/support channel, legal copy review, and incident process.",
@@ -76,13 +75,13 @@ export default function StatusPage(): React.ReactElement {
         <div className="space-y-5">
           <Badge tone="accent">Status</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
-            Hosted API demo is live. GitHub App lifecycle is the remaining gate.
+            Hosted API demo is live. OIDC verification is the remaining gate.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
             ReviewRouter can be shown to trusted beta users with a live Render
-            API demo today. The remaining broad-public gate is GitHub App
-            lifecycle event configuration and full GitHub-hosted
-            OIDC/config/health verification.
+            API demo today. The remaining broad-public gate is full
+            GitHub-hosted OIDC/config/health verification and delivery-log
+            validation after App installation.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/getting-started">Start setup</LinkButton>
