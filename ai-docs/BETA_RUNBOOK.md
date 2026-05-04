@@ -242,6 +242,16 @@ Setup URL: https://reviewrouter-web.onrender.com/dashboard
 Webhook URL: https://reviewrouter-api.onrender.com/webhooks/github
 ```
 
+The generated manifest keeps `request_oauth_on_install=false`. Do not enable
+"Request user authorization (OAuth) during installation" for the beta App unless
+a custom GitHub App OAuth callback is implemented. GitHub redirects that flow to
+the user authorization callback instead of the setup URL, while ReviewRouter's
+beta flow intentionally uses:
+
+```text
+Install App -> Setup URL /dashboard -> Sign in with GitHub if needed
+```
+
 ```bash
 pnpm github-app:check
 ```

@@ -38,7 +38,7 @@ const manifest = {
   callback_urls: [`${webUrl}/api/auth/callback/github`],
   setup_url: `${webUrl}/dashboard`,
   setup_on_update: true,
-  request_oauth_on_install: true,
+  request_oauth_on_install: false,
   public: true,
   description:
     "ReviewRouter connects GitHub pull request review setup while reviews run in customer GitHub Actions.",
