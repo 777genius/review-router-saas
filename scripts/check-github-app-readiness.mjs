@@ -67,9 +67,10 @@ async function checkGitHubApp() {
   warnAboutLifecycleEvents(appData.events ?? []);
 
   const installations = await listInstallations(app);
+  const installUrl = `https://github.com/apps/${actualSlug || appSlug}/installations/new`;
   if (installations.length === 0) {
     warnings.push(
-      "GitHub App has no installations. Install it on at least one test repository before setup PR E2E.",
+      `GitHub App has no installations. Install it on at least one selected test repository before setup PR E2E: ${installUrl}`,
     );
   }
 
@@ -98,6 +99,7 @@ async function checkGitHubApp() {
       events: appData.events ?? [],
       lifecycleEvents:
         "installation and installation_repositories are delivered by GitHub Apps by default",
+      installUrl,
       settingsUrl: buildAppSettingsUrl(appData.owner, actualSlug || appSlug),
     },
     installations: installations.map((installation) => ({

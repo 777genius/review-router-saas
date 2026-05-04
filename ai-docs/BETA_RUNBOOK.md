@@ -248,7 +248,9 @@ pnpm github-app:check
 
 Use after changing local/staging GitHub App credentials. It authenticates with
 the App private key, compares `GITHUB_APP_ID` and `GITHUB_APP_SLUG` with the
-actual App, and lists installations without printing secrets.
+actual App, prints the App install/settings URLs, and lists installations
+without printing secrets. If no installation exists yet, use the printed install
+URL and select only the test repositories needed for E2E.
 
 The manifest helper intentionally does not set `default_events` for
 `installation` or `installation_repositories`. GitHub delivers both lifecycle
