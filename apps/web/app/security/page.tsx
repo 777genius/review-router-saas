@@ -35,8 +35,19 @@ const permissionRows = [
   ],
   ["pull_requests: write", "Create setup PRs and read setup PR state."],
   [
-    "issues: write (optional)",
-    "Only needed if the SaaS posts setup/help comments. The review action can comment from CI with the repository GITHUB_TOKEN.",
+    "issues: write",
+    "Support setup/help comments and issue-style PR conversations when the SaaS needs to guide maintainers. Review execution still runs from CI.",
+  ],
+] as const;
+
+const webhookRows = [
+  [
+    "installation",
+    "Create, suspend, unsuspend, and uninstall lifecycle events for workspace and installation state.",
+  ],
+  [
+    "installation_repositories",
+    "Repository added/removed events so selected-repository installs stay in sync without manual refresh.",
   ],
 ] as const;
 
@@ -111,6 +122,42 @@ export default function SecurityPage(): React.ReactElement {
                 <tr key={permission}>
                   <td className="border-b border-cyan-200/10 px-3 py-3 font-mono text-cyan-50">
                     {permission}
+                  </td>
+                  <td className="border-b border-cyan-200/10 px-3 py-3">
+                    {reason}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card className="space-y-4">
+        <Badge tone="warning">GitHub App webhooks</Badge>
+        <h2 className="text-2xl font-semibold text-cyan-50">
+          Hosted beta requires lifecycle event subscriptions.
+        </h2>
+        <p className="text-sm leading-6 text-slate-300">
+          Local setup PR E2E can pass without webhooks, but hosted SaaS needs
+          these events to keep installations and selected repositories current.
+          The public-beta doctor fails until they are enabled.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+            <thead className="text-cyan-100">
+              <tr>
+                <th className="border-b border-cyan-200/15 px-3 py-2">Event</th>
+                <th className="border-b border-cyan-200/15 px-3 py-2">
+                  Why it exists
+                </th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-300">
+              {webhookRows.map(([eventName, reason]) => (
+                <tr key={eventName}>
+                  <td className="border-b border-cyan-200/10 px-3 py-3 font-mono text-cyan-50">
+                    {eventName}
                   </td>
                   <td className="border-b border-cyan-200/10 px-3 py-3">
                     {reason}

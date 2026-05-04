@@ -37,6 +37,7 @@ const provenCapabilities = [
 const publicBetaBlockers = [
   "Deploy web, API, and worker behind public HTTPS.",
   "Configure production GitHub App callback, setup, and webhook URLs.",
+  "Enable GitHub App lifecycle webhook events: installation and installation_repositories.",
   "Run GitHub-hosted OIDC config fetch and health report E2E against hosted API.",
   "Provision production secret storage, Postgres backups, status/support channel, and legal copy review.",
 ] as const;
