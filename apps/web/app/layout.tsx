@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { LogoMark } from "./logo-mark";
 import "./globals.css";
-import { reviewRouterApiDemoUrl } from "./public-urls";
+import { reviewRouterApiDemoUrl, reviewRouterWebUrl } from "./public-urls";
 
 const primaryNav = [
   { href: "/", label: "Overview" },
@@ -14,9 +14,28 @@ const primaryNav = [
 ] as const;
 
 export const metadata: Metadata = {
+  metadataBase: new URL(reviewRouterWebUrl),
   title: "ReviewRouter",
   description: "AI review control plane for GitHub pull requests.",
-  icons: [{ rel: "icon", url: "/icon.svg", type: "image/svg+xml" }],
+  icons: {
+    icon: [
+      { url: "/review-router-icon.png", type: "image/png", sizes: "512x512" },
+    ],
+    apple: [
+      { url: "/review-router-icon.png", type: "image/png", sizes: "512x512" },
+    ],
+  },
+  openGraph: {
+    title: "ReviewRouter",
+    description: "AI review control plane for GitHub pull requests.",
+    images: [{ url: "/review-router-logo.png", alt: "ReviewRouter logo" }],
+  },
+  twitter: {
+    card: "summary",
+    title: "ReviewRouter",
+    description: "AI review control plane for GitHub pull requests.",
+    images: ["/review-router-logo.png"],
+  },
 };
 
 export const viewport: Viewport = {

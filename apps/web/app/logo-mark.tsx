@@ -4,9 +4,9 @@ type LogoMarkProps = {
 };
 
 const sizeClasses = {
-  sm: "h-10 w-10 rounded-xl",
-  md: "h-14 w-14 rounded-2xl",
-  lg: "h-16 w-16 rounded-2xl",
+  sm: "h-11 w-11 rounded-xl",
+  md: "h-16 w-16 rounded-2xl",
+  lg: "h-20 w-20 rounded-[1.35rem]",
 } as const;
 
 export function LogoMark({
@@ -16,7 +16,7 @@ export function LogoMark({
   return (
     <span
       className={[
-        "grid shrink-0 place-items-center border border-cyan-200/15 bg-white/[0.04] p-1 shadow-[0_0_32px_rgba(0,240,255,0.16)]",
+        "grid shrink-0 place-items-center border border-cyan-200/10 bg-white/[0.03] p-0.5 shadow-[0_0_32px_rgba(0,240,255,0.16)]",
         sizeClasses[size],
         className,
       ]
@@ -25,9 +25,9 @@ export function LogoMark({
       aria-hidden="true"
     >
       <img
-        src="/icon.svg"
+        src="/review-router-logo.png"
         alt=""
-        className="h-full w-full rounded-[inherit]"
+        className="h-full w-full object-contain drop-shadow-[0_0_18px_rgba(0,240,255,0.18)]"
         draggable={false}
       />
     </span>
