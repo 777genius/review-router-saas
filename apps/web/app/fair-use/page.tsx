@@ -40,7 +40,7 @@ export default function FairUsePage(): React.ReactElement {
             workflow setup, OIDC exchange, health reports, and dashboard writes.
           </p>
           <div className="flex flex-wrap gap-3">
-            <LinkButton href="/terms">Terms draft</LinkButton>
+            <LinkButton href="/terms">Terms</LinkButton>
             <LinkButton href="/status" variant="outline">
               Status
             </LinkButton>

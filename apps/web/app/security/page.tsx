@@ -80,9 +80,9 @@ export default function SecurityPage(): React.ReactElement {
           </h2>
           <p className="text-sm leading-6 text-slate-300">
             The local helper validates Codex ChatGPT subscription auth and
-            writes `CODEX_AUTH_JSON` to repository or organization selected-repo
-            Actions secrets through `gh`. It does not send auth JSON to
-            ReviewRouter SaaS.
+            writes <code>CODEX_AUTH_JSON</code> to repository or organization
+            selected-repo Actions secrets through <code>gh</code>. It does not
+            send auth JSON to ReviewRouter SaaS.
           </p>
           <CodeBlock code={secretCommand} />
         </Card>

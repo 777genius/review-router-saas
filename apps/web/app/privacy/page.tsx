@@ -19,7 +19,7 @@ export default function PrivacyPage(): React.ReactElement {
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-12">
       <section className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
         <div className="space-y-5">
-          <Badge tone="accent">Privacy draft</Badge>
+          <Badge tone="accent">Privacy</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
             Metadata control plane, not code custody.
           </h1>
@@ -33,13 +33,10 @@ export default function PrivacyPage(): React.ReactElement {
               Security model
             </LinkButton>
             <LinkButton href="/terms" variant="outline">
-              Terms draft
+              Terms
             </LinkButton>
             <LinkButton href="/support" variant="ghost">
               Support
-            </LinkButton>
-            <LinkButton href="/disconnect" variant="ghost">
-              Disconnect
             </LinkButton>
           </div>
         </div>

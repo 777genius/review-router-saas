@@ -19,7 +19,7 @@ export default function TermsPage(): React.ReactElement {
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-12">
       <section className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
         <div className="space-y-5">
-          <Badge tone="accent">Terms draft</Badge>
+          <Badge tone="accent">Terms</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
             Trusted beta usage terms.
           </h1>
@@ -30,7 +30,7 @@ export default function TermsPage(): React.ReactElement {
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/privacy" variant="soft" tone="success">
-              Privacy draft
+              Privacy
             </LinkButton>
             <LinkButton href="/security" variant="outline">
               Security model

@@ -57,9 +57,6 @@ export default function GettingStartedPage(): React.ReactElement {
             <LinkButton href="/privacy" variant="ghost">
               Privacy
             </LinkButton>
-            <LinkButton href="/disconnect" variant="ghost">
-              Disconnect
-            </LinkButton>
           </div>
         </div>
 
@@ -70,8 +67,9 @@ export default function GettingStartedPage(): React.ReactElement {
           </h2>
           <p className="text-sm leading-6 text-slate-300">
             Provider credentials are written from the user&apos;s machine to
-            GitHub Actions secrets with `gh`. For organization usage, prefer
-            selected repositories so only approved repos can access Codex OAuth.
+            GitHub Actions secrets with <code>gh</code>. For organization usage,
+            prefer selected repositories so only approved repos can access Codex
+            OAuth.
           </p>
         </Card>
       </section>

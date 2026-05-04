@@ -83,6 +83,16 @@ canvas {
   font-family: var(--font-mono), "JetBrains Mono", "Fira Code", monospace;
 }
 
+:not(pre) > code {
+  border: 1px solid rgba(103, 232, 249, 0.16);
+  border-radius: 0.45rem;
+  background: rgba(8, 47, 73, 0.34);
+  padding: 0.05rem 0.32rem;
+  color: #cffafe;
+  font-family: var(--font-mono), "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.9em;
+}
+
 .rr-button-primary {
   border-color: transparent !important;
   background:

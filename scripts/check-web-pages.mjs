@@ -36,9 +36,9 @@ const pages = [
   ],
   ["/fair-use", ["Fair use"]],
   ["/disconnect", ["Disconnect"]],
-  ["/privacy", ["Privacy draft"]],
-  ["/terms", ["Terms draft"]],
-  ["/status", ["Hosted API demo is live", "API demo"]],
+  ["/privacy", ["Privacy"]],
+  ["/terms", ["Terms"]],
+  ["/status", ["Hosted demo is live", "API demo"]],
   ["/support", ["Trusted beta support"]],
 ];
 

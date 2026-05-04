@@ -44,7 +44,7 @@ export default function DisconnectPage(): React.ReactElement {
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/support">Support</LinkButton>
             <LinkButton href="/privacy" variant="soft" tone="success">
-              Privacy draft
+              Privacy
             </LinkButton>
             <LinkButton href="/security" variant="outline">
               Security model

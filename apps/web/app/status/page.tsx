@@ -97,7 +97,7 @@ export default function StatusPage(): React.ReactElement {
               Security model
             </LinkButton>
             <LinkButton href="/privacy" variant="outline">
-              Privacy draft
+              Privacy
             </LinkButton>
             <LinkButton href="/fair-use" variant="ghost">
               Fair use
