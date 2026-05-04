@@ -201,6 +201,31 @@ Use after action runtime, generated workflow, provider setup, review config, or 
 
 ### GitHub App Credential Smoke
 
+Create a production or staging GitHub App with the manifest helper:
+
+```bash
+pnpm github-app:create --name ReviewRouter
+```
+
+For an organization-owned App:
+
+```bash
+pnpm github-app:create --name ReviewRouter --owner your-org
+```
+
+The helper opens GitHub, submits the ReviewRouter manifest, receives the
+temporary manifest code on a localhost callback, converts it through GitHub's
+manifest conversion API, then saves a local `.env` profile and `.pem` private
+key under `.local-secrets/github-apps/`. It does not print generated secrets.
+
+Default hosted URLs:
+
+```text
+Callback URL: https://reviewrouter-web.onrender.com/api/auth/callback/github
+Setup URL: https://reviewrouter-web.onrender.com/dashboard
+Webhook URL: https://reviewrouter-api.onrender.com/webhooks/github
+```
+
 ```bash
 pnpm github-app:check
 ```
