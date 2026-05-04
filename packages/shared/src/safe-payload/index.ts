@@ -1,22 +1,65 @@
+const maxCollectedStrings = 500;
+const maxStringLength = 4_000;
+const codeLikeLinePattern =
+  /^\s*(?:async\s+)?(?:export\s+)?(?:function|class|interface|type|const|let|var|import|from|return|if|for|while|switch|try|catch)\b|=>|;\s*$/m;
+
 export function collectPayloadStrings(value: unknown): string[] {
-  if (typeof value === "string") {
-    return [value];
+  const result: string[] = [];
+  const visited = new WeakSet<object>();
+  const stack: Array<{ readonly key?: string; readonly value: unknown }> = [
+    { value },
+  ];
+
+  while (stack.length > 0 && result.length < maxCollectedStrings) {
+    const current = stack.pop();
+    if (!current) break;
+    const entry = current.value;
+
+    if (typeof current.key === "string") {
+      pushBounded(result, current.key);
+      if (typeof entry === "string") {
+        pushBounded(result, `${current.key}=${entry}`);
+      }
+    }
+
+    if (typeof entry === "string") {
+      pushBounded(result, entry);
+      continue;
+    }
+
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+
+    if (visited.has(entry)) {
+      continue;
+    }
+    visited.add(entry);
+
+    if (Array.isArray(entry)) {
+      for (let index = entry.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: entry[index] });
+      }
+      continue;
+    }
+
+    const entries = Object.entries(entry);
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const current = entries[index];
+      if (!current) continue;
+      const [key, nested] = current;
+      stack.push({ key, value: nested });
+    }
   }
-  if (Array.isArray(value)) {
-    return value.flatMap(collectPayloadStrings);
-  }
-  if (value && typeof value === "object") {
-    return Object.entries(value).flatMap(([key, entry]) => [
-      key,
-      ...(typeof entry === "string" ? [`${key}=${entry}`] : []),
-      ...collectPayloadStrings(entry),
-    ]);
-  }
-  return [];
+
+  return result;
 }
 
 export function looksLikeCodeOrDiff(value: string): boolean {
-  return /```|diff --git|@@\s+-\d+|^\+\+\+\s|^---\s/m.test(value);
+  return (
+    /```|diff --git|@@\s+-\d+|^\+\+\+\s|^---\s/m.test(value) ||
+    codeLikeLinePattern.test(value)
+  );
 }
 
 export function looksLikeSecretValue(value: string): boolean {
@@ -34,4 +77,9 @@ export function looksLikeSecretValue(value: string): boolean {
       value,
     )
   );
+}
+
+function pushBounded(result: string[], value: string): void {
+  if (result.length >= maxCollectedStrings) return;
+  result.push(value.slice(0, maxStringLength));
 }
