@@ -448,7 +448,11 @@ async function waitForCurrentWorkflow(installationId: number) {
 async function runReviewSmoke() {
   run("bash", ["scripts/seed-codex-auth.sh"], {
     cwd: process.cwd(),
-    env: { ...process.env, REVIEW_ROUTER_REPO: targetRepo },
+    env: {
+      ...process.env,
+      REVIEW_ROUTER_CONFIRM_WRITE: "1",
+      REVIEW_ROUTER_REPO: targetRepo,
+    },
   });
 
   run("git", ["fetch", "origin", "main", "-q"], { cwd: workdir });
