@@ -33,6 +33,17 @@ psql_url() {
 }
 
 if [[ "${REVIEW_ROUTER_SKIP_ENV_FILE:-0}" != "1" && -f .env.local ]]; then
+  for forbidden in \
+    CODEX_AUTH_JSON \
+    CODEX_CONFIG_TOML \
+    OPENAI_API_KEY \
+    OPENROUTER_API_KEY \
+    ANTHROPIC_API_KEY \
+    GEMINI_API_KEY; do
+    if grep -Eq "^[[:space:]]*(export[[:space:]]+)?${forbidden}[[:space:]]*=" .env.local; then
+      fail "${forbidden} must not be stored in ReviewRouter SaaS .env.local. Put provider credentials in customer GitHub Actions secrets."
+    fi
+  done
   set -a
   # shellcheck disable=SC1091
   . ./.env.local

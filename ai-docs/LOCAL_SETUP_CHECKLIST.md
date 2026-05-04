@@ -42,6 +42,12 @@ ensures dev/test PostgreSQL databases exist, installs dependencies, generates
 Prisma client, and applies migrations. It does not create a GitHub App and it
 does not write provider credentials.
 
+Do not put provider credentials in `.env.local`. `pnpm local:check` fails if
+the SaaS env file contains `CODEX_AUTH_JSON`, `CODEX_CONFIG_TOML`,
+`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, or
+`GEMINI_API_KEY`. Those values belong in customer GitHub Actions secrets or
+trusted runner environments, not in the ReviewRouter control plane.
+
 Apply database migrations before running the app:
 
 ```bash
