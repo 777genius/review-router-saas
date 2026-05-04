@@ -460,11 +460,15 @@ describe("action control plane", () => {
       {
         sessionToken: "session",
         report: {
+          protocolVersion: 1,
           actionVersion: "v1",
           configVersion: 7,
+          configSource: "runtime_oidc",
           providerSetupState: "configured",
           providerHealth: "ok",
           safeErrorCategory: "none",
+          findingCounts: { critical: 1, major: 0, minor: 0, info: 0 },
+          commentCounts: { inline: 1, summary: 1 },
         },
       },
       {
@@ -475,6 +479,12 @@ describe("action control plane", () => {
     );
 
     expect(repository.healthReports).toHaveLength(1);
+    expect(repository.healthReports[0]).toMatchObject({
+      protocolVersion: 1,
+      configSource: "runtime_oidc",
+      findingCounts: { critical: 1, major: 0, minor: 0, info: 0 },
+      commentCounts: { inline: 1, summary: 1 },
+    });
     expect(() =>
       assertSafeActionHealthReport({
         actionVersion: "v1",
@@ -485,6 +495,18 @@ describe("action control plane", () => {
         safeErrorSummary: "```ts\nconsole.log('code')\n```",
       }),
     ).toThrow("health_report_contains_code_or_diff");
+  });
+
+  it("defaults legacy health reports to protocol version 1", () => {
+    expect(
+      assertSafeActionHealthReport({
+        actionVersion: "v1",
+        configVersion: 7,
+        providerSetupState: "configured",
+        providerHealth: "ok",
+        safeErrorCategory: "none",
+      }),
+    ).toMatchObject({ protocolVersion: 1 });
   });
 
   it("checks action rate limits before accepting health reports", async () => {
@@ -696,6 +718,7 @@ function githubOidcClaims(
 
 function safeHealthReport(): ActionHealthReport {
   return {
+    protocolVersion: 1,
     actionVersion: "v1",
     configVersion: 7,
     providerSetupState: "configured",

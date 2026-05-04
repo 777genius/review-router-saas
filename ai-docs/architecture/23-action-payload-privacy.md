@@ -14,7 +14,6 @@ configSource
 repo identity from verified OIDC token
 run id and attempt
 workflow name
-status: started | succeeded | failed | skipped
 provider types, not credentials
 provider health categories
 finding counts by severity
@@ -24,6 +23,26 @@ safe error code
 safe error summary
 startedAt / finishedAt
 ```
+
+Current v1 health reports accept these metadata fields:
+
+```text
+protocolVersion: 1
+actionVersion
+configVersion
+configSource: runtime_oidc | static_fallback | workflow_static
+providerSetupState
+providerHealth
+safeErrorCategory
+safeErrorSummary
+findingCounts: critical / major / minor / info
+commentCounts: inline / summary
+skippedReasonCategory
+startedAt / finishedAt
+```
+
+Legacy reports without `protocolVersion` are parsed as version 1 for backward
+compatibility, but new action runtimes should send it explicitly.
 
 ## Forbidden Fields
 

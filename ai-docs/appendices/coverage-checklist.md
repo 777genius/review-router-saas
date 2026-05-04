@@ -31,6 +31,7 @@ This checklist is used to verify that the planning docs captured the current dir
 - Free plan first with billing boundary.
 - GitHub Actions OIDC action control plane protocol.
 - Metadata-only action health reports.
+- Versioned action health report telemetry schema.
 - Tenant isolation and authorization policy service.
 - Data retention and privacy defaults.
 - Testing strategy.
@@ -85,7 +86,7 @@ This checklist is used to verify that the planning docs captured the current dir
 ## Still Needs Decision Later
 
 - tuning beta free limits after first tester feedback
-- action-to-SaaS telemetry schema
+- dashboard chart selection for action health telemetry
 - payment model
 - exact production deployment topology for web/API split
 - exact chart/table usage once dashboard analytics screens exist

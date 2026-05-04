@@ -33,9 +33,9 @@ References:
 ## Allowed API Calls
 
 ```text
-POST /api/action/session/exchange
-GET  /api/action/config
-POST /api/action/health-report
+POST /api/action/v1/session/exchange
+GET  /api/action/v1/config
+POST /api/action/v1/health-report
 POST /api/action/review-run-report optional later
 ```
 
@@ -75,12 +75,16 @@ Repository id should be preferred over repository name where possible because na
 Allowed payloads:
 
 - config version
+- config source: runtime OIDC, static fallback, or workflow static
 - selected provider metadata
 - workflow/action version
 - health status
 - provider setup state summary
 - run id/check id
 - error categories and safe summaries
+- finding counts by severity
+- comment counts
+- skipped reason category
 
 Forbidden payloads:
 

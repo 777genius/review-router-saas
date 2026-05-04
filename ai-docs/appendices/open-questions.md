@@ -4,9 +4,9 @@
 
 1. Should SaaS dashboard require GitHub OAuth org admin permission before showing install flow?
 2. Should setup PR include only workflow or also `.reviewrouter/config.yml`?
-3. How much ReviewRouter Action telemetry should report back to SaaS without storing code/diff?
-4. Should AI discussion be included in public beta or delayed?
-5. Which free beta limits should be tuned after first tester feedback?
+3. Should AI discussion be included in public beta or delayed?
+4. Which free beta limits should be tuned after first tester feedback?
+5. Which action health metrics should become dashboard charts after beta feedback?
 
 ## Technical
 

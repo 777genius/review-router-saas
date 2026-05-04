@@ -102,11 +102,30 @@ export type ActionRuntimeConfigResponse = z.infer<
 >;
 
 export const actionHealthReportMaxBytes = 64 * 1024;
+const actionHealthCountSchema = z.number().int().min(0).max(10_000);
+const actionHealthFindingCountsSchema = z
+  .object({
+    critical: actionHealthCountSchema,
+    major: actionHealthCountSchema,
+    minor: actionHealthCountSchema,
+    info: actionHealthCountSchema,
+  })
+  .strict();
+const actionHealthCommentCountsSchema = z
+  .object({
+    inline: actionHealthCountSchema,
+    summary: actionHealthCountSchema,
+  })
+  .strict();
 
 export const actionHealthReportSchema = z
   .object({
+    protocolVersion: z.literal(1).default(1),
     actionVersion: z.string().min(1).max(80),
     configVersion: z.number().int().min(1),
+    configSource: z
+      .enum(["runtime_oidc", "static_fallback", "workflow_static"])
+      .optional(),
     providerSetupState: z.enum([
       "unknown",
       "missing",
@@ -127,6 +146,19 @@ export const actionHealthReportSchema = z
       ])
       .default("none"),
     safeErrorSummary: z.string().max(2_000).optional(),
+    findingCounts: actionHealthFindingCountsSchema.optional(),
+    commentCounts: actionHealthCommentCountsSchema.optional(),
+    skippedReasonCategory: z
+      .enum([
+        "none",
+        "fork_pr",
+        "draft_pr",
+        "bot_pr",
+        "provider_auth_missing",
+        "provider_unavailable",
+        "runtime_config_unavailable",
+      ])
+      .optional(),
     startedAt: z.string().datetime().optional(),
     finishedAt: z.string().datetime().optional(),
   })
