@@ -76,6 +76,15 @@ pnpm build
 pnpm runtime:smoke
 ```
 
+Hosted env readiness:
+
+```bash
+REVIEW_ROUTER_HOSTED_ENV_FILE=deploy/env.production.example pnpm hosted:check
+```
+
+Use a real staging/prod env file or host-provided environment variables. The
+example file should fail until placeholders are replaced.
+
 Database and protocol smoke can be included:
 
 ```bash

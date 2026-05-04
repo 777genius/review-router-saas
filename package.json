@@ -16,6 +16,8 @@
     "format:check": "prettier --check .",
     "local:bootstrap": "bash scripts/bootstrap-local.sh",
     "local:check": "bash scripts/check-local-readiness.sh",
+    "hosted:check": "node scripts/check-hosted-readiness.mjs",
+    "hosted:check:smoke": "node scripts/check-hosted-readiness-smoke.mjs",
     "beta:check": "bash scripts/check-beta-readiness.sh",
     "web:smoke": "node scripts/run-with-env.mjs node scripts/check-web-pages.mjs",
     "db:generate": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/platform-db db:generate",

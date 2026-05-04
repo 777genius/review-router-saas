@@ -96,6 +96,16 @@ dashboard when repositories are added or removed.
 
 ## Smoke After Deploy
 
+Before deploying with a prepared staging/prod env file:
+
+```bash
+REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm hosted:check
+```
+
+The hosted readiness gate rejects localhost/non-HTTPS public URLs, placeholder
+GitHub App secrets, missing private key, disabled provisioning, and provider
+credentials accidentally placed in SaaS env.
+
 Local production-runtime smoke:
 
 ```bash

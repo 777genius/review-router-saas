@@ -258,6 +258,24 @@ Expected:
 The start scripts intentionally use `node --conditions=production` so workspace
 package exports resolve to `dist/*.js` instead of source `.ts` files.
 
+### Hosted Env Readiness
+
+Before hosted staging/prod deploy, run:
+
+```bash
+REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm hosted:check
+```
+
+The gate checks production-only assumptions: public HTTPS web/API URLs,
+`REVIEW_ROUTER_PUBLIC_API_URL`, GitHub App credentials, private key custody,
+dashboard/provisioning enablement, and absence of provider secrets in SaaS env.
+
+The smoke test for the gate itself runs in `pnpm beta:check`:
+
+```bash
+pnpm hosted:check:smoke
+```
+
 ## What To Work On Next Without User Input
 
 If there is no hosted HTTPS environment yet, keep improving local/private beta.
@@ -279,6 +297,7 @@ the highest-value unblocked item and record the limitation.
 These must be closed before broad public beta:
 
 - public HTTPS web/API/worker deployment using the deploy handoff in `deploy/README.md`
+- hosted env passing `pnpm hosted:check`
 - production/staging GitHub App callback URL, setup URL, and webhook URL
 - hosted Postgres and backup/restore drill
 - true GitHub-hosted OIDC/config/health-report E2E

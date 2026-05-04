@@ -97,6 +97,15 @@ Result: passed.
 Coverage: local readiness, unit/integration tests, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke, whitespace, shell syntax.
 ```
 
+Latest hosted readiness gate smoke:
+
+```text
+Date: 2026-05-04
+Command: pnpm hosted:check:smoke
+Result: passed.
+Coverage: valid hosted env passes; SaaS env containing provider API key fails; localhost public API URL fails.
+```
+
 Latest local + DB beta gate:
 
 ```text
@@ -178,6 +187,7 @@ Result: setup PR created and merged; workflow health changed from missing to pre
 
 - deploy web/API/worker behind real HTTPS URLs
 - use `deploy/README.md` and `deploy/env.production.example` for first hosted beta rollout
+- run `REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm hosted:check` against real hosted secrets before deploy
 - configure production GitHub App callback/setup URLs
 - choose production database and backup target
 - run one restore drill against the chosen production backup target
