@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#040410"/><stop offset=".5" stop-color="#0a1024"/><stop offset="1" stop-color="#180020"/></linearGradient>
+    <radialGradient id="core" cx="66%" cy="47%" r="46%"><stop stop-color="#00e5ff" stop-opacity=".28"/><stop offset=".35" stop-color="#7b4dff" stop-opacity=".14"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="150%" height="150%"><feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000" flood-opacity=".45"/></filter>
+    <filter id="glow"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <style><![CDATA[
+      .title{font:850 56px 'IBM Plex Sans',Arial,sans-serif;fill:#f5fbff;letter-spacing:-1.7px}.sub{font:500 20px 'IBM Plex Sans',Arial,sans-serif;fill:#aeb7cf}.small{font:750 13px 'IBM Plex Mono',monospace;fill:#8defff;letter-spacing:.16em}.body{font:650 19px 'IBM Plex Sans',Arial,sans-serif;fill:#f0f8ff}.muted{font:500 16px 'IBM Plex Sans',Arial,sans-serif;fill:#909ab4}.panel{fill:#0b1022;stroke:#ffffff;stroke-opacity:.08}.cyan{fill:#00e5ff}.pink{fill:#ff42d5}.lime{fill:#b8ff4d}.line{stroke:#8defff;stroke-opacity:.25}
+    ]]></style>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg)"/><rect width="1600" height="1000" fill="url(#core)"/>
+  <text x="70" y="84" class="small">REVIEWROUTER / DASHBOARD</text><rect x="1238" y="46" width="262" height="54" rx="19" fill="#00e5ff" fill-opacity=".12" stroke="#00e5ff" stroke-opacity=".32"/><text x="1280" y="80" class="body">Install GitHub App</text>
+  <text x="70" y="168" class="title">Repository command core</text><text x="74" y="208" class="sub">A less card-heavy layout: one large command surface with embedded modules instead of many equal boxes.</text>
+  <g filter="url(#shadow)">
+    <rect x="70" y="260" width="1000" height="610" rx="44" class="panel"/><rect x="106" y="310" width="928" height="150" rx="34" fill="#101832" stroke="#ffffff" stroke-opacity=".08"/><text x="142" y="360" class="small">NEXT ACTION</text><text x="142" y="414" font-family="IBM Plex Sans,Arial" font-size="48" font-weight="850" fill="#f5fbff" letter-spacing="-1.2">Start with one selected repo.</text><rect x="780" y="346" width="206" height="58" rx="20" class="cyan"/><text x="822" y="382" font-family="IBM Plex Sans,Arial" font-size="19" font-weight="850" fill="#031018">Sign in</text>
+    <g transform="translate(136 522)"><circle cx="0" cy="0" r="20" class="cyan" filter="url(#glow)"/><line x1="0" y1="30" x2="0" y2="104" class="line" stroke-width="2"/><circle cx="0" cy="132" r="20" fill="#101832" stroke="#8defff"/><line x1="0" y1="164" x2="0" y2="238" class="line" stroke-width="2"/><circle cx="0" cy="266" r="20" fill="#101832" stroke="#ff42d5"/><text x="48" y="7" class="body">Sign in with GitHub</text><text x="48" y="139" class="body">Install App on selected repositories</text><text x="48" y="273" class="body">Create and merge setup PR</text></g>
+    <rect x="586" y="512" width="406" height="260" rx="32" fill="#071122" stroke="#8defff" stroke-opacity=".16"/><text x="620" y="562" class="small">BOUNDARY MAP</text><rect x="620" y="594" width="334" height="42" rx="14" fill="#00e5ff" fill-opacity=".10"/><text x="644" y="622" class="muted">ReviewRouter stores install metadata</text><rect x="620" y="650" width="334" height="42" rx="14" fill="#b8ff4d" fill-opacity=".10"/><text x="644" y="678" class="muted">Secrets stay in GitHub Actions</text><rect x="620" y="706" width="334" height="42" rx="14" fill="#ff42d5" fill-opacity=".10"/><text x="644" y="734" class="muted">Codex runs in customer CI</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="1110" y="260" width="390" height="178" rx="34" class="panel"/><text x="1144" y="312" class="small">WORKSPACES</text><text x="1144" y="376" font-family="IBM Plex Sans,Arial" font-size="68" font-weight="850" fill="#f5fbff">0</text><text x="1238" y="368" class="muted">selected repos</text>
+    <rect x="1110" y="466" width="390" height="178" rx="34" class="panel"/><text x="1144" y="518" class="small">PROVIDER</text><text x="1144" y="574" class="body">Codex OAuth</text><text x="1144" y="606" class="muted">gpt-5.5 - medium</text><circle cx="1442" cy="542" r="12" class="lime"/>
+    <rect x="1110" y="672" width="390" height="198" rx="34" class="panel"/><text x="1144" y="724" class="small">SYSTEM STATE</text><text x="1144" y="780" class="body">Read-only dashboard</text><text x="1144" y="812" class="muted">Sign in to request syncs or setup PRs.</text>
+  </g>
+  <text x="70" y="952" class="muted">Variant 3B - Command Core: fewer cards, more composed dashboard surface, strongest fix for “too many flat blocks”</text>
+</svg>

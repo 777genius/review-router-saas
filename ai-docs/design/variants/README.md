@@ -25,3 +25,27 @@ File: `dashboard-variant-3-cyber-saas.svg`
 🎯 9   🛡️ 9   🧠 4
 
 Most practical for public beta: still futuristic, but cleaner and easier to scan. Best default direction unless we deliberately want a more aggressive cyberpunk cockpit.
+
+## Variant 3A - Layered Cyber SaaS Console
+
+File: `dashboard-variant-3a-layered-console.svg`
+
+🎯 9   🛡️ 9   🧠 5
+
+Keeps the selected Variant 3 direction, but fixes flatness with layered cards, inset panels, status chips, and a stronger right-side trust panel.
+
+## Variant 3B - Command Core
+
+File: `dashboard-variant-3b-command-core.svg`
+
+🎯 8   🛡️ 8   🧠 6
+
+Reduces the number of equal cards. One large command surface carries the onboarding flow, with smaller side modules for state and provider details.
+
+## Variant 3C - Dense Glass Cards
+
+File: `dashboard-variant-3c-dense-glass.svg`
+
+🎯 8   🛡️ 9   🧠 5
+
+Keeps the card-based SaaS dashboard, but each card has inner structure, bigger material depth, and clearer visual texture.
