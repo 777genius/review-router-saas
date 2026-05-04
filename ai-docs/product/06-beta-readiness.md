@@ -5,6 +5,9 @@
 Status: private/local beta is functionally validated for the intended v1 model:
 SaaS control plane plus review execution inside customer GitHub Actions.
 
+For the consolidated definition of done, first tester demo checklist, validation
+commands, and launch blockers, use [Beta Runbook](../BETA_RUNBOOK.md).
+
 Validated on real GitHub repositories:
 
 - fresh repository creation under the authenticated owner

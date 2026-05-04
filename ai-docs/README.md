@@ -7,29 +7,30 @@ This folder is the canonical planning and architecture knowledge base for Review
 1. [Agent Start Here](./AGENT_START_HERE.md)
 2. [Root Plan](./ROOT_PLAN.md)
 3. [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md)
-4. [Local Setup Checklist](./LOCAL_SETUP_CHECKLIST.md)
-5. [Context Summary](./context-summary.md)
-6. [Architecture Overview](./architecture/01-system-overview.md)
-7. [Implementation Principles](./appendices/implementation-principles.md)
-8. [Blocker Handling](./appendices/blocker-handling.md)
-9. [Iteration Roadmap](./iterations/00-roadmap.md)
-10. [Decision Records](./decisions/README.md)
-11. [Control Plane Protocol](./architecture/10-control-plane-protocol.md)
-12. [Generated Workflow Security](./architecture/15-generated-workflow-security.md)
-13. [Secret and Trust Model](./architecture/20-secret-and-trust-model.md)
-14. [Data Classification](./architecture/22-data-classification.md)
-15. [Control Plane Outage Mode](./architecture/27-control-plane-outage-mode.md)
-16. [Product Positioning](./product/01-positioning.md)
-17. [Risk Register](./risks/01-risk-register.md)
-18. [GitHub/OIDC Reality Spike](./spikes/github-app-oidc-reality-spike.md)
-19. [Review Agent Runtime Architecture](./architecture/31-review-agent-runtime-architecture.md)
-20. [Provider Config Control Plane](./architecture/32-provider-config-control-plane.md)
-21. [Codex Secret Seeding](./architecture/33-codex-secret-seeding.md)
-22. [Tenant Isolation Invariants](./architecture/34-tenant-isolation-invariants.md)
-23. [Dashboard Frontend Architecture](./architecture/35-dashboard-frontend-architecture.md)
-24. [UI Component Wrapper Conventions](./architecture/36-ui-component-wrapper-conventions.md)
-25. [Frontend Clean Architecture](./architecture/37-frontend-clean-architecture.md)
-26. [Visual Direction](./product/08-visual-direction.md)
+4. [Beta Runbook](./BETA_RUNBOOK.md)
+5. [Local Setup Checklist](./LOCAL_SETUP_CHECKLIST.md)
+6. [Context Summary](./context-summary.md)
+7. [Architecture Overview](./architecture/01-system-overview.md)
+8. [Implementation Principles](./appendices/implementation-principles.md)
+9. [Blocker Handling](./appendices/blocker-handling.md)
+10. [Iteration Roadmap](./iterations/00-roadmap.md)
+11. [Decision Records](./decisions/README.md)
+12. [Control Plane Protocol](./architecture/10-control-plane-protocol.md)
+13. [Generated Workflow Security](./architecture/15-generated-workflow-security.md)
+14. [Secret and Trust Model](./architecture/20-secret-and-trust-model.md)
+15. [Data Classification](./architecture/22-data-classification.md)
+16. [Control Plane Outage Mode](./architecture/27-control-plane-outage-mode.md)
+17. [Product Positioning](./product/01-positioning.md)
+18. [Risk Register](./risks/01-risk-register.md)
+19. [GitHub/OIDC Reality Spike](./spikes/github-app-oidc-reality-spike.md)
+20. [Review Agent Runtime Architecture](./architecture/31-review-agent-runtime-architecture.md)
+21. [Provider Config Control Plane](./architecture/32-provider-config-control-plane.md)
+22. [Codex Secret Seeding](./architecture/33-codex-secret-seeding.md)
+23. [Tenant Isolation Invariants](./architecture/34-tenant-isolation-invariants.md)
+24. [Dashboard Frontend Architecture](./architecture/35-dashboard-frontend-architecture.md)
+25. [UI Component Wrapper Conventions](./architecture/36-ui-component-wrapper-conventions.md)
+26. [Frontend Clean Architecture](./architecture/37-frontend-clean-architecture.md)
+27. [Visual Direction](./product/08-visual-direction.md)
 
 ## Folder Map
 
@@ -44,7 +45,7 @@ This folder is the canonical planning and architecture knowledge base for Review
 
 ## Implementation Handoff
 
-New agents should start with [Agent Start Here](./AGENT_START_HERE.md), then follow [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md). Together they summarize the current repo state, locked decisions, implementation order, forbidden work, commands, and definition of done.
+New agents should start with [Agent Start Here](./AGENT_START_HERE.md), then follow [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md). For beta completion, demo, and validation work, use [Beta Runbook](./BETA_RUNBOOK.md) as the single operational checklist. Together they summarize the current repo state, locked decisions, implementation order, forbidden work, commands, and definition of done.
 
 If an agent is blocked by a missing external action, it should follow [Blocker Handling](./appendices/blocker-handling.md) and continue with unblocked useful work.
 

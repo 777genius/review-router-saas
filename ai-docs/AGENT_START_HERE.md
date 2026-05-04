@@ -30,6 +30,11 @@ The current implementation focus is beta hardening across [Iteration 08](./itera
 
 For the full end-to-end build sequence, follow [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md).
 
+For local/private beta completion, demo, and validation work, follow
+[Beta Runbook](./BETA_RUNBOOK.md). It contains the definition of done, first
+tester checklist, validation commands, launch blockers, and the current honest
+status wording.
+
 If blocked, follow [Blocker Handling](./appendices/blocker-handling.md) and continue with unblocked tests, contracts, mocks, docs, or adjacent tasks instead of waiting silently.
 
 ## Decision Hierarchy
@@ -52,10 +57,11 @@ Read these first:
 1. [Root Plan](./ROOT_PLAN.md)
 2. [Context Summary](./context-summary.md)
 3. [Implementation Playbook](./IMPLEMENTATION_PLAYBOOK.md)
-4. [Implementation Principles](./appendices/implementation-principles.md)
-5. [Blocker Handling](./appendices/blocker-handling.md)
-6. [Iteration Roadmap](./iterations/00-roadmap.md)
-7. The current iteration file.
+4. [Beta Runbook](./BETA_RUNBOOK.md)
+5. [Implementation Principles](./appendices/implementation-principles.md)
+6. [Blocker Handling](./appendices/blocker-handling.md)
+7. [Iteration Roadmap](./iterations/00-roadmap.md)
+8. The current iteration file.
 
 If touching frontend, also read:
 
