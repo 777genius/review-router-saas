@@ -153,6 +153,9 @@ jobs:
       - name: Hosted readiness smoke
         run: pnpm hosted:check:smoke
 
+      - name: Public beta readiness smoke
+        run: pnpm public-beta:check:smoke
+
       - name: Whitespace check
         run: git diff --check
 

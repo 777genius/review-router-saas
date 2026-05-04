@@ -36,6 +36,7 @@ run_step "local bootstrap shell syntax" bash -n scripts/bootstrap-local.sh
 run_step "public beta readiness shell syntax" bash -n scripts/check-public-beta-readiness.sh
 run_step "GitHub App readiness script syntax" node --check scripts/check-github-app-readiness.mjs
 run_step "hosted readiness smoke" run_pnpm hosted:check:smoke
+run_step "public beta readiness smoke" run_pnpm public-beta:check:smoke
 
 if [[ "${REVIEW_ROUTER_BETA_CHECK_DB_E2E:-0}" == "1" ]]; then
   run_step "migration smoke" run_pnpm db:migrate:smoke
