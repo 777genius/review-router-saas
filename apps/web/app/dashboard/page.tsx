@@ -54,6 +54,7 @@ import {
   summarizeWorkspaceHealth,
 } from "../../src/server/repository-health-view";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
+import { FormSubmitButton } from "../form-submit-button";
 import { LogoMark } from "../logo-mark";
 
 export const dynamic = "force-dynamic";
@@ -1109,8 +1110,7 @@ function RepositoryTable({
                         name="repositoryId"
                         value={repository.id}
                       />
-                      <Button
-                        type="submit"
+                      <FormSubmitButton
                         variant="soft"
                         size="sm"
                         disabled={
@@ -1119,13 +1119,17 @@ function RepositoryTable({
                           repository.archived ||
                           workflowCurrent
                         }
-                      >
-                        {workflowCurrent
-                          ? "Installed"
-                          : repository.setupStatus === "setup_pr_open"
-                            ? "Update PR"
-                            : "Create setup PR"}
-                      </Button>
+                        idleLabel={
+                          workflowCurrent
+                            ? "Installed"
+                            : setupPrButtonLabel(repository.setupStatus)
+                        }
+                        pendingLabel={
+                          repository.setupStatus === "setup_pr_open"
+                            ? "Updating setup PR..."
+                            : "Creating setup PR..."
+                        }
+                      />
                     </form>
                   </td>
                 </tr>
@@ -1589,6 +1593,12 @@ function workflowSetupAlreadyCurrent(status: string | undefined): boolean {
     "provider_unhealthy",
     "provider_report_stale",
   ].includes(status ?? "");
+}
+
+function setupPrButtonLabel(setupStatus: string): string {
+  return setupStatus === "setup_pr_open"
+    ? "Update setup PR"
+    : "Create setup PR";
 }
 
 function appInstallUrlForWorkspace(

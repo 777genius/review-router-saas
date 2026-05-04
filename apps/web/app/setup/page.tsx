@@ -1,4 +1,4 @@
-import { Badge, Button, Card, LinkButton } from "@reviewrouter/ui";
+import { Badge, Card, LinkButton } from "@reviewrouter/ui";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -11,7 +11,9 @@ import {
   createSetupPullRequestAction,
   requestInstallationSyncAction,
 } from "../dashboard/actions";
+import { FormSubmitButton } from "../form-submit-button";
 import { LogoMark } from "../logo-mark";
+import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +44,7 @@ export default async function SetupPage({
     setupAction,
     signedIn: mutationStatus.signedIn,
   });
+  const resultNotice = buildSetupResultNotice(params);
   const installation =
     mutationStatus.signedIn && installationId
       ? await loadSetupInstallation({ installationId, workspaceScope })
@@ -100,6 +103,8 @@ export default async function SetupPage({
         </div>
       </section>
 
+      {resultNotice ? <SetupResultNotice notice={resultNotice} /> : null}
+
       {!mutationStatus.signedIn ? (
         <Card className="rounded-2xl p-5 sm:p-6">
           <Badge tone="accent">Next</Badge>
@@ -116,6 +121,7 @@ export default async function SetupPage({
         <SignedInSetup
           installation={installation}
           mutationsEnabled={mutationStatus.enabled}
+          setupAction={setupAction}
         />
       ) : (
         <SetupStepCard
@@ -139,9 +145,11 @@ export default async function SetupPage({
 function SignedInSetup({
   installation,
   mutationsEnabled,
+  setupAction,
 }: {
   readonly installation: SetupInstallation;
   readonly mutationsEnabled: boolean;
+  readonly setupAction: string;
 }): React.ReactElement {
   return (
     <div className="grid gap-6">
@@ -151,6 +159,10 @@ function SignedInSetup({
         body={`${installation.accountLogin} is connected. Import the selected repositories, then create a workflow setup PR for the repo you want to test first.`}
         primary={
           <form action={requestInstallationSyncAction}>
+            <SetupReturnFields
+              installationId={installation.githubInstallationId}
+              setupAction={setupAction}
+            />
             <input
               type="hidden"
               name="workspaceId"
@@ -161,9 +173,11 @@ function SignedInSetup({
               name="githubInstallationId"
               value={installation.githubInstallationId}
             />
-            <Button type="submit" disabled={!mutationsEnabled}>
-              Sync repositories
-            </Button>
+            <FormSubmitButton
+              disabled={!mutationsEnabled}
+              idleLabel="Sync repositories"
+              pendingLabel="Syncing repositories..."
+            />
           </form>
         }
         secondary={
@@ -210,6 +224,16 @@ function SignedInSetup({
                     {repository.visibility} / {repository.defaultBranch} /{" "}
                     {repository.setupStatus.replaceAll("_", " ")}
                   </p>
+                  {repository.setupPullRequestUrl ? (
+                    <a
+                      className="mt-2 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                      href={repository.setupPullRequestUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open existing setup PR
+                    </a>
+                  ) : null}
                 </div>
                 <form action={createSetupPullRequestAction}>
                   <input
@@ -217,22 +241,29 @@ function SignedInSetup({
                     name="workspaceId"
                     value={installation.workspace.id}
                   />
+                  <SetupReturnFields
+                    installationId={installation.githubInstallationId}
+                    setupAction={setupAction}
+                  />
                   <input
                     type="hidden"
                     name="repositoryId"
                     value={repository.id}
                   />
-                  <Button
-                    type="submit"
+                  <FormSubmitButton
                     size="sm"
                     disabled={
                       !mutationsEnabled ||
                       !repository.selected ||
                       repository.archived
                     }
-                  >
-                    Create setup PR
-                  </Button>
+                    idleLabel={setupPrButtonLabel(repository.setupStatus)}
+                    pendingLabel={
+                      repository.setupStatus === "setup_pr_open"
+                        ? "Updating setup PR..."
+                        : "Creating setup PR..."
+                    }
+                  />
                 </form>
               </div>
             ))}
@@ -275,6 +306,155 @@ function SetupStepCard({
   );
 }
 
+function SetupResultNotice({
+  notice,
+}: {
+  readonly notice: {
+    readonly tone: "success" | "warning" | "danger" | "accent";
+    readonly title: string;
+    readonly body: string;
+    readonly prUrl?: string;
+  };
+}): React.ReactElement {
+  return (
+    <Card className="rounded-2xl border-cyan-200/15 p-5 sm:p-6">
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <div>
+          <Badge tone={notice.tone}>{notice.title}</Badge>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-200">
+            {notice.body}
+          </p>
+        </div>
+        {notice.prUrl ? (
+          <LinkButton href={notice.prUrl} target="_blank" rel="noreferrer">
+            Open setup PR
+          </LinkButton>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
+function SetupReturnFields({
+  installationId,
+  setupAction,
+}: {
+  readonly installationId: string;
+  readonly setupAction: string;
+}): React.ReactElement {
+  return (
+    <>
+      <input type="hidden" name="returnTo" value="setup" />
+      <input type="hidden" name="installation_id" value={installationId} />
+      <input
+        type="hidden"
+        name="setup_action"
+        value={setupAction || "install"}
+      />
+    </>
+  );
+}
+
+function setupPrButtonLabel(setupStatus: string): string {
+  return setupStatus === "setup_pr_open"
+    ? "Update setup PR"
+    : "Create setup PR";
+}
+
+function buildSetupResultNotice(
+  params: Record<string, string | string[] | undefined>,
+): {
+  readonly tone: "success" | "warning" | "danger" | "accent";
+  readonly title: string;
+  readonly body: string;
+  readonly prUrl?: string;
+} | null {
+  const notice = readParam(params.notice);
+  const error = readParam(params.error);
+  const repository = readParam(params.repository);
+  const prUrl = safeGitHubDashboardLink(readParam(params.pr)) ?? "";
+
+  if (error) {
+    return {
+      tone: "danger",
+      title: "Action needs attention",
+      body: setupErrorText(error),
+    };
+  }
+
+  switch (notice) {
+    case "sync_requested":
+      return {
+        tone: "success",
+        title: "Repository sync queued",
+        body: "ReviewRouter queued a repository sync. If the list does not update immediately, refresh this page after the worker processes the event.",
+      };
+    case "sync_already_requested":
+      return {
+        tone: "accent",
+        title: "Repository sync already queued",
+        body: "A repository sync was already requested recently. Refresh this page in a few seconds.",
+      };
+    case "setup_pr_ready":
+      return stripUndefinedPrUrl({
+        tone: "success",
+        title: "Setup PR is ready",
+        body: repository
+          ? `ReviewRouter opened or updated the setup PR for ${repository}. Merge it to install the workflow.`
+          : "ReviewRouter opened or updated the setup PR. Merge it to install the workflow.",
+        prUrl,
+      });
+    case "workflow_already_current":
+      return {
+        tone: "success",
+        title: "Workflow already installed",
+        body: repository
+          ? `The ReviewRouter workflow is already current for ${repository}.`
+          : "The ReviewRouter workflow is already current.",
+      };
+    default:
+      return null;
+  }
+}
+
+function stripUndefinedPrUrl(input: {
+  readonly tone: "success" | "warning" | "danger" | "accent";
+  readonly title: string;
+  readonly body: string;
+  readonly prUrl: string;
+}): {
+  readonly tone: "success" | "warning" | "danger" | "accent";
+  readonly title: string;
+  readonly body: string;
+  readonly prUrl?: string;
+} {
+  if (!input.prUrl) {
+    return {
+      tone: input.tone,
+      title: input.title,
+      body: input.body,
+    };
+  }
+  return input;
+}
+
+function setupErrorText(error: string): string {
+  switch (error) {
+    case "repository_not_selected":
+      return "This repository is not selected for the GitHub App installation.";
+    case "repository_archived":
+      return "Archived repositories cannot receive setup PRs.";
+    case "operation_already_running":
+      return "The same operation is already running. Wait a few seconds and refresh.";
+    case "rate_limited":
+      return "This action hit the beta rate limit. Wait a bit before retrying.";
+    case "server_misconfigured":
+      return "Server setup is incomplete. Check GitHub App credentials and public API URL.";
+    default:
+      return "The action failed. Check the dashboard diagnostics or retry after refreshing.";
+  }
+}
+
 async function loadSetupInstallation(input: {
   readonly installationId: string;
   readonly workspaceScope: DashboardWorkspaceScope;
@@ -315,6 +495,11 @@ async function loadSetupInstallation(input: {
           selected: true,
           archived: true,
           setupStatus: true,
+          provisioning: {
+            orderBy: { updatedAt: "desc" },
+            take: 1,
+            select: { pullRequestUrl: true },
+          },
         },
       },
       _count: { select: { repositories: true } },
@@ -330,7 +515,13 @@ async function loadSetupInstallation(input: {
     accountType: installation.accountType,
     repositorySelection: installation.repositorySelection,
     repositoryCount: installation._count.repositories,
-    repositories: installation.repositories,
+    repositories: installation.repositories.map((repository) => ({
+      ...repository,
+      setupPullRequestUrl: safeGitHubDashboardLink(
+        repository.provisioning[0]?.pullRequestUrl ?? "",
+      ),
+      provisioning: undefined,
+    })),
   };
 }
 

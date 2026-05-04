@@ -117,7 +117,8 @@ export async function requestInstallationSyncAction(
   }
 
   revalidatePath("/dashboard");
-  redirectWithParams(params);
+  revalidatePath("/setup");
+  redirectAfterMutation(formData, params);
 }
 
 export async function createSetupPullRequestAction(
@@ -238,7 +239,8 @@ export async function createSetupPullRequestAction(
   }
 
   revalidatePath("/dashboard");
-  redirectWithParams(params);
+  revalidatePath("/setup");
+  redirectAfterMutation(formData, params);
 }
 
 export async function saveWorkspaceReviewConfigAction(
@@ -632,6 +634,22 @@ function redirectWithParams(params: Record<string, string>): never {
   redirect(`/dashboard?${new URLSearchParams(params).toString()}`);
 }
 
+function redirectAfterMutation(
+  formData: FormData,
+  params: Record<string, string>,
+): never {
+  if (readOptionalFormString(formData, "returnTo") === "setup") {
+    const query = new URLSearchParams(params);
+    const installationId = readOptionalFormString(formData, "installation_id");
+    const setupAction = readOptionalFormString(formData, "setup_action");
+    if (installationId) query.set("installation_id", installationId);
+    if (setupAction) query.set("setup_action", setupAction);
+    redirect(`/setup?${query.toString()}`);
+  }
+
+  redirectWithParams(params);
+}
+
 function safeDashboardErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : "unknown_error";
   if (message.startsWith("workspace_mutation_forbidden:")) {
@@ -679,4 +697,9 @@ function safeDashboardErrorCode(error: unknown): string {
     return "operation_already_running";
   }
   return "github_operation_failed";
+}
+
+function readOptionalFormString(formData: FormData, key: string): string {
+  const value = formData.get(key);
+  return typeof value === "string" ? value : "";
 }
