@@ -261,7 +261,7 @@ Priority order:
 3. Improve health/readiness status wording in dashboard.
 4. Add tests for any untested behavior in iterations 08-11.
 5. Update docs/runbooks when behavior changes.
-6. Prepare deploy templates and env examples, but do not pretend hosted E2E is done.
+6. Keep deploy templates and env examples accurate, but do not pretend hosted E2E is done.
 
 Do not wait for the user if a hosted dependency blocks only one path. Switch to
 the highest-value unblocked item and record the limitation.
@@ -270,7 +270,7 @@ the highest-value unblocked item and record the limitation.
 
 These must be closed before broad public beta:
 
-- public HTTPS web/API/worker deployment
+- public HTTPS web/API/worker deployment using the deploy handoff in `deploy/README.md`
 - production/staging GitHub App callback URL, setup URL, and webhook URL
 - hosted Postgres and backup/restore drill
 - true GitHub-hosted OIDC/config/health-report E2E

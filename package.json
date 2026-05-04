@@ -8,6 +8,7 @@
     "web:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/web dev",
     "api:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/api dev",
     "worker:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/worker dev",
+    "web:start": "pnpm --filter @reviewrouter/web exec next start",
     "build": "turbo run build && node scripts/rewrite-dist-esm-imports.mjs",
     "typecheck": "turbo run typecheck && tsc --noEmit -p tsconfig.spikes.json",
     "test": "vitest run",

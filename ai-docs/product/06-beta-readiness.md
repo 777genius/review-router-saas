@@ -164,6 +164,7 @@ Result: setup PR created and merged; workflow health changed from missing to pre
 ## Remaining Before Public Launch
 
 - deploy web/API/worker behind real HTTPS URLs
+- use `deploy/README.md` and `deploy/env.production.example` for first hosted beta rollout
 - configure production GitHub App callback/setup URLs
 - choose production database and backup target
 - run one restore drill against the chosen production backup target

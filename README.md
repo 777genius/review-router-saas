@@ -47,12 +47,23 @@ New implementation agents should read:
 The current implementation focus is beta hardening across iterations 08-11,
 not rebuilding the foundation from scratch.
 
+For hosted beta handoff, read [`deploy/README.md`](./deploy/README.md) and use
+[`deploy/env.production.example`](./deploy/env.production.example) as the env
+template.
+
 ## Local Checks
 
 Baseline:
 
 ```bash
 pnpm beta:check
+```
+
+Compiled production runtime smoke:
+
+```bash
+pnpm build
+pnpm runtime:smoke
 ```
 
 Database and protocol smoke can be included:
