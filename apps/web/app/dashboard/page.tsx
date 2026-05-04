@@ -1244,6 +1244,34 @@ function RepositoryTable({
     );
   }
 
+  const rows = repositories.map((repository) => {
+    const repositoryHealth = health.find(
+      (item) => item.repositoryId === repository.id,
+    );
+    const healthView = describeRepositoryHealth(
+      repositoryHealth?.status,
+      repositoryHealth?.summary,
+    );
+    const repositoryProvisioning = provisioning.find(
+      (item) => item.repositoryId === repository.id,
+    );
+    const setupPullRequestUrl = safeGitHubDashboardLink(
+      repositoryProvisioning?.pullRequestUrl ?? "",
+    );
+    const workflowCurrent = workflowSetupAlreadyCurrent(
+      repositoryHealth?.status,
+    );
+
+    return {
+      repository,
+      repositoryHealth,
+      repositoryProvisioning,
+      healthView,
+      setupPullRequestUrl,
+      workflowCurrent,
+    };
+  });
+
   return (
     <div className="overflow-hidden rounded-2xl border border-cyan-200/10 bg-slate-950/55">
       <div className="border-b border-cyan-200/10 p-4">
@@ -1252,7 +1280,103 @@ function RepositoryTable({
           Main actions live here. Policy and diagnostics are below.
         </p>
       </div>
-      <div className="overflow-x-auto">
+      <div className="grid gap-3 p-3 lg:hidden">
+        {rows.map(
+          ({
+            repository,
+            repositoryHealth,
+            repositoryProvisioning,
+            healthView,
+            setupPullRequestUrl,
+            workflowCurrent,
+          }) => (
+            <div
+              key={repository.id}
+              className={[
+                "grid gap-4 rounded-2xl border border-cyan-200/10 bg-slate-950/70 p-4",
+                repository.selected ? "" : "opacity-50",
+              ].join(" ")}
+            >
+              <div className="min-w-0">
+                <p className="break-words font-medium text-cyan-50">
+                  {repository.fullName}
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <RepositoryVisibilityBadge
+                    visibility={repository.visibility}
+                  />
+                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
+                    {repository.defaultBranch}
+                  </span>
+                  {repository.archived ? (
+                    <Badge tone="warning">Archived</Badge>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
+                    Setup
+                  </p>
+                  <p className="mt-1 text-sm text-slate-200">
+                    {repository.setupStatus.replaceAll("_", " ")}
+                  </p>
+                  {setupPullRequestUrl ? (
+                    <a
+                      className="mt-1 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                      href={setupPullRequestUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open setup PR
+                    </a>
+                  ) : null}
+                  {repositoryProvisioning?.errorMessage ? (
+                    <span className="mt-1 block text-xs text-red-200">
+                      {repositoryProvisioning.errorMessage.slice(0, 120)}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div>
+                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
+                    Health
+                  </p>
+                  <div className="mt-2">
+                    <Badge tone={healthView.tone}>{healthView.label}</Badge>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-slate-300">
+                    {healthView.summary}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    Next: {healthView.nextAction}
+                  </p>
+                  {repositoryHealth?.latestActionHealthTelemetry ? (
+                    <p className="mt-1 text-[11px] leading-5 text-cyan-100/80">
+                      Latest run:{" "}
+                      {formatActionHealthTelemetry(
+                        repositoryHealth.latestActionHealthTelemetry,
+                      )}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              <RepositorySetupActionForm
+                workspaceId={workspace.id}
+                repositoryId={repository.id}
+                selected={repository.selected}
+                archived={repository.archived}
+                setupStatus={repository.setupStatus}
+                workflowCurrent={workflowCurrent}
+                mutationsEnabled={mutationsEnabled}
+              />
+            </div>
+          ),
+        )}
+      </div>
+      <div className="hidden overflow-x-auto lg:block">
         <table className="w-full min-w-[860px] text-left text-sm">
           <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
             <tr>
@@ -1263,122 +1387,130 @@ function RepositoryTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-cyan-200/10 text-slate-200">
-            {repositories.map((repository) => {
-              const repositoryHealth = health.find(
-                (item) => item.repositoryId === repository.id,
-              );
-              const healthView = describeRepositoryHealth(
-                repositoryHealth?.status,
-                repositoryHealth?.summary,
-              );
-              const repositoryProvisioning = provisioning.find(
-                (item) => item.repositoryId === repository.id,
-              );
-              const setupPullRequestUrl = safeGitHubDashboardLink(
-                repositoryProvisioning?.pullRequestUrl ?? "",
-              );
-              const workflowCurrent = workflowSetupAlreadyCurrent(
-                repositoryHealth?.status,
-              );
-              return (
-                <tr
-                  key={repository.id}
-                  className={repository.selected ? "" : "opacity-50"}
-                >
-                  <td className="px-4 py-4 align-top">
-                    <p className="font-medium text-cyan-50">
-                      {repository.fullName}
-                    </p>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <RepositoryVisibilityBadge
-                        visibility={repository.visibility}
-                      />
-                      <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
-                        {repository.defaultBranch}
+            {rows.map(
+              ({
+                repository,
+                repositoryHealth,
+                repositoryProvisioning,
+                healthView,
+                setupPullRequestUrl,
+                workflowCurrent,
+              }) => {
+                return (
+                  <tr
+                    key={repository.id}
+                    className={repository.selected ? "" : "opacity-50"}
+                  >
+                    <td className="px-4 py-4 align-top">
+                      <p className="font-medium text-cyan-50">
+                        {repository.fullName}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <RepositoryVisibilityBadge
+                          visibility={repository.visibility}
+                        />
+                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
+                          {repository.defaultBranch}
+                        </span>
+                        {repository.archived ? (
+                          <Badge tone="warning">Archived</Badge>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 align-top">
+                      <span className="block text-sm">
+                        {repository.setupStatus.replaceAll("_", " ")}
                       </span>
-                      {repository.archived ? (
-                        <Badge tone="warning">Archived</Badge>
+                      {setupPullRequestUrl ? (
+                        <a
+                          className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                          href={setupPullRequestUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open setup PR
+                        </a>
                       ) : null}
-                    </div>
-                  </td>
-                  <td className="px-4 py-4 align-top">
-                    <span className="block text-sm">
-                      {repository.setupStatus.replaceAll("_", " ")}
-                    </span>
-                    {setupPullRequestUrl ? (
-                      <a
-                        className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                        href={setupPullRequestUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open setup PR
-                      </a>
-                    ) : null}
-                    {repositoryProvisioning?.errorMessage ? (
-                      <span className="mt-1 block text-xs text-red-200">
-                        {repositoryProvisioning.errorMessage.slice(0, 120)}
+                      {repositoryProvisioning?.errorMessage ? (
+                        <span className="mt-1 block text-xs text-red-200">
+                          {repositoryProvisioning.errorMessage.slice(0, 120)}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-4 align-top">
+                      <Badge tone={healthView.tone}>{healthView.label}</Badge>
+                      <span className="mt-2 block text-xs leading-5 text-slate-300">
+                        {healthView.summary}
                       </span>
-                    ) : null}
-                  </td>
-                  <td className="px-4 py-4 align-top">
-                    <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                    <span className="mt-2 block text-xs leading-5 text-slate-300">
-                      {healthView.summary}
-                    </span>
-                    <span className="mt-1 block text-xs leading-5 text-slate-500">
-                      Next: {healthView.nextAction}
-                    </span>
-                    {repositoryHealth?.latestActionHealthTelemetry ? (
-                      <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
-                        Latest run:{" "}
-                        {formatActionHealthTelemetry(
-                          repositoryHealth.latestActionHealthTelemetry,
-                        )}
+                      <span className="mt-1 block text-xs leading-5 text-slate-500">
+                        Next: {healthView.nextAction}
                       </span>
-                    ) : null}
-                  </td>
-                  <td className="px-4 py-4 align-top">
-                    <form action={createSetupPullRequestAction}>
-                      <input
-                        type="hidden"
-                        name="workspaceId"
-                        value={workspace.id}
+                      {repositoryHealth?.latestActionHealthTelemetry ? (
+                        <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
+                          Latest run:{" "}
+                          {formatActionHealthTelemetry(
+                            repositoryHealth.latestActionHealthTelemetry,
+                          )}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-4 align-top">
+                      <RepositorySetupActionForm
+                        workspaceId={workspace.id}
+                        repositoryId={repository.id}
+                        selected={repository.selected}
+                        archived={repository.archived}
+                        setupStatus={repository.setupStatus}
+                        workflowCurrent={workflowCurrent}
+                        mutationsEnabled={mutationsEnabled}
                       />
-                      <input
-                        type="hidden"
-                        name="repositoryId"
-                        value={repository.id}
-                      />
-                      <FormSubmitButton
-                        variant="soft"
-                        size="sm"
-                        disabled={
-                          !mutationsEnabled ||
-                          !repository.selected ||
-                          repository.archived ||
-                          workflowCurrent
-                        }
-                        idleLabel={
-                          workflowCurrent
-                            ? "Installed"
-                            : setupPrButtonLabel(repository.setupStatus)
-                        }
-                        pendingLabel={
-                          repository.setupStatus === "setup_pr_open"
-                            ? "Updating setup PR..."
-                            : "Creating setup PR..."
-                        }
-                      />
-                    </form>
-                  </td>
-                </tr>
-              );
-            })}
+                    </td>
+                  </tr>
+                );
+              },
+            )}
           </tbody>
         </table>
       </div>
     </div>
+  );
+}
+
+function RepositorySetupActionForm({
+  workspaceId,
+  repositoryId,
+  selected,
+  archived,
+  setupStatus,
+  workflowCurrent,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly selected: boolean;
+  readonly archived: boolean;
+  readonly setupStatus: string;
+  readonly workflowCurrent: boolean;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  return (
+    <form action={createSetupPullRequestAction}>
+      <input type="hidden" name="workspaceId" value={workspaceId} />
+      <input type="hidden" name="repositoryId" value={repositoryId} />
+      <FormSubmitButton
+        variant="soft"
+        size="sm"
+        disabled={!mutationsEnabled || !selected || archived || workflowCurrent}
+        idleLabel={
+          workflowCurrent ? "Installed" : setupPrButtonLabel(setupStatus)
+        }
+        pendingLabel={
+          setupStatus === "setup_pr_open"
+            ? "Updating setup PR..."
+            : "Creating setup PR..."
+        }
+      />
+    </form>
   );
 }
 
