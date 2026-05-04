@@ -18,6 +18,13 @@ postgres - managed Postgres
 Web and API can share one deployment target for a small beta, but keep their
 commands separate so they can scale independently later.
 
+## Render Blueprint
+
+Render is the preferred first hosted beta target. The root `render.yaml`
+defines web/API/worker/Postgres plus a shared env group. See
+[`deploy/render.md`](./render.md) for the exact Blueprint flow and post-sync
+GitHub App settings.
+
 ## Build
 
 ```bash
