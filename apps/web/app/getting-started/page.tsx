@@ -1,9 +1,9 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 
-const repoCodexCommand =
-  "REVIEW_ROUTER_REPO=owner/repo bash scripts/seed-codex-auth.sh";
-const orgCodexCommand =
-  "REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash scripts/seed-codex-auth.sh";
+const seedScriptUrl =
+  "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh";
+const repoCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_REPO=owner/repo bash`;
+const orgCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`;
 const openAiKeyCommand =
   "gh secret set OPENAI_API_KEY --repo owner/repo --app actions";
 const openRouterKeyCommand =

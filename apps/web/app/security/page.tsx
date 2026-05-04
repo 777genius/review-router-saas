@@ -1,6 +1,7 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 
-const secretCommand = "bash scripts/seed-codex-auth.sh";
+const secretCommand =
+  "curl -fsSL https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh | REVIEW_ROUTER_REPO=owner/repo bash";
 
 const securitySections = [
   {
