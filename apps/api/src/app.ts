@@ -58,6 +58,16 @@ export async function createApiApp(
       : undefined);
   const clock = new SystemClock();
 
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (isPublicDemoPath(request.url)) {
+      reply
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", "no-store")
+        .header("X-ReviewRouter-Demo", "true");
+    }
+    return payload;
+  });
+
   registerApiDemoRoutes(app, {
     clock,
     ...definedOption("webUrl", process.env.REVIEW_ROUTER_WEB_URL),
@@ -159,6 +169,17 @@ function definedOption<const Key extends string>(
   return value
     ? ({ [key]: value } as { readonly [Property in Key]: string })
     : {};
+}
+
+function isPublicDemoPath(url: string): boolean {
+  const path = url.split("?", 1)[0];
+  return (
+    path === "/" ||
+    path === "/health" ||
+    path === "/ready" ||
+    path === "/demo" ||
+    path === "/openapi.json"
+  );
 }
 
 function parseCommaSeparatedEnv(value: string | undefined): string[] {

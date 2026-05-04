@@ -90,5 +90,39 @@ describe("getApiDemo", () => {
     expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
       "/api/action/v1/session/exchange",
     );
+    expect(openapi).toMatchObject({
+      components: {
+        schemas: {
+          ApiDemo: {
+            required: expect.arrayContaining([
+              "securityBoundaries",
+              "sampleRequests",
+              "maturity",
+            ]),
+          },
+          ApiIndex: {},
+          ReadyResponse: {},
+        },
+      },
+    });
+
+    const paths = openapi.paths as Record<string, Record<string, unknown>>;
+    expect(paths["/demo"]).toMatchObject({
+      get: {
+        responses: {
+          "200": {
+            headers: {
+              "Access-Control-Allow-Origin": {},
+              "X-ReviewRouter-Demo": {},
+            },
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ApiDemo" },
+              },
+            },
+          },
+        },
+      },
+    });
   });
 });

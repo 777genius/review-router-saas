@@ -309,6 +309,22 @@ export function buildApiDemoDocument(input: {
 export function buildApiDemoOpenApiDocument(input: {
   readonly apiUrl: string;
 }): Record<string, unknown> {
+  const jsonResponseHeaders = {
+    "Access-Control-Allow-Origin": {
+      schema: { type: "string", const: "*" },
+      description: "Public demo endpoints are browser-readable.",
+    },
+    "Cache-Control": {
+      schema: { type: "string", const: "no-store" },
+      description:
+        "Demo responses are generated from current deployment config.",
+    },
+    "X-ReviewRouter-Demo": {
+      schema: { type: "string", const: "true" },
+      description: "Marks intentionally public demo endpoints.",
+    },
+  };
+
   return {
     openapi: "3.1.0",
     info: {
@@ -323,7 +339,23 @@ export function buildApiDemoOpenApiDocument(input: {
         get: {
           summary: "API index",
           responses: {
-            "200": { description: "Public ReviewRouter API index." },
+            "200": {
+              description: "Public ReviewRouter API index.",
+              headers: jsonResponseHeaders,
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ApiIndex" },
+                  examples: {
+                    hosted: {
+                      value: buildApiDemoIndex({
+                        webUrl: "https://reviewrouter-web.onrender.com",
+                        apiUrl: input.apiUrl,
+                      }),
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -331,7 +363,15 @@ export function buildApiDemoOpenApiDocument(input: {
         get: {
           summary: "Service and dependency health",
           responses: {
-            "200": { description: "Service is healthy." },
+            "200": {
+              description: "Service is healthy.",
+              headers: jsonResponseHeaders,
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/HealthResponse" },
+                },
+              },
+            },
           },
         },
       },
@@ -339,7 +379,24 @@ export function buildApiDemoOpenApiDocument(input: {
         get: {
           summary: "Compact readiness check",
           responses: {
-            "200": { description: "Service is ready." },
+            "200": {
+              description: "Service is ready.",
+              headers: jsonResponseHeaders,
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ReadyResponse" },
+                  examples: {
+                    ready: {
+                      value: {
+                        service: "review-router-api",
+                        status: "ready",
+                        checkedAt: "2026-05-04T00:00:00.000Z",
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -347,7 +404,30 @@ export function buildApiDemoOpenApiDocument(input: {
         get: {
           summary: "Public hosted beta capability summary",
           responses: {
-            "200": { description: "ReviewRouter hosted beta demo document." },
+            "200": {
+              description: "ReviewRouter hosted beta demo document.",
+              headers: jsonResponseHeaders,
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ApiDemo" },
+                  examples: {
+                    hosted: {
+                      value: {
+                        ...buildApiDemoDocument({
+                          checkedAt: new Date("2026-05-04T00:00:00.000Z"),
+                          webUrl: "https://reviewrouter-web.onrender.com",
+                          apiUrl: input.apiUrl,
+                          actionVersion: "main",
+                          model: "gpt-5.5",
+                          effort: "medium",
+                        }),
+                        checkedAt: "2026-05-04T00:00:00.000Z",
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -355,7 +435,15 @@ export function buildApiDemoOpenApiDocument(input: {
         get: {
           summary: "OpenAPI document",
           responses: {
-            "200": { description: "OpenAPI 3.1 document." },
+            "200": {
+              description: "OpenAPI 3.1 document.",
+              headers: jsonResponseHeaders,
+              content: {
+                "application/json": {
+                  schema: { type: "object" },
+                },
+              },
+            },
           },
         },
       },
@@ -401,6 +489,104 @@ export function buildApiDemoOpenApiDocument(input: {
       },
     },
     components: {
+      schemas: {
+        ApiIndex: {
+          type: "object",
+          required: ["service", "product", "status", "summary", "links"],
+          properties: {
+            service: { type: "string", const: "review-router-api" },
+            product: { type: "string", const: "ReviewRouter" },
+            status: { type: "string", const: "ok" },
+            summary: { type: "string" },
+            links: {
+              type: "object",
+              required: [
+                "health",
+                "ready",
+                "demo",
+                "openapi",
+                "dashboard",
+                "docs",
+              ],
+              additionalProperties: false,
+              properties: {
+                health: { type: "string", format: "uri" },
+                ready: { type: "string", format: "uri" },
+                demo: { type: "string", format: "uri" },
+                openapi: { type: "string", format: "uri" },
+                dashboard: { type: "string", format: "uri" },
+                docs: { type: "string", format: "uri" },
+              },
+            },
+          },
+        },
+        ReadyResponse: {
+          type: "object",
+          required: ["service", "status", "checkedAt"],
+          properties: {
+            service: { type: "string", const: "review-router-api" },
+            status: { type: "string", const: "ready" },
+            checkedAt: { type: "string", format: "date-time" },
+          },
+        },
+        HealthResponse: {
+          type: "object",
+          required: ["service", "status", "checkedAt"],
+          properties: {
+            service: { type: "string", const: "review-router-api" },
+            status: { type: "string", enum: ["ok", "degraded"] },
+            checkedAt: { type: "string", format: "date-time" },
+            dependencies: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["name", "status"],
+                properties: {
+                  name: { type: "string" },
+                  status: { type: "string", enum: ["ok", "degraded"] },
+                },
+              },
+            },
+          },
+        },
+        ApiDemo: {
+          type: "object",
+          required: [
+            "service",
+            "product",
+            "contractVersion",
+            "status",
+            "checkedAt",
+            "summary",
+            "executionModel",
+            "defaultReviewRuntime",
+            "providers",
+            "endpoints",
+            "quickStart",
+            "sampleRequests",
+            "securityBoundaries",
+            "maturity",
+            "links",
+          ],
+          properties: {
+            service: { type: "string", const: "review-router-api" },
+            product: { type: "string", const: "ReviewRouter" },
+            contractVersion: { type: "string", const: "2026-05-04" },
+            status: { type: "string", const: "demo_ready" },
+            checkedAt: { type: "string", format: "date-time" },
+            summary: { type: "string" },
+            executionModel: { type: "object" },
+            defaultReviewRuntime: { type: "object" },
+            providers: { type: "array", items: { type: "object" } },
+            endpoints: { type: "array", items: { type: "object" } },
+            quickStart: { type: "array", items: { type: "object" } },
+            sampleRequests: { type: "array", items: { type: "object" } },
+            securityBoundaries: { type: "array", items: { type: "object" } },
+            maturity: { type: "object" },
+            links: { type: "object" },
+          },
+        },
+      },
       securitySchemes: {
         githubWebhookSignature: {
           type: "apiKey",

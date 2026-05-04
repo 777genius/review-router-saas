@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Clock } from "@reviewrouter/shared";
 import {
   getApiDemo,
@@ -19,26 +19,55 @@ export function registerApiDemoRoutes(
   app: FastifyInstance,
   options: RegisterApiDemoRoutesOptions,
 ): void {
-  app.get("/", async () => {
+  app.options("/", async (_request, reply) => sendPublicOptions(reply));
+  app.options("/ready", async (_request, reply) => sendPublicOptions(reply));
+  app.options("/demo", async (_request, reply) => sendPublicOptions(reply));
+  app.options("/openapi.json", async (_request, reply) =>
+    sendPublicOptions(reply),
+  );
+
+  app.get("/", async (_request, reply) => {
+    setPublicDemoHeaders(reply);
     const input = buildDemoInput(options);
     return getApiDemoIndex(input);
   });
 
-  app.get("/ready", async () => ({
-    service: "review-router-api" as const,
-    status: "ready" as const,
-    checkedAt: options.clock.now(),
-  }));
+  app.get("/ready", async (_request, reply) => {
+    setPublicDemoHeaders(reply);
+    return {
+      service: "review-router-api" as const,
+      status: "ready" as const,
+      checkedAt: options.clock.now(),
+    };
+  });
 
-  app.get("/demo", async () => {
+  app.get("/demo", async (_request, reply) => {
+    setPublicDemoHeaders(reply);
     const input = buildDemoInput(options);
     return getApiDemo(input);
   });
 
-  app.get("/openapi.json", async () => {
+  app.get("/openapi.json", async (_request, reply) => {
+    setPublicDemoHeaders(reply);
     const input = buildDemoInput(options);
     return getApiDemoOpenApi(input);
   });
+}
+
+function sendPublicOptions(reply: FastifyReply): FastifyReply {
+  setPublicDemoHeaders(reply);
+  return reply
+    .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+    .header("Access-Control-Allow-Headers", "accept, content-type")
+    .code(204)
+    .send();
+}
+
+function setPublicDemoHeaders(reply: FastifyReply): void {
+  reply
+    .header("Access-Control-Allow-Origin", "*")
+    .header("Cache-Control", "no-store")
+    .header("X-ReviewRouter-Demo", "true");
 }
 
 function buildDemoInput(options: RegisterApiDemoRoutesOptions) {

@@ -20,7 +20,7 @@ async function fetchJson(path) {
       `${path} failed ${response.status}: ${JSON.stringify(body)}`,
     );
   }
-  return body;
+  return { body, response };
 }
 
 function assert(condition, message) {
@@ -31,9 +31,17 @@ function normalizeUrl(url) {
   return url.replace(/\/+$/, "");
 }
 
-const index = await fetchJson("/");
+const { body: index, response: indexResponse } = await fetchJson("/");
 assert(index.product === "ReviewRouter", "index product mismatch");
 assert(index.status === "ok", "index status mismatch");
+assert(
+  indexResponse.headers.get("access-control-allow-origin") === "*",
+  "index missing public CORS header",
+);
+assert(
+  indexResponse.headers.get("cache-control") === "no-store",
+  "index missing no-store cache header",
+);
 assert(
   index.links?.demo === `${apiUrl}/demo`,
   "index demo link must point at the configured API URL",
@@ -43,9 +51,13 @@ assert(
   "index OpenAPI link must point at the configured API URL",
 );
 
-const health = await fetchJson("/health");
+const { body: health, response: healthResponse } = await fetchJson("/health");
 assert(health.service === "review-router-api", "health service mismatch");
 assert(health.status === "ok", `health is not ok: ${health.status}`);
+assert(
+  healthResponse.headers.get("access-control-allow-origin") === "*",
+  "health missing public CORS header",
+);
 assert(
   Array.isArray(health.dependencies) &&
     health.dependencies.some(
@@ -55,13 +67,17 @@ assert(
   "database dependency is not ok",
 );
 
-const ready = await fetchJson("/ready");
+const { body: ready } = await fetchJson("/ready");
 assert(ready.status === "ready", "ready endpoint is not ready");
 
-const demo = await fetchJson("/demo");
+const { body: demo, response: demoResponse } = await fetchJson("/demo");
 assert(demo.product === "ReviewRouter", "demo product mismatch");
 assert(demo.contractVersion === "2026-05-04", "demo contract mismatch");
 assert(demo.status === "demo_ready", "demo status mismatch");
+assert(
+  demoResponse.headers.get("x-reviewrouter-demo") === "true",
+  "demo missing x-reviewrouter-demo header",
+);
 assert(
   demo.executionModel?.reviewRunsIn === "customer_github_actions",
   "demo must state that reviews run in customer GitHub Actions",
@@ -111,7 +127,18 @@ assert(
   "demo missing action OIDC exchange endpoint",
 );
 
-const openapi = await fetchJson("/openapi.json");
+const optionsResponse = await fetch(`${apiUrl}/demo`, { method: "OPTIONS" });
+assert(optionsResponse.status === 204, "demo OPTIONS must return 204");
+assert(
+  optionsResponse.headers.get("access-control-allow-origin") === "*",
+  "demo OPTIONS missing public CORS header",
+);
+assert(
+  optionsResponse.headers.get("access-control-allow-methods")?.includes("GET"),
+  "demo OPTIONS missing GET allow-method",
+);
+
+const { body: openapi } = await fetchJson("/openapi.json");
 assert(openapi.openapi === "3.1.0", "OpenAPI version mismatch");
 assert(openapi.info?.title === "ReviewRouter API", "OpenAPI title mismatch");
 assert(openapi.info?.version === "2026-05-04", "OpenAPI version mismatch");
@@ -123,6 +150,13 @@ assert(openapi.paths?.["/demo"], "OpenAPI missing /demo path");
 assert(
   openapi.paths?.["/api/action/v1/session/exchange"],
   "OpenAPI missing action exchange path",
+);
+assert(openapi.components?.schemas?.ApiDemo, "OpenAPI missing ApiDemo schema");
+assert(
+  openapi.paths?.["/demo"]?.get?.responses?.["200"]?.content?.[
+    "application/json"
+  ]?.schema?.$ref === "#/components/schemas/ApiDemo",
+  "OpenAPI /demo response must reference ApiDemo schema",
 );
 
 console.log(

@@ -190,6 +190,9 @@ describe("API app", () => {
     const response = await app.inject({ method: "GET", url: "/" });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-reviewrouter-demo"]).toBe("true");
     expect(response.json()).toMatchObject({
       service: "review-router-api",
       product: "ReviewRouter",
@@ -200,6 +203,18 @@ describe("API app", () => {
         openapi: "https://reviewrouter-api.onrender.com/openapi.json",
       },
     });
+  });
+
+  it("serves public demo preflight responses for browser smoke checks", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({ method: "OPTIONS", url: "/demo" });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    expect(response.headers["access-control-allow-methods"]).toContain("GET");
+    expect(response.headers["access-control-allow-headers"]).toContain(
+      "content-type",
+    );
   });
 
   it("serves a small readiness response for API demos", async () => {
@@ -253,6 +268,13 @@ describe("API app", () => {
         title: "ReviewRouter API",
         version: "2026-05-04",
       },
+      components: {
+        schemas: {
+          ApiDemo: {},
+          ApiIndex: {},
+          ReadyResponse: {},
+        },
+      },
       paths: {
         "/demo": {},
         "/api/action/v1/session/exchange": {},
@@ -265,6 +287,7 @@ describe("API app", () => {
     const response = await app.inject({ method: "GET", url: "/health" });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
     expect(response.json()).toMatchObject({
       service: "review-router-api",
       status: "ok",
