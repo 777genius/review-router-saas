@@ -62,6 +62,36 @@ describe("seed-codex-auth.sh", () => {
       stderr: expect.stringContaining("auth.json auth_mode must be chatgpt"),
     });
   });
+
+  it("refuses non-interactive secret writes without explicit confirmation", async () => {
+    const fixture = await createFixture();
+
+    await expect(
+      runSeedScript(fixture, {
+        REVIEW_ROUTER_SECRET_SCOPE: "repo",
+        REVIEW_ROUTER_REPO: "777genius/example",
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "Refusing to write secrets in non-interactive mode without confirmation",
+      ),
+    });
+  });
+
+  it("writes repository secrets only after explicit non-interactive confirmation", async () => {
+    const fixture = await createFixture();
+
+    const result = await runSeedScript(fixture, {
+      REVIEW_ROUTER_CONFIRM_WRITE: "1",
+      REVIEW_ROUTER_SECRET_SCOPE: "repo",
+      REVIEW_ROUTER_REPO: "777genius/example",
+    });
+
+    expect(result.stdout).toContain(
+      "Stored repo secret CODEX_AUTH_JSON for 777genius/example",
+    );
+    expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
+  });
 });
 
 async function createFixture(input?: {
@@ -96,6 +126,7 @@ async function createFixture(input?: {
       "#!/usr/bin/env bash",
       "set -euo pipefail",
       'if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then exit 0; fi',
+      'if [ "${1:-}" = "secret" ] && [ "${2:-}" = "set" ]; then cat >/dev/null; exit 0; fi',
       'echo "unexpected gh call: $*" >&2',
       "exit 2",
       "",

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Seed Codex ChatGPT OAuth auth into GitHub Actions secrets without sending it to ReviewRouter SaaS.
 # Usage examples:
-#   curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_REPO=owner/repo bash
-#   REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=my-org REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash scripts/seed-codex-auth.sh
+#   curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
+#   REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=my-org REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash scripts/seed-codex-auth.sh
 
 set -Eeuo pipefail
 
@@ -13,6 +13,7 @@ ORG_NAME="${REVIEW_ROUTER_ORG:-}"
 ORG_SELECTED_REPOS="${REVIEW_ROUTER_ORG_SECRET_REPOS:-}"
 INCLUDE_CODEX_CONFIG="${REVIEW_ROUTER_INCLUDE_CODEX_CONFIG:-0}"
 DRY_RUN="${REVIEW_ROUTER_DRY_RUN:-0}"
+CONFIRM_WRITE="${REVIEW_ROUTER_CONFIRM_WRITE:-${REVIEW_ROUTER_YES:-0}}"
 CODEX_BASE_HOME="${REVIEW_ROUTER_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 CODEX_AUTH_FILE="${REVIEW_ROUTER_CODEX_AUTH_FILE:-$CODEX_BASE_HOME/auth.json}"
 CODEX_CONFIG_FILE="${REVIEW_ROUTER_CODEX_CONFIG_FILE:-$CODEX_BASE_HOME/config.toml}"
@@ -46,6 +47,25 @@ is_true() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "Missing required command: $1"
+}
+
+confirm_secret_write() {
+  if is_true "$DRY_RUN" || is_true "$CONFIRM_WRITE"; then
+    return
+  fi
+
+  warn "This will create or overwrite GitHub Actions secrets for the target below."
+  warn "ReviewRouter SaaS will not receive the secret value; gh writes it directly to GitHub."
+
+  if [ ! -t 0 ]; then
+    fatal "Refusing to write secrets in non-interactive mode without confirmation. Set REVIEW_ROUTER_CONFIRM_WRITE=1 after verifying the target."
+  fi
+
+  printf 'Type "write secrets" to continue: ' >&2
+  read -r answer
+  if [ "$answer" != "write secrets" ]; then
+    fatal "Secret write cancelled."
+  fi
 }
 
 normalize_remote_repo() {
@@ -236,6 +256,7 @@ main() {
     info "Secret scope: repo $TARGET_REPO"
   fi
   info "Codex auth file: $CODEX_AUTH_FILE"
+  confirm_secret_write
 
   store_secret_from_file CODEX_AUTH_JSON "$CODEX_AUTH_FILE"
 

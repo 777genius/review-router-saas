@@ -58,7 +58,7 @@ export function buildProviderSecretSetupGuidance(input: {
                 title: "Recommended: org secret scoped to this repository",
                 description:
                   "Stores CODEX_AUTH_JSON as an organization secret available only to this repository.",
-                command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=${shellQuote(owner)} REVIEW_ROUTER_ORG_SECRET_REPOS=${shellQuote(repo)} bash`,
+                command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=${shellQuote(owner)} REVIEW_ROUTER_ORG_SECRET_REPOS=${shellQuote(repo)} bash`,
                 storesSecretIn: "github_org_secret" as const,
                 sendsSecretToReviewRouter: false as const,
               },
@@ -68,13 +68,14 @@ export function buildProviderSecretSetupGuidance(input: {
           title: "Repository secret",
           description:
             "Stores CODEX_AUTH_JSON directly in this repository's Actions secrets.",
-          command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_SECRET_SCOPE=repo REVIEW_ROUTER_REPO=${shellQuote(input.repoFullName)} bash`,
+          command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=repo REVIEW_ROUTER_REPO=${shellQuote(input.repoFullName)} bash`,
           storesSecretIn: "github_repository_secret",
           sendsSecretToReviewRouter: false,
         },
       ],
       warnings: [
         "Run this on a trusted machine where Codex CLI is already logged in with ChatGPT subscription auth.",
+        "The generated command includes REVIEW_ROUTER_CONFIRM_WRITE=1 so non-interactive curl usage can write GitHub secrets only after the target is explicit in the command.",
         "ReviewRouter SaaS never receives CODEX_AUTH_JSON; the script writes directly to GitHub Actions secrets through gh.",
         "For public repositories, fork pull requests are skipped for secret-backed provider execution by default.",
       ],

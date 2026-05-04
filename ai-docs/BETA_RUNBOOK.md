@@ -118,13 +118,13 @@ Show:
 For one repository:
 
 ```bash
-curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_REPO=owner/repo bash
+curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
 ```
 
 For organization selected repositories:
 
 ```bash
-curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash
+curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash
 ```
 
 Explain:

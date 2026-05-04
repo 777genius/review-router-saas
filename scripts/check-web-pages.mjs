@@ -15,15 +15,15 @@ const pages = [
     "/getting-started",
     [
       "Getting started",
-      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_REPO=owner/repo bash`,
-      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`,
+      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`,
+      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`,
     ],
   ],
   [
     "/security",
     [
       "Designed to avoid code and secret custody",
-      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_REPO=owner/repo bash`,
+      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`,
     ],
   ],
   ["/fair-use", ["Fair use"]],

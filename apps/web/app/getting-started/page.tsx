@@ -2,8 +2,8 @@ import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import { resolveCodexSeedScriptUrl } from "@/server/codex-seed-script-url";
 
 const seedScriptUrl = resolveCodexSeedScriptUrl();
-const repoCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_REPO=owner/repo bash`;
-const orgCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`;
+const repoCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`;
+const orgCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`;
 const openAiKeyCommand =
   "gh secret set OPENAI_API_KEY --repo owner/repo --app actions";
 const openRouterKeyCommand =

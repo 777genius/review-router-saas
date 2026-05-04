@@ -27,13 +27,14 @@ scripts/seed-codex-auth.sh
 Future hosted command:
 
 ```bash
-curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_REPO=owner/repo bash
+curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
 ```
 
 ## Repo Secret Flow
 
 ```bash
 curl -fsSL https://app.reviewrouter.dev/install/codex | \
+  REVIEW_ROUTER_CONFIRM_WRITE=1 \
   REVIEW_ROUTER_REPO=owner/repo \
   REVIEW_ROUTER_SECRET_SCOPE=repo \
   bash
@@ -49,6 +50,7 @@ gh secret set CODEX_AUTH_JSON --repo owner/repo < ~/.codex/auth.json
 
 ```bash
 curl -fsSL https://app.reviewrouter.dev/install/codex | \
+  REVIEW_ROUTER_CONFIRM_WRITE=1 \
   REVIEW_ROUTER_SECRET_SCOPE=org \
   REVIEW_ROUTER_ORG=my-org \
   REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b \

@@ -20,6 +20,9 @@ describe("provider secret setup guidance", () => {
       "REVIEW_ROUTER_SECRET_SCOPE=org",
     );
     expect(guidance.commands[0]?.command).toContain(
+      "REVIEW_ROUTER_CONFIRM_WRITE=1",
+    );
+    expect(guidance.commands[0]?.command).toContain(
       "REVIEW_ROUTER_ORG_SECRET_REPOS=tvaity",
     );
     expect(guidance.commands[0]?.command).not.toContain("CODEX_AUTH_JSON=");
