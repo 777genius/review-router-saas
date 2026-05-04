@@ -54,6 +54,8 @@ import {
 
 export const dynamic = "force-dynamic";
 
+const hostedCodexSeedScriptUrl = "https://app.reviewrouter.dev/install/codex";
+
 type DashboardWorkspace = {
   readonly id: string;
   readonly name: string;
@@ -372,6 +374,7 @@ function WorkspaceCard({
           primaryEffectiveConfig.provider.authMode,
         ),
         repoFullName: primaryRepository.fullName,
+        seedScriptUrl: hostedCodexSeedScriptUrl,
         organizationLogin:
           primaryInstallation?.accountType === "Organization"
             ? primaryInstallation.accountLogin
