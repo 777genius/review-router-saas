@@ -57,4 +57,22 @@ describe("safe payload helpers", () => {
       true,
     );
   });
+
+  it("keeps enough long-string context to detect unsafe tail content", () => {
+    const payload = {
+      safeErrorSummary:
+        "provider failed after retries " +
+        "x".repeat(8_000) +
+        " OPENAI_API_KEY=sk-abc12345678901234567",
+      rawOutput:
+        "provider failed after retries " +
+        "x".repeat(8_000) +
+        "\ndiff --git a/src/app.ts b/src/app.ts",
+    };
+
+    const values = collectPayloadStrings(payload);
+
+    expect(values.some(looksLikeSecretValue)).toBe(true);
+    expect(values.some(looksLikeCodeOrDiff)).toBe(true);
+  });
 });

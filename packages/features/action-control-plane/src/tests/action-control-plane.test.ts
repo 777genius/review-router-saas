@@ -603,6 +603,16 @@ describe("action control plane", () => {
     expect(() =>
       assertSafeActionHealthReport({
         ...safeHealthReport(),
+        safeErrorSummary:
+          "provider failed after retries " +
+          "x".repeat(8_000) +
+          " OPENAI_API_KEY=sk-abc12345678901234567",
+      }),
+    ).toThrow("health_report_contains_secret_value");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
         rawDiff: "diff --git a/src/app.ts b/src/app.ts",
       }),
     ).toThrow("health_report_contains_code_or_diff");

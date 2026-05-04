@@ -1,5 +1,5 @@
 const maxCollectedStrings = 500;
-const maxStringLength = 4_000;
+const maxStringLength = 64 * 1024;
 const codeLikeLinePattern =
   /^\s*(?:async\s+)?(?:export\s+)?(?:function|class|interface|type|const|let|var|import|from|return|if|for|while|switch|try|catch)\b|=>|;\s*$/m;
 
