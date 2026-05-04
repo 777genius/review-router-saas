@@ -218,6 +218,16 @@ temporary manifest code on a localhost callback, converts it through GitHub's
 manifest conversion API, then saves a local `.env` profile and `.pem` private
 key under `.local-secrets/github-apps/`. It does not print generated secrets.
 
+Apply the generated profile to local development env without printing secrets:
+
+```bash
+pnpm github-app:use-profile --profile .local-secrets/github-apps/review-router-ai.env
+```
+
+This updates only GitHub App/OAuth keys in `.env.local` by default and keeps
+local `http://localhost` URLs. Add `--include-urls` only when intentionally
+applying the profile's hosted URLs to the target env file.
+
 Default hosted URLs:
 
 ```text
