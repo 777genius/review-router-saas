@@ -40,6 +40,7 @@
     "@base-ui/react": "^1.4.1",
     "clsx": "^2.1.1",
     "react": "^19.2.5",
+    "tailwind-merge": "^3.5.0",
     "tailwind-variants": "^3.2.2"
   },
   "peerDependencies": {

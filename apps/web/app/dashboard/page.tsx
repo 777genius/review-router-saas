@@ -282,6 +282,7 @@ export default async function DashboardPage({
   const workspaces = await loadDashboardData(workspaceScope, supportAudit);
   const params = searchParams ? await searchParams : {};
   const appInstallUrl = getGitHubAppInstallUrl();
+  const dashboardSignInHref = buildDashboardSignInHref(params);
   const appSetupNotice = buildGitHubAppSetupNotice({
     installationId: readParam(params.installation_id),
     setupAction: readParam(params.setup_action),
@@ -296,11 +297,13 @@ export default async function DashboardPage({
           mutationStatus={mutationStatus}
           showReadOnlyHint={false}
           appSetupNotice={appSetupNotice}
+          signInHref={dashboardSignInHref}
         />
         <OnboardingDashboard
           appSetupActive={Boolean(appSetupNotice)}
           appInstallUrl={appInstallUrl}
           signedIn={mutationStatus.signedIn}
+          signInHref={dashboardSignInHref}
         />
       </main>
     );
@@ -373,6 +376,7 @@ export default async function DashboardPage({
         params={params}
         mutationStatus={mutationStatus}
         appSetupNotice={appSetupNotice}
+        signInHref={dashboardSignInHref}
       />
 
       <section className="grid gap-5">
@@ -392,21 +396,23 @@ function OnboardingDashboard({
   appSetupActive,
   appInstallUrl,
   signedIn,
+  signInHref,
 }: {
   readonly appSetupActive: boolean;
   readonly appInstallUrl: string | null;
   readonly signedIn: boolean;
+  readonly signInHref: string;
 }): React.ReactElement {
   const primaryAction =
     appSetupActive && !signedIn
-      ? { href: "/api/auth/signin", label: "Sign in to finish setup" }
+      ? { href: signInHref, label: "Sign in to finish setup" }
       : appInstallUrl
         ? { href: appInstallUrl, label: "Install GitHub App" }
-        : { href: "/api/auth/signin", label: "Sign in with GitHub" };
+        : { href: signInHref, label: "Sign in with GitHub" };
   const secondaryAction =
     appSetupActive || signedIn
       ? { href: "/getting-started", label: "Setup guide" }
-      : { href: "/api/auth/signin", label: "Sign in" };
+      : { href: signInHref, label: "Sign in" };
   const onboardingSteps = appSetupActive
     ? signedIn
       ? [
@@ -1382,6 +1388,7 @@ function DashboardNotice({
   appSetupNotice,
   params,
   mutationStatus,
+  signInHref,
   showReadOnlyHint = true,
 }: {
   readonly appSetupNotice?: ReturnType<typeof buildGitHubAppSetupNotice>;
@@ -1389,6 +1396,7 @@ function DashboardNotice({
   readonly mutationStatus: Awaited<
     ReturnType<typeof getDashboardMutationStatus>
   >;
+  readonly signInHref: string;
   readonly showReadOnlyHint?: boolean;
 }): React.ReactElement | null {
   const notice = readParam(params.notice);
@@ -1443,7 +1451,7 @@ function DashboardNotice({
                 {" "}
                 <a
                   className="text-lime-100 underline decoration-lime-300/50 underline-offset-4"
-                  href="/api/auth/signin"
+                  href={signInHref}
                 >
                   Sign in
                 </a>
@@ -1470,7 +1478,7 @@ function DashboardNotice({
                 {" "}
                 <a
                   className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                  href="/api/auth/signin"
+                  href={signInHref}
                 >
                   Sign in
                 </a>
@@ -1490,6 +1498,28 @@ function readParam(value: string | string[] | undefined): string {
     return value[0] ?? "";
   }
   return value ?? "";
+}
+
+function buildDashboardSignInHref(
+  params: Record<string, string | string[] | undefined>,
+): string {
+  const callbackParams = new URLSearchParams();
+  for (const key of [
+    "installation_id",
+    "setup_action",
+    "notice",
+    "error",
+    "repository",
+    "pr",
+  ]) {
+    const value = readParam(params[key]);
+    if (value) callbackParams.set(key, value);
+  }
+
+  const query = callbackParams.toString();
+  const callbackPath = query ? `/dashboard?${query}` : "/dashboard";
+
+  return `/api/auth/signin?callbackUrl=${encodeURIComponent(callbackPath)}`;
 }
 
 function dashboardNoticeText(notice: string, repository: string): string {

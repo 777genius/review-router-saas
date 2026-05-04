@@ -158,6 +158,11 @@ try {
   );
   assertIncludes(
     postInstallHtml,
+    "callbackUrl=%2Fdashboard%3Finstallation_id%3D123%26setup_action%3Dinstall",
+    "post-install sign-in must return users to the setup handoff page",
+  );
+  assertIncludes(
+    postInstallHtml,
     "Authorize dashboard access for this GitHub user.",
     "post-install dashboard did not show sign-in as the next onboarding step",
   );

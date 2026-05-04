@@ -81,6 +81,11 @@ assertIncludes(
 );
 assertIncludes(
   installNotice.html,
+  "callbackUrl=%2Fdashboard%3Finstallation_id%3D123%26setup_action%3Dinstall",
+  "install redirect sign-in must return users to the setup handoff page",
+);
+assertIncludes(
+  installNotice.html,
   "Authorize dashboard access for this GitHub user.",
   "install redirect dashboard must show sign-in as the next onboarding step",
 );
