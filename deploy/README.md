@@ -126,6 +126,12 @@ permissions, and hosted lifecycle webhook events are actually configured:
 REVIEW_ROUTER_GITHUB_APP_CHECK_MODE=hosted pnpm github-app:check
 ```
 
+Full public-beta doctor command:
+
+```bash
+REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm public-beta:check
+```
+
 The hosted readiness gate rejects localhost/non-HTTPS public URLs, placeholder
 GitHub App secrets, missing private key, disabled provisioning, and provider
 credentials accidentally placed in SaaS env.

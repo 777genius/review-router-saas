@@ -306,6 +306,17 @@ The smoke test for the gate itself runs in `pnpm beta:check`:
 pnpm hosted:check:smoke
 ```
 
+Before calling the app public-beta ready, run the full public-beta doctor:
+
+```bash
+REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm public-beta:check
+```
+
+This combines hosted env validation, hosted GitHub App permission/event
+validation, production build, and compiled runtime smoke. It is expected to fail
+until public HTTPS env values and hosted GitHub App lifecycle webhook events are
+configured.
+
 ## What To Work On Next Without User Input
 
 If there is no hosted HTTPS environment yet, keep improving local/private beta.

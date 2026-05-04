@@ -237,6 +237,7 @@ Result: setup PR created and merged; workflow health changed from missing to pre
 - deploy web/API/worker behind real HTTPS URLs
 - use `deploy/README.md` and `deploy/env.production.example` for first hosted beta rollout
 - run `REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm hosted:check` against real hosted secrets before deploy
+- run `REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm public-beta:check` after hosted GitHub App webhook events are enabled
 - configure production GitHub App callback/setup URLs
 - choose production database and backup target
 - run one restore drill against the chosen production backup target
