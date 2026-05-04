@@ -13,6 +13,7 @@ The script:
 - finds `~/.codex/auth.json` or `$CODEX_HOME/auth.json`
 - validates `auth_mode=chatgpt`
 - validates `tokens.refresh_token` exists
+- warns when `last_refresh` is missing, unparsable, or older than the configured freshness window
 - stores `CODEX_AUTH_JSON` directly in GitHub Actions secrets using `gh secret set`
 - supports repository secrets and organization selected-repository secrets
 - skips `CODEX_CONFIG_TOML` by default
@@ -50,6 +51,12 @@ Direct local dry-run:
 
 ```bash
 bash scripts/seed-codex-auth.sh --dry-run --repo owner/repo
+```
+
+If a team wants a stricter warning threshold during onboarding:
+
+```bash
+bash scripts/seed-codex-auth.sh --dry-run --repo owner/repo --stale-days 7
 ```
 
 ## Org Selected-Repositories Flow
@@ -123,6 +130,8 @@ The old `scripts/setup-cli-secrets.sh` should not be reused as-is because it can
 ## Auth Freshness
 
 GitHub-hosted runners are ephemeral. If Codex refreshes `auth.json` during a run, the refreshed file disappears after the job.
+
+The seeding script and generated workflow preflight intentionally do not fail only because `last_refresh` is old. They warn first, because a refresh token can still work even when the access token metadata is old. Hard failure is reserved for malformed JSON, non-ChatGPT auth mode, or missing refresh token.
 
 User-facing guidance:
 

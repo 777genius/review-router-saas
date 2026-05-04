@@ -103,6 +103,9 @@ jobs:
             console.error('::error::' + message);
             process.exit(1);
           };
+          const warn = (message) => {
+            console.error('::warning::' + message);
+          };
           let auth;
           try {
             auth = JSON.parse(payload);
@@ -114,6 +117,17 @@ jobs:
           }
           if (!auth.tokens || typeof auth.tokens.refresh_token !== 'string' || auth.tokens.refresh_token.length === 0) {
             fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+          }
+          if (!auth.last_refresh) {
+            warn('CODEX_AUTH_JSON last_refresh is missing. If Codex later fails with an auth error, run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+          } else {
+            const refreshedAt = Date.parse(auth.last_refresh);
+            const maxAgeDays = 30;
+            if (!Number.isFinite(refreshedAt)) {
+              warn('CODEX_AUTH_JSON last_refresh is not parseable. If Codex later fails with an auth error, run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+            } else if ((Date.now() - refreshedAt) / 86400000 > maxAgeDays) {
+              warn('CODEX_AUTH_JSON last_refresh is older than 30 days. If Codex later fails with an auth error, run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+            }
           }
           NODE
           export CODEX_HOME="\${CODEX_HOME:-$HOME/.codex}"

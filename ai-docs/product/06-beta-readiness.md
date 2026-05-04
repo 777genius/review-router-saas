@@ -28,6 +28,19 @@ smoke passes after the latest action/runtime provisioning change.
 Latest full-review validation:
 
 ```text
+Date: 2026-05-04 10:47 EEST
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777880754438
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777880754438/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777880754438/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777880754438/actions/runs/25307252407
+Result: setup PR merged, workflow detected on main, disposable repo CODEX_AUTH_JSON was seeded from the current local Codex account with explicit confirmation, latest `777genius/review-router@main` action bundle ran from static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5 with title "Authentication bypass".
+Note: this validation includes the generated workflow Codex OAuth preflight with stale `last_refresh` warning support. The current local auth did not trigger the stale warning at the default 30-day threshold.
+```
+
+Previous full-review validation:
+
+```text
 Date: 2026-05-04 10:34 EEST
 Command: REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
 Repo: 777genius/rr-saas-fresh-e2e-1777879956635
@@ -117,10 +130,10 @@ Result: setup PR merged, workflow detected on main, Codex OAuth review ran, inte
 Latest local beta gate:
 
 ```text
-Date: 2026-05-04 10:03 EEST
+Date: 2026-05-04 10:45 EEST
 Command: pnpm beta:check
 Result: passed.
-Coverage: local readiness, 164 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer command assertions and installer redirect check, whitespace, shell syntax, hosted readiness smoke.
+Coverage: local readiness, 169 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer command assertions and installer redirect check, whitespace, shell syntax, hosted readiness smoke.
 ```
 
 Latest hosted readiness gate smoke:

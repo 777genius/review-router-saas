@@ -65,6 +65,41 @@ describe("seed-codex-auth.sh", () => {
     });
   });
 
+  it("warns when Codex OAuth looks stale without leaking token values", async () => {
+    const fixture = await createFixture({
+      authJson: {
+        auth_mode: "chatgpt",
+        last_refresh: "2026-01-01T00:00:00.000Z",
+        tokens: { refresh_token: "stale-refresh-token-that-must-not-leak" },
+      },
+    });
+
+    const result = await runSeedScript(
+      fixture,
+      { REVIEW_ROUTER_DRY_RUN: "1" },
+      ["--scope", "repo", "--repo", "777genius/example", "--stale-days", "1"],
+    );
+
+    expect(result.stderr).toContain(
+      "WARN auth.json last_refresh is older than 1 day",
+    );
+    expect(result.stdout + result.stderr).not.toContain(
+      "stale-refresh-token-that-must-not-leak",
+    );
+  });
+
+  it("warns when Codex OAuth last_refresh metadata is missing", async () => {
+    const fixture = await createFixture();
+
+    const result = await runSeedScript(fixture, {
+      REVIEW_ROUTER_DRY_RUN: "1",
+      REVIEW_ROUTER_SECRET_SCOPE: "repo",
+      REVIEW_ROUTER_REPO: "777genius/example",
+    });
+
+    expect(result.stderr).toContain("WARN auth.json last_refresh is missing");
+  });
+
   it("refuses non-interactive secret writes without explicit confirmation", async () => {
     const fixture = await createFixture();
 
