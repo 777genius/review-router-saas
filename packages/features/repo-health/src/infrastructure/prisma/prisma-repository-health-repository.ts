@@ -27,6 +27,14 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
           select: {
             providerHealth: true,
             providerSetupState: true,
+            configSource: true,
+            findingCriticalCount: true,
+            findingMajorCount: true,
+            findingMinorCount: true,
+            findingInfoCount: true,
+            inlineCommentCount: true,
+            summaryCommentCount: true,
+            skippedReasonCategory: true,
             receivedAt: true,
           },
         },
@@ -48,6 +56,22 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
         latestProviderHealth: latestHealth?.providerHealth ?? null,
         latestProviderSetupState: latestHealth?.providerSetupState ?? null,
         latestActionHealthReceivedAt: latestHealth?.receivedAt ?? null,
+        latestActionHealthTelemetry: latestHealth
+          ? {
+              configSource: latestHealth.configSource,
+              findingCounts: {
+                critical: latestHealth.findingCriticalCount,
+                major: latestHealth.findingMajorCount,
+                minor: latestHealth.findingMinorCount,
+                info: latestHealth.findingInfoCount,
+              },
+              commentCounts: {
+                inline: latestHealth.inlineCommentCount,
+                summary: latestHealth.summaryCommentCount,
+              },
+              skippedReasonCategory: latestHealth.skippedReasonCategory,
+            }
+          : null,
       };
     });
   }

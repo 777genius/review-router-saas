@@ -14,6 +14,7 @@ What is proven:
 - GitHub App installation discovery works.
 - Repository sync into Postgres works.
 - Dashboard can show workspaces, installations, repositories, health, review config, provider setup, audit, and operational queue metadata.
+- Dashboard repository health shows latest action-run metadata counts without storing code, diffs, prompts, model output, or secrets.
 - SaaS can create a workflow setup PR through the GitHub App.
 - Setup PR can be merged on a fresh repository.
 - Generated workflow runs review inside the customer repository GitHub Actions.

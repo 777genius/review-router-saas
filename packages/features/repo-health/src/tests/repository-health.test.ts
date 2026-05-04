@@ -143,6 +143,34 @@ describe("repository health", () => {
       status: "provider_report_stale",
       summary: "No recent action health report from the installed workflow",
     });
+
+    expect(
+      evaluateRepositoryHealth(
+        {
+          repositoryId: "repo_1",
+          fullName: "777genius/example",
+          setupStatus: "configured",
+          expectedActionRef: "777genius/review-router@v1",
+          latestProviderSetupState: "configured",
+          latestProviderHealth: "ok",
+          latestActionHealthReceivedAt: new Date("2026-05-03T00:00:00.000Z"),
+          latestActionHealthTelemetry: {
+            configSource: "runtime_oidc",
+            findingCounts: { critical: 1, major: 2, minor: 0, info: 0 },
+            commentCounts: { inline: 3, summary: 1 },
+            skippedReasonCategory: "none",
+          },
+        },
+        new Date("2026-05-03T00:05:00.000Z"),
+      ),
+    ).toMatchObject({
+      status: "healthy",
+      latestActionHealthTelemetry: {
+        configSource: "runtime_oidc",
+        findingCounts: { critical: 1, major: 2 },
+        commentCounts: { inline: 3, summary: 1 },
+      },
+    });
   });
 
   it("enriches configured repositories with workflow probe metadata", async () => {

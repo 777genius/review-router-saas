@@ -16,6 +16,21 @@ export type RepositoryWorkflowCheck =
   | { readonly status: "missing" }
   | { readonly status: "unavailable"; readonly reason: string };
 
+export type RepositoryActionHealthTelemetry = {
+  readonly configSource: string | null;
+  readonly findingCounts: {
+    readonly critical: number | null;
+    readonly major: number | null;
+    readonly minor: number | null;
+    readonly info: number | null;
+  };
+  readonly commentCounts: {
+    readonly inline: number | null;
+    readonly summary: number | null;
+  };
+  readonly skippedReasonCategory: string | null;
+};
+
 export type RepositoryHealthInput = {
   readonly repositoryId: string;
   readonly fullName: string;
@@ -45,6 +60,7 @@ export type RepositoryHealthInput = {
     | "unavailable_in_fork_pr"
     | null;
   readonly latestActionHealthReceivedAt?: Date | null;
+  readonly latestActionHealthTelemetry?: RepositoryActionHealthTelemetry | null;
   readonly actionHealthStaleAfterMs?: number;
 };
 
@@ -53,6 +69,8 @@ export type RepositoryHealthSnapshot = {
   readonly fullName: string;
   readonly status: RepositoryHealthStatus;
   readonly summary: string;
+  readonly latestActionHealthReceivedAt?: Date | null;
+  readonly latestActionHealthTelemetry?: RepositoryActionHealthTelemetry | null;
   readonly checkedAt: Date;
 };
 
@@ -193,6 +211,8 @@ function snapshot(
     fullName: input.fullName,
     status,
     summary,
+    latestActionHealthReceivedAt: input.latestActionHealthReceivedAt ?? null,
+    latestActionHealthTelemetry: input.latestActionHealthTelemetry ?? null,
     checkedAt,
   };
 }

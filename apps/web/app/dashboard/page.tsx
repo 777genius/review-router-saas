@@ -776,6 +776,20 @@ function WorkspaceCard({
                     <span className="mt-1 block text-xs leading-5 text-slate-500">
                       Next: {healthView.nextAction}
                     </span>
+                    {repositoryHealth?.latestActionHealthTelemetry ? (
+                      <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
+                        Latest run:{" "}
+                        {formatActionHealthTelemetry(
+                          repositoryHealth.latestActionHealthTelemetry,
+                        )}
+                      </span>
+                    ) : null}
+                    {repositoryHealth?.latestActionHealthReceivedAt ? (
+                      <span className="mt-1 block text-[11px] uppercase tracking-[0.12em] text-slate-500">
+                        Reported{" "}
+                        {repositoryHealth.latestActionHealthReceivedAt.toISOString()}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3">
                     <form action={createSetupPullRequestAction}>
@@ -861,6 +875,46 @@ function SupportMetric({
       <p className="mt-1 text-xs text-slate-400">{hint}</p>
     </div>
   );
+}
+
+type DashboardActionHealthTelemetry = NonNullable<
+  Awaited<
+    ReturnType<typeof listWorkspaceRepositoryHealth>
+  >[number]["latestActionHealthTelemetry"]
+>;
+
+function formatActionHealthTelemetry(
+  telemetry: DashboardActionHealthTelemetry,
+): string {
+  const findings = [
+    countLabel(telemetry.findingCounts.critical, "critical"),
+    countLabel(telemetry.findingCounts.major, "major"),
+    countLabel(telemetry.findingCounts.minor, "minor"),
+    countLabel(telemetry.findingCounts.info, "info"),
+  ].filter(Boolean);
+  const comments = [
+    countLabel(telemetry.commentCounts.inline, "inline"),
+    countLabel(telemetry.commentCounts.summary, "summary"),
+  ].filter(Boolean);
+  const source = telemetry.configSource
+    ? telemetry.configSource.replaceAll("_", " ")
+    : null;
+  const skipped =
+    telemetry.skippedReasonCategory &&
+    telemetry.skippedReasonCategory !== "none"
+      ? `skipped: ${telemetry.skippedReasonCategory.replaceAll("_", " ")}`
+      : null;
+
+  return [source, findings.join(" / "), comments.join(" / "), skipped]
+    .filter(Boolean)
+    .join(" - ");
+}
+
+function countLabel(value: number | null, label: string): string | null {
+  if (typeof value !== "number" || value <= 0) {
+    return null;
+  }
+  return `${value} ${label}`;
 }
 
 type DashboardFormAction = (formData: FormData) => void | Promise<void>;
