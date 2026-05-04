@@ -105,6 +105,9 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Architecture boundaries
+        run: pnpm architecture:check
+
       - name: GitHub/OIDC contract tests
         run: pnpm spike:test
 

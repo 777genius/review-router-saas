@@ -13,10 +13,13 @@ Before merging any feature:
 Automated guardrail:
 
 ```bash
-pnpm test -- packages/shared/src/tests/architecture-boundaries.test.ts
+pnpm architecture:check
 ```
 
-This test scans `packages/features/*/src/domain` and `packages/features/*/src/application` so adapter/framework imports fail before review. If a legitimate new adapter is added, put it under `infrastructure` or `interface` and expose it through an application port.
+This script scans `packages/features/*/src/domain` and
+`packages/features/*/src/application` so adapter/framework imports fail before
+review. If a legitimate new adapter is added, put it under `infrastructure` or
+`interface` and expose it through an application port.
 
 ## CI Gate
 
@@ -26,6 +29,7 @@ Every pull request and `main` push must run:
 - fresh migration smoke on a temporary database
 - local readiness checks
 - unit tests
+- architecture boundary check
 - GitHub/OIDC contract tests that do not require real secrets
 - local DB smoke for repository config override -> clear -> workspace fallback
 - local DB smoke for support diagnostics access audit and safe metadata summary

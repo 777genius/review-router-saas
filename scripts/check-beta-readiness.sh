@@ -23,6 +23,7 @@ run_with_env() {
 
 run_step "local readiness" run_pnpm local:check
 run_step "unit and integration tests" run_pnpm test
+run_step "architecture boundaries" run_pnpm architecture:check
 run_step "typecheck" run_pnpm typecheck
 run_step "lint" run_pnpm lint
 run_step "format check" run_pnpm format:check

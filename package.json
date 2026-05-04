@@ -45,7 +45,8 @@
     "spike:distributed-lock:e2e": "tsx spikes/github-oidc/src/distributed-lock-e2e.ts",
     "api:start": "node --conditions=production apps/api/dist/server.js",
     "worker:start": "node --conditions=production apps/worker/dist/worker.js",
-    "runtime:smoke": "node scripts/run-with-env.mjs node scripts/check-production-runtime.mjs"
+    "runtime:smoke": "node scripts/run-with-env.mjs node scripts/check-production-runtime.mjs",
+    "architecture:check": "node scripts/check-architecture-boundaries.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
