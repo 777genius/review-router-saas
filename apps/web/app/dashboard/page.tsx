@@ -55,6 +55,10 @@ import {
 } from "../../src/server/repository-health-view";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
 import { FormSubmitButton } from "../form-submit-button";
+import {
+  GitHubSignInButton,
+  GitHubSignInInlineButton,
+} from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 
 export const dynamic = "force-dynamic";
@@ -295,7 +299,7 @@ export default async function DashboardPage({
       : undefined;
   const workspaces = await loadDashboardData(workspaceScope, supportAudit);
   const appInstallUrl = getGitHubAppInstallUrl();
-  const dashboardSignInHref = buildDashboardSignInHref(params);
+  const dashboardSignInCallbackUrl = buildDashboardSignInCallbackUrl(params);
   const selectedSection = resolveDashboardSection(params);
 
   if (workspaces.length === 0) {
@@ -306,13 +310,13 @@ export default async function DashboardPage({
           mutationStatus={mutationStatus}
           showReadOnlyHint={false}
           appSetupNotice={appSetupNotice}
-          signInHref={dashboardSignInHref}
+          signInCallbackUrl={dashboardSignInCallbackUrl}
         />
         <OnboardingDashboard
           appSetupActive={Boolean(appSetupNotice)}
           appInstallUrl={appInstallUrl}
           signedIn={mutationStatus.signedIn}
-          signInHref={dashboardSignInHref}
+          signInCallbackUrl={dashboardSignInCallbackUrl}
         />
       </main>
     );
@@ -374,23 +378,31 @@ function OnboardingDashboard({
   appSetupActive,
   appInstallUrl,
   signedIn,
-  signInHref,
+  signInCallbackUrl,
 }: {
   readonly appSetupActive: boolean;
   readonly appInstallUrl: string | null;
   readonly signedIn: boolean;
-  readonly signInHref: string;
+  readonly signInCallbackUrl: string;
 }): React.ReactElement {
   const primaryAction =
     appSetupActive && !signedIn
-      ? { href: signInHref, label: "Sign in to finish setup" }
+      ? { kind: "sign-in" as const, label: "Sign in to finish setup" }
       : appInstallUrl
-        ? { href: appInstallUrl, label: "Install GitHub App" }
-        : { href: signInHref, label: "Sign in with GitHub" };
+        ? {
+            kind: "link" as const,
+            href: appInstallUrl,
+            label: "Install GitHub App",
+          }
+        : { kind: "sign-in" as const, label: "Sign in with GitHub" };
   const secondaryAction =
     appSetupActive || signedIn
-      ? { href: "/getting-started", label: "Setup guide" }
-      : { href: signInHref, label: "Sign in" };
+      ? {
+          kind: "link" as const,
+          href: "/getting-started",
+          label: "Setup guide",
+        }
+      : { kind: "sign-in" as const, label: "Sign in" };
   const onboardingSteps = appSetupActive
     ? signedIn
       ? [
@@ -457,21 +469,17 @@ function OnboardingDashboard({
             </div>
 
             <div className="grid w-full max-w-xl gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <LinkButton
-                href={primaryAction.href}
-                size="lg"
+              <OnboardingActionButton
+                action={primaryAction}
+                callbackUrl={signInCallbackUrl}
                 className="h-16 rounded-2xl px-8 text-lg font-semibold"
-              >
-                {primaryAction.label}
-              </LinkButton>
-              <LinkButton
-                href={secondaryAction.href}
+              />
+              <OnboardingActionButton
+                action={secondaryAction}
+                callbackUrl={signInCallbackUrl}
                 variant="outline"
-                size="lg"
                 className="h-16 rounded-2xl px-8"
-              >
-                {secondaryAction.label}
-              </LinkButton>
+              />
             </div>
 
             <div className="grid w-full gap-3 text-left sm:grid-cols-3">
@@ -502,6 +510,53 @@ function OnboardingDashboard({
         </Card>
       </div>
     </section>
+  );
+}
+
+type OnboardingAction =
+  | {
+      readonly kind: "link";
+      readonly href: string;
+      readonly label: string;
+    }
+  | {
+      readonly kind: "sign-in";
+      readonly label: string;
+    };
+
+function OnboardingActionButton({
+  action,
+  callbackUrl,
+  className,
+  variant,
+}: {
+  readonly action: OnboardingAction;
+  readonly callbackUrl: string;
+  readonly className: string;
+  readonly variant?: "outline";
+}): React.ReactElement {
+  if (action.kind === "sign-in") {
+    return (
+      <GitHubSignInButton
+        callbackUrl={callbackUrl}
+        size="lg"
+        variant={variant}
+        className={className}
+      >
+        {action.label}
+      </GitHubSignInButton>
+    );
+  }
+
+  return (
+    <LinkButton
+      href={action.href}
+      size="lg"
+      variant={variant}
+      className={className}
+    >
+      {action.label}
+    </LinkButton>
   );
 }
 
@@ -551,9 +606,7 @@ function DashboardSectionNav({
         <p className="truncate text-lg font-semibold text-cyan-50">
           {workspace.name}
         </p>
-        <p className="mt-1 truncate text-xs text-slate-500">
-          {workspace.slug}
-        </p>
+        <p className="mt-1 truncate text-xs text-slate-500">{workspace.slug}</p>
         <div className="mt-4 grid gap-2">
           <Badge tone="success">{repositoryCount} repos</Badge>
           <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
@@ -656,262 +709,428 @@ function WorkspaceCard({
           selectedSection={selectedSection}
         />
         <div className="space-y-5 p-5 sm:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-semibold text-cyan-50">
-            {workspace.name}
-          </h2>
-          <p className="text-sm text-slate-400">{workspace.slug}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Badge tone="success">{repositoryCount} repositories</Badge>
-          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
-          <Badge tone="accent">
-            {entitlement.plan.replace("_", " ")} / {entitlement.status}
-          </Badge>
-        </div>
-      </div>
-
-      <WorkspaceActionNotice params={params} />
-
-      {selectedSection === "repositories" ? (
-        <>
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-        <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
-          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
-          <p className="mt-3 text-sm leading-6 text-slate-300">
-            {workspaceHealth.ready} ready / {workspaceHealth.needsSetup} need
-            setup / {workspaceHealth.needsAttention} need attention. Start by
-            creating a setup PR for one selected repository.
-          </p>
-        </div>
-        {appInstallUrlForWorkspace(primaryInstallation) ? (
-          <LinkButton
-            href={appInstallUrlForWorkspace(primaryInstallation) ?? "#"}
-            variant="outline"
-            className="md:justify-self-end"
-          >
-            Manage App access
-          </LinkButton>
-        ) : null}
-      </div>
-
-      <RepositoryTable
-        workspace={workspace}
-        repositories={repositories}
-        health={health}
-        provisioning={provisioning}
-        mutationsEnabled={mutationsEnabled}
-      />
-        </>
-      ) : null}
-
-      {selectedSection === "setup" ? (
-        <>
-      <details
-        open
-        className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
-      >
-        <summary className="cursor-pointer list-none">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <Badge tone="accent">GitHub App connection</Badge>
-              <p className="mt-2 text-sm text-slate-400">
-                Installation sync and repository selection.
-              </p>
+              <h2 className="text-2xl font-semibold text-cyan-50">
+                {workspace.name}
+              </h2>
+              <p className="text-sm text-slate-400">{workspace.slug}</p>
             </div>
-            <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
-              details
-            </span>
+            <div className="flex flex-wrap gap-2">
+              <Badge tone="success">{repositoryCount} repositories</Badge>
+              <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
+              <Badge tone="accent">
+                {entitlement.plan.replace("_", " ")} / {entitlement.status}
+              </Badge>
+            </div>
           </div>
-        </summary>
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          {workspace.installations.map((installation) => (
-            <div
-              key={`${workspace.id}-${installation.githubInstallationId}`}
-              className="space-y-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
-            >
-              <div>
-                <p className="text-sm font-semibold text-cyan-50">
-                  {installation.accountLogin}
-                </p>
-                <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                  {installation.accountType} / {installation.status} /{" "}
-                  {installation.repositorySelection}
-                </p>
-              </div>
-              <form action={requestInstallationSyncAction}>
-                <input type="hidden" name="workspaceId" value={workspace.id} />
-                <input
-                  type="hidden"
-                  name="githubInstallationId"
-                  value={installation.githubInstallationId}
-                />
-                <Button
-                  type="submit"
-                  variant="outline"
-                  size="sm"
-                  disabled={
-                    !mutationsEnabled || installation.status !== "active"
-                  }
-                >
-                  Sync repos
-                </Button>
-              </form>
-            </div>
-          ))}
-        </div>
-      </details>
 
-      {providerGuidance ? (
-        <details
-          open
-          className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4"
-        >
-          <summary className="cursor-pointer list-none">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <Badge tone="success">
-                  {providerSetupTitle(providerGuidance.provider)}
-                </Badge>
-                <p className="mt-2 text-sm leading-6 text-emerald-50">
-                  Credentials stay in GitHub Actions secrets. Open this when you
-                  are ready to seed the selected provider.
-                </p>
-              </div>
-              <span className="font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
-                {providerGuidance.recommendedScope.replaceAll("_", " ")}
-              </span>
-            </div>
-          </summary>
-          <div className="mt-4">
-            <p className="mb-4 text-sm leading-6 text-emerald-50">
-              {providerSetupIntro(providerGuidance.provider)}
-            </p>
-            {providerGuidance.warnings.length > 0 ? (
-              <ul className="mb-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
-                {providerGuidance.warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
-            ) : null}
-            <div className="grid gap-3">
-              {providerGuidance.commands.map((command) => (
-                <div
-                  key={command.title}
-                  className="rounded-lg border border-emerald-200/10 bg-slate-950/80 p-3"
-                >
-                  <p className="text-sm font-semibold text-emerald-50">
-                    {command.title}
+          <WorkspaceActionNotice params={params} />
+
+          {selectedSection === "repositories" ? (
+            <>
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+                  <Badge tone={workspaceHealth.tone}>
+                    {workspaceHealth.label}
+                  </Badge>
+                  <p className="mt-3 text-sm leading-6 text-slate-300">
+                    {workspaceHealth.ready} ready / {workspaceHealth.needsSetup}{" "}
+                    need setup / {workspaceHealth.needsAttention} need
+                    attention. Start by creating a setup PR for one selected
+                    repository.
                   </p>
-                  <p className="mt-1 text-xs leading-5 text-slate-400">
-                    {command.description}
-                  </p>
-                  <pre className="mt-3 overflow-x-auto rounded-md bg-black/40 p-3 text-xs text-cyan-100">
-                    <code>{command.command}</code>
-                  </pre>
                 </div>
-              ))}
-            </div>
-          </div>
-        </details>
-      ) : null}
-        </>
-      ) : null}
-
-      {selectedSection === "policy" ? (
-      <details
-        open
-        className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
-      >
-        <summary className="cursor-pointer list-none">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <Badge tone="accent">Review policy</Badge>
-              <p className="mt-2 text-sm text-slate-400">
-                Workspace defaults and optional per-repository overrides.
-              </p>
-            </div>
-            <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
-              v{activeConfigVersion}
-            </span>
-          </div>
-        </summary>
-        <div className="mt-4">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <Badge tone="accent">Workspace default</Badge>
-            <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-              v{activeConfigVersion}
-            </span>
-          </div>
-          <ReviewConfigForm
-            action={saveWorkspaceReviewConfigAction}
-            config={activeConfig}
-            hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
-            mutationsEnabled={mutationsEnabled}
-            submitLabel="Save workspace default"
-          />
-        </div>
-
-        {repositories.length > 0 ? (
-          <div className="mt-4 rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <Badge tone="accent">Repository overrides</Badge>
-              <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                optional per-repository provider/model/effort
-              </span>
-            </div>
-            <div className="grid gap-3">
-              {repositories.map((repository) => {
-                const repositoryConfig = repositoryConfigs.find(
-                  (item) => item.repositoryId === repository.id,
-                )?.config;
-                const effectiveConfig =
-                  repositoryConfig?.config ?? activeConfig;
-                const configVersion =
-                  repositoryConfig?.version ?? activeConfigVersion;
-
-                return (
-                  <details
-                    key={`${repository.id}-review-config`}
-                    className="rounded-lg border border-cyan-200/10 bg-cyan-300/5 p-3"
+                {appInstallUrlForWorkspace(primaryInstallation) ? (
+                  <LinkButton
+                    href={appInstallUrlForWorkspace(primaryInstallation) ?? "#"}
+                    variant="outline"
+                    className="md:justify-self-end"
                   >
-                    <summary className="cursor-pointer list-none">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-semibold text-cyan-50">
-                            {repository.fullName}
+                    Manage App access
+                  </LinkButton>
+                ) : null}
+              </div>
+
+              <RepositoryTable
+                workspace={workspace}
+                repositories={repositories}
+                health={health}
+                provisioning={provisioning}
+                mutationsEnabled={mutationsEnabled}
+              />
+            </>
+          ) : null}
+
+          {selectedSection === "setup" ? (
+            <>
+              <details
+                open
+                className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
+              >
+                <summary className="cursor-pointer list-none">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <Badge tone="accent">GitHub App connection</Badge>
+                      <p className="mt-2 text-sm text-slate-400">
+                        Installation sync and repository selection.
+                      </p>
+                    </div>
+                    <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
+                      details
+                    </span>
+                  </div>
+                </summary>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  {workspace.installations.map((installation) => (
+                    <div
+                      key={`${workspace.id}-${installation.githubInstallationId}`}
+                      className="space-y-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold text-cyan-50">
+                          {installation.accountLogin}
+                        </p>
+                        <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                          {installation.accountType} / {installation.status} /{" "}
+                          {installation.repositorySelection}
+                        </p>
+                      </div>
+                      <form action={requestInstallationSyncAction}>
+                        <input
+                          type="hidden"
+                          name="workspaceId"
+                          value={workspace.id}
+                        />
+                        <input
+                          type="hidden"
+                          name="githubInstallationId"
+                          value={installation.githubInstallationId}
+                        />
+                        <Button
+                          type="submit"
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            !mutationsEnabled ||
+                            installation.status !== "active"
+                          }
+                        >
+                          Sync repos
+                        </Button>
+                      </form>
+                    </div>
+                  ))}
+                </div>
+              </details>
+
+              {providerGuidance ? (
+                <details
+                  open
+                  className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4"
+                >
+                  <summary className="cursor-pointer list-none">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <Badge tone="success">
+                          {providerSetupTitle(providerGuidance.provider)}
+                        </Badge>
+                        <p className="mt-2 text-sm leading-6 text-emerald-50">
+                          Credentials stay in GitHub Actions secrets. Open this
+                          when you are ready to seed the selected provider.
+                        </p>
+                      </div>
+                      <span className="font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
+                        {providerGuidance.recommendedScope.replaceAll("_", " ")}
+                      </span>
+                    </div>
+                  </summary>
+                  <div className="mt-4">
+                    <p className="mb-4 text-sm leading-6 text-emerald-50">
+                      {providerSetupIntro(providerGuidance.provider)}
+                    </p>
+                    {providerGuidance.warnings.length > 0 ? (
+                      <ul className="mb-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
+                        {providerGuidance.warnings.map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    <div className="grid gap-3">
+                      {providerGuidance.commands.map((command) => (
+                        <div
+                          key={command.title}
+                          className="rounded-lg border border-emerald-200/10 bg-slate-950/80 p-3"
+                        >
+                          <p className="text-sm font-semibold text-emerald-50">
+                            {command.title}
                           </p>
-                          <p className="text-xs text-slate-400">
-                            {repositoryConfig
-                              ? `Repository override / v${configVersion}`
-                              : `Inherits workspace default / v${configVersion}`}
+                          <p className="mt-1 text-xs leading-5 text-slate-400">
+                            {command.description}
+                          </p>
+                          <pre className="mt-3 overflow-x-auto rounded-md bg-black/40 p-3 text-xs text-cyan-100">
+                            <code>{command.command}</code>
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              ) : null}
+            </>
+          ) : null}
+
+          {selectedSection === "policy" ? (
+            <details
+              open
+              className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
+            >
+              <summary className="cursor-pointer list-none">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <Badge tone="accent">Review policy</Badge>
+                    <p className="mt-2 text-sm text-slate-400">
+                      Workspace defaults and optional per-repository overrides.
+                    </p>
+                  </div>
+                  <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
+                    v{activeConfigVersion}
+                  </span>
+                </div>
+              </summary>
+              <div className="mt-4">
+                <div className="mb-4 flex flex-wrap items-center gap-2">
+                  <Badge tone="accent">Workspace default</Badge>
+                  <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                    v{activeConfigVersion}
+                  </span>
+                </div>
+                <ReviewConfigForm
+                  action={saveWorkspaceReviewConfigAction}
+                  config={activeConfig}
+                  hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
+                  mutationsEnabled={mutationsEnabled}
+                  submitLabel="Save workspace default"
+                />
+              </div>
+
+              {repositories.length > 0 ? (
+                <div className="mt-4 rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+                  <div className="mb-4 flex flex-wrap items-center gap-2">
+                    <Badge tone="accent">Repository overrides</Badge>
+                    <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                      optional per-repository provider/model/effort
+                    </span>
+                  </div>
+                  <div className="grid gap-3">
+                    {repositories.map((repository) => {
+                      const repositoryConfig = repositoryConfigs.find(
+                        (item) => item.repositoryId === repository.id,
+                      )?.config;
+                      const effectiveConfig =
+                        repositoryConfig?.config ?? activeConfig;
+                      const configVersion =
+                        repositoryConfig?.version ?? activeConfigVersion;
+
+                      return (
+                        <details
+                          key={`${repository.id}-review-config`}
+                          className="rounded-lg border border-cyan-200/10 bg-cyan-300/5 p-3"
+                        >
+                          <summary className="cursor-pointer list-none">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <p className="text-sm font-semibold text-cyan-50">
+                                  {repository.fullName}
+                                </p>
+                                <p className="text-xs text-slate-400">
+                                  {repositoryConfig
+                                    ? `Repository override / v${configVersion}`
+                                    : `Inherits workspace default / v${configVersion}`}
+                                </p>
+                              </div>
+                              <Badge
+                                tone={repositoryConfig ? "warning" : "success"}
+                              >
+                                {repositoryConfig ? "override" : "inherits"}
+                              </Badge>
+                            </div>
+                          </summary>
+                          <div className="mt-4 space-y-3">
+                            <ReviewConfigForm
+                              action={saveRepositoryReviewConfigAction}
+                              config={effectiveConfig}
+                              hiddenFields={[
+                                { name: "workspaceId", value: workspace.id },
+                                { name: "repositoryId", value: repository.id },
+                              ]}
+                              mutationsEnabled={
+                                mutationsEnabled &&
+                                repository.selected &&
+                                !repository.archived
+                              }
+                              submitLabel={
+                                repositoryConfig
+                                  ? "Update override"
+                                  : "Save override"
+                              }
+                            />
+                            {repositoryConfig ? (
+                              <form action={clearRepositoryReviewConfigAction}>
+                                <input
+                                  type="hidden"
+                                  name="workspaceId"
+                                  value={workspace.id}
+                                />
+                                <input
+                                  type="hidden"
+                                  name="repositoryId"
+                                  value={repository.id}
+                                />
+                                <Button
+                                  type="submit"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={
+                                    !mutationsEnabled ||
+                                    !repository.selected ||
+                                    repository.archived
+                                  }
+                                >
+                                  Inherit workspace default
+                                </Button>
+                              </form>
+                            ) : null}
+                          </div>
+                        </details>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </details>
+          ) : null}
+
+          {selectedSection === "repositories" &&
+          repositories.some(
+            (repository) => repository.visibility === "public",
+          ) ? (
+            <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+              Public repository warning: fork pull requests are skipped by
+              default for secret-backed providers. Maintainers can add a trusted
+              rerun flow later, but v1 keeps provider secrets out of untrusted
+              fork code paths.
+            </div>
+          ) : null}
+
+          {selectedSection === "diagnostics" ? (
+            <>
+              <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Badge tone={workspaceHealth.tone}>Readiness</Badge>
+                  <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                    {workspaceHealth.ready} ready / {workspaceHealth.needsSetup}{" "}
+                    setup / {workspaceHealth.needsAttention} attention /{" "}
+                    {workspaceHealth.unknown} unknown
+                  </span>
+                </div>
+                <p className="text-sm leading-6 text-slate-300">
+                  This is metadata-only repository health. It does not include
+                  code, diffs, prompts, or provider output.
+                </p>
+              </div>
+
+              {supportDiagnostics ? (
+                <div className="rounded-xl border border-magenta-300/20 bg-fuchsia-400/10 p-4">
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <Badge tone="accent">Support diagnostics</Badge>
+                    <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                      metadata only / no code, diffs, prompts, or secrets
+                    </span>
+                  </div>
+                  <div className="grid gap-3 text-sm md:grid-cols-5">
+                    <SupportMetric
+                      label="Repositories"
+                      value={`${supportDiagnostics.repositoryCounts.selected}/${supportDiagnostics.repositoryCounts.total}`}
+                      hint={`${supportDiagnostics.repositoryCounts.notConfigured} missing workflow`}
+                    />
+                    <SupportMetric
+                      label="Provider"
+                      value={`${supportDiagnostics.providerCounts.configured} configured`}
+                      hint={`${supportDiagnostics.providerCounts.missing + supportDiagnostics.providerCounts.staleOrInvalid} need setup`}
+                    />
+                    <SupportMetric
+                      label="Outbox"
+                      value={`${supportDiagnostics.outboxCounts.deadLetter} dead-letter`}
+                      hint={`${supportDiagnostics.outboxCounts.pending} pending`}
+                    />
+                    <SupportMetric
+                      label="Workflow PRs"
+                      value={`${supportDiagnostics.workflowProvisioningCounts.setup_pr_open ?? 0} open`}
+                      hint={`${supportDiagnostics.workflowProvisioningCounts.failed ?? 0} failed`}
+                    />
+                    <SupportMetric
+                      label="Action runs"
+                      value={`${supportDiagnostics.actionRunCounts.repositoriesWithReports} reports`}
+                      hint={`${supportDiagnostics.actionRunCounts.criticalFindings} critical / ${supportDiagnostics.actionRunCounts.inlineComments} inline`}
+                    />
+                  </div>
+                  {supportDiagnostics.recentAuditActions.length > 0 ? (
+                    <p className="mt-3 text-xs leading-5 text-slate-400">
+                      Recent audit actions:{" "}
+                      {supportDiagnostics.recentAuditActions
+                        .slice(0, 4)
+                        .join(", ")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Badge
+                    tone={outboxFailures.length > 0 ? "warning" : "success"}
+                  >
+                    Operational queue
+                  </Badge>
+                  <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                    dead letters / retries
+                  </span>
+                </div>
+                {outboxFailures.length === 0 ? (
+                  <p className="text-sm leading-6 text-slate-400">
+                    No stuck or failed background events for this workspace.
+                  </p>
+                ) : (
+                  <div className="grid gap-3">
+                    {outboxFailures.map((event) => (
+                      <div
+                        key={event.id}
+                        className="grid gap-3 rounded-lg border border-amber-200/10 bg-amber-300/10 p-3 md:grid-cols-[1fr_auto]"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-amber-50">
+                            {event.type}@v{event.version} / {event.status}
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-slate-300">
+                            Attempts {event.attempts}/{event.maxAttempts}
+                            {event.lastErrorCode
+                              ? ` - ${event.lastErrorCode}`
+                              : ""}
+                          </p>
+                          {event.safeLastErrorSummary ? (
+                            <p className="mt-1 text-xs leading-5 text-slate-400">
+                              {event.safeLastErrorSummary}
+                            </p>
+                          ) : null}
+                          <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                            Updated {event.updatedAt.toISOString()}
                           </p>
                         </div>
-                        <Badge tone={repositoryConfig ? "warning" : "success"}>
-                          {repositoryConfig ? "override" : "inherits"}
-                        </Badge>
-                      </div>
-                    </summary>
-                    <div className="mt-4 space-y-3">
-                      <ReviewConfigForm
-                        action={saveRepositoryReviewConfigAction}
-                        config={effectiveConfig}
-                        hiddenFields={[
-                          { name: "workspaceId", value: workspace.id },
-                          { name: "repositoryId", value: repository.id },
-                        ]}
-                        mutationsEnabled={
-                          mutationsEnabled &&
-                          repository.selected &&
-                          !repository.archived
-                        }
-                        submitLabel={
-                          repositoryConfig ? "Update override" : "Save override"
-                        }
-                      />
-                      {repositoryConfig ? (
-                        <form action={clearRepositoryReviewConfigAction}>
+                        <form
+                          action={retryOutboxEventAction}
+                          className="self-center"
+                        >
                           <input
                             type="hidden"
                             name="workspaceId"
@@ -919,8 +1138,8 @@ function WorkspaceCard({
                           />
                           <input
                             type="hidden"
-                            name="repositoryId"
-                            value={repository.id}
+                            name="eventId"
+                            value={event.id}
                           />
                           <Button
                             type="submit"
@@ -928,181 +1147,44 @@ function WorkspaceCard({
                             size="sm"
                             disabled={
                               !mutationsEnabled ||
-                              !repository.selected ||
-                              repository.archived
+                              event.status !== "dead_letter"
                             }
                           >
-                            Inherit workspace default
+                            Retry
                           </Button>
                         </form>
-                      ) : null}
-                    </div>
-                  </details>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
-      </details>
-      ) : null}
-
-      {selectedSection === "repositories" &&
-      repositories.some((repository) => repository.visibility === "public") ? (
-        <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
-          Public repository warning: fork pull requests are skipped by default
-          for secret-backed providers. Maintainers can add a trusted rerun flow
-          later, but v1 keeps provider secrets out of untrusted fork code paths.
-        </div>
-      ) : null}
-
-      {selectedSection === "diagnostics" ? (
-        <>
-      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Badge tone={workspaceHealth.tone}>Readiness</Badge>
-          <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-            {workspaceHealth.ready} ready / {workspaceHealth.needsSetup} setup /{" "}
-            {workspaceHealth.needsAttention} attention /{" "}
-            {workspaceHealth.unknown} unknown
-          </span>
-        </div>
-        <p className="text-sm leading-6 text-slate-300">
-          This is metadata-only repository health. It does not include code,
-          diffs, prompts, or provider output.
-        </p>
-      </div>
-
-      {supportDiagnostics ? (
-        <div className="rounded-xl border border-magenta-300/20 bg-fuchsia-400/10 p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <Badge tone="accent">Support diagnostics</Badge>
-            <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-              metadata only / no code, diffs, prompts, or secrets
-            </span>
-          </div>
-          <div className="grid gap-3 text-sm md:grid-cols-5">
-            <SupportMetric
-              label="Repositories"
-              value={`${supportDiagnostics.repositoryCounts.selected}/${supportDiagnostics.repositoryCounts.total}`}
-              hint={`${supportDiagnostics.repositoryCounts.notConfigured} missing workflow`}
-            />
-            <SupportMetric
-              label="Provider"
-              value={`${supportDiagnostics.providerCounts.configured} configured`}
-              hint={`${supportDiagnostics.providerCounts.missing + supportDiagnostics.providerCounts.staleOrInvalid} need setup`}
-            />
-            <SupportMetric
-              label="Outbox"
-              value={`${supportDiagnostics.outboxCounts.deadLetter} dead-letter`}
-              hint={`${supportDiagnostics.outboxCounts.pending} pending`}
-            />
-            <SupportMetric
-              label="Workflow PRs"
-              value={`${supportDiagnostics.workflowProvisioningCounts.setup_pr_open ?? 0} open`}
-              hint={`${supportDiagnostics.workflowProvisioningCounts.failed ?? 0} failed`}
-            />
-            <SupportMetric
-              label="Action runs"
-              value={`${supportDiagnostics.actionRunCounts.repositoriesWithReports} reports`}
-              hint={`${supportDiagnostics.actionRunCounts.criticalFindings} critical / ${supportDiagnostics.actionRunCounts.inlineComments} inline`}
-            />
-          </div>
-          {supportDiagnostics.recentAuditActions.length > 0 ? (
-            <p className="mt-3 text-xs leading-5 text-slate-400">
-              Recent audit actions:{" "}
-              {supportDiagnostics.recentAuditActions.slice(0, 4).join(", ")}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Badge tone={outboxFailures.length > 0 ? "warning" : "success"}>
-            Operational queue
-          </Badge>
-          <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-            dead letters / retries
-          </span>
-        </div>
-        {outboxFailures.length === 0 ? (
-          <p className="text-sm leading-6 text-slate-400">
-            No stuck or failed background events for this workspace.
-          </p>
-        ) : (
-          <div className="grid gap-3">
-            {outboxFailures.map((event) => (
-              <div
-                key={event.id}
-                className="grid gap-3 rounded-lg border border-amber-200/10 bg-amber-300/10 p-3 md:grid-cols-[1fr_auto]"
-              >
-                <div>
-                  <p className="text-sm font-semibold text-amber-50">
-                    {event.type}@v{event.version} / {event.status}
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-slate-300">
-                    Attempts {event.attempts}/{event.maxAttempts}
-                    {event.lastErrorCode ? ` - ${event.lastErrorCode}` : ""}
-                  </p>
-                  {event.safeLastErrorSummary ? (
-                    <p className="mt-1 text-xs leading-5 text-slate-400">
-                      {event.safeLastErrorSummary}
-                    </p>
-                  ) : null}
-                  <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                    Updated {event.updatedAt.toISOString()}
-                  </p>
-                </div>
-                <form action={retryOutboxEventAction} className="self-center">
-                  <input
-                    type="hidden"
-                    name="workspaceId"
-                    value={workspace.id}
-                  />
-                  <input type="hidden" name="eventId" value={event.id} />
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    size="sm"
-                    disabled={
-                      !mutationsEnabled || event.status !== "dead_letter"
-                    }
-                  >
-                    Retry
-                  </Button>
-                </form>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
-        )}
-      </div>
 
-      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
-        <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
-          Recent audit
-        </p>
-        {workspace.auditEvents.length === 0 ? (
-          <p className="text-sm text-slate-400">No audit events yet.</p>
-        ) : (
-          <ul className="space-y-2 text-sm text-slate-300">
-            {workspace.auditEvents.map((event) => (
-              <li
-                key={`${event.action}-${event.targetType}-${event.createdAt.toISOString()}`}
-                className="flex flex-wrap items-center justify-between gap-2"
-              >
-                <span>
-                  {event.action} by {event.actor}
-                </span>
-                <span className="text-xs text-slate-500">
-                  {event.createdAt.toISOString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-        </>
-      ) : null}
+              <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+                <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
+                  Recent audit
+                </p>
+                {workspace.auditEvents.length === 0 ? (
+                  <p className="text-sm text-slate-400">No audit events yet.</p>
+                ) : (
+                  <ul className="space-y-2 text-sm text-slate-300">
+                    {workspace.auditEvents.map((event) => (
+                      <li
+                        key={`${event.action}-${event.targetType}-${event.createdAt.toISOString()}`}
+                        className="flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <span>
+                          {event.action} by {event.actor}
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          {event.createdAt.toISOString()}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
     </Card>
@@ -1609,7 +1691,7 @@ function DashboardNotice({
   appSetupNotice,
   params,
   mutationStatus,
-  signInHref,
+  signInCallbackUrl,
   showReadOnlyHint = true,
 }: {
   readonly appSetupNotice?: ReturnType<typeof buildGitHubAppSetupNotice>;
@@ -1617,7 +1699,7 @@ function DashboardNotice({
   readonly mutationStatus: Awaited<
     ReturnType<typeof getDashboardMutationStatus>
   >;
-  readonly signInHref: string;
+  readonly signInCallbackUrl: string;
   readonly showReadOnlyHint?: boolean;
 }): React.ReactElement | null {
   const notice = readParam(params.notice);
@@ -1670,12 +1752,12 @@ function DashboardNotice({
             {!mutationStatus.signedIn ? (
               <>
                 {" "}
-                <a
+                <GitHubSignInInlineButton
                   className="text-lime-100 underline decoration-lime-300/50 underline-offset-4"
-                  href={signInHref}
+                  callbackUrl={signInCallbackUrl}
                 >
                   Sign in
-                </a>
+                </GitHubSignInInlineButton>
               </>
             ) : null}
           </p>
@@ -1697,12 +1779,12 @@ function DashboardNotice({
             {mutationStatus.reason === "signed_out" ? (
               <>
                 {" "}
-                <a
+                <GitHubSignInInlineButton
                   className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                  href={signInHref}
+                  callbackUrl={signInCallbackUrl}
                 >
                   Sign in
-                </a>
+                </GitHubSignInInlineButton>
               </>
             ) : null}
           </p>
@@ -1760,7 +1842,7 @@ function dashboardSectionHref(section: DashboardSection): string {
   return `/dashboard?section=${section}`;
 }
 
-function buildDashboardSignInHref(
+function buildDashboardSignInCallbackUrl(
   params: Record<string, string | string[] | undefined>,
 ): string {
   const callbackParams = new URLSearchParams();
@@ -1779,7 +1861,7 @@ function buildDashboardSignInHref(
   const query = callbackParams.toString();
   const callbackPath = query ? `/dashboard?${query}` : "/dashboard";
 
-  return `/api/auth/signin?callbackUrl=${encodeURIComponent(callbackPath)}`;
+  return callbackPath;
 }
 
 function setupQueryString(

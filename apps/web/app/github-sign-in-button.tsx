@@ -1,0 +1,74 @@
+"use client";
+
+import { useState, type ReactNode } from "react";
+import { signIn } from "next-auth/react";
+import { Button, type ButtonProps } from "@reviewrouter/ui";
+
+type GitHubSignInButtonProps = Omit<
+  ButtonProps,
+  "children" | "onClick" | "type"
+> & {
+  readonly callbackUrl: string;
+  readonly children: ReactNode;
+  readonly pendingLabel?: string;
+};
+
+export function GitHubSignInButton({
+  callbackUrl,
+  children,
+  pendingLabel = "Opening GitHub...",
+  ...props
+}: GitHubSignInButtonProps): React.ReactElement {
+  const [pending, setPending] = useState(false);
+
+  return (
+    <Button
+      {...props}
+      type="button"
+      disabled={pending || props.disabled}
+      onClick={() => {
+        setPending(true);
+        void signIn("github", { callbackUrl }).finally(() => {
+          setPending(false);
+        });
+      }}
+    >
+      {pending ? pendingLabel : children}
+    </Button>
+  );
+}
+
+type GitHubSignInInlineButtonProps = {
+  readonly callbackUrl: string;
+  readonly children: ReactNode;
+  readonly className?: string;
+};
+
+export function GitHubSignInInlineButton({
+  callbackUrl,
+  children,
+  className = "",
+}: GitHubSignInInlineButtonProps): React.ReactElement {
+  const [pending, setPending] = useState(false);
+
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      className={[
+        "inline cursor-pointer bg-transparent p-0 text-left disabled:cursor-wait disabled:opacity-70",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      onClick={() => {
+        setPending(true);
+        void signIn("github", { callbackUrl }).finally(() => {
+          setPending(false);
+        });
+      }}
+    >
+      {pending ? "Opening GitHub..." : children}
+    </button>
+  );
+}

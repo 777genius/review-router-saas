@@ -7,10 +7,9 @@ import {
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { getPrisma } from "../../src/server/prisma";
-import {
-  requestInstallationSyncAction,
-} from "../dashboard/actions";
+import { requestInstallationSyncAction } from "../dashboard/actions";
 import { FormSubmitButton } from "../form-submit-button";
+import { GitHubSignInButton } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 import { RepositoryPicker } from "./repository-picker";
@@ -38,7 +37,7 @@ export default async function SetupPage({
     getDashboardWorkspaceScope(),
   ]);
   const appInstallUrl = getGitHubAppInstallUrl();
-  const signInHref = buildSetupSignInHref(params);
+  const signInCallbackUrl = buildSetupSignInCallbackUrl(params);
   const setupNotice = buildGitHubAppSetupNotice({
     installationId,
     setupAction,
@@ -72,13 +71,13 @@ export default async function SetupPage({
           </div>
           <div className="flex flex-wrap gap-3 lg:justify-end">
             {!mutationStatus.signedIn ? (
-              <LinkButton
-                href={signInHref}
+              <GitHubSignInButton
+                callbackUrl={signInCallbackUrl}
                 size="lg"
                 className="min-w-52 rounded-2xl"
               >
                 Sign in with GitHub
-              </LinkButton>
+              </GitHubSignInButton>
             ) : (
               <LinkButton
                 href="/dashboard"
@@ -467,7 +466,7 @@ async function loadSetupInstallation(input: {
   };
 }
 
-function buildSetupSignInHref(
+function buildSetupSignInCallbackUrl(
   params: Record<string, string | string[] | undefined>,
 ): string {
   const callbackParams = new URLSearchParams();
@@ -477,7 +476,7 @@ function buildSetupSignInHref(
   }
   const query = callbackParams.toString();
   const callbackPath = query ? `/setup?${query}` : "/setup";
-  return `/api/auth/signin?callbackUrl=${encodeURIComponent(callbackPath)}`;
+  return callbackPath;
 }
 
 function readParam(value: string | string[] | undefined): string {
