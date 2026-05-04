@@ -17,11 +17,13 @@ describe("seed-codex-auth.sh", () => {
   it("prints a repository secret dry-run without leaking auth JSON", async () => {
     const fixture = await createFixture();
 
-    const result = await runSeedScript(fixture, {
-      REVIEW_ROUTER_DRY_RUN: "1",
-      REVIEW_ROUTER_SECRET_SCOPE: "repo",
-      REVIEW_ROUTER_REPO: "777genius/example",
-    });
+    const result = await runSeedScript(fixture, {}, [
+      "--dry-run",
+      "--scope",
+      "repo",
+      "--repo",
+      "777genius/example",
+    ]);
 
     expect(result.stdout).toContain("ReviewRouter Codex OAuth secret seeding");
     expect(result.stdout).toContain(
@@ -92,6 +94,16 @@ describe("seed-codex-auth.sh", () => {
     );
     expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
   });
+
+  it("prints help without requiring gh or auth.json", async () => {
+    const fixture = await createFixture();
+
+    const result = await runSeedScript(fixture, {}, ["--help"]);
+
+    expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("--dry-run");
+    expect(result.stdout).toContain("--confirm-write");
+  });
 });
 
 async function createFixture(input?: {
@@ -144,8 +156,9 @@ async function runSeedScript(
     readonly binDir: string;
   },
   env: Record<string, string>,
+  args: readonly string[] = [],
 ): Promise<{ readonly stdout: string; readonly stderr: string }> {
-  return execFileAsync("bash", [seedScript], {
+  return execFileAsync("bash", [seedScript, ...args], {
     cwd: repoRoot,
     env: {
       ...process.env,

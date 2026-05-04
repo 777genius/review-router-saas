@@ -46,6 +46,12 @@ Equivalent direct command:
 gh secret set CODEX_AUTH_JSON --repo owner/repo < ~/.codex/auth.json
 ```
 
+Direct local dry-run:
+
+```bash
+bash scripts/seed-codex-auth.sh --dry-run --repo owner/repo
+```
+
 ## Org Selected-Repositories Flow
 
 ```bash
@@ -61,6 +67,12 @@ Equivalent direct command:
 
 ```bash
 gh secret set CODEX_AUTH_JSON --org my-org --repos repo-a,repo-b --app actions < ~/.codex/auth.json
+```
+
+Direct local confirmed write:
+
+```bash
+bash scripts/seed-codex-auth.sh --confirm-write --scope org --org my-org --repos repo-a,repo-b
 ```
 
 The selected-repositories scope is important. Do not use organization `visibility=all` for personal Codex OAuth credentials.

@@ -38,6 +38,30 @@ ok() { log "${GREEN}OK${NC} $*"; }
 warn() { log "${YELLOW}WARN${NC} $*"; }
 fatal() { log "${RED}ERROR${NC} $*" >&2; exit 1; }
 
+usage() {
+  cat <<'EOF'
+ReviewRouter Codex OAuth secret seeding
+
+Usage:
+  bash scripts/seed-codex-auth.sh [options]
+
+Options:
+  --dry-run                 Print gh secret commands without writing secrets.
+  --yes, --confirm-write    Allow non-interactive secret writes after verifying the target.
+  --repo owner/repo         Target repository for repo-scoped secrets.
+  --scope repo|org          Secret scope. Defaults to repo.
+  --org org                 Organization for org selected-repository secrets.
+  --repos repo-a,repo-b     Selected repositories for org-scoped secrets.
+  --include-config          Also write CODEX_CONFIG_TOML.
+  --codex-home path         Codex home containing auth.json and config.toml.
+  --auth-file path          Explicit Codex auth.json path.
+  --config-file path        Explicit Codex config.toml path.
+  -h, --help                Show this help.
+
+Environment variables with the same REVIEW_ROUTER_* names are still supported.
+EOF
+}
+
 is_true() {
   case "${1:-}" in
     1|true|TRUE|yes|YES|y|Y) return 0 ;;
@@ -47,6 +71,77 @@ is_true() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "Missing required command: $1"
+}
+
+require_arg() {
+  option="$1"
+  value="${2:-}"
+  [ -n "$value" ] || fatal "$option requires a value"
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run)
+        DRY_RUN="1"
+        ;;
+      --yes|--confirm-write)
+        CONFIRM_WRITE="1"
+        ;;
+      --repo)
+        shift
+        require_arg "--repo" "${1:-}"
+        TARGET_REPO="$1"
+        ;;
+      --scope)
+        shift
+        require_arg "--scope" "${1:-}"
+        SECRET_SCOPE="$1"
+        ;;
+      --org)
+        shift
+        require_arg "--org" "${1:-}"
+        ORG_NAME="$1"
+        ;;
+      --repos|--selected-repos)
+        shift
+        require_arg "--repos" "${1:-}"
+        ORG_SELECTED_REPOS="$1"
+        ;;
+      --include-config)
+        INCLUDE_CODEX_CONFIG="1"
+        ;;
+      --codex-home)
+        shift
+        require_arg "--codex-home" "${1:-}"
+        CODEX_BASE_HOME="$1"
+        CODEX_AUTH_FILE="$CODEX_BASE_HOME/auth.json"
+        CODEX_CONFIG_FILE="$CODEX_BASE_HOME/config.toml"
+        ;;
+      --auth-file)
+        shift
+        require_arg "--auth-file" "${1:-}"
+        CODEX_AUTH_FILE="$1"
+        ;;
+      --config-file)
+        shift
+        require_arg "--config-file" "${1:-}"
+        CODEX_CONFIG_FILE="$1"
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        fatal "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
 }
 
 confirm_secret_write() {
@@ -238,6 +333,7 @@ store_secret_from_file() {
 }
 
 main() {
+  parse_args "$@"
   log "${PRODUCT_NAME} Codex OAuth secret seeding"
   require_cmd gh
   normalize_secret_scope
