@@ -12,6 +12,7 @@ const checkMode = String(
   env.REVIEW_ROUTER_GITHUB_APP_CHECK_MODE ?? "local",
 ).trim();
 const isHostedMode = checkMode === "hosted";
+const expectedWebhookUrl = resolveExpectedWebhookUrl(env, isHostedMode);
 const requireInstallation =
   String(env.REVIEW_ROUTER_GITHUB_APP_REQUIRE_INSTALLATION ?? "").trim() ===
   "1";
@@ -53,6 +54,7 @@ if (errors.length > 0) {
 async function checkGitHubApp() {
   const app = new App({ appId, privateKey });
   const { data: appData } = await app.octokit.request("GET /app");
+  const webhookConfig = await readWebhookConfig(app);
   const actualId = String(appData.id);
   const actualSlug = String(appData.slug ?? "");
 
@@ -67,6 +69,7 @@ async function checkGitHubApp() {
     );
   }
   assertPermissions(appData.permissions ?? {});
+  assertWebhookConfig(webhookConfig);
   warnAboutLifecycleEvents(appData.events ?? []);
 
   const installations = await listInstallations(app);
@@ -105,6 +108,13 @@ async function checkGitHubApp() {
       events: appData.events ?? [],
       lifecycleEvents:
         "installation and installation_repositories are delivered by GitHub Apps by default",
+      webhook: webhookConfig
+        ? {
+            url: webhookConfig.url ?? null,
+            contentType: webhookConfig.content_type ?? null,
+            insecureSsl: webhookConfig.insecure_ssl ?? null,
+          }
+        : null,
       installUrl,
       settingsUrl: buildAppSettingsUrl(appData.owner, actualSlug || appSlug),
     },
@@ -125,6 +135,46 @@ async function checkGitHubApp() {
 
   if (errors.length === 0) {
     console.log(JSON.stringify(diagnostics, null, 2));
+  }
+}
+
+async function readWebhookConfig(app) {
+  try {
+    const { data } = await app.octokit.request("GET /app/hook/config");
+    return data;
+  } catch (error) {
+    if (isHostedMode || expectedWebhookUrl) {
+      errors.push(
+        `GitHub App webhook configuration could not be read: ${safeErrorMessage(error)}.`,
+      );
+    } else {
+      warnings.push(
+        `GitHub App webhook configuration could not be read: ${safeErrorMessage(error)}.`,
+      );
+    }
+    return null;
+  }
+}
+
+function assertWebhookConfig(webhookConfig) {
+  if (!webhookConfig) return;
+
+  if (expectedWebhookUrl && webhookConfig.url !== expectedWebhookUrl) {
+    errors.push(
+      `GitHub App webhook URL must be ${expectedWebhookUrl}; current value is ${webhookConfig.url ?? "missing"}.`,
+    );
+  }
+
+  if (isHostedMode && webhookConfig.content_type !== "json") {
+    errors.push(
+      `GitHub App webhook content_type must be json; current value is ${webhookConfig.content_type ?? "missing"}.`,
+    );
+  }
+
+  if (isHostedMode && webhookConfig.insecure_ssl !== "0") {
+    errors.push(
+      `GitHub App webhook insecure_ssl must be 0; current value is ${webhookConfig.insecure_ssl ?? "missing"}.`,
+    );
   }
 }
 
@@ -170,6 +220,24 @@ function pickPermissions(permissions) {
       permissions[permission] ?? null,
     ]),
   );
+}
+
+function resolveExpectedWebhookUrl(sourceEnv, hostedMode) {
+  const explicit = String(
+    sourceEnv.REVIEW_ROUTER_GITHUB_APP_EXPECT_WEBHOOK_URL ?? "",
+  ).trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+
+  if (!hostedMode) return "";
+
+  const apiUrl = String(
+    sourceEnv.REVIEW_ROUTER_PUBLIC_API_URL ??
+      sourceEnv.REVIEW_ROUTER_HOSTED_API_URL ??
+      "",
+  ).trim();
+  if (!apiUrl) return "";
+
+  return `${apiUrl.replace(/\/+$/, "")}/webhooks/github`;
 }
 
 function buildAppSettingsUrl(owner, slug) {

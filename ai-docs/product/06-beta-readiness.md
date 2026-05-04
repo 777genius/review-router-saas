@@ -39,7 +39,7 @@ Latest hosted GitHub App credential smoke:
 ```text
 Date: 2026-05-04 20:30 EEST
 Command: REVIEW_ROUTER_GITHUB_APP_ENV_FILE=.env.production pnpm github-app:check
-Result: credentials passed, required permissions present, no installations yet.
+Result: credentials passed, required permissions present, webhook config matched `https://reviewrouter-api.onrender.com/webhooks/github`, no installations yet.
 App: id 3599233 / slug review-router-ai / owner 777genius.
 Install URL: https://github.com/apps/review-router-ai/installations/new
 Public beta setup PR E2E remains blocked until this App is installed on at least one selected test repository.
