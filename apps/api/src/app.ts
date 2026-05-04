@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
+import { registerApiDemoRoutes } from "@reviewrouter/features-api-demo";
 import {
   JoseActionSessionTokenService,
   JoseGitHubActionsOidcTokenVerifier,
@@ -55,10 +56,24 @@ export async function createApiApp(
     (options.githubWebhookSecret || options.actionSessionSecret
       ? createPrismaClient()
       : undefined);
+  const clock = new SystemClock();
+
+  registerApiDemoRoutes(app, {
+    clock,
+    ...definedOption("webUrl", process.env.REVIEW_ROUTER_WEB_URL),
+    ...definedOption(
+      "apiUrl",
+      process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
+        process.env.REVIEW_ROUTER_API_URL,
+    ),
+    ...definedOption("actionVersion", process.env.REVIEW_ROUTER_ACTION_VERSION),
+    ...definedOption("model", process.env.REVIEW_ROUTER_DEFAULT_MODEL),
+    ...definedOption("effort", process.env.REVIEW_ROUTER_DEFAULT_EFFORT),
+  });
 
   registerSystemHealthRoutes(
     app,
-    new SystemClock(),
+    clock,
     options.healthDependencies ??
       (prisma ? [new PrismaHealthDependency(prisma)] : []),
   );
@@ -135,6 +150,15 @@ export async function createApiApp(
   }
 
   return app;
+}
+
+function definedOption<const Key extends string>(
+  key: Key,
+  value: string | undefined,
+): { readonly [Property in Key]: string } | Record<string, never> {
+  return value
+    ? ({ [key]: value } as { readonly [Property in Key]: string })
+    : {};
 }
 
 function parseCommaSeparatedEnv(value: string | undefined): string[] {

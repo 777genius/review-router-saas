@@ -26,7 +26,7 @@ Implemented local-beta baseline:
 
 Not production-complete yet:
 
-- hosted deployment/domain/callback URLs
+- hosted GitHub App lifecycle events and public onboarding polish
 - public onboarding polish
 - payments
 - enterprise SSO
@@ -80,6 +80,20 @@ Hosted env readiness:
 
 ```bash
 REVIEW_ROUTER_HOSTED_ENV_FILE=deploy/env.production.example pnpm hosted:check
+```
+
+Hosted API demo smoke:
+
+```bash
+REVIEW_ROUTER_API_URL=https://reviewrouter-api.onrender.com pnpm hosted:api-demo:check
+```
+
+Public demo endpoints:
+
+```text
+GET /health - liveness plus dependency health
+GET /ready  - compact readiness response for demos and uptime checks
+GET /demo   - public control-plane capability summary
 ```
 
 Use a real staging/prod env file or host-provided environment variables. The

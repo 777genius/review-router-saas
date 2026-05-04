@@ -50,7 +50,8 @@
     "architecture:check": "node scripts/check-architecture-boundaries.mjs",
     "github-app:check": "node scripts/run-with-env.mjs node scripts/check-github-app-readiness.mjs",
     "public-beta:check": "bash scripts/check-public-beta-readiness.sh",
-    "deploy:render:hosted-beta": "node scripts/deploy-render-hosted-beta.mjs"
+    "deploy:render:hosted-beta": "node scripts/deploy-render-hosted-beta.mjs",
+    "hosted:api-demo:check": "node scripts/check-hosted-api-demo.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

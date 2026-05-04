@@ -185,6 +185,40 @@ const fixedClock: Clock = {
 };
 
 describe("API app", () => {
+  it("serves a small readiness response for API demos", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({ method: "GET", url: "/ready" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      service: "review-router-api",
+      status: "ready",
+    });
+  });
+
+  it("serves public API demo capabilities without code or secret claims", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({ method: "GET", url: "/demo" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      service: "review-router-api",
+      product: "ReviewRouter",
+      status: "demo_ready",
+      executionModel: {
+        reviewRunsIn: "customer_github_actions",
+      },
+      defaultReviewRuntime: {
+        provider: "codex_oauth",
+      },
+    });
+    expect(response.body).toContain("/api/action/v1/session/exchange");
+    expect(response.body).toContain("repository source code");
+    expect(response.body).toContain("Codex OAuth auth.json");
+    expect(response.body).not.toContain("CODEX_AUTH_JSON=");
+    expect(response.body).not.toContain("OPENAI_API_KEY=");
+  });
+
   it("serves health status", async () => {
     const app = await createApiApp();
     const response = await app.inject({ method: "GET", url: "/health" });

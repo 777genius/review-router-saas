@@ -1,0 +1,20 @@
+{
+  "name": "@reviewrouter/features-api-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@reviewrouter/shared": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

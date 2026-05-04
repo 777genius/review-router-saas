@@ -146,7 +146,13 @@ Installation repositories
 curl -fsS https://<reviewrouter-api>.onrender.com/health
 ```
 
-4. Confirm the web dashboard loads:
+4. Confirm the API demo endpoints:
+
+```bash
+REVIEW_ROUTER_API_URL=https://<reviewrouter-api>.onrender.com pnpm hosted:api-demo:check
+```
+
+5. Confirm the web dashboard loads:
 
 ```bash
 curl -fsS https://<reviewrouter-web>.onrender.com/status
