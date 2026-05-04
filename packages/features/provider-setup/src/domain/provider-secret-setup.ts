@@ -30,7 +30,7 @@ export type ProviderSecretSetupGuidance = {
   readonly warnings: readonly string[];
 };
 
-const defaultCodexSeedScriptUrl =
+export const defaultCodexSeedScriptUrl =
   "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh";
 
 export function buildProviderSecretSetupGuidance(input: {

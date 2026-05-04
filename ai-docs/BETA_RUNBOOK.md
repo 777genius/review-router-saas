@@ -118,13 +118,13 @@ Show:
 For one repository:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh | REVIEW_ROUTER_REPO=owner/repo bash
+curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_REPO=owner/repo bash
 ```
 
 For organization selected repositories:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash
+curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash
 ```
 
 Explain:

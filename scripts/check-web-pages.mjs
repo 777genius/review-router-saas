@@ -16,6 +16,13 @@ const pages = [
   ["/support", "Trusted beta support"],
 ];
 
+const redirectChecks = [
+  [
+    "/install/codex",
+    "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh",
+  ],
+];
+
 const port = Number(process.env.REVIEW_ROUTER_WEB_SMOKE_PORT ?? 3300);
 const baseUrl = `http://127.0.0.1:${port}`;
 const output = [];
@@ -86,7 +93,22 @@ try {
     }
   }
 
-  console.log(`Web page smoke passed for ${pages.length} pages.`);
+  for (const [path, expectedLocation] of redirectChecks) {
+    const response = await fetch(`${baseUrl}${path}`, { redirect: "manual" });
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      await fail(`${path} returned HTTP ${response.status}; expected redirect`);
+    }
+    const location = response.headers.get("location");
+    if (location !== expectedLocation) {
+      await fail(
+        `${path} redirected to ${location ?? "missing location"}; expected ${expectedLocation}`,
+      );
+    }
+  }
+
+  console.log(
+    `Web page smoke passed for ${pages.length} pages and ${redirectChecks.length} redirects.`,
+  );
 } finally {
   child.kill("SIGTERM");
 }
