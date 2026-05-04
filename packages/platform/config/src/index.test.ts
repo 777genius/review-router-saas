@@ -1,7 +1,12 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   isWorkflowProvisioningEnabled,
   loadRuntimeEnv,
+  readGitHubAppPrivateKey,
+  requireGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
 } from "./index";
 
@@ -54,5 +59,53 @@ describe("platform config", () => {
         REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
       } as NodeJS.ProcessEnv),
     ).toBe(false);
+  });
+
+  it("reads GitHub App private key from an inline hosted secret", () => {
+    expect(
+      readGitHubAppPrivateKey({
+        GITHUB_APP_PRIVATE_KEY:
+          "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+      }),
+    ).toBe("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----");
+  });
+
+  it("prefers an inline GitHub App private key over a local file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "review-router-config-"));
+    try {
+      const keyFile = join(tempDir, "app.pem");
+      writeFileSync(keyFile, "file-key");
+
+      expect(
+        readGitHubAppPrivateKey({
+          GITHUB_APP_PRIVATE_KEY: "inline-key",
+          GITHUB_APP_PRIVATE_KEY_FILE: keyFile,
+        }),
+      ).toBe("inline-key");
+    } finally {
+      rmSync(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it("reads GitHub App private key from a local file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "review-router-config-"));
+    try {
+      const keyFile = join(tempDir, "app.pem");
+      writeFileSync(keyFile, "file-key");
+
+      expect(
+        readGitHubAppPrivateKey({
+          GITHUB_APP_PRIVATE_KEY_FILE: keyFile,
+        }),
+      ).toBe("file-key");
+    } finally {
+      rmSync(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it("throws a clear error when GitHub App private key is missing", () => {
+    expect(() => requireGitHubAppPrivateKey({})).toThrow(
+      "missing_env:GITHUB_APP_PRIVATE_KEY",
+    );
   });
 });

@@ -6,26 +6,32 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "production": "./dist/index.js",
       "default": "./src/index.ts"
     },
     "./button": {
       "types": "./src/button/index.ts",
+      "production": "./dist/button/index.js",
       "default": "./src/button/index.ts"
     },
     "./card": {
       "types": "./src/card/index.ts",
+      "production": "./dist/card/index.js",
       "default": "./src/card/index.ts"
     },
     "./badge": {
       "types": "./src/badge/index.ts",
+      "production": "./dist/badge/index.js",
       "default": "./src/badge/index.ts"
     },
     "./code-block": {
       "types": "./src/code-block/index.ts",
+      "production": "./dist/code-block/index.js",
       "default": "./src/code-block/index.ts"
     },
     "./dialog": {
       "types": "./src/dialog/index.ts",
+      "production": "./dist/dialog/index.js",
       "default": "./src/dialog/index.ts"
     },
     "./tokens.css": "./src/tokens/tokens.css"

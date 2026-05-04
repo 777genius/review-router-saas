@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { App } from "@octokit/app";
 import { getServerSession } from "next-auth";
 import {
@@ -7,6 +6,7 @@ import {
   PrismaWorkspaceAccessRepository,
   type VisibleWorkspaceScope,
 } from "@reviewrouter/features-auth";
+import { requireGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { getAuthEnvironmentStatus } from "../auth/auth-env";
 import { authOptions } from "../auth/auth-options";
 import { getPrisma } from "./prisma";
@@ -130,10 +130,9 @@ export async function createGitHubAppInstallationOctokit(
   githubInstallationId: string,
 ) {
   const appId = requiredEnv("GITHUB_APP_ID");
-  const privateKeyFile = requiredEnv("GITHUB_APP_PRIVATE_KEY_FILE");
   const app = new App({
     appId,
-    privateKey: readFileSync(privateKeyFile, "utf8"),
+    privateKey: requireGitHubAppPrivateKey(),
   });
 
   return app.getInstallationOctokit(Number(githubInstallationId));

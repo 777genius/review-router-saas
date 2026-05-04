@@ -51,6 +51,7 @@ Local/private beta is done when all items below are true.
 - `pnpm beta:check` passes.
 - `REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check` passes after schema or worker changes.
 - `REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check` passes after action/workflow/provider changes.
+- `pnpm runtime:smoke` passes after build/package/export/server changes.
 - Automated web smoke covers `/`, `/dashboard`, `/getting-started`, `/security`, `/fair-use`, `/disconnect`, `/privacy`, `/terms`, `/status`, and `/support`.
 - Action runtime full test suite passes after touching `777genius/review-router`.
 - Generated workflow snapshot tests cover security-sensitive defaults.
@@ -229,6 +230,26 @@ Expected:
 
 Use the in-app browser for visual QA after larger frontend changes.
 
+### Compiled Runtime Smoke
+
+After package exports, build output, API boot, worker boot, or deploy script
+changes, run:
+
+```bash
+pnpm build
+pnpm runtime:smoke
+```
+
+Expected:
+
+- compiled Fastify API starts through `pnpm api:start`
+- `/health` returns `status: ok`
+- compiled worker starts through `pnpm worker:start`
+- worker can process one outbox batch and exit with `REVIEW_ROUTER_WORKER_ONCE=1`
+
+The start scripts intentionally use `node --conditions=production` so workspace
+package exports resolve to `dist/*.js` instead of source `.ts` files.
+
 ## What To Work On Next Without User Input
 
 If there is no hosted HTTPS environment yet, keep improving local/private beta.
@@ -253,7 +274,8 @@ These must be closed before broad public beta:
 - production/staging GitHub App callback URL, setup URL, and webhook URL
 - hosted Postgres and backup/restore drill
 - true GitHub-hosted OIDC/config/health-report E2E
-- production secret management for GitHub App private key, client secret, OAuth secret, Auth.js secret, webhook secret, and DB URL
+- production secret management for GitHub App client secret, OAuth secret, Auth.js secret, webhook secret, and DB URL
+- GitHub App private key supplied by either hosted env secret `GITHUB_APP_PRIVATE_KEY` or local file `GITHUB_APP_PRIVATE_KEY_FILE`
 - production status/support channel
 - reviewed legal/privacy/terms copy
 

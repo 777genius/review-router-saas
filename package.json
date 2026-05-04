@@ -8,7 +8,7 @@
     "web:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/web dev",
     "api:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/api dev",
     "worker:dev": "node scripts/run-with-env.mjs pnpm --filter @reviewrouter/worker dev",
-    "build": "turbo run build",
+    "build": "turbo run build && node scripts/rewrite-dist-esm-imports.mjs",
     "typecheck": "turbo run typecheck && tsc --noEmit -p tsconfig.spikes.json",
     "test": "vitest run",
     "lint": "eslint .",
@@ -38,7 +38,10 @@
     "spike:outbox-maintenance:e2e": "tsx spikes/github-oidc/src/outbox-maintenance-e2e.ts",
     "spike:repo-health:e2e": "tsx spikes/github-oidc/src/repo-health-workflow-e2e.ts",
     "spike:rate-limit:e2e": "tsx spikes/github-oidc/src/rate-limit-e2e.ts",
-    "spike:distributed-lock:e2e": "tsx spikes/github-oidc/src/distributed-lock-e2e.ts"
+    "spike:distributed-lock:e2e": "tsx spikes/github-oidc/src/distributed-lock-e2e.ts",
+    "api:start": "node --conditions=production apps/api/dist/server.js",
+    "worker:start": "node --conditions=production apps/worker/dist/worker.js",
+    "runtime:smoke": "node scripts/run-with-env.mjs node scripts/check-production-runtime.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { config as loadDotenv } from "dotenv";
 import {
   PrismaActionOidcReplayNonceStore,
@@ -19,6 +18,7 @@ import {
 } from "@reviewrouter/features-repositories";
 import { createInstallationSyncRequestedHandler } from "@reviewrouter/features-repositories/outbox";
 import { createPrismaClient } from "@reviewrouter/platform-db";
+import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import {
@@ -113,8 +113,8 @@ function createOutboxHandlers(
   clock: SystemClock,
 ): readonly OutboxHandler[] {
   const appId = process.env.GITHUB_APP_ID;
-  const privateKeyFile = process.env.GITHUB_APP_PRIVATE_KEY_FILE;
-  if (!appId || !privateKeyFile) {
+  const privateKey = readGitHubAppPrivateKey();
+  if (!appId || !privateKey) {
     logger.warn("GitHub App credentials missing; installation sync disabled");
     return [];
   }
@@ -123,7 +123,7 @@ function createOutboxHandlers(
     createInstallationSyncRequestedHandler({
       github: new OctokitGitHubRepositorySource({
         appId,
-        privateKey: readFileSync(privateKeyFile, "utf8"),
+        privateKey,
       }),
       repositories: new PrismaRepositoryConnectionRepository(prisma),
       clock,

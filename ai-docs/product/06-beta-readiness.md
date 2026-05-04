@@ -75,13 +75,22 @@ Run: https://github.com/777genius/rr-saas-fresh-e2e-1777851508064/actions/runs/2
 Result: setup PR merged, workflow detected on main, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5.
 ```
 
+Latest local beta gate:
+
+```text
+Date: 2026-05-04 09:10 EEST
+Command: pnpm beta:check
+Result: passed.
+Coverage: local readiness, unit/integration tests, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke, whitespace, shell syntax.
+```
+
 Latest local + DB beta gate:
 
 ```text
-Date: 2026-05-04 08:56 EEST
+Date: 2026-05-04 09:12 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 Result: passed.
-Coverage: stricter local readiness, unit/integration tests, typecheck, lint, format, production build, automated 10-page web smoke, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
+Coverage: stricter local readiness, unit/integration tests, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
 ```
 
 Latest browser smoke:

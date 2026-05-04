@@ -33,6 +33,7 @@ Every pull request and `main` push must run:
 - format check
 - typecheck
 - production build
+- compiled API/worker runtime smoke
 - `git diff --check`
 
 The default CI workflow must not require GitHub App private keys, Codex OAuth files, provider API keys, ngrok, or real customer repositories. Real GitHub E2E remains a local/staging smoke step because it depends on a disposable GitHub App installation and selected test repository.
@@ -70,6 +71,16 @@ runtime config, blocking status, and inline comments.
 
 Do not mark the MVP as showable if the latest full-review smoke is older than
 the latest action runtime or workflow provisioning change.
+
+`pnpm beta:check` also runs `pnpm runtime:smoke`, which verifies the compiled
+Fastify API and worker can start from `dist` with `node --conditions=production`.
+Run it explicitly after package export, build output, API startup, worker
+startup, or deployment command changes:
+
+```bash
+pnpm build
+pnpm runtime:smoke
+```
 
 ## Security Gate
 

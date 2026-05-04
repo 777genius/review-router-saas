@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 export const REVIEW_ROUTER_ACTION_REPOSITORY = "777genius/review-router";
@@ -16,6 +17,7 @@ export const runtimeEnvSchema = z.object({
   GITHUB_APP_CLIENT_ID: z.string().optional(),
   GITHUB_APP_CLIENT_SECRET: z.string().optional(),
   GITHUB_APP_SLUG: z.string().optional(),
+  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY_FILE: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   REVIEW_ROUTER_ACTION_REF: z.string().optional(),
@@ -69,4 +71,40 @@ export function isWorkflowProvisioningEnabled(
     return false;
   }
   return input.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING === "1";
+}
+
+export type GitHubAppPrivateKeyEnv = {
+  readonly GITHUB_APP_PRIVATE_KEY?: string | undefined;
+  readonly GITHUB_APP_PRIVATE_KEY_FILE?: string | undefined;
+  readonly [key: string]: string | undefined;
+};
+
+export function readGitHubAppPrivateKey(
+  input: GitHubAppPrivateKeyEnv = process.env,
+): string | null {
+  const inlineKey = input.GITHUB_APP_PRIVATE_KEY?.trim();
+  if (inlineKey) {
+    return normalizePrivateKey(inlineKey);
+  }
+
+  const privateKeyFile = input.GITHUB_APP_PRIVATE_KEY_FILE?.trim();
+  if (!privateKeyFile) {
+    return null;
+  }
+
+  return readFileSync(privateKeyFile, "utf8");
+}
+
+export function requireGitHubAppPrivateKey(
+  input: GitHubAppPrivateKeyEnv = process.env,
+): string {
+  const privateKey = readGitHubAppPrivateKey(input);
+  if (!privateKey) {
+    throw new Error("missing_env:GITHUB_APP_PRIVATE_KEY");
+  }
+  return privateKey;
+}
+
+function normalizePrivateKey(value: string): string {
+  return value.includes("\\n") ? value.replaceAll("\\n", "\n") : value;
 }

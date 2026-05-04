@@ -6,10 +6,12 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "production": "./dist/index.js",
       "default": "./src/index.ts"
     },
     "./outbox": {
       "types": "./src/infrastructure/outbox/installation-sync-requested-handler.ts",
+      "production": "./dist/infrastructure/outbox/installation-sync-requested-handler.js",
       "default": "./src/infrastructure/outbox/installation-sync-requested-handler.ts"
     }
   },

@@ -36,11 +36,46 @@ GITHUB_APP_ID
 GITHUB_APP_CLIENT_ID
 GITHUB_APP_CLIENT_SECRET
 GITHUB_APP_PRIVATE_KEY
+GITHUB_APP_PRIVATE_KEY_FILE
 GITHUB_WEBHOOK_SECRET
 SESSION_SECRET
 APP_BASE_URL
 LOG_LEVEL
 ```
+
+Use `GITHUB_APP_PRIVATE_KEY` for hosted secret managers. Use
+`GITHUB_APP_PRIVATE_KEY_FILE` for local development or file-mounted secrets.
+The inline env value may contain escaped newlines (`\n`); runtime config
+normalizes it before creating GitHub App installation tokens.
+
+## Runtime Commands
+
+Production API and worker boot from compiled JavaScript:
+
+```bash
+pnpm build
+pnpm api:start
+pnpm worker:start
+```
+
+The start scripts use:
+
+```text
+node --conditions=production
+```
+
+Do not remove this condition unless package exports are redesigned. In
+development, workspace packages export `src/*.ts` for Next/Turbopack and tsx.
+In production, the `production` export condition points Node at `dist/*.js`.
+
+After build/export/startup changes, run:
+
+```bash
+pnpm runtime:smoke
+```
+
+This starts the compiled API, checks `/health`, then starts the compiled worker
+once with `REVIEW_ROUTER_WORKER_ONCE=1`.
 
 ## Scaling Path
 

@@ -48,7 +48,6 @@ require_env GITHUB_APP_CLIENT_ID
 require_env GITHUB_APP_CLIENT_SECRET
 require_env GITHUB_APP_ID
 require_env GITHUB_APP_SLUG
-require_env GITHUB_APP_PRIVATE_KEY_FILE
 require_env GITHUB_WEBHOOK_SECRET
 
 [[ "${#AUTH_SECRET}" -ge 16 ]] || fail "AUTH_SECRET must be at least 16 characters"
@@ -70,13 +69,21 @@ psql "$(psql_url "$TEST_DATABASE_URL")" -v ON_ERROR_STOP=1 -Atc "select current_
 info "Checking test migration status..."
 DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @reviewrouter/platform-db db:migrate:status >/dev/null
 
-[[ -f "$GITHUB_APP_PRIVATE_KEY_FILE" ]] || fail "GITHUB_APP_PRIVATE_KEY_FILE does not exist: $GITHUB_APP_PRIVATE_KEY_FILE"
-[[ -r "$GITHUB_APP_PRIVATE_KEY_FILE" ]] || fail "GITHUB_APP_PRIVATE_KEY_FILE is not readable: $GITHUB_APP_PRIVATE_KEY_FILE"
-grep -q "BEGIN .*PRIVATE KEY" "$GITHUB_APP_PRIVATE_KEY_FILE" || fail "GITHUB_APP_PRIVATE_KEY_FILE does not look like a PEM private key"
+if [[ -n "${GITHUB_APP_PRIVATE_KEY:-}" ]]; then
+  printf '%b' "$GITHUB_APP_PRIVATE_KEY" | grep -q "BEGIN .*PRIVATE KEY" || fail "GITHUB_APP_PRIVATE_KEY does not look like a PEM private key"
+elif [[ -n "${GITHUB_APP_PRIVATE_KEY_FILE:-}" ]]; then
+  [[ -f "$GITHUB_APP_PRIVATE_KEY_FILE" ]] || fail "GITHUB_APP_PRIVATE_KEY_FILE does not exist: $GITHUB_APP_PRIVATE_KEY_FILE"
+  [[ -r "$GITHUB_APP_PRIVATE_KEY_FILE" ]] || fail "GITHUB_APP_PRIVATE_KEY_FILE is not readable: $GITHUB_APP_PRIVATE_KEY_FILE"
+  grep -q "BEGIN .*PRIVATE KEY" "$GITHUB_APP_PRIVATE_KEY_FILE" || fail "GITHUB_APP_PRIVATE_KEY_FILE does not look like a PEM private key"
+else
+  fail "GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_FILE is required"
+fi
 
-case "$GITHUB_APP_PRIVATE_KEY_FILE" in
-  "$ROOT_DIR/.local-secrets/"*) ;;
-  *) info "Warning: private key is outside .local-secrets. Ensure it is ignored by git." ;;
-esac
+if [[ -n "${GITHUB_APP_PRIVATE_KEY_FILE:-}" ]]; then
+  case "$GITHUB_APP_PRIVATE_KEY_FILE" in
+    "$ROOT_DIR/.local-secrets/"*) ;;
+    *) info "Warning: private key is outside .local-secrets. Ensure it is ignored by git." ;;
+  esac
+fi
 
 info "Local readiness check passed."
