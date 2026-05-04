@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { reviewRouterApiDemoUrl } from "./public-urls";
 
 const primaryNav = [
   { href: "/", label: "Overview" },
@@ -9,12 +10,6 @@ const primaryNav = [
   { href: "/security", label: "Security" },
   { href: "/support", label: "Support" },
 ] as const;
-
-const apiDemoUrl = `${(
-  process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
-  process.env.REVIEW_ROUTER_API_URL ??
-  "http://localhost:4000"
-).replace(/\/+$/, "")}/docs`;
 
 export const metadata: Metadata = {
   title: "ReviewRouter",
@@ -63,7 +58,7 @@ export default function RootLayout({
                 </a>
               ))}
               <a
-                href={apiDemoUrl}
+                href={reviewRouterApiDemoUrl}
                 className="rounded-lg border border-lime-300/30 bg-lime-300/10 px-3 py-2 font-medium text-lime-100 transition hover:bg-lime-300/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lime-300"
               >
                 API demo

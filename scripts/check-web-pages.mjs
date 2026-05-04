@@ -7,6 +7,11 @@ const configuredWebUrl = (
   process.env.REVIEW_ROUTER_WEB_URL || "http://localhost:3000"
 ).replace(/\/$/, "");
 const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
+const configuredApiUrl = (
+  process.env.REVIEW_ROUTER_WEB_SMOKE_EXPECTED_API_URL ??
+  "https://reviewrouter-api.onrender.com"
+).replace(/\/$/, "");
+const apiDemoUrl = `${configuredApiUrl}/docs`;
 
 const commonTexts = [
   "ReviewRouter",
@@ -18,7 +23,10 @@ const commonTexts = [
 ];
 
 const pages = [
-  ["/", ["Review routing for AI pull request checks", "View API demo"]],
+  [
+    "/",
+    ["Review routing for AI pull request checks", "View API demo", apiDemoUrl],
+  ],
   ["/dashboard", ["Dashboard", "Start with one selected repository"]],
   [
     "/getting-started",
@@ -39,7 +47,7 @@ const pages = [
   ["/disconnect", ["Disconnect"]],
   ["/privacy", ["Privacy draft"]],
   ["/terms", ["Terms draft"]],
-  ["/status", ["Hosted API demo is live"]],
+  ["/status", ["Hosted API demo is live", apiDemoUrl]],
   ["/support", ["Trusted beta support"]],
 ];
 

@@ -1,12 +1,8 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import { reviewRouterApiDemoUrl } from "./public-urls";
 
 const fullSmokeCommand =
   "REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check";
-const apiDemoUrl = `${(
-  process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
-  process.env.REVIEW_ROUTER_API_URL ??
-  "http://localhost:4000"
-).replace(/\/+$/, "")}/docs`;
 
 const trustCards = [
   {
@@ -68,7 +64,11 @@ export default function HomePage(): React.ReactElement {
             <LinkButton href="/status" variant="ghost">
               Status
             </LinkButton>
-            <LinkButton href={apiDemoUrl} variant="soft" tone="success">
+            <LinkButton
+              href={reviewRouterApiDemoUrl}
+              variant="soft"
+              tone="success"
+            >
               API demo
             </LinkButton>
           </div>
@@ -84,7 +84,7 @@ export default function HomePage(): React.ReactElement {
             exactly what the SaaS does and does not store.
           </p>
           <div className="flex flex-wrap gap-3">
-            <LinkButton href={apiDemoUrl} size="sm">
+            <LinkButton href={reviewRouterApiDemoUrl} size="sm">
               View API demo
             </LinkButton>
             <LinkButton href="/getting-started" variant="outline" size="sm">

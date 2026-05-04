@@ -1,4 +1,5 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import { reviewRouterApiDemoUrl } from "../public-urls";
 
 const localChecks = `pnpm beta:check
 REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
@@ -87,7 +88,7 @@ export default function StatusPage(): React.ReactElement {
             <LinkButton href="/getting-started">Start setup</LinkButton>
             <LinkButton href="/support">Report issue</LinkButton>
             <LinkButton
-              href="https://reviewrouter-api.onrender.com/docs"
+              href={reviewRouterApiDemoUrl}
               variant="soft"
               tone="success"
             >
