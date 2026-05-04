@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { defaultCodexSeedScriptUrl } from "@reviewrouter/features-provider-setup";
+import { resolveInstallCodexRedirect } from "@/server/install-codex-redirect";
 
-export function GET(): NextResponse {
-  return NextResponse.redirect(defaultCodexSeedScriptUrl, 307);
+export function GET(request: Request): NextResponse {
+  return NextResponse.redirect(resolveInstallCodexRedirect(request), 307);
 }

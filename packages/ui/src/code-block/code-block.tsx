@@ -13,7 +13,7 @@ export function CodeBlock({
   return (
     <pre
       className={cn(
-        "overflow-x-auto rounded-xl border border-cyan-200/15 bg-black/60 p-4 font-mono text-sm text-cyan-50",
+        "overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-cyan-200/15 bg-black/60 p-4 font-mono text-sm leading-6 text-cyan-50",
         className,
       )}
       {...props}

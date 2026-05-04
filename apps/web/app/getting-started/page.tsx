@@ -88,7 +88,10 @@ export default function GettingStartedPage(): React.ReactElement {
         ))}
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-2">
+      <section
+        id="codex-oauth"
+        className="grid scroll-mt-28 gap-6 lg:grid-cols-2"
+      >
         <Card className="space-y-4">
           <Badge tone="success">Codex subscription</Badge>
           <h2 className="text-2xl font-semibold text-cyan-50">

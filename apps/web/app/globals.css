@@ -15,7 +15,8 @@ body {
   overflow-x: hidden;
   background: rgb(10, 10, 15);
   color: var(--rr-color-text);
-  font-family: var(--font-inter), "Inter", "Segoe UI", system-ui, sans-serif;
+  font-family:
+    var(--font-sans), "Space Grotesk", "Segoe UI", system-ui, sans-serif;
 }
 
 body::before {

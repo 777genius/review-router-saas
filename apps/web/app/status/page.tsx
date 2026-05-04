@@ -45,7 +45,7 @@ const provenCapabilities = [
 ] as const;
 
 const publicBetaBlockers = [
-  "Run GitHub-hosted OIDC config fetch and health report E2E against hosted API.",
+  "Finish GitHub-hosted OIDC config fetch and health report E2E against the hosted API.",
   "Pin the ReviewRouter Action to a release tag before broad public production installs.",
   "Provision production status/support channel, legal copy review, and incident process.",
 ] as const;
@@ -75,13 +75,13 @@ export default function StatusPage(): React.ReactElement {
         <div className="space-y-5">
           <Badge tone="accent">Status</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
-            Hosted API demo is live. OIDC verification is the remaining gate.
+            Hosted demo is live. Reviews still run in customer CI.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
-            ReviewRouter can be shown to trusted beta users with a live Render
-            API demo today. The remaining broad-public gate is full
-            GitHub-hosted OIDC/config/health verification and delivery-log
-            validation after App installation.
+            ReviewRouter is ready for trusted beta demos with a live Render API,
+            GitHub App onboarding, setup PR provisioning, and metadata-only
+            health surfaces. Broad public launch still needs hosted OIDC E2E,
+            support operations, and release policy hardening.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/getting-started">Start setup</LinkButton>

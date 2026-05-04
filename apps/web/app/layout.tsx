@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { LogoMark } from "./logo-mark";
 import "./globals.css";
 import { reviewRouterApiDemoUrl, reviewRouterWebUrl } from "./public-urls";
@@ -44,10 +44,10 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-const inter = Inter({
+const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
-  weight: ["400", "600", "700", "800"],
-  variable: "--font-inter",
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-sans",
   display: "swap",
 });
 
@@ -62,7 +62,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>): React.ReactElement {
   return (
-    <html lang="en" className={`${inter.variable} ${jetBrainsMono.variable}`}>
+    <html
+      lang="en"
+      className={`${spaceGrotesk.variable} ${jetBrainsMono.variable}`}
+    >
       <body>
         <a
           href="#content"
