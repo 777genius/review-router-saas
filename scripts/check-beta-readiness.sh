@@ -27,6 +27,7 @@ run_step "typecheck" run_pnpm typecheck
 run_step "lint" run_pnpm lint
 run_step "format check" run_pnpm format:check
 run_step "production build" run_pnpm build
+run_step "web page smoke" run_pnpm web:smoke
 run_step "whitespace check" git diff --check
 run_step "Codex secret seeding shell syntax" bash -n scripts/seed-codex-auth.sh
 

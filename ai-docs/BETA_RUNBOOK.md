@@ -51,7 +51,7 @@ Local/private beta is done when all items below are true.
 - `pnpm beta:check` passes.
 - `REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check` passes after schema or worker changes.
 - `REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check` passes after action/workflow/provider changes.
-- Browser smoke covers `/`, `/dashboard`, `/getting-started`, `/security`, `/fair-use`, `/disconnect`, `/privacy`, `/terms`, `/status`, and `/support`.
+- Automated web smoke covers `/`, `/dashboard`, `/getting-started`, `/security`, `/fair-use`, `/disconnect`, `/privacy`, `/terms`, `/status`, and `/support`.
 - Action runtime full test suite passes after touching `777genius/review-router`.
 - Generated workflow snapshot tests cover security-sensitive defaults.
 - No workflow uses `pull_request_target` for default review execution.
@@ -199,13 +199,14 @@ Use after touching `src/`, `scripts/`, action `dist/`, or action tests.
 
 ### Browser Smoke
 
-Start the web app:
+Automated smoke after a production build:
 
 ```bash
-pnpm --filter @reviewrouter/web dev
+pnpm build
+pnpm web:smoke
 ```
 
-Then check the important pages in the in-app browser:
+It checks these pages:
 
 ```text
 /
@@ -224,7 +225,9 @@ Expected:
 
 - no 404/500/runtime error text
 - main h1/content visible
-- `/getting-started` and `/security` show the public raw `seed-codex-auth.sh` curl command
+- key beta/security/support pages include their expected text
+
+Use the in-app browser for visual QA after larger frontend changes.
 
 ## What To Work On Next Without User Input
 
