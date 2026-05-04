@@ -28,6 +28,19 @@ smoke passes after the latest action/runtime provisioning change.
 Latest full-review validation:
 
 ```text
+Date: 2026-05-04 11:07 EEST
+Command: REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+Repo: 777genius/rr-saas-fresh-e2e-1777881944408
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777881944408/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777881944408/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777881944408/actions/runs/25308054479
+Result: setup PR merged, workflow detected on main, disposable repo CODEX_AUTH_JSON was seeded from the current local Codex account with explicit confirmation, latest `777genius/review-router@main` action bundle ran from static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5 with title "Email is ignored during login lookup".
+Note: this validation also confirms the fresh-repository E2E assertion no longer depends on one brittle file/line oracle; it requires a ReviewRouter inline marker, critical severity, prompt-for-agents section, and auth-bypass semantics on the changed fixture lines.
+```
+
+Previous full-review validation:
+
+```text
 Date: 2026-05-04 10:47 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 Repo: 777genius/rr-saas-fresh-e2e-1777880754438

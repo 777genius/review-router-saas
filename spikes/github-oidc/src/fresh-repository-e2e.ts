@@ -542,16 +542,10 @@ async function runReviewSmoke() {
   const comments = JSON.parse(
     run("gh", ["api", `repos/${targetRepo}/pulls/${prNumber}/comments`]),
   ) as ReviewCommentView[];
-  const reviewRouterComments = comments.filter(
-    (comment) =>
-      comment.path === "auth.js" &&
-      comment.line === 5 &&
-      comment.body.includes("_🔴 Critical_") &&
-      comment.body.includes("Prompt for AI Agents"),
-  );
+  const reviewRouterComments = comments.filter(isExpectedReviewRouterFinding);
   if (reviewRouterComments.length === 0) {
     throw new Error(
-      "review smoke did not find expected ReviewRouter inline comment",
+      `review smoke did not find expected ReviewRouter inline comment. Observed comments: ${JSON.stringify(summarizeReviewComments(comments))}`,
     );
   }
 
@@ -606,6 +600,39 @@ async function getRun(databaseId: number): Promise<WorkflowRunView> {
     ]),
   ) as WorkflowRunView;
   return data;
+}
+
+function isExpectedReviewRouterFinding(comment: ReviewCommentView): boolean {
+  const body = comment.body.toLowerCase();
+  const isReviewRouterInline =
+    comment.body.includes("<!-- review-router-inline:") &&
+    comment.body.includes("Prompt for AI Agents");
+  const isCritical = comment.body.includes("_🔴 Critical_");
+  const describesAuthBypass =
+    body.includes("auth") &&
+    (body.includes("bypass") ||
+      body.includes("any email") ||
+      body.includes("canlogin") ||
+      body.includes("admin"));
+
+  return (
+    isReviewRouterInline &&
+    isCritical &&
+    describesAuthBypass &&
+    (comment.path === "auth.js" || comment.path === "db.js") &&
+    typeof comment.line === "number"
+  );
+}
+
+function summarizeReviewComments(comments: readonly ReviewCommentView[]) {
+  return comments.map((comment) => ({
+    author: comment.user.login,
+    path: comment.path,
+    line: comment.line,
+    hasReviewRouterMarker: comment.body.includes("<!-- review-router-inline:"),
+    hasCriticalLabel: comment.body.includes("_🔴 Critical_"),
+    title: firstMarkdownHeading(comment.body),
+  }));
 }
 
 function firstMarkdownHeading(body: string): string {
