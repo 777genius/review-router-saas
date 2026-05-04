@@ -1,4 +1,4 @@
-const hostedApiUrl = "https://reviewrouter-api.onrender.com";
+const hostedApiUrl = "https://api.reviewrouter.site";
 
 export const reviewRouterApiUrl = (
   process.env.REVIEW_ROUTER_PUBLIC_API_URL ??

@@ -8,12 +8,8 @@ import { join, resolve } from "node:path";
 import { platform } from "node:os";
 
 const args = parseArgs(process.argv.slice(2));
-const webUrl = normalizeUrl(
-  args["web-url"] ?? "https://reviewrouter-web.onrender.com",
-);
-const apiUrl = normalizeUrl(
-  args["api-url"] ?? "https://reviewrouter-api.onrender.com",
-);
+const webUrl = normalizeUrl(args["web-url"] ?? "https://reviewrouter.site");
+const apiUrl = normalizeUrl(args["api-url"] ?? "https://api.reviewrouter.site");
 const appName = String(args.name ?? "ReviewRouter");
 const owner = args.owner ? String(args.owner) : "";
 const port = Number(args.port ?? 45731);

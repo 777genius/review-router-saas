@@ -237,9 +237,9 @@ applying the profile's hosted URLs to the target env file.
 Default hosted URLs:
 
 ```text
-Callback URL: https://reviewrouter-web.onrender.com/api/auth/callback/github
-Setup URL: https://reviewrouter-web.onrender.com/dashboard
-Webhook URL: https://reviewrouter-api.onrender.com/webhooks/github
+Callback URL: https://reviewrouter.site/api/auth/callback/github
+Setup URL: https://reviewrouter.site/dashboard
+Webhook URL: https://api.reviewrouter.site/webhooks/github
 ```
 
 The generated manifest keeps `request_oauth_on_install=false`. Do not enable

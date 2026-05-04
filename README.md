@@ -85,7 +85,7 @@ REVIEW_ROUTER_HOSTED_ENV_FILE=deploy/env.production.example pnpm hosted:check
 Hosted API demo smoke:
 
 ```bash
-REVIEW_ROUTER_API_URL=https://reviewrouter-api.onrender.com pnpm hosted:api-demo:check
+REVIEW_ROUTER_API_URL=https://api.reviewrouter.site pnpm hosted:api-demo:check
 ```
 
 Public demo endpoints:

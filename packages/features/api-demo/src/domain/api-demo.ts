@@ -375,7 +375,7 @@ export function buildApiDemoOpenApiDocument(input: {
                   examples: {
                     hosted: {
                       value: buildApiDemoIndex({
-                        webUrl: "https://reviewrouter-web.onrender.com",
+                        webUrl: "https://reviewrouter.site",
                         apiUrl: input.apiUrl,
                       }),
                     },
@@ -442,7 +442,7 @@ export function buildApiDemoOpenApiDocument(input: {
                       value: {
                         ...buildApiDemoDocument({
                           checkedAt: new Date("2026-05-04T00:00:00.000Z"),
-                          webUrl: "https://reviewrouter-web.onrender.com",
+                          webUrl: "https://reviewrouter.site",
                           apiUrl: input.apiUrl,
                           actionVersion: "main",
                           model: "gpt-5.5",

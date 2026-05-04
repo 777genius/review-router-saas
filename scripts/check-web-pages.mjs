@@ -9,7 +9,7 @@ const configuredWebUrl = (
 const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
 const configuredApiUrl = (
   process.env.REVIEW_ROUTER_WEB_SMOKE_EXPECTED_API_URL ??
-  "https://reviewrouter-api.onrender.com"
+  "https://api.reviewrouter.site"
 ).replace(/\/$/, "");
 const apiDemoUrl = `${configuredApiUrl}/docs`;
 

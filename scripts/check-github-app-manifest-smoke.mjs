@@ -21,17 +21,17 @@ const manifest = parseManifest(result.stdout);
 
 assertEqual(
   manifest.setup_url,
-  "https://reviewrouter-web.onrender.com/dashboard",
+  "https://reviewrouter.site/dashboard",
   "setup_url",
 );
 assertEqual(
   manifest.hook_attributes?.url,
-  "https://reviewrouter-api.onrender.com/webhooks/github",
+  "https://api.reviewrouter.site/webhooks/github",
   "hook_attributes.url",
 );
 assertEqual(
   manifest.callback_urls?.[0],
-  "https://reviewrouter-web.onrender.com/api/auth/callback/github",
+  "https://reviewrouter.site/api/auth/callback/github",
   "callback_urls[0]",
 );
 assertEqual(

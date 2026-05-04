@@ -272,10 +272,8 @@ const ownerId = requiredEnv("RENDER_OWNER_ID", env);
 const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);
 const repo = requiredEnv("RENDER_REPO", env);
 const branch = env.RENDER_BRANCH ?? "main";
-const webUrl =
-  env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter-web.onrender.com";
-const apiUrl =
-  env.REVIEW_ROUTER_API_URL ?? "https://reviewrouter-api.onrender.com";
+const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
+const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
 const privateKey = readGithubPrivateKey(env);
 const client = new RenderClient(readRenderApiKey());
 
