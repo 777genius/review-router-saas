@@ -28,6 +28,19 @@ smoke passes after the latest action/runtime provisioning change.
 Latest full-review validation:
 
 ```text
+Date: 2026-05-04 09:43 EEST
+Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+Repo: 777genius/rr-saas-fresh-e2e-1777876904596
+Setup PR: https://github.com/777genius/rr-saas-fresh-e2e-1777876904596/pull/1
+Review PR: https://github.com/777genius/rr-saas-fresh-e2e-1777876904596/pull/2
+Run: https://github.com/777genius/rr-saas-fresh-e2e-1777876904596/actions/runs/25304911170
+Result: setup PR merged, workflow detected on main, latest `777genius/review-router@main` action bundle ran from static fallback config, Codex OAuth review ran, intentional critical finding posted inline on auth.js:5 with title "Authentication bypass from unscoped user lookup".
+Note: this validation includes the generated workflow Codex OAuth preflight check for `auth_mode=chatgpt` and `tokens.refresh_token` before writing `CODEX_HOME/auth.json`.
+```
+
+Previous full-review validation:
+
+```text
 Date: 2026-05-04 09:28 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 Repo: 777genius/rr-saas-fresh-e2e-1777876068729
