@@ -281,18 +281,25 @@ export default async function DashboardPage({
   const workspaces = await loadDashboardData(workspaceScope, supportAudit);
   const params = searchParams ? await searchParams : {};
   const appInstallUrl = getGitHubAppInstallUrl();
+  const appSetupNotice = buildGitHubAppSetupNotice({
+    installationId: readParam(params.installation_id),
+    setupAction: readParam(params.setup_action),
+    signedIn: mutationStatus.signedIn,
+  });
 
   if (workspaces.length === 0) {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 md:py-16">
-        <OnboardingDashboard
-          appInstallUrl={appInstallUrl}
-          signedIn={mutationStatus.signedIn}
-        />
         <DashboardNotice
           params={params}
           mutationStatus={mutationStatus}
           showReadOnlyHint={false}
+          appSetupNotice={appSetupNotice}
+        />
+        <OnboardingDashboard
+          appSetupActive={Boolean(appSetupNotice)}
+          appInstallUrl={appInstallUrl}
+          signedIn={mutationStatus.signedIn}
         />
       </main>
     );
@@ -363,7 +370,11 @@ export default async function DashboardPage({
         <DashboardHeroDemo />
       </section>
 
-      <DashboardNotice params={params} mutationStatus={mutationStatus} />
+      <DashboardNotice
+        params={params}
+        mutationStatus={mutationStatus}
+        appSetupNotice={appSetupNotice}
+      />
 
       <section className="grid gap-5">
         {workspaces.map((workspace) => (
@@ -379,12 +390,25 @@ export default async function DashboardPage({
 }
 
 function OnboardingDashboard({
+  appSetupActive,
   appInstallUrl,
   signedIn,
 }: {
+  readonly appSetupActive: boolean;
   readonly appInstallUrl: string | null;
   readonly signedIn: boolean;
 }): React.ReactElement {
+  const primaryAction =
+    appSetupActive && !signedIn
+      ? { href: "/api/auth/signin", label: "Sign in to finish setup" }
+      : appInstallUrl
+        ? { href: appInstallUrl, label: "Install GitHub App" }
+        : { href: "/api/auth/signin", label: "Sign in with GitHub" };
+  const secondaryAction =
+    appSetupActive || signedIn
+      ? { href: "/getting-started", label: "Setup guide" }
+      : { href: "/api/auth/signin", label: "Sign in" };
+
   return (
     <section className="grid min-h-[72vh] items-center">
       <div className="relative">
@@ -396,57 +420,40 @@ function OnboardingDashboard({
               <span className="grid h-16 w-16 place-items-center rounded-2xl border border-white/[0.08] bg-white/[0.06] font-mono text-xl font-black text-cyan-100 shadow-[0_0_36px_rgba(0,240,255,0.18)]">
                 RR
               </span>
-              <Badge tone="accent">GitHub setup</Badge>
+              <Badge tone="accent">
+                {appSetupActive ? "Finish setup" : "GitHub setup"}
+              </Badge>
             </div>
 
             <div className="space-y-5">
               <h1 className="bg-[image:var(--rr-gradient-brand)] bg-clip-text text-5xl font-extrabold leading-[1.02] tracking-[-0.05em] text-transparent md:text-7xl">
-                Connect ReviewRouter.
+                {appSetupActive
+                  ? "Finish ReviewRouter setup."
+                  : "Connect ReviewRouter."}
               </h1>
               <p className="mx-auto max-w-2xl text-lg leading-8 text-[#a0a8c0]">
-                Install the GitHub App on selected repositories. ReviewRouter
-                will sync metadata, create the setup PR, and keep provider
-                secrets inside GitHub Actions.
+                {appSetupActive
+                  ? "The GitHub App install returned successfully. Sign in to map the installation to your workspace, then create the setup PR."
+                  : "Install the GitHub App on selected repositories. ReviewRouter will sync metadata, create the setup PR, and keep provider secrets inside GitHub Actions."}
               </p>
             </div>
 
             <div className="grid w-full max-w-xl gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-              {appInstallUrl ? (
-                <LinkButton
-                  href={appInstallUrl}
-                  size="lg"
-                  className="h-16 rounded-2xl px-8 text-lg font-semibold"
-                >
-                  Install GitHub App
-                </LinkButton>
-              ) : (
-                <LinkButton
-                  href="/api/auth/signin"
-                  size="lg"
-                  className="h-16 rounded-2xl px-8 text-lg font-semibold"
-                >
-                  Sign in with GitHub
-                </LinkButton>
-              )}
-              {!signedIn ? (
-                <LinkButton
-                  href="/api/auth/signin"
-                  variant="outline"
-                  size="lg"
-                  className="h-16 rounded-2xl px-8"
-                >
-                  Sign in
-                </LinkButton>
-              ) : (
-                <LinkButton
-                  href="/getting-started"
-                  variant="outline"
-                  size="lg"
-                  className="h-16 rounded-2xl px-8"
-                >
-                  Setup guide
-                </LinkButton>
-              )}
+              <LinkButton
+                href={primaryAction.href}
+                size="lg"
+                className="h-16 rounded-2xl px-8 text-lg font-semibold"
+              >
+                {primaryAction.label}
+              </LinkButton>
+              <LinkButton
+                href={secondaryAction.href}
+                variant="outline"
+                size="lg"
+                className="h-16 rounded-2xl px-8"
+              >
+                {secondaryAction.label}
+              </LinkButton>
             </div>
 
             <div className="grid w-full gap-3 text-left sm:grid-cols-3">
@@ -1342,10 +1349,12 @@ function providerSetupIntro(provider: ProviderSecretKind): React.ReactNode {
 }
 
 function DashboardNotice({
+  appSetupNotice,
   params,
   mutationStatus,
   showReadOnlyHint = true,
 }: {
+  readonly appSetupNotice?: ReturnType<typeof buildGitHubAppSetupNotice>;
   readonly params: Record<string, string | string[] | undefined>;
   readonly mutationStatus: Awaited<
     ReturnType<typeof getDashboardMutationStatus>
@@ -1354,11 +1363,6 @@ function DashboardNotice({
 }): React.ReactElement | null {
   const notice = readParam(params.notice);
   const error = readParam(params.error);
-  const appSetupNotice = buildGitHubAppSetupNotice({
-    installationId: readParam(params.installation_id),
-    setupAction: readParam(params.setup_action),
-    signedIn: mutationStatus.signedIn,
-  });
   if (notice) {
     const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
     return (

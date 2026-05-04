@@ -137,6 +137,32 @@ try {
     }
   }
 
+  const postInstallResponse = await fetch(
+    `${baseUrl}/dashboard?installation_id=123&setup_action=install`,
+  );
+  if (!postInstallResponse.ok) {
+    await fail(
+      `/dashboard post-install returned HTTP ${postInstallResponse.status}`,
+    );
+  }
+  const postInstallHtml = await postInstallResponse.text();
+  assertIncludes(
+    postInstallHtml,
+    "GitHub App installed",
+    "post-install dashboard did not include install notice",
+  );
+  assertIncludes(
+    postInstallHtml,
+    "Sign in to finish setup",
+    "post-install dashboard did not include primary sign-in CTA",
+  );
+  assertBefore(
+    postInstallHtml,
+    "GitHub App installed",
+    "Finish ReviewRouter setup.",
+    "post-install notice should appear before onboarding hero",
+  );
+
   for (const [path, expectedLocation] of redirectChecks) {
     const response = await fetch(`${baseUrl}${path}`, { redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) {
@@ -155,4 +181,18 @@ try {
   );
 } finally {
   child.kill("SIGTERM");
+}
+
+function assertIncludes(input, expected, message) {
+  if (!input.includes(expected)) {
+    throw new Error(`${message}: expected to find ${expected}`);
+  }
+}
+
+function assertBefore(input, first, second, message) {
+  const firstIndex = input.indexOf(first);
+  const secondIndex = input.indexOf(second);
+  if (firstIndex === -1 || secondIndex === -1 || firstIndex >= secondIndex) {
+    throw new Error(`${message}: expected ${first} before ${second}`);
+  }
 }
