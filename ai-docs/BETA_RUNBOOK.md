@@ -15,6 +15,7 @@ What is proven:
 - Repository sync into Postgres works.
 - Dashboard can show workspaces, installations, repositories, health, review config, provider setup, audit, and operational queue metadata.
 - Dashboard repository health shows latest action-run metadata counts without storing code, diffs, prompts, model output, or secrets.
+- Support diagnostics aggregates safe action-run counts for support triage without storing code, diffs, prompts, model output, or secrets.
 - SaaS can create a workflow setup PR through the GitHub App.
 - Setup PR can be merged on a fresh repository.
 - Generated workflow runs review inside the customer repository GitHub Actions.
@@ -178,6 +179,9 @@ REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 ```
 
 Use after Prisma, repositories, jobs, locks, outbox, webhooks, action-control-plane, or health logic changes.
+This gate also verifies support diagnostics can read safe action-run metadata
+aggregates and audit the access without touching code, diffs, prompts, model
+output, or secrets.
 
 ### Real GitHub Setup E2E
 

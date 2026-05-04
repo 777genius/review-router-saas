@@ -48,6 +48,7 @@ export async function getWorkspaceSupportDiagnostics(
           repositoryTotal: snapshot.repositoryCounts.total,
           outboxDeadLetter: snapshot.outboxCounts.deadLetter,
           providerUnhealthy: snapshot.providerCounts.unhealthy,
+          actionReports: snapshot.actionRunCounts.repositoriesWithReports,
         },
       },
       { auditLog: dependencies.auditLog },

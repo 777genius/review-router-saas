@@ -39,6 +39,8 @@ const supportInput = {
       setupStatus: "configured",
       latestProviderSetupState: "configured",
       latestProviderHealth: "ok",
+      latestFindingCounts: { critical: 1, major: 2, minor: 0, info: 0 },
+      latestCommentCounts: { inline: 3, summary: 1 },
     },
     {
       id: "repo_2",
@@ -47,6 +49,13 @@ const supportInput = {
       setupStatus: "setup_pr_open",
       latestProviderSetupState: "missing",
       latestProviderHealth: "failed",
+      latestFindingCounts: {
+        critical: null,
+        major: 1,
+        minor: null,
+        info: null,
+      },
+      latestCommentCounts: { inline: 1, summary: null },
     },
     {
       id: "repo_3",
@@ -55,6 +64,8 @@ const supportInput = {
       setupStatus: "not_configured",
       latestProviderSetupState: null,
       latestProviderHealth: null,
+      latestFindingCounts: null,
+      latestCommentCounts: null,
     },
   ],
   workflowProvisioning: [{ status: "setup_pr_open" }, { status: "failed" }],
@@ -85,6 +96,13 @@ describe("support diagnostics", () => {
         missing: 1,
         configured: 1,
         unhealthy: 1,
+      },
+      actionRunCounts: {
+        repositoriesWithReports: 2,
+        criticalFindings: 1,
+        majorFindings: 3,
+        inlineComments: 4,
+        summaryComments: 1,
       },
       workflowProvisioningCounts: {
         setup_pr_open: 1,
@@ -125,6 +143,7 @@ describe("support diagnostics", () => {
           repositoryTotal: 3,
           outboxDeadLetter: 1,
           providerUnhealthy: 1,
+          actionReports: 2,
         },
       }),
     ]);

@@ -15,6 +15,16 @@ export type SupportDiagnosticsInput = {
     readonly setupStatus: string;
     readonly latestProviderSetupState: string | null;
     readonly latestProviderHealth: string | null;
+    readonly latestFindingCounts: {
+      readonly critical: number | null;
+      readonly major: number | null;
+      readonly minor: number | null;
+      readonly info: number | null;
+    } | null;
+    readonly latestCommentCounts: {
+      readonly inline: number | null;
+      readonly summary: number | null;
+    } | null;
   }[];
   readonly workflowProvisioning: readonly {
     readonly status: string;
@@ -47,6 +57,13 @@ export type SupportDiagnosticsSnapshot = {
     readonly configured: number;
     readonly staleOrInvalid: number;
     readonly unhealthy: number;
+  };
+  readonly actionRunCounts: {
+    readonly repositoriesWithReports: number;
+    readonly criticalFindings: number;
+    readonly majorFindings: number;
+    readonly inlineComments: number;
+    readonly summaryComments: number;
   };
   readonly workflowProvisioningCounts: Record<string, number>;
   readonly outboxCounts: {
@@ -107,6 +124,31 @@ export function summarizeSupportDiagnostics(
           repo.latestProviderHealth === "degraded",
       ).length,
     },
+    actionRunCounts: {
+      repositoriesWithReports: input.repositories.filter(
+        (repo) => repo.latestFindingCounts || repo.latestCommentCounts,
+      ).length,
+      criticalFindings: sumNullable(
+        input.repositories.map(
+          (repo) => repo.latestFindingCounts?.critical ?? null,
+        ),
+      ),
+      majorFindings: sumNullable(
+        input.repositories.map(
+          (repo) => repo.latestFindingCounts?.major ?? null,
+        ),
+      ),
+      inlineComments: sumNullable(
+        input.repositories.map(
+          (repo) => repo.latestCommentCounts?.inline ?? null,
+        ),
+      ),
+      summaryComments: sumNullable(
+        input.repositories.map(
+          (repo) => repo.latestCommentCounts?.summary ?? null,
+        ),
+      ),
+    },
     workflowProvisioningCounts: countBy(
       input.workflowProvisioning,
       (item) => item.status,
@@ -121,6 +163,10 @@ export function summarizeSupportDiagnostics(
     },
     recentAuditActions: input.recentAuditActions.slice(0, 10),
   };
+}
+
+function sumNullable(values: readonly (number | null)[]): number {
+  return values.reduce<number>((total, value) => total + (value ?? 0), 0);
 }
 
 function countBy<T>(

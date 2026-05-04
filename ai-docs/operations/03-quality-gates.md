@@ -32,7 +32,7 @@ Every pull request and `main` push must run:
 - architecture boundary check
 - GitHub/OIDC contract tests that do not require real secrets
 - local DB smoke for repository config override -> clear -> workspace fallback
-- local DB smoke for support diagnostics access audit and safe metadata summary
+- local DB smoke for support diagnostics access audit and safe action metadata summary
 - lint
 - format check
 - typecheck
@@ -72,6 +72,9 @@ Passing setup-only smoke proves GitHub App installation, repository sync,
 workflow provisioning PR creation/merge, and workflow health probing. Passing
 full-review smoke proves Codex OAuth seeding, customer-CI execution, action
 runtime config, blocking status, and inline comments.
+
+The DB gate must also prove support diagnostics can aggregate action health
+report counts without returning code, diffs, prompts, model output, or secrets.
 
 Do not mark the MVP as showable if the latest full-review smoke is older than
 the latest action runtime or workflow provisioning change.

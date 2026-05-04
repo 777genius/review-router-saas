@@ -32,6 +32,12 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
               select: {
                 providerSetupState: true,
                 providerHealth: true,
+                findingCriticalCount: true,
+                findingMajorCount: true,
+                findingMinorCount: true,
+                findingInfoCount: true,
+                inlineCommentCount: true,
+                summaryCommentCount: true,
               },
             },
           },
@@ -79,6 +85,20 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
           setupStatus: repository.setupStatus,
           latestProviderSetupState: latestHealth?.providerSetupState ?? null,
           latestProviderHealth: latestHealth?.providerHealth ?? null,
+          latestFindingCounts: latestHealth
+            ? {
+                critical: latestHealth.findingCriticalCount,
+                major: latestHealth.findingMajorCount,
+                minor: latestHealth.findingMinorCount,
+                info: latestHealth.findingInfoCount,
+              }
+            : null,
+          latestCommentCounts: latestHealth
+            ? {
+                inline: latestHealth.inlineCommentCount,
+                summary: latestHealth.summaryCommentCount,
+              }
+            : null,
         };
       }),
       workflowProvisioning: workspace.provisioning.map((item) => ({

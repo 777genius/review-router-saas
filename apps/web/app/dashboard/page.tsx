@@ -618,7 +618,7 @@ function WorkspaceCard({
               metadata only / no code, diffs, prompts, or secrets
             </span>
           </div>
-          <div className="grid gap-3 text-sm md:grid-cols-4">
+          <div className="grid gap-3 text-sm md:grid-cols-5">
             <SupportMetric
               label="Repositories"
               value={`${supportDiagnostics.repositoryCounts.selected}/${supportDiagnostics.repositoryCounts.total}`}
@@ -638,6 +638,11 @@ function WorkspaceCard({
               label="Workflow PRs"
               value={`${supportDiagnostics.workflowProvisioningCounts.setup_pr_open ?? 0} open`}
               hint={`${supportDiagnostics.workflowProvisioningCounts.failed ?? 0} failed`}
+            />
+            <SupportMetric
+              label="Action runs"
+              value={`${supportDiagnostics.actionRunCounts.repositoriesWithReports} reports`}
+              hint={`${supportDiagnostics.actionRunCounts.criticalFindings} critical / ${supportDiagnostics.actionRunCounts.inlineComments} inline`}
             />
           </div>
           {supportDiagnostics.recentAuditActions.length > 0 ? (
