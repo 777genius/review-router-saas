@@ -78,6 +78,14 @@ export default async function SetupPage({
               >
                 Sign in with GitHub
               </GitHubSignInButton>
+            ) : installation ? (
+              <LinkButton
+                href="#sync-repositories"
+                size="lg"
+                className="min-w-44 rounded-2xl"
+              >
+                Sync repositories
+              </LinkButton>
             ) : (
               <LinkButton
                 href="/dashboard"
@@ -122,11 +130,13 @@ export default async function SetupPage({
           mutationsEnabled={mutationStatus.enabled}
           setupAction={setupAction}
         />
+      ) : !installationId ? (
+        <SetupStartCard appInstallUrl={appInstallUrl} />
       ) : (
         <SetupStepCard
           badge="Waiting"
           title="Installation webhook is not synced yet"
-          body="If you just installed the App, wait a few seconds and refresh. If it still does not appear, confirm the App was installed on selected repositories and the webhook URL is api.reviewrouter.site."
+          body="If you just installed the App, wait a few seconds and refresh. If it still does not appear, confirm the App was installed on selected repositories and that the setup URL points back to this environment."
           primary={<LinkButton href="/dashboard">Open dashboard</LinkButton>}
           secondary={
             appInstallUrl ? (
@@ -138,6 +148,41 @@ export default async function SetupPage({
         />
       )}
     </main>
+  );
+}
+
+function SetupStartCard({
+  appInstallUrl,
+}: {
+  readonly appInstallUrl: string | null;
+}): React.ReactElement {
+  return (
+    <Card className="rounded-2xl p-5 sm:p-7">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div>
+          <Badge tone="accent">Choose installation</Badge>
+          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
+            Start by selecting repositories.
+          </h2>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+            Install or manage the GitHub App for a personal account or
+            organization. Select only the repositories that should run
+            ReviewRouter, then GitHub will send you back here to sync and create
+            the setup PR.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3 lg:justify-end">
+          {appInstallUrl ? (
+            <LinkButton href={appInstallUrl} size="lg">
+              Install or manage App
+            </LinkButton>
+          ) : null}
+          <LinkButton href="/dashboard" variant="outline" size="lg">
+            Open dashboard
+          </LinkButton>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -153,6 +198,7 @@ function SignedInSetup({
   return (
     <div className="grid gap-6">
       <SetupStepCard
+        id="sync-repositories"
         badge="Step 2"
         title="Sync selected repositories"
         body={`${installation.accountLogin} is connected. Import the selected repositories, then create a workflow setup PR for the repo you want to test first.`}
@@ -223,12 +269,14 @@ function SignedInSetup({
 }
 
 function SetupStepCard({
+  id,
   badge,
   title,
   body,
   primary,
   secondary,
 }: {
+  readonly id?: string;
   readonly badge: string;
   readonly title: string;
   readonly body: string;
@@ -236,7 +284,7 @@ function SetupStepCard({
   readonly secondary?: React.ReactNode;
 }): React.ReactElement {
   return (
-    <Card className="rounded-2xl p-5 sm:p-6">
+    <Card id={id} className="scroll-mt-24 rounded-2xl p-5 sm:p-6">
       <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
         <div>
           <Badge tone="accent">{badge}</Badge>

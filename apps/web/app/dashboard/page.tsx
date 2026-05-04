@@ -137,7 +137,7 @@ async function loadDashboardData(
   const outboxStore = new PrismaOutboxEventRepository(prisma);
   const diagnosticsStore = new PrismaSupportDiagnosticsRepository(prisma);
 
-  return Promise.all(
+  const dashboardData = await Promise.all(
     workspaces.map(
       async (
         workspace,
@@ -248,6 +248,33 @@ async function loadDashboardData(
       },
     ),
   );
+
+  return dashboardData.sort(compareDashboardWorkspaces);
+}
+
+type SortableDashboardWorkspace = {
+  readonly repositoryCount: number;
+  readonly workspace: {
+    readonly name: string;
+    readonly installations: readonly { readonly status: string }[];
+  };
+};
+
+function compareDashboardWorkspaces(
+  left: SortableDashboardWorkspace,
+  right: SortableDashboardWorkspace,
+): number {
+  const leftScore = workspaceSortScore(left);
+  const rightScore = workspaceSortScore(right);
+  if (leftScore !== rightScore) return rightScore - leftScore;
+  return left.workspace.name.localeCompare(right.workspace.name);
+}
+
+function workspaceSortScore(data: SortableDashboardWorkspace): number {
+  const activeInstallations = data.workspace.installations.filter(
+    (installation) => installation.status === "active",
+  ).length;
+  return data.repositoryCount * 100 + activeInstallations * 10;
 }
 
 function createDashboardWorkflowProbe(): OctokitRepositoryWorkflowProbe | null {
