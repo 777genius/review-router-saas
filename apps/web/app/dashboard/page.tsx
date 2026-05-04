@@ -784,6 +784,7 @@ function WorkspaceCard({
 
               <RepositoryTable
                 workspace={workspace}
+                repositoryCount={repositoryCount}
                 repositories={repositories}
                 health={health}
                 provisioning={provisioning}
@@ -1223,12 +1224,14 @@ function WorkspaceCard({
 
 function RepositoryTable({
   workspace,
+  repositoryCount,
   repositories,
   health,
   provisioning,
   mutationsEnabled,
 }: {
   readonly workspace: DashboardWorkspace;
+  readonly repositoryCount: number;
   readonly repositories: DashboardWorkspaceData["repositories"];
   readonly health: DashboardWorkspaceData["health"];
   readonly provisioning: DashboardWorkspaceData["provisioning"];
@@ -1275,13 +1278,31 @@ function RepositoryTable({
     };
   });
 
+  const primaryInstallation = workspace.installations[0];
+  const setupSearchHref = primaryInstallation
+    ? `/setup?installation_id=${primaryInstallation.githubInstallationId}&setup_action=install#sync-repositories`
+    : "/setup";
+  const hiddenRepositoryCount = Math.max(
+    repositoryCount - repositories.length,
+    0,
+  );
+
   return (
     <div className="overflow-hidden rounded-2xl border border-cyan-200/10 bg-slate-950/55">
-      <div className="border-b border-cyan-200/10 p-4">
-        <Badge tone="accent">Repositories</Badge>
-        <p className="mt-2 text-sm text-slate-400">
-          Main actions live here. Policy and diagnostics are below.
-        </p>
+      <div className="grid gap-3 border-b border-cyan-200/10 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+        <div>
+          <Badge tone="accent">Repositories</Badge>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            Showing {repositories.length} of {repositoryCount} synced
+            repositories here for quick setup and health.{" "}
+            {hiddenRepositoryCount > 0
+              ? `${hiddenRepositoryCount} more are available in the setup search.`
+              : "Policy and diagnostics are below."}
+          </p>
+        </div>
+        <LinkButton href={setupSearchHref} variant="outline" size="sm">
+          Search all repos
+        </LinkButton>
       </div>
       <div className="grid gap-3 p-3 lg:hidden">
         {rows.map(
