@@ -147,8 +147,14 @@ jobs:
       - name: Web page smoke
         run: pnpm web:smoke
 
+      - name: Hosted readiness smoke
+        run: pnpm hosted:check:smoke
+
       - name: Whitespace check
         run: git diff --check
 
       - name: Codex auth seeding shell syntax
         run: bash -n scripts/seed-codex-auth.sh
+
+      - name: Local bootstrap shell syntax
+        run: bash -n scripts/bootstrap-local.sh
