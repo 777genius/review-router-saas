@@ -156,6 +156,14 @@ Hosted SaaS will let the action fetch updated config through OIDC.
 
 ### SaaS Local Gate
 
+First-time local bootstrap:
+
+```bash
+pnpm local:bootstrap
+```
+
+It is safe to rerun and does not create GitHub Apps or provider credentials.
+
 ```bash
 pnpm beta:check
 ```

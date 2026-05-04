@@ -31,6 +31,7 @@ run_step "compiled runtime smoke" run_pnpm runtime:smoke
 run_step "web page smoke" run_pnpm web:smoke
 run_step "whitespace check" git diff --check
 run_step "Codex secret seeding shell syntax" bash -n scripts/seed-codex-auth.sh
+run_step "local bootstrap shell syntax" bash -n scripts/bootstrap-local.sh
 
 if [[ "${REVIEW_ROUTER_BETA_CHECK_DB_E2E:-0}" == "1" ]]; then
   run_step "migration smoke" run_pnpm db:migrate:smoke

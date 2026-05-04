@@ -30,6 +30,18 @@ Local environment files:
 
 `.env.local` is ignored by git. `.local-secrets/` and `*.pem` files are ignored by git.
 
+For first-time bootstrap, run:
+
+```bash
+pnpm local:bootstrap
+```
+
+This command is safe to rerun. It creates `.env.local` from `.env.example` if
+needed, generates a local `AUTH_SECRET` when the placeholder is still present,
+ensures dev/test PostgreSQL databases exist, installs dependencies, generates
+Prisma client, and applies migrations. It does not create a GitHub App and it
+does not write provider credentials.
+
 Apply database migrations before running the app:
 
 ```bash

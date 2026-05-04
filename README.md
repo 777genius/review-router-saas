@@ -53,6 +53,16 @@ template.
 
 ## Local Checks
 
+First-time local bootstrap:
+
+```bash
+pnpm local:bootstrap
+```
+
+This creates `.env.local` if needed, ensures dev/test Postgres databases exist,
+installs dependencies, generates Prisma client, and applies migrations. It does
+not create a GitHub App or store secrets.
+
 Baseline:
 
 ```bash

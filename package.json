@@ -14,6 +14,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "format:check": "prettier --check .",
+    "local:bootstrap": "bash scripts/bootstrap-local.sh",
     "local:check": "bash scripts/check-local-readiness.sh",
     "beta:check": "bash scripts/check-beta-readiness.sh",
     "web:smoke": "node scripts/run-with-env.mjs node scripts/check-web-pages.mjs",
