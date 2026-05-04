@@ -1,16 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { LogoMark } from "./logo-mark";
+import { PrimaryNav } from "./primary-nav";
 import "./globals.css";
 import { reviewRouterApiDemoUrl, reviewRouterWebUrl } from "./public-urls";
-
-const primaryNav = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/setup", label: "Setup" },
-  { href: "/getting-started", label: "Guide" },
-  { href: "/security", label: "Security" },
-  { href: "/status", label: "Status" },
-] as const;
 
 export const metadata: Metadata = {
   metadataBase: new URL(reviewRouterWebUrl),
@@ -86,26 +79,7 @@ export default function RootLayout({
                 </span>
               </span>
             </a>
-            <nav
-              aria-label="Primary navigation"
-              className="grid w-full min-w-0 grid-cols-2 gap-2 font-mono text-xs uppercase tracking-[0.16em] sm:flex sm:flex-wrap sm:items-center sm:gap-1 md:w-auto md:justify-end"
-            >
-              {primaryNav.map((item) => (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  className="min-w-0 rounded-lg px-2 py-2 text-slate-200 transition hover:bg-cyan-300/[0.06] hover:text-cyan-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 sm:px-3"
-                >
-                  {item.label}
-                </a>
-              ))}
-              <a
-                href={reviewRouterApiDemoUrl}
-                className="min-w-0 rounded-lg border border-cyan-300/25 bg-cyan-300/[0.03] px-2 py-2 font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 sm:px-3"
-              >
-                API demo
-              </a>
-            </nav>
+            <PrimaryNav apiDemoUrl={reviewRouterApiDemoUrl} />
           </div>
         </header>
         <div id="content">{children}</div>
