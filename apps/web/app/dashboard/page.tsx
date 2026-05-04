@@ -53,6 +53,7 @@ import {
   summarizeWorkspaceHealth,
 } from "../../src/server/repository-health-view";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
+import { LogoMark } from "../logo-mark";
 
 export const dynamic = "force-dynamic";
 
@@ -311,9 +312,7 @@ export default async function DashboardPage({
         <div className="min-w-0 space-y-8">
           <div className="space-y-5">
             <div className="flex items-center gap-4">
-              <span className="grid h-14 w-14 place-items-center rounded-2xl border border-white/[0.06] bg-white/[0.05] font-mono text-lg font-black text-cyan-100 shadow-[0_0_32px_rgba(0,240,255,0.12)]">
-                RR
-              </span>
+              <LogoMark size="md" />
               <Badge tone="accent">Dashboard</Badge>
             </div>
             <h1 className="max-w-3xl break-words bg-[image:var(--rr-gradient-brand)] bg-clip-text text-5xl font-extrabold leading-[1.05] tracking-[-0.04em] text-transparent md:text-7xl">
@@ -454,9 +453,7 @@ function OnboardingDashboard({
           <div className="absolute right-0 top-0 h-56 w-56 rounded-full bg-cyan-300/10 blur-3xl" />
           <div className="relative mx-auto grid max-w-3xl justify-items-center gap-8 text-center">
             <div className="grid justify-items-center gap-4">
-              <span className="grid h-16 w-16 place-items-center rounded-2xl border border-white/[0.08] bg-white/[0.06] font-mono text-xl font-black text-cyan-100 shadow-[0_0_36px_rgba(0,240,255,0.18)]">
-                RR
-              </span>
+              <LogoMark size="lg" />
               <Badge tone="accent">
                 {appSetupActive ? "Finish setup" : "GitHub setup"}
               </Badge>

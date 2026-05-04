@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { LogoMark } from "./logo-mark";
 import "./globals.css";
 import { reviewRouterApiDemoUrl } from "./public-urls";
 
@@ -52,9 +53,7 @@ export default function RootLayout({
         <header className="sticky top-0 z-40 border-b border-cyan-300/[0.08] bg-[#0a0a0f]/90 backdrop-blur-xl">
           <div className="mx-auto flex min-h-16 w-full min-w-0 max-w-6xl flex-col gap-3 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between md:py-0">
             <a href="/" className="group flex min-w-0 items-center gap-3">
-              <span className="grid h-10 w-10 place-items-center rounded-xl border border-white/[0.06] bg-white/[0.05] font-mono text-sm font-black text-cyan-100 shadow-[0_0_28px_rgba(0,240,255,0.12)]">
-                RR
-              </span>
+              <LogoMark size="sm" />
               <span className="min-w-0">
                 <span className="block font-mono text-sm font-semibold tracking-[0.18em] text-cyan-100">
                   ReviewRouter

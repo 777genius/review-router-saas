@@ -1,5 +1,39 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="28" fill="#020617"/>
-  <path d="M28 36h72l-9 18H55l-9 18h36L72 92H28l10-20h-8l9-18h8l9-18H28z" fill="#22d3ee"/>
-  <path d="M78 36h22L72 92H50z" fill="#34d399" opacity=".86"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ReviewRouter">
+  <defs>
+    <linearGradient id="bg" x1="12" y1="12" x2="116" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#08111f"/>
+      <stop offset=".52" stop-color="#160b24"/>
+      <stop offset="1" stop-color="#041613"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="20" y1="26" x2="84" y2="102" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a7f3ff"/>
+      <stop offset=".45" stop-color="#21e6ff"/>
+      <stop offset="1" stop-color="#3b82f6"/>
+    </linearGradient>
+    <linearGradient id="lime" x1="74" y1="27" x2="106" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e8ff82"/>
+      <stop offset=".55" stop-color="#a8ff2f"/>
+      <stop offset="1" stop-color="#1df7a1"/>
+    </linearGradient>
+    <linearGradient id="pink" x1="42" y1="34" x2="101" y2="92" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff62f7"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.18 0 0 0 0 0.93 0 0 0 0 1 0 0 0 .8 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="url(#bg)"/>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="none" stroke="#9df7ff" stroke-opacity=".18" stroke-width="2"/>
+  <path d="M25 96V31h36c17 0 28 9 28 23 0 10-6 17-16 21l18 21H68L51 75H44v21H25Zm19-37h16c6 0 10-3 10-8s-4-8-10-8H44v16Z" fill="url(#cyan)" filter="url(#glow)"/>
+  <path d="M66 96V31h15c16 0 27 8 27 22 0 9-5 16-14 20l16 23H91L76 74v22H66Zm16-38h9c5 0 8-3 8-7s-3-7-8-7h-9v14Z" fill="url(#lime)" filter="url(#glow)"/>
+  <path d="M38 29h43c16 0 28 9 31 23" fill="none" stroke="url(#pink)" stroke-linecap="round" stroke-width="5" opacity=".72"/>
+  <path d="M25 102h78" fill="none" stroke="#21e6ff" stroke-linecap="round" stroke-width="3" opacity=".42"/>
+  <circle cx="105" cy="52" r="5" fill="#a8ff2f"/>
+  <circle cx="25" cy="96" r="4" fill="#21e6ff"/>
 </svg>
