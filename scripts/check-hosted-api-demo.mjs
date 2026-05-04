@@ -50,6 +50,10 @@ assert(
   index.links?.openapi === `${apiUrl}/openapi.json`,
   "index OpenAPI link must point at the configured API URL",
 );
+assert(
+  index.links?.apiDocs === `${apiUrl}/docs`,
+  "index API docs link must point at the configured API URL",
+);
 
 const { body: health, response: healthResponse } = await fetchJson("/health");
 assert(health.service === "review-router-api", "health service mismatch");
@@ -121,6 +125,12 @@ assert(
   "demo missing OpenAPI sample request",
 );
 assert(
+  demo.sampleRequests?.some((request) =>
+    request.command.includes(`${apiUrl}/docs`),
+  ),
+  "demo missing browser docs sample request",
+);
+assert(
   demo.endpoints?.some(
     (endpoint) => endpoint.path === "/api/action/v1/session/exchange",
   ),
@@ -151,12 +161,36 @@ assert(
   openapi.paths?.["/api/action/v1/session/exchange"],
   "OpenAPI missing action exchange path",
 );
+assert(openapi.paths?.["/docs"], "OpenAPI missing /docs path");
 assert(openapi.components?.schemas?.ApiDemo, "OpenAPI missing ApiDemo schema");
 assert(
   openapi.paths?.["/demo"]?.get?.responses?.["200"]?.content?.[
     "application/json"
   ]?.schema?.$ref === "#/components/schemas/ApiDemo",
   "OpenAPI /demo response must reference ApiDemo schema",
+);
+
+const docsResponse = await fetch(`${apiUrl}/docs`, {
+  headers: { accept: "text/html" },
+});
+const docsBody = await docsResponse.text();
+assert(docsResponse.ok, `/docs failed ${docsResponse.status}`);
+assert(
+  docsResponse.headers.get("content-type")?.includes("text/html"),
+  "/docs must return text/html",
+);
+assert(
+  docsResponse.headers.get("access-control-allow-origin") === "*",
+  "/docs missing public CORS header",
+);
+assert(
+  docsBody.includes("<title>ReviewRouter API Demo</title>"),
+  "/docs missing page title",
+);
+assert(docsBody.includes("Quick start"), "/docs missing quick start section");
+assert(
+  docsBody.includes("Security boundaries"),
+  "/docs missing security boundaries section",
 );
 
 console.log(
@@ -168,6 +202,7 @@ console.log(
       ready: ready.status,
       demo: demo.status,
       openapi: openapi.info?.version,
+      docs: "ok",
       model: demo.defaultReviewRuntime?.model,
       effort: demo.defaultReviewRuntime?.effort,
     },

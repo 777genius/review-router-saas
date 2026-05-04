@@ -66,6 +66,7 @@ describe("getApiDemo", () => {
         ready: "https://api.example.com/ready",
         demo: "https://api.example.com/demo",
         openapi: "https://api.example.com/openapi.json",
+        apiDocs: "https://api.example.com/docs",
         dashboard: "https://web.example.com/dashboard",
       },
     });
@@ -86,6 +87,9 @@ describe("getApiDemo", () => {
     });
     expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
       "/demo",
+    );
+    expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
+      "/docs",
     );
     expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
       "/api/action/v1/session/exchange",

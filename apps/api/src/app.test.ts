@@ -201,6 +201,7 @@ describe("API app", () => {
         health: "https://reviewrouter-api.onrender.com/health",
         demo: "https://reviewrouter-api.onrender.com/demo",
         openapi: "https://reviewrouter-api.onrender.com/openapi.json",
+        apiDocs: "https://reviewrouter-api.onrender.com/docs",
       },
     });
   });
@@ -214,6 +215,21 @@ describe("API app", () => {
     expect(response.headers["access-control-allow-methods"]).toContain("GET");
     expect(response.headers["access-control-allow-headers"]).toContain(
       "content-type",
+    );
+  });
+
+  it("serves a browser-friendly API demo page", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({ method: "GET", url: "/docs" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    expect(response.body).toContain("<title>ReviewRouter API Demo</title>");
+    expect(response.body).toContain("Quick start");
+    expect(response.body).toContain("Security boundaries");
+    expect(response.body).toContain(
+      "https://reviewrouter-api.onrender.com/demo",
     );
   });
 
@@ -277,6 +293,7 @@ describe("API app", () => {
       },
       paths: {
         "/demo": {},
+        "/docs": {},
         "/api/action/v1/session/exchange": {},
       },
     });

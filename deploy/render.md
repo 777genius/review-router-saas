@@ -150,6 +150,7 @@ curl -fsS https://<reviewrouter-api>.onrender.com/health
 
 ```bash
 REVIEW_ROUTER_API_URL=https://<reviewrouter-api>.onrender.com pnpm hosted:api-demo:check
+curl -fsS https://<reviewrouter-api>.onrender.com/docs >/dev/null
 curl -fsS https://<reviewrouter-api>.onrender.com/openapi.json | jq .info
 ```
 

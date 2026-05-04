@@ -49,6 +49,7 @@ export type ApiDemoIndexDocument = {
     readonly ready: string;
     readonly demo: string;
     readonly openapi: string;
+    readonly apiDocs: string;
     readonly dashboard: string;
     readonly docs: string;
   };
@@ -83,6 +84,7 @@ export type ApiDemoDocument = {
     readonly gettingStarted: string;
     readonly docs: string;
     readonly openapi: string;
+    readonly apiDocs: string;
   };
 };
 
@@ -100,6 +102,7 @@ export function buildApiDemoIndex(input: {
       ready: `${input.apiUrl}/ready`,
       demo: `${input.apiUrl}/demo`,
       openapi: `${input.apiUrl}/openapi.json`,
+      apiDocs: `${input.apiUrl}/docs`,
       dashboard: `${input.webUrl}/dashboard`,
       docs: "https://github.com/777genius/review-router-saas",
     },
@@ -193,6 +196,13 @@ export function buildApiDemoDocument(input: {
         auth: "public",
       },
       {
+        method: "GET",
+        path: "/docs",
+        purpose:
+          "Browser-friendly hosted API demo page for humans and screenshots.",
+        auth: "public",
+      },
+      {
         method: "POST",
         path: "/webhooks/github",
         purpose: "GitHub App lifecycle webhooks for installation sync.",
@@ -261,6 +271,12 @@ export function buildApiDemoDocument(input: {
         command: `curl -fsS ${input.apiUrl}/openapi.json | jq .info`,
         expectedSignal: "OpenAPI document title is ReviewRouter API",
       },
+      {
+        title: "Open the browser demo",
+        command: `open ${input.apiUrl}/docs`,
+        expectedSignal:
+          "HTML page explains quick start and security boundaries",
+      },
     ],
     securityBoundaries: [
       {
@@ -302,6 +318,7 @@ export function buildApiDemoDocument(input: {
       gettingStarted: `${input.webUrl}/getting-started`,
       docs: "https://github.com/777genius/review-router-saas",
       openapi: `${input.apiUrl}/openapi.json`,
+      apiDocs: `${input.apiUrl}/docs`,
     },
   };
 }
@@ -447,6 +464,22 @@ export function buildApiDemoOpenApiDocument(input: {
           },
         },
       },
+      "/docs": {
+        get: {
+          summary: "Browser-friendly API demo page",
+          responses: {
+            "200": {
+              description: "HTML ReviewRouter API demo page.",
+              headers: jsonResponseHeaders,
+              content: {
+                "text/html": {
+                  schema: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
       "/webhooks/github": {
         post: {
           summary: "GitHub App lifecycle webhook",
@@ -505,6 +538,7 @@ export function buildApiDemoOpenApiDocument(input: {
                 "ready",
                 "demo",
                 "openapi",
+                "apiDocs",
                 "dashboard",
                 "docs",
               ],
@@ -514,6 +548,7 @@ export function buildApiDemoOpenApiDocument(input: {
                 ready: { type: "string", format: "uri" },
                 demo: { type: "string", format: "uri" },
                 openapi: { type: "string", format: "uri" },
+                apiDocs: { type: "string", format: "uri" },
                 dashboard: { type: "string", format: "uri" },
                 docs: { type: "string", format: "uri" },
               },

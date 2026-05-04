@@ -5,6 +5,7 @@ import {
   getApiDemoIndex,
   getApiDemoOpenApi,
 } from "../application/get-api-demo.js";
+import { renderApiDemoHtml } from "./html.js";
 
 export type RegisterApiDemoRoutesOptions = {
   readonly clock: Clock;
@@ -22,6 +23,7 @@ export function registerApiDemoRoutes(
   app.options("/", async (_request, reply) => sendPublicOptions(reply));
   app.options("/ready", async (_request, reply) => sendPublicOptions(reply));
   app.options("/demo", async (_request, reply) => sendPublicOptions(reply));
+  app.options("/docs", async (_request, reply) => sendPublicOptions(reply));
   app.options("/openapi.json", async (_request, reply) =>
     sendPublicOptions(reply),
   );
@@ -51,6 +53,19 @@ export function registerApiDemoRoutes(
     setPublicDemoHeaders(reply);
     const input = buildDemoInput(options);
     return getApiDemoOpenApi(input);
+  });
+
+  app.get("/docs", async (_request, reply) => {
+    setPublicDemoHeaders(reply);
+    const input = buildDemoInput(options);
+    const index = getApiDemoIndex(input);
+    const demo = getApiDemo(input);
+    return reply.type("text/html; charset=utf-8").send(
+      renderApiDemoHtml({
+        index,
+        demo,
+      }),
+    );
   });
 }
 

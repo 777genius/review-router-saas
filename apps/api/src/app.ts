@@ -178,6 +178,7 @@ function isPublicDemoPath(url: string): boolean {
     path === "/health" ||
     path === "/ready" ||
     path === "/demo" ||
+    path === "/docs" ||
     path === "/openapi.json"
   );
 }
