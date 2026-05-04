@@ -160,13 +160,13 @@ Never commit this file.
 Fill these values from the GitHub App settings:
 
 ```text
-GITHUB_CLIENT_ID
-GITHUB_CLIENT_SECRET
+AUTH_SECRET
 GITHUB_APP_ID
 GITHUB_APP_CLIENT_ID
 GITHUB_APP_CLIENT_SECRET
 GITHUB_APP_SLUG
 GITHUB_APP_PRIVATE_KEY_FILE
+GITHUB_WEBHOOK_SECRET
 REVIEW_ROUTER_ACTION_REF
 ```
 
@@ -194,6 +194,11 @@ REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS="your-github-login"
 ```
 
 `REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS` is a local beta escape hatch for GitHub App-created workspaces that do not yet have explicit `WorkspaceMember` rows. Do not use it as a production authorization model.
+
+`pnpm local:check` intentionally requires the GitHub App, Auth.js, webhook
+secret, private key file, and `REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING="1"`.
+The goal is to catch broken setup-PR readiness before the dashboard looks
+usable.
 
 ## Human Action 6 - Install App On Test Repo
 
