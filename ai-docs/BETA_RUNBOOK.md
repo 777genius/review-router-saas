@@ -317,6 +317,17 @@ validation, production build, and compiled runtime smoke. It is expected to fail
 until public HTTPS env values and hosted GitHub App lifecycle webhook events are
 configured.
 
+The public-beta doctor intentionally uses the same
+`REVIEW_ROUTER_HOSTED_ENV_FILE` for both hosted env validation and GitHub App
+hosted readiness. This prevents accidentally validating `.env.production` for
+the app runtime while checking a local `.env.local` GitHub App.
+
+The smoke test for this wiring runs in `pnpm beta:check`:
+
+```bash
+pnpm public-beta:check:smoke
+```
+
 ## What To Work On Next Without User Input
 
 If there is no hosted HTTPS environment yet, keep improving local/private beta.

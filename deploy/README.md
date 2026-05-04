@@ -132,6 +132,10 @@ Full public-beta doctor command:
 REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm public-beta:check
 ```
 
+This command uses the same hosted env file for both app runtime validation and
+GitHub App hosted readiness. Do not run the GitHub App hosted check against
+`.env.local` when validating staging or production.
+
 The hosted readiness gate rejects localhost/non-HTTPS public URLs, placeholder
 GitHub App secrets, missing private key, disabled provisioning, and provider
 credentials accidentally placed in SaaS env.
