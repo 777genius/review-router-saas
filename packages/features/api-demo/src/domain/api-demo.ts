@@ -48,6 +48,7 @@ export type ApiDemoIndexDocument = {
     readonly health: string;
     readonly ready: string;
     readonly demo: string;
+    readonly demoMarkdown: string;
     readonly openapi: string;
     readonly apiDocs: string;
     readonly dashboard: string;
@@ -85,6 +86,7 @@ export type ApiDemoDocument = {
     readonly docs: string;
     readonly openapi: string;
     readonly apiDocs: string;
+    readonly demoMarkdown: string;
   };
 };
 
@@ -101,6 +103,7 @@ export function buildApiDemoIndex(input: {
       health: `${input.apiUrl}/health`,
       ready: `${input.apiUrl}/ready`,
       demo: `${input.apiUrl}/demo`,
+      demoMarkdown: `${input.apiUrl}/demo.md`,
       openapi: `${input.apiUrl}/openapi.json`,
       apiDocs: `${input.apiUrl}/docs`,
       dashboard: `${input.webUrl}/dashboard`,
@@ -187,6 +190,12 @@ export function buildApiDemoDocument(input: {
         method: "GET",
         path: "/demo",
         purpose: "Human-readable API capability summary for the hosted beta.",
+        auth: "public",
+      },
+      {
+        method: "GET",
+        path: "/demo.md",
+        purpose: "Terminal-friendly Markdown API demo summary.",
         auth: "public",
       },
       {
@@ -319,6 +328,7 @@ export function buildApiDemoDocument(input: {
       docs: "https://github.com/777genius/review-router-saas",
       openapi: `${input.apiUrl}/openapi.json`,
       apiDocs: `${input.apiUrl}/docs`,
+      demoMarkdown: `${input.apiUrl}/demo.md`,
     },
   };
 }
@@ -448,6 +458,22 @@ export function buildApiDemoOpenApiDocument(input: {
           },
         },
       },
+      "/demo.md": {
+        get: {
+          summary: "Markdown API demo summary",
+          responses: {
+            "200": {
+              description: "Terminal-friendly Markdown ReviewRouter API demo.",
+              headers: jsonResponseHeaders,
+              content: {
+                "text/markdown": {
+                  schema: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
       "/openapi.json": {
         get: {
           summary: "OpenAPI document",
@@ -537,6 +563,7 @@ export function buildApiDemoOpenApiDocument(input: {
                 "health",
                 "ready",
                 "demo",
+                "demoMarkdown",
                 "openapi",
                 "apiDocs",
                 "dashboard",
@@ -547,6 +574,7 @@ export function buildApiDemoOpenApiDocument(input: {
                 health: { type: "string", format: "uri" },
                 ready: { type: "string", format: "uri" },
                 demo: { type: "string", format: "uri" },
+                demoMarkdown: { type: "string", format: "uri" },
                 openapi: { type: "string", format: "uri" },
                 apiDocs: { type: "string", format: "uri" },
                 dashboard: { type: "string", format: "uri" },

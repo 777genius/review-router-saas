@@ -170,6 +170,7 @@ export function renderApiDemoHtml(input: {
       <div class="links">
         <a class="button" href="${escapeAttribute(index.links.dashboard)}">Dashboard</a>
         <a class="button" href="${escapeAttribute(index.links.demo)}">JSON demo</a>
+        <a class="button" href="${escapeAttribute(index.links.demoMarkdown)}">Markdown</a>
         <a class="button" href="${escapeAttribute(index.links.openapi)}">OpenAPI</a>
         <a class="button" href="${escapeAttribute(index.links.health)}">Health</a>
       </div>

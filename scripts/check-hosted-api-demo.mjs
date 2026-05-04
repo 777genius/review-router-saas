@@ -47,6 +47,10 @@ assert(
   "index demo link must point at the configured API URL",
 );
 assert(
+  index.links?.demoMarkdown === `${apiUrl}/demo.md`,
+  "index Markdown demo link must point at the configured API URL",
+);
+assert(
   index.links?.openapi === `${apiUrl}/openapi.json`,
   "index OpenAPI link must point at the configured API URL",
 );
@@ -157,6 +161,7 @@ assert(
   "OpenAPI server URL must match configured API URL",
 );
 assert(openapi.paths?.["/demo"], "OpenAPI missing /demo path");
+assert(openapi.paths?.["/demo.md"], "OpenAPI missing /demo.md path");
 assert(
   openapi.paths?.["/api/action/v1/session/exchange"],
   "OpenAPI missing action exchange path",
@@ -193,6 +198,42 @@ assert(
   "/docs missing security boundaries section",
 );
 
+const rootHtmlResponse = await fetch(apiUrl, {
+  headers: { accept: "text/html" },
+});
+const rootHtmlBody = await rootHtmlResponse.text();
+assert(rootHtmlResponse.ok, `/ HTML failed ${rootHtmlResponse.status}`);
+assert(
+  rootHtmlResponse.headers.get("content-type")?.includes("text/html"),
+  "/ with Accept text/html must return HTML",
+);
+assert(
+  rootHtmlBody.includes("<title>ReviewRouter API Demo</title>"),
+  "/ HTML missing page title",
+);
+assert(
+  rootHtmlBody.includes(`${apiUrl}/demo.md`),
+  "/ HTML missing Markdown demo link",
+);
+
+const markdownResponse = await fetch(`${apiUrl}/demo.md`, {
+  headers: { accept: "text/markdown" },
+});
+const markdownBody = await markdownResponse.text();
+assert(markdownResponse.ok, `/demo.md failed ${markdownResponse.status}`);
+assert(
+  markdownResponse.headers.get("content-type")?.includes("text/markdown"),
+  "/demo.md must return text/markdown",
+);
+assert(
+  markdownBody.includes("# ReviewRouter API Demo"),
+  "/demo.md missing title",
+);
+assert(
+  markdownBody.includes("## Security boundaries"),
+  "/demo.md missing security boundaries section",
+);
+
 console.log(
   JSON.stringify(
     {
@@ -203,6 +244,7 @@ console.log(
       demo: demo.status,
       openapi: openapi.info?.version,
       docs: "ok",
+      markdown: "ok",
       model: demo.defaultReviewRuntime?.model,
       effort: demo.defaultReviewRuntime?.effort,
     },

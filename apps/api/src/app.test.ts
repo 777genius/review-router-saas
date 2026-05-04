@@ -200,10 +200,27 @@ describe("API app", () => {
       links: {
         health: "https://reviewrouter-api.onrender.com/health",
         demo: "https://reviewrouter-api.onrender.com/demo",
+        demoMarkdown: "https://reviewrouter-api.onrender.com/demo.md",
         openapi: "https://reviewrouter-api.onrender.com/openapi.json",
         apiDocs: "https://reviewrouter-api.onrender.com/docs",
       },
     });
+  });
+
+  it("serves HTML from the API index for browser requests", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: { accept: "text/html" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.body).toContain("<title>ReviewRouter API Demo</title>");
+    expect(response.body).toContain(
+      "https://reviewrouter-api.onrender.com/demo.md",
+    );
   });
 
   it("serves public demo preflight responses for browser smoke checks", async () => {
@@ -230,6 +247,20 @@ describe("API app", () => {
     expect(response.body).toContain("Security boundaries");
     expect(response.body).toContain(
       "https://reviewrouter-api.onrender.com/demo",
+    );
+  });
+
+  it("serves a terminal-friendly Markdown API demo page", async () => {
+    const app = await createApiApp();
+    const response = await app.inject({ method: "GET", url: "/demo.md" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/markdown");
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    expect(response.body).toContain("# ReviewRouter API Demo");
+    expect(response.body).toContain("## Security boundaries");
+    expect(response.body).toContain(
+      "https://reviewrouter-api.onrender.com/docs",
     );
   });
 
@@ -293,6 +324,7 @@ describe("API app", () => {
       },
       paths: {
         "/demo": {},
+        "/demo.md": {},
         "/docs": {},
         "/api/action/v1/session/exchange": {},
       },

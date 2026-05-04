@@ -95,6 +95,7 @@ GET /       - public API index with demo, docs, and dashboard links
 GET /health - liveness plus dependency health
 GET /ready  - compact readiness response for demos and uptime checks
 GET /demo   - public control-plane capability summary, quick start, security boundaries
+GET /demo.md - terminal-friendly Markdown API demo summary
 GET /docs   - browser-friendly API demo page
 GET /openapi.json - machine-readable public API surface
 ```
