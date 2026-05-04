@@ -1,7 +1,7 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import { resolveCodexSeedScriptUrl } from "@/server/codex-seed-script-url";
 
-const secretCommand =
-  "curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_REPO=owner/repo bash";
+const secretCommand = `curl -fsSL ${resolveCodexSeedScriptUrl()} | REVIEW_ROUTER_REPO=owner/repo bash`;
 
 const securitySections = [
   {

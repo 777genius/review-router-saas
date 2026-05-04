@@ -51,10 +51,9 @@ import {
   describeRepositoryHealth,
   summarizeWorkspaceHealth,
 } from "../../src/server/repository-health-view";
+import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
 
 export const dynamic = "force-dynamic";
-
-const hostedCodexSeedScriptUrl = "https://app.reviewrouter.dev/install/codex";
 
 type DashboardWorkspace = {
   readonly id: string;
@@ -374,7 +373,7 @@ function WorkspaceCard({
           primaryEffectiveConfig.provider.authMode,
         ),
         repoFullName: primaryRepository.fullName,
-        seedScriptUrl: hostedCodexSeedScriptUrl,
+        seedScriptUrl: resolveCodexSeedScriptUrl(),
         organizationLogin:
           primaryInstallation?.accountType === "Organization"
             ? primaryInstallation.accountLogin
