@@ -408,6 +408,43 @@ function OnboardingDashboard({
     appSetupActive || signedIn
       ? { href: "/getting-started", label: "Setup guide" }
       : { href: "/api/auth/signin", label: "Sign in" };
+  const onboardingSteps = appSetupActive
+    ? signedIn
+      ? [
+          [
+            "1",
+            "Sync repositories",
+            "Import the selected repositories from the App installation.",
+          ],
+          [
+            "2",
+            "Create setup PR",
+            "ReviewRouter opens a workflow PR in the selected repo.",
+          ],
+          [
+            "3",
+            "Seed provider",
+            "Codex or API keys stay in GitHub Actions secrets.",
+          ],
+        ]
+      : [
+          ["1", "Sign in", "Authorize dashboard access for this GitHub user."],
+          [
+            "2",
+            "Sync repositories",
+            "ReviewRouter maps the installation to your workspace.",
+          ],
+          [
+            "3",
+            "Create setup PR",
+            "Seed provider secrets directly in GitHub Actions.",
+          ],
+        ]
+    : [
+        ["1", "Install App", "Choose only the repositories to review."],
+        ["2", "Create setup PR", "ReviewRouter opens a workflow PR."],
+        ["3", "Seed provider", "Codex or API keys stay in GitHub."],
+      ];
 
   return (
     <section className="grid min-h-[72vh] items-center">
@@ -457,11 +494,7 @@ function OnboardingDashboard({
             </div>
 
             <div className="grid w-full gap-3 text-left sm:grid-cols-3">
-              {[
-                ["1", "Install App", "Choose only the repositories to review."],
-                ["2", "Create setup PR", "ReviewRouter opens a workflow PR."],
-                ["3", "Seed provider", "Codex or API keys stay in GitHub."],
-              ].map(([step, title, body]) => (
+              {onboardingSteps.map(([step, title, body]) => (
                 <div
                   key={step}
                   className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4"
@@ -1403,16 +1436,16 @@ function DashboardNotice({
   }
   if (appSetupNotice) {
     return (
-      <Card className="rounded-[2rem] border-cyan-300/25 bg-cyan-300/10 p-6 shadow-[0_18px_58px_rgba(0,240,255,0.08)] sm:p-7">
+      <Card className="rounded-[2rem] border-lime-300/25 bg-lime-300/10 p-6 shadow-[0_18px_58px_rgba(190,255,61,0.08)] sm:p-7">
         <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-          <Badge tone="accent">{appSetupNotice.title}</Badge>
-          <p className="text-sm leading-7 text-cyan-50">
+          <Badge tone="success">{appSetupNotice.title}</Badge>
+          <p className="text-sm leading-7 text-lime-50">
             {appSetupNotice.body}
             {!mutationStatus.signedIn ? (
               <>
                 {" "}
                 <a
-                  className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                  className="text-lime-100 underline decoration-lime-300/50 underline-offset-4"
                   href="/api/auth/signin"
                 >
                   Sign in

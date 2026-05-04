@@ -79,6 +79,16 @@ assertIncludes(
   "Sign in to finish setup",
   "install redirect dashboard must promote sign-in over reinstall",
 );
+assertIncludes(
+  installNotice.html,
+  "Authorize dashboard access for this GitHub user.",
+  "install redirect dashboard must show sign-in as the next onboarding step",
+);
+assertNotIncludes(
+  installNotice.html,
+  "Choose only the repositories to review.",
+  "install redirect dashboard must not ask users to install the App again",
+);
 assertBefore(
   installNotice.html,
   "GitHub App installed",

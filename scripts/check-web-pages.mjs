@@ -156,6 +156,16 @@ try {
     "Sign in to finish setup",
     "post-install dashboard did not include primary sign-in CTA",
   );
+  assertIncludes(
+    postInstallHtml,
+    "Authorize dashboard access for this GitHub user.",
+    "post-install dashboard did not show sign-in as the next onboarding step",
+  );
+  assertNotIncludes(
+    postInstallHtml,
+    "Choose only the repositories to review.",
+    "post-install dashboard should not ask users to install the App again",
+  );
   assertBefore(
     postInstallHtml,
     "GitHub App installed",
@@ -186,6 +196,12 @@ try {
 function assertIncludes(input, expected, message) {
   if (!input.includes(expected)) {
     throw new Error(`${message}: expected to find ${expected}`);
+  }
+}
+
+function assertNotIncludes(input, expected, message) {
+  if (input.includes(expected)) {
+    throw new Error(`${message}: unexpected ${expected}`);
   }
 }
 
