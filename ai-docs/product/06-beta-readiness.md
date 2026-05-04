@@ -171,10 +171,10 @@ Coverage: valid hosted env passes; SaaS env containing provider API key fails; l
 Latest local + DB beta gate:
 
 ```text
-Date: 2026-05-04 11:26 EEST
+Date: 2026-05-04 11:37 EEST
 Command: REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 Result: passed.
-Coverage: stricter local readiness, 171 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer redirect check, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC, support diagnostics.
+Coverage: stricter local readiness, 171 unit/integration tests, architecture boundary check, typecheck, lint, format, production build, compiled API/worker runtime smoke, automated 10-page web smoke with installer redirect check, whitespace, shell syntax, migration smoke, backup restore smoke, webhook lifecycle, outbox maintenance, rate limits, distributed locks, review config, action control plane OIDC with persisted health telemetry counts, support diagnostics.
 ```
 
 Latest browser smoke:

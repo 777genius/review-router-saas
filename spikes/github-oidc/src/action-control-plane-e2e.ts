@@ -128,9 +128,12 @@ try {
       actionVersion: "local-e2e",
       configVersion: config.json<{ readonly configVersion: number }>()
         .configVersion,
+      configSource: "runtime_oidc",
       providerSetupState: "configured",
       providerHealth: "ok",
       safeErrorCategory: "none",
+      findingCounts: { critical: 0, major: 1, minor: 0, info: 0 },
+      commentCounts: { inline: 1, summary: 1 },
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
     },
@@ -146,10 +149,14 @@ try {
       actionVersion: "local-e2e",
       configVersion: config.json<{ readonly configVersion: number }>()
         .configVersion,
+      configSource: "runtime_oidc",
       providerSetupState: "configured",
       providerHealth: "degraded",
       safeErrorCategory: "runtime_error",
       safeErrorSummary: "provider returned a retryable local e2e error",
+      findingCounts: { critical: 1, major: 1, minor: 0, info: 0 },
+      commentCounts: { inline: 2, summary: 1 },
+      skippedReasonCategory: "none",
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
     },
@@ -188,6 +195,12 @@ try {
       providerHealth: true,
       providerSetupState: true,
       configVersion: true,
+      configSource: true,
+      findingCriticalCount: true,
+      findingMajorCount: true,
+      inlineCommentCount: true,
+      summaryCommentCount: true,
+      skippedReasonCategory: true,
       safeErrorSummary: true,
     },
   });
@@ -202,6 +215,16 @@ try {
   }
   if (recorded.providerHealth !== "degraded") {
     throw new Error("health retry did not update the existing report");
+  }
+  if (
+    recorded.configSource !== "runtime_oidc" ||
+    recorded.findingCriticalCount !== 1 ||
+    recorded.findingMajorCount !== 1 ||
+    recorded.inlineCommentCount !== 2 ||
+    recorded.summaryCommentCount !== 1 ||
+    recorded.skippedReasonCategory !== "none"
+  ) {
+    throw new Error("health telemetry counts were not persisted");
   }
 
   console.log(

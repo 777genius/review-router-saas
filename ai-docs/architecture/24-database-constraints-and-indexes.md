@@ -71,3 +71,7 @@ pnpm local:check
 ```
 
 `db:migrate:smoke` creates a temporary database and verifies the baseline migration, including the action health idempotency unique index.
+Action health reports persist only metadata-safe telemetry: config source,
+finding counts, comment counts, skipped reason category, provider setup/health
+state, safe error category/summary, and run timestamps. They must not store file
+paths, code, diffs, prompts, model responses, or secrets.

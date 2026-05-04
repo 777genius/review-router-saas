@@ -56,15 +56,15 @@ model WorkspaceMember {
 }
 
 model GitHubInstallation {
-  id                   String                    @id @default(cuid())
+  id                   String                   @id @default(cuid())
   workspaceId          String
-  githubInstallationId BigInt                    @unique
+  githubInstallationId BigInt                   @unique
   accountLogin         String
   accountType          String
   repositorySelection  String
-  status               GitHubInstallationStatus  @default(active)
-  createdAt            DateTime                  @default(now())
-  updatedAt            DateTime                  @updatedAt
+  status               GitHubInstallationStatus @default(active)
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
 
   workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repositories RepositoryConnection[]
@@ -73,28 +73,28 @@ model GitHubInstallation {
 }
 
 model RepositoryConnection {
-  id                   String                 @id @default(cuid())
-  workspaceId          String
-  installationId       String
-  githubRepositoryId   BigInt                 @unique
-  owner                String
-  name                 String
-  fullName             String
-  defaultBranch        String
-  visibility           RepositoryVisibility
-  selected             Boolean                @default(true)
-  archived             Boolean                @default(false)
-  setupStatus          RepositorySetupStatus  @default(not_configured)
-  lastSyncedAt         DateTime?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
+  id                 String                @id @default(cuid())
+  workspaceId        String
+  installationId     String
+  githubRepositoryId BigInt                @unique
+  owner              String
+  name               String
+  fullName           String
+  defaultBranch      String
+  visibility         RepositoryVisibility
+  selected           Boolean               @default(true)
+  archived           Boolean               @default(false)
+  setupStatus        RepositorySetupStatus @default(not_configured)
+  lastSyncedAt       DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
 
-  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  provisioning WorkflowProvisioning[]
+  workspace     Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation  GitHubInstallation      @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  provisioning  WorkflowProvisioning[]
   reviewConfigs ReviewConfiguration[]
   providerSetup ProviderSetupState[]
-  actionHealth ActionRunHealthReport[]
+  actionHealth  ActionRunHealthReport[]
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
@@ -103,15 +103,15 @@ model RepositoryConnection {
 }
 
 model ReviewConfiguration {
-  id          String              @id @default(cuid())
-  workspaceId String
+  id           String   @id @default(cuid())
+  workspaceId  String
   repositoryId String?
-  targetKey   String
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  targetKey    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  workspace  Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  repository RepositoryConnection? @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  workspace  Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection?        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   versions   ReviewConfigurationVersion[]
 
   @@unique([workspaceId, targetKey])
@@ -119,19 +119,19 @@ model ReviewConfiguration {
 }
 
 model ReviewConfigurationVersion {
-  id                String   @id @default(cuid())
-  configurationId   String
-  version           Int
-  schemaVersion     Int      @default(1)
-  providerKind      String
-  providerAuthMode  String
-  model             String
-  reasoningEffort   String
-  agenticContext    Boolean  @default(true)
-  failOnSeverity    String
-  inlineMaxComments Int
+  id                   String   @id @default(cuid())
+  configurationId      String
+  version              Int
+  schemaVersion        Int      @default(1)
+  providerKind         String
+  providerAuthMode     String
+  model                String
+  reasoningEffort      String
+  agenticContext       Boolean  @default(true)
+  failOnSeverity       String
+  inlineMaxComments    Int
   targetTokensPerBatch Int
-  createdAt         DateTime @default(now())
+  createdAt            DateTime @default(now())
 
   configuration ReviewConfiguration @relation(fields: [configurationId], references: [id], onDelete: Cascade)
 
@@ -140,15 +140,15 @@ model ReviewConfigurationVersion {
 }
 
 model ProviderSetupState {
-  id           String   @id @default(cuid())
+  id           String              @id @default(cuid())
   workspaceId  String
   repositoryId String?
   targetKey    String
   providerKind String
   authMode     String
   state        ProviderSecretState @default(unknown)
-  updatedAt    DateTime @updatedAt
-  createdAt    DateTime @default(now())
+  updatedAt    DateTime            @updatedAt
+  createdAt    DateTime            @default(now())
 
   workspace  Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository RepositoryConnection? @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -158,22 +158,30 @@ model ProviderSetupState {
 }
 
 model ActionRunHealthReport {
-  id                 String   @id @default(cuid())
-  workspaceId        String
-  repositoryId       String
-  githubRunId        String
-  githubRunAttempt   String
-  eventName          String
-  actionVersion      String
-  configVersion      Int
-  providerSetupState ProviderSecretState
-  providerHealth     ActionProviderHealth
-  safeErrorCategory  String
-  safeErrorSummary   String?
-  startedAt          DateTime?
-  finishedAt         DateTime?
-  receivedAt         DateTime
-  createdAt          DateTime @default(now())
+  id                    String               @id @default(cuid())
+  workspaceId           String
+  repositoryId          String
+  githubRunId           String
+  githubRunAttempt      String
+  eventName             String
+  actionVersion         String
+  configVersion         Int
+  configSource          String?
+  providerSetupState    ProviderSecretState
+  providerHealth        ActionProviderHealth
+  safeErrorCategory     String
+  safeErrorSummary      String?
+  findingCriticalCount  Int?
+  findingMajorCount     Int?
+  findingMinorCount     Int?
+  findingInfoCount      Int?
+  inlineCommentCount    Int?
+  summaryCommentCount   Int?
+  skippedReasonCategory String?
+  startedAt             DateTime?
+  finishedAt            DateTime?
+  receivedAt            DateTime
+  createdAt             DateTime             @default(now())
 
   workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -183,17 +191,17 @@ model ActionRunHealthReport {
 }
 
 model WorkflowProvisioning {
-  id              String                     @id @default(cuid())
-  workspaceId     String
-  repositoryId    String
-  status          WorkflowProvisioningStatus @default(not_started)
-  branch          String
-  workflowPath    String
-  actionVersion   String
-  pullRequestUrl  String?
-  errorMessage    String?
-  createdAt       DateTime                   @default(now())
-  updatedAt       DateTime                   @updatedAt
+  id             String                     @id @default(cuid())
+  workspaceId    String
+  repositoryId   String
+  status         WorkflowProvisioningStatus @default(not_started)
+  branch         String
+  workflowPath   String
+  actionVersion  String
+  pullRequestUrl String?
+  errorMessage   String?
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
 
   workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -220,19 +228,19 @@ model AuditEvent {
 }
 
 model GitHubWebhookDelivery {
-  id             String    @id @default(cuid())
-  deliveryId     String    @unique
-  eventName      String
-  action         String?
-  installationId BigInt?
-  payloadHash    String?
+  id              String                @id @default(cuid())
+  deliveryId      String                @unique
+  eventName       String
+  action          String?
+  installationId  BigInt?
+  payloadHash     String?
   normalizedEvent Json?
-  status         WebhookDeliveryStatus @default(received)
-  errorSummary   String?
-  processedAt    DateTime?
-  receivedAt     DateTime  @default(now())
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @default(now()) @updatedAt
+  status          WebhookDeliveryStatus @default(received)
+  errorSummary    String?
+  processedAt     DateTime?
+  receivedAt      DateTime              @default(now())
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @default(now()) @updatedAt
 
   @@index([eventName, createdAt])
   @@index([installationId])
