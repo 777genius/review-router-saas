@@ -1,11 +1,21 @@
+import { freeBetaLimits } from "@reviewrouter/features-entitlements";
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 
 const freeLimits = [
-  ["Workspaces per GitHub user", "3"],
-  ["Repositories per workspace sync", "250"],
-  ["Setup PR attempts", "5 per repository per hour"],
-  ["Manual installation sync", "10 per installation per 15 minutes"],
-  ["Review config saves", "60 per workspace per hour"],
+  ["Workspaces per GitHub user", String(freeBetaLimits.maxWorkspacesPerUser)],
+  ["Repositories per workspace sync", String(freeBetaLimits.maxRepositories)],
+  [
+    "Setup PR attempts",
+    `${freeBetaLimits.setupPrAttemptsPerRepositoryPerHour} per repository per hour`,
+  ],
+  [
+    "Manual installation sync",
+    `${freeBetaLimits.installationSyncsPerInstallationPer15Minutes} per installation per 15 minutes`,
+  ],
+  [
+    "Review config saves",
+    `${freeBetaLimits.reviewConfigSavesPerWorkspacePerHour} per workspace per hour`,
+  ],
   [
     "Action OIDC exchange and health reports",
     "DB-backed per repository/run limits",
@@ -13,7 +23,7 @@ const freeLimits = [
 ] as const;
 
 const workerLimit = `# Default local beta repository sync cap
-REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC=250`;
+REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC=${freeBetaLimits.maxRepositories}`;
 
 export default function FairUsePage(): React.ReactElement {
   return (

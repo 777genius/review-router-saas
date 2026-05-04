@@ -8,6 +8,7 @@ import { assertWorkspaceFeatureEntitlement } from "../application/use-cases/asse
 import {
   EntitlementDeniedError,
   freeBetaEntitlement,
+  freeBetaLimits,
   type WorkspaceEntitlement,
 } from "../domain/entitlement";
 
@@ -34,6 +35,22 @@ class InMemoryAuditLog implements AuditLogRepositoryPort {
 }
 
 describe("entitlements", () => {
+  it("uses one explicit free beta limit policy", () => {
+    expect(freeBetaEntitlement("workspace_1").limits).toEqual({
+      maxRepositories: freeBetaLimits.maxRepositories,
+      maxWorkspacesPerUser: freeBetaLimits.maxWorkspacesPerUser,
+    });
+    expect(freeBetaLimits.setupPrAttemptsPerRepositoryPerHour).toBeGreaterThan(
+      0,
+    );
+    expect(
+      freeBetaLimits.installationSyncsPerInstallationPer15Minutes,
+    ).toBeGreaterThan(0);
+    expect(freeBetaLimits.reviewConfigSavesPerWorkspacePerHour).toBeGreaterThan(
+      0,
+    );
+  });
+
   it("allows MVP features on free beta by default", async () => {
     const entitlements = new InMemoryEntitlements();
 

@@ -6,7 +6,10 @@ Even without cloud review execution, SaaS endpoints can be abused through webhoo
 
 ## Free Beta Limits
 
-Initial soft limits should exist even if not exposed as billing:
+Initial soft limits are part of the free beta policy and are defined in code by
+`freeBetaLimits` from `@reviewrouter/features-entitlements`. UI pages and
+dashboard mutation rate limits must read from that policy instead of duplicating
+magic numbers.
 
 ```text
 max workspaces per user: 3

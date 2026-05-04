@@ -56,6 +56,7 @@ This checklist is used to verify that the planning docs captured the current dir
 - Action payload privacy and size limits.
 - Dependency pinning policy.
 - Abuse quotas and fair-use.
+- Free beta limits centralized in entitlement policy.
 - Database constraints and indexes.
 - Webhook normalization without raw payload storage.
 - OIDC JWKS/cache/clock-skew/action-session security.
@@ -83,7 +84,7 @@ This checklist is used to verify that the planning docs captured the current dir
 
 ## Still Needs Decision Later
 
-- beta free limits
+- tuning beta free limits after first tester feedback
 - action-to-SaaS telemetry schema
 - payment model
 - exact production deployment topology for web/API split

@@ -3,6 +3,7 @@ import type {
   ConsumeFixedWindowRateLimitInput,
   RateLimitStorePort,
 } from "@reviewrouter/features-rate-limits";
+import { freeBetaLimits } from "@reviewrouter/features-entitlements";
 import {
   createRateLimitDecision,
   RateLimitExceededError,
@@ -47,7 +48,11 @@ describe("DashboardRateLimitPolicy", () => {
     const policy = new DashboardRateLimitPolicy(store, staticClock());
     const input = { workspaceId: "workspace_1", repositoryId: "repo_1" };
 
-    for (let index = 0; index < 5; index += 1) {
+    for (
+      let index = 0;
+      index < freeBetaLimits.setupPrAttemptsPerRepositoryPerHour;
+      index += 1
+    ) {
       await expect(policy.assertWorkflowSetupPrAllowed(input)).resolves.toBe(
         undefined,
       );

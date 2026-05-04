@@ -3,6 +3,7 @@ import {
   PrismaRateLimitStore,
   type RateLimitStorePort,
 } from "@reviewrouter/features-rate-limits";
+import { freeBetaLimits } from "@reviewrouter/features-entitlements";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 
 type Clock = {
@@ -13,10 +14,22 @@ const minute = 60 * 1000;
 const hour = 60 * minute;
 
 const dashboardMutationLimits = {
-  installationSync: { limit: 10, windowMs: 15 * minute },
-  workflowSetupPr: { limit: 5, windowMs: hour },
-  reviewConfigSave: { limit: 60, windowMs: hour },
-  outboxRetry: { limit: 5, windowMs: hour },
+  installationSync: {
+    limit: freeBetaLimits.installationSyncsPerInstallationPer15Minutes,
+    windowMs: 15 * minute,
+  },
+  workflowSetupPr: {
+    limit: freeBetaLimits.setupPrAttemptsPerRepositoryPerHour,
+    windowMs: hour,
+  },
+  reviewConfigSave: {
+    limit: freeBetaLimits.reviewConfigSavesPerWorkspacePerHour,
+    windowMs: hour,
+  },
+  outboxRetry: {
+    limit: freeBetaLimits.outboxRetriesPerWorkspacePerHour,
+    windowMs: hour,
+  },
 } as const;
 
 export class DashboardRateLimitPolicy {

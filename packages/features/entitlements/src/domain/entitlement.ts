@@ -26,6 +26,15 @@ export type WorkspaceEntitlement = {
   readonly flags: Readonly<Record<EntitlementFeature, boolean>>;
 };
 
+export const freeBetaLimits = {
+  maxRepositories: 250,
+  maxWorkspacesPerUser: 3,
+  setupPrAttemptsPerRepositoryPerHour: 5,
+  installationSyncsPerInstallationPer15Minutes: 10,
+  reviewConfigSavesPerWorkspacePerHour: 60,
+  outboxRetriesPerWorkspacePerHour: 5,
+} as const;
+
 export const freeBetaEntitlement = (
   workspaceId: string,
 ): WorkspaceEntitlement => ({
@@ -33,8 +42,8 @@ export const freeBetaEntitlement = (
   plan: "free_beta",
   status: "active",
   limits: {
-    maxRepositories: 250,
-    maxWorkspacesPerUser: 3,
+    maxRepositories: freeBetaLimits.maxRepositories,
+    maxWorkspacesPerUser: freeBetaLimits.maxWorkspacesPerUser,
   },
   flags: {
     workflow_provisioning: true,
