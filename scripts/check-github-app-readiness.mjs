@@ -12,6 +12,9 @@ const checkMode = String(
   env.REVIEW_ROUTER_GITHUB_APP_CHECK_MODE ?? "local",
 ).trim();
 const isHostedMode = checkMode === "hosted";
+const requireInstallation =
+  String(env.REVIEW_ROUTER_GITHUB_APP_REQUIRE_INSTALLATION ?? "").trim() ===
+  "1";
 
 const requiredPermissions = {
   contents: "write",
@@ -69,9 +72,12 @@ async function checkGitHubApp() {
   const installations = await listInstallations(app);
   const installUrl = `https://github.com/apps/${actualSlug || appSlug}/installations/new`;
   if (installations.length === 0) {
-    warnings.push(
-      `GitHub App has no installations. Install it on at least one selected test repository before setup PR E2E: ${installUrl}`,
-    );
+    const message = `GitHub App has no installations. Install it on at least one selected test repository before setup PR E2E: ${installUrl}`;
+    if (requireInstallation) {
+      errors.push(message);
+    } else {
+      warnings.push(message);
+    }
   }
 
   let expectedRepoInstallation = null;

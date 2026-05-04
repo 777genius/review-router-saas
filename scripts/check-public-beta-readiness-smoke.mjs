@@ -38,8 +38,8 @@ try {
   );
   assertIncludes(
     calls,
-    `node scripts/check-github-app-readiness.mjs hosted=${hostedEnvFile} appEnv=${hostedEnvFile} mode=hosted`,
-    "GitHub App readiness must use the same hosted env file in hosted mode",
+    `node scripts/check-github-app-readiness.mjs hosted=${hostedEnvFile} appEnv=${hostedEnvFile} mode=hosted requireInstallation=1`,
+    "GitHub App readiness must use the same hosted env file in hosted mode and require at least one installation",
   );
   assertIncludes(
     calls,
@@ -61,7 +61,7 @@ function writeStub(binDir, name, content) {
 function nodeStub(logFile) {
   return `#!/usr/bin/env bash
 set -euo pipefail
-printf 'node %s hosted=%s appEnv=%s mode=%s\\n' "$1" "\${REVIEW_ROUTER_HOSTED_ENV_FILE:-}" "\${REVIEW_ROUTER_GITHUB_APP_ENV_FILE:-}" "\${REVIEW_ROUTER_GITHUB_APP_CHECK_MODE:-}" >> ${JSON.stringify(logFile)}
+printf 'node %s hosted=%s appEnv=%s mode=%s requireInstallation=%s\\n' "$1" "\${REVIEW_ROUTER_HOSTED_ENV_FILE:-}" "\${REVIEW_ROUTER_GITHUB_APP_ENV_FILE:-}" "\${REVIEW_ROUTER_GITHUB_APP_CHECK_MODE:-}" "\${REVIEW_ROUTER_GITHUB_APP_REQUIRE_INSTALLATION:-}" >> ${JSON.stringify(logFile)}
 exit 0
 `;
 }
