@@ -818,7 +818,10 @@ function DashboardSectionNav({
             {entitlement.plan.replace("_", " ")} / {entitlement.status}
           </Badge>
         </div>
-        <nav className="mt-6 grid gap-2" aria-label="Dashboard sections">
+        <nav
+          className="mt-6 flex flex-wrap gap-2"
+          aria-label="Dashboard sections"
+        >
           {items.map((item) => {
             const active = selectedSection === item.section;
             return (
@@ -826,18 +829,16 @@ function DashboardSectionNav({
                 key={item.section}
                 href={dashboardSectionHref(item.section, workspaceKey)}
                 aria-current={active ? "page" : undefined}
+                title={item.description}
                 className={[
-                  "rounded-2xl border p-3 transition",
+                  "inline-flex min-h-10 items-center rounded-xl border px-3 py-2 transition",
                   active
                     ? "border-cyan-300/35 bg-cyan-300/10 text-cyan-50 shadow-[0_0_34px_-24px_rgba(0,240,255,0.9)]"
                     : "border-cyan-200/10 bg-white/[0.03] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/[0.06]",
                 ].join(" ")}
               >
-                <span className="block font-mono text-xs font-semibold uppercase tracking-[0.16em]">
+                <span className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em]">
                   {item.label}
-                </span>
-                <span className="mt-1 block text-xs leading-5 text-slate-400">
-                  {item.description}
                 </span>
               </a>
             );
