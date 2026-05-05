@@ -327,6 +327,68 @@ function filterVisibleDashboardWorkspaces(
   return actionableWorkspaces.length > 0 ? actionableWorkspaces : workspaces;
 }
 
+function selectDashboardWorkspace(
+  workspaces: readonly DashboardWorkspaceData[],
+  workspaceParam: string,
+): DashboardWorkspaceData {
+  if (!workspaceParam) return workspaces[0]!;
+
+  const normalized = normalizeWorkspaceKey(workspaceParam);
+  return (
+    workspaces.find((workspace) =>
+      dashboardWorkspaceKeys(workspace.workspace).includes(normalized),
+    ) ?? workspaces[0]!
+  );
+}
+
+function dashboardWorkspaceKeys(workspace: DashboardWorkspace): string[] {
+  return [
+    workspace.id,
+    workspace.slug,
+    workspace.name,
+    ...workspace.installations.map((installation) => installation.accountLogin),
+  ]
+    .filter(Boolean)
+    .map(normalizeWorkspaceKey);
+}
+
+function dashboardWorkspaceUrlKey(
+  workspace: DashboardWorkspace,
+  allWorkspaces?: readonly DashboardWorkspaceData[],
+): string {
+  const preferredKey = dashboardWorkspacePreferredUrlKey(workspace);
+  if (!allWorkspaces) return preferredKey;
+
+  const preferredKeyCollision = allWorkspaces.some(
+    (item) =>
+      item.workspace.id !== workspace.id &&
+      normalizeWorkspaceKey(
+        dashboardWorkspacePreferredUrlKey(item.workspace),
+      ) === normalizeWorkspaceKey(preferredKey),
+  );
+  const preferredKeyNamesWorkspace =
+    normalizeWorkspaceKey(workspace.name) ===
+    normalizeWorkspaceKey(preferredKey);
+
+  if (!preferredKeyCollision || preferredKeyNamesWorkspace) {
+    return preferredKey;
+  }
+
+  return workspace.slug || workspace.id;
+}
+
+function dashboardWorkspacePreferredUrlKey(
+  workspace: DashboardWorkspace,
+): string {
+  return (
+    workspace.installations[0]?.accountLogin || workspace.slug || workspace.id
+  );
+}
+
+function normalizeWorkspaceKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 type DashboardPageProps = {
   readonly searchParams?: Promise<
     Record<string, string | string[] | undefined>
@@ -367,7 +429,6 @@ export default async function DashboardPage({
   const appInstallUrl = getGitHubAppInstallUrl();
   const dashboardSignInCallbackUrl = buildDashboardSignInCallbackUrl(params);
   const selectedSection = resolveDashboardSection(params);
-  const dashboardSummary = summarizeDashboardWorkspaces(workspaces);
 
   if (workspaces.length === 0) {
     return (
@@ -388,6 +449,16 @@ export default async function DashboardPage({
       </main>
     );
   }
+
+  const selectedWorkspace = selectDashboardWorkspace(
+    workspaces,
+    readParam(params.workspace),
+  );
+  const selectedWorkspaceKey = dashboardWorkspaceUrlKey(
+    selectedWorkspace.workspace,
+    workspaces,
+  );
+  const dashboardSummary = summarizeDashboardWorkspaces([selectedWorkspace]);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
@@ -412,7 +483,7 @@ export default async function DashboardPage({
 
           <div className="flex flex-wrap gap-3 lg:justify-end">
             <LinkButton
-              href="/dashboard?section=repositories#dashboard-section-content"
+              href={dashboardSectionHref("repositories", selectedWorkspaceKey)}
               size="lg"
               className="min-w-44"
             >
@@ -437,16 +508,20 @@ export default async function DashboardPage({
         </div>
       </section>
 
+      <WorkspaceSwitcher
+        workspaces={workspaces}
+        selectedWorkspaceId={selectedWorkspace.workspace.id}
+        selectedSection={selectedSection}
+      />
+
       <section id="dashboard-workspace" className="grid gap-5 scroll-mt-28">
-        {workspaces.map((workspace) => (
-          <WorkspaceCard
-            key={workspace.workspace.id}
-            data={workspace}
-            mutationsEnabled={mutationStatus.enabled}
-            selectedSection={selectedSection}
-            params={params}
-          />
-        ))}
+        <WorkspaceCard
+          data={selectedWorkspace}
+          mutationsEnabled={mutationStatus.enabled}
+          selectedSection={selectedSection}
+          params={params}
+          workspaceKey={selectedWorkspaceKey}
+        />
       </section>
     </main>
   );
@@ -638,18 +713,67 @@ function OnboardingActionButton({
   );
 }
 
+function WorkspaceSwitcher({
+  workspaces,
+  selectedWorkspaceId,
+  selectedSection,
+}: {
+  readonly workspaces: readonly DashboardWorkspaceData[];
+  readonly selectedWorkspaceId: string;
+  readonly selectedSection: DashboardSection;
+}): React.ReactElement | null {
+  if (workspaces.length < 2) return null;
+
+  return (
+    <Card className="rounded-2xl p-4 sm:p-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
+          Account
+        </span>
+        {workspaces.map((workspace) => {
+          const workspaceKey = dashboardWorkspaceUrlKey(
+            workspace.workspace,
+            workspaces,
+          );
+          const active = workspace.workspace.id === selectedWorkspaceId;
+          return (
+            <a
+              key={workspace.workspace.id}
+              href={dashboardSectionHref(selectedSection, workspaceKey)}
+              aria-current={active ? "page" : undefined}
+              className={[
+                "inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold transition",
+                active
+                  ? "border-cyan-300/45 bg-cyan-300/10 text-cyan-50"
+                  : "border-cyan-200/10 bg-white/[0.03] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/[0.06]",
+              ].join(" ")}
+            >
+              <span>{workspace.workspace.name}</span>
+              <span className="font-mono text-xs text-slate-500">
+                {workspace.repositoryCount} repos
+              </span>
+            </a>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 function DashboardSectionNav({
   workspace,
   repositoryCount,
   entitlement,
   workspaceHealth,
   selectedSection,
+  workspaceKey,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repositoryCount: number;
   readonly entitlement: DashboardWorkspaceData["entitlement"];
   readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
   readonly selectedSection: DashboardSection;
+  readonly workspaceKey: string;
 }): React.ReactElement {
   const items: readonly {
     readonly section: DashboardSection;
@@ -700,7 +824,7 @@ function DashboardSectionNav({
             return (
               <a
                 key={item.section}
-                href={dashboardSectionHref(item.section)}
+                href={dashboardSectionHref(item.section, workspaceKey)}
                 aria-current={active ? "page" : undefined}
                 className={[
                   "rounded-2xl border p-3 transition",
@@ -729,11 +853,13 @@ function WorkspaceCard({
   mutationsEnabled,
   selectedSection,
   params,
+  workspaceKey,
 }: {
   readonly data: DashboardWorkspaceData;
   readonly mutationsEnabled: boolean;
   readonly selectedSection: DashboardSection;
   readonly params: Record<string, string | string[] | undefined>;
+  readonly workspaceKey: string;
 }): React.ReactElement {
   const {
     workspace,
@@ -796,29 +922,12 @@ function WorkspaceCard({
           entitlement={entitlement}
           workspaceHealth={workspaceHealth}
           selectedSection={selectedSection}
+          workspaceKey={workspaceKey}
         />
         <div
           id="dashboard-section-content"
           className="space-y-5 scroll-mt-28 p-5 sm:p-6"
         >
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="text-2xl font-semibold text-cyan-50">
-                {workspace.name}
-              </h2>
-              <p className="text-sm text-slate-400">
-                {workspaceInstallSummary(workspace)}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Badge tone="success">{repositoryCount} repositories</Badge>
-              <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
-              <Badge tone="accent">
-                {entitlement.plan.replace("_", " ")} / {entitlement.status}
-              </Badge>
-            </div>
-          </div>
-
           <WorkspaceActionNotice params={params} />
 
           {selectedSection === "repositories" ? (
@@ -2063,8 +2172,13 @@ function isDashboardSection(value: string): value is DashboardSection {
   return ["repositories", "setup", "policy", "diagnostics"].includes(value);
 }
 
-function dashboardSectionHref(section: DashboardSection): string {
-  return `/dashboard?section=${section}#dashboard-section-content`;
+function dashboardSectionHref(
+  section: DashboardSection,
+  workspaceKey?: string,
+): string {
+  const query = new URLSearchParams({ section });
+  if (workspaceKey) query.set("workspace", workspaceKey);
+  return `/dashboard?${query.toString()}#dashboard-section-content`;
 }
 
 function buildDashboardSignInCallbackUrl(
@@ -2078,6 +2192,7 @@ function buildDashboardSignInCallbackUrl(
     "error",
     "repository",
     "pr",
+    "workspace",
   ]) {
     const value = readParam(params[key]);
     if (value) callbackParams.set(key, value);
@@ -2195,7 +2310,7 @@ function workspaceInstallSummary(workspace: DashboardWorkspace): string {
       ? "all repositories available"
       : "selected repositories only";
 
-  return `${accountType} GitHub App install: ${installation.accountLogin} - ${repositoryScope}`;
+  return `${accountType} GitHub App install - ${repositoryScope}`;
 }
 
 function formatAccountTypeLabel(accountType: string): string {
