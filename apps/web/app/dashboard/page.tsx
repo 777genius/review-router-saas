@@ -943,32 +943,22 @@ function WorkspaceCard({
 
           {selectedSection === "repositories" ? (
             <>
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone={workspaceHealth.tone}>
-                      {workspaceHealth.label}
-                    </Badge>
-                    <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100">
-                      Next step
-                    </span>
-                  </div>
-                  <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-                    {workspaceHealth.ready} ready, {workspaceHealth.needsSetup}{" "}
-                    need setup, {workspaceHealth.needsAttention} need attention.
-                    Next: create or update a setup PR, merge it, then seed
-                    provider secrets from the Setup section.
-                  </p>
+              <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={workspaceHealth.tone}>
+                    {workspaceHealth.label}
+                  </Badge>
+                  <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100">
+                    Next step
+                  </span>
                 </div>
-                {appInstallUrlForWorkspace(primaryInstallation) ? (
-                  <LinkButton
-                    href={appInstallUrlForWorkspace(primaryInstallation) ?? "#"}
-                    variant="outline"
-                    className="md:justify-self-end"
-                  >
-                    Manage App access
-                  </LinkButton>
-                ) : null}
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                  {workspaceHealth.ready} ready, {workspaceHealth.needsSetup}{" "}
+                  need setup, {workspaceHealth.needsAttention} need attention.
+                  Use the repository action below: create or update the setup
+                  PR, merge it, then seed provider secrets from the Setup
+                  section.
+                </p>
               </div>
 
               <RepositoryTable
@@ -2367,17 +2357,6 @@ function describeRepositorySetup(
         hint: null,
       };
   }
-}
-
-function appInstallUrlForWorkspace(
-  installation: DashboardWorkspace["installations"][number] | undefined,
-): string | null {
-  if (!installation?.githubInstallationId) return null;
-  if (!/^\d+$/.test(installation.githubInstallationId)) return null;
-  if (installation.accountType === "Organization") {
-    return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.githubInstallationId}`;
-  }
-  return `https://github.com/settings/installations/${installation.githubInstallationId}`;
 }
 
 function workspaceInstallSummary(workspace: DashboardWorkspace): string {
