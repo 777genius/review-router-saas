@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global fetch */
+/* global fetch, setTimeout, clearTimeout */
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -19,6 +19,7 @@ async function checkApi() {
       HOST: "127.0.0.1",
       PORT: String(port),
     },
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (chunk) => output.push(chunk.toString()));
@@ -49,8 +50,7 @@ async function checkApi() {
 
     fail("compiled API did not become healthy within 20s", output);
   } finally {
-    child.kill("SIGTERM");
-    await delay(250);
+    await terminateProcessGroup(child);
   }
 }
 
@@ -61,16 +61,69 @@ async function checkWorker() {
       ...process.env,
       REVIEW_ROUTER_WORKER_ONCE: "1",
     },
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (chunk) => output.push(chunk.toString()));
   child.stderr.on("data", (chunk) => output.push(chunk.toString()));
 
-  const exitCode = await new Promise((resolve) => {
-    child.on("exit", (code) => resolve(code ?? 1));
-  });
+  const exitCode = await waitForExit(child, 20_000);
+  if (exitCode === "timeout") {
+    await terminateProcessGroup(child);
+    fail("compiled worker did not exit within 20s", output);
+  }
   if (exitCode !== 0) {
     fail(`compiled worker exited with code ${exitCode}`, output);
+  }
+}
+
+async function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null) {
+    return child.exitCode;
+  }
+  if (child.signalCode !== null) {
+    return 1;
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      resolve(code ?? 1);
+    });
+  });
+}
+
+async function terminateProcessGroup(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  signalChild(child, "SIGTERM");
+  const gracefulExit = await waitForExit(child, 3_000);
+  if (
+    gracefulExit === "timeout" &&
+    child.exitCode === null &&
+    child.signalCode === null
+  ) {
+    signalChild(child, "SIGKILL");
+    await waitForExit(child, 1_000);
+  }
+}
+
+function signalChild(child, signal) {
+  try {
+    if (process.platform !== "win32" && child.pid) {
+      process.kill(-child.pid, signal);
+      return;
+    }
+  } catch {
+    // The process may already have exited between checks.
+  }
+
+  try {
+    child.kill(signal);
+  } catch {
+    // The process may already have exited between checks.
   }
 }
 
