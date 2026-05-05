@@ -70,7 +70,7 @@ export default async function SetupPage({
             </p>
           </div>
           <div className="flex flex-wrap gap-3 lg:justify-end">
-            {!mutationStatus.signedIn ? (
+            {!mutationStatus.signedIn && installationId ? (
               <GitHubSignInButton
                 callbackUrl={signInCallbackUrl}
                 size="lg"
@@ -78,6 +78,14 @@ export default async function SetupPage({
               >
                 Sign in with GitHub
               </GitHubSignInButton>
+            ) : !mutationStatus.signedIn && appInstallUrl ? (
+              <LinkButton
+                href={appInstallUrl}
+                size="lg"
+                className="min-w-52 rounded-2xl"
+              >
+                Install or manage App
+              </LinkButton>
             ) : installation ? (
               <LinkButton
                 href="#sync-repositories"
@@ -104,7 +112,16 @@ export default async function SetupPage({
                 Open dashboard
               </LinkButton>
             )}
-            {appInstallUrl && !installation ? (
+            {!mutationStatus.signedIn && !installationId ? (
+              <GitHubSignInButton
+                callbackUrl={signInCallbackUrl}
+                size="lg"
+                variant="outline"
+                className="min-w-36 rounded-2xl"
+              >
+                Sign in
+              </GitHubSignInButton>
+            ) : appInstallUrl && !installation ? (
               <LinkButton
                 href="/dashboard"
                 variant="outline"

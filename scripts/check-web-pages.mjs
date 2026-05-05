@@ -18,7 +18,7 @@ const commonTexts = [
 const pages = [
   ["/", ["AI pull request review that runs in your CI", "Install GitHub App"]],
   ["/dashboard", ["GitHub setup", "Install GitHub App"]],
-  ["/setup", ["Finish repository setup", "Sign in with GitHub"]],
+  ["/setup", ["Finish repository setup", "One sign-in finishes the handoff"]],
   [
     "/getting-started",
     [
