@@ -199,6 +199,46 @@ try {
     "post-install notice should appear before onboarding hero",
   );
 
+  const setupPrDashboardResponse = await fetch(
+    `${baseUrl}/dashboard?notice=setup_pr_ready&repository=owner%2Frepo&pr=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F1`,
+  );
+  if (!setupPrDashboardResponse.ok) {
+    await fail(
+      `/dashboard setup PR notice returned HTTP ${setupPrDashboardResponse.status}`,
+    );
+  }
+  const setupPrDashboardHtml = await setupPrDashboardResponse.text();
+  assertIncludes(
+    setupPrDashboardHtml,
+    "Setup PR ready",
+    "dashboard setup PR notice should use a specific success title",
+  );
+  assertNotIncludes(
+    setupPrDashboardHtml,
+    ">Done<",
+    "dashboard setup PR notice should not use a generic Done label",
+  );
+
+  const syncDashboardResponse = await fetch(
+    `${baseUrl}/dashboard?notice=sync_requested`,
+  );
+  if (!syncDashboardResponse.ok) {
+    await fail(
+      `/dashboard sync notice returned HTTP ${syncDashboardResponse.status}`,
+    );
+  }
+  const syncDashboardHtml = await syncDashboardResponse.text();
+  assertIncludes(
+    syncDashboardHtml,
+    "Refresh in a few seconds",
+    "dashboard sync notice should give customer-facing next steps",
+  );
+  assertNotIncludes(
+    syncDashboardHtml,
+    "Run the worker",
+    "dashboard sync notice must not expose internal worker language",
+  );
+
   for (const [path, expectedLocation] of redirectChecks) {
     const response = await fetch(`${baseUrl}${path}`, { redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) {

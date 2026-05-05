@@ -116,6 +116,32 @@ assertNotIncludes(
   "invalid installation id must not be rendered",
 );
 
+const setupPrDashboardNotice = await fetchHtml(
+  "/dashboard?notice=setup_pr_ready&repository=owner%2Frepo&pr=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F1",
+);
+assertIncludes(
+  setupPrDashboardNotice.html,
+  "Setup PR ready",
+  "dashboard setup PR notice should use a specific success title",
+);
+assertNotIncludes(
+  setupPrDashboardNotice.html,
+  ">Done<",
+  "dashboard setup PR notice should not use a generic Done label",
+);
+
+const syncDashboardNotice = await fetchHtml("/dashboard?notice=sync_requested");
+assertIncludes(
+  syncDashboardNotice.html,
+  "Refresh in a few seconds",
+  "dashboard sync notice should give customer-facing next steps",
+);
+assertNotIncludes(
+  syncDashboardNotice.html,
+  "Run the worker",
+  "dashboard sync notice must not expose internal worker language",
+);
+
 console.log(
   JSON.stringify(
     {

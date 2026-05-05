@@ -1649,7 +1649,7 @@ function WorkspaceActionNotice({
 
   const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
   const tone = error ? "danger" : "success";
-  const title = error ? "Action failed" : "Done";
+  const title = error ? "Action failed" : dashboardNoticeTitle(notice);
   const body = error
     ? dashboardErrorText(error)
     : dashboardNoticeText(notice, readParam(params.repository));
@@ -1903,7 +1903,7 @@ function DashboardNotice({
     return (
       <Card className="rounded-[2rem] border-lime-300/25 bg-lime-300/10 p-6 shadow-[0_18px_58px_rgba(190,255,61,0.08)] sm:p-7">
         <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-          <Badge tone="success">Done</Badge>
+          <Badge tone="success">{dashboardNoticeTitle(notice)}</Badge>
           <p className="text-sm leading-7 text-lime-50">
             {dashboardNoticeText(notice, readParam(params.repository))}
             {pullRequestUrl ? (
@@ -2077,7 +2077,7 @@ function setupQueryString(
 function dashboardNoticeText(notice: string, repository: string): string {
   switch (notice) {
     case "sync_requested":
-      return "Repository sync was queued. Run the worker or wait for the worker to process the outbox.";
+      return "Repository sync was queued. Refresh in a few seconds if the repository list does not update immediately.";
     case "sync_already_requested":
       return "Repository sync was already queued for this installation recently.";
     case "setup_pr_ready":
@@ -2099,13 +2099,35 @@ function dashboardNoticeText(notice: string, repository: string): string {
         ? `${repository} now inherits the workspace review configuration.`
         : "Repository override was cleared.";
     case "outbox_retry_queued":
-      return "Failed background event was queued for retry. Run the worker or wait for it to process.";
+      return "Failed background event was queued for retry. Refresh in a few seconds after background processing catches up.";
     case "outbox_retry_not_found":
       return "Failed background event was not found for this workspace.";
     case "outbox_retry_not_dead_letter":
       return "Background event is no longer in dead-letter state and was not manually retried.";
     default:
       return "Dashboard action completed.";
+  }
+}
+
+function dashboardNoticeTitle(notice: string): string {
+  switch (notice) {
+    case "sync_requested":
+    case "sync_already_requested":
+      return "Sync queued";
+    case "setup_pr_ready":
+      return "Setup PR ready";
+    case "workflow_already_current":
+      return "Workflow installed";
+    case "review_config_saved":
+    case "repository_review_config_saved":
+    case "repository_review_config_cleared":
+      return "Policy saved";
+    case "outbox_retry_queued":
+    case "outbox_retry_not_found":
+    case "outbox_retry_not_dead_letter":
+      return "Retry updated";
+    default:
+      return "Action complete";
   }
 }
 

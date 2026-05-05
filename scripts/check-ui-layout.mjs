@@ -72,6 +72,7 @@ try {
 
   for (const viewport of viewports) {
     for (const route of routes) {
+      await assertRouteReachable(route);
       const entry = await auditRoute({ route, viewport });
       summary.push(entry);
     }
@@ -166,6 +167,28 @@ async function auditRoute({ route, viewport }) {
     client.ws.close();
     await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`).catch(
       () => undefined,
+    );
+  }
+}
+
+async function assertRouteReachable(route) {
+  const url = `${baseUrl}${route}`;
+  let response;
+  try {
+    response = await fetch(url, { headers: { accept: "text/html" } });
+  } catch (error) {
+    throw new Error(
+      `UI audit target is not reachable: ${url}. Start the web server first or pass --base-url. ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`UI audit target returned HTTP ${response.status}: ${url}`);
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/html")) {
+    throw new Error(
+      `UI audit target returned ${contentType || "unknown content type"}; expected text/html: ${url}`,
     );
   }
 }
