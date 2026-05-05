@@ -298,6 +298,23 @@ type DashboardWorkspaceData = Awaited<
   ReturnType<typeof loadDashboardData>
 >[number];
 
+function summarizeDashboardWorkspaces(
+  workspaces: readonly DashboardWorkspaceData[],
+): { readonly needsSetup: number } {
+  return workspaces.reduce(
+    (summary, workspace) => {
+      const workspaceHealth = summarizeWorkspaceHealth(
+        workspace.health.map((repositoryHealth) => repositoryHealth.status),
+      );
+
+      return {
+        needsSetup: summary.needsSetup + workspaceHealth.needsSetup,
+      };
+    },
+    { needsSetup: 0 },
+  );
+}
+
 type DashboardPageProps = {
   readonly searchParams?: Promise<
     Record<string, string | string[] | undefined>
@@ -336,6 +353,7 @@ export default async function DashboardPage({
   const appInstallUrl = getGitHubAppInstallUrl();
   const dashboardSignInCallbackUrl = buildDashboardSignInCallbackUrl(params);
   const selectedSection = resolveDashboardSection(params);
+  const dashboardSummary = summarizeDashboardWorkspaces(workspaces);
 
   if (workspaces.length === 0) {
     return (
@@ -379,16 +397,27 @@ export default async function DashboardPage({
           </div>
 
           <div className="flex flex-wrap gap-3 lg:justify-end">
+            <LinkButton
+              href="/dashboard?section=repositories#dashboard-section-content"
+              size="lg"
+              className="min-w-44"
+            >
+              {dashboardSummary.needsSetup > 0
+                ? "Create setup PR"
+                : "Review repositories"}
+            </LinkButton>
             {appInstallUrl ? (
-              <LinkButton href={appInstallUrl} size="lg" className="min-w-44">
+              <LinkButton
+                href={appInstallUrl}
+                variant="outline"
+                size="md"
+                className="min-w-44"
+              >
                 Add repositories
               </LinkButton>
             ) : null}
-            <LinkButton href="/setup" variant="outline" size="md">
+            <LinkButton href="/setup" variant="ghost" size="md">
               Setup flow
-            </LinkButton>
-            <LinkButton href="/security" variant="ghost" size="md">
-              Security
             </LinkButton>
           </div>
         </div>
