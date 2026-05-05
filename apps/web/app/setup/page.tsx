@@ -51,7 +51,7 @@ export default async function SetupPage({
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
-      <section className="rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/80 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-8">
+      <section className="min-w-0 rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/80 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-8">
         <div className="flex flex-wrap items-center gap-3">
           <LogoMark size="sm" />
           <Badge tone={setupNotice ? "success" : "accent"}>
@@ -65,21 +65,21 @@ export default async function SetupPage({
         </div>
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <div className="min-w-0 space-y-4">
-            <h1 className="max-w-3xl text-4xl font-extrabold leading-[1.05] tracking-[-0.04em] text-cyan-50 md:text-6xl">
+            <h1 className="max-w-full text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-cyan-50 [overflow-wrap:anywhere] sm:max-w-3xl sm:text-4xl sm:tracking-[-0.04em] md:text-6xl">
               Finish repository setup.
             </h1>
-            <p className="max-w-2xl text-base leading-7 text-[#a0a8c0]">
+            <p className="max-w-full text-base leading-7 text-[#a0a8c0] [overflow-wrap:anywhere] sm:max-w-2xl">
               {setupNotice
                 ? `${setupNotice.body} The dashboard stays focused on connected repositories after setup.`
                 : "Install the GitHub App, sign in, sync repositories, and create the setup PR from one guided flow."}
             </p>
           </div>
-          <div className="flex flex-wrap gap-3 lg:justify-end">
+          <div className="grid w-full gap-3 sm:flex sm:w-auto sm:flex-wrap lg:justify-end">
             {!mutationStatus.signedIn && installationId ? (
               <GitHubSignInButton
                 callbackUrl={signInCallbackUrl}
                 size="lg"
-                className="min-w-52 rounded-2xl"
+                className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
               >
                 Sign in with GitHub
               </GitHubSignInButton>
@@ -87,7 +87,7 @@ export default async function SetupPage({
               <LinkButton
                 href={appInstallUrl}
                 size="lg"
-                className="min-w-52 rounded-2xl"
+                className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
               >
                 Install or manage App
               </LinkButton>
@@ -95,7 +95,7 @@ export default async function SetupPage({
               <LinkButton
                 href="#sync-repositories"
                 size="lg"
-                className="min-w-44 rounded-2xl"
+                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
               >
                 Sync repositories
               </LinkButton>
@@ -103,7 +103,7 @@ export default async function SetupPage({
               <LinkButton
                 href={appInstallUrl}
                 size="lg"
-                className="min-w-44 rounded-2xl"
+                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
               >
                 Install or manage App
               </LinkButton>
@@ -112,7 +112,7 @@ export default async function SetupPage({
                 href="/dashboard"
                 variant="outline"
                 size="lg"
-                className="min-w-44 rounded-2xl"
+                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
               >
                 Open dashboard
               </LinkButton>
@@ -122,7 +122,7 @@ export default async function SetupPage({
                 callbackUrl={signInCallbackUrl}
                 size="lg"
                 variant="outline"
-                className="min-w-36 rounded-2xl"
+                className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
               >
                 Sign in
               </GitHubSignInButton>
@@ -131,7 +131,7 @@ export default async function SetupPage({
                 href="/dashboard"
                 variant="outline"
                 size="lg"
-                className="min-w-36 rounded-2xl"
+                className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
               >
                 Open dashboard
               </LinkButton>

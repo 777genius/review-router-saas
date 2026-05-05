@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { loadAppProfile } from "../src/config";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(
@@ -65,6 +66,20 @@ describe("use-github-app-profile.mjs", () => {
     expect(env).toContain(
       'REVIEW_ROUTER_API_URL="https://api.reviewrouter.site"',
     );
+  });
+});
+
+describe("loadAppProfile", () => {
+  it("accepts generated GitHub App profile keys", async () => {
+    const fixture = await createFixture();
+
+    const profile = loadAppProfile(fixture.profileFile);
+
+    expect(profile.APP_ID).toBe(123456);
+    expect(profile.APP_CLIENT_ID).toBe("client-id");
+    expect(profile.APP_SLUG).toBe("review-router-test");
+    expect(profile.APP_PRIVATE_KEY_FILE).toBe(fixture.keyFile);
+    expect(profile.privateKey).toContain("test-private-key-body");
   });
 });
 

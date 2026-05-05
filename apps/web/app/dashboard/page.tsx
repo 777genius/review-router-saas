@@ -478,9 +478,9 @@ function OnboardingDashboard({
 
   return (
     <section className="grid min-h-[72vh] items-center">
-      <div className="relative">
+      <div className="relative overflow-hidden rounded-[2.75rem]">
         <div className="absolute -inset-6 rounded-[2.5rem] bg-[radial-gradient(circle_at_20%_20%,rgba(0,240,255,0.18),transparent_34%),radial-gradient(circle_at_80%_30%,rgba(255,0,255,0.16),transparent_30%),radial-gradient(circle_at_50%_90%,rgba(57,255,20,0.08),transparent_32%)] blur-2xl" />
-        <Card className="relative overflow-hidden rounded-[2rem] border-cyan-300/[0.16] bg-[#0a0a0f]/90 p-6 shadow-[0_30px_90px_rgba(0,0,0,0.55),0_0_80px_-40px_rgba(0,240,255,0.85)] sm:p-10">
+        <Card className="relative min-w-0 overflow-hidden rounded-[2rem] border-cyan-300/[0.16] bg-[#0a0a0f]/90 p-6 shadow-[0_30px_90px_rgba(0,0,0,0.55),0_0_80px_-40px_rgba(0,240,255,0.85)] sm:p-10">
           <div className="absolute right-0 top-0 h-56 w-56 rounded-full bg-cyan-300/10 blur-3xl" />
           <div className="relative mx-auto grid max-w-3xl justify-items-center gap-8 text-center">
             <div className="grid justify-items-center gap-4">
@@ -491,12 +491,12 @@ function OnboardingDashboard({
             </div>
 
             <div className="space-y-5">
-              <h1 className="bg-[image:var(--rr-gradient-brand)] bg-clip-text text-5xl font-extrabold leading-[1.02] tracking-[-0.05em] text-transparent md:text-7xl">
+              <h1 className="max-w-full bg-[image:var(--rr-gradient-brand)] bg-clip-text text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-transparent [overflow-wrap:anywhere] sm:text-5xl sm:tracking-[-0.045em] md:text-7xl">
                 {appSetupActive
                   ? "Finish ReviewRouter setup."
                   : "Connect ReviewRouter."}
               </h1>
-              <p className="mx-auto max-w-2xl text-lg leading-8 text-[#a0a8c0]">
+              <p className="mx-auto max-w-full text-base leading-7 text-[#a0a8c0] [overflow-wrap:anywhere] sm:max-w-2xl sm:text-lg sm:leading-8">
                 {appSetupActive
                   ? "The GitHub App install returned successfully. Sign in to map the installation to your workspace, then create the setup PR."
                   : "Install the GitHub App on selected repositories. ReviewRouter will sync metadata, create the setup PR, and keep provider secrets inside GitHub Actions."}
@@ -507,13 +507,13 @@ function OnboardingDashboard({
               <OnboardingActionButton
                 action={primaryAction}
                 callbackUrl={signInCallbackUrl}
-                className="h-16 rounded-2xl px-8 text-lg font-semibold"
+                className="h-16 w-full rounded-2xl px-8 text-lg font-semibold"
               />
               <OnboardingActionButton
                 action={secondaryAction}
                 callbackUrl={signInCallbackUrl}
                 variant="outline"
-                className="h-16 rounded-2xl px-8"
+                className="h-16 w-full rounded-2xl px-8"
               />
             </div>
 

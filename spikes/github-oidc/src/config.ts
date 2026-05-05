@@ -38,7 +38,16 @@ export function loadAppProfile(
   }
 
   const parsed = dotenv.parse(readFileSync(profilePath));
-  const profile = appProfileSchema.parse(parsed);
+  const normalizedProfile = {
+    ...parsed,
+    APP_ID: parsed.APP_ID ?? parsed.GITHUB_APP_ID,
+    APP_CLIENT_ID: parsed.APP_CLIENT_ID ?? parsed.GITHUB_APP_CLIENT_ID,
+    APP_SLUG: parsed.APP_SLUG ?? parsed.GITHUB_APP_SLUG,
+    APP_NAME: parsed.APP_NAME ?? parsed.GITHUB_APP_NAME,
+    APP_PRIVATE_KEY_FILE:
+      parsed.APP_PRIVATE_KEY_FILE ?? parsed.GITHUB_APP_PRIVATE_KEY_FILE,
+  };
+  const profile = appProfileSchema.parse(normalizedProfile);
   const keyPath = expandHome(profile.APP_PRIVATE_KEY_FILE);
   if (!existsSync(keyPath)) {
     throw new Error(`GitHub App private key file not found: ${keyPath}`);

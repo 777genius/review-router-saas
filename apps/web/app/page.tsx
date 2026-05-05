@@ -26,22 +26,22 @@ export default function HomePage(): React.ReactElement {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-4 py-10 sm:px-6 md:py-14">
       <section className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(22rem,0.95fr)] lg:items-stretch">
-        <div className="space-y-7 rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/78 p-6 shadow-[0_24px_90px_rgba(0,0,0,0.48),0_0_110px_-56px_rgba(0,240,255,0.95)] backdrop-blur-2xl sm:p-8 lg:p-10">
+        <div className="min-w-0 space-y-7 rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/78 p-6 shadow-[0_24px_90px_rgba(0,0,0,0.48),0_0_110px_-56px_rgba(0,240,255,0.95)] backdrop-blur-2xl sm:p-8 lg:p-10">
           <Badge tone="accent">Control plane</Badge>
           <div className="space-y-4">
-            <h1 className="max-w-3xl text-5xl font-extrabold leading-[0.95] tracking-[-0.06em] text-cyan-50 md:text-7xl">
+            <h1 className="max-w-full text-3xl font-extrabold leading-[1.02] tracking-[-0.045em] text-cyan-50 [overflow-wrap:anywhere] sm:max-w-3xl sm:text-5xl sm:tracking-[-0.055em] md:text-7xl">
               AI pull request review that runs in your CI.
             </h1>
-            <p className="max-w-2xl text-lg leading-8 text-slate-300 md:text-xl">
+            <p className="max-w-full text-base leading-7 text-slate-300 [overflow-wrap:anywhere] sm:max-w-2xl md:text-xl md:leading-8">
               Connect one repository, merge a setup PR, and keep model execution
               plus provider secrets inside your GitHub Actions.
             </p>
           </div>
-          <div className="flex flex-col gap-3 sm:flex-row">
+          <div className="grid gap-3 sm:flex sm:flex-row">
             <LinkButton
               href={appInstallUrl ?? "/dashboard"}
               size="lg"
-              className="min-h-14 px-8 text-base"
+              className="min-h-14 w-full px-8 text-base sm:w-auto"
             >
               Install GitHub App
             </LinkButton>
@@ -49,7 +49,7 @@ export default function HomePage(): React.ReactElement {
               href="/dashboard"
               variant="outline"
               size="lg"
-              className="min-h-14 px-8 text-base"
+              className="min-h-14 w-full px-8 text-base sm:w-auto"
             >
               Open dashboard
             </LinkButton>
@@ -67,7 +67,7 @@ export default function HomePage(): React.ReactElement {
           </div>
         </div>
 
-        <Card className="flex flex-col justify-between gap-8 p-6 sm:p-8">
+        <Card className="flex min-w-0 flex-col justify-between gap-8 p-6 sm:p-8">
           <div className="space-y-4">
             <Badge tone="success">Runtime boundary</Badge>
             <h2 className="text-3xl font-semibold tracking-[-0.03em] text-cyan-50">
