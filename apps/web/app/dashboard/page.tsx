@@ -474,9 +474,9 @@ export default async function DashboardPage({
                 Connected repositories
               </h1>
               <p className="max-w-2xl text-base leading-7 text-[#a0a8c0]">
-                Pick a repository, create the setup PR, then seed provider
-                secrets directly into GitHub Actions. Advanced policy and
-                diagnostics stay collapsed until you need them.
+                Choose an account, set up one repository at a time, and keep
+                provider secrets inside GitHub Actions. Policy and diagnostics
+                stay out of the way until needed.
               </p>
             </div>
           </div>
@@ -488,7 +488,7 @@ export default async function DashboardPage({
               className="min-w-44"
             >
               {dashboardSummary.needsSetup > 0
-                ? "Create setup PR"
+                ? "Choose repo to set up"
                 : "Review repositories"}
             </LinkButton>
             {appInstallUrl ? (
@@ -502,7 +502,7 @@ export default async function DashboardPage({
               </LinkButton>
             ) : null}
             <LinkButton href="/setup" variant="ghost" size="md">
-              Setup flow
+              Guided setup
             </LinkButton>
           </div>
         </div>
@@ -945,10 +945,15 @@ function WorkspaceCard({
             <>
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                 <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
-                  <Badge tone={workspaceHealth.tone}>
-                    {workspaceHealth.label}
-                  </Badge>
-                  <p className="mt-3 text-sm leading-6 text-slate-300">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={workspaceHealth.tone}>
+                      {workspaceHealth.label}
+                    </Badge>
+                    <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100">
+                      Next step
+                    </span>
+                  </div>
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
                     {workspaceHealth.ready} ready, {workspaceHealth.needsSetup}{" "}
                     need setup, {workspaceHealth.needsAttention} need attention.
                     Next: create and merge a setup PR for one repository, then
