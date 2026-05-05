@@ -48,6 +48,7 @@ export type ActionRepositoryContext = {
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly githubRepositoryId: string;
+  readonly githubInstallationId: string;
   readonly fullName: string;
   readonly owner: string;
   readonly selected: boolean;
@@ -99,6 +100,21 @@ export const actionRuntimeConfigResponseSchema = z.object({
 
 export type ActionRuntimeConfigResponse = z.infer<
   typeof actionRuntimeConfigResponseSchema
+>;
+
+export const actionCommentTokenResponseSchema = z.object({
+  protocolVersion: z.literal(1),
+  token: z.string().min(1),
+  expiresAt: z.string().datetime(),
+  repository: z.string().min(1),
+  permissions: z.object({
+    pullRequests: z.literal("write"),
+    issues: z.literal("write"),
+  }),
+});
+
+export type ActionCommentTokenResponse = z.infer<
+  typeof actionCommentTokenResponseSchema
 >;
 
 export const actionHealthReportMaxBytes = 64 * 1024;

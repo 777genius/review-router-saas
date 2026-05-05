@@ -62,6 +62,9 @@ jobs:
       REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(
+        options.runtimeConfigMode === "oidc" ? "app-oidc" : "github-token",
+      )}
     steps:
       - name: Checkout pull request code
         uses: actions/checkout@v6

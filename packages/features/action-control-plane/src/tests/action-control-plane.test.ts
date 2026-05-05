@@ -13,9 +13,14 @@ import type { ActionControlPlaneRepositoryPort } from "../application/ports/acti
 import type { ActionEntitlementPolicyPort } from "../application/ports/action-entitlement-policy-port.js";
 import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
+import type {
+  GitHubAppCommentTokenIssuerPort,
+  IssueGitHubAppCommentTokenInput,
+} from "../application/ports/github-app-comment-token-issuer-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../application/ports/github-actions-oidc-token-verifier-port.js";
 import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-github-oidc-token.js";
 import { getActionRuntimeConfig } from "../application/use-cases/get-action-runtime-config.js";
+import { issueActionCommentToken } from "../application/use-cases/issue-action-comment-token.js";
 import { pruneExpiredActionOidcReplayNonces } from "../application/use-cases/prune-expired-action-oidc-replay-nonces.js";
 import { recordActionHealthReport } from "../application/use-cases/record-action-health-report.js";
 import {
@@ -39,6 +44,7 @@ const repositoryContext: ActionRepositoryContext = {
   workspaceId: "workspace_1",
   repositoryId: "repo_1",
   githubRepositoryId: "123456",
+  githubInstallationId: "129500385",
   fullName: "777genius/example",
   owner: "777genius",
   selected: true,
@@ -107,6 +113,23 @@ class StaticSessionTokenService implements ActionSessionTokenServicePort {
 
   async verify(): Promise<ActionSessionClaims> {
     return sessionClaims;
+  }
+}
+
+class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
+  public readonly calls: IssueGitHubAppCommentTokenInput[] = [];
+
+  async issueCommentToken(input: IssueGitHubAppCommentTokenInput) {
+    this.calls.push(input);
+    return {
+      token: "ghs_reviewrouter_app_token",
+      expiresAt: new Date("2026-05-03T13:00:00.000Z"),
+      repository: input.repositoryFullName,
+      permissions: {
+        pullRequests: "write" as const,
+        issues: "write" as const,
+      },
+    };
   }
 }
 
@@ -436,6 +459,73 @@ describe("action control plane", () => {
         },
       ),
     ).rejects.toThrow("entitlement_denied:action_control_plane");
+  });
+
+  it("issues a repository-scoped GitHub App token for branded comments", async () => {
+    const commentTokens = new InMemoryCommentTokenIssuer();
+
+    const result = await issueActionCommentToken(
+      { sessionToken: "session" },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService(),
+        commentTokens,
+        clock,
+      },
+    );
+
+    expect(result).toEqual({
+      protocolVersion: 1,
+      token: "ghs_reviewrouter_app_token",
+      expiresAt: "2026-05-03T13:00:00.000Z",
+      repository: "777genius/example",
+      permissions: {
+        pullRequests: "write",
+        issues: "write",
+      },
+    });
+    expect(commentTokens.calls).toEqual([
+      {
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+      },
+    ]);
+  });
+
+  it("revalidates repository state before issuing branded comment tokens", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.repository = { ...repositoryContext, selected: false };
+
+    await expect(
+      issueActionCommentToken(
+        { sessionToken: "session" },
+        {
+          repositories,
+          sessions: new StaticSessionTokenService(),
+          commentTokens: new InMemoryCommentTokenIssuer(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("repository_not_selected");
+  });
+
+  it("checks action control plane entitlements before issuing branded comment tokens", async () => {
+    const commentTokens = new InMemoryCommentTokenIssuer();
+
+    await expect(
+      issueActionCommentToken(
+        { sessionToken: "session" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          commentTokens,
+          entitlements: new DenyingActionEntitlements(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("entitlement_denied:action_control_plane");
+    expect(commentTokens.calls).toEqual([]);
   });
 
   it("revalidates repository state before returning runtime config", async () => {

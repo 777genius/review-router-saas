@@ -27,11 +27,13 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
+import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
+import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
 import { appRouter } from "./trpc.js";
 
@@ -112,6 +114,7 @@ export async function createApiApp(
     (options.actionSessionSecret && prisma
       ? (() => {
           const clock = new SystemClock();
+          const githubAppPrivateKey = readGitHubAppPrivateKey();
           return {
             repositories: new PrismaActionControlPlaneRepository(prisma),
             entitlements: new PrismaActionEntitlementPolicy(prisma),
@@ -128,6 +131,14 @@ export async function createApiApp(
             sessions: new JoseActionSessionTokenService(
               options.actionSessionSecret,
             ),
+            ...(process.env.GITHUB_APP_ID && githubAppPrivateKey
+              ? {
+                  commentTokens: new OctokitGitHubAppCommentTokenIssuer({
+                    appId: process.env.GITHUB_APP_ID,
+                    privateKey: githubAppPrivateKey,
+                  }),
+                }
+              : {}),
             oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
             clock,
             ...(options.actionOidcAudience

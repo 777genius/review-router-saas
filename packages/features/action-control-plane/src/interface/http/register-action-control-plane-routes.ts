@@ -14,14 +14,20 @@ import {
   type GetActionRuntimeConfigDependencies,
 } from "../../application/use-cases/get-action-runtime-config.js";
 import {
+  issueActionCommentToken,
+  type IssueActionCommentTokenDependencies,
+} from "../../application/use-cases/issue-action-comment-token.js";
+import {
   recordActionHealthReport,
   type RecordActionHealthReportDependencies,
 } from "../../application/use-cases/record-action-health-report.js";
+import type { GitHubAppCommentTokenIssuerPort } from "../../application/ports/github-app-comment-token-issuer-port.js";
 
 export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
     GetActionRuntimeConfigDependencies &
     RecordActionHealthReportDependencies & {
+      readonly commentTokens?: GitHubAppCommentTokenIssuerPort;
       readonly oidcAudience?: string;
       readonly controlPlaneEnabled?: boolean;
     };
@@ -115,10 +121,42 @@ export async function registerActionControlPlaneRoutes(
       }
     };
 
+  const createCommentTokenHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (!dependencies.commentTokens) {
+        return sendActionErrorCode(
+          reply,
+          "comment_token_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const result = await issueActionCommentToken(
+          { sessionToken: readBearerToken(request) },
+          dependencies as IssueActionCommentTokenDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
   app.post("/api/action/exchange-token", createExchangeHandler("legacy"));
   app.post("/api/action/v1/session/exchange", createExchangeHandler("v1"));
   app.get("/api/action/config", createConfigHandler("legacy"));
   app.get("/api/action/v1/config", createConfigHandler("v1"));
+  app.post("/api/action/comment-token", createCommentTokenHandler("legacy"));
+  app.post("/api/action/v1/comment-token", createCommentTokenHandler("v1"));
   app.post(
     "/api/action/health-report",
     { bodyLimit: actionHealthReportMaxBytes },
@@ -270,6 +308,8 @@ function safeActionErrorMessage(code: string): string {
   switch (code) {
     case "action_control_plane_disabled":
       return "ReviewRouter action control plane is temporarily disabled.";
+    case "comment_token_unavailable":
+      return "ReviewRouter App comment identity is temporarily unavailable.";
     case "repository_not_registered":
       return "Repository is not registered in ReviewRouter.";
     case "repository_not_selected":
@@ -301,5 +341,9 @@ function safeActionErrorMessage(code: string): string {
 }
 
 function isRetryableActionError(code: string): boolean {
-  return code === "rate_limited" || code === "action_control_plane_disabled";
+  return (
+    code === "rate_limited" ||
+    code === "action_control_plane_disabled" ||
+    code === "comment_token_unavailable"
+  );
 }

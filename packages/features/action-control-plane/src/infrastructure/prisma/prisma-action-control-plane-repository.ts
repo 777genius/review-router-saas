@@ -25,7 +25,9 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
         fullName: true,
         owner: true,
         selected: true,
-        installation: { select: { status: true } },
+        installation: {
+          select: { status: true, githubInstallationId: true },
+        },
       },
     });
 
@@ -37,6 +39,8 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       workspaceId: repository.workspaceId,
       repositoryId: repository.id,
       githubRepositoryId: repository.githubRepositoryId.toString(),
+      githubInstallationId:
+        repository.installation.githubInstallationId.toString(),
       fullName: repository.fullName,
       owner: repository.owner,
       selected: repository.selected,

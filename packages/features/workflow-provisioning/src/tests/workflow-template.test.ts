@@ -46,6 +46,7 @@ describe("renderReviewRouterWorkflow", () => {
             CODEX_REASONING_EFFORT: "medium"
             FAIL_ON_SEVERITY: "critical"
             REVIEW_AUTH_MODE: "codex-oauth"
+            REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"
           steps:
             - name: Checkout pull request code
               uses: actions/checkout@v6
@@ -199,8 +200,21 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(workflow).toContain('REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"');
     expect(workflow).toContain('REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"');
+    expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
     expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');
     expect(workflow).toContain('CODEX_MODEL: "gpt-5.5"');
+  });
+
+  it("uses github-actions comment identity when runtime config is static", () => {
+    const workflow = renderReviewRouterWorkflow({
+      actionRef: "777genius/review-router@v1",
+      apiUrl: "https://app.reviewrouter.dev",
+      runtimeConfigMode: "static",
+    });
+
+    expect(workflow).toContain(
+      'REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token"',
+    );
   });
 
   it("allows local http for development workflow provisioning only", () => {

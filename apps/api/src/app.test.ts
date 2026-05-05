@@ -6,8 +6,10 @@ import type {
   ActionOidcReplayNonceStorePort,
   ActionRateLimitPolicyPort,
   ActionRepositoryContext,
+  GitHubAppCommentTokenIssuerPort,
   GitHubActionsOidcClaims,
   GitHubActionsOidcTokenVerifierPort,
+  IssueGitHubAppCommentTokenInput,
 } from "@reviewrouter/features-action-control-plane";
 import {
   actionHealthReportMaxBytes,
@@ -108,6 +110,7 @@ class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
       workspaceId: "workspace_1",
       repositoryId: "repo_1",
       githubRepositoryId: "123456",
+      githubInstallationId: "129500385",
       fullName: "777genius/example",
       owner: "777genius",
       selected: true,
@@ -159,6 +162,23 @@ class InMemoryActionReplayNonces implements ActionOidcReplayNonceStorePort {
     }
     this.keys.add(input.key);
     return true;
+  }
+}
+
+class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
+  public readonly calls: IssueGitHubAppCommentTokenInput[] = [];
+
+  async issueCommentToken(input: IssueGitHubAppCommentTokenInput) {
+    this.calls.push(input);
+    return {
+      token: "ghs_reviewrouter_app_token",
+      expiresAt: new Date("2026-05-03T13:00:00.000Z"),
+      repository: input.repositoryFullName,
+      permissions: {
+        pullRequests: "write" as const,
+        issues: "write" as const,
+      },
+    };
   }
 }
 
@@ -497,9 +517,11 @@ describe("API app", () => {
 
   it("serves action OIDC exchange, config fetch, and safe health report", async () => {
     const repositories = new InMemoryActionRepositories();
+    const commentTokens = new InMemoryCommentTokenIssuer();
     const app = await createApiApp({
       actionControlPlaneDependencies: {
         repositories,
+        commentTokens,
         oidcVerifier: new StaticActionOidcVerifier(),
         sessions: new JoseActionSessionTokenService(
           "0123456789abcdef0123456789abcdef",
@@ -533,6 +555,30 @@ describe("API app", () => {
       runtimeEnv: { REVIEW_AUTH_MODE: "codex-oauth" },
     });
 
+    const commentToken = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/comment-token",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+    });
+    expect(commentToken.statusCode).toBe(200);
+    expect(commentToken.json()).toEqual({
+      protocolVersion: 1,
+      token: "ghs_reviewrouter_app_token",
+      expiresAt: "2026-05-03T13:00:00.000Z",
+      repository: "777genius/example",
+      permissions: {
+        pullRequests: "write",
+        issues: "write",
+      },
+    });
+    expect(commentTokens.calls).toEqual([
+      {
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+      },
+    ]);
+
     const health = await app.inject({
       method: "POST",
       url: "/api/action/v1/health-report",
@@ -548,6 +594,43 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("returns a safe error when App comment identity is unavailable", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/comment-token",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: {
+        code: "comment_token_unavailable",
+        message:
+          "ReviewRouter App comment identity is temporarily unavailable.",
+        retryable: true,
+      },
+    });
   });
 
   it("keeps legacy action endpoints available for current action compatibility", async () => {
