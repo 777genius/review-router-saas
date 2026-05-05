@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global fetch, setTimeout, clearTimeout */
+/* global fetch */
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
