@@ -1,4 +1,5 @@
-import { Badge, Card, LinkButton } from "@reviewrouter/ui";
+import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -12,6 +13,7 @@ import { FormSubmitButton } from "../form-submit-button";
 import { GitHubSignInButton } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
+import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
 import { RepositoryPicker } from "./repository-picker";
 
 export const dynamic = "force-dynamic";
@@ -159,6 +161,7 @@ export default async function SetupPage({
           installation={installation}
           mutationsEnabled={mutationStatus.enabled}
           setupAction={setupAction}
+          setupRepositoryFullName={readParam(params.repository)}
         />
       ) : !installationId ? (
         <SetupStartCard appInstallUrl={appInstallUrl} />
@@ -220,18 +223,37 @@ function SignedInSetup({
   installation,
   mutationsEnabled,
   setupAction,
+  setupRepositoryFullName,
 }: {
   readonly installation: SetupInstallation;
   readonly mutationsEnabled: boolean;
   readonly setupAction: string;
+  readonly setupRepositoryFullName: string;
 }): React.ReactElement {
+  const setupRepository = setupRepositoryFullName
+    ? installation.repositories.find(
+        (repository) => repository.fullName === setupRepositoryFullName,
+      )
+    : null;
+  const providerGuidance = setupRepository
+    ? buildProviderSecretSetupGuidance({
+        provider: "codex_oauth",
+        repoFullName: setupRepository.fullName,
+        seedScriptUrl: resolveCodexSeedScriptUrl(),
+        organizationLogin:
+          installation.accountType === "Organization"
+            ? installation.accountLogin
+            : null,
+      })
+    : null;
+
   return (
     <div className="grid gap-6">
       <SetupStepCard
         id="sync-repositories"
         badge="Step 2"
         title="Sync selected repositories"
-        body={`${installation.accountLogin} is connected. Import the selected repositories, then create a workflow setup PR for the repo you want to test first.`}
+        body={`${installation.accountLogin} is connected. Sync imports repository metadata only. ReviewRouter does not open setup PRs automatically, even when the GitHub App is installed on all repositories.`}
         primary={
           <form action={requestInstallationSyncAction}>
             <SetupReturnFields
@@ -261,6 +283,26 @@ function SignedInSetup({
           </LinkButton>
         }
       />
+
+      <RepositorySelectionExplainer installation={installation} />
+
+      {providerGuidance && setupRepository ? (
+        <ProviderSecretSetupCard
+          repositoryFullName={setupRepository.fullName}
+          guidance={providerGuidance}
+        />
+      ) : (
+        <SetupStepCard
+          badge="Step 3"
+          title="Connect Codex after choosing a repository"
+          body="After you create and merge a setup PR, this page will show the exact Codex OAuth command for that repository. The command writes CODEX_AUTH_JSON directly to GitHub Actions secrets through gh; ReviewRouter SaaS does not receive it."
+          primary={
+            <LinkButton href="/getting-started" variant="outline">
+              Read provider setup
+            </LinkButton>
+          }
+        />
+      )}
 
       <Card className="rounded-2xl p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -301,6 +343,105 @@ function SignedInSetup({
         )}
       </Card>
     </div>
+  );
+}
+
+function RepositorySelectionExplainer({
+  installation,
+}: {
+  readonly installation: SetupInstallation;
+}): React.ReactElement {
+  const isAllRepositories = installation.repositorySelection === "all";
+  const settingsUrl = appInstallationSettingsUrl(installation);
+
+  return (
+    <Card className="rounded-2xl border-cyan-200/15 bg-cyan-300/[0.04] p-5 sm:p-6">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div>
+          <Badge tone={isAllRepositories ? "warning" : "success"}>
+            {isAllRepositories ? "All repositories install" : "Selected repos"}
+          </Badge>
+          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
+            {isAllRepositories
+              ? "All repos are available, but setup is still per repository."
+              : "Only selected repositories are available here."}
+          </h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
+            {isAllRepositories
+              ? "GitHub grants the App access to all current and future repositories for this account. ReviewRouter syncs metadata, then you choose which repositories receive setup PRs and provider secrets. It will not spam every repository with a PR."
+              : "To add another repository, manage the GitHub App installation and select it there. Then sync here and create a setup PR for the repository you want to enable."}
+          </p>
+        </div>
+        {settingsUrl ? (
+          <LinkButton href={settingsUrl} variant="outline" target="_blank">
+            Manage App access
+          </LinkButton>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
+function ProviderSecretSetupCard({
+  repositoryFullName,
+  guidance,
+}: {
+  readonly repositoryFullName: string;
+  readonly guidance: ReturnType<typeof buildProviderSecretSetupGuidance>;
+}): React.ReactElement {
+  return (
+    <Card className="rounded-2xl border-emerald-300/20 bg-emerald-300/[0.08] p-5 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <Badge tone="success">Step 3 - Codex OAuth</Badge>
+          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
+            Seed Codex for {repositoryFullName}
+          </h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-emerald-50">
+            Run the recommended command on a trusted machine where Codex CLI is
+            already logged in. It writes secrets directly to GitHub Actions
+            through <code>gh</code>; ReviewRouter never receives your Codex
+            OAuth file.
+          </p>
+        </div>
+        <Badge tone="success">
+          {guidance.recommendedScope.replaceAll("_", " ")}
+        </Badge>
+      </div>
+
+      {guidance.warnings.length > 0 ? (
+        <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
+          {guidance.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="mt-5 grid gap-3">
+        {guidance.commands.map((command, index) => (
+          <div
+            key={command.title}
+            className="rounded-2xl border border-emerald-200/10 bg-slate-950/80 p-4"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={index === 0 ? "success" : "neutral"}>
+                {index === 0 ? "Recommended" : "Alternative"}
+              </Badge>
+              <h3 className="text-sm font-semibold text-emerald-50">
+                {command.title}
+              </h3>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-400">
+              {command.description}
+            </p>
+            <CodeBlock
+              code={command.command}
+              className="mt-3 rounded-xl p-3 text-xs leading-5"
+            />
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -561,6 +702,16 @@ function buildSetupSignInCallbackUrl(
   const query = callbackParams.toString();
   const callbackPath = query ? `/setup?${query}` : "/setup";
   return callbackPath;
+}
+
+function appInstallationSettingsUrl(
+  installation: SetupInstallation,
+): string | null {
+  if (!/^\d+$/.test(installation.githubInstallationId)) return null;
+  if (installation.accountType === "Organization") {
+    return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.githubInstallationId}`;
+  }
+  return `https://github.com/settings/installations/${installation.githubInstallationId}`;
 }
 
 function readParam(value: string | string[] | undefined): string {

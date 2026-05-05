@@ -315,6 +315,18 @@ function summarizeDashboardWorkspaces(
   );
 }
 
+function filterVisibleDashboardWorkspaces(
+  workspaces: readonly DashboardWorkspaceData[],
+): readonly DashboardWorkspaceData[] {
+  const actionableWorkspaces = workspaces.filter(
+    (workspace) =>
+      workspace.repositoryCount > 0 ||
+      workspace.workspace.installations.length > 0,
+  );
+
+  return actionableWorkspaces.length > 0 ? actionableWorkspaces : workspaces;
+}
+
 type DashboardPageProps = {
   readonly searchParams?: Promise<
     Record<string, string | string[] | undefined>
@@ -349,7 +361,9 @@ export default async function DashboardPage({
           reason: "local_admin_override" as const,
         }
       : undefined;
-  const workspaces = await loadDashboardData(workspaceScope, supportAudit);
+  const workspaces = filterVisibleDashboardWorkspaces(
+    await loadDashboardData(workspaceScope, supportAudit),
+  );
   const appInstallUrl = getGitHubAppInstallUrl();
   const dashboardSignInCallbackUrl = buildDashboardSignInCallbackUrl(params);
   const selectedSection = resolveDashboardSection(params);
@@ -670,7 +684,9 @@ function DashboardSectionNav({
         <p className="truncate text-lg font-semibold text-cyan-50">
           {workspace.name}
         </p>
-        <p className="mt-1 truncate text-xs text-slate-500">{workspace.slug}</p>
+        <p className="mt-1 text-xs leading-5 text-slate-500">
+          {workspaceInstallSummary(workspace)}
+        </p>
         <div className="mt-4 grid gap-2">
           <Badge tone="success">{repositoryCount} repos</Badge>
           <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
@@ -733,8 +749,16 @@ function WorkspaceCard({
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
   const activeConfigVersion = data.reviewConfig?.version ?? 1;
+  const requestedRepositoryFullName = readParam(params.repository);
+  const requestedRepository = requestedRepositoryFullName
+    ? repositories.find(
+        (repository) => repository.fullName === requestedRepositoryFullName,
+      )
+    : undefined;
   const primaryRepository =
-    repositories.find((repository) => repository.selected) ?? repositories[0];
+    requestedRepository ??
+    repositories.find((repository) => repository.selected) ??
+    repositories[0];
   const primaryInstallation = workspace.installations[0];
   const primaryRepositoryConfig = primaryRepository
     ? repositoryConfigs.find(
@@ -782,7 +806,9 @@ function WorkspaceCard({
               <h2 className="text-2xl font-semibold text-cyan-50">
                 {workspace.name}
               </h2>
-              <p className="text-sm text-slate-400">{workspace.slug}</p>
+              <p className="text-sm text-slate-400">
+                {workspaceInstallSummary(workspace)}
+              </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <Badge tone="success">{repositoryCount} repositories</Badge>
@@ -2155,6 +2181,21 @@ function appInstallUrlForWorkspace(
     return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.githubInstallationId}`;
   }
   return `https://github.com/settings/installations/${installation.githubInstallationId}`;
+}
+
+function workspaceInstallSummary(workspace: DashboardWorkspace): string {
+  const installation = workspace.installations[0];
+  if (!installation) {
+    return "Signed-in GitHub user workspace - install the App to connect repositories.";
+  }
+
+  const accountType = formatAccountTypeLabel(installation.accountType);
+  const repositoryScope =
+    installation.repositorySelection === "all"
+      ? "all repositories available"
+      : "selected repositories only";
+
+  return `${accountType} GitHub App install: ${installation.accountLogin} - ${repositoryScope}`;
 }
 
 function formatAccountTypeLabel(accountType: string): string {

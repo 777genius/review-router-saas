@@ -10,19 +10,13 @@ const primaryNav = [
   { href: "/status", label: "Status" },
 ] as const;
 
-type PrimaryNavProps = {
-  readonly apiDemoUrl: string;
-};
-
-export function PrimaryNav({
-  apiDemoUrl,
-}: PrimaryNavProps): React.ReactElement {
+export function PrimaryNav(): React.ReactElement {
   const pathname = usePathname();
 
   return (
     <nav
       aria-label="Primary navigation"
-      className="grid w-full min-w-0 grid-cols-3 gap-2 font-mono text-xs uppercase tracking-[0.14em] md:flex md:w-auto md:justify-end md:tracking-[0.16em]"
+      className="flex w-full min-w-0 flex-wrap gap-2 font-mono text-xs uppercase tracking-[0.14em] md:w-auto md:justify-end md:tracking-[0.16em]"
     >
       {primaryNav.map((item) => {
         const active = isActivePath(pathname, item.href);
@@ -37,12 +31,6 @@ export function PrimaryNav({
           </a>
         );
       })}
-      <a
-        href={apiDemoUrl}
-        className="inline-flex min-h-11 shrink-0 items-center justify-center whitespace-nowrap rounded-lg border border-cyan-300/25 bg-cyan-300/[0.03] px-3 py-2 font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
-      >
-        API demo
-      </a>
     </nav>
   );
 }

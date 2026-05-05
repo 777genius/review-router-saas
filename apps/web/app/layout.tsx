@@ -3,7 +3,7 @@ import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { LogoMark } from "./logo-mark";
 import { PrimaryNav } from "./primary-nav";
 import "./globals.css";
-import { reviewRouterApiDemoUrl, reviewRouterWebUrl } from "./public-urls";
+import { reviewRouterWebUrl } from "./public-urls";
 
 export const metadata: Metadata = {
   metadataBase: new URL(reviewRouterWebUrl),
@@ -79,7 +79,7 @@ export default function RootLayout({
                 </span>
               </span>
             </a>
-            <PrimaryNav apiDemoUrl={reviewRouterApiDemoUrl} />
+            <PrimaryNav />
           </div>
         </header>
         <div id="content">{children}</div>

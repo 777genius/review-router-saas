@@ -12,7 +12,6 @@ const commonTexts = [
   "Dashboard",
   "Security",
   "Support",
-  "API demo",
 ];
 
 const pages = [
