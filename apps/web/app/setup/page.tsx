@@ -271,12 +271,14 @@ function SignedInSetup({
             </h2>
             <p className="mt-1 text-sm text-slate-400">
               {installation.repositoryCount} repositories synced from{" "}
-              {installation.accountType.toLowerCase()} account{" "}
+              {formatAccountType(installation.accountType)}{" "}
               {installation.accountLogin}.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="accent">{installation.accountType}</Badge>
+            <Badge tone="accent">
+              {formatAccountTypeBadge(installation.accountType)}
+            </Badge>
             <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 font-mono text-xs uppercase tracking-[0.14em] text-cyan-100">
               {installation.repositorySelection}
             </span>
@@ -566,4 +568,12 @@ function readParam(value: string | string[] | undefined): string {
     return value[0] ?? "";
   }
   return value ?? "";
+}
+
+function formatAccountType(accountType: string): string {
+  return accountType === "Organization" ? "organization" : "personal account";
+}
+
+function formatAccountTypeBadge(accountType: string): string {
+  return accountType === "Organization" ? "Organization" : "Personal";
 }

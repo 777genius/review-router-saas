@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Badge } from "@reviewrouter/ui";
 import { createSetupPullRequestAction } from "../dashboard/actions";
 import { FormSubmitButton } from "../form-submit-button";
+import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 
 type SetupRepository = {
   readonly id: string;
@@ -122,7 +123,7 @@ function RepositoryRow({
           <p className="min-w-0 truncate font-medium text-cyan-50">
             {repository.fullName}
           </p>
-          <VisibilityBadge visibility={repository.visibility} />
+          <RepositoryVisibilityBadge visibility={repository.visibility} />
           {repository.archived ? <Badge tone="warning">Archived</Badge> : null}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
@@ -167,26 +168,6 @@ function RepositoryRow({
         />
       </form>
     </div>
-  );
-}
-
-function VisibilityBadge({
-  visibility,
-}: {
-  readonly visibility: SetupRepository["visibility"];
-}): React.ReactElement {
-  const normalized = visibility.toLowerCase();
-  const isPrivate = normalized === "private";
-  const isInternal = normalized === "internal";
-  const icon = isPrivate ? "🔒" : isInternal ? "🏢" : "◎";
-  const label = isPrivate ? "Private" : isInternal ? "Internal" : "Public";
-  const tone = isPrivate ? "warning" : isInternal ? "accent" : "success";
-
-  return (
-    <Badge tone={tone} className="gap-1.5 px-2.5 py-1 text-[0.62rem]">
-      <span aria-hidden="true">{icon}</span>
-      <span>{label}</span>
-    </Badge>
   );
 }
 

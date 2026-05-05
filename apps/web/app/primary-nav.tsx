@@ -22,7 +22,7 @@ export function PrimaryNav({
   return (
     <nav
       aria-label="Primary navigation"
-      className="grid w-full min-w-0 grid-cols-2 gap-2 font-mono text-xs uppercase tracking-[0.16em] sm:flex sm:flex-wrap sm:items-center sm:gap-1 md:w-auto md:justify-end"
+      className="flex w-full min-w-0 flex-wrap gap-2 font-mono text-xs uppercase tracking-[0.16em] sm:items-center md:w-auto md:justify-end"
     >
       {primaryNav.map((item) => {
         const active = isActivePath(pathname, item.href);
@@ -39,7 +39,7 @@ export function PrimaryNav({
       })}
       <a
         href={apiDemoUrl}
-        className="min-w-0 rounded-lg border border-cyan-300/25 bg-cyan-300/[0.03] px-2 py-2 font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 sm:px-3"
+        className="shrink-0 whitespace-nowrap rounded-lg border border-cyan-300/25 bg-cyan-300/[0.03] px-3 py-2 font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
       >
         API demo
       </a>
@@ -54,7 +54,7 @@ function isActivePath(pathname: string | null, href: string): boolean {
 
 function navLinkClass(active: boolean): string {
   const base =
-    "min-w-0 rounded-lg border px-2 py-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 sm:px-3";
+    "shrink-0 whitespace-nowrap rounded-lg border px-3 py-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300";
 
   if (active) {
     return `${base} border-cyan-300/35 bg-cyan-300/[0.1] text-cyan-50 shadow-[0_0_24px_-16px_rgba(0,240,255,0.9)]`;

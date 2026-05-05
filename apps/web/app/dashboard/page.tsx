@@ -67,6 +67,7 @@ import {
   GitHubSignInInlineButton,
 } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
+import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 
 export const dynamic = "force-dynamic";
 
@@ -831,7 +832,8 @@ function WorkspaceCard({
                           {installation.accountLogin}
                         </p>
                         <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                          {installation.accountType} / {installation.status} /{" "}
+                          {formatAccountTypeLabel(installation.accountType)} /{" "}
+                          {installation.status} /{" "}
                           {installation.repositorySelection}
                         </p>
                       </div>
@@ -1650,35 +1652,6 @@ function WorkspaceActionNotice({
   );
 }
 
-function RepositoryVisibilityBadge({
-  visibility,
-}: {
-  readonly visibility: string;
-}): React.ReactElement {
-  const normalized = visibility.toLowerCase();
-  const icon =
-    normalized === "private" ? "🔒" : normalized === "internal" ? "🏢" : "◎";
-  const label =
-    normalized === "private"
-      ? "Private"
-      : normalized === "internal"
-        ? "Internal"
-        : "Public";
-  const tone =
-    normalized === "private"
-      ? "warning"
-      : normalized === "internal"
-        ? "accent"
-        : "success";
-
-  return (
-    <Badge tone={tone} className="gap-1.5 px-2.5 py-1 text-[0.62rem]">
-      <span aria-hidden="true">{icon}</span>
-      <span>{label}</span>
-    </Badge>
-  );
-}
-
 type DashboardFormAction = (formData: FormData) => void | Promise<void>;
 
 const providerAuthOptions = [
@@ -2131,6 +2104,10 @@ function appInstallUrlForWorkspace(
     return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.githubInstallationId}`;
   }
   return `https://github.com/settings/installations/${installation.githubInstallationId}`;
+}
+
+function formatAccountTypeLabel(accountType: string): string {
+  return accountType === "Organization" ? "Organization" : "Personal";
 }
 
 function dashboardErrorText(error: string): string {
