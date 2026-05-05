@@ -43,8 +43,8 @@ export function SelectField({
             "flex min-h-11 w-full items-center justify-between gap-3 rounded-xl border border-cyan-200/15 bg-slate-950/80 px-3 py-2 text-left text-cyan-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-cyan-200/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50",
           )}
         >
-          <BaseSelect.Value />
-          <BaseSelect.Icon className="text-cyan-100">⌄</BaseSelect.Icon>
+          <BaseSelect.Value className="min-w-0 truncate" />
+          <BaseSelect.Icon className="shrink-0 text-cyan-100">⌄</BaseSelect.Icon>
         </BaseSelect.Trigger>
         <BaseSelect.Portal>
           <BaseSelect.Positioner
@@ -52,22 +52,26 @@ export function SelectField({
             alignItemWithTrigger={false}
             className="z-50"
           >
-            <BaseSelect.Popup className="max-h-72 min-w-[var(--anchor-width)] overflow-y-auto rounded-xl border border-cyan-200/15 bg-[#080b12] p-1 text-cyan-50 shadow-[0_24px_80px_rgba(0,0,0,0.72),0_0_60px_-32px_rgba(0,240,255,0.9)] outline-none">
+            <BaseSelect.Popup
+              className="max-h-72 w-[min(28rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-cyan-200/15 bg-[#080b12] p-1.5 text-cyan-50 shadow-[0_24px_80px_rgba(0,0,0,0.72),0_0_60px_-32px_rgba(0,240,255,0.9)] outline-none sm:min-w-[min(28rem,max(var(--anchor-width),22rem))]"
+            >
               <BaseSelect.List>
                 {options.map((option) => (
                   <BaseSelect.Item
                     key={option.value}
                     value={option.value}
                     label={option.label}
-                    className="grid cursor-pointer grid-cols-[1rem_minmax(0,1fr)] gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-200 outline-none transition data-[highlighted]:bg-cyan-300/10 data-[highlighted]:text-cyan-50"
+                    className="grid cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)] gap-3 rounded-lg px-3.5 py-3 text-sm leading-5 text-slate-200 outline-none transition data-[highlighted]:bg-cyan-300/10 data-[highlighted]:text-cyan-50"
                   >
-                    <BaseSelect.ItemIndicator className="text-lime-200">
+                    <BaseSelect.ItemIndicator className="pt-0.5 text-lime-200">
                       ✓
                     </BaseSelect.ItemIndicator>
-                    <BaseSelect.ItemText>
-                      <span className="block font-medium">{option.label}</span>
+                    <BaseSelect.ItemText className="min-w-0">
+                      <span className="block whitespace-normal font-medium">
+                        {option.label}
+                      </span>
                       {option.description ? (
-                        <span className="mt-0.5 block text-xs leading-5 text-slate-400">
+                        <span className="mt-1 block whitespace-normal text-xs leading-5 text-slate-400">
                           {option.description}
                         </span>
                       ) : null}
