@@ -39,7 +39,7 @@ export function PrimaryNav({
       })}
       <a
         href={apiDemoUrl}
-        className="shrink-0 whitespace-nowrap rounded-lg border border-cyan-300/25 bg-cyan-300/[0.03] px-3 py-2 font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+        className="inline-flex min-h-11 shrink-0 items-center whitespace-nowrap rounded-lg border border-cyan-300/25 bg-cyan-300/[0.03] px-3 py-2 font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
       >
         API demo
       </a>
@@ -54,7 +54,7 @@ function isActivePath(pathname: string | null, href: string): boolean {
 
 function navLinkClass(active: boolean): string {
   const base =
-    "shrink-0 whitespace-nowrap rounded-lg border px-3 py-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300";
+    "inline-flex min-h-11 shrink-0 items-center whitespace-nowrap rounded-lg border px-3 py-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300";
 
   if (active) {
     return `${base} border-cyan-300/35 bg-cyan-300/[0.1] text-cyan-50 shadow-[0_0_24px_-16px_rgba(0,240,255,0.9)]`;

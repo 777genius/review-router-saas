@@ -90,20 +90,35 @@ export default function RootLayout({
               provider credentials, and PR diffs stay in customer GitHub Actions
               by default.
             </p>
-            <div className="flex flex-wrap gap-3">
-              <a className="text-cyan-100 hover:underline" href="/support">
+            <div className="flex flex-wrap gap-2">
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href="/support"
+              >
                 Support
               </a>
-              <a className="text-cyan-100 hover:underline" href="/privacy">
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href="/privacy"
+              >
                 Privacy
               </a>
-              <a className="text-cyan-100 hover:underline" href="/terms">
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href="/terms"
+              >
                 Terms
               </a>
-              <a className="text-cyan-100 hover:underline" href="/fair-use">
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href="/fair-use"
+              >
                 Fair use
               </a>
-              <a className="text-cyan-100 hover:underline" href="/disconnect">
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href="/disconnect"
+              >
                 Disconnect
               </a>
             </div>
