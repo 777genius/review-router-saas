@@ -28,7 +28,7 @@ const pages = [
       "GitHub returned an OAuth callback error",
     ],
   ],
-  ["/dashboard", ["GitHub setup", "Install GitHub App"]],
+  ["/dashboard", ["GitHub setup"]],
   ["/setup", ["Finish repository setup", "One sign-in finishes the handoff"]],
   [
     "/getting-started",
