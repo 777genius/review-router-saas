@@ -37,18 +37,59 @@ export class PrismaInstallationWorkspaceOwnerGrant implements InstallationWorksp
         },
       });
 
-      await tx.workspaceMember.upsert({
+      const existingByUser = await tx.workspaceMember.findUnique({
         where: {
           workspaceId_userId: {
             workspaceId: installation.workspaceId,
             userId: user.id,
           },
         },
-        update: {
-          githubLogin: grant.githubLogin,
-          role: "owner",
+        select: { id: true },
+      });
+      const existingByLogin = await tx.workspaceMember.findUnique({
+        where: {
+          workspaceId_githubLogin: {
+            workspaceId: installation.workspaceId,
+            githubLogin: grant.githubLogin,
+          },
         },
-        create: {
+        select: { id: true },
+      });
+
+      if (
+        existingByUser &&
+        existingByLogin &&
+        existingByUser.id !== existingByLogin.id
+      ) {
+        await tx.workspaceMember.delete({
+          where: { id: existingByLogin.id },
+        });
+      }
+
+      if (existingByUser) {
+        await tx.workspaceMember.update({
+          where: { id: existingByUser.id },
+          data: {
+            githubLogin: grant.githubLogin,
+            role: "owner",
+          },
+        });
+        return;
+      }
+
+      if (existingByLogin) {
+        await tx.workspaceMember.update({
+          where: { id: existingByLogin.id },
+          data: {
+            userId: user.id,
+            role: "owner",
+          },
+        });
+        return;
+      }
+
+      await tx.workspaceMember.create({
+        data: {
           workspaceId: installation.workspaceId,
           userId: user.id,
           githubLogin: grant.githubLogin,
