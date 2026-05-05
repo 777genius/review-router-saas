@@ -57,6 +57,11 @@ export default async function SetupPage({
           <Badge tone={setupNotice ? "success" : "accent"}>
             {setupNotice?.title ?? "Setup"}
           </Badge>
+          {setupNotice ? (
+            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+              Installation #{setupNotice.installationId}
+            </span>
+          ) : null}
         </div>
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <div className="min-w-0 space-y-4">

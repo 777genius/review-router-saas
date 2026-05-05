@@ -1,6 +1,7 @@
 export type GitHubAppSetupNotice = {
   readonly title: string;
   readonly body: string;
+  readonly installationId: string;
 };
 
 export function buildGitHubAppSetupNotice(input: {
@@ -26,6 +27,7 @@ export function buildGitHubAppSetupNotice(input: {
 
   return {
     title,
-    body: `${nextStep} Installation ID: ${installationId}.`,
+    body: nextStep,
+    installationId,
   };
 }

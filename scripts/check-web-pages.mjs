@@ -169,6 +169,21 @@ try {
   );
   assertIncludes(
     postInstallHtml,
+    "Installation #",
+    "post-install dashboard did not expose installation metadata as a small chip",
+  );
+  assertIncludes(
+    postInstallHtml,
+    "123",
+    "post-install dashboard did not include the GitHub installation id",
+  );
+  assertNotIncludes(
+    postInstallHtml,
+    "Installation ID: 123",
+    "post-install dashboard should not put raw installation ids in the main copy",
+  );
+  assertIncludes(
+    postInstallHtml,
     "One sign-in finishes the handoff.",
     "post-install dashboard did not show sign-in as the next onboarding step",
   );

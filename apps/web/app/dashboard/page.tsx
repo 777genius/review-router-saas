@@ -1938,7 +1938,12 @@ function DashboardNotice({
     return (
       <Card className="rounded-[2rem] border-lime-300/25 bg-lime-300/10 p-6 shadow-[0_18px_58px_rgba(190,255,61,0.08)] sm:p-7">
         <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-          <Badge tone="success">{appSetupNotice.title}</Badge>
+          <div className="flex flex-wrap gap-2">
+            <Badge tone="success">{appSetupNotice.title}</Badge>
+            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+              Installation #{appSetupNotice.installationId}
+            </span>
+          </div>
           <p className="text-sm leading-7 text-lime-50">
             {appSetupNotice.body}
             {!mutationStatus.signedIn ? (

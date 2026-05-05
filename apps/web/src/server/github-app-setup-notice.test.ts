@@ -11,7 +11,8 @@ describe("buildGitHubAppSetupNotice", () => {
       }),
     ).toEqual({
       title: "GitHub App installed",
-      body: "Sign in with GitHub to map the installation to your dashboard workspace and continue setup. Installation ID: 123.",
+      body: "Sign in with GitHub to map the installation to your dashboard workspace and continue setup.",
+      installationId: "123",
     });
   });
 
@@ -24,7 +25,8 @@ describe("buildGitHubAppSetupNotice", () => {
       }),
     ).toEqual({
       title: "GitHub App access updated",
-      body: "Repository sync should start from the signed GitHub webhook. If repositories do not appear within a minute, request a sync from the dashboard. Installation ID: 456.",
+      body: "Repository sync should start from the signed GitHub webhook. If repositories do not appear within a minute, request a sync from the dashboard.",
+      installationId: "456",
     });
   });
 
