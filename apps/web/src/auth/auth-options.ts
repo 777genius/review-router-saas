@@ -12,6 +12,10 @@ import { readOptionalAuthEnv } from "./auth-env";
 export const authOptions: NextAuthOptions = {
   secret: readOptionalAuthEnv("AUTH_SECRET"),
   session: { strategy: "jwt" },
+  pages: {
+    signIn: "/auth/signin",
+    error: "/auth/signin",
+  },
   providers: [
     GitHubProvider({
       clientId: readOptionalAuthEnv("GITHUB_APP_CLIENT_ID"),

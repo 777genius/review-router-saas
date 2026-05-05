@@ -17,6 +17,17 @@ const commonTexts = [
 
 const pages = [
   ["/", ["AI pull request review that runs in your CI", "Install GitHub App"]],
+  [
+    "/auth/signin",
+    ["Sign in to ReviewRouter", "Continue with GitHub", "No secret custody"],
+  ],
+  [
+    "/auth/signin?error=OAuthCallback",
+    [
+      "GitHub did not complete sign-in",
+      "GitHub returned an OAuth callback error",
+    ],
+  ],
   ["/dashboard", ["GitHub setup", "Install GitHub App"]],
   ["/setup", ["Finish repository setup", "One sign-in finishes the handoff"]],
   [
@@ -198,6 +209,28 @@ try {
     "Finish repository setup.",
     "post-install notice should appear before onboarding hero",
   );
+
+  const authSignInRedirectResponse = await fetch(
+    `${baseUrl}/api/auth/signin?callbackUrl=%2Fdashboard`,
+    { redirect: "manual" },
+  );
+  if (![301, 302, 303, 307, 308].includes(authSignInRedirectResponse.status)) {
+    await fail(
+      `/api/auth/signin returned HTTP ${authSignInRedirectResponse.status}; expected redirect to branded sign-in page`,
+    );
+  }
+  const authSignInRedirectLocation =
+    authSignInRedirectResponse.headers.get("location");
+  if (
+    !authSignInRedirectLocation?.startsWith(
+      `${baseUrl}/auth/signin?callbackUrl=`,
+    ) &&
+    !authSignInRedirectLocation?.startsWith("/auth/signin?callbackUrl=")
+  ) {
+    await fail(
+      `/api/auth/signin redirected to ${authSignInRedirectLocation}; expected /auth/signin`,
+    );
+  }
 
   const setupPrDashboardResponse = await fetch(
     `${baseUrl}/dashboard?notice=setup_pr_ready&repository=owner%2Frepo&pr=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F1`,

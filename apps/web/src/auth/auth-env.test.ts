@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { authOptions } from "./auth-options";
 import { getAuthEnvironmentStatus, readOptionalAuthEnv } from "./auth-env";
 
 describe("auth env", () => {
@@ -27,5 +28,12 @@ describe("auth env", () => {
     expect(readOptionalAuthEnv("REVIEW_ROUTER_TEST_MISSING")).toBe(
       "missing-review_router_test_missing",
     );
+  });
+
+  it("uses a branded sign-in page instead of the default Auth.js screen", () => {
+    expect(authOptions.pages).toMatchObject({
+      signIn: "/auth/signin",
+      error: "/auth/signin",
+    });
   });
 });

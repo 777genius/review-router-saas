@@ -38,6 +38,29 @@ assertIncludes(
   "dashboard missing stylesheet link",
 );
 
+const signIn = await fetchHtml("/auth/signin");
+assertIncludes(
+  signIn.html,
+  "Sign in to ReviewRouter",
+  "sign-in missing branded title",
+);
+assertIncludes(
+  signIn.html,
+  "Continue with GitHub",
+  "sign-in missing GitHub CTA",
+);
+const signInError = await fetchHtml("/auth/signin?error=OAuthCallback");
+assertIncludes(
+  signInError.html,
+  "GitHub did not complete sign-in",
+  "sign-in error missing customer-facing title",
+);
+assertIncludes(
+  signInError.html,
+  "GitHub returned an OAuth callback error",
+  "sign-in error missing customer-facing guidance",
+);
+
 const installUrls = uniqueMatches(
   dashboard.html,
   /https:\/\/github\.com\/apps\/[^"'\\\s]+\/installations\/new/g,

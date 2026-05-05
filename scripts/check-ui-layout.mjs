@@ -8,6 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const routes = [
   "/",
+  "/auth/signin",
+  "/auth/signin?error=OAuthCallback",
   "/dashboard",
   "/setup",
   "/setup?installation_id=123&setup_action=install",
