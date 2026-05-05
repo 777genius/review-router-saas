@@ -1,36 +1,38 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import { reviewRouterApiDemoUrl } from "../public-urls";
 
-const localChecks = `pnpm beta:check
-REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
-REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
-pnpm hosted:api-demo:check
-REVIEW_ROUTER_HOSTED_ENV_FILE=.env.production pnpm hosted:check`;
+const verificationGates = `pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm web:smoke
+pnpm hosted:ui-audit
+REVIEW_ROUTER_FRESH_E2E_MODE=review pnpm spike:github:fresh-repo:e2e`;
 
 const statusTiers = [
   {
-    label: "Local/private beta",
-    state: "Ready for trusted testers",
+    label: "Customer CI runtime",
+    state: "Review runs outside SaaS",
     tone: "success" as const,
-    body: "Dashboard, GitHub App sync, setup PR provisioning, secret seeding guidance, static workflow config, and real GitHub fallback review smoke have passed.",
+    body: "The setup PR installs a GitHub Actions workflow. Provider credentials, pull request diffs, prompts, and model execution stay in the customer's repository workflow.",
   },
   {
-    label: "Hosted API demo",
+    label: "Hosted control plane",
     state: "Live on Render",
     tone: "success" as const,
-    body: "The public API now exposes health, readiness, OpenAPI, JSON, Markdown, and browser demo endpoints with hosted smoke checks passing.",
+    body: "The public web and API surfaces expose onboarding, health, readiness, OpenAPI, JSON, Markdown, and browser demo endpoints with hosted smoke checks passing.",
   },
   {
     label: "GitHub App lifecycle",
-    state: "Default lifecycle events",
+    state: "Install and selected-repo sync",
     tone: "success" as const,
-    body: "GitHub delivers installation and installation_repositories lifecycle events to Apps by default. Hosted sync verification now focuses on webhook delivery logs and OIDC health.",
+    body: "Personal-account installs are verified end to end. Organization installs use the same installation and selected-repository lifecycle, with owner approval handled by GitHub.",
   },
   {
-    label: "Public launch",
-    state: "Hardening next",
+    label: "Production hardening",
+    state: "Roadmap, not setup blocker",
     tone: "neutral" as const,
-    body: "Next hardening work is hosted OIDC E2E, support operations, legal copy review, release compatibility policy, and production observability.",
+    body: "The remaining work is operational polish: hosted OIDC E2E expansion, support operations, release compatibility policy, and production observability.",
   },
 ] as const;
 
@@ -44,10 +46,10 @@ const provenCapabilities = [
   "Hosted API demo on Render with browser, Markdown, JSON, OpenAPI, health, and readiness checks.",
 ] as const;
 
-const publicBetaBlockers = [
-  "Finish GitHub-hosted OIDC config fetch and health report E2E against the hosted API.",
-  "Pin the ReviewRouter Action to a release tag before broad public production installs.",
-  "Provision production status/support channel, legal copy review, and incident process.",
+const hardeningRoadmap = [
+  "Expand live organization-install E2E with selected repositories and owner approval.",
+  "Add a public changelog and release compatibility policy for customers pinned to stable versions.",
+  "Formalize support operations, incident response, and legal copy review before broad launch.",
 ] as const;
 
 const incidentClasses = [
@@ -63,7 +65,7 @@ const incidentClasses = [
   },
   {
     title: "Beta limitation",
-    body: "Trusted beta status is verified by gates and recorded smoke runs. A public status page belongs in the production operations package.",
+    body: "Current status is backed by automated gates and real GitHub smoke runs. A full uptime status page belongs in the production operations package.",
     tone: "neutral" as const,
   },
 ] as const;
@@ -111,10 +113,10 @@ export default function StatusPage(): React.ReactElement {
             Current health is verified by gates.
           </h2>
           <p className="text-sm leading-6 text-slate-300">
-            For trusted beta, the current source of truth is the latest passing
-            local and real GitHub smoke run recorded in the readiness docs.
+            The demo is checked with repeatable local, hosted, visual, and real
+            GitHub pull request tests before changes are shipped.
           </p>
-          <CodeBlock code={localChecks} />
+          <CodeBlock code={verificationGates} />
         </Card>
       </section>
 
@@ -147,12 +149,12 @@ export default function StatusPage(): React.ReactElement {
         </Card>
 
         <Card className="space-y-4">
-          <Badge tone="warning">Before public beta</Badge>
+          <Badge tone="warning">Hardening roadmap</Badge>
           <h2 className="text-2xl font-semibold text-cyan-50">
-            What still must be proven.
+            What improves confidence next.
           </h2>
           <ul className="grid gap-3 text-sm leading-6 text-slate-300">
-            {publicBetaBlockers.map((item) => (
+            {hardeningRoadmap.map((item) => (
               <li
                 key={item}
                 className="rounded-xl border border-amber-300/10 bg-amber-300/5 p-3"
