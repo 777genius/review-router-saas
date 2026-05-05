@@ -159,7 +159,6 @@ jobs:
   interaction:
     name: interaction
     runs-on: ubuntu-latest
-    if: \${{ github.event_name == 'workflow_dispatch' || (github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/rr ')) }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
       REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
@@ -168,7 +167,15 @@ jobs:
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
       REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
       REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"
-    steps:${template.oidcStep}      - name: Run ReviewRouter interaction
+    steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
+        id: preflight
+        uses: ${options.actionRef}
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          REVIEW_ROUTER_MODE: "interaction-preflight"
+
+      - name: Run ReviewRouter interaction
+        if: \${{ steps.preflight.outputs.should_run == 'true' }}
         uses: ${options.actionRef}
         env:
           GITHUB_TOKEN: \${{ github.token }}

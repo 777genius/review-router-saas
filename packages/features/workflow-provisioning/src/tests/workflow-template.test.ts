@@ -81,8 +81,15 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("pull-requests: write");
     expect(workflow).toContain("issues: write");
     expect(workflow).toContain("id-token: write");
-    expect(workflow).toContain("github.event.comment.user.type != 'Bot'");
-    expect(workflow).toContain("startsWith(github.event.comment.body, '/rr ')");
+    expect(workflow).not.toContain("github.event.comment.user.type != 'Bot'");
+    expect(workflow).not.toContain(
+      "startsWith(github.event.comment.body, '/rr ')",
+    );
+    expect(workflow).toContain("Preflight ReviewRouter interaction");
+    expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
+    expect(workflow).toContain(
+      "steps.preflight.outputs.should_run == 'true'",
+    );
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"',
