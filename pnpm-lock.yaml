@@ -132,6 +132,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@octokit/app':
+        specifier: ^16.1.2
+        version: 16.1.2
       '@reviewrouter/features-action-control-plane':
         specifier: workspace:*
         version: link:../../packages/features/action-control-plane
