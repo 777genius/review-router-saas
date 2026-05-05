@@ -27,8 +27,10 @@ export function SelectField({
   className,
 }: SelectFieldProps): React.ReactElement {
   return (
-    <label className={cn("grid gap-1.5 text-sm text-slate-300", className)}>
-      <span>{label}</span>
+    <label className={cn("grid min-w-0 gap-2 text-sm text-slate-300", className)}>
+      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        {label}
+      </span>
       <BaseSelect.Root
         name={name}
         defaultValue={defaultValue}
@@ -40,7 +42,7 @@ export function SelectField({
       >
         <BaseSelect.Trigger
           className={cn(
-            "flex min-h-11 w-full items-center justify-between gap-3 rounded-xl border border-cyan-200/15 bg-slate-950/80 px-3 py-2 text-left text-cyan-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-cyan-200/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50",
+            "flex min-h-11 w-full min-w-0 items-center justify-between gap-3 rounded-xl border border-cyan-200/15 bg-slate-950/80 px-3 py-2 text-left text-cyan-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-cyan-200/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50",
           )}
         >
           <BaseSelect.Value className="min-w-0 truncate" />
@@ -53,7 +55,11 @@ export function SelectField({
             className="z-50"
           >
             <BaseSelect.Popup
-              className="max-h-72 w-[min(28rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-cyan-200/15 bg-[#080b12] p-1.5 text-cyan-50 shadow-[0_24px_80px_rgba(0,0,0,0.72),0_0_60px_-32px_rgba(0,240,255,0.9)] outline-none sm:min-w-[min(28rem,max(var(--anchor-width),22rem))]"
+              className="max-h-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-cyan-200/15 bg-[#080b12] p-1.5 text-cyan-50 shadow-[0_24px_80px_rgba(0,0,0,0.72),0_0_60px_-32px_rgba(0,240,255,0.9)] outline-none"
+              style={{
+                minWidth:
+                  "min(max(var(--anchor-width), 18rem), calc(100vw - 2rem))",
+              }}
             >
               <BaseSelect.List>
                 {options.map((option) => (
@@ -61,12 +67,12 @@ export function SelectField({
                     key={option.value}
                     value={option.value}
                     label={option.label}
-                    className="grid cursor-pointer grid-cols-[1.25rem_minmax(0,1fr)] gap-3 rounded-lg px-3.5 py-3 text-sm leading-5 text-slate-200 outline-none transition data-[highlighted]:bg-cyan-300/10 data-[highlighted]:text-cyan-50"
+                    className="flex w-full cursor-pointer items-start gap-3 rounded-lg px-3.5 py-3 text-sm leading-5 text-slate-200 outline-none transition data-[highlighted]:bg-cyan-300/10 data-[highlighted]:text-cyan-50"
                   >
-                    <BaseSelect.ItemIndicator className="pt-0.5 text-lime-200">
+                    <BaseSelect.ItemIndicator className="flex h-5 w-5 shrink-0 items-center justify-center pt-0.5 text-lime-200">
                       ✓
                     </BaseSelect.ItemIndicator>
-                    <BaseSelect.ItemText className="min-w-0">
+                    <BaseSelect.ItemText className="min-w-0 flex-1">
                       <span className="block whitespace-normal font-medium">
                         {option.label}
                       </span>

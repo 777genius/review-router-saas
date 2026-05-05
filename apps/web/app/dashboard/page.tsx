@@ -953,7 +953,7 @@ function WorkspaceCard({
           id="dashboard-section-content"
           className="space-y-5 scroll-mt-28 p-5 sm:p-6"
         >
-          <WorkspaceActionNotice params={params} />
+          <WorkspaceActionNotice params={params} orgRuleset={orgRuleset} />
 
           {selectedSection === "repositories" ? (
             <>
@@ -1743,6 +1743,8 @@ function OrgRulesetAdvancedCard({
     return null;
   }
 
+  const rulesetsUnsupported =
+    orgRuleset?.safeErrorCode === "org_rulesets_not_supported";
   const permissionMissing =
     permissionUpgradeNeeded ||
     orgRuleset?.safeErrorCode === "org_admin_permission_required" ||
@@ -1782,7 +1784,14 @@ function OrgRulesetAdvancedCard({
             workflow. Provider secrets still stay in GitHub Actions, not in
             ReviewRouter SaaS.
           </p>
-          {permissionMissing ? (
+          {rulesetsUnsupported ? (
+            <p className="mt-3 text-amber-100">
+              GitHub accepted the App permissions, but this organization plan
+              does not expose Organization Rulesets through the API. Use the
+              per-repository setup PR fallback unless the organization is
+              upgraded to a plan that supports rulesets.
+            </p>
+          ) : permissionMissing ? (
             <p className="mt-3 text-amber-100">
               GitHub has not approved that optional permission for this
               organization yet. Approve the App permission update, then retry
@@ -1806,10 +1815,10 @@ function OrgRulesetAdvancedCard({
           ) : null}
         </div>
 
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+        <div className="grid gap-4">
           <form
             action={enableOrgRulesetWorkflowAction}
-            className="grid gap-3 md:grid-cols-3"
+            className="grid gap-4 xl:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_auto] xl:items-end"
           >
             <input type="hidden" name="workspaceId" value={workspace.id} />
             <input
@@ -1859,20 +1868,22 @@ function OrgRulesetAdvancedCard({
               <FormSubmitButton
                 variant="soft"
                 tone="warning"
+                className="w-full whitespace-nowrap xl:w-auto"
                 disabled={
                   !mutationsEnabled ||
                   organizationInstallation.status !== "active" ||
-                  orgRuleset?.status === "processing"
+                  orgRuleset?.status === "processing" ||
+                  rulesetsUnsupported
                 }
                 idleLabel={
-                  orgRuleset ? "Update org-wide workflow" : "Enable org-wide"
+                  orgRuleset ? "Update org-wide" : "Enable org-wide"
                 }
                 pendingLabel="Checking permission..."
               />
             </div>
           </form>
 
-          <div className="flex flex-wrap gap-2 md:justify-end">
+          <div className="flex flex-wrap gap-2">
             {permissionMissing && permissionApprovalUrl ? (
               <LinkButton
                 href={permissionApprovalUrl}
@@ -1999,11 +2010,18 @@ function countLabel(value: number | null, label: string): string | null {
 
 function WorkspaceActionNotice({
   params,
+  orgRuleset,
 }: {
   readonly params: Record<string, string | string[] | undefined>;
+  readonly orgRuleset: DashboardWorkspaceData["orgRuleset"];
 }): React.ReactElement | null {
   const notice = readParam(params.notice);
-  const error = readParam(params.error);
+  const rawError = readParam(params.error);
+  const error =
+    rawError === "org_admin_permission_required" &&
+    orgRuleset?.safeErrorCode === "org_rulesets_not_supported"
+      ? "org_rulesets_not_supported"
+      : rawError;
   if (!notice && !error) return null;
 
   const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
@@ -2607,7 +2625,7 @@ function orgRulesetErrorText(error: string): string {
     case "org_admin_permission_required":
       return "Organization Administration: write is required for org-wide rulesets.";
     case "org_rulesets_not_supported":
-      return "GitHub rulesets are not available for this organization, installation, or plan.";
+      return "GitHub organization rulesets are unavailable on this organization plan. Use per-repository setup PR fallback, or upgrade the organization plan before retrying org-wide mode.";
     case "org_ruleset_permission_update_pending":
       return "GitHub rejected the ruleset probe. The App permission update may still need approval.";
     case "org_ruleset_all_repositories_requires_all_access":
@@ -2656,7 +2674,7 @@ function dashboardErrorText(error: string): string {
     case "org_admin_permission_required":
       return "Organization-wide required workflow needs optional GitHub App Organization Administration: write permission. Approve the permission update or use per-repository setup PR fallback.";
     case "org_rulesets_not_supported":
-      return "GitHub organization rulesets are unavailable for this org, installation, or plan. Use per-repository setup PR fallback.";
+      return "GitHub accepted the App permissions, but organization rulesets are unavailable on this organization plan. Use per-repository setup PR fallback, or upgrade the organization plan before retrying org-wide mode.";
     case "org_ruleset_permission_update_pending":
       return "GitHub rejected the ruleset permission probe. An organization owner may still need to approve the App permission update.";
     case "github_org_ruleset_validation_failed":
