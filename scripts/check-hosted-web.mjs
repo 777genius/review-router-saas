@@ -66,8 +66,18 @@ assertIncludes(
 );
 assertIncludes(
   installNotice.html,
-  "Installation ID: 123",
+  "Installation #",
+  "install redirect notice missing installation metadata chip",
+);
+assertIncludes(
+  installNotice.html,
+  "123",
   "install redirect notice missing installation id",
+);
+assertNotIncludes(
+  installNotice.html,
+  "Installation ID: 123",
+  "install redirect notice should not put raw installation ids in main copy",
 );
 assertIncludes(
   installNotice.html,
