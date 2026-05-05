@@ -239,6 +239,26 @@ try {
     "dashboard sync notice must not expose internal worker language",
   );
 
+  const setupSyncNoticeResponse = await fetch(
+    `${baseUrl}/setup?notice=sync_requested`,
+  );
+  if (!setupSyncNoticeResponse.ok) {
+    await fail(
+      `/setup sync notice returned HTTP ${setupSyncNoticeResponse.status}`,
+    );
+  }
+  const setupSyncNoticeHtml = await setupSyncNoticeResponse.text();
+  assertIncludes(
+    setupSyncNoticeHtml,
+    "GitHub metadata catches up",
+    "setup sync notice should use customer-facing copy",
+  );
+  assertNotIncludes(
+    setupSyncNoticeHtml,
+    "worker processes the event",
+    "setup sync notice must not expose worker internals",
+  );
+
   for (const [path, expectedLocation] of redirectChecks) {
     const response = await fetch(`${baseUrl}${path}`, { redirect: "manual" });
     if (![301, 302, 303, 307, 308].includes(response.status)) {

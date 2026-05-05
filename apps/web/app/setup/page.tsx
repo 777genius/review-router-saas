@@ -413,7 +413,7 @@ function buildSetupResultNotice(
       return {
         tone: "success",
         title: "Repository sync queued",
-        body: "ReviewRouter queued a repository sync. If the list does not update immediately, refresh this page after the worker processes the event.",
+        body: "ReviewRouter queued a repository sync. If the list does not update immediately, refresh this page in a few seconds after GitHub metadata catches up.",
       };
     case "sync_already_requested":
       return {

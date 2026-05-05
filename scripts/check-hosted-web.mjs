@@ -142,6 +142,18 @@ assertNotIncludes(
   "dashboard sync notice must not expose internal worker language",
 );
 
+const setupSyncNotice = await fetchHtml("/setup?notice=sync_requested");
+assertIncludes(
+  setupSyncNotice.html,
+  "GitHub metadata catches up",
+  "setup sync notice should give customer-facing next steps",
+);
+assertNotIncludes(
+  setupSyncNotice.html,
+  "worker processes the event",
+  "setup sync notice must not expose worker internals",
+);
+
 console.log(
   JSON.stringify(
     {
