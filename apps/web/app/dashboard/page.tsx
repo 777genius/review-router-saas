@@ -1793,9 +1793,11 @@ function OrgRulesetAdvancedCard({
             </p>
           ) : permissionMissing ? (
             <p className="mt-3 text-amber-100">
-              GitHub has not approved that optional permission for this
-              organization yet. Approve the App permission update, then retry
-              this action.
+              GitHub did not allow ruleset access. Usually this means the
+              optional Organization Administration permission still needs
+              approval; if it is already approved, the organization plan may not
+              support rulesets. Use the setup PR fallback when rulesets are not
+              available.
             </p>
           ) : null}
           {orgRuleset?.safeErrorCode ? (
@@ -1890,7 +1892,7 @@ function OrgRulesetAdvancedCard({
                 variant="outline"
                 size="sm"
               >
-                Approve App permission
+                Review App permissions
               </LinkButton>
             ) : null}
             <LinkButton
@@ -2672,7 +2674,7 @@ function dashboardErrorText(error: string): string {
     case "org_ruleset_all_repositories_requires_all_access":
       return "All-repositories org ruleset requires installing the GitHub App for all repositories first. Use selected repositories or per-repository setup PR fallback.";
     case "org_admin_permission_required":
-      return "Organization-wide required workflow needs optional GitHub App Organization Administration: write permission. Approve the permission update or use per-repository setup PR fallback.";
+      return "GitHub did not allow organization ruleset access. Approve the optional Organization Administration: write permission if it is still pending; if it is already approved, the organization plan may not support rulesets. Use per-repository setup PR fallback.";
     case "org_rulesets_not_supported":
       return "GitHub accepted the App permissions, but organization rulesets are unavailable on this organization plan. Use per-repository setup PR fallback, or upgrade the organization plan before retrying org-wide mode.";
     case "org_ruleset_permission_update_pending":
