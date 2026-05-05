@@ -5,7 +5,7 @@ import { loadEnvFile } from "./lib/env-file.mjs";
 const hostedEnvFile =
   process.env.REVIEW_ROUTER_HOSTED_ENV_FILE ||
   process.env.REVIEW_ROUTER_WEB_ENV_FILE ||
-  ".env.local";
+  ".env.production";
 const env = loadEnvFile(hostedEnvFile, process.env);
 
 const webUrl = normalizeUrl(
