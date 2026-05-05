@@ -1,6 +1,7 @@
 import { jwtVerify, SignJWT } from "jose";
 import {
   actionSessionAudience,
+  allowedActionEvents,
   type ActionSessionClaims,
 } from "../../domain/action-control-plane.js";
 import type { ActionSessionTokenServicePort } from "../../application/ports/action-session-token-service-port.js";
@@ -76,9 +77,12 @@ function assertString(value: unknown, claim: string): string {
   return value;
 }
 
-function assertEventName(value: unknown): "pull_request" | "workflow_dispatch" {
-  if (value === "pull_request" || value === "workflow_dispatch") {
-    return value;
+function assertEventName(value: unknown): ActionSessionClaims["eventName"] {
+  if (
+    typeof value === "string" &&
+    (allowedActionEvents as readonly string[]).includes(value)
+  ) {
+    return value as ActionSessionClaims["eventName"];
   }
   throw new Error("invalid_action_session_eventName");
 }

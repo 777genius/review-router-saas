@@ -833,6 +833,25 @@ describe("action control plane", () => {
     ).rejects.toThrow();
   });
 
+  it("verifies review comment action session tokens for interaction runs", async () => {
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const claims: ActionSessionClaims = {
+      ...sessionClaims,
+      eventName: "pull_request_review_comment",
+    };
+    const signed = await sessions.sign({
+      claims,
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+
+    await expect(
+      sessions.verify({ token: signed.token, now: fixedNow }),
+    ).resolves.toMatchObject(claims);
+  });
+
   it("verifies GitHub Actions OIDC JWTs with JWKS and rejects wrong audience", async () => {
     const { privateKey, publicKey } = await generateKeyPair("RS256");
     const publicJwk = await exportJWK(publicKey);
