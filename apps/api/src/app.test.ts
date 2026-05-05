@@ -204,6 +204,12 @@ const fixedClock: Clock = {
   now: () => new Date("2026-05-03T12:00:00.000Z"),
 };
 
+const expectedApiUrl = (
+  process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
+  process.env.REVIEW_ROUTER_API_URL ??
+  "https://api.reviewrouter.site"
+).replace(/\/+$/, "");
+
 describe("API app", () => {
   it("serves a public API index for demos", async () => {
     const app = await createApiApp();
@@ -218,11 +224,11 @@ describe("API app", () => {
       product: "ReviewRouter",
       status: "ok",
       links: {
-        health: "https://api.reviewrouter.site/health",
-        demo: "https://api.reviewrouter.site/demo",
-        demoMarkdown: "https://api.reviewrouter.site/demo.md",
-        openapi: "https://api.reviewrouter.site/openapi.json",
-        apiDocs: "https://api.reviewrouter.site/docs",
+        health: `${expectedApiUrl}/health`,
+        demo: `${expectedApiUrl}/demo`,
+        demoMarkdown: `${expectedApiUrl}/demo.md`,
+        openapi: `${expectedApiUrl}/openapi.json`,
+        apiDocs: `${expectedApiUrl}/docs`,
       },
     });
   });
@@ -238,7 +244,7 @@ describe("API app", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/html");
     expect(response.body).toContain("<title>ReviewRouter API Demo</title>");
-    expect(response.body).toContain("https://api.reviewrouter.site/demo.md");
+    expect(response.body).toContain(`${expectedApiUrl}/demo.md`);
   });
 
   it("serves public demo preflight responses for browser smoke checks", async () => {
@@ -263,7 +269,7 @@ describe("API app", () => {
     expect(response.body).toContain("<title>ReviewRouter API Demo</title>");
     expect(response.body).toContain("Quick start");
     expect(response.body).toContain("Security boundaries");
-    expect(response.body).toContain("https://api.reviewrouter.site/demo");
+    expect(response.body).toContain(`${expectedApiUrl}/demo`);
   });
 
   it("serves a terminal-friendly Markdown API demo page", async () => {
@@ -275,7 +281,7 @@ describe("API app", () => {
     expect(response.headers["access-control-allow-origin"]).toBe("*");
     expect(response.body).toContain("# ReviewRouter API Demo");
     expect(response.body).toContain("## Security boundaries");
-    expect(response.body).toContain("https://api.reviewrouter.site/docs");
+    expect(response.body).toContain(`${expectedApiUrl}/docs`);
   });
 
   it("serves a small readiness response for API demos", async () => {
