@@ -1,0 +1,32 @@
+{
+  "name": "@reviewrouter/features-org-ruleset-provisioning",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    },
+    "./outbox": {
+      "types": "./src/infrastructure/outbox/org-ruleset-provisioning-requested-handler.ts",
+      "production": "./dist/infrastructure/outbox/org-ruleset-provisioning-requested-handler.js",
+      "default": "./src/infrastructure/outbox/org-ruleset-provisioning-requested-handler.ts"
+    }
+  },
+  "dependencies": {
+    "@octokit/app": "^16.1.2",
+    "@prisma/client": "^7.8.0",
+    "@reviewrouter/features-audit-log": "workspace:*",
+    "@reviewrouter/features-outbox": "workspace:*",
+    "@reviewrouter/features-review-config": "workspace:*",
+    "@reviewrouter/features-workflow-provisioning": "workspace:*",
+    "@reviewrouter/shared": "workspace:*",
+    "zod": "^4.4.2"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

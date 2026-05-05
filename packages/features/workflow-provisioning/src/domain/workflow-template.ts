@@ -13,6 +13,8 @@ export type ReviewRouterWorkflowFile = {
 export const defaultWorkflowPath = ".github/workflows/reviewrouter.yml";
 export const defaultInteractionWorkflowPath =
   ".github/workflows/reviewrouter-interaction.yml";
+export const defaultRequiredWorkflowPath =
+  ".github/workflows/reviewrouter-required.yml";
 export const defaultSetupBranch = "reviewrouter/setup";
 
 export function renderReviewRouterWorkflow(
@@ -180,6 +182,113 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
+`;
+}
+
+export function renderReviewRouterRequiredWorkflow(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  const template = prepareWorkflowTemplate(options);
+
+  return `name: ReviewRouter Required
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    name: review
+    runs-on: ubuntu-latest
+    if: \${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
+    env:
+      REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
+      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
+      REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
+      REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
+      REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${template.staticRuntimeEnvBlock}
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
+    steps:
+      - name: Checkout pull request code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Skip fork pull requests
+        if: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        shell: bash
+        run: |
+          echo "ReviewRouter skipped this fork pull request because secret-backed provider execution is disabled by default."
+
+      - name: Setup Node.js for Codex CLI
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Codex CLI
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        shell: bash
+        run: npm install -g @openai/codex@0.125.0
+
+      - name: Restore Codex subscription auth
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.REVIEW_AUTH_MODE == 'codex-oauth' }}
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+        run: |
+          set -euo pipefail
+          if [ -z "\${CODEX_AUTH_JSON:-}" ]; then
+            echo "::error::CODEX_AUTH_JSON secret is missing. Re-seed Codex auth from a trusted machine or switch this repository to OpenAI API-key mode."
+            exit 1
+          fi
+          node - <<'NODE'
+          const payload = process.env.CODEX_AUTH_JSON || '';
+          const fail = (message) => {
+            console.error('::error::' + message);
+            process.exit(1);
+          };
+          let auth;
+          try {
+            auth = JSON.parse(payload);
+          } catch (error) {
+            fail('CODEX_AUTH_JSON is not valid JSON. Re-seed Codex auth from a trusted machine. ' + error.message);
+          }
+          if (auth.auth_mode !== 'chatgpt') {
+            fail('CODEX_AUTH_JSON auth_mode must be chatgpt. Re-seed with Codex CLI subscription login or switch this repo to API-key mode.');
+          }
+          if (!auth.tokens || typeof auth.tokens.refresh_token !== 'string' || auth.tokens.refresh_token.length === 0) {
+            fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+          }
+          NODE
+          export CODEX_HOME="\${CODEX_HOME:-$HOME/.codex}"
+          mkdir -p "$CODEX_HOME"
+          chmod 700 "$CODEX_HOME"
+          printf '%s' "$CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"
+          chmod 600 "$CODEX_HOME/auth.json"
+          if [ -n "\${CODEX_CONFIG_TOML:-}" ]; then
+            printf '%s' "$CODEX_CONFIG_TOML" > "$CODEX_HOME/config.toml"
+            chmod 600 "$CODEX_HOME/config.toml"
+          fi
+
+${template.oidcStep}      - name: Run ReviewRouter
+        if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: ${options.actionRef}
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          PR_NUMBER: \${{ github.event.pull_request.number }}
+          CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+          OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
 `;
 }
 

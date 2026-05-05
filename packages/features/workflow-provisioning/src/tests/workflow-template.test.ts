@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   defaultInteractionWorkflowPath,
+  defaultRequiredWorkflowPath,
   defaultWorkflowPath,
   renderReviewRouterInteractionWorkflow,
+  renderReviewRouterRequiredWorkflow,
   renderReviewRouterWorkflow,
   renderReviewRouterWorkflowFiles,
 } from "../domain/workflow-template";
@@ -117,6 +119,29 @@ describe("renderReviewRouterWorkflow", () => {
     );
   });
 
+  it("renders a required ruleset workflow without pull_request_target", () => {
+    const workflow = renderReviewRouterRequiredWorkflow(workflowOptions);
+
+    expect(defaultRequiredWorkflowPath).toBe(
+      ".github/workflows/reviewrouter-required.yml",
+    );
+    expect(workflow).toContain("name: ReviewRouter Required");
+    expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain("merge_group:");
+    expect(workflow).not.toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("pull_request_target");
+    expect(workflow).toContain("contents: read");
+    expect(workflow).toContain("pull-requests: write");
+    expect(workflow).toContain("issues: write");
+    expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain("uses: 777genius/review-router@v1");
+    expect(workflow).toContain("github.event_name != 'merge_group'");
+    expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain("CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}");
+    expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
+  });
+
   it("uses github-actions comment identity when runtime config is static", () => {
     const reviewWorkflow = renderReviewRouterWorkflow({
       actionRef: "777genius/review-router@v1",
@@ -170,6 +195,14 @@ describe("renderReviewRouterWorkflow", () => {
         runtimeConfigMode: "oidc",
       }),
     ).toThrow("invalid_workflow_api_url");
+
+    expect(() =>
+      renderReviewRouterRequiredWorkflow({
+        actionRef: "777genius/review-router@v1\nrun: evil",
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+      }),
+    ).toThrow("invalid_workflow_action_ref");
 
     expect(() =>
       renderReviewRouterWorkflow({
