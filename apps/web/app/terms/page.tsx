@@ -21,12 +21,12 @@ export default function TermsPage(): React.ReactElement {
         <div className="space-y-5">
           <Badge tone="accent">Terms</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
-            Trusted beta usage terms.
+            Trusted beta usage guidelines.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
-            This draft sets operational expectations for trusted testers. It is
-            not final legal text and must be replaced before broad public
-            launch.
+            These guidelines set operational expectations for early users:
+            install only where authorized, review generated workflow PRs, and
+            keep provider credentials in your own GitHub Actions secrets.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/privacy" variant="soft" tone="success">

@@ -27,10 +27,10 @@ const statusTiers = [
     body: "GitHub delivers installation and installation_repositories lifecycle events to Apps by default. Hosted sync verification now focuses on webhook delivery logs and OIDC health.",
   },
   {
-    label: "Production",
-    state: "Not claimed",
+    label: "Public launch",
+    state: "Hardening next",
     tone: "neutral" as const,
-    body: "Production needs public beta feedback, billing/support/legal hardening, hosted observability, backup drills, and release compatibility policy.",
+    body: "Next hardening work is hosted OIDC E2E, support operations, legal copy review, release compatibility policy, and production observability.",
   },
 ] as const;
 
@@ -63,7 +63,7 @@ const incidentClasses = [
   },
   {
     title: "Beta limitation",
-    body: "Local/private beta status is verified by gates and recorded smoke runs. Public status still needs a hosted status channel.",
+    body: "Trusted beta status is verified by gates and recorded smoke runs. A public status page belongs in the production operations package.",
     tone: "neutral" as const,
   },
 ] as const;
@@ -80,8 +80,8 @@ export default function StatusPage(): React.ReactElement {
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
             ReviewRouter is ready for trusted beta demos with a live Render API,
             GitHub App onboarding, setup PR provisioning, and metadata-only
-            health surfaces. Broad public launch still needs hosted OIDC E2E,
-            support operations, and release policy hardening.
+            health surfaces. The remaining work is production hardening, not the
+            basic setup path.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/getting-started">Start setup</LinkButton>

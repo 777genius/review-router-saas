@@ -32,7 +32,7 @@ export default function FairUsePage(): React.ReactElement {
         <div className="space-y-5">
           <Badge tone="accent">Fair use</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
-            Generous beta, not unlimited abuse surface.
+            Fair beta access with clear limits.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
             ReviewRouter does not run model workloads in the SaaS by default,

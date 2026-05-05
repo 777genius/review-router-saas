@@ -24,9 +24,10 @@ export default function PrivacyPage(): React.ReactElement {
             Metadata control plane, not code custody.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
-            This trusted-beta privacy draft documents the intended v1 behavior.
-            It is product guidance, not final legal text. Final public launch
-            still needs review under the production domain and company details.
+            ReviewRouter is designed as a metadata control plane. It keeps
+            setup, policy, health, and audit state in SaaS while repository
+            code, provider credentials, and review execution stay in customer
+            GitHub Actions by default.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/security" variant="soft" tone="success">
@@ -94,8 +95,9 @@ export default function PrivacyPage(): React.ReactElement {
         <Card className="space-y-3">
           <Badge tone="warning">Retention</Badge>
           <p className="text-sm leading-6 text-slate-300">
-            Trusted-beta metadata retention is operational. Public launch needs
-            a published retention window and workspace deletion process.
+            Beta metadata is retained only for setup, audit, support, and health
+            operations. A published retention window belongs in the production
+            legal package.
           </p>
         </Card>
         <Card className="space-y-3">
@@ -109,9 +111,9 @@ export default function PrivacyPage(): React.ReactElement {
         <Card className="space-y-3">
           <Badge tone="warning">Subprocessors</Badge>
           <p className="text-sm leading-6 text-slate-300">
-            Local beta has no hosted subprocessors beyond GitHub and local
-            development infrastructure. Production must publish the actual
-            hosting, database, logging, and email providers.
+            Hosted beta uses the production hosting, database, and GitHub
+            integration stack. A formal subprocessor list belongs in the
+            production legal package.
           </p>
         </Card>
       </section>
