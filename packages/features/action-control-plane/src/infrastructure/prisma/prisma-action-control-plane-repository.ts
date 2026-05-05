@@ -25,6 +25,20 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
         fullName: true,
         owner: true,
         selected: true,
+        workspace: {
+          select: {
+            orgRulesets: {
+              where: { status: "configured" },
+              select: {
+                scope: true,
+                sourceRepositoryFullName: true,
+                sourceWorkflowPath: true,
+                sourceWorkflowRef: true,
+                targetRepositoryIds: true,
+              },
+            },
+          },
+        },
         installation: {
           select: { status: true, githubInstallationId: true },
         },
@@ -44,6 +58,19 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       fullName: repository.fullName,
       owner: repository.owner,
       selected: repository.selected,
+      trustedWorkflowRefs: repository.workspace.orgRulesets
+        .filter((ruleset) => {
+          if (ruleset.scope === "all_repositories") return true;
+          return parseTargetRepositoryIds(ruleset.targetRepositoryIds).includes(
+            repository.githubRepositoryId.toString(),
+          );
+        })
+        .flatMap((ruleset) => {
+          if (!ruleset.sourceRepositoryFullName) return [];
+          return [
+            `${ruleset.sourceRepositoryFullName}/${ruleset.sourceWorkflowPath}@${ruleset.sourceWorkflowRef}`,
+          ];
+        }),
       installationStatus: repository.installation.status,
     };
   }
@@ -217,6 +244,13 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       },
     };
   }
+}
+
+function parseTargetRepositoryIds(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item : String(item)))
+    .filter(Boolean);
 }
 
 function toAuthMode(value: string) {

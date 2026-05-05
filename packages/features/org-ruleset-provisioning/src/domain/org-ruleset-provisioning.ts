@@ -45,6 +45,7 @@ export type OrgRulesetProvisioningRequest = {
   readonly githubInstallationId: string;
   readonly organizationLogin: string;
   readonly sourceRepositoryId?: string;
+  readonly sourceGithubRepositoryId?: string;
   readonly sourceRepositoryFullName?: string;
   readonly sourceWorkflowPath: string;
   readonly sourceWorkflowRef: string;
@@ -128,6 +129,7 @@ export function createOrgRulesetProvisioningRequest(input: {
   readonly githubInstallationId: string;
   readonly organizationLogin: string;
   readonly sourceRepositoryId?: string;
+  readonly sourceGithubRepositoryId?: string;
   readonly sourceRepositoryFullName?: string;
   readonly sourceWorkflowPath: string;
   readonly sourceWorkflowRef: string;
@@ -137,7 +139,10 @@ export function createOrgRulesetProvisioningRequest(input: {
   readonly requestedBy: string;
   readonly requestedAt: Date;
 }): OrgRulesetProvisioningRequest {
-  const workspaceId = requiredString(input.workspaceId, "workspace_id_required");
+  const workspaceId = requiredString(
+    input.workspaceId,
+    "workspace_id_required",
+  );
   const installationId = requiredString(
     input.installationId,
     "installation_id_required",
@@ -170,6 +175,13 @@ export function createOrgRulesetProvisioningRequest(input: {
     ...(input.sourceRepositoryId
       ? { sourceRepositoryId: requiredString(input.sourceRepositoryId) }
       : {}),
+    ...(input.sourceGithubRepositoryId
+      ? {
+          sourceGithubRepositoryId: requiredString(
+            input.sourceGithubRepositoryId,
+          ),
+        }
+      : {}),
     ...(input.sourceRepositoryFullName
       ? {
           sourceRepositoryFullName: requiredString(
@@ -196,7 +208,11 @@ export function assertOrganizationRulesetTarget(
   if (target.installationStatus !== "active") {
     throw new Error("installation_not_active");
   }
-  if (target.repositories.filter((repository) => repository.selected).length === 0) {
+  if (
+    target.repositories.filter(
+      (repository) => repository.selected && !repository.archived,
+    ).length === 0
+  ) {
     throw new Error("org_ruleset_no_selected_repositories");
   }
 }
@@ -327,6 +343,7 @@ export function safeOrgRulesetErrorCode(error: unknown): string {
       "installation_not_active",
       "source_repository_id_invalid",
       "target_repository_id_invalid",
+      "org_ruleset_all_repositories_requires_all_access",
       "github_ruleset_response_invalid",
       "github_workflow_write_response_invalid",
     ].includes(message)
@@ -334,11 +351,14 @@ export function safeOrgRulesetErrorCode(error: unknown): string {
     return message;
   }
   const status = getHttpStatus(error);
-  if ([401, 403].includes(status)) {
+  if (status === 403) {
+    return "org_admin_permission_required";
+  }
+  if (status === 401) {
     return "github_org_ruleset_permission_denied";
   }
   if (status === 404) {
-    return "github_org_ruleset_not_supported_or_not_found";
+    return "org_rulesets_not_supported";
   }
   if (status === 422) {
     return "github_org_ruleset_validation_failed";
@@ -360,7 +380,10 @@ export function safeOrgRulesetErrorSummary(error: unknown): string {
 function buildRulesetConditions(
   targetSelection: OrgRulesetTargetSelection,
 ): GitHubOrgRulesetPayload["conditions"] {
-  const ref_name = { include: ["~DEFAULT_BRANCH"] as const, exclude: [] as const };
+  const ref_name = {
+    include: ["~DEFAULT_BRANCH"] as const,
+    exclude: [] as const,
+  };
   if (targetSelection.scope === "all_repositories") {
     return {
       ref_name,

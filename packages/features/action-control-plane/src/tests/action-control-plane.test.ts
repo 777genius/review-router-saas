@@ -284,6 +284,126 @@ describe("action control plane", () => {
     });
   });
 
+  it("accepts trusted organization required workflow refs for selected repositories", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+      ],
+    };
+    const sessions = new StaticSessionTokenService();
+
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            event_name: "merge_group",
+            workflow_ref:
+              "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+          }),
+        ),
+        repositories: repository,
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      eventName: "merge_group",
+      repository: "777genius/example",
+    });
+  });
+
+  it("accepts trusted reusable workflow refs through job_workflow_ref", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+      ],
+    };
+    const sessions = new StaticSessionTokenService();
+
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            workflow_ref:
+              "777genius/example/.github/workflows/generated-required-workflow.yml@refs/pull/1/merge",
+            job_workflow_ref:
+              "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+          }),
+        ),
+        repositories: repository,
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      repository: "777genius/example",
+    });
+  });
+
+  it("rejects similar but untrusted organization required workflow refs", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+      ],
+    };
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              workflow_ref:
+                "agent-teams-ai/reviewrouter-workflows/.github/workflows/other.yml@refs/heads/main",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
+  it("rejects trusted job_workflow_ref claims when the caller workflow is from another repository", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+      ],
+    };
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              workflow_ref:
+                "attacker/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+              job_workflow_ref:
+                "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
   it("rejects OIDC claims for a different repository id", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     await expect(

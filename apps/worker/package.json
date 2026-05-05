@@ -5,13 +5,17 @@
   "type": "module",
   "dependencies": {
     "@reviewrouter/features-action-control-plane": "workspace:*",
+    "@reviewrouter/features-audit-log": "workspace:*",
+    "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
+    "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",
     "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/platform-logger": "workspace:*",
-    "@reviewrouter/shared": "workspace:*"
+    "@reviewrouter/shared": "workspace:*",
+    "@octokit/app": "^16.1.2"
   },
   "scripts": {
     "dev": "tsx watch src/worker.ts",

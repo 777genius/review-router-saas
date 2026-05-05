@@ -17,6 +17,7 @@ model Workspace {
   installations GitHubInstallation[]
   repositories  RepositoryConnection[]
   provisioning  WorkflowProvisioning[]
+  orgRulesets   OrgRulesetProvisioning[]
   reviewConfigs ReviewConfiguration[]
   providerSetup ProviderSetupState[]
   actionHealth  ActionRunHealthReport[]
@@ -66,8 +67,9 @@ model GitHubInstallation {
   createdAt            DateTime                 @default(now())
   updatedAt            DateTime                 @updatedAt
 
-  workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace    Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repositories RepositoryConnection[]
+  orgRulesets  OrgRulesetProvisioning[]
 
   @@index([workspaceId, status])
 }
@@ -89,12 +91,13 @@ model RepositoryConnection {
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
 
-  workspace     Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation  GitHubInstallation      @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  provisioning  WorkflowProvisioning[]
-  reviewConfigs ReviewConfiguration[]
-  providerSetup ProviderSetupState[]
-  actionHealth  ActionRunHealthReport[]
+  workspace      Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation   GitHubInstallation       @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  provisioning   WorkflowProvisioning[]
+  reviewConfigs  ReviewConfiguration[]
+  providerSetup  ProviderSetupState[]
+  actionHealth   ActionRunHealthReport[]
+  rulesetSources OrgRulesetProvisioning[] @relation("OrgRulesetSourceRepository")
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
@@ -209,6 +212,44 @@ model WorkflowProvisioning {
   @@unique([repositoryId, branch])
   @@index([workspaceId, status])
   @@index([repositoryId, status])
+}
+
+model OrgRulesetProvisioning {
+  id                       String                       @id @default(cuid())
+  workspaceId              String
+  installationId           String
+  githubInstallationId     BigInt
+  organizationLogin        String
+  status                   OrgRulesetProvisioningStatus @default(requested)
+  scope                    OrgRulesetScope
+  enforcement              OrgRulesetEnforcement
+  sourceRepositoryId       String?
+  sourceGithubRepositoryId BigInt?
+  sourceRepositoryFullName String?
+  sourceWorkflowPath       String
+  sourceWorkflowRef        String
+  sourceWorkflowSha        String?
+  rulesetId                BigInt?
+  rulesetUrl               String?
+  targetRepositoryIds      Json
+  safeErrorCode            String?
+  safeErrorSummary         String?
+  requestedBy              String
+  requestedAt              DateTime
+  lastAttemptAt            DateTime?
+  configuredAt             DateTime?
+  createdAt                DateTime                     @default(now())
+  updatedAt                DateTime                     @updatedAt
+
+  workspace        Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation     GitHubInstallation    @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  sourceRepository RepositoryConnection? @relation("OrgRulesetSourceRepository", fields: [sourceRepositoryId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId])
+  @@index([githubInstallationId, status])
+  @@index([installationId, status])
+  @@index([sourceRepositoryId])
+  @@index([workspaceId, status])
 }
 
 model AuditEvent {
@@ -352,6 +393,23 @@ enum WorkflowProvisioningStatus {
   setup_pr_open
   configured
   failed
+}
+
+enum OrgRulesetProvisioningStatus {
+  requested
+  processing
+  configured
+  failed
+}
+
+enum OrgRulesetScope {
+  selected_repositories
+  all_repositories
+}
+
+enum OrgRulesetEnforcement {
+  evaluate
+  active
 }
 
 enum ProviderSecretState {

@@ -30,6 +30,10 @@ const dashboardMutationLimits = {
     limit: freeBetaLimits.outboxRetriesPerWorkspacePerHour,
     windowMs: hour,
   },
+  orgRulesetProvisioning: {
+    limit: 3,
+    windowMs: hour,
+  },
 } as const;
 
 export class DashboardRateLimitPolicy {
@@ -86,12 +90,25 @@ export class DashboardRateLimitPolicy {
     });
   }
 
+  async assertOrgRulesetProvisioningAllowed(input: {
+    readonly workspaceId: string;
+    readonly githubInstallationId: string;
+  }): Promise<void> {
+    await this.assertOperationAllowed({
+      operation: "org_ruleset_provisioning",
+      workspaceId: input.workspaceId,
+      resourceId: input.githubInstallationId,
+      ...dashboardMutationLimits.orgRulesetProvisioning,
+    });
+  }
+
   private async assertOperationAllowed(input: {
     readonly operation:
       | "installation_sync"
       | "workflow_setup_pr"
       | "review_config_save"
-      | "outbox_retry";
+      | "outbox_retry"
+      | "org_ruleset_provisioning";
     readonly workspaceId: string;
     readonly resourceId: string;
     readonly limit: number;

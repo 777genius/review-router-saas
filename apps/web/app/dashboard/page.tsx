@@ -24,6 +24,7 @@ import {
   listWorkspaceOutboxFailures,
   PrismaOutboxEventRepository,
 } from "@reviewrouter/features-outbox";
+import { PrismaOrgRulesetProvisioningRepository } from "@reviewrouter/features-org-ruleset-provisioning";
 import {
   listRepositoryWorkflowProvisioning,
   PrismaWorkflowProvisioningQuery,
@@ -50,6 +51,7 @@ import {
   createSetupPullRequestAction,
   requestInstallationSyncAction,
   retryOutboxEventAction,
+  enableOrgRulesetWorkflowAction,
   saveRepositoryReviewConfigAction,
   saveWorkspaceReviewConfigAction,
 } from "./actions";
@@ -144,6 +146,7 @@ async function loadDashboardData(
   const reviewConfigStore = new PrismaReviewConfigurationRepository(prisma);
   const outboxStore = new PrismaOutboxEventRepository(prisma);
   const diagnosticsStore = new PrismaSupportDiagnosticsRepository(prisma);
+  const orgRulesetStore = new PrismaOrgRulesetProvisioningRepository(prisma);
 
   const dashboardData = await Promise.all(
     workspaces.map(
@@ -170,6 +173,9 @@ async function loadDashboardData(
         outboxFailures: Awaited<ReturnType<typeof listWorkspaceOutboxFailures>>;
         supportDiagnostics: Awaited<
           ReturnType<typeof getWorkspaceSupportDiagnostics>
+        >;
+        orgRuleset: Awaited<
+          ReturnType<typeof orgRulesetStore.findByWorkspaceId>
         >;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
@@ -230,6 +236,9 @@ async function loadDashboardData(
               : {}),
           },
         );
+        const orgRuleset = await orgRulesetStore.findByWorkspaceId(
+          workspace.id,
+        );
 
         return {
           workspace: {
@@ -252,6 +261,7 @@ async function loadDashboardData(
           repositoryConfigs,
           outboxFailures,
           supportDiagnostics,
+          orgRuleset,
         };
       },
     ),
@@ -521,6 +531,7 @@ export default async function DashboardPage({
           selectedSection={selectedSection}
           params={params}
           workspaceKey={selectedWorkspaceKey}
+          appInstallUrl={appInstallUrl}
         />
       </section>
     </main>
@@ -865,12 +876,14 @@ function WorkspaceCard({
   selectedSection,
   params,
   workspaceKey,
+  appInstallUrl,
 }: {
   readonly data: DashboardWorkspaceData;
   readonly mutationsEnabled: boolean;
   readonly selectedSection: DashboardSection;
   readonly params: Record<string, string | string[] | undefined>;
   readonly workspaceKey: string;
+  readonly appInstallUrl: string | null;
 }): React.ReactElement {
   const {
     workspace,
@@ -882,6 +895,7 @@ function WorkspaceCard({
     repositoryConfigs,
     outboxFailures,
     supportDiagnostics,
+    orgRuleset,
   } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
@@ -1034,6 +1048,18 @@ function WorkspaceCard({
                   ))}
                 </div>
               </details>
+
+              <OrgRulesetAdvancedCard
+                workspace={workspace}
+                orgRuleset={orgRuleset}
+                mutationsEnabled={mutationsEnabled}
+                appInstallUrl={appInstallUrl}
+                permissionUpgradeNeeded={
+                  readParam(params.error) === "org_admin_permission_required" ||
+                  readParam(params.error) ===
+                    "org_ruleset_permission_update_pending"
+                }
+              />
 
               {providerGuidance ? (
                 <details
@@ -1697,6 +1723,182 @@ function RepositoryTable({
   );
 }
 
+function OrgRulesetAdvancedCard({
+  workspace,
+  orgRuleset,
+  mutationsEnabled,
+  appInstallUrl,
+  permissionUpgradeNeeded,
+}: {
+  readonly workspace: DashboardWorkspace;
+  readonly orgRuleset: DashboardWorkspaceData["orgRuleset"];
+  readonly mutationsEnabled: boolean;
+  readonly appInstallUrl: string | null;
+  readonly permissionUpgradeNeeded: boolean;
+}): React.ReactElement | null {
+  const organizationInstallation = workspace.installations.find(
+    (installation) => installation.accountType === "Organization",
+  );
+  if (!organizationInstallation) {
+    return null;
+  }
+
+  const permissionMissing =
+    permissionUpgradeNeeded ||
+    orgRuleset?.safeErrorCode === "org_admin_permission_required" ||
+    orgRuleset?.safeErrorCode === "org_ruleset_permission_update_pending";
+  const rulesetUrl = safeGitHubDashboardLink(orgRuleset?.rulesetUrl ?? "");
+  const permissionApprovalUrl =
+    buildInstallationSettingsUrl(organizationInstallation) ?? appInstallUrl;
+
+  return (
+    <details className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4">
+      <summary className="cursor-pointer list-none">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+          <div>
+            <Badge tone="warning">Advanced org-wide mode</Badge>
+            <p className="mt-2 text-sm leading-6 text-amber-50">
+              Enable a GitHub Organization Ruleset required workflow for many
+              repositories without opening setup PRs in every repo. Default
+              onboarding stays per-repository setup PR.
+            </p>
+          </div>
+          <Badge tone={orgRulesetStatusTone(orgRuleset?.status)}>
+            {orgRuleset?.status
+              ? orgRuleset.status.replaceAll("_", " ")
+              : "not enabled"}
+          </Badge>
+        </div>
+      </summary>
+
+      <div className="mt-4 grid gap-4">
+        <div className="rounded-lg border border-amber-200/15 bg-slate-950/70 p-4 text-sm leading-6 text-slate-300">
+          <p>
+            This advanced mode requires GitHub App{" "}
+            <strong className="text-amber-100">
+              Organization Administration: write
+            </strong>{" "}
+            only to create/update the ReviewRouter ruleset and its central
+            workflow. Provider secrets still stay in GitHub Actions, not in
+            ReviewRouter SaaS.
+          </p>
+          {permissionMissing ? (
+            <p className="mt-3 text-amber-100">
+              GitHub has not approved that optional permission for this
+              organization yet. Approve the App permission update, then retry
+              this action.
+            </p>
+          ) : null}
+          {orgRuleset?.safeErrorCode ? (
+            <p className="mt-3 text-amber-100">
+              Last status: {orgRulesetErrorText(orgRuleset.safeErrorCode)}
+            </p>
+          ) : null}
+          {rulesetUrl ? (
+            <a
+              href={rulesetUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+            >
+              Open GitHub ruleset
+            </a>
+          ) : null}
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+          <form
+            action={enableOrgRulesetWorkflowAction}
+            className="grid gap-3 md:grid-cols-3"
+          >
+            <input type="hidden" name="workspaceId" value={workspace.id} />
+            <input
+              type="hidden"
+              name="githubInstallationId"
+              value={organizationInstallation.githubInstallationId}
+            />
+            <SelectField
+              name="scope"
+              label="Repository scope"
+              defaultValue={orgRuleset?.scope ?? "selected_repositories"}
+              disabled={!mutationsEnabled}
+              options={[
+                {
+                  value: "selected_repositories",
+                  label: "Selected App repos",
+                  description: "Safer default, matches App repository access.",
+                },
+                {
+                  value: "all_repositories",
+                  label: "All organization repos",
+                  description:
+                    "Advanced, ruleset applies broadly where GitHub allows it.",
+                },
+              ]}
+            />
+            <SelectField
+              name="enforcement"
+              label="Ruleset enforcement"
+              defaultValue={orgRuleset?.enforcement ?? "evaluate"}
+              disabled={!mutationsEnabled}
+              options={[
+                {
+                  value: "evaluate",
+                  label: "Evaluate first",
+                  description:
+                    "Non-blocking smoke mode. GitHub Enterprise only.",
+                },
+                {
+                  value: "active",
+                  label: "Active",
+                  description: "Blocks according to GitHub required workflow.",
+                },
+              ]}
+            />
+            <div className="flex items-end">
+              <FormSubmitButton
+                variant="soft"
+                tone="warning"
+                disabled={
+                  !mutationsEnabled ||
+                  organizationInstallation.status !== "active" ||
+                  orgRuleset?.status === "processing"
+                }
+                idleLabel={
+                  orgRuleset ? "Update org-wide workflow" : "Enable org-wide"
+                }
+                pendingLabel="Checking permission..."
+              />
+            </div>
+          </form>
+
+          <div className="flex flex-wrap gap-2 md:justify-end">
+            {permissionMissing && permissionApprovalUrl ? (
+              <LinkButton
+                href={permissionApprovalUrl}
+                variant="outline"
+                size="sm"
+              >
+                Approve App permission
+              </LinkButton>
+            ) : null}
+            <LinkButton
+              href={dashboardSectionHref(
+                "repositories",
+                dashboardWorkspaceUrlKey(workspace),
+              )}
+              variant="ghost"
+              size="sm"
+            >
+              Use setup PR fallback
+            </LinkButton>
+          </div>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function RepositorySetupActionForm({
   workspaceId,
   repositoryId,
@@ -2172,6 +2374,7 @@ function resolveDashboardSection(
       "workflow_already_current",
       "sync_requested",
       "sync_already_requested",
+      "org_ruleset_queued",
     ].includes(notice)
   ) {
     return "setup";
@@ -2215,6 +2418,7 @@ function buildDashboardSignInCallbackUrl(
     "repository",
     "pr",
     "workspace",
+    "section",
   ]) {
     const value = readParam(params[key]);
     if (value) callbackParams.set(key, value);
@@ -2251,6 +2455,8 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return repository
         ? `ReviewRouter workflow is already current for ${repository}.`
         : "ReviewRouter workflow is already current.";
+    case "org_ruleset_queued":
+      return "Organization-wide required workflow setup was queued. The worker will create or update the central workflow and GitHub ruleset after the permission probe passes.";
     case "review_config_saved":
       return "Review configuration was saved. Future action runs can fetch it through OIDC.";
     case "repository_review_config_saved":
@@ -2281,6 +2487,8 @@ function dashboardNoticeTitle(notice: string): string {
       return "Setup PR ready";
     case "workflow_already_current":
       return "Workflow installed";
+    case "org_ruleset_queued":
+      return "Org-wide setup queued";
     case "review_config_saved":
     case "repository_review_config_saved":
     case "repository_review_config_cleared":
@@ -2378,6 +2586,39 @@ function formatAccountTypeLabel(accountType: string): string {
   return accountType === "Organization" ? "Organization" : "Personal";
 }
 
+function orgRulesetStatusTone(
+  status: string | undefined,
+): "success" | "warning" | "danger" | "neutral" {
+  switch (status) {
+    case "configured":
+      return "success";
+    case "requested":
+    case "processing":
+      return "warning";
+    case "failed":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
+function orgRulesetErrorText(error: string): string {
+  switch (error) {
+    case "org_admin_permission_required":
+      return "Organization Administration: write is required for org-wide rulesets.";
+    case "org_rulesets_not_supported":
+      return "GitHub rulesets are not available for this organization, installation, or plan.";
+    case "org_ruleset_permission_update_pending":
+      return "GitHub rejected the ruleset probe. The App permission update may still need approval.";
+    case "org_ruleset_all_repositories_requires_all_access":
+      return "All-repositories ruleset requires the GitHub App installation to be configured for all repositories.";
+    case "github_org_ruleset_validation_failed":
+      return "GitHub rejected the ruleset payload. If you chose Evaluate, switch to Active unless the organization is on GitHub Enterprise.";
+    default:
+      return error.replaceAll("_", " ");
+  }
+}
+
 function dashboardErrorText(error: string): string {
   switch (error) {
     case "dashboard_mutations_disabled":
@@ -2406,7 +2647,32 @@ function dashboardErrorText(error: string): string {
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
     case "workflow_provisioning_disabled":
       return "Workflow provisioning is disabled. Set REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING=1 in a trusted local or beta environment.";
+    case "org_ruleset_requires_organization_installation":
+      return "Organization-wide required workflow is available only for GitHub organization installations. Use per-repository setup PR for personal repositories.";
+    case "org_ruleset_no_selected_repositories":
+      return "This organization installation has no selected, active repositories to target.";
+    case "org_ruleset_all_repositories_requires_all_access":
+      return "All-repositories org ruleset requires installing the GitHub App for all repositories first. Use selected repositories or per-repository setup PR fallback.";
+    case "org_admin_permission_required":
+      return "Organization-wide required workflow needs optional GitHub App Organization Administration: write permission. Approve the permission update or use per-repository setup PR fallback.";
+    case "org_rulesets_not_supported":
+      return "GitHub organization rulesets are unavailable for this org, installation, or plan. Use per-repository setup PR fallback.";
+    case "org_ruleset_permission_update_pending":
+      return "GitHub rejected the ruleset permission probe. An organization owner may still need to approve the App permission update.";
+    case "github_org_ruleset_validation_failed":
+      return "GitHub rejected the ruleset payload. Evaluate mode requires GitHub Enterprise; switch to Active or use per-repository setup PR fallback.";
     default:
       return "GitHub operation failed. Check audit events or server logs for the safe error code.";
   }
+}
+
+function buildInstallationSettingsUrl(
+  installation: DashboardWorkspace["installations"][number],
+): string | null {
+  if (!/^\d+$/.test(installation.githubInstallationId)) return null;
+  if (installation.accountType === "Organization") {
+    if (!/^[A-Za-z0-9-]+$/.test(installation.accountLogin)) return null;
+    return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.githubInstallationId}`;
+  }
+  return `https://github.com/settings/installations/${installation.githubInstallationId}`;
 }

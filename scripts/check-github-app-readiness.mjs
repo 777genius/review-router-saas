@@ -16,6 +16,10 @@ const expectedWebhookUrl = resolveExpectedWebhookUrl(env, isHostedMode);
 const requireInstallation =
   String(env.REVIEW_ROUTER_GITHUB_APP_REQUIRE_INSTALLATION ?? "").trim() ===
   "1";
+const checkOrgRulesetPermission =
+  String(
+    env.REVIEW_ROUTER_GITHUB_APP_CHECK_ORG_RULESET_PERMISSION ?? "",
+  ).trim() === "1";
 
 const requiredPermissions = {
   contents: "write",
@@ -189,6 +193,14 @@ function assertPermissions(actualPermissions) {
       );
     }
   }
+  if (
+    checkOrgRulesetPermission &&
+    !permissionSatisfies(actualPermissions.organization_administration, "write")
+  ) {
+    errors.push(
+      `Optional org-wide ruleset permission organization_administration must be write when REVIEW_ROUTER_GITHUB_APP_CHECK_ORG_RULESET_PERMISSION=1; current value is ${actualPermissions.organization_administration ?? "missing"}.`,
+    );
+  }
 }
 
 function warnAboutLifecycleEvents(actualEvents) {
@@ -214,8 +226,12 @@ function permissionSatisfies(actualAccess, requiredAccess) {
 }
 
 function pickPermissions(permissions) {
+  const permissionNames = [
+    ...Object.keys(requiredPermissions),
+    "organization_administration",
+  ];
   return Object.fromEntries(
-    Object.keys(requiredPermissions).map((permission) => [
+    permissionNames.map((permission) => [
       permission,
       permissions[permission] ?? null,
     ]),

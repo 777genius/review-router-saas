@@ -20,6 +20,7 @@ export const allowedActionEvents = [
   "pull_request",
   "pull_request_review_comment",
   "workflow_dispatch",
+  "merge_group",
 ] as const;
 
 export const githubActionsOidcClaimsSchema = z.object({
@@ -54,6 +55,7 @@ export type ActionRepositoryContext = {
   readonly fullName: string;
   readonly owner: string;
   readonly selected: boolean;
+  readonly trustedWorkflowRefs?: readonly string[];
   readonly installationStatus:
     | "active"
     | "pending"
@@ -239,9 +241,13 @@ export function validateOidcClaimsAgainstRepository(input: {
     throw new Error("repository_owner_mismatch");
   }
   if (
-    isAllowedWorkflowRef({
+    isAllowedOidcWorkflowIdentity({
       workflowRef: input.claims.workflow_ref,
+      jobWorkflowRef: input.claims.job_workflow_ref,
       repository: repository.fullName,
+      ...(repository.trustedWorkflowRefs
+        ? { trustedWorkflowRefs: repository.trustedWorkflowRefs }
+        : {}),
     }) === false
   ) {
     throw new Error("workflow_ref_not_allowed");
@@ -298,7 +304,17 @@ export function isAllowedWorkflowRef(input: {
   readonly workflowRef: string;
   readonly repository: string;
   readonly allowedPaths?: readonly string[];
+  readonly trustedWorkflowRefs?: readonly string[];
 }): boolean {
+  if (
+    input.trustedWorkflowRefs?.some(
+      (workflowRef) =>
+        workflowRef.toLowerCase() === input.workflowRef.toLowerCase(),
+    )
+  ) {
+    return true;
+  }
+
   const atIndex = input.workflowRef.indexOf("@");
   if (atIndex <= 0) {
     return false;
@@ -316,4 +332,54 @@ export function isAllowedWorkflowRef(input: {
   const path = workflowIdentity.slice(repositoryPrefix.length);
   const allowedPaths = input.allowedPaths ?? allowedWorkflowPaths;
   return allowedPaths.includes(path);
+}
+
+export function isAllowedOidcWorkflowIdentity(input: {
+  readonly workflowRef: string;
+  readonly jobWorkflowRef?: string | undefined;
+  readonly repository: string;
+  readonly allowedPaths?: readonly string[];
+  readonly trustedWorkflowRefs?: readonly string[];
+}): boolean {
+  if (
+    input.jobWorkflowRef &&
+    isTrustedWorkflowRef(input.jobWorkflowRef, input.trustedWorkflowRefs) &&
+    isWorkflowRefForRepository(input.workflowRef, input.repository)
+  ) {
+    return true;
+  }
+
+  return isAllowedWorkflowRef({
+    workflowRef: input.workflowRef,
+    repository: input.repository,
+    ...(input.allowedPaths ? { allowedPaths: input.allowedPaths } : {}),
+    ...(input.trustedWorkflowRefs
+      ? { trustedWorkflowRefs: input.trustedWorkflowRefs }
+      : {}),
+  });
+}
+
+function isTrustedWorkflowRef(
+  workflowRef: string,
+  trustedWorkflowRefs: readonly string[] | undefined,
+): boolean {
+  return (
+    trustedWorkflowRefs?.some(
+      (trustedRef) => trustedRef.toLowerCase() === workflowRef.toLowerCase(),
+    ) ?? false
+  );
+}
+
+function isWorkflowRefForRepository(
+  workflowRef: string,
+  repository: string,
+): boolean {
+  const atIndex = workflowRef.indexOf("@");
+  if (atIndex <= 0) return false;
+  const workflowIdentity = workflowRef.slice(0, atIndex);
+  const repositoryPrefix = `${repository}/`;
+  return (
+    workflowIdentity.slice(0, repositoryPrefix.length).toLowerCase() ===
+    repositoryPrefix.toLowerCase()
+  );
 }

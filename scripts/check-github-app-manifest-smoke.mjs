@@ -1,21 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 
-const result = spawnSync(
-  process.execPath,
-  ["scripts/create-github-app-manifest.mjs", "--dry-run", "--no-open"],
-  {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  },
-);
-
-if (result.status !== 0) {
-  console.error("GitHub App manifest helper dry run failed.");
-  console.error(result.stdout);
-  console.error(result.stderr);
-  process.exit(result.status ?? 1);
-}
+const result = runManifestHelper(["--dry-run", "--no-open"]);
 
 const manifest = parseManifest(result.stdout);
 
@@ -49,8 +35,42 @@ assertPermission("contents", "write");
 assertPermission("issues", "write");
 assertPermission("pull_requests", "write");
 assertPermission("workflows", "write");
+assertPermissionMissing("organization_administration");
+
+const orgRulesetResult = runManifestHelper([
+  "--dry-run",
+  "--no-open",
+  "--permission-profile",
+  "org-ruleset",
+]);
+const orgRulesetManifest = parseManifest(orgRulesetResult.stdout);
+assertEqual(
+  orgRulesetManifest.default_permissions?.organization_administration,
+  "write",
+  "org-ruleset default_permissions.organization_administration",
+);
 
 console.log("GitHub App manifest smoke passed.");
+
+function runManifestHelper(args) {
+  const run = spawnSync(
+    process.execPath,
+    ["scripts/create-github-app-manifest.mjs", ...args],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  if (run.status !== 0) {
+    console.error("GitHub App manifest helper dry run failed.");
+    console.error(run.stdout);
+    console.error(run.stderr);
+    process.exit(run.status ?? 1);
+  }
+
+  return run;
+}
 
 function parseManifest(stdout) {
   const start = stdout.indexOf("{");
@@ -66,6 +86,12 @@ function assertPermission(permission, expected) {
     expected,
     `default_permissions.${permission}`,
   );
+}
+
+function assertPermissionMissing(permission) {
+  if (permission in (manifest.default_permissions ?? {})) {
+    throw new Error(`default_permissions.${permission} must not be present`);
+  }
 }
 
 function assertEqual(actual, expected, label) {

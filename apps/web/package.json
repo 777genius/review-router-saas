@@ -8,6 +8,7 @@
     "@reviewrouter/features-audit-log": "workspace:*",
     "@reviewrouter/features-entitlements": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
+    "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-provider-setup": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",

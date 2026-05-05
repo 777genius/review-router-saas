@@ -18,6 +18,26 @@ A user should be able to connect one repository in under 5 minutes without under
 9. Dashboard shows health status.
 ```
 
+## Organization-Wide Advanced Setup
+
+Default onboarding should not push users into org admin permissions.
+
+Organization workspaces may show an advanced card:
+
+```text
+Enable organization-wide required workflow
+```
+
+Rules:
+
+- hide this card for personal accounts
+- explain that per-repository setup PR is the default and safest path
+- explain that GitHub App Organization Administration write is needed only for org ruleset/source workflow setup
+- probe permission before creating anything
+- if permission is missing, show "Approve App permission" plus "Use setup PR fallback"
+- default enforcement should be evaluate, not active, but copy must say Evaluate is GitHub Enterprise-only and Active is the fallback when Evaluate is unavailable
+- provider secrets still stay in GitHub Actions repo/org secrets
+
 ## Provider Setup UX
 
 ### Codex OAuth

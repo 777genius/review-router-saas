@@ -109,6 +109,17 @@ pull_requests: write
 issues: write
 ```
 
+Optional advanced org-wide mode:
+
+```text
+organization_administration: write
+```
+
+This is not part of the standard profile. It is required only when a user asks
+ReviewRouter to create or update a GitHub organization ruleset with a central
+required workflow. The dashboard must show it as an advanced upgrade and keep
+per-repository setup PR as the fallback.
+
 Why each write permission exists:
 
 ```text
@@ -123,6 +134,10 @@ The UI must explain that `workflows: write` is for ReviewRouter setup/update PRs
 Do not request `actions: write` in minimal v1. Runtime health reports use
 GitHub Actions OIDC. Keep `issues: write` scoped to PR summary/setup/help
 comments; it must not be used to read or store customer code in SaaS.
+
+Do not imply that org-wide setup eliminates the secret boundary. Required
+workflow mode still runs provider commands in customer GitHub Actions. Codex
+OAuth and API keys are seeded into GitHub repo/org secrets, not SaaS.
 
 ## Status and Comments
 
@@ -145,6 +160,13 @@ GitHub Actions bot: simpler setup, generic identity
 Generated workflows should include `id-token: write` so ReviewRouter Action can request a GitHub Actions OIDC token.
 
 The action uses that token to fetch SaaS-managed runtime config and optionally report health metadata. This avoids long-lived ReviewRouter API tokens in customer repositories.
+
+For org-wide required workflow mode, OIDC validation must allow only exact
+trusted central workflow refs stored in DB. The validator still checks the
+target repository id/name/owner first, then accepts either `workflow_ref` or
+`job_workflow_ref` when it exactly matches the trusted central workflow. When
+`job_workflow_ref` is used, the caller `workflow_ref` must still belong to the
+same target repository.
 
 If OIDC fails, the action should fall back to static workflow config where possible.
 

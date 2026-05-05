@@ -22,6 +22,9 @@ const outputDir = resolve(
 const reviewRouterLogoUrl = "https://i.imgur.com/Yz9XIQM.png";
 const noOpen = Boolean(args["no-open"]);
 const dryRun = Boolean(args["dry-run"]);
+const permissionProfile = normalizePermissionProfile(
+  args["permission-profile"] ?? "standard",
+);
 
 const manifest = {
   name: appName,
@@ -44,6 +47,9 @@ const manifest = {
     issues: "write",
     pull_requests: "write",
     workflows: "write",
+    ...(permissionProfile === "org-ruleset"
+      ? { organization_administration: "write" }
+      : {}),
   },
 };
 
@@ -217,6 +223,7 @@ function printPlan() {
   console.log(`Callback URL: ${webUrl}/api/auth/callback/github`);
   console.log(`Setup URL: ${webUrl}/setup`);
   console.log(`Webhook URL: ${apiUrl}/webhooks/github`);
+  console.log(`Permission profile: ${permissionProfile}`);
   console.log(`Output dir: ${outputDir}`);
 }
 
@@ -289,6 +296,16 @@ function parseArgs(argv) {
     index += 1;
   }
   return parsed;
+}
+
+function normalizePermissionProfile(value) {
+  const normalized = String(value).trim();
+  if (normalized === "standard" || normalized === "org-ruleset") {
+    return normalized;
+  }
+  throw new Error(
+    "--permission-profile must be either standard or org-ruleset",
+  );
 }
 
 function shellQuote(value) {

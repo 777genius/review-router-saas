@@ -1,8 +1,15 @@
 import { config as loadDotenv } from "dotenv";
+import { App } from "@octokit/app";
 import {
   PrismaActionOidcReplayNonceStore,
   pruneExpiredActionOidcReplayNonces,
 } from "@reviewrouter/features-action-control-plane";
+import { PrismaAuditLogRepository } from "@reviewrouter/features-audit-log";
+import {
+  OctokitOrgRulesetSetupGateway,
+  PrismaOrgRulesetProvisioningRepository,
+} from "@reviewrouter/features-org-ruleset-provisioning";
+import { createOrgRulesetProvisioningRequestedHandler } from "@reviewrouter/features-org-ruleset-provisioning/outbox";
 import {
   PrismaOutboxEventRepository,
   processOutboxBatch,
@@ -18,7 +25,10 @@ import {
 } from "@reviewrouter/features-repositories";
 import { createInstallationSyncRequestedHandler } from "@reviewrouter/features-repositories/outbox";
 import { createPrismaClient } from "@reviewrouter/platform-db";
-import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
+import {
+  readGitHubAppPrivateKey,
+  resolveReviewRouterActionRef,
+} from "@reviewrouter/platform-config";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import {
@@ -134,7 +144,45 @@ function createOutboxHandlers(
         ),
       },
     }),
+    createOrgRulesetProvisioningRequestedHandler({
+      provisioning: new PrismaOrgRulesetProvisioningRepository(prisma),
+      createSetupGateway: createOrgRulesetSetupGatewayFactory({
+        appId,
+        privateKey,
+      }),
+      auditLog: new PrismaAuditLogRepository(prisma),
+      clock,
+      actionRef: resolveReviewRouterActionRef(),
+      apiUrl: resolveWorkflowPublicApiUrl(),
+      runtimeConfigMode: "oidc",
+    }),
   ];
+}
+
+function createOrgRulesetSetupGatewayFactory(input: {
+  readonly appId: string;
+  readonly privateKey: string;
+}): (githubInstallationId: string) => Promise<OctokitOrgRulesetSetupGateway> {
+  const app = new App({
+    appId: input.appId,
+    privateKey: input.privateKey,
+  });
+  return async (githubInstallationId) =>
+    new OctokitOrgRulesetSetupGateway(
+      await app.getInstallationOctokit(Number(githubInstallationId)),
+    );
+}
+
+function resolveWorkflowPublicApiUrl(): string {
+  const raw =
+    process.env.REVIEW_ROUTER_PUBLIC_API_URL ||
+    process.env.REVIEW_ROUTER_API_URL ||
+    "http://localhost:4000";
+  const url = new URL(raw);
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("invalid_workflow_api_url");
+  }
+  return url.toString().replace(/\/$/, "");
 }
 
 function createRateLimitMaintenance(

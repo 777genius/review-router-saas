@@ -18,6 +18,16 @@ pull_requests: write
 issues: write
 ```
 
+Optional advanced organization permissions:
+
+```text
+organization_administration: write
+```
+
+This optional permission is used only for org-wide required workflow
+provisioning through GitHub organization rulesets. It must not be required for
+the default per-repository setup PR flow.
+
 `workflows: write` is needed only because ReviewRouter writes `.github/workflows/reviewrouter.yml`. It is not needed for the review engine itself.
 
 `issues: write` is included for PR summary/setup/help conversations when
@@ -51,6 +61,23 @@ References:
 ```
 
 No direct push to default branch.
+
+## Advanced Org-Wide Flow
+
+```text
+1. User installs ReviewRouter normally and uses per-repo setup PR by default.
+2. Organization workspace shows "Enable organization-wide required workflow" as Advanced.
+3. User clicks the advanced action.
+4. SaaS probes org ruleset access with the App installation token.
+5. If GitHub returns 403/404/422, UI shows a safe reason and keeps setup PR fallback.
+6. If permission is available, SaaS writes .github/workflows/reviewrouter-required.yml to a selected source repo.
+7. SaaS creates/updates one GitHub organization ruleset in evaluate mode first when the organization is on GitHub Enterprise.
+8. If Evaluate is unavailable, UI tells the user to switch to Active or stay on per-repo setup PR fallback.
+9. User can switch ruleset enforcement to active after smoke validation.
+```
+
+The generated required workflow uses `pull_request` and `merge_group`, never
+`pull_request_target`, and fetches runtime config through GitHub Actions OIDC.
 
 ## Codex Auth Boundary
 
@@ -124,5 +151,6 @@ Negative:
 - Every workflow provisioning action is audited.
 - Only workspace admins can request setup/update PRs.
 - UI explains `workflows: write` before GitHub redirects to install.
+- UI explains optional `Organization Administration: write` only inside advanced org-wide mode.
 - App token is never exposed to provider subprocesses.
 - Action workflow uses `pull_request`, not `pull_request_target`, for default review execution.

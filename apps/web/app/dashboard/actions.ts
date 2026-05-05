@@ -17,6 +17,13 @@ import {
   retryDeadLetterOutboxEvent,
 } from "@reviewrouter/features-outbox";
 import {
+  OctokitOrgRulesetSetupGateway,
+  PrismaOrgRulesetProvisioningRepository,
+  requestOrgRulesetProvisioning,
+  type OrgRulesetEnforcement,
+  type OrgRulesetScope,
+} from "@reviewrouter/features-org-ruleset-provisioning";
+import {
   clearReviewConfiguration,
   PrismaReviewConfigurationRepository,
   resolveReviewRuntimeEnv,
@@ -241,6 +248,93 @@ export async function createSetupPullRequestAction(
   revalidatePath("/dashboard");
   revalidatePath("/setup");
   redirectAfterMutation(formData, params);
+}
+
+export async function enableOrgRulesetWorkflowAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const githubInstallationId = readFormString(formData, "githubInstallationId");
+  let params: Record<string, string>;
+
+  try {
+    const installation = await prisma.gitHubInstallation.findUnique({
+      where: { githubInstallationId: BigInt(githubInstallationId) },
+      select: {
+        id: true,
+        workspaceId: true,
+        accountLogin: true,
+        accountType: true,
+        status: true,
+      },
+    });
+    if (!installation || installation.workspaceId !== workspaceId) {
+      throw new Error("installation_not_found");
+    }
+    if (installation.accountType !== "Organization") {
+      throw new Error("org_ruleset_requires_organization_installation");
+    }
+
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "workflow_provisioning",
+    });
+    await createDashboardRateLimitPolicy(
+      prisma,
+    ).assertOrgRulesetProvisioningAllowed({
+      workspaceId,
+      githubInstallationId,
+    });
+
+    const octokit =
+      await createGitHubAppInstallationOctokit(githubInstallationId);
+    const scope = readFormString(formData, "scope") as OrgRulesetScope;
+    const enforcement = readFormString(
+      formData,
+      "enforcement",
+    ) as OrgRulesetEnforcement;
+    const result = await new PostgresLeaseLock(prisma).withLock(
+      `org-ruleset:${workspaceId}:provision`,
+      5 * 60_000,
+      async () =>
+        requestOrgRulesetProvisioning(
+          {
+            workspaceId,
+            githubInstallationId,
+            scope,
+            enforcement,
+            actor: actor.actor,
+            requestedAt: new Date(),
+          },
+          {
+            provisioning: new PrismaOrgRulesetProvisioningRepository(prisma),
+            setupGateway: new OctokitOrgRulesetSetupGateway(octokit),
+            outbox: new PrismaOutboxEventRepository(prisma),
+            auditLog: new PrismaAuditLogRepository(prisma),
+          },
+        ),
+    );
+
+    params = {
+      notice: "org_ruleset_queued",
+      workspace: workspaceId,
+      section: "setup",
+      provisioning: result.provisioningId,
+    };
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "setup",
+    };
+  }
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
 }
 
 export async function saveWorkspaceReviewConfigAction(
@@ -679,6 +773,13 @@ function safeDashboardErrorCode(error: unknown): string {
       "repository_archived",
       "installation_not_active",
       "workflow_provisioning_disabled",
+      "org_ruleset_requires_organization_installation",
+      "org_ruleset_no_selected_repositories",
+      "org_ruleset_all_repositories_requires_all_access",
+      "org_admin_permission_required",
+      "org_rulesets_not_supported",
+      "org_ruleset_permission_update_pending",
+      "github_org_ruleset_validation_failed",
     ].includes(message)
   ) {
     return message;
