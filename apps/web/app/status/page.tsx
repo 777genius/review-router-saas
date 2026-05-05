@@ -80,10 +80,10 @@ export default function StatusPage(): React.ReactElement {
             Hosted demo is live. Reviews still run in customer CI.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
-            ReviewRouter is ready for trusted beta demos with a live Render API,
-            GitHub App onboarding, setup PR provisioning, and metadata-only
-            health surfaces. The remaining work is production hardening, not the
-            basic setup path.
+            ReviewRouter has a live hosted control plane, GitHub App onboarding,
+            setup PR provisioning, and metadata-only health surfaces. Reviews
+            and provider credentials still stay inside the customer GitHub
+            Actions workflow.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/getting-started">Start setup</LinkButton>
