@@ -1458,12 +1458,17 @@ function RepositoryTable({
     const workflowCurrent = workflowSetupAlreadyCurrent(
       repositoryHealth?.status,
     );
+    const setupView = describeRepositorySetup(
+      repository.setupStatus,
+      repositoryHealth?.status,
+    );
 
     return {
       repository,
       repositoryHealth,
       repositoryProvisioning,
       healthView,
+      setupView,
       setupPullRequestUrl,
       workflowCurrent,
     };
@@ -1502,6 +1507,7 @@ function RepositoryTable({
             repositoryHealth,
             repositoryProvisioning,
             healthView,
+            setupView,
             setupPullRequestUrl,
             workflowCurrent,
           }) => (
@@ -1532,15 +1538,16 @@ function RepositoryTable({
               <div className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3">
                 <div>
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                    Setup state
+                    Setup PR
                   </p>
                   <div className="mt-2">
-                    <Badge
-                      tone={repositorySetupStatusTone(repository.setupStatus)}
-                    >
-                      {formatRepositorySetupStatus(repository.setupStatus)}
-                    </Badge>
+                    <Badge tone={setupView.tone}>{setupView.label}</Badge>
                   </div>
+                  {setupView.hint ? (
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {setupView.hint}
+                    </p>
+                  ) : null}
                   {setupPullRequestUrl ? (
                     <a
                       className="mt-1 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
@@ -1600,7 +1607,7 @@ function RepositoryTable({
           <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
             <tr>
               <th className="px-4 py-3">Repository</th>
-              <th className="px-4 py-3">Setup state</th>
+              <th className="px-4 py-3">Setup PR</th>
               <th className="px-4 py-3">Runtime health</th>
               <th className="px-4 py-3">Action</th>
             </tr>
@@ -1612,6 +1619,7 @@ function RepositoryTable({
                 repositoryHealth,
                 repositoryProvisioning,
                 healthView,
+                setupView,
                 setupPullRequestUrl,
                 workflowCurrent,
               }) => {
@@ -1637,11 +1645,12 @@ function RepositoryTable({
                       </div>
                     </td>
                     <td className="px-4 py-4 align-top">
-                      <Badge
-                        tone={repositorySetupStatusTone(repository.setupStatus)}
-                      >
-                        {formatRepositorySetupStatus(repository.setupStatus)}
-                      </Badge>
+                      <Badge tone={setupView.tone}>{setupView.label}</Badge>
+                      {setupView.hint ? (
+                        <span className="mt-1 block text-xs leading-5 text-slate-500">
+                          {setupView.hint}
+                        </span>
+                      ) : null}
                       {setupPullRequestUrl ? (
                         <a
                           className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
@@ -2309,33 +2318,53 @@ function setupPrButtonLabel(setupStatus: string): string {
     : "Create setup PR";
 }
 
-function formatRepositorySetupStatus(setupStatus: string): string {
+function describeRepositorySetup(
+  setupStatus: string,
+  healthStatus: string | undefined,
+): {
+  readonly label: string;
+  readonly tone: "success" | "warning" | "danger" | "neutral";
+  readonly hint: string | null;
+} {
+  if (healthStatus === "missing_workflow") {
+    return {
+      label: "Setup PR needed",
+      tone: "warning",
+      hint: "Workflow is not on the default branch yet.",
+    };
+  }
+
   switch (setupStatus) {
     case "not_configured":
-      return "Not configured";
+      return {
+        label: "No setup PR",
+        tone: "neutral",
+        hint: "Create and merge the setup PR first.",
+      };
     case "setup_pr_open":
-      return "Setup PR open";
+      return {
+        label: "Setup PR open",
+        tone: "warning",
+        hint: "Merge it to install the workflow.",
+      };
     case "configured":
-      return "Configured";
+      return {
+        label: "Setup recorded",
+        tone: "success",
+        hint: null,
+      };
     case "needs_attention":
-      return "Needs attention";
+      return {
+        label: "Needs attention",
+        tone: "danger",
+        hint: "Fix the setup error, then retry.",
+      };
     default:
-      return setupStatus.replaceAll("_", " ");
-  }
-}
-
-function repositorySetupStatusTone(
-  setupStatus: string,
-): "success" | "warning" | "danger" | "neutral" {
-  switch (setupStatus) {
-    case "configured":
-      return "success";
-    case "setup_pr_open":
-      return "warning";
-    case "needs_attention":
-      return "danger";
-    default:
-      return "neutral";
+      return {
+        label: setupStatus.replaceAll("_", " "),
+        tone: "neutral",
+        hint: null,
+      };
   }
 }
 

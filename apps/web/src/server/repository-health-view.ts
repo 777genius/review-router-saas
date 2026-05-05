@@ -52,7 +52,8 @@ export function describeRepositoryHealth(
         tone: "warning",
         label: "Workflow missing",
         summary: fallbackSummary,
-        nextAction: "Create a setup PR from the dashboard and merge it.",
+        nextAction:
+          "Create or update the setup PR and merge it into the default branch.",
         blocksReview: true,
       };
     case "version_mismatch":
