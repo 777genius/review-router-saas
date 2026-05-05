@@ -43,21 +43,7 @@ if (!actionSessionSecret) {
 
 const prisma = createPrismaClient();
 try {
-  const repository = await prisma.repositoryConnection.findFirst({
-    where: { fullName: targetRepo, selected: true },
-    select: {
-      id: true,
-      githubRepositoryId: true,
-      fullName: true,
-      owner: true,
-    },
-  });
-  if (!repository) {
-    throw new Error(
-      `Repository ${targetRepo} is not synced. Run spike:github:sync-repositories first.`,
-    );
-  }
-
+  const repository = await ensureRepositoryFixture();
   const runId = `local-e2e-${Date.now()}`;
   const oidcJti = `local-e2e-jti-${Date.now()}`;
   const app = await createApiApp({
@@ -141,6 +127,7 @@ try {
   if (health.statusCode !== 200) {
     throw new Error(`health failed: ${health.statusCode} ${health.body}`);
   }
+
   const healthRetry = await app.inject({
     method: "POST",
     url: "/api/action/v1/health-report",
@@ -249,4 +236,65 @@ try {
   await app.close();
 } finally {
   await prisma.$disconnect();
+}
+
+async function ensureRepositoryFixture() {
+  const [owner, name] = targetRepo.split("/");
+  if (!owner || !name) {
+    throw new Error(`invalid target repository: ${targetRepo}`);
+  }
+
+  const workspace = await prisma.workspace.upsert({
+    where: { slug: "reviewrouter-ci-e2e" },
+    update: {},
+    create: { slug: "reviewrouter-ci-e2e", name: "ReviewRouter CI E2E" },
+    select: { id: true },
+  });
+  const installation = await prisma.gitHubInstallation.upsert({
+    where: { githubInstallationId: 9_999_001n },
+    update: { status: "active" },
+    create: {
+      workspaceId: workspace.id,
+      githubInstallationId: 9_999_001n,
+      accountLogin: owner,
+      accountType: "User",
+      repositorySelection: "selected",
+      status: "active",
+    },
+    select: { id: true },
+  });
+
+  return await prisma.repositoryConnection.upsert({
+    where: { githubRepositoryId: 9_999_002n },
+    update: {
+      workspaceId: workspace.id,
+      installationId: installation.id,
+      owner,
+      name,
+      fullName: targetRepo,
+      selected: true,
+      archived: false,
+      lastSyncedAt: new Date(),
+    },
+    create: {
+      workspaceId: workspace.id,
+      installationId: installation.id,
+      githubRepositoryId: 9_999_002n,
+      owner,
+      name,
+      fullName: targetRepo,
+      defaultBranch: "main",
+      visibility: "public",
+      selected: true,
+      archived: false,
+      setupStatus: "configured",
+      lastSyncedAt: new Date(),
+    },
+    select: {
+      id: true,
+      githubRepositoryId: true,
+      fullName: true,
+      owner: true,
+    },
+  });
 }
