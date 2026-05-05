@@ -1532,11 +1532,15 @@ function RepositoryTable({
               <div className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3">
                 <div>
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                    Setup
+                    Setup state
                   </p>
-                  <p className="mt-1 text-sm text-slate-200">
-                    {repository.setupStatus.replaceAll("_", " ")}
-                  </p>
+                  <div className="mt-2">
+                    <Badge
+                      tone={repositorySetupStatusTone(repository.setupStatus)}
+                    >
+                      {formatRepositorySetupStatus(repository.setupStatus)}
+                    </Badge>
+                  </div>
                   {setupPullRequestUrl ? (
                     <a
                       className="mt-1 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
@@ -1556,7 +1560,7 @@ function RepositoryTable({
 
                 <div>
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                    Health
+                    Runtime health
                   </p>
                   <div className="mt-2">
                     <Badge tone={healthView.tone}>{healthView.label}</Badge>
@@ -1596,8 +1600,8 @@ function RepositoryTable({
           <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
             <tr>
               <th className="px-4 py-3">Repository</th>
-              <th className="px-4 py-3">Setup</th>
-              <th className="px-4 py-3">Health</th>
+              <th className="px-4 py-3">Setup state</th>
+              <th className="px-4 py-3">Runtime health</th>
               <th className="px-4 py-3">Action</th>
             </tr>
           </thead>
@@ -1633,9 +1637,11 @@ function RepositoryTable({
                       </div>
                     </td>
                     <td className="px-4 py-4 align-top">
-                      <span className="block text-sm">
-                        {repository.setupStatus.replaceAll("_", " ")}
-                      </span>
+                      <Badge
+                        tone={repositorySetupStatusTone(repository.setupStatus)}
+                      >
+                        {formatRepositorySetupStatus(repository.setupStatus)}
+                      </Badge>
                       {setupPullRequestUrl ? (
                         <a
                           className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
@@ -2301,6 +2307,36 @@ function setupPrButtonLabel(setupStatus: string): string {
   return setupStatus === "setup_pr_open"
     ? "Update setup PR"
     : "Create setup PR";
+}
+
+function formatRepositorySetupStatus(setupStatus: string): string {
+  switch (setupStatus) {
+    case "not_configured":
+      return "Not configured";
+    case "setup_pr_open":
+      return "Setup PR open";
+    case "configured":
+      return "Configured";
+    case "needs_attention":
+      return "Needs attention";
+    default:
+      return setupStatus.replaceAll("_", " ");
+  }
+}
+
+function repositorySetupStatusTone(
+  setupStatus: string,
+): "success" | "warning" | "danger" | "neutral" {
+  switch (setupStatus) {
+    case "configured":
+      return "success";
+    case "setup_pr_open":
+      return "warning";
+    case "needs_attention":
+      return "danger";
+    default:
+      return "neutral";
+  }
 }
 
 function appInstallUrlForWorkspace(
