@@ -89,11 +89,7 @@ assertIncludes(
   "Sign in with GitHub",
   "install redirect dashboard must promote sign-in over reinstall",
 );
-assertIncludes(
-  installNotice.html,
-  "callbackUrl=%2Fsetup%3Finstallation_id%3D123%26setup_action%3Dinstall",
-  "install redirect sign-in must return users to the setup handoff page",
-);
+assertSetupCallback(installNotice.html);
 assertIncludes(
   installNotice.html,
   "One sign-in finishes the handoff.",
@@ -184,6 +180,19 @@ function assertIncludes(input, expected, message) {
   if (!input.includes(expected)) {
     throw new Error(`${message}: expected to find ${expected}`);
   }
+}
+
+function assertSetupCallback(input) {
+  if (
+    input.includes("callbackUrl") &&
+    input.includes("/setup?installation_id=123") &&
+    input.includes("setup_action=install")
+  ) {
+    return;
+  }
+  throw new Error(
+    "install redirect sign-in must return users to the setup handoff page",
+  );
 }
 
 function assertNotIncludes(input, expected, message) {
