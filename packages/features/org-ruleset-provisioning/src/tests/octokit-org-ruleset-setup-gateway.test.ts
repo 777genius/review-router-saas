@@ -24,6 +24,26 @@ describe("OctokitOrgRulesetSetupGateway", () => {
     });
   });
 
+  it("maps GitHub plan ruleset 403 responses to unsupported rulesets", async () => {
+    const requester = new FakeRequester(() => {
+      const error = new Error("Upgrade to GitHub Team to enable this feature.") as Error & {
+        status: number;
+      };
+      error.status = 403;
+      throw error;
+    });
+    const gateway = new OctokitOrgRulesetSetupGateway(requester);
+
+    await expect(
+      gateway.probeOrganizationRulesetAccess({
+        organizationLogin: "agent-teams-ai",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      safeErrorCode: "org_rulesets_not_supported",
+    });
+  });
+
   it("maps unsupported rulesets probes to safe UI codes", async () => {
     const notFound = new FakeRequester(() => {
       const error = new Error("not found") as Error & { status: number };

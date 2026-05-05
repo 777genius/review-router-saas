@@ -352,6 +352,9 @@ export function safeOrgRulesetErrorCode(error: unknown): string {
   }
   const status = getHttpStatus(error);
   if (status === 403) {
+    if (isGitHubRulesetsPlanUpgradeError(error)) {
+      return "org_rulesets_not_supported";
+    }
     return "org_admin_permission_required";
   }
   if (status === 401) {
@@ -434,4 +437,16 @@ function getHttpStatus(error: unknown): number {
   return typeof error === "object" && error !== null && "status" in error
     ? Number(error.status)
     : 0;
+}
+
+function isGitHubRulesetsPlanUpgradeError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : "";
+  return /upgrade to github team|upgrade.*enterprise|rulesets.*unavailable/i.test(
+    message,
+  );
 }

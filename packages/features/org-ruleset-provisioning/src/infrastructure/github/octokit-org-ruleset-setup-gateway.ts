@@ -38,6 +38,14 @@ export class OctokitOrgRulesetSetupGateway implements OrgRulesetSetupGatewayPort
     } catch (error: unknown) {
       const status = getErrorStatus(error);
       if (status === 403) {
+        if (isGitHubRulesetsPlanUpgradeError(error)) {
+          return {
+            ok: false,
+            safeErrorCode: "org_rulesets_not_supported",
+            safeErrorSummary:
+              "GitHub organization rulesets are unavailable on this organization plan. Use per-repository setup PR fallback.",
+          };
+        }
         return {
           ok: false,
           safeErrorCode: "org_admin_permission_required",
@@ -253,4 +261,16 @@ function getErrorStatus(error: unknown): number {
   return typeof error === "object" && error !== null && "status" in error
     ? Number(error.status)
     : 0;
+}
+
+function isGitHubRulesetsPlanUpgradeError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : "";
+  return /upgrade to github team|upgrade.*enterprise|rulesets.*unavailable/i.test(
+    message,
+  );
 }

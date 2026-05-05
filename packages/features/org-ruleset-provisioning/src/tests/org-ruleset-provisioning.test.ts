@@ -137,6 +137,15 @@ describe("org ruleset provisioning", () => {
     );
   });
 
+  it("maps worker-side GitHub plan 403 responses to unsupported rulesets", () => {
+    const error = new Error("Upgrade to GitHub Team to enable this feature.") as Error & {
+      status: number;
+    };
+    error.status = 403;
+
+    expect(safeOrgRulesetErrorCode(error)).toBe("org_rulesets_not_supported");
+  });
+
   it("does not enqueue provisioning when org ruleset permission is missing", async () => {
     const provisioning = new InMemoryOrgRulesetProvisioningRepository(target);
     const gateway = new StaticOrgRulesetSetupGateway({
