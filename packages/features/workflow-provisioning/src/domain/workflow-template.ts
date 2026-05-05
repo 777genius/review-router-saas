@@ -5,50 +5,29 @@ export type ReviewRouterWorkflowOptions = {
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
 };
 
+export type ReviewRouterWorkflowFile = {
+  readonly path: string;
+  readonly content: string;
+};
+
 export const defaultWorkflowPath = ".github/workflows/reviewrouter.yml";
+export const defaultInteractionWorkflowPath =
+  ".github/workflows/reviewrouter-interaction.yml";
 export const defaultSetupBranch = "reviewrouter/setup";
 
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
-  assertSafeActionRef(options.actionRef);
-  assertSafeApiUrl(options.apiUrl);
-  const actionVersion = extractActionVersion(options.actionRef);
-  const staticRuntimeEnv = Object.entries(options.staticRuntimeEnv ?? {})
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => {
-      assertSafeEnvKey(key);
-      return `      ${key}: ${JSON.stringify(value)}`;
-    })
-    .join("\n");
-  const staticRuntimeEnvBlock = staticRuntimeEnv ? `\n${staticRuntimeEnv}` : "";
-  const oidcStep =
-    options.runtimeConfigMode === "oidc"
-      ? `
-      - name: Fetch ReviewRouter runtime config
-        if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "\${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
-            echo "ReviewRouter OIDC is unavailable. Check id-token: write permission."
-            exit 1
-          fi
-          echo "ReviewRouter runtime config will be fetched by the action using GitHub OIDC."
-`
-      : "";
+  const template = prepareWorkflowTemplate(options);
 
   return `name: ReviewRouter
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_review_comment:
-    types: [created]
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: read
   pull-requests: write
   issues: write
@@ -58,16 +37,14 @@ jobs:
   review:
     name: review
     runs-on: ubuntu-latest
-    if: \${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
+    if: \${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
-      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(actionVersion)}
+      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
       REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
-      REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${staticRuntimeEnvBlock}
-      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(
-        options.runtimeConfigMode === "oidc" ? "app-oidc" : "github-token",
-      )}
+      REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${template.staticRuntimeEnvBlock}
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
     steps:
       - name: Checkout pull request code
         uses: actions/checkout@v6
@@ -146,7 +123,7 @@ jobs:
             chmod 600 "$CODEX_HOME/config.toml"
           fi
 
-${oidcStep}      - name: Run ReviewRouter
+${template.oidcStep}      - name: Run ReviewRouter
         if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         uses: ${options.actionRef}
         env:
@@ -156,27 +133,104 @@ ${oidcStep}      - name: Run ReviewRouter
           CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
+`;
+}
 
+export function renderReviewRouterInteractionWorkflow(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  const template = prepareWorkflowTemplate(options);
+
+  return `name: ReviewRouter Interaction
+
+on:
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
   interaction:
     name: interaction
     runs-on: ubuntu-latest
-    if: \${{ github.event_name == 'pull_request_review_comment' && startsWith(github.event.comment.body, '/rr ') }}
+    if: \${{ github.event_name == 'workflow_dispatch' || (github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/rr ')) }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
-      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(actionVersion)}
+      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
       REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
-      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(
-        options.runtimeConfigMode === "oidc" ? "app-oidc" : "github-token",
-      )}
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
       REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"
-    steps:${oidcStep}      - name: Run ReviewRouter interaction
+    steps:${template.oidcStep}      - name: Run ReviewRouter interaction
         uses: ${options.actionRef}
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
 `;
+}
+
+export function renderReviewRouterWorkflowFiles(
+  options: ReviewRouterWorkflowOptions,
+): readonly ReviewRouterWorkflowFile[] {
+  return [
+    {
+      path: defaultWorkflowPath,
+      content: renderReviewRouterWorkflow(options),
+    },
+    {
+      path: defaultInteractionWorkflowPath,
+      content: renderReviewRouterInteractionWorkflow(options),
+    },
+  ];
+}
+
+function prepareWorkflowTemplate(options: ReviewRouterWorkflowOptions): {
+  readonly actionVersion: string;
+  readonly commentTokenMode: "app-oidc" | "github-token";
+  readonly oidcStep: string;
+  readonly staticRuntimeEnvBlock: string;
+} {
+  assertSafeActionRef(options.actionRef);
+  assertSafeApiUrl(options.apiUrl);
+  const actionVersion = extractActionVersion(options.actionRef);
+  const staticRuntimeEnv = Object.entries(options.staticRuntimeEnv ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => {
+      assertSafeEnvKey(key);
+      return `      ${key}: ${JSON.stringify(value)}`;
+    })
+    .join("\n");
+  const staticRuntimeEnvBlock = staticRuntimeEnv ? `\n${staticRuntimeEnv}` : "";
+  const oidcStep =
+    options.runtimeConfigMode === "oidc"
+      ? `
+      - name: Fetch ReviewRouter runtime config
+        if: \${{ github.event_name == 'workflow_dispatch' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "\${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "ReviewRouter OIDC is unavailable. Check id-token: write permission."
+            exit 1
+          fi
+          echo "ReviewRouter runtime config will be fetched by the action using GitHub OIDC."
+`
+      : "";
+
+  return {
+    actionVersion,
+    commentTokenMode:
+      options.runtimeConfigMode === "oidc" ? "app-oidc" : "github-token",
+    oidcStep,
+    staticRuntimeEnvBlock,
+  };
 }
 
 function assertSafeActionRef(actionRef: string): void {

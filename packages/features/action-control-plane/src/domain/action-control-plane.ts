@@ -13,6 +13,7 @@ export const actionSessionTtlSeconds = 15 * 60;
 export const actionOidcReplayNonceFallbackTtlSeconds = actionSessionTtlSeconds;
 export const allowedWorkflowPaths = [
   ".github/workflows/reviewrouter.yml",
+  ".github/workflows/reviewrouter-interaction.yml",
 ] as const;
 
 export const allowedActionEvents = [

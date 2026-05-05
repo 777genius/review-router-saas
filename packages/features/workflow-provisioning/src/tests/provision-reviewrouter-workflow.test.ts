@@ -105,14 +105,34 @@ describe("provisionReviewRouterWorkflow", () => {
     );
 
     expect(pullRequest.url).toContain("/pull/1");
-    expect(gateway.input?.workflowPath).toBe(
-      ".github/workflows/reviewrouter.yml",
+    const files = new Map(
+      (gateway.input?.workflowFiles ?? []).map((file) => [
+        file.path,
+        file.content,
+      ]),
     );
-    expect(gateway.input?.workflowYaml).toContain("name: ReviewRouter");
-    expect(gateway.input?.workflowYaml).toContain(
+    expect([...files.keys()].sort()).toEqual([
+      ".github/workflows/reviewrouter-interaction.yml",
+      ".github/workflows/reviewrouter.yml",
+    ]);
+    expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
+      "name: ReviewRouter",
+    );
+    expect(files.get(".github/workflows/reviewrouter.yml")).not.toContain(
+      "pull_request_review_comment:",
+    );
+    expect(
+      files.get(".github/workflows/reviewrouter-interaction.yml"),
+    ).toContain("name: ReviewRouter Interaction");
+    expect(
+      files.get(".github/workflows/reviewrouter-interaction.yml"),
+    ).toContain("pull_request_review_comment:");
+    expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
       'CODEX_MODEL: "gpt-5.4-mini"',
     );
-    expect(gateway.input?.workflowYaml).toContain('FAIL_ON_SEVERITY: "major"');
+    expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
+      'FAIL_ON_SEVERITY: "major"',
+    );
     expect(provisioning.opened).toMatchObject({
       status: "setup_pr_open",
       branch: "reviewrouter/setup",
@@ -223,10 +243,18 @@ describe("provisionReviewRouterWorkflow", () => {
       repo: "example",
       baseBranch: "main",
     });
-    expect(gateway.input?.workflowYaml).toContain(
+    const files = new Map(
+      (gateway.input?.workflowFiles ?? []).map((file) => [
+        file.path,
+        file.content,
+      ]),
+    );
+    expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
       'CODEX_MODEL: "gpt-5.4-mini"',
     );
-    expect(gateway.input?.workflowYaml).toContain('FAIL_ON_SEVERITY: "off"');
+    expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
+      'FAIL_ON_SEVERITY: "off"',
+    );
     expect(auditLog.events[0]).toMatchObject({ actor: "user:maintainer" });
   });
 

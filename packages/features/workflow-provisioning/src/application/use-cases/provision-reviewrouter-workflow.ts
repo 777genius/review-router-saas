@@ -6,7 +6,7 @@ import {
   recordAuditEvent,
   type AuditLogRepositoryPort,
 } from "@reviewrouter/features-audit-log";
-import { renderReviewRouterWorkflow } from "../../domain/workflow-template";
+import { renderReviewRouterWorkflowFiles } from "../../domain/workflow-template";
 import {
   createProvisionWorkflowPlan,
   type ProvisionWorkflowInput,
@@ -54,7 +54,7 @@ export async function provisionReviewRouterWorkflow(
     throw new Error("workflow_provisioning_disabled");
   }
 
-  const workflowYaml = renderReviewRouterWorkflow({
+  const workflowFiles = renderReviewRouterWorkflowFiles({
     actionRef: plan.actionRef,
     apiUrl: plan.apiUrl,
     runtimeConfigMode: plan.runtimeConfigMode,
@@ -70,8 +70,7 @@ export async function provisionReviewRouterWorkflow(
         repo: plan.name,
         baseBranch: plan.defaultBranch,
         setupBranch: plan.setupBranch,
-        workflowPath: plan.workflowPath,
-        workflowYaml,
+        workflowFiles,
       });
 
     await dependencies.provisioning.markSetupPullRequestOpen({

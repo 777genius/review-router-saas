@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import type {
+  WorkflowSetupFile,
   WorkflowSetupGatewayInput,
   WorkflowSetupGatewayPort,
   WorkflowSetupPullRequest,
@@ -45,7 +46,9 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       if (getErrorStatus(error) !== 422) throw error;
     }
 
-    await this.createOrUpdateWorkflowFile(input);
+    for (const file of input.workflowFiles) {
+      await this.createOrUpdateWorkflowFile(input, file);
+    }
 
     const pullRequest = await this.getOrCreateSetupPullRequest(input);
 
@@ -58,10 +61,11 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
 
   private async createOrUpdateWorkflowFile(
     input: WorkflowSetupGatewayInput,
+    file: WorkflowSetupFile,
   ): Promise<void> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const existing = await this.readWorkflowFile(input);
-      if (existing.content === input.workflowYaml) {
+      const existing = await this.readWorkflowFile(input, file.path);
+      if (existing.content === file.content) {
         return;
       }
 
@@ -71,11 +75,11 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
           {
             owner: input.owner,
             repo: input.repo,
-            path: input.workflowPath,
+            path: file.path,
             branch: input.setupBranch,
             ...(existing.sha ? { sha: existing.sha } : {}),
-            message: "chore: add ReviewRouter workflow",
-            content: Buffer.from(input.workflowYaml).toString("base64"),
+            message: "chore: add ReviewRouter workflows",
+            content: Buffer.from(file.content).toString("base64"),
           },
         );
         return;
@@ -88,7 +92,10 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
     }
   }
 
-  private async readWorkflowFile(input: WorkflowSetupGatewayInput): Promise<{
+  private async readWorkflowFile(
+    input: WorkflowSetupGatewayInput,
+    filePath: string,
+  ): Promise<{
     readonly sha: string | null;
     readonly content: string | null;
   }> {
@@ -98,7 +105,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         {
           owner: input.owner,
           repo: input.repo,
-          path: input.workflowPath,
+          path: filePath,
           ref: input.setupBranch,
         },
       );
@@ -129,13 +136,17 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
           head: input.setupBranch,
           base: input.baseBranch,
           body: [
-            "This PR installs the ReviewRouter GitHub Actions workflow.",
+            "This PR installs the ReviewRouter GitHub Actions workflows.",
             "",
             "Security defaults:",
             "- uses pull_request, not pull_request_target",
             "- checks out code with persist-credentials: false",
             "- skips secret-backed review for fork pull requests by default",
             "- uses GitHub OIDC for SaaS runtime config",
+            "",
+            "Workflow files:",
+            "- `.github/workflows/reviewrouter.yml` - pull request review gate",
+            "- `.github/workflows/reviewrouter-interaction.yml` - `/rr` comment commands",
           ].join("\n"),
         },
       );

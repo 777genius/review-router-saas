@@ -269,7 +269,7 @@ describe("action control plane", () => {
           githubOidcClaims({
             event_name: "pull_request_review_comment",
             workflow_ref:
-              "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+              "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
           }),
         ),
         repositories: new InMemoryActionControlPlaneRepository(),

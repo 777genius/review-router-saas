@@ -125,13 +125,18 @@ const setupInput = {
   repo: "example",
   baseBranch: "main",
   setupBranch: "reviewrouter/setup",
-  workflowPath: ".github/workflows/reviewrouter.yml",
-  workflowYaml: "name: ReviewRouter\n",
+  workflowFiles: [
+    {
+      path: ".github/workflows/reviewrouter.yml",
+      content: "name: ReviewRouter\n",
+    },
+  ],
 };
+const primaryWorkflow = setupInput.workflowFiles[0]!;
 
 describe("OctokitWorkflowSetupGateway", () => {
   it("does not rewrite an identical workflow on the setup branch", async () => {
-    const requester = new FakeRequester(setupInput.workflowYaml);
+    const requester = new FakeRequester(primaryWorkflow.content);
     const gateway = new OctokitWorkflowSetupGateway(requester);
 
     await expect(
@@ -155,12 +160,12 @@ describe("OctokitWorkflowSetupGateway", () => {
     expect(putCall?.parameters).toMatchObject({
       branch: "reviewrouter/setup",
       sha: "workflow-sha",
-      content: Buffer.from(setupInput.workflowYaml).toString("base64"),
+      content: Buffer.from(primaryWorkflow.content).toString("base64"),
     });
   });
 
   it("re-reads workflow content once when GitHub reports a write conflict", async () => {
-    const requester = new FakeRequester([null, setupInput.workflowYaml], {
+    const requester = new FakeRequester([null, primaryWorkflow.content], {
       failPutOnceStatus: 409,
     });
     const gateway = new OctokitWorkflowSetupGateway(requester);
@@ -182,7 +187,7 @@ describe("OctokitWorkflowSetupGateway", () => {
   });
 
   it("re-reads open setup PRs when pull request creation races", async () => {
-    const requester = new FakeRequester(setupInput.workflowYaml, {
+    const requester = new FakeRequester(primaryWorkflow.content, {
       pullRequestResponses: [
         [],
         [
@@ -213,5 +218,29 @@ describe("OctokitWorkflowSetupGateway", () => {
         (call) => call.route === "POST /repos/{owner}/{repo}/pulls",
       ),
     ).toHaveLength(1);
+  });
+
+  it("writes every workflow file into the setup branch", async () => {
+    const requester = new FakeRequester(null);
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await gateway.createOrUpdateSetupPullRequest({
+      ...setupInput,
+      workflowFiles: [
+        ...setupInput.workflowFiles,
+        {
+          path: ".github/workflows/reviewrouter-interaction.yml",
+          content: "name: ReviewRouter Interaction\n",
+        },
+      ],
+    });
+
+    const putCalls = requester.calls.filter(
+      (call) => call.route === "PUT /repos/{owner}/{repo}/contents/{path}",
+    );
+    expect(putCalls.map((call) => call.parameters?.path)).toEqual([
+      ".github/workflows/reviewrouter.yml",
+      ".github/workflows/reviewrouter-interaction.yml",
+    ]);
   });
 });
