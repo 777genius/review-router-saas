@@ -22,9 +22,12 @@ describe("renderReviewRouterWorkflow", () => {
       on:
         pull_request:
           types: [opened, synchronize, reopened, ready_for_review]
+        pull_request_review_comment:
+          types: [created]
         workflow_dispatch:
 
       permissions:
+        actions: write
         contents: read
         pull-requests: write
         issues: write
@@ -34,7 +37,7 @@ describe("renderReviewRouterWorkflow", () => {
         review:
           name: review
           runs-on: ubuntu-latest
-          if: \${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+          if: \${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
           env:
             REVIEWROUTER_API_URL: "https://app.reviewrouter.dev"
             REVIEWROUTER_ACTION_VERSION: "v1"
@@ -146,6 +149,35 @@ describe("renderReviewRouterWorkflow", () => {
                 CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
                 OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
                 OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
+
+        interaction:
+          name: interaction
+          runs-on: ubuntu-latest
+          if: \${{ github.event_name == 'pull_request_review_comment' && startsWith(github.event.comment.body, '/rr ') }}
+          env:
+            REVIEWROUTER_API_URL: "https://app.reviewrouter.dev"
+            REVIEWROUTER_ACTION_VERSION: "v1"
+            REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
+            REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"
+            REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
+            REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"
+            REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"
+          steps:
+            - name: Fetch ReviewRouter runtime config
+              if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+              shell: bash
+              run: |
+                set -euo pipefail
+                if [ -z "\${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "\${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+                  echo "ReviewRouter OIDC is unavailable. Check id-token: write permission."
+                  exit 1
+                fi
+                echo "ReviewRouter runtime config will be fetched by the action using GitHub OIDC."
+            - name: Run ReviewRouter interaction
+              uses: 777genius/review-router@v1
+              env:
+                GITHUB_TOKEN: \${{ github.token }}
+                REVIEW_ROUTER_MODE: "interaction"
       "
     `);
   });
@@ -162,8 +194,10 @@ describe("renderReviewRouterWorkflow", () => {
     });
 
     expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain("pull_request_review_comment:");
     expect(workflow).not.toContain("pull_request_target");
     expect(workflow).not.toContain("env:\n        run:");
+    expect(workflow).toContain("actions: write");
     expect(workflow).toContain("persist-credentials: false");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain(
@@ -173,7 +207,10 @@ describe("renderReviewRouterWorkflow", () => {
       "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
     );
     expect(workflow).toContain(
-      "github.event_name != 'pull_request' || github.event.pull_request.draft == false",
+      "github.event_name == 'pull_request' && github.event.pull_request.draft == false",
+    );
+    expect(workflow).toContain(
+      "github.event_name == 'pull_request_review_comment' && startsWith(github.event.comment.body, '/rr ')",
     );
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain("uses: actions/setup-node@v6");
@@ -201,6 +238,10 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain('REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"');
     expect(workflow).toContain('REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"');
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"',
+    );
     expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');
     expect(workflow).toContain('CODEX_MODEL: "gpt-5.5"');
   });

@@ -17,6 +17,7 @@ export const allowedWorkflowPaths = [
 
 export const allowedActionEvents = [
   "pull_request",
+  "pull_request_review_comment",
   "workflow_dispatch",
 ] as const;
 

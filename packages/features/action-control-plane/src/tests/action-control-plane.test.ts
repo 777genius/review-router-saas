@@ -11,6 +11,10 @@ import type {
 } from "../application/ports/action-oidc-replay-nonce-store-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../application/ports/action-control-plane-repository-port.js";
 import type { ActionEntitlementPolicyPort } from "../application/ports/action-entitlement-policy-port.js";
+import type {
+  ActionLedgerKeyInput,
+  ActionLedgerKeyPort,
+} from "../application/ports/action-ledger-key-port.js";
 import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
 import type {
@@ -152,6 +156,15 @@ class DenyingActionEntitlements implements ActionEntitlementPolicyPort {
   }
 }
 
+class StaticActionLedgerKeys implements ActionLedgerKeyPort {
+  public readonly calls: ActionLedgerKeyInput[] = [];
+
+  deriveLedgerKey(input: ActionLedgerKeyInput): string {
+    this.calls.push(input);
+    return "ledger-key";
+  }
+}
+
 class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
   public readonly oidcExchangeCalls: Array<{
     readonly workspaceId: string;
@@ -244,6 +257,30 @@ describe("action control plane", () => {
       repositoryId: "repo_1",
       githubRunId: "1001",
       protocolVersion: 1,
+    });
+  });
+
+  it("accepts review comment OIDC claims for interaction commands", async () => {
+    const sessions = new StaticSessionTokenService();
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            event_name: "pull_request_review_comment",
+            workflow_ref:
+              "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+          }),
+        ),
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      eventName: "pull_request_review_comment",
+      repository: "777genius/example",
     });
   });
 
@@ -429,6 +466,29 @@ describe("action control plane", () => {
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("adds a derived ledger key to runtime config when configured", async () => {
+    const ledgerKeys = new StaticActionLedgerKeys();
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService(),
+        ledgerKeys,
+        clock,
+      },
+    );
+
+    expect(config.runtimeEnv.REVIEW_ROUTER_LEDGER_KEY).toBe("ledger-key");
+    expect(ledgerKeys.calls).toEqual([
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+      },
+    ]);
   });
 
   it("blocks runtime config for known-bad action versions", async () => {

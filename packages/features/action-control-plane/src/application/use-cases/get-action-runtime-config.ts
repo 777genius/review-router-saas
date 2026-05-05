@@ -10,6 +10,7 @@ import {
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
 import type { ActionRuntimeCompatibilityPolicyPort } from "../ports/action-runtime-compatibility-policy-port.js";
+import type { ActionLedgerKeyPort } from "../ports/action-ledger-key-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
 
 export type GetActionRuntimeConfigDependencies = {
@@ -17,6 +18,7 @@ export type GetActionRuntimeConfigDependencies = {
   readonly sessions: ActionSessionTokenServicePort;
   readonly entitlements?: ActionEntitlementPolicyPort;
   readonly compatibility?: ActionRuntimeCompatibilityPolicyPort;
+  readonly ledgerKeys?: ActionLedgerKeyPort;
   readonly clock: Clock;
 };
 
@@ -55,6 +57,16 @@ export async function getActionRuntimeConfig(
   );
   const config = record?.config ?? safeDefaultReviewConfiguration;
   const version = record?.version ?? 1;
+  const runtimeEnv = mapConfigToRuntimeEnv(config);
+  const ledgerKey = dependencies.ledgerKeys?.deriveLedgerKey({
+    workspaceId: repository.workspaceId,
+    repositoryId: repository.repositoryId,
+    githubRepositoryId: repository.githubRepositoryId,
+    repositoryFullName: repository.fullName,
+  });
+  if (ledgerKey) {
+    runtimeEnv.REVIEW_ROUTER_LEDGER_KEY = ledgerKey;
+  }
 
   return {
     protocolVersion: 1,
@@ -72,6 +84,6 @@ export async function getActionRuntimeConfig(
       inlineMaxComments: config.limits.inlineMaxComments,
       targetTokensPerBatch: config.limits.targetTokensPerBatch,
     },
-    runtimeEnv: mapConfigToRuntimeEnv(config),
+    runtimeEnv,
   };
 }

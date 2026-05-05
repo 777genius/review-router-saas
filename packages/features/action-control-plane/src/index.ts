@@ -1,6 +1,7 @@
 export * from "./domain/action-control-plane.js";
 export * from "./application/ports/action-oidc-replay-nonce-store-port.js";
 export * from "./application/ports/action-entitlement-policy-port.js";
+export * from "./application/ports/action-ledger-key-port.js";
 export * from "./application/ports/action-control-plane-repository-port.js";
 export * from "./application/ports/action-rate-limit-policy-port.js";
 export * from "./application/ports/action-runtime-compatibility-policy-port.js";
@@ -13,6 +14,7 @@ export * from "./application/use-cases/issue-action-comment-token.js";
 export * from "./application/use-cases/prune-expired-action-oidc-replay-nonces.js";
 export * from "./application/use-cases/record-action-health-report.js";
 export * from "./infrastructure/oidc/jose-github-actions-oidc-token-verifier.js";
+export * from "./infrastructure/crypto/hmac-action-ledger-key.js";
 export * from "./infrastructure/prisma/prisma-action-control-plane-repository.js";
 export * from "./infrastructure/prisma/prisma-action-oidc-replay-nonce-store.js";
 export * from "./infrastructure/config/static-action-runtime-compatibility-policy.js";

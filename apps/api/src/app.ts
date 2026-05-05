@@ -4,6 +4,7 @@ import { registerApiDemoRoutes } from "@reviewrouter/features-api-demo";
 import {
   JoseActionSessionTokenService,
   JoseGitHubActionsOidcTokenVerifier,
+  HmacActionLedgerKey,
   PrismaActionControlPlaneRepository,
   PrismaActionOidcReplayNonceStore,
   registerActionControlPlaneRoutes,
@@ -115,6 +116,9 @@ export async function createApiApp(
       ? (() => {
           const clock = new SystemClock();
           const githubAppPrivateKey = readGitHubAppPrivateKey();
+          const ledgerSecret =
+            process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
+            options.actionSessionSecret;
           return {
             repositories: new PrismaActionControlPlaneRepository(prisma),
             entitlements: new PrismaActionEntitlementPolicy(prisma),
@@ -131,6 +135,7 @@ export async function createApiApp(
             sessions: new JoseActionSessionTokenService(
               options.actionSessionSecret,
             ),
+            ledgerKeys: new HmacActionLedgerKey(ledgerSecret),
             ...(process.env.GITHUB_APP_ID && githubAppPrivateKey
               ? {
                   commentTokens: new OctokitGitHubAppCommentTokenIssuer({

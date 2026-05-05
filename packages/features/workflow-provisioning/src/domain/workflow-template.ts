@@ -43,9 +43,12 @@ export function renderReviewRouterWorkflow(
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: read
   pull-requests: write
   issues: write
@@ -55,7 +58,7 @@ jobs:
   review:
     name: review
     runs-on: ubuntu-latest
-    if: \${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    if: \${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
       REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(actionVersion)}
@@ -153,6 +156,26 @@ ${oidcStep}      - name: Run ReviewRouter
           CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
+
+  interaction:
+    name: interaction
+    runs-on: ubuntu-latest
+    if: \${{ github.event_name == 'pull_request_review_comment' && startsWith(github.event.comment.body, '/rr ') }}
+    env:
+      REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
+      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(actionVersion)}
+      REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
+      REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
+      REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(
+        options.runtimeConfigMode === "oidc" ? "app-oidc" : "github-token",
+      )}
+      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"
+    steps:${oidcStep}      - name: Run ReviewRouter interaction
+        uses: ${options.actionRef}
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          REVIEW_ROUTER_MODE: "interaction"
 `;
 }
 
