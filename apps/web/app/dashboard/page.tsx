@@ -474,9 +474,9 @@ export default async function DashboardPage({
                 Connected repositories
               </h1>
               <p className="max-w-2xl text-base leading-7 text-[#a0a8c0]">
-                Choose an account, set up one repository at a time, and keep
+                Pick an account, create a setup PR for one repository, then keep
                 provider secrets inside GitHub Actions. Policy and diagnostics
-                stay out of the way until needed.
+                stay available, but out of the way.
               </p>
             </div>
           </div>
@@ -488,7 +488,7 @@ export default async function DashboardPage({
               className="min-w-44"
             >
               {dashboardSummary.needsSetup > 0
-                ? "Choose repo to set up"
+                ? "Set up a repository"
                 : "Review repositories"}
             </LinkButton>
             {appInstallUrl ? (
@@ -498,7 +498,7 @@ export default async function DashboardPage({
                 size="md"
                 className="min-w-44"
               >
-                Add repositories
+                Add App repositories
               </LinkButton>
             ) : null}
             <LinkButton href="/setup" variant="ghost" size="md">
@@ -956,8 +956,8 @@ function WorkspaceCard({
                   <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
                     {workspaceHealth.ready} ready, {workspaceHealth.needsSetup}{" "}
                     need setup, {workspaceHealth.needsAttention} need attention.
-                    Next: create and merge a setup PR for one repository, then
-                    seed provider secrets.
+                    Next: create or update a setup PR, merge it, then seed
+                    provider secrets from the Setup section.
                   </p>
                 </div>
                 {appInstallUrlForWorkspace(primaryInstallation) ? (
@@ -1490,14 +1490,15 @@ function RepositoryTable({
           <Badge tone="accent">Repositories</Badge>
           <p className="mt-2 text-sm leading-6 text-slate-400">
             Showing {repositories.length} of {repositoryCount} synced
-            repositories here for quick setup and health.{" "}
+            repositories. Create or update setup PRs here; use setup search if
+            the repo is not visible.{" "}
             {hiddenRepositoryCount > 0
               ? `${hiddenRepositoryCount} more are available in the setup search.`
-              : "Policy and diagnostics are below."}
+              : "Only selected App repositories are shown."}
           </p>
         </div>
         <LinkButton href={setupSearchHref} variant="outline" size="sm">
-          Search all repos
+          Find repository
         </LinkButton>
       </div>
       <div className="grid gap-3 p-3 lg:hidden">
