@@ -248,13 +248,17 @@ function SignedInSetup({
               {installation.workspace.name}
             </h2>
             <p className="mt-1 text-sm text-slate-400">
-              {installation.repositoryCount} repositories synced from this App
-              installation.
+              {installation.repositoryCount} repositories synced from{" "}
+              {installation.accountType.toLowerCase()} account{" "}
+              {installation.accountLogin}.
             </p>
           </div>
-          <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 font-mono text-xs uppercase tracking-[0.14em] text-cyan-100">
-            {installation.repositorySelection}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="accent">{installation.accountType}</Badge>
+            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 font-mono text-xs uppercase tracking-[0.14em] text-cyan-100">
+              {installation.repositorySelection}
+            </span>
+          </div>
         </div>
 
         {installation.repositories.length === 0 ? (

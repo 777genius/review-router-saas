@@ -1,7 +1,7 @@
 import { tv } from "tailwind-variants";
 
 export const buttonStyles = tv({
-  base: "inline-flex shrink-0 items-center justify-center rounded-2xl border font-semibold leading-none tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+  base: "inline-flex shrink-0 items-center justify-center gap-2 rounded-2xl border text-center font-semibold leading-none tracking-wide transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
   variants: {
     variant: {
       solid:

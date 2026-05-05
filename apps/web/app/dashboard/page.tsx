@@ -1,5 +1,12 @@
 import { redirect } from "next/navigation";
-import { Badge, Button, Card, LinkButton, SelectField } from "@reviewrouter/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CodeBlock,
+  LinkButton,
+  SelectField,
+} from "@reviewrouter/ui";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
@@ -648,6 +655,7 @@ function DashboardSectionNav({
               <a
                 key={item.section}
                 href={dashboardSectionHref(item.section)}
+                aria-current={active ? "page" : undefined}
                 className={[
                   "rounded-2xl border p-3 transition",
                   active
@@ -808,7 +816,7 @@ function WorkspaceCard({
                       </p>
                     </div>
                     <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
-                      details
+                      {workspace.installations.length} connected
                     </span>
                   </div>
                 </summary>
@@ -871,7 +879,7 @@ function WorkspaceCard({
                           when you are ready to seed the selected provider.
                         </p>
                       </div>
-                      <span className="font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
+                      <span className="max-w-full break-words font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
                         {providerGuidance.recommendedScope.replaceAll("_", " ")}
                       </span>
                     </div>
@@ -899,9 +907,10 @@ function WorkspaceCard({
                           <p className="mt-1 text-xs leading-5 text-slate-400">
                             {command.description}
                           </p>
-                          <pre className="mt-3 overflow-x-auto rounded-md bg-black/40 p-3 text-xs text-cyan-100">
-                            <code>{command.command}</code>
-                          </pre>
+                          <CodeBlock
+                            code={command.command}
+                            className="mt-3 rounded-md p-3 text-xs leading-5"
+                          />
                         </div>
                       ))}
                     </div>
