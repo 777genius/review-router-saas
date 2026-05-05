@@ -726,35 +726,42 @@ function WorkspaceSwitcher({
 
   return (
     <Card className="rounded-2xl p-4 sm:p-5">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-          Account
-        </span>
-        {workspaces.map((workspace) => {
-          const workspaceKey = dashboardWorkspaceUrlKey(
-            workspace.workspace,
-            workspaces,
-          );
-          const active = workspace.workspace.id === selectedWorkspaceId;
-          return (
-            <a
-              key={workspace.workspace.id}
-              href={dashboardSectionHref(selectedSection, workspaceKey)}
-              aria-current={active ? "page" : undefined}
-              className={[
-                "inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold transition",
-                active
-                  ? "border-cyan-300/45 bg-cyan-300/10 text-cyan-50"
-                  : "border-cyan-200/10 bg-white/[0.03] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/[0.06]",
-              ].join(" ")}
-            >
-              <span>{workspace.workspace.name}</span>
-              <span className="font-mono text-xs text-slate-500">
-                {workspace.repositoryCount} repos
-              </span>
-            </a>
-          );
-        })}
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div>
+          <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-slate-300">
+            Choose account
+          </p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">
+            Personal accounts and organizations are configured separately.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 lg:justify-end">
+          {workspaces.map((workspace) => {
+            const workspaceKey = dashboardWorkspaceUrlKey(
+              workspace.workspace,
+              workspaces,
+            );
+            const active = workspace.workspace.id === selectedWorkspaceId;
+            return (
+              <a
+                key={workspace.workspace.id}
+                href={dashboardSectionHref(selectedSection, workspaceKey)}
+                aria-current={active ? "page" : undefined}
+                className={[
+                  "inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold transition",
+                  active
+                    ? "border-cyan-300/45 bg-cyan-300/10 text-cyan-50"
+                    : "border-cyan-200/10 bg-white/[0.03] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/[0.06]",
+                ].join(" ")}
+              >
+                <span>{workspace.workspace.name}</span>
+                <span className="font-mono text-xs text-slate-500">
+                  {workspace.repositoryCount} repos
+                </span>
+              </a>
+            );
+          })}
+        </div>
       </div>
     </Card>
   );
@@ -805,13 +812,16 @@ function DashboardSectionNav({
   return (
     <aside className="border-b border-cyan-200/10 bg-slate-950/45 p-5 lg:border-b-0 lg:border-r lg:p-6">
       <div className="lg:sticky lg:top-24">
+        <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+          Current account
+        </p>
         <p className="truncate text-lg font-semibold text-cyan-50">
           {workspace.name}
         </p>
         <p className="mt-1 text-xs leading-5 text-slate-500">
           {workspaceInstallSummary(workspace)}
         </p>
-        <div className="mt-4 grid gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
           <Badge tone="success">{repositoryCount} repos</Badge>
           <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
           <Badge tone="accent">
@@ -939,10 +949,10 @@ function WorkspaceCard({
                     {workspaceHealth.label}
                   </Badge>
                   <p className="mt-3 text-sm leading-6 text-slate-300">
-                    {workspaceHealth.ready} ready / {workspaceHealth.needsSetup}{" "}
-                    need setup / {workspaceHealth.needsAttention} need
-                    attention. Start by creating a setup PR for one selected
-                    repository.
+                    {workspaceHealth.ready} ready, {workspaceHealth.needsSetup}{" "}
+                    need setup, {workspaceHealth.needsAttention} need attention.
+                    Next: create and merge a setup PR for one repository, then
+                    seed provider secrets.
                   </p>
                 </div>
                 {appInstallUrlForWorkspace(primaryInstallation) ? (
