@@ -89,10 +89,11 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(workflow).toContain("Preflight ReviewRouter interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
-    expect(workflow).toContain(
-      "steps.preflight.outputs.should_run == 'true'",
-    );
+    expect(workflow).toContain("steps.preflight.outputs.should_run == 'true'");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_THREAD_RESOLVE_TOKEN: ${{ secrets.REVIEW_ROUTER_THREAD_RESOLVE_TOKEN }}",
+    );
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"',
     );
@@ -138,7 +139,9 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain("github.event_name != 'merge_group'");
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
-    expect(workflow).toContain("CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}");
+    expect(workflow).toContain(
+      "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
+    );
     expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
   });
 
