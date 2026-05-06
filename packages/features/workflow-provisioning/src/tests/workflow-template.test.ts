@@ -122,6 +122,9 @@ describe("renderReviewRouterWorkflow", () => {
       "uses: 777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml@v1",
     );
     expect(interactionWorkflow?.content).toContain(
+      "review_workflow_file: reviewrouter.yml",
+    );
+    expect(interactionWorkflow?.content).toContain(
       "pull_request_review_comment:",
     );
   });

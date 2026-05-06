@@ -263,6 +263,7 @@ jobs:
       runtime_ref: ${template.runtimeRef}
       api_url: ${JSON.stringify(options.apiUrl)}
       runtime_config_mode: ${options.runtimeConfigMode}
+      review_workflow_file: reviewrouter.yml
     secrets:
       REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
 `;
