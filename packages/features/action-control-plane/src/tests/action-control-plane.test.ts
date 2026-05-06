@@ -348,6 +348,38 @@ describe("action control plane", () => {
     });
   });
 
+  it("accepts live main reusable workflow refs through job_workflow_ref", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/heads/main",
+      ],
+    };
+    const sessions = new StaticSessionTokenService();
+
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            workflow_ref:
+              "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
+            job_workflow_ref:
+              "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/heads/main",
+          }),
+        ),
+        repositories: repository,
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      repository: "777genius/example",
+    });
+  });
+
   it("accepts trusted central workflow_ref when it calls a trusted reusable job", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     repository.repository = {
