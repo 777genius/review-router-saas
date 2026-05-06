@@ -407,6 +407,45 @@ type DashboardPageProps = {
 
 type DashboardSection = "repositories" | "setup" | "policy" | "diagnostics";
 
+const dashboardSectionMeta: Record<
+  DashboardSection,
+  {
+    readonly eyebrow: string;
+    readonly title: string;
+    readonly description: string;
+    readonly navDescription: string;
+  }
+> = {
+  repositories: {
+    eyebrow: "Repository setup",
+    title: "Repositories",
+    description:
+      "Create setup PRs, confirm runtime health, and see what needs attention before reviews run.",
+    navDescription: "Setup PRs and health",
+  },
+  setup: {
+    eyebrow: "Connection",
+    title: "Setup",
+    description:
+      "Sync GitHub App repositories and seed provider credentials directly into GitHub Actions secrets.",
+    navDescription: "App sync and secrets",
+  },
+  policy: {
+    eyebrow: "Review behavior",
+    title: "Policy",
+    description:
+      "Choose provider auth, model, reasoning effort, context mode, and blocking severity.",
+    navDescription: "Provider, model, gates",
+  },
+  diagnostics: {
+    eyebrow: "Operations",
+    title: "Diagnostics",
+    description:
+      "Inspect metadata-only health, queue failures, audit events, and support diagnostics.",
+    navDescription: "Queue, audit, support",
+  },
+};
+
 export default async function DashboardPage({
   searchParams,
 }: DashboardPageProps): Promise<React.ReactElement> {
@@ -471,34 +510,35 @@ export default async function DashboardPage({
   const dashboardSummary = summarizeDashboardWorkspaces([selectedWorkspace]);
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
-      <section className="rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/75 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-8">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-          <div className="min-w-0 space-y-4">
-            <div className="flex items-center gap-3">
+    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 md:py-10">
+      <section className="relative overflow-hidden rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/80 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-6">
+        <div className="absolute right-[-8rem] top-[-8rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl" />
+        <div className="relative grid gap-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
               <LogoMark size="sm" />
               <Badge tone="accent">Dashboard</Badge>
+              <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-500">
+                Reviews run in customer CI
+              </span>
             </div>
-            <div className="space-y-3">
-              <h1 className="max-w-3xl break-words text-4xl font-extrabold leading-[1.05] tracking-[-0.04em] text-cyan-50 md:text-6xl">
-                Connected repositories
-              </h1>
-              <p className="max-w-2xl text-base leading-7 text-[#a0a8c0]">
-                Pick an account, create a setup PR for one repository, then keep
-                provider secrets inside GitHub Actions. Policy and diagnostics
-                stay available, but out of the way.
-              </p>
-            </div>
+            <h1 className="mt-5 max-w-3xl break-words text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-cyan-50 sm:text-4xl md:text-5xl">
+              Manage repository review rollout.
+            </h1>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-[#a0a8c0] sm:text-base sm:leading-7">
+              Start from repositories. Setup, policy, and diagnostics are
+              separated into focused sections so the primary action stays clear.
+            </p>
           </div>
 
-          <div className="flex flex-wrap gap-3 lg:justify-end">
+          <div className="grid gap-2 sm:grid-cols-3 xl:min-w-[31rem]">
             <LinkButton
               href={dashboardSectionHref("repositories", selectedWorkspaceKey)}
               size="lg"
-              className="min-w-44"
+              className="w-full"
             >
               {dashboardSummary.needsSetup > 0
-                ? "Set up a repository"
+                ? "Set up repo"
                 : "Review repositories"}
             </LinkButton>
             {appInstallUrl ? (
@@ -506,12 +546,17 @@ export default async function DashboardPage({
                 href={appInstallUrl}
                 variant="outline"
                 size="md"
-                className="min-w-44"
+                className="w-full"
               >
-                Add App repositories
+                Add repos
               </LinkButton>
             ) : null}
-            <LinkButton href="/setup" variant="ghost" size="md">
+            <LinkButton
+              href="/setup"
+              variant="ghost"
+              size="md"
+              className="w-full"
+            >
               Guided setup
             </LinkButton>
           </div>
@@ -736,17 +781,17 @@ function WorkspaceSwitcher({
   if (workspaces.length < 2) return null;
 
   return (
-    <Card className="rounded-2xl p-4 sm:p-5">
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-        <div>
-          <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-slate-300">
-            Choose account
+    <Card className="rounded-[1.5rem] border-cyan-300/[0.1] bg-slate-950/45 p-3 sm:p-4">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] xl:items-center">
+        <div className="min-w-0 px-1">
+          <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+            Workspace
           </p>
           <p className="mt-1 text-xs leading-5 text-slate-500">
-            Personal accounts and organizations are configured separately.
+            Personal accounts and organizations stay isolated.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2 lg:justify-end">
+        <div className="flex gap-2 overflow-x-auto pb-1 xl:flex-wrap xl:justify-end xl:pb-0">
           {workspaces.map((workspace) => {
             const workspaceKey = dashboardWorkspaceUrlKey(
               workspace.workspace,
@@ -759,9 +804,9 @@ function WorkspaceSwitcher({
                 href={dashboardSectionHref(selectedSection, workspaceKey)}
                 aria-current={active ? "page" : undefined}
                 className={[
-                  "inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-2 text-sm font-semibold transition",
+                  "inline-flex min-h-11 shrink-0 items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold transition",
                   active
-                    ? "border-cyan-300/45 bg-cyan-300/10 text-cyan-50"
+                    ? "border-cyan-300/45 bg-cyan-300/10 text-cyan-50 shadow-[0_0_30px_-22px_rgba(0,240,255,0.9)]"
                     : "border-cyan-200/10 bg-white/[0.03] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/[0.06]",
                 ].join(" ")}
               >
@@ -797,52 +842,38 @@ function DashboardSectionNav({
     readonly section: DashboardSection;
     readonly label: string;
     readonly description: string;
-  }[] = [
-    {
-      section: "repositories",
-      label: "Repositories",
-      description: "Setup PRs and health",
-    },
-    {
-      section: "setup",
-      label: "Setup",
-      description: "App sync and secrets",
-    },
-    {
-      section: "policy",
-      label: "Policy",
-      description: "Provider, model, gates",
-    },
-    {
-      section: "diagnostics",
-      label: "Diagnostics",
-      description: "Queue, audit, support",
-    },
-  ];
+  }[] = (["repositories", "setup", "policy", "diagnostics"] as const).map(
+    (section) => ({
+      section,
+      label: dashboardSectionMeta[section].title,
+      description: dashboardSectionMeta[section].navDescription,
+    }),
+  );
 
   return (
-    <aside className="border-b border-cyan-200/10 bg-slate-950/45 p-5 lg:border-b-0 lg:border-r lg:p-6">
-      <div className="lg:sticky lg:top-24">
-        <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
-          Current account
-        </p>
-        <p className="truncate text-lg font-semibold text-cyan-50">
-          {workspace.name}
-        </p>
-        <p className="mt-1 text-xs leading-5 text-slate-500">
-          {workspaceInstallSummary(workspace)}
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Badge tone="success">{repositoryCount} repos</Badge>
-          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
-          <Badge tone="accent">
-            {entitlement.plan.replace("_", " ")} / {entitlement.status}
-          </Badge>
+    <aside className="border-b border-cyan-200/10 bg-slate-950/55 p-4 lg:border-b-0 lg:border-r lg:p-5">
+      <div className="grid gap-4 lg:sticky lg:top-24">
+        <div className="rounded-2xl border border-cyan-200/10 bg-black/25 p-4">
+          <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Current account
+          </p>
+          <p className="mt-2 truncate text-xl font-semibold text-cyan-50">
+            {workspace.name}
+          </p>
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            {workspaceInstallSummary(workspace)}
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+            <DashboardMiniStat label="Repos" value={String(repositoryCount)} />
+            <DashboardMiniStat label="Health" value={workspaceHealth.label} />
+          </div>
+          <div className="mt-3">
+            <Badge tone="accent" className="max-w-full break-words">
+              {entitlement.plan.replace("_", " ")} / {entitlement.status}
+            </Badge>
+          </div>
         </div>
-        <nav
-          className="mt-6 flex flex-wrap gap-2"
-          aria-label="Dashboard sections"
-        >
+        <nav className="grid gap-2" aria-label="Dashboard sections">
           {items.map((item) => {
             const active = selectedSection === item.section;
             return (
@@ -852,14 +883,22 @@ function DashboardSectionNav({
                 aria-current={active ? "page" : undefined}
                 title={item.description}
                 className={[
-                  "inline-flex min-h-10 items-center rounded-xl border px-3 py-2 transition",
+                  "group grid min-h-16 rounded-2xl border px-4 py-3 text-left transition",
                   active
-                    ? "border-cyan-300/35 bg-cyan-300/10 text-cyan-50 shadow-[0_0_34px_-24px_rgba(0,240,255,0.9)]"
+                    ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-50 shadow-[0_0_34px_-24px_rgba(0,240,255,0.9)]"
                     : "border-cyan-200/10 bg-white/[0.03] text-slate-300 hover:border-cyan-300/25 hover:bg-cyan-300/[0.06]",
                 ].join(" ")}
               >
-                <span className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em]">
+                <span className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.16em]">
                   {item.label}
+                </span>
+                <span
+                  className={[
+                    "mt-1 text-xs leading-5",
+                    active ? "text-cyan-100/80" : "text-slate-500",
+                  ].join(" ")}
+                >
+                  {item.description}
                 </span>
               </a>
             );
@@ -867,6 +906,25 @@ function DashboardSectionNav({
         </nav>
       </div>
     </aside>
+  );
+}
+
+function DashboardMiniStat({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.ReactElement {
+  return (
+    <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2">
+      <p className="font-mono text-[0.6rem] uppercase tracking-[0.14em] text-slate-500">
+        {label}
+      </p>
+      <p className="mt-1 truncate text-sm font-semibold text-cyan-50">
+        {value}
+      </p>
+    </div>
   );
 }
 
@@ -939,8 +997,8 @@ function WorkspaceCard({
   );
 
   return (
-    <Card className="overflow-hidden p-0">
-      <div className="grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+    <Card className="overflow-hidden rounded-[2rem] border-cyan-300/[0.1] bg-[#0b0d14]/82 p-0">
+      <div className="grid lg:grid-cols-[18rem_minmax(0,1fr)]">
         <DashboardSectionNav
           workspace={workspace}
           repositoryCount={repositoryCount}
@@ -951,29 +1009,20 @@ function WorkspaceCard({
         />
         <div
           id="dashboard-section-content"
-          className="space-y-5 scroll-mt-28 p-5 sm:p-6"
+          className="space-y-5 scroll-mt-28 bg-[radial-gradient(circle_at_100%_0%,rgba(0,240,255,0.06),transparent_22rem)] p-4 sm:p-6"
         >
+          <DashboardSectionHeader
+            selectedSection={selectedSection}
+            repositoryCount={repositoryCount}
+            workspaceHealth={workspaceHealth}
+            primaryRepositoryFullName={primaryRepository?.fullName ?? null}
+            activeConfig={activeConfig}
+          />
           <WorkspaceActionNotice params={params} orgRuleset={orgRuleset} />
 
           {selectedSection === "repositories" ? (
             <>
-              <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/5 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone={workspaceHealth.tone}>
-                    {workspaceHealth.label}
-                  </Badge>
-                  <span className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100">
-                    Next step
-                  </span>
-                </div>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-                  {workspaceHealth.ready} ready, {workspaceHealth.needsSetup}{" "}
-                  need setup, {workspaceHealth.needsAttention} need attention.
-                  Use the repository action below: create or update the setup
-                  PR, merge it, then seed provider secrets from the Setup
-                  section.
-                </p>
-              </div>
+              <RepositoryReadinessPanel workspaceHealth={workspaceHealth} />
 
               <RepositoryTable
                 workspace={workspace}
@@ -990,7 +1039,7 @@ function WorkspaceCard({
             <>
               <details
                 open
-                className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
+                className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
               >
                 <summary className="cursor-pointer list-none">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1005,11 +1054,11 @@ function WorkspaceCard({
                     </span>
                   </div>
                 </summary>
-                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {workspace.installations.map((installation) => (
                     <div
                       key={`${workspace.id}-${installation.githubInstallationId}`}
-                      className="space-y-3 rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+                      className="grid gap-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4"
                     >
                       <div>
                         <p className="text-sm font-semibold text-cyan-50">
@@ -1036,6 +1085,7 @@ function WorkspaceCard({
                           type="submit"
                           variant="outline"
                           size="sm"
+                          className="w-full sm:w-auto"
                           disabled={
                             !mutationsEnabled ||
                             installation.status !== "active"
@@ -1064,7 +1114,7 @@ function WorkspaceCard({
               {providerGuidance ? (
                 <details
                   open
-                  className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-4"
+                  className="rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/[0.08] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
                 >
                   <summary className="cursor-pointer list-none">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1097,7 +1147,7 @@ function WorkspaceCard({
                       {providerGuidance.commands.map((command) => (
                         <div
                           key={command.title}
-                          className="rounded-lg border border-emerald-200/10 bg-slate-950/80 p-3"
+                          className="rounded-2xl border border-emerald-200/10 bg-slate-950/80 p-4"
                         >
                           <p className="text-sm font-semibold text-emerald-50">
                             {command.title}
@@ -1121,7 +1171,7 @@ function WorkspaceCard({
           {selectedSection === "policy" ? (
             <details
               open
-              className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-4"
+              className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
             >
               <summary className="cursor-pointer list-none">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1136,7 +1186,7 @@ function WorkspaceCard({
                   </span>
                 </div>
               </summary>
-              <div className="mt-4">
+              <div className="mt-5 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                   <Badge tone="accent">Workspace default</Badge>
                   <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
@@ -1153,7 +1203,7 @@ function WorkspaceCard({
               </div>
 
               {repositories.length > 0 ? (
-                <div className="mt-4 rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+                <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
                   <div className="mb-4 flex flex-wrap items-center gap-2">
                     <Badge tone="accent">Repository overrides</Badge>
                     <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
@@ -1173,7 +1223,7 @@ function WorkspaceCard({
                       return (
                         <details
                           key={`${repository.id}-review-config`}
-                          className="rounded-lg border border-cyan-200/10 bg-cyan-300/5 p-3"
+                          className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4"
                         >
                           <summary className="cursor-pointer list-none">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1263,7 +1313,7 @@ function WorkspaceCard({
 
           {selectedSection === "diagnostics" ? (
             <>
-              <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+              <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                   <Badge tone={workspaceHealth.tone}>Readiness</Badge>
                   <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
@@ -1279,14 +1329,14 @@ function WorkspaceCard({
               </div>
 
               {supportDiagnostics ? (
-                <div className="rounded-xl border border-magenta-300/20 bg-fuchsia-400/10 p-4">
+                <div className="rounded-[1.5rem] border border-magenta-300/20 bg-fuchsia-400/10 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
                   <div className="mb-3 flex flex-wrap items-center gap-2">
                     <Badge tone="accent">Support diagnostics</Badge>
                     <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
                       metadata only / no code, diffs, prompts, or secrets
                     </span>
                   </div>
-                  <div className="grid gap-3 text-sm md:grid-cols-5">
+                  <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-5">
                     <SupportMetric
                       label="Repositories"
                       value={`${supportDiagnostics.repositoryCounts.selected}/${supportDiagnostics.repositoryCounts.total}`}
@@ -1324,7 +1374,7 @@ function WorkspaceCard({
                 </div>
               ) : null}
 
-              <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+              <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                   <Badge
                     tone={outboxFailures.length > 0 ? "warning" : "success"}
@@ -1397,7 +1447,7 @@ function WorkspaceCard({
                 )}
               </div>
 
-              <div className="rounded-xl border border-cyan-200/10 bg-slate-950/60 p-4">
+              <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
                 <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
                   Recent audit
                 </p>
@@ -1426,6 +1476,104 @@ function WorkspaceCard({
         </div>
       </div>
     </Card>
+  );
+}
+
+function DashboardSectionHeader({
+  selectedSection,
+  repositoryCount,
+  workspaceHealth,
+  primaryRepositoryFullName,
+  activeConfig,
+}: {
+  readonly selectedSection: DashboardSection;
+  readonly repositoryCount: number;
+  readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
+  readonly primaryRepositoryFullName: string | null;
+  readonly activeConfig: ReviewConfiguration;
+}): React.ReactElement {
+  const meta = dashboardSectionMeta[selectedSection];
+  const status =
+    selectedSection === "repositories"
+      ? `${repositoryCount} synced repositories`
+      : selectedSection === "policy"
+        ? `${activeConfig.provider.model} / ${activeConfig.provider.reasoningEffort}`
+        : selectedSection === "setup"
+          ? primaryRepositoryFullName
+            ? `Selected repo: ${primaryRepositoryFullName}`
+            : "Select a repository first"
+          : "Metadata only";
+
+  return (
+    <section className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+        <div className="min-w-0">
+          <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+            {meta.eyebrow}
+          </p>
+          <h2 className="mt-2 text-2xl font-bold tracking-[-0.025em] text-cyan-50 sm:text-3xl">
+            {meta.title}
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            {meta.description}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 xl:justify-end">
+          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
+          <Badge tone="neutral" className="max-w-full break-words">
+            {status}
+          </Badge>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RepositoryReadinessPanel({
+  workspaceHealth,
+}: {
+  readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
+}): React.ReactElement {
+  return (
+    <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_17rem]">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <ReadinessMetric label="Ready" value={workspaceHealth.ready} />
+        <ReadinessMetric
+          label="Need setup"
+          value={workspaceHealth.needsSetup}
+        />
+        <ReadinessMetric
+          label="Need attention"
+          value={workspaceHealth.needsAttention}
+        />
+      </div>
+      <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.06] p-4">
+        <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+          Next step
+        </p>
+        <p className="mt-2 text-sm leading-6 text-slate-300">
+          Use the action column below. Create or update the setup PR, merge it,
+          then seed provider secrets from Setup.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function ReadinessMetric({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: number;
+}): React.ReactElement {
+  return (
+    <div className="rounded-2xl border border-cyan-200/10 bg-slate-950/60 p-4">
+      <p className="font-mono text-[0.68rem] uppercase tracking-[0.16em] text-slate-500">
+        {label}
+      </p>
+      <p className="mt-2 text-3xl font-bold text-cyan-50">{value}</p>
+    </div>
   );
 }
 
@@ -1500,8 +1648,8 @@ function RepositoryTable({
   );
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-cyan-200/10 bg-slate-950/55">
-      <div className="grid gap-3 border-b border-cyan-200/10 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+    <div className="overflow-hidden rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+      <div className="grid gap-3 border-b border-cyan-200/10 bg-white/[0.025] p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
         <div>
           <Badge tone="accent">Repositories</Badge>
           <p className="mt-2 text-sm leading-6 text-slate-400">
@@ -1531,7 +1679,7 @@ function RepositoryTable({
             <div
               key={repository.id}
               className={[
-                "grid gap-4 rounded-2xl border border-cyan-200/10 bg-slate-950/70 p-4",
+                "grid gap-4 rounded-2xl border border-cyan-200/10 bg-slate-950/76 p-4",
                 repository.selected ? "" : "opacity-50",
               ].join(" ")}
             >
@@ -1621,7 +1769,7 @@ function RepositoryTable({
       </div>
       <div className="hidden overflow-x-auto lg:block">
         <table className="w-full min-w-[860px] text-left text-sm">
-          <thead className="bg-cyan-300/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
+          <thead className="bg-cyan-300/[0.08] text-xs uppercase tracking-[0.16em] text-cyan-100">
             <tr>
               <th className="px-4 py-3">Repository</th>
               <th className="px-4 py-3">Setup PR</th>
@@ -1643,7 +1791,10 @@ function RepositoryTable({
                 return (
                   <tr
                     key={repository.id}
-                    className={repository.selected ? "" : "opacity-50"}
+                    className={[
+                      "transition hover:bg-cyan-300/[0.035]",
+                      repository.selected ? "" : "opacity-50",
+                    ].join(" ")}
                   >
                     <td className="px-4 py-4 align-top">
                       <p className="font-medium text-cyan-50">
@@ -1754,7 +1905,7 @@ function OrgRulesetAdvancedCard({
     buildInstallationSettingsUrl(organizationInstallation) ?? appInstallUrl;
 
   return (
-    <details className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4">
+    <details className="rounded-[1.5rem] border border-amber-300/20 bg-amber-300/[0.08] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
       <summary className="cursor-pointer list-none">
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
           <div>
@@ -1773,8 +1924,8 @@ function OrgRulesetAdvancedCard({
         </div>
       </summary>
 
-      <div className="mt-4 grid gap-4">
-        <div className="rounded-lg border border-amber-200/15 bg-slate-950/70 p-4 text-sm leading-6 text-slate-300">
+      <div className="mt-5 grid gap-4">
+        <div className="rounded-2xl border border-amber-200/15 bg-slate-950/70 p-4 text-sm leading-6 text-slate-300">
           <p>
             This advanced mode requires GitHub App{" "}
             <strong className="text-amber-100">
@@ -1817,10 +1968,10 @@ function OrgRulesetAdvancedCard({
           ) : null}
         </div>
 
-        <div className="grid gap-4">
+        <div className="rounded-2xl border border-amber-200/10 bg-slate-950/55 p-4">
           <form
             action={enableOrgRulesetWorkflowAction}
-            className="grid gap-4 xl:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_auto] xl:items-end"
+            className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_auto] 2xl:items-end"
           >
             <input type="hidden" name="workspaceId" value={workspace.id} />
             <input
@@ -1870,22 +2021,20 @@ function OrgRulesetAdvancedCard({
               <FormSubmitButton
                 variant="soft"
                 tone="warning"
-                className="w-full whitespace-nowrap xl:w-auto"
+                className="w-full whitespace-nowrap"
                 disabled={
                   !mutationsEnabled ||
                   organizationInstallation.status !== "active" ||
                   orgRuleset?.status === "processing" ||
                   rulesetsUnsupported
                 }
-                idleLabel={
-                  orgRuleset ? "Update org-wide" : "Enable org-wide"
-                }
+                idleLabel={orgRuleset ? "Update org-wide" : "Enable org-wide"}
                 pendingLabel="Checking permission..."
               />
             </div>
           </form>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-amber-200/10 pt-4">
             {permissionMissing && permissionApprovalUrl ? (
               <LinkButton
                 href={permissionApprovalUrl}
@@ -2126,7 +2275,7 @@ function ReviewConfigForm({
   readonly submitLabel: string;
 }): React.ReactElement {
   return (
-    <form action={action} className="grid gap-3 md:grid-cols-3">
+    <form action={action} className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {hiddenFields.map((field) => (
         <input
           key={`${field.name}:${field.value}`}
@@ -2142,15 +2291,12 @@ function ReviewConfigForm({
         disabled={!mutationsEnabled}
         options={providerAuthOptions}
       />
-      <label className="space-y-1 text-sm text-slate-300">
-        <span>Model</span>
-        <input
-          name="model"
-          defaultValue={config.provider.model}
-          disabled={!mutationsEnabled}
-          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-        />
-      </label>
+      <DashboardTextField
+        name="model"
+        label="Model"
+        defaultValue={config.provider.model}
+        disabled={!mutationsEnabled}
+      />
       <SelectField
         name="reasoningEffort"
         label="Reasoning effort"
@@ -2165,31 +2311,25 @@ function ReviewConfigForm({
         disabled={!mutationsEnabled}
         options={failOnSeverityOptions}
       />
-      <label className="space-y-1 text-sm text-slate-300">
-        <span>Inline max comments</span>
-        <input
-          name="inlineMaxComments"
-          type="number"
-          min={0}
-          max={50}
-          defaultValue={config.limits.inlineMaxComments}
-          disabled={!mutationsEnabled}
-          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-        />
-      </label>
-      <label className="space-y-1 text-sm text-slate-300">
-        <span>Target tokens per batch</span>
-        <input
-          name="targetTokensPerBatch"
-          type="number"
-          min={4000}
-          max={200000}
-          step={1000}
-          defaultValue={config.limits.targetTokensPerBatch}
-          disabled={!mutationsEnabled}
-          className="w-full rounded-lg border border-cyan-200/15 bg-slate-950 px-3 py-2 text-cyan-50"
-        />
-      </label>
+      <DashboardTextField
+        name="inlineMaxComments"
+        label="Inline max comments"
+        type="number"
+        min={0}
+        max={50}
+        defaultValue={config.limits.inlineMaxComments}
+        disabled={!mutationsEnabled}
+      />
+      <DashboardTextField
+        name="targetTokensPerBatch"
+        label="Target tokens per batch"
+        type="number"
+        min={4000}
+        max={200000}
+        step={1000}
+        defaultValue={config.limits.targetTokensPerBatch}
+        disabled={!mutationsEnabled}
+      />
       <SelectField
         name="agenticContext"
         label="Agentic context"
@@ -2197,12 +2337,55 @@ function ReviewConfigForm({
         disabled={!mutationsEnabled}
         options={agenticContextOptions}
       />
-      <div className="flex items-end">
-        <Button type="submit" variant="solid" disabled={!mutationsEnabled}>
+      <div className="flex items-end md:col-span-2 xl:col-span-1">
+        <Button
+          type="submit"
+          variant="solid"
+          className="w-full"
+          disabled={!mutationsEnabled}
+        >
           {submitLabel}
         </Button>
       </div>
     </form>
+  );
+}
+
+function DashboardTextField({
+  name,
+  label,
+  defaultValue,
+  disabled,
+  type = "text",
+  min,
+  max,
+  step,
+}: {
+  readonly name: string;
+  readonly label: string;
+  readonly defaultValue: string | number;
+  readonly disabled: boolean;
+  readonly type?: string;
+  readonly min?: number;
+  readonly max?: number;
+  readonly step?: number;
+}): React.ReactElement {
+  return (
+    <label className="grid min-w-0 gap-2 text-sm text-slate-300">
+      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        {label}
+      </span>
+      <input
+        name={name}
+        type={type}
+        min={min}
+        max={max}
+        step={step}
+        defaultValue={defaultValue}
+        disabled={disabled}
+        className="min-h-11 w-full rounded-xl border border-cyan-200/15 bg-slate-950/80 px-3 py-2 text-cyan-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition placeholder:text-slate-500 hover:border-cyan-200/30 focus:border-cyan-300/55 focus:ring-2 focus:ring-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+      />
+    </label>
   );
 }
 
