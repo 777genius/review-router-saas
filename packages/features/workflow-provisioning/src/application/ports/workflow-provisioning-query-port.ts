@@ -1,8 +1,11 @@
+import type { ReviewRouterWorkflowStyle } from "../../domain/workflow-template";
+
 export type RepositoryWorkflowProvisioningSummary = {
   readonly repositoryId: string;
   readonly status: "not_started" | "setup_pr_open" | "configured" | "failed";
   readonly branch: string;
   readonly workflowPath: string;
+  readonly workflowStyle: ReviewRouterWorkflowStyle;
   readonly actionVersion: string;
   readonly pullRequestUrl: string | null;
   readonly errorMessage: string | null;

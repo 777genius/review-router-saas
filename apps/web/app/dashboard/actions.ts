@@ -134,6 +134,7 @@ export async function createSetupPullRequestAction(
   const prisma = getPrisma();
   const repositoryId = readFormString(formData, "repositoryId");
   const workspaceId = readFormString(formData, "workspaceId");
+  const workflowStyle = readWorkflowStyle(formData);
   let params: Record<string, string>;
 
   try {
@@ -223,6 +224,7 @@ export async function createSetupPullRequestAction(
               apiUrl: resolveWorkflowPublicApiUrl(),
               runtimeConfigMode: "oidc",
               staticRuntimeEnv,
+              workflowStyle,
               actor: actor.actor,
             },
             {
@@ -705,6 +707,11 @@ function readFormString(formData: FormData, key: string): string {
   return value;
 }
 
+function readWorkflowStyle(formData: FormData): "reusable" | "explicit" {
+  const value = formData.get("workflowStyle");
+  return value === "explicit" ? "explicit" : "reusable";
+}
+
 function readFormNumber(formData: FormData, key: string): number {
   const value = Number(readFormString(formData, key));
   if (!Number.isFinite(value)) {
@@ -789,6 +796,8 @@ function safeDashboardErrorCode(error: unknown): string {
     [
       "invalid_workflow_api_url",
       "invalid_workflow_action_ref",
+      "invalid_reusable_workflow_action_ref",
+      "invalid_reusable_workflow_runtime_ref",
       "invalid_workflow_env_key",
     ].includes(message)
   ) {

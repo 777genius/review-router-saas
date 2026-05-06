@@ -1,4 +1,5 @@
 import type { AuditLogRepositoryPort } from "@reviewrouter/features-audit-log";
+import type { ReviewRouterWorkflowStyle } from "../../domain/workflow-template";
 import { provisionReviewRouterWorkflow } from "./provision-reviewrouter-workflow";
 import type { WorkflowProvisioningRepositoryPort } from "../ports/workflow-provisioning-repository-port";
 import type { WorkflowSetupGatewayPort } from "../ports/workflow-setup-gateway-port";
@@ -10,6 +11,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly apiUrl: string;
   readonly runtimeConfigMode: "oidc" | "static";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
+  readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly actor?: string;
 };
 
@@ -50,6 +52,7 @@ export async function provisionRepositoryReviewRouterWorkflow(
       actionRef: input.actionRef,
       apiUrl: input.apiUrl,
       runtimeConfigMode: input.runtimeConfigMode,
+      ...(input.workflowStyle ? { workflowStyle: input.workflowStyle } : {}),
       ...(input.staticRuntimeEnv
         ? { staticRuntimeEnv: input.staticRuntimeEnv }
         : {}),

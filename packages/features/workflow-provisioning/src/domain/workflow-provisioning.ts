@@ -1,4 +1,8 @@
-import { defaultSetupBranch, defaultWorkflowPath } from "./workflow-template";
+import {
+  defaultSetupBranch,
+  defaultWorkflowPath,
+  type ReviewRouterWorkflowStyle,
+} from "./workflow-template";
 
 export type WorkflowProvisioningStatus =
   | "not_started"
@@ -16,12 +20,13 @@ export type ProvisionWorkflowInput = {
   readonly apiUrl: string;
   readonly runtimeConfigMode: "oidc" | "static";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
+  readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly setupBranch?: string;
   readonly workflowPath?: string;
 };
 
 export type ProvisionWorkflowPlan = Required<
-  Pick<ProvisionWorkflowInput, "setupBranch" | "workflowPath">
+  Pick<ProvisionWorkflowInput, "setupBranch" | "workflowPath" | "workflowStyle">
 > &
   ProvisionWorkflowInput;
 
@@ -30,6 +35,7 @@ export function createProvisionWorkflowPlan(
 ): ProvisionWorkflowPlan {
   return {
     ...input,
+    workflowStyle: input.workflowStyle ?? "reusable",
     setupBranch: input.setupBranch ?? defaultSetupBranch,
     workflowPath: input.workflowPath ?? defaultWorkflowPath,
   };

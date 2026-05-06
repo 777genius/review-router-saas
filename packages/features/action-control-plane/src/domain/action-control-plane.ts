@@ -341,12 +341,21 @@ export function isAllowedOidcWorkflowIdentity(input: {
   readonly allowedPaths?: readonly string[];
   readonly trustedWorkflowRefs?: readonly string[];
 }): boolean {
-  if (
-    input.jobWorkflowRef &&
-    isTrustedWorkflowRef(input.jobWorkflowRef, input.trustedWorkflowRefs) &&
-    isWorkflowRefForRepository(input.workflowRef, input.repository)
-  ) {
-    return true;
+  if (input.jobWorkflowRef) {
+    if (
+      !isTrustedWorkflowRef(input.jobWorkflowRef, input.trustedWorkflowRefs)
+    ) {
+      return false;
+    }
+
+    return isAllowedWorkflowRef({
+      workflowRef: input.workflowRef,
+      repository: input.repository,
+      ...(input.allowedPaths ? { allowedPaths: input.allowedPaths } : {}),
+      ...(input.trustedWorkflowRefs
+        ? { trustedWorkflowRefs: input.trustedWorkflowRefs }
+        : {}),
+    });
   }
 
   return isAllowedWorkflowRef({
@@ -367,19 +376,5 @@ function isTrustedWorkflowRef(
     trustedWorkflowRefs?.some(
       (trustedRef) => trustedRef.toLowerCase() === workflowRef.toLowerCase(),
     ) ?? false
-  );
-}
-
-function isWorkflowRefForRepository(
-  workflowRef: string,
-  repository: string,
-): boolean {
-  const atIndex = workflowRef.indexOf("@");
-  if (atIndex <= 0) return false;
-  const workflowIdentity = workflowRef.slice(0, atIndex);
-  const repositoryPrefix = `${repository}/`;
-  return (
-    workflowIdentity.slice(0, repositoryPrefix.length).toLowerCase() ===
-    repositoryPrefix.toLowerCase()
   );
 }

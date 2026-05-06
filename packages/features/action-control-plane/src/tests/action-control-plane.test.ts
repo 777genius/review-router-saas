@@ -321,7 +321,7 @@ describe("action control plane", () => {
     repository.repository = {
       ...repositoryContext,
       trustedWorkflowRefs: [
-        "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+        "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
       ],
     };
     const sessions = new StaticSessionTokenService();
@@ -332,9 +332,43 @@ describe("action control plane", () => {
         oidcVerifier: new StaticOidcVerifier(
           githubOidcClaims({
             workflow_ref:
-              "777genius/example/.github/workflows/generated-required-workflow.yml@refs/pull/1/merge",
+              "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
             job_workflow_ref:
+              "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+          }),
+        ),
+        repositories: repository,
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      repository: "777genius/example",
+    });
+  });
+
+  it("accepts trusted central workflow_ref when it calls a trusted reusable job", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+        "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+      ],
+    };
+    const sessions = new StaticSessionTokenService();
+
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            event_name: "merge_group",
+            workflow_ref:
               "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+            job_workflow_ref:
+              "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
           }),
         ),
         repositories: repository,
@@ -394,6 +428,64 @@ describe("action control plane", () => {
                 "attacker/example/.github/workflows/reviewrouter.yml@refs/heads/main",
               job_workflow_ref:
                 "agent-teams-ai/reviewrouter-workflows/.github/workflows/reviewrouter-required.yml@refs/heads/main",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
+  it("rejects trusted reusable jobs when the caller path is not a ReviewRouter workflow", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+      ],
+    };
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              workflow_ref:
+                "777genius/example/.github/workflows/deploy.yml@refs/heads/main",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
+  it("rejects untrusted reusable jobs even when the caller path is allowed", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+      ],
+    };
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              workflow_ref:
+                "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+              job_workflow_ref:
+                "attacker/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
             }),
           ),
           repositories: repository,

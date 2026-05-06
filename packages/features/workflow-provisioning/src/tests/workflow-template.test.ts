@@ -4,6 +4,8 @@ import {
   defaultRequiredWorkflowPath,
   defaultWorkflowPath,
   renderReviewRouterInteractionWorkflow,
+  renderReviewRouterReusableInteractionWorkflow,
+  renderReviewRouterReusableWorkflow,
   renderReviewRouterRequiredWorkflow,
   renderReviewRouterWorkflow,
   renderReviewRouterWorkflowFiles,
@@ -107,6 +109,9 @@ describe("renderReviewRouterWorkflow", () => {
     ]);
     const [reviewWorkflow, interactionWorkflow] = files;
     expect(reviewWorkflow?.content).toContain("name: ReviewRouter");
+    expect(reviewWorkflow?.content).toContain(
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",
+    );
     expect(reviewWorkflow?.content).not.toContain(
       "pull_request_review_comment:",
     );
@@ -114,7 +119,57 @@ describe("renderReviewRouterWorkflow", () => {
       "name: ReviewRouter Interaction",
     );
     expect(interactionWorkflow?.content).toContain(
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml@v1",
+    );
+    expect(interactionWorkflow?.content).toContain(
       "pull_request_review_comment:",
+    );
+  });
+
+  it("renders compact reusable caller workflows by default", () => {
+    const reviewWorkflow = renderReviewRouterReusableWorkflow(workflowOptions);
+    const interactionWorkflow =
+      renderReviewRouterReusableInteractionWorkflow(workflowOptions);
+
+    expect(reviewWorkflow).toContain("pull_request:");
+    expect(reviewWorkflow).toContain("workflow_dispatch:");
+    expect(reviewWorkflow).toContain("id-token: write");
+    expect(reviewWorkflow).toContain(
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",
+    );
+    expect(reviewWorkflow).toContain("runtime_ref: v1");
+    expect(reviewWorkflow).toContain('api_url: "https://app.reviewrouter.dev"');
+    expect(reviewWorkflow).toContain("runtime_config_mode: oidc");
+    expect(reviewWorkflow).toContain(
+      'static_runtime_env_json: >-\n        {"REVIEW_AUTH_MODE":"codex-oauth","CODEX_MODEL":"gpt-5.5"}',
+    );
+    expect(reviewWorkflow).toContain(
+      "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
+    );
+    expect(reviewWorkflow).not.toContain("pull_request_target");
+    expect(reviewWorkflow).not.toContain("actions/setup-node@v6");
+
+    expect(interactionWorkflow).toContain("pull_request_review_comment:");
+    expect(interactionWorkflow).toContain("actions: write");
+    expect(interactionWorkflow).toContain(
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml@v1",
+    );
+    expect(interactionWorkflow).toContain(
+      "REVIEW_ROUTER_LEDGER_KEY: ${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}",
+    );
+    expect(interactionWorkflow).not.toContain("pull_request_target");
+  });
+
+  it("keeps explicit workflow rendering available for debug fallback", () => {
+    const files = renderReviewRouterWorkflowFiles({
+      ...workflowOptions,
+      workflowStyle: "explicit",
+    });
+
+    expect(files[0]?.content).toContain("uses: 777genius/review-router@v1");
+    expect(files[0]?.content).toContain("actions/setup-node@v6");
+    expect(files[0]?.content).not.toContain(
+      ".github/workflows/reviewrouter-reusable.yml",
     );
   });
 
@@ -239,5 +294,21 @@ describe("renderReviewRouterWorkflow", () => {
         },
       }),
     ).toThrow("invalid_workflow_env_key");
+
+    expect(() =>
+      renderReviewRouterReusableWorkflow({
+        actionRef: "evil/review-router@v1",
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+      }),
+    ).toThrow("invalid_reusable_workflow_action_ref");
+
+    expect(() =>
+      renderReviewRouterReusableWorkflow({
+        actionRef: "777genius/review-router@feature/evil",
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+      }),
+    ).toThrow("invalid_reusable_workflow_runtime_ref");
   });
 });

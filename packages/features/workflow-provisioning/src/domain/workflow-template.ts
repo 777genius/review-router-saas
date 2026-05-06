@@ -3,7 +3,10 @@ export type ReviewRouterWorkflowOptions = {
   readonly apiUrl: string;
   readonly runtimeConfigMode: "oidc" | "static";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
+  readonly workflowStyle?: ReviewRouterWorkflowStyle;
 };
+
+export type ReviewRouterWorkflowStyle = "reusable" | "explicit";
 
 export type ReviewRouterWorkflowFile = {
   readonly path: string;
@@ -16,6 +19,11 @@ export const defaultInteractionWorkflowPath =
 export const defaultRequiredWorkflowPath =
   ".github/workflows/reviewrouter-required.yml";
 export const defaultSetupBranch = "reviewrouter/setup";
+export const reusableWorkflowRuntimeRepository = "777genius/review-router";
+export const reusableReviewWorkflowPath =
+  ".github/workflows/reviewrouter-reusable.yml";
+export const reusableInteractionWorkflowPath =
+  ".github/workflows/reviewrouter-interaction-reusable.yml";
 
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
@@ -185,6 +193,80 @@ jobs:
 `;
 }
 
+export function renderReviewRouterReusableWorkflow(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  const template = prepareReusableWorkflowTemplate(options);
+
+  return `name: ReviewRouter
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number for manual reruns"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    name: review
+    uses: ${reusableWorkflowRuntimeRepository}/${reusableReviewWorkflowPath}@${template.runtimeRef}
+    with:
+      runtime_ref: ${template.runtimeRef}
+      api_url: ${JSON.stringify(options.apiUrl)}
+      runtime_config_mode: ${options.runtimeConfigMode}
+      static_runtime_env_json: >-
+        ${template.staticRuntimeEnvJson}
+      pr_number: \${{ github.event.pull_request.number || inputs.pr_number }}
+    secrets:
+      CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
+      CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+      OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+      OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
+`;
+}
+
+export function renderReviewRouterReusableInteractionWorkflow(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  const template = prepareReusableWorkflowTemplate(options);
+
+  return `name: ReviewRouter Interaction
+
+on:
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  interaction:
+    name: interaction
+    uses: ${reusableWorkflowRuntimeRepository}/${reusableInteractionWorkflowPath}@${template.runtimeRef}
+    with:
+      runtime_ref: ${template.runtimeRef}
+      api_url: ${JSON.stringify(options.apiUrl)}
+      runtime_config_mode: ${options.runtimeConfigMode}
+    secrets:
+      REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
+`;
+}
+
 export function renderReviewRouterRequiredWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
@@ -295,6 +377,19 @@ ${template.oidcStep}      - name: Run ReviewRouter
 export function renderReviewRouterWorkflowFiles(
   options: ReviewRouterWorkflowOptions,
 ): readonly ReviewRouterWorkflowFile[] {
+  if ((options.workflowStyle ?? "reusable") === "reusable") {
+    return [
+      {
+        path: defaultWorkflowPath,
+        content: renderReviewRouterReusableWorkflow(options),
+      },
+      {
+        path: defaultInteractionWorkflowPath,
+        content: renderReviewRouterReusableInteractionWorkflow(options),
+      },
+    ];
+  }
+
   return [
     {
       path: defaultWorkflowPath,
@@ -305,6 +400,28 @@ export function renderReviewRouterWorkflowFiles(
       content: renderReviewRouterInteractionWorkflow(options),
     },
   ];
+}
+
+function prepareReusableWorkflowTemplate(
+  options: ReviewRouterWorkflowOptions,
+): {
+  readonly runtimeRef: string;
+  readonly staticRuntimeEnvJson: string;
+} {
+  assertSafeApiUrl(options.apiUrl);
+  const runtimeRef = extractReusableRuntimeRef(options.actionRef);
+  const staticRuntimeEnv = options.staticRuntimeEnv ?? {};
+  for (const [key, value] of Object.entries(staticRuntimeEnv)) {
+    assertSafeEnvKey(key);
+    if (typeof value !== "string") {
+      throw new Error("invalid_workflow_env_value");
+    }
+  }
+
+  return {
+    runtimeRef,
+    staticRuntimeEnvJson: JSON.stringify(staticRuntimeEnv),
+  };
 }
 
 function prepareWorkflowTemplate(options: ReviewRouterWorkflowOptions): {
@@ -353,6 +470,20 @@ function assertSafeActionRef(actionRef: string): void {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[A-Za-z0-9_./-]+$/.test(actionRef)) {
     throw new Error("invalid_workflow_action_ref");
   }
+}
+
+function extractReusableRuntimeRef(actionRef: string): string {
+  assertSafeActionRef(actionRef);
+  const atIndex = actionRef.lastIndexOf("@");
+  const repository = actionRef.slice(0, atIndex).toLowerCase();
+  const runtimeRef = actionRef.slice(atIndex + 1);
+  if (repository !== reusableWorkflowRuntimeRepository) {
+    throw new Error("invalid_reusable_workflow_action_ref");
+  }
+  if (!/^(main|v1|v1\.[0-9]+\.[0-9]+|[a-fA-F0-9]{40})$/.test(runtimeRef)) {
+    throw new Error("invalid_reusable_workflow_runtime_ref");
+  }
+  return runtimeRef;
 }
 
 function extractActionVersion(actionRef: string): string {

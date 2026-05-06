@@ -118,6 +118,9 @@ describe("provisionReviewRouterWorkflow", () => {
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
       "name: ReviewRouter",
     );
+    expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",
+    );
     expect(files.get(".github/workflows/reviewrouter.yml")).not.toContain(
       "pull_request_review_comment:",
     );
@@ -128,14 +131,15 @@ describe("provisionReviewRouterWorkflow", () => {
       files.get(".github/workflows/reviewrouter-interaction.yml"),
     ).toContain("pull_request_review_comment:");
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      'CODEX_MODEL: "gpt-5.4-mini"',
+      '"CODEX_MODEL":"gpt-5.4-mini"',
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      'FAIL_ON_SEVERITY: "major"',
+      '"FAIL_ON_SEVERITY":"major"',
     );
     expect(provisioning.opened).toMatchObject({
       status: "setup_pr_open",
       branch: "reviewrouter/setup",
+      workflowStyle: "reusable",
       actionVersion: "777genius/review-router@v1",
     });
     expect(auditLog.events).toContainEqual(
@@ -250,10 +254,10 @@ describe("provisionReviewRouterWorkflow", () => {
       ]),
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      'CODEX_MODEL: "gpt-5.4-mini"',
+      '"CODEX_MODEL":"gpt-5.4-mini"',
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      'FAIL_ON_SEVERITY: "off"',
+      '"FAIL_ON_SEVERITY":"off"',
     );
     expect(auditLog.events[0]).toMatchObject({ actor: "user:maintainer" });
   });

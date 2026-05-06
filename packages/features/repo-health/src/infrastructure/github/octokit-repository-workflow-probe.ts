@@ -84,14 +84,32 @@ function workflowUsesActionRef(
   yaml: string,
   expectedActionRef: string,
 ): boolean {
+  const acceptedRefs = new Set([
+    expectedActionRef,
+    ...expectedReusableWorkflowRefs(expectedActionRef),
+  ]);
   return yaml.split(/\r?\n/).some((line) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) {
       return false;
     }
     const usesMatch = trimmed.match(/^-?\s*uses:\s*["']?([^"'\s#]+)["']?/);
-    return usesMatch?.[1] === expectedActionRef;
+    return usesMatch?.[1] ? acceptedRefs.has(usesMatch[1]) : false;
   });
+}
+
+function expectedReusableWorkflowRefs(actionRef: string): readonly string[] {
+  const match = /^777genius\/review-router@(.+)$/.exec(actionRef);
+  if (!match) {
+    return [];
+  }
+  const runtimeRef = match[1] ?? "";
+  if (!/^(main|v1|v1\.[0-9]+\.[0-9]+|[a-fA-F0-9]{40})$/.test(runtimeRef)) {
+    return [];
+  }
+  return [
+    `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${runtimeRef}`,
+  ];
 }
 
 function getErrorStatus(error: unknown): number {

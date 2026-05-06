@@ -154,6 +154,7 @@ function RepositoryRow({
         />
         <input type="hidden" name="workspaceId" value={workspaceId} />
         <input type="hidden" name="repositoryId" value={repository.id} />
+        <input type="hidden" name="workflowStyle" value="reusable" />
         <FormSubmitButton
           size="sm"
           disabled={

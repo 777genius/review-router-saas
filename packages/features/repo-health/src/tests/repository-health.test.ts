@@ -380,6 +380,36 @@ describe("repository health", () => {
     });
   });
 
+  it("recognizes compact reusable ReviewRouter caller workflows as current", async () => {
+    const workflow =
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1\n";
+    const probe = new OctokitRepositoryWorkflowProbe({
+      createRequester: async () => ({
+        request: async () => ({
+          data: {
+            type: "file",
+            encoding: "base64",
+            content: Buffer.from(workflow).toString("base64"),
+          },
+        }),
+      }),
+    });
+
+    await expect(
+      probe.probeWorkflow({
+        githubInstallationId: "129",
+        owner: "777genius",
+        name: "example",
+        defaultBranch: "main",
+        workflowPath: ".github/workflows/reviewrouter.yml",
+        expectedActionRef: "777genius/review-router@v1",
+      }),
+    ).resolves.toEqual({
+      status: "present",
+      expectedActionRefFound: true,
+    });
+  });
+
   it("maps missing or failed GitHub workflow probes to safe metadata", async () => {
     const missingProbe = new OctokitRepositoryWorkflowProbe({
       createRequester: async () => ({

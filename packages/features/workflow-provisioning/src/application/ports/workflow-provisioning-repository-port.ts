@@ -1,4 +1,5 @@
 import type { WorkflowProvisioningStatus } from "../../domain/workflow-provisioning";
+import type { ReviewRouterWorkflowStyle } from "../../domain/workflow-template";
 
 export type WorkflowProvisioningRecord = {
   readonly workspaceId: string;
@@ -6,6 +7,7 @@ export type WorkflowProvisioningRecord = {
   readonly status: WorkflowProvisioningStatus;
   readonly branch: string;
   readonly workflowPath: string;
+  readonly workflowStyle: ReviewRouterWorkflowStyle;
   readonly actionVersion: string;
   readonly pullRequestUrl?: string | null;
   readonly errorMessage?: string | null;

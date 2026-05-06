@@ -143,10 +143,12 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
             "- checks out code with persist-credentials: false",
             "- skips secret-backed review for fork pull requests by default",
             "- uses GitHub OIDC for SaaS runtime config",
+            "- keeps provider secrets in this repository or organization Actions secrets",
+            "- compact mode keeps small caller workflows here and runs versioned ReviewRouter runtime from `777genius/review-router`",
             "",
             "Workflow files:",
             "- `.github/workflows/reviewrouter.yml` - pull request review gate",
-            "- `.github/workflows/reviewrouter-interaction.yml` - `/rr` comment commands",
+            "- `.github/workflows/reviewrouter-interaction.yml` - `/rr` comment commands and discussion routing",
           ].join("\n"),
         },
       );

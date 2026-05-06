@@ -34,6 +34,7 @@ export async function provisionReviewRouterWorkflow(
       status: "failed",
       branch: plan.setupBranch,
       workflowPath: plan.workflowPath,
+      workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
       pullRequestUrl: null,
       errorMessage: "workflow_provisioning_disabled",
@@ -58,6 +59,7 @@ export async function provisionReviewRouterWorkflow(
     actionRef: plan.actionRef,
     apiUrl: plan.apiUrl,
     runtimeConfigMode: plan.runtimeConfigMode,
+    workflowStyle: plan.workflowStyle,
     staticRuntimeEnv:
       plan.staticRuntimeEnv ??
       mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
@@ -79,6 +81,7 @@ export async function provisionReviewRouterWorkflow(
       status: "setup_pr_open",
       branch: pullRequest.branch,
       workflowPath: plan.workflowPath,
+      workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
       pullRequestUrl: pullRequest.url,
       errorMessage: null,
@@ -94,6 +97,7 @@ export async function provisionReviewRouterWorkflow(
           metadata: {
             branch: pullRequest.branch,
             workflowPath: plan.workflowPath,
+            workflowStyle: plan.workflowStyle,
             actionVersion: plan.actionRef,
             pullRequestUrl: pullRequest.url,
           },
@@ -111,6 +115,7 @@ export async function provisionReviewRouterWorkflow(
       status: "failed",
       branch: plan.setupBranch,
       workflowPath: plan.workflowPath,
+      workflowStyle: plan.workflowStyle,
       actionVersion: plan.actionRef,
       pullRequestUrl: null,
       errorMessage: message,
@@ -126,6 +131,7 @@ export async function provisionReviewRouterWorkflow(
           metadata: {
             branch: plan.setupBranch,
             workflowPath: plan.workflowPath,
+            workflowStyle: plan.workflowStyle,
             actionVersion: plan.actionRef,
             errorSummary: message.slice(0, 500),
           },
@@ -142,8 +148,11 @@ function safeWorkflowProvisioningErrorSummary(error: unknown): string {
   if (
     [
       "invalid_workflow_action_ref",
+      "invalid_reusable_workflow_action_ref",
+      "invalid_reusable_workflow_runtime_ref",
       "invalid_workflow_api_url",
       "invalid_workflow_env_key",
+      "invalid_workflow_env_value",
       "workflow_provisioning_disabled",
     ].includes(message)
   ) {

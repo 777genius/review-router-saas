@@ -36,6 +36,7 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
       update: {
         status: record.status,
         workflowPath: record.workflowPath,
+        workflowStyle: record.workflowStyle,
         actionVersion: record.actionVersion,
         pullRequestUrl: record.pullRequestUrl ?? null,
         errorMessage: record.errorMessage ?? null,
@@ -46,6 +47,7 @@ export class PrismaWorkflowProvisioningRepository implements WorkflowProvisionin
         status: record.status,
         branch: record.branch,
         workflowPath: record.workflowPath,
+        workflowStyle: record.workflowStyle,
         actionVersion: record.actionVersion,
         pullRequestUrl: record.pullRequestUrl ?? null,
         errorMessage: record.errorMessage ?? null,

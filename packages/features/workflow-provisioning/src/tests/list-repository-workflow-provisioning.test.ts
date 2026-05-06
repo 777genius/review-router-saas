@@ -32,6 +32,7 @@ describe("listRepositoryWorkflowProvisioning", () => {
         status: "setup_pr_open",
         branch: "reviewrouter/setup",
         workflowPath: ".github/workflows/reviewrouter.yml",
+        workflowStyle: "reusable",
         actionVersion: "777genius/review-router@v1",
         pullRequestUrl: "https://github.com/777genius/example/pull/1",
         errorMessage: null,

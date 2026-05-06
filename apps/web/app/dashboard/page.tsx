@@ -2085,9 +2085,17 @@ function RepositorySetupActionForm({
   readonly mutationsEnabled: boolean;
 }): React.ReactElement {
   return (
-    <form action={createSetupPullRequestAction}>
+    <form action={createSetupPullRequestAction} className="grid gap-2">
       <input type="hidden" name="workspaceId" value={workspaceId} />
       <input type="hidden" name="repositoryId" value={repositoryId} />
+      <SelectField
+        name="workflowStyle"
+        label="Workflow"
+        defaultValue="reusable"
+        disabled={!mutationsEnabled || !selected || archived || workflowCurrent}
+        options={workflowStyleOptions}
+        className="min-w-[14rem]"
+      />
       <FormSubmitButton
         variant="soft"
         size="sm"
@@ -2264,6 +2272,21 @@ const agenticContextOptions = [
   },
 ] as const;
 
+const workflowStyleOptions = [
+  {
+    value: "reusable",
+    label: "Compact reusable",
+    description:
+      "Recommended. Customer repo keeps small caller workflows while runtime code comes from 777genius/review-router.",
+  },
+  {
+    value: "explicit",
+    label: "Full explicit",
+    description:
+      "Debug fallback. Writes the full workflow into the repository setup PR.",
+  },
+] as const;
+
 function ReviewConfigForm({
   action,
   config,
@@ -2412,7 +2435,9 @@ function ProviderSecretGuidancePanel({
       <summary className="cursor-pointer list-none">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <Badge tone="success">{providerSetupTitle(guidance.provider)}</Badge>
+            <Badge tone="success">
+              {providerSetupTitle(guidance.provider)}
+            </Badge>
             <p className="mt-2 text-sm leading-6 text-emerald-50">
               Ready command for{" "}
               <span className="font-semibold">

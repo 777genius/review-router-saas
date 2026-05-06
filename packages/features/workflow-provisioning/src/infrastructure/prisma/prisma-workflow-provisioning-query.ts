@@ -36,6 +36,8 @@ export class PrismaWorkflowProvisioningQuery implements WorkflowProvisioningQuer
         status: row.status,
         branch: row.branch,
         workflowPath: row.workflowPath,
+        workflowStyle:
+          row.workflowStyle === "reusable" ? "reusable" : "explicit",
         actionVersion: row.actionVersion,
         pullRequestUrl: row.pullRequestUrl,
         errorMessage: row.errorMessage,

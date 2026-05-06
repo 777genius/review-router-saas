@@ -200,6 +200,7 @@ model WorkflowProvisioning {
   status         WorkflowProvisioningStatus @default(not_started)
   branch         String
   workflowPath   String
+  workflowStyle  String                     @default("explicit")
   actionVersion  String
   pullRequestUrl String?
   errorMessage   String?

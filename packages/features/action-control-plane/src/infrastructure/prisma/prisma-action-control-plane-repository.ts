@@ -39,6 +39,15 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             },
           },
         },
+        provisioning: {
+          where: { workflowStyle: "reusable" },
+          orderBy: { updatedAt: "desc" },
+          take: 10,
+          select: {
+            actionVersion: true,
+            workflowStyle: true,
+          },
+        },
         installation: {
           select: { status: true, githubInstallationId: true },
         },
@@ -58,19 +67,22 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       fullName: repository.fullName,
       owner: repository.owner,
       selected: repository.selected,
-      trustedWorkflowRefs: repository.workspace.orgRulesets
-        .filter((ruleset) => {
-          if (ruleset.scope === "all_repositories") return true;
-          return parseTargetRepositoryIds(ruleset.targetRepositoryIds).includes(
-            repository.githubRepositoryId.toString(),
-          );
-        })
-        .flatMap((ruleset) => {
-          if (!ruleset.sourceRepositoryFullName) return [];
-          return [
-            `${ruleset.sourceRepositoryFullName}/${ruleset.sourceWorkflowPath}@${ruleset.sourceWorkflowRef}`,
-          ];
-        }),
+      trustedWorkflowRefs: [
+        ...repository.workspace.orgRulesets
+          .filter((ruleset) => {
+            if (ruleset.scope === "all_repositories") return true;
+            return parseTargetRepositoryIds(
+              ruleset.targetRepositoryIds,
+            ).includes(repository.githubRepositoryId.toString());
+          })
+          .flatMap((ruleset) => {
+            if (!ruleset.sourceRepositoryFullName) return [];
+            return [
+              `${ruleset.sourceRepositoryFullName}/${ruleset.sourceWorkflowPath}@${ruleset.sourceWorkflowRef}`,
+            ];
+          }),
+        ...buildTrustedReusableWorkflowRefs(repository.provisioning),
+      ],
       installationStatus: repository.installation.status,
     };
   }
@@ -251,6 +263,45 @@ function parseTargetRepositoryIds(value: unknown): readonly string[] {
   return value
     .map((item) => (typeof item === "string" ? item : String(item)))
     .filter(Boolean);
+}
+
+function buildTrustedReusableWorkflowRefs(
+  provisioningRows: readonly {
+    readonly actionVersion: string;
+    readonly workflowStyle: string;
+  }[],
+): readonly string[] {
+  const refs = new Set<string>();
+  for (const row of provisioningRows) {
+    if (row.workflowStyle !== "reusable") continue;
+    const ref = extractReviewRouterRuntimeGitRef(row.actionVersion);
+    if (!ref) continue;
+    refs.add(
+      `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${ref}`,
+    );
+    refs.add(
+      `777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml@${ref}`,
+    );
+  }
+  return [...refs];
+}
+
+function extractReviewRouterRuntimeGitRef(
+  actionVersion: string,
+): string | null {
+  const match = /^777genius\/review-router@(.+)$/.exec(actionVersion);
+  if (!match) return null;
+  const ref = match[1] ?? "";
+  if (ref === "main") {
+    return "refs/heads/main";
+  }
+  if (ref === "v1" || /^v1\.[0-9]+\.[0-9]+$/.test(ref)) {
+    return `refs/tags/${ref}`;
+  }
+  if (/^[a-fA-F0-9]{40}$/.test(ref)) {
+    return ref;
+  }
+  return null;
 }
 
 function toAuthMode(value: string) {
