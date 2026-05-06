@@ -135,6 +135,7 @@ describe("renderReviewRouterWorkflow", () => {
       renderReviewRouterReusableInteractionWorkflow(workflowOptions);
 
     expect(reviewWorkflow).toContain("pull_request:");
+    expect(reviewWorkflow).toContain("merge_group:");
     expect(reviewWorkflow).toContain("workflow_dispatch:");
     expect(reviewWorkflow).toContain("id-token: write");
     expect(reviewWorkflow).toContain(
@@ -195,8 +196,12 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("issues: write");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain("ReviewRouter merge queue check passed");
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain("github.event_name != 'merge_group'");
+    expect(workflow).toContain(
+      "github.event_name != 'merge_group' && (github.event_name != 'pull_request'",
+    );
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
     expect(workflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",

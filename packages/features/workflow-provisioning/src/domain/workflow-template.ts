@@ -203,6 +203,7 @@ export function renderReviewRouterReusableWorkflow(
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
   workflow_dispatch:
     inputs:
       pr_number:
@@ -300,7 +301,14 @@ jobs:
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${template.staticRuntimeEnvBlock}
       REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
     steps:
+      - name: Pass merge queue check
+        if: \${{ github.event_name == 'merge_group' }}
+        shell: bash
+        run: |
+          echo "ReviewRouter merge queue check passed. Full review runs on pull_request events where a PR number is available."
+
       - name: Checkout pull request code
+        if: \${{ github.event_name != 'merge_group' }}
         uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -364,7 +372,7 @@ jobs:
           fi
 
 ${template.oidcStep}      - name: Run ReviewRouter
-        if: \${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: \${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: ${options.actionRef}
         env:
           GITHUB_TOKEN: \${{ github.token }}
@@ -447,7 +455,7 @@ function prepareWorkflowTemplate(options: ReviewRouterWorkflowOptions): {
     options.runtimeConfigMode === "oidc"
       ? `
       - name: Fetch ReviewRouter runtime config
-        if: \${{ github.event_name == 'workflow_dispatch' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: \${{ github.event_name != 'merge_group' && (github.event_name == 'workflow_dispatch' || github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         shell: bash
         run: |
           set -euo pipefail
