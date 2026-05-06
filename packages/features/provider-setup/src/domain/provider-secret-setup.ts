@@ -20,6 +20,11 @@ export type ProviderSecretSetupCommand = {
   readonly description: string;
   readonly command: string;
   readonly storesSecretIn: "github_repository_secret" | "github_org_secret";
+  readonly targetLabel: string;
+  readonly secretNames: readonly string[];
+  readonly selectedRepositories: readonly string[];
+  readonly validatesBeforeWrite: boolean;
+  readonly failureRecovery: string;
   readonly sendsSecretToReviewRouter: false;
 };
 
@@ -60,6 +65,12 @@ export function buildProviderSecretSetupGuidance(input: {
                   "Stores CODEX_AUTH_JSON as an organization secret available only to this repository.",
                 command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=${shellQuote(owner)} REVIEW_ROUTER_ORG_SECRET_REPOS=${shellQuote(repo)} bash`,
                 storesSecretIn: "github_org_secret" as const,
+                targetLabel: `${owner} organization secret, selected repo ${repo}`,
+                secretNames: ["CODEX_AUTH_JSON"],
+                selectedRepositories: [`${owner}/${repo}`],
+                validatesBeforeWrite: true,
+                failureRecovery:
+                  "If validation says reseed auth.json, run codex login on this trusted machine and rerun this exact command.",
                 sendsSecretToReviewRouter: false as const,
               },
             ]
@@ -70,6 +81,12 @@ export function buildProviderSecretSetupGuidance(input: {
             "Stores CODEX_AUTH_JSON directly in this repository's Actions secrets.",
           command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=repo REVIEW_ROUTER_REPO=${shellQuote(input.repoFullName)} bash`,
           storesSecretIn: "github_repository_secret",
+          targetLabel: `${input.repoFullName} repository secret`,
+          secretNames: ["CODEX_AUTH_JSON"],
+          selectedRepositories: [input.repoFullName],
+          validatesBeforeWrite: true,
+          failureRecovery:
+            "If validation says reseed auth.json, run codex login on this trusted machine and rerun this exact command.",
           sendsSecretToReviewRouter: false,
         },
       ],
@@ -99,6 +116,12 @@ export function buildProviderSecretSetupGuidance(input: {
               description: `Stores ${secretName} as an organization secret available only to this repository.`,
               command: `gh secret set ${secretName} --org ${shellQuote(owner)} --repos ${shellQuote(repo)} --app actions`,
               storesSecretIn: "github_org_secret" as const,
+              targetLabel: `${owner} organization secret, selected repo ${repo}`,
+              secretNames: [secretName],
+              selectedRepositories: [`${owner}/${repo}`],
+              validatesBeforeWrite: false,
+              failureRecovery:
+                "If GitHub rejects the command, verify gh auth, organization ownership, and selected repository access.",
               sendsSecretToReviewRouter: false as const,
             },
           ]
@@ -108,6 +131,12 @@ export function buildProviderSecretSetupGuidance(input: {
         description: `Stores ${secretName} directly in this repository's Actions secrets.`,
         command: `gh secret set ${secretName} --repo ${shellQuote(input.repoFullName)}`,
         storesSecretIn: "github_repository_secret",
+        targetLabel: `${input.repoFullName} repository secret`,
+        secretNames: [secretName],
+        selectedRepositories: [input.repoFullName],
+        validatesBeforeWrite: false,
+        failureRecovery:
+          "If GitHub rejects the command, verify gh auth and repository admin access.",
         sendsSecretToReviewRouter: false,
       },
     ],

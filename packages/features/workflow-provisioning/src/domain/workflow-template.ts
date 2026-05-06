@@ -79,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "\${CODEX_AUTH_JSON:-}" ]; then
-            echo "::error::CODEX_AUTH_JSON secret is missing. Re-seed Codex auth from a trusted machine or switch this repository to OpenAI API-key mode."
+            echo "::error::CODEX_AUTH_JSON secret is missing. reseed auth.json from a trusted machine or switch this repository to OpenAI API-key mode."
             exit 1
           fi
           node - <<'NODE'
@@ -95,23 +95,23 @@ jobs:
           try {
             auth = JSON.parse(payload);
           } catch (error) {
-            fail('CODEX_AUTH_JSON is not valid JSON. Re-seed Codex auth from a trusted machine. ' + error.message);
+            fail('CODEX_AUTH_JSON is not valid JSON. reseed auth.json from a trusted machine. ' + error.message);
           }
           if (auth.auth_mode !== 'chatgpt') {
-            fail('CODEX_AUTH_JSON auth_mode must be chatgpt. Re-seed with Codex CLI subscription login or switch this repo to API-key mode.');
+            fail('CODEX_AUTH_JSON auth_mode must be chatgpt. reseed auth.json with Codex CLI subscription login or switch this repo to API-key mode.');
           }
           if (!auth.tokens || typeof auth.tokens.refresh_token !== 'string' || auth.tokens.refresh_token.length === 0) {
-            fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+            fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and reseed auth.json.');
           }
           if (!auth.last_refresh) {
-            warn('CODEX_AUTH_JSON last_refresh is missing. If Codex later fails with an auth error, run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+            warn('CODEX_AUTH_JSON last_refresh is missing. If Codex later fails with an auth error, run codex login on a trusted machine and reseed auth.json.');
           } else {
             const refreshedAt = Date.parse(auth.last_refresh);
             const maxAgeDays = 30;
             if (!Number.isFinite(refreshedAt)) {
-              warn('CODEX_AUTH_JSON last_refresh is not parseable. If Codex later fails with an auth error, run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+              warn('CODEX_AUTH_JSON last_refresh is not parseable. If Codex later fails with an auth error, run codex login on a trusted machine and reseed auth.json.');
             } else if ((Date.now() - refreshedAt) / 86400000 > maxAgeDays) {
-              warn('CODEX_AUTH_JSON last_refresh is older than 30 days. If Codex later fails with an auth error, run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+              warn('CODEX_AUTH_JSON last_refresh is older than 30 days. If Codex later fails with an auth error, run codex login on a trusted machine and reseed auth.json.');
             }
           }
           NODE
@@ -248,7 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "\${CODEX_AUTH_JSON:-}" ]; then
-            echo "::error::CODEX_AUTH_JSON secret is missing. Re-seed Codex auth from a trusted machine or switch this repository to OpenAI API-key mode."
+            echo "::error::CODEX_AUTH_JSON secret is missing. reseed auth.json from a trusted machine or switch this repository to OpenAI API-key mode."
             exit 1
           fi
           node - <<'NODE'
@@ -261,13 +261,13 @@ jobs:
           try {
             auth = JSON.parse(payload);
           } catch (error) {
-            fail('CODEX_AUTH_JSON is not valid JSON. Re-seed Codex auth from a trusted machine. ' + error.message);
+            fail('CODEX_AUTH_JSON is not valid JSON. reseed auth.json from a trusted machine. ' + error.message);
           }
           if (auth.auth_mode !== 'chatgpt') {
-            fail('CODEX_AUTH_JSON auth_mode must be chatgpt. Re-seed with Codex CLI subscription login or switch this repo to API-key mode.');
+            fail('CODEX_AUTH_JSON auth_mode must be chatgpt. reseed auth.json with Codex CLI subscription login or switch this repo to API-key mode.');
           }
           if (!auth.tokens || typeof auth.tokens.refresh_token !== 'string' || auth.tokens.refresh_token.length === 0) {
-            fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and re-seed CODEX_AUTH_JSON.');
+            fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and reseed auth.json.');
           }
           NODE
           export CODEX_HOME="\${CODEX_HOME:-$HOME/.codex}"

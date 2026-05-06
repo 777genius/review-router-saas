@@ -353,6 +353,12 @@ function RepositorySelectionExplainer({
 }): React.ReactElement {
   const isAllRepositories = installation.repositorySelection === "all";
   const settingsUrl = appInstallationSettingsUrl(installation);
+  const selectedRepositories = installation.repositories
+    .filter((repository) => repository.selected)
+    .map((repository) => repository.fullName);
+  const visibleSelectedRepositories = selectedRepositories.slice(0, 8);
+  const hiddenSelectedRepositoryCount =
+    selectedRepositories.length - visibleSelectedRepositories.length;
 
   return (
     <Card className="rounded-2xl border-cyan-200/15 bg-cyan-300/[0.04] p-5 sm:p-6">
@@ -371,6 +377,41 @@ function RepositorySelectionExplainer({
               ? "GitHub grants the App access to all current and future repositories for this account. ReviewRouter syncs metadata, then you choose which repositories receive setup PRs and provider secrets. It will not spam every repository with a PR."
               : "To add another repository, manage the GitHub App installation and select it there. Then sync here and create a setup PR for the repository you want to enable."}
           </p>
+          {installation.accountType === "Organization" ? (
+            <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
+              <p className="font-mono text-[0.62rem] uppercase tracking-[0.16em] text-cyan-100/70">
+                Organization repository access
+              </p>
+              {isAllRepositories ? (
+                <p className="mt-2 text-sm leading-6 text-slate-300">
+                  The App is installed for all repositories in{" "}
+                  {installation.accountLogin}. Setup PRs and provider secrets are
+                  still created only for repositories you choose here.
+                </p>
+              ) : visibleSelectedRepositories.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {visibleSelectedRepositories.map((repositoryFullName) => (
+                    <span
+                      key={repositoryFullName}
+                      className="rounded-full border border-cyan-300/15 bg-cyan-300/[0.08] px-3 py-1 text-xs font-semibold text-cyan-50"
+                    >
+                      {repositoryFullName}
+                    </span>
+                  ))}
+                  {hiddenSelectedRepositoryCount > 0 ? (
+                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-300">
+                      +{hiddenSelectedRepositoryCount} more
+                    </span>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="mt-2 text-sm leading-6 text-slate-300">
+                  No selected repositories are synced yet. Sync the installation,
+                  then refresh this page.
+                </p>
+              )}
+            </div>
+          ) : null}
         </div>
         {settingsUrl ? (
           <LinkButton href={settingsUrl} variant="outline" target="_blank">
@@ -389,6 +430,8 @@ function ProviderSecretSetupCard({
   readonly repositoryFullName: string;
   readonly guidance: ReturnType<typeof buildProviderSecretSetupGuidance>;
 }): React.ReactElement {
+  const recommendedCommand = guidance.commands[0];
+
   return (
     <Card className="rounded-2xl border-emerald-300/20 bg-emerald-300/[0.08] p-5 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -408,6 +451,27 @@ function ProviderSecretSetupCard({
           {guidance.recommendedScope.replaceAll("_", " ")}
         </Badge>
       </div>
+
+      {recommendedCommand ? (
+        <div className="mt-5 grid gap-3 md:grid-cols-3">
+          <SetupFact
+            label="Secret destination"
+            value={recommendedCommand.targetLabel}
+          />
+          <SetupFact
+            label="Selected repositories"
+            value={recommendedCommand.selectedRepositories.join(", ")}
+          />
+          <SetupFact
+            label="Validation"
+            value={
+              recommendedCommand.validatesBeforeWrite
+                ? "Checks auth.json before writing"
+                : "GitHub validates secret write"
+            }
+          />
+        </div>
+      ) : null}
 
       {guidance.warnings.length > 0 ? (
         <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
@@ -434,6 +498,20 @@ function ProviderSecretSetupCard({
             <p className="mt-2 text-xs leading-5 text-slate-400">
               {command.description}
             </p>
+            <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 sm:grid-cols-3">
+              <span>
+                <strong className="text-emerald-100">Secrets:</strong>{" "}
+                {command.secretNames.join(", ")}
+              </span>
+              <span>
+                <strong className="text-emerald-100">Target:</strong>{" "}
+                {command.targetLabel}
+              </span>
+              <span>
+                <strong className="text-emerald-100">Recovery:</strong>{" "}
+                {command.failureRecovery}
+              </span>
+            </div>
             <CodeBlock
               code={command.command}
               className="mt-3 rounded-xl p-3 text-xs leading-5"
@@ -442,6 +520,25 @@ function ProviderSecretSetupCard({
         ))}
       </div>
     </Card>
+  );
+}
+
+function SetupFact({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.ReactElement {
+  return (
+    <div className="min-w-0 rounded-2xl border border-emerald-200/10 bg-slate-950/70 p-4">
+      <p className="font-mono text-[0.62rem] uppercase tracking-[0.16em] text-emerald-100/70">
+        {label}
+      </p>
+      <p className="mt-2 break-words text-sm font-semibold leading-6 text-emerald-50">
+        {value}
+      </p>
+    </div>
   );
 }
 

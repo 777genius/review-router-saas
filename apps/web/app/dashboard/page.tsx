@@ -1055,47 +1055,101 @@ function WorkspaceCard({
                   </div>
                 </summary>
                 <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {workspace.installations.map((installation) => (
-                    <div
-                      key={`${workspace.id}-${installation.githubInstallationId}`}
-                      className="grid gap-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4"
-                    >
-                      <div>
-                        <p className="text-sm font-semibold text-cyan-50">
-                          {installation.accountLogin}
-                        </p>
-                        <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                          {formatAccountTypeLabel(installation.accountType)} /{" "}
-                          {installation.status} /{" "}
-                          {installation.repositorySelection}
-                        </p>
+                  {workspace.installations.map((installation) => {
+                    const selectedRepositories = repositories
+                      .filter(
+                        (repository) =>
+                          repository.selected &&
+                          repository.fullName.startsWith(
+                            `${installation.accountLogin}/`,
+                          ),
+                      )
+                      .map((repository) => repository.fullName);
+                    const visibleSelectedRepositories =
+                      selectedRepositories.slice(0, 6);
+                    const hiddenSelectedRepositoryCount =
+                      selectedRepositories.length -
+                      visibleSelectedRepositories.length;
+
+                    return (
+                      <div
+                        key={`${workspace.id}-${installation.githubInstallationId}`}
+                        className="grid gap-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4"
+                      >
+                        <div>
+                          <p className="text-sm font-semibold text-cyan-50">
+                            {installation.accountLogin}
+                          </p>
+                          <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                            {formatAccountTypeLabel(installation.accountType)} /{" "}
+                            {installation.status} /{" "}
+                            {installation.repositorySelection}
+                          </p>
+                        </div>
+                        {installation.accountType === "Organization" ? (
+                          <div className="rounded-xl border border-cyan-200/10 bg-slate-950/55 p-3">
+                            <p className="font-mono text-[0.6rem] uppercase tracking-[0.14em] text-cyan-100/70">
+                              Selected repositories
+                            </p>
+                            {installation.repositorySelection === "all" ? (
+                              <p className="mt-2 text-xs leading-5 text-slate-300">
+                                All organization repositories are available.
+                                Setup and secrets still apply only to the
+                                repository you choose.
+                              </p>
+                            ) : visibleSelectedRepositories.length > 0 ? (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {visibleSelectedRepositories.map(
+                                  (repositoryFullName) => (
+                                    <span
+                                      key={repositoryFullName}
+                                      className="rounded-full border border-cyan-300/15 bg-cyan-300/[0.08] px-2.5 py-1 text-[0.7rem] font-semibold text-cyan-50"
+                                    >
+                                      {repositoryFullName}
+                                    </span>
+                                  ),
+                                )}
+                                {hiddenSelectedRepositoryCount > 0 ? (
+                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[0.7rem] font-semibold text-slate-300">
+                                    +{hiddenSelectedRepositoryCount} more
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <p className="mt-2 text-xs leading-5 text-slate-300">
+                                Sync repositories to show the exact selected
+                                repository list.
+                              </p>
+                            )}
+                          </div>
+                        ) : null}
+                        <form action={requestInstallationSyncAction}>
+                          <input
+                            type="hidden"
+                            name="workspaceId"
+                            value={workspace.id}
+                          />
+                          <input
+                            type="hidden"
+                            name="githubInstallationId"
+                            value={installation.githubInstallationId}
+                          />
+                          <Button
+                            type="submit"
+                            variant="outline"
+                            size="sm"
+                            className="w-full sm:w-auto"
+                            disabled={
+                              !mutationsEnabled ||
+                              installation.status !== "active"
+                            }
+                          >
+                            Sync repos
+                          </Button>
+                        </form>
                       </div>
-                      <form action={requestInstallationSyncAction}>
-                        <input
-                          type="hidden"
-                          name="workspaceId"
-                          value={workspace.id}
-                        />
-                        <input
-                          type="hidden"
-                          name="githubInstallationId"
-                          value={installation.githubInstallationId}
-                        />
-                        <Button
-                          type="submit"
-                          variant="outline"
-                          size="sm"
-                          className="w-full sm:w-auto"
-                          disabled={
-                            !mutationsEnabled ||
-                            installation.status !== "active"
-                          }
-                        >
-                          Sync repos
-                        </Button>
-                      </form>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </details>
 
@@ -1112,58 +1166,10 @@ function WorkspaceCard({
               />
 
               {providerGuidance ? (
-                <details
-                  open
-                  className="rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/[0.08] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
-                >
-                  <summary className="cursor-pointer list-none">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <Badge tone="success">
-                          {providerSetupTitle(providerGuidance.provider)}
-                        </Badge>
-                        <p className="mt-2 text-sm leading-6 text-emerald-50">
-                          Credentials stay in GitHub Actions secrets. Open this
-                          when you are ready to seed the selected provider.
-                        </p>
-                      </div>
-                      <span className="max-w-full break-words font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
-                        {providerGuidance.recommendedScope.replaceAll("_", " ")}
-                      </span>
-                    </div>
-                  </summary>
-                  <div className="mt-4">
-                    <p className="mb-4 text-sm leading-6 text-emerald-50">
-                      {providerSetupIntro(providerGuidance.provider)}
-                    </p>
-                    {providerGuidance.warnings.length > 0 ? (
-                      <ul className="mb-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
-                        {providerGuidance.warnings.map((warning) => (
-                          <li key={warning}>{warning}</li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    <div className="grid gap-3">
-                      {providerGuidance.commands.map((command) => (
-                        <div
-                          key={command.title}
-                          className="rounded-2xl border border-emerald-200/10 bg-slate-950/80 p-4"
-                        >
-                          <p className="text-sm font-semibold text-emerald-50">
-                            {command.title}
-                          </p>
-                          <p className="mt-1 text-xs leading-5 text-slate-400">
-                            {command.description}
-                          </p>
-                          <CodeBlock
-                            code={command.command}
-                            className="mt-3 rounded-md p-3 text-xs leading-5"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </details>
+                <ProviderSecretGuidancePanel
+                  guidance={providerGuidance}
+                  repositoryFullName={primaryRepository?.fullName ?? null}
+                />
               ) : null}
             </>
           ) : null}
@@ -2386,6 +2392,130 @@ function DashboardTextField({
         className="min-h-11 w-full rounded-xl border border-cyan-200/15 bg-slate-950/80 px-3 py-2 text-cyan-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition placeholder:text-slate-500 hover:border-cyan-200/30 focus:border-cyan-300/55 focus:ring-2 focus:ring-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
       />
     </label>
+  );
+}
+
+function ProviderSecretGuidancePanel({
+  guidance,
+  repositoryFullName,
+}: {
+  readonly guidance: ReturnType<typeof buildProviderSecretSetupGuidance>;
+  readonly repositoryFullName: string | null;
+}): React.ReactElement {
+  const recommendedCommand = guidance.commands[0];
+
+  return (
+    <details
+      open
+      className="rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/[0.08] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
+    >
+      <summary className="cursor-pointer list-none">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <Badge tone="success">{providerSetupTitle(guidance.provider)}</Badge>
+            <p className="mt-2 text-sm leading-6 text-emerald-50">
+              Ready command for{" "}
+              <span className="font-semibold">
+                {repositoryFullName ?? "the selected repository"}
+              </span>
+              . Credentials stay in GitHub Actions secrets.
+            </p>
+          </div>
+          <span className="max-w-full break-words font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
+            {guidance.recommendedScope.replaceAll("_", " ")}
+          </span>
+        </div>
+      </summary>
+
+      <div className="mt-5">
+        <p className="text-sm leading-6 text-emerald-50">
+          {providerSetupIntro(guidance.provider)}
+        </p>
+
+        {recommendedCommand ? (
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
+            <ProviderSetupFact
+              label="Writes secret to"
+              value={recommendedCommand.targetLabel}
+            />
+            <ProviderSetupFact
+              label="Selected repositories"
+              value={recommendedCommand.selectedRepositories.join(", ")}
+            />
+            <ProviderSetupFact
+              label="Before write"
+              value={
+                recommendedCommand.validatesBeforeWrite
+                  ? "Validates auth.json locally"
+                  : "GitHub validates the secret input"
+              }
+            />
+          </div>
+        ) : null}
+
+        {guidance.warnings.length > 0 ? (
+          <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
+            {guidance.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        ) : null}
+
+        <div className="mt-4 grid gap-3">
+          {guidance.commands.map((command, index) => (
+            <div
+              key={command.title}
+              className="rounded-2xl border border-emerald-200/10 bg-slate-950/80 p-4"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={index === 0 ? "success" : "neutral"}>
+                  {index === 0 ? "Recommended" : "Alternative"}
+                </Badge>
+                <p className="text-sm font-semibold text-emerald-50">
+                  {command.title}
+                </p>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-400">
+                {command.description}
+              </p>
+              <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-2">
+                <span>
+                  <strong className="text-emerald-100">Secrets:</strong>{" "}
+                  {command.secretNames.join(", ")}
+                </span>
+                <span>
+                  <strong className="text-emerald-100">Recovery:</strong>{" "}
+                  {command.failureRecovery}
+                </span>
+              </div>
+              <CodeBlock
+                code={command.command}
+                className="mt-3 rounded-md p-3 text-xs leading-5"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function ProviderSetupFact({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.ReactElement {
+  return (
+    <div className="min-w-0 rounded-2xl border border-emerald-200/10 bg-slate-950/70 p-4">
+      <p className="font-mono text-[0.62rem] uppercase tracking-[0.16em] text-emerald-100/70">
+        {label}
+      </p>
+      <p className="mt-2 break-words text-sm font-semibold leading-6 text-emerald-50">
+        {value}
+      </p>
+    </div>
   );
 }
 

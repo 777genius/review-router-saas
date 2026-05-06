@@ -27,6 +27,9 @@ describe("seed-codex-auth.sh", () => {
 
     expect(result.stdout).toContain("ReviewRouter Codex OAuth secret seeding");
     expect(result.stdout).toContain(
+      "Validated auth.json before writing secrets",
+    );
+    expect(result.stdout).toContain(
       "[dry-run] gh secret set CODEX_AUTH_JSON --repo 777genius/example <",
     );
     expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
@@ -62,6 +65,22 @@ describe("seed-codex-auth.sh", () => {
       }),
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("auth.json auth_mode must be chatgpt"),
+    });
+  });
+
+  it("prints a reseed auth.json recovery hint before any secret write", async () => {
+    const fixture = await createFixture({
+      authJson: { auth_mode: "chatgpt", tokens: {} },
+    });
+
+    await expect(
+      runSeedScript(fixture, {
+        REVIEW_ROUTER_CONFIRM_WRITE: "1",
+        REVIEW_ROUTER_SECRET_SCOPE: "repo",
+        REVIEW_ROUTER_REPO: "777genius/example",
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("To reseed auth.json"),
     });
   });
 

@@ -54,7 +54,7 @@ describe("renderReviewRouterWorkflow", () => {
       "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}",
     );
     expect(workflow).toContain(
-      "CODEX_AUTH_JSON secret is missing. Re-seed Codex auth",
+      "CODEX_AUTH_JSON secret is missing. reseed auth.json",
     );
     expect(workflow).toContain(
       'REVIEWROUTER_API_URL: "https://app.reviewrouter.dev"',

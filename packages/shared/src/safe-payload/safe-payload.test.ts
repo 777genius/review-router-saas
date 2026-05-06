@@ -41,7 +41,7 @@ describe("safe payload helpers", () => {
   it("does not classify ordinary setup guidance as code", () => {
     expect(
       looksLikeCodeOrDiff(
-        "CODEX_AUTH_JSON secret is missing. Re-seed Codex auth from a trusted machine.",
+        "CODEX_AUTH_JSON secret is missing. reseed auth.json from a trusted machine.",
       ),
     ).toBe(false);
   });

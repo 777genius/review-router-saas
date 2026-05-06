@@ -20,3 +20,4 @@ Decision records capture important product and architecture choices.
 - [ADR-014: One-Click Workflow Provisioning With Workflows Write](./014-one-click-workflow-provisioning.md)
 - [ADR-015: Dashboard Frontend Stack](./015-dashboard-frontend-stack.md)
 - [ADR-016: Cyberpunk-Future Visual Direction](./016-cyberpunk-future-visual-direction.md)
+- [ADR-017: Reusable Workflow Caller Strategy](./017-reusable-workflow-caller.md)

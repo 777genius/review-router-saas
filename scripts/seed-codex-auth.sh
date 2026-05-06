@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Seed Codex ChatGPT OAuth auth into GitHub Actions secrets without sending it to ReviewRouter SaaS.
 # Usage examples:
-#   curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
+#   curl -fsSL https://reviewrouter.site/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
 #   REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=my-org REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash scripts/seed-codex-auth.sh
 
 set -Eeuo pipefail
@@ -279,8 +279,8 @@ normalize_org_repos() {
 }
 
 validate_codex_auth_file() {
-  [ -f "$CODEX_AUTH_FILE" ] || fatal "Codex auth file not found: $CODEX_AUTH_FILE. Run: codex login"
-  [ -r "$CODEX_AUTH_FILE" ] || fatal "Codex auth file is not readable: $CODEX_AUTH_FILE"
+  [ -f "$CODEX_AUTH_FILE" ] || fatal "Codex auth file not found: $CODEX_AUTH_FILE. To reseed auth.json, run: codex login"
+  [ -r "$CODEX_AUTH_FILE" ] || fatal "Codex auth file is not readable: $CODEX_AUTH_FILE. To reseed auth.json, run: codex login"
 
   if command -v node >/dev/null 2>&1; then
     node - "$CODEX_AUTH_FILE" "$CODEX_AUTH_STALE_DAYS" <<'NODE'
@@ -299,21 +299,21 @@ let data;
 try {
   data = JSON.parse(fs.readFileSync(path, 'utf8'));
 } catch (error) {
-  fail(`auth.json is not valid JSON: ${error.message}`);
+  fail(`auth.json is not valid JSON: ${error.message}. To reseed auth.json, run codex login and rerun this command.`);
 }
-if (data.auth_mode !== 'chatgpt') fail('auth.json auth_mode must be chatgpt');
-if (!data.tokens || !data.tokens.refresh_token) fail('auth.json tokens.refresh_token is missing');
+if (data.auth_mode !== 'chatgpt') fail('auth.json auth_mode must be chatgpt. To reseed auth.json, run codex login and rerun this command.');
+if (!data.tokens || !data.tokens.refresh_token) fail('auth.json tokens.refresh_token is missing. To reseed auth.json, run codex login and rerun this command.');
 if (!Number.isFinite(staleDays) || staleDays <= 0) fail('stale-days must be a positive number');
 if (!data.last_refresh) {
-  warn('auth.json last_refresh is missing. If CI later reports Codex auth errors, run codex login and re-seed CODEX_AUTH_JSON.');
+  warn('auth.json last_refresh is missing. If CI later reports Codex auth errors, run codex login and reseed auth.json.');
 } else {
   const refreshedAt = Date.parse(data.last_refresh);
   if (!Number.isFinite(refreshedAt)) {
-    warn('auth.json last_refresh is not parseable. If CI later reports Codex auth errors, run codex login and re-seed CODEX_AUTH_JSON.');
+    warn('auth.json last_refresh is not parseable. If CI later reports Codex auth errors, run codex login and reseed auth.json.');
   } else {
     const ageDays = (Date.now() - refreshedAt) / 86_400_000;
     if (ageDays > staleDays) {
-      warn(`auth.json last_refresh is older than ${staleDaysLabel}. Re-run codex login and re-seed CODEX_AUTH_JSON if CI reports Codex auth failures.`);
+      warn(`auth.json last_refresh is older than ${staleDaysLabel}. Re-run codex login and reseed auth.json if CI reports Codex auth failures.`);
     }
   }
 }
@@ -328,25 +328,28 @@ stale_days = float(sys.argv[2] or '30')
 stale_days_label = '1 day' if stale_days == 1 else f'{stale_days:g} days'
 def warn(message):
     print(f'WARN {message}', file=sys.stderr)
-with open(path, 'r', encoding='utf-8') as f:
-    data = json.load(f)
+try:
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f'auth.json is not valid JSON: {exc}. To reseed auth.json, run codex login and rerun this command.')
 if data.get('auth_mode') != 'chatgpt':
-    raise SystemExit('auth.json auth_mode must be chatgpt')
+    raise SystemExit('auth.json auth_mode must be chatgpt. To reseed auth.json, run codex login and rerun this command.')
 if not ((data.get('tokens') or {}).get('refresh_token')):
-    raise SystemExit('auth.json tokens.refresh_token is missing')
+    raise SystemExit('auth.json tokens.refresh_token is missing. To reseed auth.json, run codex login and rerun this command.')
 if stale_days <= 0:
     raise SystemExit('stale-days must be a positive number')
 last_refresh = data.get('last_refresh')
 if not last_refresh:
-    warn('auth.json last_refresh is missing. If CI later reports Codex auth errors, run codex login and re-seed CODEX_AUTH_JSON.')
+    warn('auth.json last_refresh is missing. If CI later reports Codex auth errors, run codex login and reseed auth.json.')
 else:
     try:
         refreshed_at = datetime.fromisoformat(last_refresh.replace('Z', '+00:00'))
         age_days = (datetime.now(timezone.utc) - refreshed_at).total_seconds() / 86400
         if age_days > stale_days:
-            warn(f'auth.json last_refresh is older than {stale_days_label}. Re-run codex login and re-seed CODEX_AUTH_JSON if CI reports Codex auth failures.')
+            warn(f'auth.json last_refresh is older than {stale_days_label}. Re-run codex login and reseed auth.json if CI reports Codex auth failures.')
     except ValueError:
-        warn('auth.json last_refresh is not parseable. If CI later reports Codex auth errors, run codex login and re-seed CODEX_AUTH_JSON.')
+        warn('auth.json last_refresh is not parseable. If CI later reports Codex auth errors, run codex login and reseed auth.json.')
 PY
   else
     fatal "Need node or python3 to validate auth.json safely."
@@ -388,6 +391,7 @@ main() {
 
   gh auth status >/dev/null 2>&1 || fatal "gh is not authenticated. Run: gh auth login"
   validate_codex_auth_file
+  ok "Validated auth.json before writing secrets"
 
   info "Target repo: $TARGET_REPO"
   if [ "$SECRET_SCOPE" = "org" ]; then

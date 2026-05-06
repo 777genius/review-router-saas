@@ -14,6 +14,10 @@ describe("provider secret setup guidance", () => {
     );
     expect(guidance.commands[0]).toMatchObject({
       storesSecretIn: "github_org_secret",
+      targetLabel: "agent-teams-ai organization secret, selected repo tvaity",
+      secretNames: ["CODEX_AUTH_JSON"],
+      selectedRepositories: ["agent-teams-ai/tvaity"],
+      validatesBeforeWrite: true,
       sendsSecretToReviewRouter: false,
     });
     expect(guidance.commands[0]?.command).toContain(
@@ -38,6 +42,12 @@ describe("provider secret setup guidance", () => {
     expect(guidance.commands[0]?.command).toBe(
       "gh secret set OPENAI_API_KEY --repo 777genius/example",
     );
+    expect(guidance.commands[0]).toMatchObject({
+      targetLabel: "777genius/example repository secret",
+      secretNames: ["OPENAI_API_KEY"],
+      selectedRepositories: ["777genius/example"],
+      validatesBeforeWrite: false,
+    });
     expect(guidance.commands[0]?.command).not.toContain("sk-");
   });
 
@@ -54,6 +64,11 @@ describe("provider secret setup guidance", () => {
     expect(guidance.commands[0]?.command).toBe(
       "gh secret set OPENROUTER_API_KEY --org agent-teams-ai --repos tvaity --app actions",
     );
+    expect(guidance.commands[0]).toMatchObject({
+      targetLabel: "agent-teams-ai organization secret, selected repo tvaity",
+      secretNames: ["OPENROUTER_API_KEY"],
+      selectedRepositories: ["agent-teams-ai/tvaity"],
+    });
     expect(guidance.commands[0]?.command).not.toContain("sk-or-");
   });
 });

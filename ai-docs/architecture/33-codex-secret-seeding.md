@@ -13,6 +13,7 @@ The script:
 - finds `~/.codex/auth.json` or `$CODEX_HOME/auth.json`
 - validates `auth_mode=chatgpt`
 - validates `tokens.refresh_token` exists
+- fails with a clear `reseed auth.json` recovery hint before any `gh secret set`
 - warns when `last_refresh` is missing, unparsable, or older than the configured freshness window
 - stores `CODEX_AUTH_JSON` directly in GitHub Actions secrets using `gh secret set`
 - supports repository secrets and organization selected-repository secrets
@@ -28,13 +29,13 @@ scripts/seed-codex-auth.sh
 Future hosted command:
 
 ```bash
-curl -fsSL https://app.reviewrouter.dev/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
+curl -fsSL https://reviewrouter.site/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
 ```
 
 ## Repo Secret Flow
 
 ```bash
-curl -fsSL https://app.reviewrouter.dev/install/codex | \
+curl -fsSL https://reviewrouter.site/install/codex | \
   REVIEW_ROUTER_CONFIRM_WRITE=1 \
   REVIEW_ROUTER_REPO=owner/repo \
   REVIEW_ROUTER_SECRET_SCOPE=repo \
@@ -62,7 +63,7 @@ bash scripts/seed-codex-auth.sh --dry-run --repo owner/repo --stale-days 7
 ## Org Selected-Repositories Flow
 
 ```bash
-curl -fsSL https://app.reviewrouter.dev/install/codex | \
+curl -fsSL https://reviewrouter.site/install/codex | \
   REVIEW_ROUTER_CONFIRM_WRITE=1 \
   REVIEW_ROUTER_SECRET_SCOPE=org \
   REVIEW_ROUTER_ORG=my-org \
@@ -84,6 +85,16 @@ bash scripts/seed-codex-auth.sh --confirm-write --scope org --org my-org --repos
 
 The selected-repositories scope is important. Do not use organization `visibility=all` for personal Codex OAuth credentials.
 
+Dashboard and setup pages must show the exact selected repositories before displaying the command. For organization installs the recommended command should default to:
+
+```text
+REVIEW_ROUTER_SECRET_SCOPE=org
+REVIEW_ROUTER_ORG=<org>
+REVIEW_ROUTER_ORG_SECRET_REPOS=<selected repo names>
+```
+
+This prevents accidental all-organization secret exposure.
+
 ## Cross-Platform Scope
 
 v1 script target:
@@ -97,7 +108,7 @@ Windows Git Bash / WSL where gh and bash are available
 Future PowerShell script:
 
 ```text
-irm https://app.reviewrouter.dev/install/codex.ps1 | iex
+irm https://reviewrouter.site/install/codex.ps1 | iex
 ```
 
 Do not block beta on PowerShell if bash flow is documented clearly.
