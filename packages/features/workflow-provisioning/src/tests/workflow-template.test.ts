@@ -146,6 +146,9 @@ describe("renderReviewRouterWorkflow", () => {
     expect(reviewWorkflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
     );
+    expect(reviewWorkflow).toContain(
+      "REVIEW_ROUTER_LEDGER_KEY: ${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}",
+    );
     expect(reviewWorkflow).not.toContain("pull_request_target");
     expect(reviewWorkflow).not.toContain("actions/setup-node@v6");
 

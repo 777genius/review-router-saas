@@ -228,6 +228,7 @@ jobs:
         ${template.staticRuntimeEnvJson}
       pr_number: \${{ github.event.pull_request.number || inputs.pr_number }}
     secrets:
+      REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
       CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
       CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
       OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
