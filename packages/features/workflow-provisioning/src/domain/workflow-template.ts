@@ -182,7 +182,6 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
-          REVIEW_ROUTER_THREAD_RESOLVE_TOKEN: \${{ secrets.REVIEW_ROUTER_THREAD_RESOLVE_TOKEN }}
 `;
 }
 

@@ -91,9 +91,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
     expect(workflow).toContain("steps.preflight.outputs.should_run == 'true'");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
-    expect(workflow).toContain(
-      "REVIEW_ROUTER_THREAD_RESOLVE_TOKEN: ${{ secrets.REVIEW_ROUTER_THREAD_RESOLVE_TOKEN }}",
-    );
+    expect(workflow).not.toContain("REVIEW_ROUTER_THREAD_RESOLVE_TOKEN");
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"',
     );
