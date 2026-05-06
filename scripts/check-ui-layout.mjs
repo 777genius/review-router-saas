@@ -193,6 +193,12 @@ async function assertRouteReachable(route) {
       `UI audit target returned ${contentType || "unknown content type"}; expected text/html: ${url}`,
     );
   }
+  const html = await response.text();
+  if (!html.includes("ReviewRouter")) {
+    throw new Error(
+      `UI audit target does not look like ReviewRouter: ${url}. Check --base-url or stop the process using that port.`,
+    );
+  }
 }
 
 function collectIssues(summary) {
