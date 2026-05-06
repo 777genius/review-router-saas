@@ -7,12 +7,7 @@ const configuredWebUrl = (
   process.env.REVIEW_ROUTER_WEB_URL || "http://localhost:3000"
 ).replace(/\/$/, "");
 const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
-const commonTexts = [
-  "ReviewRouter",
-  "Dashboard",
-  "Security",
-  "Support",
-];
+const commonTexts = ["ReviewRouter", "Dashboard", "Security", "Support"];
 
 const pages = [
   ["/", ["AI pull request review that runs in your CI", "Install GitHub App"]],

@@ -79,7 +79,7 @@ Security implication:
 
 ### 1. Keep Explicit Generated Workflows
 
-🎯 9   🛡️ 9   🧠 3   ~0-100 LOC
+🎯 9 🛡️ 9 🧠 3 ~0-100 LOC
 
 Keep the current generated `reviewrouter.yml` and `reviewrouter-interaction.yml`.
 
@@ -96,7 +96,7 @@ Cons:
 
 ### 2. Thin Caller + Public Reusable Review Workflows
 
-🎯 8.5   🛡️ 8   🧠 6   ~900-1600 LOC
+🎯 8.5 🛡️ 8 🧠 6 ~900-1600 LOC
 
 Generate thin caller workflows in user repositories:
 
@@ -132,7 +132,7 @@ Cons:
 
 ### 3. Org Required Workflow + Reusable Runtime
 
-🎯 6   🛡️ 8   🧠 8   ~1000+ LOC
+🎯 6 🛡️ 8 🧠 8 ~1000+ LOC
 
 Use GitHub organization rulesets required workflow where supported, then call ReviewRouter reusable runtime from the central source workflow.
 

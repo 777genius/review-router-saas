@@ -385,8 +385,8 @@ function RepositorySelectionExplainer({
               {isAllRepositories ? (
                 <p className="mt-2 text-sm leading-6 text-slate-300">
                   The App is installed for all repositories in{" "}
-                  {installation.accountLogin}. Setup PRs and provider secrets are
-                  still created only for repositories you choose here.
+                  {installation.accountLogin}. Setup PRs and provider secrets
+                  are still created only for repositories you choose here.
                 </p>
               ) : visibleSelectedRepositories.length > 0 ? (
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -406,8 +406,8 @@ function RepositorySelectionExplainer({
                 </div>
               ) : (
                 <p className="mt-2 text-sm leading-6 text-slate-300">
-                  No selected repositories are synced yet. Sync the installation,
-                  then refresh this page.
+                  No selected repositories are synced yet. Sync the
+                  installation, then refresh this page.
                 </p>
               )}
             </div>

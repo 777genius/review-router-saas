@@ -27,7 +27,9 @@ export function SelectField({
   className,
 }: SelectFieldProps): React.ReactElement {
   return (
-    <label className={cn("grid min-w-0 gap-2 text-sm text-slate-300", className)}>
+    <label
+      className={cn("grid min-w-0 gap-2 text-sm text-slate-300", className)}
+    >
       <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
         {label}
       </span>
@@ -46,7 +48,9 @@ export function SelectField({
           )}
         >
           <BaseSelect.Value className="min-w-0 truncate" />
-          <BaseSelect.Icon className="shrink-0 text-cyan-100">⌄</BaseSelect.Icon>
+          <BaseSelect.Icon className="shrink-0 text-cyan-100">
+            ⌄
+          </BaseSelect.Icon>
         </BaseSelect.Trigger>
         <BaseSelect.Portal>
           <BaseSelect.Positioner
