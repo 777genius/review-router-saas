@@ -11,10 +11,8 @@ import {
 } from "./index";
 
 describe("platform config", () => {
-  it("defaults beta workflow provisioning to live ReviewRouter main", () => {
-    expect(resolveReviewRouterActionRef({})).toBe(
-      "777genius/review-router@main",
-    );
+  it("defaults workflow provisioning to the stable ReviewRouter runtime tag", () => {
+    expect(resolveReviewRouterActionRef({})).toBe("777genius/review-router@v1");
   });
 
   it("allows pinning a release version without changing callers", () => {
@@ -40,10 +38,8 @@ describe("platform config", () => {
       AUTH_SECRET: "0123456789abcdef",
     } as NodeJS.ProcessEnv);
 
-    expect(env.REVIEW_ROUTER_ACTION_VERSION).toBe("main");
-    expect(resolveReviewRouterActionRef(env)).toBe(
-      "777genius/review-router@main",
-    );
+    expect(env.REVIEW_ROUTER_ACTION_VERSION).toBe("v1");
+    expect(resolveReviewRouterActionRef(env)).toBe("777genius/review-router@v1");
   });
 
   it("requires explicit workflow provisioning enablement and lets disable win", () => {
