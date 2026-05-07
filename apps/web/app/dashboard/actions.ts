@@ -118,9 +118,15 @@ export async function requestInstallationSyncAction(
 
     params = {
       notice: result.created ? "sync_requested" : "sync_already_requested",
+      workspace: workspaceId,
+      section: "repositories",
     };
   } catch (error) {
-    params = { error: safeDashboardErrorCode(error) };
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "repositories",
+    };
   }
 
   revalidatePath("/dashboard");
@@ -205,6 +211,8 @@ export async function createSetupPullRequestAction(
       params = {
         notice: "workflow_already_current",
         repository: repository.fullName,
+        workspace: workspaceId,
+        section: "repositories",
       };
     } else {
       const staticRuntimeEnv = await loadStaticRuntimeEnv({
@@ -241,10 +249,16 @@ export async function createSetupPullRequestAction(
         notice: "setup_pr_ready",
         repository: repository.fullName,
         pr: pullRequest.url,
+        workspace: workspaceId,
+        section: "repositories",
       };
     }
   } catch (error) {
-    params = { error: safeDashboardErrorCode(error) };
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "repositories",
+    };
   }
 
   revalidatePath("/dashboard");

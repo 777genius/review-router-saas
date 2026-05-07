@@ -1,12 +1,4 @@
-import { redirect } from "next/navigation";
-import {
-  Badge,
-  Button,
-  Card,
-  CodeBlock,
-  LinkButton,
-  SelectField,
-} from "@reviewrouter/ui";
+import { Badge, Button, Card, LinkButton, SelectField } from "@reviewrouter/ui";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
@@ -39,7 +31,6 @@ import {
   getWorkspaceSupportDiagnostics,
   PrismaSupportDiagnosticsRepository,
 } from "@reviewrouter/features-support-diagnostics";
-import type { ProviderSecretKind } from "@reviewrouter/features-provider-setup";
 import {
   createGitHubAppInstallationOctokit,
   getDashboardMutationStatus,
@@ -74,6 +65,7 @@ import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 import { DashboardSectionTabs } from "./dashboard-section-tabs";
 import { DashboardWorkspaceTabs } from "./dashboard-workspace-tabs";
+import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
 
 export const dynamic = "force-dynamic";
 
@@ -257,7 +249,7 @@ async function loadDashboardData(
             auditEvents: workspace.auditEvents,
           },
           repositoryCount: repositories.length,
-          repositories: repositories.slice(0, 8),
+          repositories,
           provisioning,
           entitlement,
           health,
@@ -344,7 +336,18 @@ function filterVisibleDashboardWorkspaces(
 function selectDashboardWorkspace(
   workspaces: readonly DashboardWorkspaceData[],
   workspaceParam: string,
+  installationIdParam = "",
 ): DashboardWorkspaceData {
+  if (!workspaceParam && installationIdParam) {
+    const byInstallation = workspaces.find((workspace) =>
+      workspace.workspace.installations.some(
+        (installation) =>
+          installation.githubInstallationId === installationIdParam,
+      ),
+    );
+    if (byInstallation) return byInstallation;
+  }
+
   if (!workspaceParam) return workspaces[0]!;
 
   const normalized = normalizeWorkspaceKey(workspaceParam);
@@ -463,9 +466,6 @@ export default async function DashboardPage({
     setupAction: readParam(params.setup_action),
     signedIn: mutationStatus.signedIn,
   });
-  if (appSetupNotice) {
-    redirect(`/setup?${setupQueryString(params)}`);
-  }
 
   const supportAudit =
     workspaceScope.kind === "all" &&
@@ -506,6 +506,7 @@ export default async function DashboardPage({
   const selectedWorkspace = selectDashboardWorkspace(
     workspaces,
     readParam(params.workspace),
+    readParam(params.installation_id),
   );
   const selectedWorkspaceKey = dashboardWorkspaceUrlKey(
     selectedWorkspace.workspace,
@@ -920,6 +921,7 @@ function WorkspaceCard({
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
   const activeConfigVersion = data.reviewConfig?.version ?? 1;
   const requestedRepositoryFullName = readParam(params.repository);
+  const repositorySearchQuery = readParam(params.q);
   const requestedRepository = requestedRepositoryFullName
     ? repositories.find(
         (repository) => repository.fullName === requestedRepositoryFullName,
@@ -929,27 +931,16 @@ function WorkspaceCard({
     requestedRepository ??
     repositories.find((repository) => repository.selected) ??
     repositories[0];
-  const primaryInstallation = workspace.installations[0];
-  const primaryRepositoryConfig = primaryRepository
-    ? repositoryConfigs.find(
-        (item) => item.repositoryId === primaryRepository.id,
-      )?.config
-    : null;
-  const primaryEffectiveConfig =
-    primaryRepositoryConfig?.config ?? activeConfig;
-  const providerGuidance = primaryRepository
-    ? buildProviderSecretSetupGuidance({
-        provider: providerSecretKindForAuthMode(
-          primaryEffectiveConfig.provider.authMode,
-        ),
-        repoFullName: primaryRepository.fullName,
-        seedScriptUrl: resolveCodexSeedScriptUrl(),
-        organizationLogin:
-          primaryInstallation?.accountType === "Organization"
-            ? primaryInstallation.accountLogin
-            : null,
-      })
-    : null;
+  const primaryInstallation = primaryRepository
+    ? findInstallationForRepository(workspace, primaryRepository.fullName)
+    : workspace.installations[0];
+  const providerGuidanceSet =
+    primaryRepository && primaryInstallation
+      ? buildProviderSecretGuidanceSet({
+          repositoryFullName: primaryRepository.fullName,
+          installation: primaryInstallation,
+        })
+      : null;
   const workspaceHealth = summarizeWorkspaceHealth(
     repositories.map(
       (repository) =>
@@ -989,7 +980,17 @@ function WorkspaceCard({
               activeConfig={activeConfig}
               activeConfigVersion={activeConfigVersion}
               mutationsEnabled={mutationsEnabled}
+              workspaceKey={workspaceKey}
+              searchQuery={repositorySearchQuery}
+              selectedRepositoryFullName={primaryRepository?.fullName ?? null}
             />
+            {primaryRepository && primaryInstallation && providerGuidanceSet ? (
+              <RepositoryProviderSetupPanel
+                repositoryFullName={primaryRepository.fullName}
+                installation={primaryInstallation}
+                guidanceSet={providerGuidanceSet}
+              />
+            ) : null}
           </>
         ) : null}
 
@@ -1145,13 +1146,6 @@ function WorkspaceCard({
                   "org_ruleset_permission_update_pending"
               }
             />
-
-            {providerGuidance ? (
-              <ProviderSecretGuidancePanel
-                guidance={providerGuidance}
-                repositoryFullName={primaryRepository?.fullName ?? null}
-              />
-            ) : null}
           </>
         ) : null}
 
@@ -1571,6 +1565,9 @@ function RepositoryTable({
   activeConfig,
   activeConfigVersion,
   mutationsEnabled,
+  workspaceKey,
+  searchQuery,
+  selectedRepositoryFullName,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repositoryCount: number;
@@ -1581,6 +1578,9 @@ function RepositoryTable({
   readonly activeConfig: ReviewConfiguration;
   readonly activeConfigVersion: number;
   readonly mutationsEnabled: boolean;
+  readonly workspaceKey: string;
+  readonly searchQuery: string;
+  readonly selectedRepositoryFullName: string | null;
 }): React.ReactElement {
   if (repositories.length === 0) {
     return (
@@ -1624,6 +1624,21 @@ function RepositoryTable({
     const effectiveConfig = repositoryConfig?.config ?? activeConfig;
     const configVersion = repositoryConfig?.version ?? activeConfigVersion;
 
+    const searchableText = [
+      repository.fullName,
+      repository.defaultBranch,
+      repository.visibility,
+      repository.archived ? "archived" : "",
+      repository.setupStatus,
+      setupView.label,
+      setupView.hint ?? "",
+      healthView.label,
+      healthView.summary,
+      healthView.nextAction,
+    ]
+      .join(" ")
+      .toLowerCase();
+
     return {
       repository,
       repositoryHealth,
@@ -1635,161 +1650,87 @@ function RepositoryTable({
       repositoryConfig,
       effectiveConfig,
       configVersion,
+      searchableText,
     };
   });
 
-  const primaryInstallation = workspace.installations[0];
-  const setupSearchHref = primaryInstallation
-    ? `/setup?installation_id=${primaryInstallation.githubInstallationId}&setup_action=install#sync-repositories`
-    : "/setup";
-  const hiddenRepositoryCount = Math.max(
-    repositoryCount - repositories.length,
-    0,
-  );
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const filteredRows = normalizedSearchQuery
+    ? rows.filter((row) => row.searchableText.includes(normalizedSearchQuery))
+    : rows;
+
+  const selectedRepositoryVisible = selectedRepositoryFullName
+    ? filteredRows.some(
+        (row) => row.repository.fullName === selectedRepositoryFullName,
+      )
+    : false;
+  const selectedRepositoryHint =
+    selectedRepositoryFullName && !selectedRepositoryVisible
+      ? `${selectedRepositoryFullName} is selected for provider setup but hidden by the current search.`
+      : null;
 
   return (
     <div className="overflow-hidden rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
-      <div className="grid gap-3 border-b border-cyan-200/10 bg-white/[0.025] p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+      <div className="grid gap-4 border-b border-cyan-200/10 bg-white/[0.025] p-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] lg:items-end">
         <div>
           <Badge tone="accent">Repositories</Badge>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Showing {repositories.length} of {repositoryCount} synced
-            repositories. Create or update setup PRs here; use setup search if
-            the repo is not visible.{" "}
-            {hiddenRepositoryCount > 0
-              ? `${hiddenRepositoryCount} more are available in the setup search.`
-              : "Only selected App repositories are shown."}
+            Search synced App repositories, create or update setup PRs, then
+            choose a repository for provider secret commands.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Badge tone="neutral">{repositoryCount} synced repositories</Badge>
+            {filteredRows.length !== repositoryCount ? (
+              <Badge tone="accent">{filteredRows.length} matching</Badge>
+            ) : null}
+          </div>
+        </div>
+        <form action="/dashboard" className="grid gap-2">
+          <input type="hidden" name="workspace" value={workspaceKey} />
+          <input type="hidden" name="section" value="repositories" />
+          {selectedRepositoryFullName ? (
+            <input
+              type="hidden"
+              name="repository"
+              value={selectedRepositoryFullName}
+            />
+          ) : null}
+          <label className="grid gap-2">
+            <span className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
+              Find repository
+            </span>
+            <input
+              name="q"
+              type="search"
+              defaultValue={searchQuery}
+              placeholder="owner/repo, branch, public, setup..."
+              className="min-h-12 w-full rounded-2xl border border-cyan-200/15 bg-slate-950/80 px-4 py-3 text-sm text-cyan-50 outline-none transition placeholder:text-slate-600 hover:border-cyan-200/30 focus:border-cyan-300/55 focus:ring-2 focus:ring-cyan-300/20"
+            />
+          </label>
+        </form>
+        {selectedRepositoryHint ? (
+          <p className="lg:col-span-2 text-xs leading-5 text-amber-100">
+            {selectedRepositoryHint}
+          </p>
+        ) : null}
+      </div>
+
+      {filteredRows.length === 0 ? (
+        <div className="p-5">
+          <Badge tone="warning">No matches</Badge>
+          <p className="mt-3 text-sm leading-6 text-slate-300">
+            No synced repository matches "{searchQuery}". Try owner/repo,
+            default branch, public/private, setup status, or runtime health. If
+            the repository is missing, update GitHub App access and refresh
+            repositories from the Setup section.
           </p>
         </div>
-        <LinkButton href={setupSearchHref} variant="outline" size="sm">
-          Find repository
-        </LinkButton>
-      </div>
-      <div className="grid gap-3 p-3 lg:hidden">
-        {rows.map(
-          ({
-            repository,
-            repositoryHealth,
-            repositoryProvisioning,
-            healthView,
-            setupView,
-            setupPullRequestUrl,
-            workflowCurrent,
-            repositoryConfig,
-            effectiveConfig,
-            configVersion,
-          }) => (
-            <div
-              key={repository.id}
-              className={[
-                "grid gap-4 border-t border-cyan-200/10 px-1 py-5 first:border-t-0",
-                repository.selected ? "" : "opacity-50",
-              ].join(" ")}
-            >
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                <p className="break-words font-medium text-cyan-50">
-                  {repository.fullName}
-                </p>
-                <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                  <RepositoryVisibilityBadge
-                    visibility={repository.visibility}
-                  />
-                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
-                    {repository.defaultBranch}
-                  </span>
-                  {repository.archived ? (
-                    <Badge tone="warning">Archived</Badge>
-                  ) : null}
-                </div>
-              </div>
+      ) : null}
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                    Setup PR
-                  </p>
-                  <div className="mt-2">
-                    <Badge tone={setupView.tone}>{setupView.label}</Badge>
-                  </div>
-                  {setupView.hint ? (
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
-                      {setupView.hint}
-                    </p>
-                  ) : null}
-                  {setupPullRequestUrl ? (
-                    <a
-                      className="mt-1 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                      href={setupPullRequestUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open setup PR
-                    </a>
-                  ) : null}
-                  {repositoryProvisioning?.errorMessage ? (
-                    <span className="mt-1 block text-xs text-red-200">
-                      {repositoryProvisioning.errorMessage.slice(0, 120)}
-                    </span>
-                  ) : null}
-                </div>
-
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                    Runtime health
-                  </p>
-                  <div className="mt-2">
-                    <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                  </div>
-                  <p className="mt-2 text-xs leading-5 text-slate-300">
-                    {healthView.summary}
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">
-                    Next: {healthView.nextAction}
-                  </p>
-                  {repositoryHealth?.latestActionHealthTelemetry ? (
-                    <p className="mt-1 text-[11px] leading-5 text-cyan-100/80">
-                      Latest run:{" "}
-                      {formatActionHealthTelemetry(
-                        repositoryHealth.latestActionHealthTelemetry,
-                      )}
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-
-              <RepositorySetupActionForm
-                workspaceId={workspace.id}
-                repositoryId={repository.id}
-                selected={repository.selected}
-                archived={repository.archived}
-                setupStatus={repository.setupStatus}
-                workflowCurrent={workflowCurrent}
-                mutationsEnabled={mutationsEnabled}
-              />
-              <RepositoryPolicyEditor
-                workspaceId={workspace.id}
-                repository={repository}
-                repositoryConfig={repositoryConfig}
-                effectiveConfig={effectiveConfig}
-                configVersion={configVersion}
-                mutationsEnabled={mutationsEnabled}
-              />
-            </div>
-          ),
-        )}
-      </div>
-      <div className="hidden overflow-x-auto lg:block">
-        <table className="w-full min-w-[860px] text-left text-sm">
-          <thead className="bg-cyan-300/[0.08] text-xs uppercase tracking-[0.16em] text-cyan-100">
-            <tr>
-              <th className="px-4 py-3">Repository</th>
-              <th className="px-4 py-3">Setup PR</th>
-              <th className="px-4 py-3">Runtime health</th>
-              <th className="px-4 py-3">Action</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-cyan-200/10 text-slate-200">
-            {rows.map(
+      {filteredRows.length > 0 ? (
+        <>
+          <div className="grid gap-3 p-3 lg:hidden">
+            {filteredRows.map(
               ({
                 repository,
                 repositoryHealth,
@@ -1801,41 +1742,50 @@ function RepositoryTable({
                 repositoryConfig,
                 effectiveConfig,
                 configVersion,
-              }) => {
-                return (
-                  <tr
-                    key={repository.id}
-                    className={[
-                      "transition hover:bg-cyan-300/[0.035]",
-                      repository.selected ? "" : "opacity-50",
-                    ].join(" ")}
-                  >
-                    <td className="px-4 py-4 align-top">
-                      <p className="font-medium text-cyan-50">
-                        {repository.fullName}
+              }) => (
+                <div
+                  key={repository.id}
+                  className={[
+                    "grid gap-4 border-t border-cyan-200/10 px-1 py-5 first:border-t-0",
+                    repository.selected ? "" : "opacity-50",
+                    repository.fullName === selectedRepositoryFullName
+                      ? "rounded-2xl bg-cyan-300/[0.045] px-3"
+                      : "",
+                  ].join(" ")}
+                >
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                    <p className="break-words font-medium text-cyan-50">
+                      {repository.fullName}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                      <RepositoryVisibilityBadge
+                        visibility={repository.visibility}
+                      />
+                      <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
+                        {repository.defaultBranch}
+                      </span>
+                      {repository.archived ? (
+                        <Badge tone="warning">Archived</Badge>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
+                        Setup PR
                       </p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <RepositoryVisibilityBadge
-                          visibility={repository.visibility}
-                        />
-                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
-                          {repository.defaultBranch}
-                        </span>
-                        {repository.archived ? (
-                          <Badge tone="warning">Archived</Badge>
-                        ) : null}
+                      <div className="mt-2">
+                        <Badge tone={setupView.tone}>{setupView.label}</Badge>
                       </div>
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <Badge tone={setupView.tone}>{setupView.label}</Badge>
                       {setupView.hint ? (
-                        <span className="mt-1 block text-xs leading-5 text-slate-500">
+                        <p className="mt-1 text-xs leading-5 text-slate-500">
                           {setupView.hint}
-                        </span>
+                        </p>
                       ) : null}
                       {setupPullRequestUrl ? (
                         <a
-                          className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                          className="mt-1 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
                           href={setupPullRequestUrl}
                           target="_blank"
                           rel="noreferrer"
@@ -1848,52 +1798,301 @@ function RepositoryTable({
                           {repositoryProvisioning.errorMessage.slice(0, 120)}
                         </span>
                       ) : null}
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                      <span className="mt-2 block text-xs leading-5 text-slate-300">
+                    </div>
+
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
+                        Runtime health
+                      </p>
+                      <div className="mt-2">
+                        <Badge tone={healthView.tone}>{healthView.label}</Badge>
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-300">
                         {healthView.summary}
-                      </span>
-                      <span className="mt-1 block text-xs leading-5 text-slate-500">
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
                         Next: {healthView.nextAction}
-                      </span>
+                      </p>
                       {repositoryHealth?.latestActionHealthTelemetry ? (
-                        <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
+                        <p className="mt-1 text-[11px] leading-5 text-cyan-100/80">
                           Latest run:{" "}
                           {formatActionHealthTelemetry(
                             repositoryHealth.latestActionHealthTelemetry,
                           )}
-                        </span>
+                        </p>
                       ) : null}
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <RepositorySetupActionForm
-                        workspaceId={workspace.id}
-                        repositoryId={repository.id}
-                        selected={repository.selected}
-                        archived={repository.archived}
-                        setupStatus={repository.setupStatus}
-                        workflowCurrent={workflowCurrent}
-                        mutationsEnabled={mutationsEnabled}
-                      />
-                      <RepositoryPolicyEditor
-                        workspaceId={workspace.id}
-                        repository={repository}
-                        repositoryConfig={repositoryConfig}
-                        effectiveConfig={effectiveConfig}
-                        configVersion={configVersion}
-                        mutationsEnabled={mutationsEnabled}
-                      />
-                    </td>
-                  </tr>
-                );
-              },
+                    </div>
+                  </div>
+
+                  <RepositorySetupActionForm
+                    workspaceId={workspace.id}
+                    repositoryId={repository.id}
+                    selected={repository.selected}
+                    archived={repository.archived}
+                    setupStatus={repository.setupStatus}
+                    workflowCurrent={workflowCurrent}
+                    mutationsEnabled={mutationsEnabled}
+                  />
+                  <a
+                    href={dashboardRepositoryHref({
+                      workspaceKey,
+                      repositoryFullName: repository.fullName,
+                      searchQuery,
+                    })}
+                    className="inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                  >
+                    Show provider command
+                  </a>
+                  <RepositoryPolicyEditor
+                    workspaceId={workspace.id}
+                    repository={repository}
+                    repositoryConfig={repositoryConfig}
+                    effectiveConfig={effectiveConfig}
+                    configVersion={configVersion}
+                    mutationsEnabled={mutationsEnabled}
+                  />
+                </div>
+              ),
             )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+          <div className="hidden overflow-x-auto lg:block">
+            <table className="w-full min-w-[860px] text-left text-sm">
+              <thead className="bg-cyan-300/[0.08] text-xs uppercase tracking-[0.16em] text-cyan-100">
+                <tr>
+                  <th className="px-4 py-3">Repository</th>
+                  <th className="px-4 py-3">Setup PR</th>
+                  <th className="px-4 py-3">Runtime health</th>
+                  <th className="px-4 py-3">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-cyan-200/10 text-slate-200">
+                {filteredRows.map(
+                  ({
+                    repository,
+                    repositoryHealth,
+                    repositoryProvisioning,
+                    healthView,
+                    setupView,
+                    setupPullRequestUrl,
+                    workflowCurrent,
+                    repositoryConfig,
+                    effectiveConfig,
+                    configVersion,
+                  }) => {
+                    return (
+                      <tr
+                        key={repository.id}
+                        className={[
+                          "transition hover:bg-cyan-300/[0.035]",
+                          repository.selected ? "" : "opacity-50",
+                          repository.fullName === selectedRepositoryFullName
+                            ? "bg-cyan-300/[0.045]"
+                            : "",
+                        ].join(" ")}
+                      >
+                        <td className="px-4 py-4 align-top">
+                          <p className="font-medium text-cyan-50">
+                            {repository.fullName}
+                          </p>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <RepositoryVisibilityBadge
+                              visibility={repository.visibility}
+                            />
+                            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
+                              {repository.defaultBranch}
+                            </span>
+                            {repository.archived ? (
+                              <Badge tone="warning">Archived</Badge>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <Badge tone={setupView.tone}>{setupView.label}</Badge>
+                          {setupView.hint ? (
+                            <span className="mt-1 block text-xs leading-5 text-slate-500">
+                              {setupView.hint}
+                            </span>
+                          ) : null}
+                          {setupPullRequestUrl ? (
+                            <a
+                              className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                              href={setupPullRequestUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open setup PR
+                            </a>
+                          ) : null}
+                          {repositoryProvisioning?.errorMessage ? (
+                            <span className="mt-1 block text-xs text-red-200">
+                              {repositoryProvisioning.errorMessage.slice(
+                                0,
+                                120,
+                              )}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <Badge tone={healthView.tone}>
+                            {healthView.label}
+                          </Badge>
+                          <span className="mt-2 block text-xs leading-5 text-slate-300">
+                            {healthView.summary}
+                          </span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-500">
+                            Next: {healthView.nextAction}
+                          </span>
+                          {repositoryHealth?.latestActionHealthTelemetry ? (
+                            <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
+                              Latest run:{" "}
+                              {formatActionHealthTelemetry(
+                                repositoryHealth.latestActionHealthTelemetry,
+                              )}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <RepositorySetupActionForm
+                            workspaceId={workspace.id}
+                            repositoryId={repository.id}
+                            selected={repository.selected}
+                            archived={repository.archived}
+                            setupStatus={repository.setupStatus}
+                            workflowCurrent={workflowCurrent}
+                            mutationsEnabled={mutationsEnabled}
+                          />
+                          <a
+                            href={dashboardRepositoryHref({
+                              workspaceKey,
+                              repositoryFullName: repository.fullName,
+                              searchQuery,
+                            })}
+                            className="mt-2 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                          >
+                            Show provider command
+                          </a>
+                          <RepositoryPolicyEditor
+                            workspaceId={workspace.id}
+                            repository={repository}
+                            repositoryConfig={repositoryConfig}
+                            effectiveConfig={effectiveConfig}
+                            configVersion={configVersion}
+                            mutationsEnabled={mutationsEnabled}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  },
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
     </div>
   );
+}
+
+type DashboardInstallation = DashboardWorkspace["installations"][number];
+
+type ProviderSecretGuidanceSet = {
+  readonly codexOAuth: ReturnType<typeof buildProviderSecretSetupGuidance>;
+  readonly codexApiKey: ReturnType<typeof buildProviderSecretSetupGuidance>;
+  readonly openRouterApiKey: ReturnType<
+    typeof buildProviderSecretSetupGuidance
+  >;
+};
+
+function RepositoryProviderSetupPanel({
+  repositoryFullName,
+  installation,
+  guidanceSet,
+}: {
+  readonly repositoryFullName: string;
+  readonly installation: DashboardInstallation;
+  readonly guidanceSet: ProviderSecretGuidanceSet;
+}): React.ReactElement {
+  const organizationLogin =
+    installation.accountType === "Organization"
+      ? installation.accountLogin
+      : null;
+
+  return (
+    <section
+      id="provider-setup"
+      className="scroll-mt-28 rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/[0.07] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
+    >
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <Badge tone="success">Provider secrets</Badge>
+          <h2 className="mt-3 text-xl font-semibold text-emerald-50">
+            Connect model credentials for {repositoryFullName}
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+            Create and merge the setup PR first, then run one command below.
+            Secrets are written directly to GitHub Actions; ReviewRouter SaaS
+            only stores metadata and policy.
+          </p>
+        </div>
+        <Badge tone={organizationLogin ? "accent" : "neutral"}>
+          {organizationLogin
+            ? `${organizationLogin} selected repo secret`
+            : "repository secret"}
+        </Badge>
+      </div>
+      <ProviderSecretSetupChooser
+        repositoryFullName={repositoryFullName}
+        organizationLogin={organizationLogin}
+        codexOAuthGuidance={guidanceSet.codexOAuth}
+        codexApiKeyGuidance={guidanceSet.codexApiKey}
+        openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}
+      />
+    </section>
+  );
+}
+
+function findInstallationForRepository(
+  workspace: DashboardWorkspace,
+  repositoryFullName: string,
+): DashboardInstallation | undefined {
+  const owner = repositoryFullName.split("/")[0]?.toLowerCase();
+  return (
+    workspace.installations.find(
+      (installation) => installation.accountLogin.toLowerCase() === owner,
+    ) ?? workspace.installations[0]
+  );
+}
+
+function buildProviderSecretGuidanceSet({
+  repositoryFullName,
+  installation,
+}: {
+  readonly repositoryFullName: string;
+  readonly installation: DashboardInstallation;
+}): ProviderSecretGuidanceSet {
+  const organizationLogin =
+    installation.accountType === "Organization"
+      ? installation.accountLogin
+      : null;
+
+  return {
+    codexOAuth: buildProviderSecretSetupGuidance({
+      provider: "codex_oauth",
+      repoFullName: repositoryFullName,
+      seedScriptUrl: resolveCodexSeedScriptUrl(),
+      organizationLogin,
+    }),
+    codexApiKey: buildProviderSecretSetupGuidance({
+      provider: "openai_api_key",
+      repoFullName: repositoryFullName,
+      organizationLogin,
+    }),
+    openRouterApiKey: buildProviderSecretSetupGuidance({
+      provider: "openrouter_api_key",
+      repoFullName: repositoryFullName,
+      organizationLogin,
+    }),
+  };
 }
 
 function OrgRulesetAdvancedCard({
@@ -2493,137 +2692,6 @@ function DashboardTextField({
   );
 }
 
-function ProviderSecretGuidancePanel({
-  guidance,
-  repositoryFullName,
-}: {
-  readonly guidance: ReturnType<typeof buildProviderSecretSetupGuidance>;
-  readonly repositoryFullName: string | null;
-}): React.ReactElement {
-  const recommendedCommand = guidance.commands[0];
-
-  return (
-    <details
-      open
-      className="rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/[0.08] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
-    >
-      <summary className="cursor-pointer list-none">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <Badge tone="success">
-              {providerSetupTitle(guidance.provider)}
-            </Badge>
-            <p className="mt-2 text-sm leading-6 text-emerald-50">
-              Ready command for{" "}
-              <span className="font-semibold">
-                {repositoryFullName ?? "the selected repository"}
-              </span>
-              . Credentials stay in GitHub Actions secrets.
-            </p>
-          </div>
-          <span className="max-w-full break-words font-mono text-xs uppercase tracking-[0.16em] text-emerald-100">
-            {guidance.recommendedScope.replaceAll("_", " ")}
-          </span>
-        </div>
-      </summary>
-
-      <div className="mt-5">
-        <p className="mb-3 rounded-2xl border border-emerald-200/10 bg-slate-950/60 p-3 text-xs leading-5 text-emerald-100/90">
-          {guidance.recommendedScope === "repository"
-            ? "Personal account flow: this command writes a repository secret for the selected repo."
-            : "Organization flow: the recommended command writes one organization secret scoped only to the selected repository."}
-        </p>
-        <p className="text-sm leading-6 text-emerald-50">
-          {providerSetupIntro(guidance.provider)}
-        </p>
-
-        {recommendedCommand ? (
-          <div className="mt-4 grid gap-3 lg:grid-cols-3">
-            <ProviderSetupFact
-              label="Writes secret to"
-              value={recommendedCommand.targetLabel}
-            />
-            <ProviderSetupFact
-              label="Selected repositories"
-              value={recommendedCommand.selectedRepositories.join(", ")}
-            />
-            <ProviderSetupFact
-              label="Before write"
-              value={
-                recommendedCommand.validatesBeforeWrite
-                  ? "Validates auth.json locally"
-                  : "GitHub validates the secret input"
-              }
-            />
-          </div>
-        ) : null}
-
-        {guidance.warnings.length > 0 ? (
-          <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
-            {guidance.warnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
-        ) : null}
-
-        <div className="mt-4 grid gap-3">
-          {guidance.commands.map((command, index) => (
-            <div
-              key={command.title}
-              className="rounded-2xl border border-emerald-200/10 bg-slate-950/80 p-4"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={index === 0 ? "success" : "neutral"}>
-                  {index === 0 ? "Recommended" : "Alternative"}
-                </Badge>
-                <p className="text-sm font-semibold text-emerald-50">
-                  {command.title}
-                </p>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-slate-400">
-                {command.description}
-              </p>
-              <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-2">
-                <span>
-                  <strong className="text-emerald-100">Secrets:</strong>{" "}
-                  {command.secretNames.join(", ")}
-                </span>
-                <span>
-                  <strong className="text-emerald-100">Recovery:</strong>{" "}
-                  {command.failureRecovery}
-                </span>
-              </div>
-              <CodeBlock
-                code={command.command}
-                className="mt-3 rounded-md p-3 text-xs leading-5"
-              />
-            </div>
-          ))}
-        </div>
-      </div>
-    </details>
-  );
-}
-
-function ProviderSetupFact({
-  label,
-  value,
-}: {
-  readonly label: string;
-  readonly value: string;
-}): React.ReactElement {
-  return (
-    <div className="min-w-0 rounded-2xl border border-emerald-200/10 bg-slate-950/70 p-4">
-      <p className="font-mono text-[0.62rem] uppercase tracking-[0.16em] text-emerald-100/70">
-        {label}
-      </p>
-      <p className="mt-2 break-words text-sm font-semibold leading-6 text-emerald-50">
-        {value}
-      </p>
-    </div>
-  );
-}
-
 function formatReviewConfigSummary(config: ReviewConfiguration): string {
   return [
     formatProviderAuthMode(config.provider.authMode),
@@ -2643,60 +2711,6 @@ function formatProviderAuthMode(
       return "Codex API key";
     case "openrouter_api_key":
       return "OpenRouter API key";
-  }
-}
-
-function providerSecretKindForAuthMode(
-  authMode: ReviewConfiguration["provider"]["authMode"],
-): ProviderSecretKind {
-  switch (authMode) {
-    case "codex_subscription_oauth":
-      return "codex_oauth";
-    case "codex_openai_api_key":
-      return "openai_api_key";
-    case "openrouter_api_key":
-      return "openrouter_api_key";
-  }
-}
-
-function providerSetupTitle(provider: ProviderSecretKind): string {
-  switch (provider) {
-    case "codex_oauth":
-      return "Codex OAuth setup";
-    case "openai_api_key":
-      return "OpenAI API key setup";
-    case "openrouter_api_key":
-      return "OpenRouter API key setup";
-  }
-}
-
-function providerSetupIntro(provider: ProviderSecretKind): React.ReactNode {
-  switch (provider) {
-    case "codex_oauth":
-      return (
-        <>
-          Run this on a trusted machine where Codex CLI is already logged in.
-          The command writes directly to GitHub Actions secrets through{" "}
-          <code>gh</code>; ReviewRouter SaaS never receives{" "}
-          <code>CODEX_AUTH_JSON</code>.
-        </>
-      );
-    case "openai_api_key":
-      return (
-        <>
-          Run this where <code>gh</code> is authenticated and paste the OpenAI
-          key when prompted. ReviewRouter SaaS never receives{" "}
-          <code>OPENAI_API_KEY</code>.
-        </>
-      );
-    case "openrouter_api_key":
-      return (
-        <>
-          Run this where <code>gh</code> is authenticated and paste the
-          OpenRouter key when prompted. ReviewRouter SaaS never receives{" "}
-          <code>OPENROUTER_API_KEY</code>.
-        </>
-      );
   }
 }
 
@@ -2870,13 +2884,16 @@ function resolveDashboardSection(
   const notice = readParam(params.notice);
   if (
     [
+      "app_installed",
       "setup_pr_ready",
       "workflow_already_current",
       "sync_requested",
       "sync_already_requested",
-      "org_ruleset_queued",
     ].includes(notice)
   ) {
+    return "repositories";
+  }
+  if (notice === "org_ruleset_queued") {
     return "setup";
   }
   if (
@@ -2906,6 +2923,24 @@ function dashboardSectionHref(
   return `/dashboard?${query.toString()}#dashboard-section-content`;
 }
 
+function dashboardRepositoryHref({
+  workspaceKey,
+  repositoryFullName,
+  searchQuery,
+}: {
+  readonly workspaceKey: string;
+  readonly repositoryFullName: string;
+  readonly searchQuery?: string;
+}): string {
+  const query = new URLSearchParams({
+    workspace: workspaceKey,
+    section: "repositories",
+    repository: repositoryFullName,
+  });
+  if (searchQuery) query.set("q", searchQuery);
+  return `/dashboard?${query.toString()}#provider-setup`;
+}
+
 function buildDashboardSignInCallbackUrl(
   params: Record<string, string | string[] | undefined>,
 ): string {
@@ -2919,6 +2954,7 @@ function buildDashboardSignInCallbackUrl(
     "pr",
     "workspace",
     "section",
+    "q",
   ]) {
     const value = readParam(params[key]);
     if (value) callbackParams.set(key, value);
@@ -2930,19 +2966,10 @@ function buildDashboardSignInCallbackUrl(
   return callbackPath;
 }
 
-function setupQueryString(
-  params: Record<string, string | string[] | undefined>,
-): string {
-  const query = new URLSearchParams();
-  for (const key of ["installation_id", "setup_action"]) {
-    const value = readParam(params[key]);
-    if (value) query.set(key, value);
-  }
-  return query.toString();
-}
-
 function dashboardNoticeText(notice: string, repository: string): string {
   switch (notice) {
+    case "app_installed":
+      return "GitHub App is connected. Search for one repository, create the setup PR, then seed provider credentials from this dashboard.";
     case "sync_requested":
       return "Repository metadata refresh was queued. Reload in a few seconds if the repository list does not update immediately.";
     case "sync_already_requested":
@@ -2980,6 +3007,8 @@ function dashboardNoticeText(notice: string, repository: string): string {
 
 function dashboardNoticeTitle(notice: string): string {
   switch (notice) {
+    case "app_installed":
+      return "GitHub App installed";
     case "sync_requested":
     case "sync_already_requested":
       return "Refresh queued";
@@ -3007,6 +3036,7 @@ function dashboardNoticeTone(
 ): "success" | "warning" | "danger" | "accent" {
   switch (notice) {
     case "setup_pr_ready":
+    case "app_installed":
     case "workflow_already_current":
     case "review_config_saved":
     case "repository_review_config_saved":

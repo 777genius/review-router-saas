@@ -4,13 +4,14 @@ import { useMemo, useState } from "react";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { Badge, CodeBlock } from "@reviewrouter/ui";
 
-type ProviderChoice = "codex_oauth" | "codex_api_key";
+type ProviderChoice = "codex_oauth" | "codex_api_key" | "openrouter_api_key";
 
 export type ProviderSecretSetupChooserProps = {
   readonly repositoryFullName: string;
   readonly organizationLogin: string | null;
   readonly codexOAuthGuidance: ProviderSecretSetupGuidance;
   readonly codexApiKeyGuidance: ProviderSecretSetupGuidance;
+  readonly openRouterApiKeyGuidance: ProviderSecretSetupGuidance;
 };
 
 export function ProviderSecretSetupChooser({
@@ -18,6 +19,7 @@ export function ProviderSecretSetupChooser({
   organizationLogin,
   codexOAuthGuidance,
   codexApiKeyGuidance,
+  openRouterApiKeyGuidance,
 }: ProviderSecretSetupChooserProps): React.ReactElement {
   const [providerChoice, setProviderChoice] =
     useState<ProviderChoice>("codex_oauth");
@@ -26,7 +28,11 @@ export function ProviderSecretSetupChooser({
   );
 
   const activeGuidance =
-    providerChoice === "codex_oauth" ? codexOAuthGuidance : codexApiKeyGuidance;
+    providerChoice === "codex_oauth"
+      ? codexOAuthGuidance
+      : providerChoice === "codex_api_key"
+        ? codexApiKeyGuidance
+        : openRouterApiKeyGuidance;
   const repositoryCommand = activeGuidance.commands.find(
     (command) => command.storesSecretIn === "github_repository_secret",
   );
@@ -49,19 +55,27 @@ export function ProviderSecretSetupChooser({
             footnote:
               "If Codex later says the token is stale, run codex login again and rerun this same command.",
           }
-        : {
-            badge: "Codex API key",
-            title: "Use OpenAI API billing for Codex",
-            body: "Store OPENAI_API_KEY directly in GitHub Actions secrets. Then keep the dashboard policy on Codex API key mode for this repository.",
-            footnote:
-              "This does not use the ChatGPT subscription OAuth file. It uses normal OpenAI API billing.",
-          },
+        : providerChoice === "codex_api_key"
+          ? {
+              badge: "Codex API key",
+              title: "Use OpenAI API billing for Codex",
+              body: "Store OPENAI_API_KEY directly in GitHub Actions secrets. Then keep the dashboard policy on Codex API key mode for this repository.",
+              footnote:
+                "This does not use the ChatGPT subscription OAuth file. It uses normal OpenAI API billing.",
+            }
+          : {
+              badge: "OpenRouter API key",
+              title: "Use OpenRouter billing",
+              body: "Store OPENROUTER_API_KEY directly in GitHub Actions secrets. Then keep the dashboard policy on OpenRouter mode for this repository.",
+              footnote:
+                "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
+            },
     [providerChoice],
   );
 
   return (
     <div className="grid gap-5">
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-3">
         <ProviderChoiceButton
           active={providerChoice === "codex_oauth"}
           testId="provider-choice-codex-oauth"
@@ -75,6 +89,13 @@ export function ProviderSecretSetupChooser({
           title="Codex API key"
           body="Use OPENAI_API_KEY and API billing."
           onClick={() => setProviderChoice("codex_api_key")}
+        />
+        <ProviderChoiceButton
+          active={providerChoice === "openrouter_api_key"}
+          testId="provider-choice-openrouter-api-key"
+          title="OpenRouter API key"
+          body="Use OPENROUTER_API_KEY from GitHub Actions."
+          onClick={() => setProviderChoice("openrouter_api_key")}
         />
       </div>
 
@@ -113,9 +134,9 @@ export function ProviderSecretSetupChooser({
           {providerDetails.body}
         </p>
         <ol className="mt-4 grid list-decimal gap-2 pl-5 text-sm leading-6 text-emerald-50/90">
-          <li>1. Create and merge the setup PR for {repositoryFullName}.</li>
-          <li>2. Run the command below on your trusted machine.</li>
-          <li>3. Open a test pull request and ReviewRouter will run in CI.</li>
+          <li>Create and merge the setup PR for {repositoryFullName}.</li>
+          <li>Run the command below on your trusted machine.</li>
+          <li>Open a test pull request and ReviewRouter will run in CI.</li>
         </ol>
         {activeCommand ? (
           <CodeBlock

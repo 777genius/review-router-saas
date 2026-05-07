@@ -35,10 +35,7 @@ const pages = [
   ],
   [
     "/security",
-    [
-      "Designed to avoid code and secret custody",
-      repoCodexCommandFragment,
-    ],
+    ["Designed to avoid code and secret custody", repoCodexCommandFragment],
   ],
   ["/fair-use", ["Fair use"]],
   ["/disconnect", ["Disconnect"]],
@@ -134,25 +131,26 @@ try {
     }
   }
 
-  const dashboardRedirectResponse = await fetch(
+  const dashboardPostInstallResponse = await fetch(
     `${baseUrl}/dashboard?installation_id=123&setup_action=install`,
     { redirect: "manual" },
   );
-  if (![301, 302, 303, 307, 308].includes(dashboardRedirectResponse.status)) {
+  if (!dashboardPostInstallResponse.ok) {
     await fail(
-      `/dashboard post-install returned HTTP ${dashboardRedirectResponse.status}; expected redirect`,
+      `/dashboard post-install returned HTTP ${dashboardPostInstallResponse.status}`,
     );
   }
-  const dashboardRedirectLocation =
-    dashboardRedirectResponse.headers.get("location");
-  if (
-    dashboardRedirectLocation !==
-    "/setup?installation_id=123&setup_action=install"
-  ) {
-    await fail(
-      `/dashboard post-install redirected to ${dashboardRedirectLocation}; expected /setup?installation_id=123&setup_action=install`,
-    );
-  }
+  const dashboardPostInstallHtml = await dashboardPostInstallResponse.text();
+  assertIncludes(
+    dashboardPostInstallHtml,
+    "GitHub App installed",
+    "dashboard post-install should keep the App install handoff visible",
+  );
+  assertIncludes(
+    dashboardPostInstallHtml,
+    "Sign in with GitHub",
+    "dashboard post-install should show sign-in as the next action when signed out",
+  );
 
   const postInstallResponse = await fetch(
     `${baseUrl}/setup?installation_id=123&setup_action=install`,
@@ -207,6 +205,16 @@ try {
     postInstallHtml,
     "Install or manage App",
     "post-install dashboard should not show install as the primary next action",
+  );
+  assertNotIncludes(
+    postInstallHtml,
+    "Search synced App repositories",
+    "setup should not contain repository management",
+  );
+  assertNotIncludes(
+    postInstallHtml,
+    "Provider secrets",
+    "setup should not contain provider secret management",
   );
   assertBefore(
     postInstallHtml,

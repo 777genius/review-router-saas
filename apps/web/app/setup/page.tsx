@@ -1,5 +1,5 @@
+import { redirect } from "next/navigation";
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
-import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -8,8 +8,6 @@ import {
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { getPrisma } from "../../src/server/prisma";
-import { requestInstallationSyncAction } from "../dashboard/actions";
-import { FormSubmitButton } from "../form-submit-button";
 import { ActionToast } from "../action-toast";
 import {
   GitHubSignInButton,
@@ -17,9 +15,6 @@ import {
 } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
-import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
-import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
-import { RepositoryPicker } from "./repository-picker";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +27,11 @@ type SetupPageProps = {
 type SetupInstallation = NonNullable<
   Awaited<ReturnType<typeof loadSetupInstallation>>
 >;
+
+function readParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
+}
 
 export default async function SetupPage({
   searchParams,
@@ -55,6 +55,10 @@ export default async function SetupPage({
     mutationStatus.signedIn && installationId
       ? await loadSetupInstallation({ installationId, workspaceScope })
       : null;
+  if (mutationStatus.signedIn && installation) {
+    redirect(buildSetupDashboardRedirect(installation));
+  }
+
   const appInstallReturned = Boolean(setupNotice);
   const heroBody = buildSetupHeroBody({
     installation,
@@ -209,19 +213,11 @@ export default async function SetupPage({
             </h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
               After sign-in, ReviewRouter maps this GitHub App installation to
-              your workspace, lets you refresh selected repositories, and creates
-              the setup PR from the same guided page.
+              your dashboard workspace. Repository search, setup PRs, provider
+              secrets, policy, and health live in the dashboard.
             </p>
           </Card>
         )
-      ) : installation ? (
-        <SignedInSetup
-          installation={installation}
-          mutationsEnabled={mutationStatus.enabled}
-          setupAction={setupAction}
-          syncQueued={readParam(params.notice) === "sync_requested"}
-          setupRepositoryFullName={readParam(params.repository)}
-        />
       ) : !installationId ? (
         <SetupStartCard appInstallUrl={appInstallUrl} />
       ) : setupNotice ? null : (
@@ -241,6 +237,19 @@ export default async function SetupPage({
       )}
     </main>
   );
+}
+
+function buildSetupDashboardRedirect(installation: SetupInstallation): string {
+  const query = new URLSearchParams({
+    workspace:
+      installation.accountLogin ||
+      installation.workspace.slug ||
+      installation.workspace.id,
+    section: "repositories",
+    notice: "app_installed",
+    installation_id: installation.githubInstallationId,
+  });
+  return `/dashboard?${query.toString()}`;
 }
 
 function buildSetupHeroBody(input: {
@@ -292,7 +301,8 @@ function GitHubAppInstallHandoffCard({
         }
       : {
           badge: "Waiting",
-          title: "GitHub confirmed the App install. ReviewRouter is waiting for the signed webhook.",
+          title:
+            "GitHub confirmed the App install. ReviewRouter is waiting for the signed webhook.",
           body: "This normally updates within a few seconds. Refresh this page, or open the dashboard after GitHub metadata catches up.",
           tone: "warning" as const,
         };
@@ -404,370 +414,7 @@ function SetupStartCard({
   );
 }
 
-function SignedInSetup({
-  installation,
-  mutationsEnabled,
-  setupAction,
-  syncQueued,
-  setupRepositoryFullName,
-}: {
-  readonly installation: SetupInstallation;
-  readonly mutationsEnabled: boolean;
-  readonly setupAction: string;
-  readonly syncQueued: boolean;
-  readonly setupRepositoryFullName: string;
-}): React.ReactElement {
-  const setupRepository = setupRepositoryFullName
-    ? installation.repositories.find(
-        (repository) => repository.fullName === setupRepositoryFullName,
-      )
-    : null;
-  const codexOAuthGuidance = setupRepository
-    ? buildProviderSecretSetupGuidance({
-        provider: "codex_oauth",
-        repoFullName: setupRepository.fullName,
-        seedScriptUrl: resolveCodexSeedScriptUrl(),
-        organizationLogin:
-          installation.accountType === "Organization"
-            ? installation.accountLogin
-            : null,
-      })
-    : null;
-  const codexApiKeyGuidance = setupRepository
-    ? buildProviderSecretSetupGuidance({
-        provider: "openai_api_key",
-        repoFullName: setupRepository.fullName,
-        organizationLogin:
-          installation.accountType === "Organization"
-            ? installation.accountLogin
-            : null,
-      })
-    : null;
-  const repositoriesSynced = installation.repositories.length > 0;
-  const selectedRepositorySetupStatus = setupRepository?.setupStatus ?? null;
-
-  return (
-    <div className="grid gap-6">
-      <SetupProgressTracker
-        repositoriesSynced={repositoriesSynced}
-        repositorySelected={Boolean(setupRepository)}
-        selectedRepositorySetupStatus={selectedRepositorySetupStatus}
-        syncQueued={syncQueued}
-      />
-
-      <SetupStepCard
-        id="sync-repositories"
-        badge="Step 2"
-        status={repositoriesSynced ? "done" : syncQueued ? "current" : "todo"}
-        title="Refresh repository list"
-        body={`${installation.accountLogin} is connected as a ${formatAccountType(installation.accountType).toLowerCase()} install. GitHub webhooks normally refresh repository metadata automatically. Use this only if repositories are missing or you changed App access.`}
-        primary={
-          <form action={requestInstallationSyncAction}>
-            <SetupReturnFields
-              installationId={installation.githubInstallationId}
-              setupAction={setupAction}
-            />
-            <input
-              type="hidden"
-              name="workspaceId"
-              value={installation.workspace.id}
-            />
-            <input
-              type="hidden"
-              name="githubInstallationId"
-              value={installation.githubInstallationId}
-            />
-            <FormSubmitButton
-              disabled={!mutationsEnabled}
-              idleLabel="Refresh repository list"
-              pendingLabel="Refreshing repositories..."
-            />
-          </form>
-        }
-        secondary={
-          <LinkButton href="/dashboard" variant="outline">
-            Open dashboard
-          </LinkButton>
-        }
-      />
-
-      <RepositorySelectionExplainer installation={installation} />
-
-      <Card className="rounded-2xl p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <Badge tone="accent">Selected repositories</Badge>
-            <h2 className="mt-3 text-2xl font-semibold text-cyan-50">
-              {installation.workspace.name}
-            </h2>
-            <p className="mt-1 text-sm text-slate-400">
-              {installation.repositoryCount} repositories synced from{" "}
-              {formatAccountType(installation.accountType)}{" "}
-              {installation.accountLogin}.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="accent">
-              {formatAccountTypeBadge(installation.accountType)}
-            </Badge>
-            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 font-mono text-xs uppercase tracking-[0.14em] text-cyan-100">
-              {installation.repositorySelection}
-            </span>
-          </div>
-        </div>
-
-        {installation.repositories.length === 0 ? (
-          <p className="mt-5 text-sm leading-6 text-slate-300">
-            No repositories are synced yet. Refresh the repository list above,
-            then reload this page or open the dashboard.
-          </p>
-        ) : (
-          <RepositoryPicker
-            workspaceId={installation.workspace.id}
-            installationId={installation.githubInstallationId}
-            setupAction={setupAction}
-            initialQuery={setupRepository?.fullName ?? ""}
-            mutationsEnabled={mutationsEnabled}
-            repositories={installation.repositories}
-          />
-        )}
-      </Card>
-
-      {codexOAuthGuidance && codexApiKeyGuidance && setupRepository ? (
-        <SetupStepCard
-          badge="Step 3"
-          status="current"
-          title={`Connect provider secrets for ${setupRepository.fullName}`}
-          body="Choose how ReviewRouter should authenticate the model, then run the exact GitHub secret command. Credentials go directly to GitHub Actions secrets, not to ReviewRouter SaaS."
-          primary={null}
-        >
-          <ProviderSecretSetupChooser
-            repositoryFullName={setupRepository.fullName}
-            organizationLogin={
-              installation.accountType === "Organization"
-                ? installation.accountLogin
-                : null
-            }
-            codexOAuthGuidance={codexOAuthGuidance}
-            codexApiKeyGuidance={codexApiKeyGuidance}
-          />
-        </SetupStepCard>
-      ) : (
-        <SetupStepCard
-          badge="Step 3"
-          status="todo"
-          title="Choose a repository, then connect Codex"
-          body="Refresh repositories if needed, create the setup PR for one repository, then this step will show exact commands for Codex subscription OAuth or Codex API key mode. The commands write only to GitHub Actions secrets."
-          primary={null}
-        />
-      )}
-    </div>
-  );
-}
-
-function RepositorySelectionExplainer({
-  installation,
-}: {
-  readonly installation: SetupInstallation;
-}): React.ReactElement {
-  const isAllRepositories = installation.repositorySelection === "all";
-  const settingsUrl = appInstallationSettingsUrl(installation);
-  const selectedRepositories = installation.repositories
-    .filter((repository) => repository.selected)
-    .map((repository) => repository.fullName);
-  const visibleSelectedRepositories = selectedRepositories.slice(0, 8);
-  const hiddenSelectedRepositoryCount =
-    selectedRepositories.length - visibleSelectedRepositories.length;
-
-  return (
-    <Card className="rounded-2xl border-cyan-200/15 bg-cyan-300/[0.04] p-5 sm:p-6">
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-        <div>
-          <Badge tone={isAllRepositories ? "warning" : "success"}>
-            {isAllRepositories ? "All repositories install" : "Selected repos"}
-          </Badge>
-          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
-            {isAllRepositories
-              ? "All repos are available, but setup is still per repository."
-              : "Only selected repositories are available here."}
-          </h2>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
-            {isAllRepositories
-              ? "GitHub grants the App access to all current and future repositories for this account. ReviewRouter syncs metadata from webhooks, then you choose which repositories receive setup PRs and provider secrets. It will not spam every repository with a PR."
-              : "To add another repository, manage the GitHub App installation and select it there. GitHub should sync it automatically, but you can refresh here if it is missing."}
-          </p>
-          {installation.accountType === "Organization" ? (
-            <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
-              <p className="font-mono text-[0.62rem] uppercase tracking-[0.16em] text-cyan-100/70">
-                Organization repository access
-              </p>
-              {isAllRepositories ? (
-                <p className="mt-2 text-sm leading-6 text-slate-300">
-                  The App is installed for all repositories in{" "}
-                  {installation.accountLogin}. Setup PRs and provider secrets
-                  are still created only for repositories you choose here.
-                </p>
-              ) : visibleSelectedRepositories.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {visibleSelectedRepositories.map((repositoryFullName) => (
-                    <span
-                      key={repositoryFullName}
-                      className="rounded-full border border-cyan-300/15 bg-cyan-300/[0.08] px-3 py-1 text-xs font-semibold text-cyan-50"
-                    >
-                      {repositoryFullName}
-                    </span>
-                  ))}
-                  {hiddenSelectedRepositoryCount > 0 ? (
-                    <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-300">
-                      +{hiddenSelectedRepositoryCount} more
-                    </span>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="mt-2 text-sm leading-6 text-slate-300">
-                  No selected repositories are synced yet. Refresh the
-                  installation, then reload this page.
-                </p>
-              )}
-            </div>
-          ) : null}
-        </div>
-        {settingsUrl ? (
-          <LinkButton href={settingsUrl} variant="outline" target="_blank">
-            Manage App access
-          </LinkButton>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
-
 type SetupStepStatus = "done" | "current" | "todo";
-
-function SetupProgressTracker({
-  repositoriesSynced,
-  repositorySelected,
-  selectedRepositorySetupStatus,
-  syncQueued,
-}: {
-  readonly repositoriesSynced: boolean;
-  readonly repositorySelected: boolean;
-  readonly selectedRepositorySetupStatus: string | null;
-  readonly syncQueued: boolean;
-}): React.ReactElement {
-  const setupPrStatus = setupStepStatus({
-    repositoriesSynced,
-    repositorySelected,
-    selectedRepositorySetupStatus,
-  });
-  const providerSecretStatus = repositorySelected ? "current" : "todo";
-  const steps = [
-    {
-      label: "Install App",
-      body: "GitHub App is connected.",
-      status: "done" as const,
-    },
-    {
-      label: "Repo list",
-      body: repositoriesSynced
-        ? "Repository metadata is available."
-        : syncQueued
-          ? "Refresh is queued. Reload in a few seconds."
-          : "GitHub webhook syncs automatically. Refresh only if needed.",
-      status: repositoriesSynced
-        ? ("done" as const)
-        : syncQueued
-          ? ("current" as const)
-          : ("todo" as const),
-    },
-    {
-      label: "Setup PR",
-      body: setupStepBody({
-        repositoriesSynced,
-        repositorySelected,
-        selectedRepositorySetupStatus,
-      }),
-      status: setupPrStatus,
-    },
-    {
-      label: "Provider secret",
-      body: repositorySelected
-        ? "Run the command shown below."
-        : "Appears after repository selection.",
-      status: providerSecretStatus,
-    },
-  ];
-
-  return (
-    <Card className="rounded-2xl p-4 sm:p-5">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {steps.map((step, index) => (
-          <div
-            key={step.label}
-            className={`rounded-2xl border p-4 ${
-              step.status === "done"
-                ? "border-lime-300/25 bg-lime-300/[0.07]"
-                : step.status === "current"
-                  ? "border-cyan-300/30 bg-cyan-300/[0.08]"
-                  : "border-white/10 bg-white/[0.03]"
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <span
-                className={`grid h-7 w-7 place-items-center rounded-full border text-xs font-bold ${
-                  step.status === "done"
-                    ? "border-lime-300/40 bg-lime-300/15 text-lime-100"
-                    : step.status === "current"
-                      ? "border-cyan-300/45 bg-cyan-300/15 text-cyan-100"
-                      : "border-white/15 bg-white/[0.04] text-slate-400"
-                }`}
-              >
-                {step.status === "done" ? "✓" : index + 1}
-              </span>
-              <p className="font-mono text-[0.66rem] font-semibold uppercase tracking-[0.16em] text-cyan-50">
-                {step.label}
-              </p>
-            </div>
-            <p className="mt-3 text-xs leading-5 text-slate-400">
-              {step.body}
-            </p>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-function setupStepStatus(input: {
-  readonly repositoriesSynced: boolean;
-  readonly repositorySelected: boolean;
-  readonly selectedRepositorySetupStatus: string | null;
-}): SetupStepStatus {
-  if (input.selectedRepositorySetupStatus === "configured") return "done";
-  if (input.repositorySelected) return "current";
-  if (input.repositoriesSynced) return "current";
-  return "todo";
-}
-
-function setupStepBody(input: {
-  readonly repositoriesSynced: boolean;
-  readonly repositorySelected: boolean;
-  readonly selectedRepositorySetupStatus: string | null;
-}): string {
-  if (input.selectedRepositorySetupStatus === "configured") {
-    return "Workflow is installed.";
-  }
-  if (input.selectedRepositorySetupStatus === "setup_pr_open") {
-    return "Setup PR is open. Merge it.";
-  }
-  if (input.repositorySelected) {
-    return "Create and merge the setup PR.";
-  }
-  if (input.repositoriesSynced) {
-    return "Choose a repository and create setup PR.";
-  }
-  return "Waiting for repository sync.";
-}
 
 function SetupStepCard({
   id,
@@ -818,26 +465,6 @@ function SetupStepCard({
       </div>
       {children ? <div className="mt-5">{children}</div> : null}
     </Card>
-  );
-}
-
-function SetupReturnFields({
-  installationId,
-  setupAction,
-}: {
-  readonly installationId: string;
-  readonly setupAction: string;
-}): React.ReactElement {
-  return (
-    <>
-      <input type="hidden" name="returnTo" value="setup" />
-      <input type="hidden" name="installation_id" value={installationId} />
-      <input
-        type="hidden"
-        name="setup_action"
-        value={setupAction || "install"}
-      />
-    </>
   );
 }
 
@@ -1025,23 +652,6 @@ function buildSetupRefreshHref(input: {
   if (input.installationId) query.set("installation_id", input.installationId);
   query.set("setup_action", input.setupAction || "install");
   return `/setup?${query.toString()}`;
-}
-
-function appInstallationSettingsUrl(
-  installation: SetupInstallation,
-): string | null {
-  if (!/^\d+$/.test(installation.githubInstallationId)) return null;
-  if (installation.accountType === "Organization") {
-    return `https://github.com/organizations/${installation.accountLogin}/settings/installations/${installation.githubInstallationId}`;
-  }
-  return `https://github.com/settings/installations/${installation.githubInstallationId}`;
-}
-
-function readParam(value: string | string[] | undefined): string {
-  if (Array.isArray(value)) {
-    return value[0] ?? "";
-  }
-  return value ?? "";
 }
 
 function formatAccountType(accountType: string): string {
