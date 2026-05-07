@@ -927,18 +927,15 @@ function WorkspaceCard({
         (repository) => repository.fullName === requestedRepositoryFullName,
       )
     : undefined;
-  const primaryRepository =
-    requestedRepository ??
-    repositories.find((repository) => repository.selected) ??
-    repositories[0];
-  const primaryInstallation = primaryRepository
-    ? findInstallationForRepository(workspace, primaryRepository.fullName)
-    : workspace.installations[0];
+  const selectedRepository = requestedRepository ?? null;
+  const selectedInstallation = selectedRepository
+    ? findInstallationForRepository(workspace, selectedRepository.fullName)
+    : null;
   const providerGuidanceSet =
-    primaryRepository && primaryInstallation
+    selectedRepository && selectedInstallation
       ? buildProviderSecretGuidanceSet({
-          repositoryFullName: primaryRepository.fullName,
-          installation: primaryInstallation,
+          repositoryFullName: selectedRepository.fullName,
+          installation: selectedInstallation,
         })
       : null;
   const workspaceHealth = summarizeWorkspaceHealth(
@@ -963,7 +960,7 @@ function WorkspaceCard({
           selectedSection={selectedSection}
           repositoryCount={repositoryCount}
           workspaceHealth={workspaceHealth}
-          primaryRepositoryFullName={primaryRepository?.fullName ?? null}
+          primaryRepositoryFullName={selectedRepository?.fullName ?? null}
           activeConfig={activeConfig}
         />
         <WorkspaceActionNotice params={params} orgRuleset={orgRuleset} />
@@ -982,12 +979,14 @@ function WorkspaceCard({
               mutationsEnabled={mutationsEnabled}
               workspaceKey={workspaceKey}
               searchQuery={repositorySearchQuery}
-              selectedRepositoryFullName={primaryRepository?.fullName ?? null}
+              selectedRepositoryFullName={selectedRepository?.fullName ?? null}
             />
-            {primaryRepository && primaryInstallation && providerGuidanceSet ? (
+            {selectedRepository &&
+            selectedInstallation &&
+            providerGuidanceSet ? (
               <RepositoryProviderSetupPanel
-                repositoryFullName={primaryRepository.fullName}
-                installation={primaryInstallation}
+                repositoryFullName={selectedRepository.fullName}
+                installation={selectedInstallation}
                 guidanceSet={providerGuidanceSet}
               />
             ) : null}
@@ -1685,7 +1684,7 @@ function RepositoryTable({
             ) : null}
           </div>
         </div>
-        <form action="/dashboard" className="grid gap-2">
+        <form action="/dashboard" method="get" className="grid gap-2">
           <input type="hidden" name="workspace" value={workspaceKey} />
           <input type="hidden" name="section" value="repositories" />
           {selectedRepositoryFullName ? (
@@ -1699,14 +1698,37 @@ function RepositoryTable({
             <span className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
               Find repository
             </span>
-            <input
-              name="q"
-              type="search"
-              defaultValue={searchQuery}
-              placeholder="owner/repo, branch, public, setup..."
-              className="min-h-12 w-full rounded-2xl border border-cyan-200/15 bg-slate-950/80 px-4 py-3 text-sm text-cyan-50 outline-none transition placeholder:text-slate-600 hover:border-cyan-200/30 focus:border-cyan-300/55 focus:ring-2 focus:ring-cyan-300/20"
-            />
+            <span className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <input
+                name="q"
+                type="search"
+                defaultValue={searchQuery}
+                placeholder="owner/repo, branch, public, setup..."
+                className="min-h-12 w-full rounded-2xl border border-cyan-200/15 bg-slate-950/80 px-4 py-3 text-sm text-cyan-50 outline-none transition placeholder:text-slate-600 hover:border-cyan-200/30 focus:border-cyan-300/55 focus:ring-2 focus:ring-cyan-300/20"
+              />
+              <Button
+                type="submit"
+                variant="outline"
+                size="md"
+                className="min-h-12 rounded-2xl px-5"
+              >
+                Search
+              </Button>
+            </span>
           </label>
+          {normalizedSearchQuery ? (
+            <LinkButton
+              href={dashboardRepositoriesHref({
+                workspaceKey,
+                repositoryFullName: selectedRepositoryFullName,
+              })}
+              variant="ghost"
+              size="sm"
+              className="justify-self-start rounded-xl"
+            >
+              Clear search
+            </LinkButton>
+          ) : null}
         </form>
         {selectedRepositoryHint ? (
           <p className="lg:col-span-2 text-xs leading-5 text-amber-100">
@@ -2930,15 +2952,34 @@ function dashboardRepositoryHref({
 }: {
   readonly workspaceKey: string;
   readonly repositoryFullName: string;
-  readonly searchQuery?: string;
+  readonly searchQuery?: string | undefined;
+}): string {
+  return dashboardRepositoriesHref({
+    workspaceKey,
+    repositoryFullName,
+    searchQuery,
+    hash: "provider-setup",
+  });
+}
+
+function dashboardRepositoriesHref({
+  workspaceKey,
+  repositoryFullName,
+  searchQuery,
+  hash = "dashboard-section-content",
+}: {
+  readonly workspaceKey: string;
+  readonly repositoryFullName?: string | null;
+  readonly searchQuery?: string | undefined;
+  readonly hash?: string | undefined;
 }): string {
   const query = new URLSearchParams({
     workspace: workspaceKey,
     section: "repositories",
-    repository: repositoryFullName,
   });
+  if (repositoryFullName) query.set("repository", repositoryFullName);
   if (searchQuery) query.set("q", searchQuery);
-  return `/dashboard?${query.toString()}#provider-setup`;
+  return `/dashboard?${query.toString()}#${hash}`;
 }
 
 function buildDashboardSignInCallbackUrl(
