@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { signIn } from "next-auth/react";
+import { signIn, signOut } from "next-auth/react";
 import { Button, type ButtonProps } from "@reviewrouter/ui";
 
 type GitHubSignInButtonProps = Omit<
@@ -70,5 +70,39 @@ export function GitHubSignInInlineButton({
     >
       {pending ? "Opening GitHub..." : children}
     </button>
+  );
+}
+
+type GitHubSignOutButtonProps = Omit<
+  ButtonProps,
+  "children" | "onClick" | "type"
+> & {
+  readonly callbackUrl?: string;
+  readonly children?: ReactNode;
+  readonly pendingLabel?: string;
+};
+
+export function GitHubSignOutButton({
+  callbackUrl = "/",
+  children = "Sign out",
+  pendingLabel = "Signing out...",
+  ...props
+}: GitHubSignOutButtonProps): React.ReactElement {
+  const [pending, setPending] = useState(false);
+
+  return (
+    <Button
+      {...props}
+      type="button"
+      disabled={pending || props.disabled}
+      onClick={() => {
+        setPending(true);
+        void signOut({ callbackUrl }).finally(() => {
+          setPending(false);
+        });
+      }}
+    >
+      {pending ? pendingLabel : children}
+    </Button>
   );
 }

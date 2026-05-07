@@ -3,10 +3,10 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
-const configuredWebUrl = (
-  process.env.REVIEW_ROUTER_WEB_URL || "http://localhost:3000"
-).replace(/\/$/, "");
-const codexInstallerUrl = `${configuredWebUrl}/install/codex`;
+const repoCodexCommandFragment =
+  "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash";
+const orgCodexCommandFragment =
+  "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash";
 const commonTexts = ["ReviewRouter", "Dashboard", "Security", "Support"];
 
 const pages = [
@@ -28,15 +28,16 @@ const pages = [
     "/getting-started",
     [
       "Getting started",
-      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`,
-      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`,
+      "curl -fsSL ",
+      repoCodexCommandFragment,
+      orgCodexCommandFragment,
     ],
   ],
   [
     "/security",
     [
       "Designed to avoid code and secret custody",
-      `curl -fsSL ${codexInstallerUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`,
+      repoCodexCommandFragment,
     ],
   ],
   ["/fair-use", ["Fair use"]],
@@ -174,6 +175,11 @@ try {
   );
   assertIncludes(
     postInstallHtml,
+    "GitHub confirmed the App install",
+    "post-install dashboard did not clearly explain the App is installed",
+  );
+  assertIncludes(
+    postInstallHtml,
     "Installation #",
     "post-install dashboard did not expose installation metadata as a small chip",
   );
@@ -189,13 +195,18 @@ try {
   );
   assertIncludes(
     postInstallHtml,
-    "One sign-in finishes the handoff.",
+    "Sign in to finish setup",
     "post-install dashboard did not show sign-in as the next onboarding step",
   );
   assertNotIncludes(
     postInstallHtml,
     "Choose only the repositories to review.",
     "post-install dashboard should not ask users to install the App again",
+  );
+  assertNotIncludes(
+    postInstallHtml,
+    "Install or manage App",
+    "post-install dashboard should not show install as the primary next action",
   );
   assertBefore(
     postInstallHtml,

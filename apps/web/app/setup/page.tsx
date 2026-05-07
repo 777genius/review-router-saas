@@ -10,7 +10,10 @@ import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-not
 import { getPrisma } from "../../src/server/prisma";
 import { requestInstallationSyncAction } from "../dashboard/actions";
 import { FormSubmitButton } from "../form-submit-button";
-import { GitHubSignInButton } from "../github-sign-in-button";
+import {
+  GitHubSignInButton,
+  GitHubSignOutButton,
+} from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
@@ -51,6 +54,12 @@ export default async function SetupPage({
     mutationStatus.signedIn && installationId
       ? await loadSetupInstallation({ installationId, workspaceScope })
       : null;
+  const appInstallReturned = Boolean(setupNotice);
+  const heroBody = buildSetupHeroBody({
+    installation,
+    setupNotice,
+    signedIn: mutationStatus.signedIn,
+  });
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
@@ -65,6 +74,21 @@ export default async function SetupPage({
               Installation #{setupNotice.installationId}
             </span>
           ) : null}
+          {mutationStatus.signedIn ? (
+            <>
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-slate-300">
+                Signed in
+                {mutationStatus.githubLogin
+                  ? ` as ${mutationStatus.githubLogin}`
+                  : ""}
+              </span>
+              <GitHubSignOutButton
+                variant="ghost"
+                size="sm"
+                className="rounded-xl"
+              />
+            </>
+          ) : null}
         </div>
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <div className="min-w-0 space-y-4">
@@ -72,9 +96,7 @@ export default async function SetupPage({
               Finish repository setup.
             </h1>
             <p className="max-w-full text-base leading-7 text-[#a0a8c0] [overflow-wrap:anywhere] sm:max-w-2xl">
-              {setupNotice
-                ? `${setupNotice.body} The dashboard stays focused on connected repositories after setup.`
-                : "Install the GitHub App, sign in, sync repositories, and create the setup PR from one guided flow."}
+              {heroBody}
             </p>
           </div>
           <div className="grid w-full gap-3 sm:flex sm:w-auto sm:flex-wrap lg:justify-end">
@@ -101,6 +123,14 @@ export default async function SetupPage({
                 className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
               >
                 Sync repositories
+              </LinkButton>
+            ) : appInstallReturned ? (
+              <LinkButton
+                href={buildSetupRefreshHref({ installationId, setupAction })}
+                size="lg"
+                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
+              >
+                Refresh install status
               </LinkButton>
             ) : appInstallUrl ? (
               <LinkButton
@@ -129,7 +159,7 @@ export default async function SetupPage({
               >
                 Sign in
               </GitHubSignInButton>
-            ) : appInstallUrl && !installation ? (
+            ) : appInstallUrl && !installation && !appInstallReturned ? (
               <LinkButton
                 href="/dashboard"
                 variant="outline"
@@ -143,20 +173,32 @@ export default async function SetupPage({
         </div>
       </section>
 
+      {setupNotice ? (
+        <GitHubAppInstallHandoffCard
+          appInstallUrl={appInstallUrl}
+          installation={installation}
+          notice={setupNotice}
+          signedIn={mutationStatus.signedIn}
+          signInCallbackUrl={signInCallbackUrl}
+        />
+      ) : null}
+
       {resultNotice ? <SetupResultNotice notice={resultNotice} /> : null}
 
       {!mutationStatus.signedIn ? (
-        <Card className="rounded-2xl p-5 sm:p-6">
-          <Badge tone="accent">Next</Badge>
-          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
-            One sign-in finishes the handoff.
-          </h2>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-            After sign-in, ReviewRouter maps this GitHub App installation to
-            your workspace, lets you sync selected repositories, and creates the
-            setup PR from the same guided page.
-          </p>
-        </Card>
+        setupNotice ? null : (
+          <Card className="rounded-2xl p-5 sm:p-6">
+            <Badge tone="accent">Next</Badge>
+            <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
+              One sign-in finishes the handoff.
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+              After sign-in, ReviewRouter maps this GitHub App installation to
+              your workspace, lets you sync selected repositories, and creates
+              the setup PR from the same guided page.
+            </p>
+          </Card>
+        )
       ) : installation ? (
         <SignedInSetup
           installation={installation}
@@ -167,7 +209,7 @@ export default async function SetupPage({
         />
       ) : !installationId ? (
         <SetupStartCard appInstallUrl={appInstallUrl} />
-      ) : (
+      ) : setupNotice ? null : (
         <SetupStepCard
           badge="Waiting"
           title="Installation webhook is not synced yet"
@@ -183,6 +225,116 @@ export default async function SetupPage({
         />
       )}
     </main>
+  );
+}
+
+function buildSetupHeroBody(input: {
+  readonly installation: SetupInstallation | null;
+  readonly setupNotice: ReturnType<typeof buildGitHubAppSetupNotice>;
+  readonly signedIn: boolean;
+}): string {
+  if (!input.setupNotice) {
+    return "Install the GitHub App, sign in, sync repositories, and create the setup PR from one guided flow.";
+  }
+
+  if (!input.signedIn) {
+    return "GitHub confirmed the App installation. Sign in once to link it to your ReviewRouter workspace and continue setup.";
+  }
+
+  if (input.installation) {
+    return `${input.installation.accountLogin} is linked. Sync repository metadata, choose a repository, then create the setup PR.`;
+  }
+
+  return "GitHub confirmed the App installation. ReviewRouter is waiting for the signed GitHub webhook, which normally arrives within a few seconds.";
+}
+
+function GitHubAppInstallHandoffCard({
+  appInstallUrl,
+  installation,
+  notice,
+  signedIn,
+  signInCallbackUrl,
+}: {
+  readonly appInstallUrl: string | null;
+  readonly installation: SetupInstallation | null;
+  readonly notice: NonNullable<ReturnType<typeof buildGitHubAppSetupNotice>>;
+  readonly signedIn: boolean;
+  readonly signInCallbackUrl: string;
+}): React.ReactElement {
+  const state = !signedIn
+    ? {
+        badge: "Next step",
+        title: "GitHub confirmed the App install. Sign in to finish setup.",
+        body: "One GitHub sign-in maps this installation to your ReviewRouter workspace. After that you can sync repositories and create the setup PR.",
+        tone: "accent" as const,
+      }
+    : installation
+      ? {
+          badge: "Ready",
+          title: `${installation.accountLogin} is connected.`,
+          body: "Sync repository metadata next, then choose one repository and create the setup PR. ReviewRouter will not create PRs in every repository automatically.",
+          tone: "success" as const,
+        }
+      : {
+          badge: "Waiting",
+          title: "GitHub confirmed the App install. ReviewRouter is waiting for the signed webhook.",
+          body: "This normally updates within a few seconds. Refresh this page, or open the dashboard after GitHub metadata catches up.",
+          tone: "warning" as const,
+        };
+
+  return (
+    <Card className="rounded-2xl border-lime-300/20 bg-lime-300/[0.045] p-5 sm:p-6">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="success">GitHub App installed</Badge>
+            <Badge tone={state.tone}>{state.badge}</Badge>
+            <span className="rounded-full border border-white/10 bg-slate-950/50 px-3 py-1 font-mono text-[0.66rem] font-semibold uppercase tracking-[0.14em] text-slate-300">
+              Installation #{notice.installationId}
+            </span>
+          </div>
+          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
+            {state.title}
+          </h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
+            {state.body}
+          </p>
+        </div>
+        <div className="grid gap-3 sm:flex sm:flex-wrap lg:justify-end">
+          {!signedIn ? (
+            <GitHubSignInButton
+              callbackUrl={signInCallbackUrl}
+              className="rounded-2xl"
+            >
+              Sign in with GitHub
+            </GitHubSignInButton>
+          ) : installation ? (
+            <LinkButton href="#sync-repositories" className="rounded-2xl">
+              Sync repositories
+            </LinkButton>
+          ) : (
+            <LinkButton
+              href={buildSetupRefreshHref({
+                installationId: notice.installationId,
+                setupAction: "install",
+              })}
+              className="rounded-2xl"
+            >
+              Refresh status
+            </LinkButton>
+          )}
+          {appInstallUrl ? (
+            <LinkButton
+              href={appInstallUrl}
+              variant="outline"
+              className="rounded-2xl"
+            >
+              Manage App access
+            </LinkButton>
+          ) : null}
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -897,6 +1049,16 @@ function buildSetupSignInCallbackUrl(
   const query = callbackParams.toString();
   const callbackPath = query ? `/setup?${query}` : "/setup";
   return callbackPath;
+}
+
+function buildSetupRefreshHref(input: {
+  readonly installationId: string;
+  readonly setupAction: string;
+}): string {
+  const query = new URLSearchParams();
+  if (input.installationId) query.set("installation_id", input.installationId);
+  query.set("setup_action", input.setupAction || "install");
+  return `/setup?${query.toString()}`;
 }
 
 function appInstallationSettingsUrl(

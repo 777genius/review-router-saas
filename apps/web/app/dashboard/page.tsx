@@ -67,6 +67,7 @@ import { FormSubmitButton } from "../form-submit-button";
 import {
   GitHubSignInButton,
   GitHubSignInInlineButton,
+  GitHubSignOutButton,
 } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
@@ -523,6 +524,21 @@ export default async function DashboardPage({
               <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-500">
                 Reviews run in customer CI
               </span>
+              {mutationStatus.signedIn ? (
+                <>
+                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-slate-300">
+                    Signed in
+                    {mutationStatus.githubLogin
+                      ? ` as ${mutationStatus.githubLogin}`
+                      : ""}
+                  </span>
+                  <GitHubSignOutButton
+                    variant="ghost"
+                    size="sm"
+                    className="rounded-xl"
+                  />
+                </>
+              ) : null}
             </div>
             <h1 className="mt-5 max-w-3xl break-words text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-cyan-50 sm:text-4xl md:text-5xl">
               Manage repository review rollout.
