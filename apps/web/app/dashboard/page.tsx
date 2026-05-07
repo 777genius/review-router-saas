@@ -1182,14 +1182,26 @@ function WorkspaceCard({
             </div>
 
             {repositories.length > 0 ? (
-              <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
-                <div className="mb-4 flex flex-wrap items-center gap-2">
-                  <Badge tone="accent">Repository overrides</Badge>
-                  <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                    optional per-repository provider/model/effort
-                  </span>
-                </div>
-                <div className="grid gap-3">
+              <details className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
+                <summary className="cursor-pointer list-none">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone="accent">Repository overrides</Badge>
+                      <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                        optional per-repository provider/model/effort
+                      </span>
+                    </div>
+                    <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
+                      advanced
+                    </span>
+                  </div>
+                  <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
+                    Most repositories should inherit the workspace default. Open
+                    this only when one repository needs a different provider,
+                    model, effort, or gate.
+                  </p>
+                </summary>
+                <div className="mt-4 grid gap-3">
                   {repositories.map((repository) => {
                     const repositoryConfig = repositoryConfigs.find(
                       (item) => item.repositoryId === repository.id,
@@ -1273,7 +1285,7 @@ function WorkspaceCard({
                     );
                   })}
                 </div>
-              </div>
+              </details>
             ) : null}
           </section>
         ) : null}
