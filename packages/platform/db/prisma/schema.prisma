@@ -62,6 +62,7 @@ model GitHubInstallation {
   githubInstallationId BigInt                   @unique
   accountLogin         String
   accountType          String
+  accountAvatarUrl     String?
   repositorySelection  String
   status               GitHubInstallationStatus @default(active)
   createdAt            DateTime                 @default(now())

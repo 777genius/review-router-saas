@@ -751,18 +751,9 @@ function redirectWithParams(params: Record<string, string>): never {
 }
 
 function redirectAfterMutation(
-  formData: FormData,
+  _formData: FormData,
   params: Record<string, string>,
 ): never {
-  if (readOptionalFormString(formData, "returnTo") === "setup") {
-    const query = new URLSearchParams(params);
-    const installationId = readOptionalFormString(formData, "installation_id");
-    const setupAction = readOptionalFormString(formData, "setup_action");
-    if (installationId) query.set("installation_id", installationId);
-    if (setupAction) query.set("setup_action", setupAction);
-    redirect(`/setup?${query.toString()}`);
-  }
-
   redirectWithParams(params);
 }
 
@@ -822,9 +813,4 @@ function safeDashboardErrorCode(error: unknown): string {
     return "operation_already_running";
   }
   return "github_operation_failed";
-}
-
-function readOptionalFormString(formData: FormData, key: string): string {
-  const value = formData.get(key);
-  return typeof value === "string" ? value : "";
 }

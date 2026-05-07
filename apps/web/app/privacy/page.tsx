@@ -29,9 +29,9 @@ export default function PrivacyPage(): React.ReactElement {
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
             ReviewRouter is designed as a metadata control plane. It keeps
-            setup, policy, health, and audit state in SaaS while repository
-            code, provider credentials, and review execution stay in customer
-            GitHub Actions by default.
+            setup, model settings, health, and audit state in SaaS while
+            repository code, provider credentials, and review execution stay in
+            customer GitHub Actions by default.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/security" variant="soft" tone="success">

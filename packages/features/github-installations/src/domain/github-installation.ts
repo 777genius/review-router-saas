@@ -12,6 +12,7 @@ export type GitHubInstallationSnapshot = {
   readonly githubInstallationId: string;
   readonly accountLogin: string;
   readonly accountType: GitHubAccountType;
+  readonly accountAvatarUrl?: string | null;
   readonly repositorySelection: "all" | "selected" | string;
   readonly status: GitHubInstallationLifecycleStatus;
 };

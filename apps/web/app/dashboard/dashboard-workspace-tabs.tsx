@@ -1,10 +1,12 @@
 "use client";
 
 import { Tabs } from "@base-ui/react/tabs";
+import { GitHubAccountAvatar } from "../github-account-avatar";
 
 export type DashboardWorkspaceTabItem = {
   readonly id: string;
   readonly label: string;
+  readonly avatarUrl?: string | null;
   readonly repositoryCount: number;
   readonly href: string;
 };
@@ -45,6 +47,12 @@ export function DashboardWorkspaceTabs({
               ].join(" ")
             }
           >
+            <GitHubAccountAvatar
+              avatarUrl={item.avatarUrl}
+              login={item.label}
+              size="sm"
+              className="-my-1"
+            />
             <span>{item.label}</span>
             <span className="font-mono text-xs text-slate-500 group-hover:text-slate-300 group-data-[active]:text-cyan-100/80">
               {item.repositoryCount} repos

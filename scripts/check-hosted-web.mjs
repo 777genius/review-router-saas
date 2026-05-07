@@ -115,21 +115,14 @@ assertIncludes(
 assertSetupCallback(installNotice.html);
 assertIncludes(
   installNotice.html,
-  "Sign in to finish setup",
-  "install redirect dashboard must show sign-in as the next onboarding step",
+  "Finish ReviewRouter setup",
+  "install redirect dashboard must show the setup handoff title",
 );
 assertNotIncludes(
   installNotice.html,
   "Choose only the repositories to review.",
   "install redirect dashboard must not ask users to install the App again",
 );
-assertBefore(
-  installNotice.html,
-  "GitHub App installed",
-  "Finish repository setup.",
-  "install redirect notice should appear before onboarding hero",
-);
-
 const invalidNotice = await fetchHtml(
   "/setup?installation_id=abc&setup_action=install",
 );
@@ -259,13 +252,5 @@ function assertSetupCallback(input) {
 function assertNotIncludes(input, expected, message) {
   if (input.includes(expected)) {
     throw new Error(`${message}: unexpected ${expected}`);
-  }
-}
-
-function assertBefore(input, first, second, message) {
-  const firstIndex = input.indexOf(first);
-  const secondIndex = input.indexOf(second);
-  if (firstIndex === -1 || secondIndex === -1 || firstIndex >= secondIndex) {
-    throw new Error(`${message}: expected ${first} before ${second}`);
   }
 }

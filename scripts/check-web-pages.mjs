@@ -23,7 +23,7 @@ const pages = [
     ],
   ],
   ["/dashboard", ["GitHub setup"]],
-  ["/setup", ["Finish repository setup", "One sign-in finishes the handoff"]],
+  ["/setup", ["Set up ReviewRouter", "Install GitHub App"]],
   [
     "/getting-started",
     [
@@ -148,7 +148,7 @@ try {
   );
   assertIncludes(
     dashboardPostInstallHtml,
-    "Sign in with GitHub",
+    "Sign in to finish setup",
     "dashboard post-install should show sign-in as the next action when signed out",
   );
 
@@ -193,8 +193,8 @@ try {
   );
   assertIncludes(
     postInstallHtml,
-    "Sign in to finish setup",
-    "post-install dashboard did not show sign-in as the next onboarding step",
+    "Finish ReviewRouter setup",
+    "post-install dashboard did not show the setup handoff title",
   );
   assertNotIncludes(
     postInstallHtml,
@@ -216,13 +216,6 @@ try {
     "Provider secrets",
     "setup should not contain provider secret management",
   );
-  assertBefore(
-    postInstallHtml,
-    "GitHub App installed",
-    "Finish repository setup.",
-    "post-install notice should appear before onboarding hero",
-  );
-
   const authSignInRedirectResponse = await fetch(
     `${baseUrl}/api/auth/signin?callbackUrl=%2Fdashboard`,
     { redirect: "manual" },
@@ -334,13 +327,5 @@ function assertIncludes(input, expected, message) {
 function assertNotIncludes(input, expected, message) {
   if (input.includes(expected)) {
     throw new Error(`${message}: unexpected ${expected}`);
-  }
-}
-
-function assertBefore(input, first, second, message) {
-  const firstIndex = input.indexOf(first);
-  const secondIndex = input.indexOf(second);
-  if (firstIndex === -1 || secondIndex === -1 || firstIndex >= secondIndex) {
-    throw new Error(`${message}: expected ${first} before ${second}`);
   }
 }

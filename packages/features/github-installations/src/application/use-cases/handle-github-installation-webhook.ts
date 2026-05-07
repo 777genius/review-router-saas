@@ -44,6 +44,8 @@ export async function handleGitHubInstallationWebhook(
         githubInstallationId: installationId,
         accountLogin: envelope.payload.installation.account.login,
         accountType: envelope.payload.installation.account.type,
+        accountAvatarUrl:
+          envelope.payload.installation.account.avatar_url ?? null,
         repositorySelection:
           envelope.payload.repository_selection ??
           envelope.payload.installation.repository_selection,
@@ -72,6 +74,8 @@ export async function handleGitHubInstallationWebhook(
         githubInstallationId: installationId,
         accountLogin: envelope.payload.installation.account.login,
         accountType: envelope.payload.installation.account.type,
+        accountAvatarUrl:
+          envelope.payload.installation.account.avatar_url ?? null,
         repositorySelection: envelope.payload.installation.repository_selection,
         status,
       });

@@ -23,7 +23,7 @@ export function buildGitHubAppSetupNotice(input: {
       : "GitHub App installed";
   const nextStep = input.signedIn
     ? "Repository metadata should refresh from the signed GitHub webhook. If repositories do not appear within a minute, request a refresh from the dashboard."
-    : "Sign in with GitHub to map the installation to your dashboard workspace and continue setup.";
+    : "Sign in to map the installation to your dashboard workspace.";
 
   return {
     title,

@@ -3,6 +3,7 @@ import { z } from "zod";
 const accountSchema = z.object({
   login: z.string().min(1),
   type: z.string().min(1).default("User"),
+  avatar_url: z.string().url().nullable().optional(),
 });
 
 const installationSchema = z.object({

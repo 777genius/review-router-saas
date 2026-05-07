@@ -17,13 +17,13 @@ const installSteps = [
   },
   {
     label: "2",
-    title: "Create and merge the setup PR",
-    body: "Use the dashboard to create a workflow setup PR. The generated workflow runs review inside GitHub Actions and avoids pull_request_target for default review execution.",
+    title: "Choose one repo in the dashboard",
+    body: "Search synced repositories in the dashboard, create the setup PR for one repo, then merge it. The small workflow caller runs review inside GitHub Actions and avoids pull_request_target for default review execution.",
   },
   {
     label: "3",
-    title: "Seed provider credentials directly to GitHub",
-    body: "Codex OAuth, OpenAI API keys, and OpenRouter keys should live in repository or organization selected-repo Actions secrets. ReviewRouter SaaS does not receive them.",
+    title: "Connect provider credentials from your machine",
+    body: "After the setup PR is merged, open the repository in the dashboard and use Enable review. The command writes Codex OAuth, OpenAI, or OpenRouter credentials directly to GitHub Actions secrets.",
   },
   {
     label: "4",
@@ -43,8 +43,9 @@ export default function GettingStartedPage(): React.ReactElement {
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
             The fastest safe path is explicit: install the App on selected
-            repositories, merge the setup workflow PR, then seed provider
-            credentials directly into GitHub Actions secrets.
+            repositories, choose one repo in the dashboard, merge the setup PR,
+            then connect provider credentials directly into GitHub Actions
+            secrets.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/dashboard">Open dashboard</LinkButton>

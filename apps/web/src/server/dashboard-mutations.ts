@@ -21,6 +21,7 @@ export type DashboardMutationStatus = {
   readonly enabled: boolean;
   readonly signedIn: boolean;
   readonly githubLogin: string | null;
+  readonly githubAvatarUrl: string | null;
   readonly reason: "ready" | "disabled" | "signed_out" | "auth_misconfigured";
 };
 
@@ -34,6 +35,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
       enabled: false,
       signedIn: false,
       githubLogin: null,
+      githubAvatarUrl: null,
       reason: "auth_misconfigured",
     };
   }
@@ -47,6 +49,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
       enabled: false,
       signedIn,
       githubLogin: session?.user?.githubLogin ?? null,
+      githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
       reason: "disabled",
     };
   }
@@ -55,6 +58,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
       enabled: false,
       signedIn: false,
       githubLogin: null,
+      githubAvatarUrl: null,
       reason: "signed_out",
     };
   }
@@ -63,6 +67,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
     enabled: true,
     signedIn: true,
     githubLogin: session?.user?.githubLogin ?? null,
+    githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
     reason: "ready",
   };
 }

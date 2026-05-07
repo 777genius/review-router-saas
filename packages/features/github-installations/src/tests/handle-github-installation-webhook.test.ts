@@ -116,7 +116,11 @@ describe("handleGitHubInstallationWebhook", () => {
         action: "created",
         installation: {
           id: 129,
-          account: { login: "agent-teams-ai", type: "Organization" },
+          account: {
+            login: "agent-teams-ai",
+            type: "Organization",
+            avatar_url: "https://avatars.githubusercontent.com/u/129?v=4",
+          },
           repository_selection: "selected",
         },
         sender: {
@@ -148,6 +152,7 @@ describe("handleGitHubInstallationWebhook", () => {
     expect(second).toEqual({ processed: false });
     expect(installations.snapshots.get("129")).toMatchObject({
       accountLogin: "agent-teams-ai",
+      accountAvatarUrl: "https://avatars.githubusercontent.com/u/129?v=4",
       status: "active",
     });
     expect(deliveries.deliveries.get("delivery-1")).toMatchObject({
@@ -196,7 +201,11 @@ describe("handleGitHubInstallationWebhook", () => {
           repositories_removed: [{ id: 102, name: "old" }],
           installation: {
             id: 129,
-            account: { login: "agent-teams-ai", type: "Organization" },
+            account: {
+              login: "agent-teams-ai",
+              type: "Organization",
+              avatar_url: "https://avatars.githubusercontent.com/u/129?v=4",
+            },
             repository_selection: "selected",
           },
         },
@@ -211,6 +220,7 @@ describe("handleGitHubInstallationWebhook", () => {
 
     expect(result).toEqual({ processed: true, status: "active" });
     expect(installations.snapshots.get("129")).toMatchObject({
+      accountAvatarUrl: "https://avatars.githubusercontent.com/u/129?v=4",
       status: "active",
       repositorySelection: "selected",
     });

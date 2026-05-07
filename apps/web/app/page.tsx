@@ -1,6 +1,5 @@
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
 import { getGitHubAppInstallUrl } from "../src/server/github-app-install-url";
-import { reviewRouterApiDemoUrl } from "./public-urls";
 
 const trustCards = [
   {
@@ -14,7 +13,7 @@ const trustCards = [
     badge: "Step 2",
   },
   {
-    title: "Seed provider secrets",
+    title: "Connect provider secrets",
     body: "Codex OAuth, OpenAI, or OpenRouter credentials go directly into GitHub Actions secrets, not into SaaS.",
     badge: "Step 3",
   },
@@ -74,17 +73,17 @@ export default function HomePage(): React.ReactElement {
               SaaS configures. GitHub Actions executes.
             </h2>
             <p className="text-base leading-7 text-slate-300">
-              ReviewRouter stores installation metadata, policy, health, and
-              audit state. It does not store code, PR diffs, prompts, or Codex
-              OAuth files in v1.
+              ReviewRouter stores installation metadata, model settings,
+              health, and audit state. It does not store code, PR diffs,
+              prompts, or Codex OAuth files in v1.
             </p>
           </div>
           <div className="grid gap-3">
             <LinkButton href="/security" variant="soft" tone="success">
               Read security model
             </LinkButton>
-            <LinkButton href={reviewRouterApiDemoUrl} variant="outline">
-              View API demo
+            <LinkButton href="/getting-started" variant="outline">
+              Getting started
             </LinkButton>
           </div>
         </Card>

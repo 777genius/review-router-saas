@@ -44,6 +44,7 @@ export const authOptions: NextAuthOptions = {
         const identity = parseNextAuthGitHubProfile(profile);
         token.githubUserId = identity.githubUserId;
         token.githubLogin = identity.githubLogin;
+        token.githubAvatarUrl = identity.avatarUrl ?? null;
       }
       return token;
     },
@@ -54,6 +55,10 @@ export const authOptions: NextAuthOptions = {
           typeof token.githubUserId === "string" ? token.githubUserId : null,
         githubLogin:
           typeof token.githubLogin === "string" ? token.githubLogin : null,
+        githubAvatarUrl:
+          typeof token.githubAvatarUrl === "string"
+            ? token.githubAvatarUrl
+            : null,
       };
       return session;
     },

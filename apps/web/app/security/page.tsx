@@ -7,7 +7,7 @@ const securitySections = [
   {
     label: "Code custody",
     title: "Review execution stays in customer CI.",
-    body: "ReviewRouter v1 manages metadata, workflow setup, policy, health, and audit. It does not store repository code, pull request diffs, prompts, or model responses by default.",
+    body: "ReviewRouter v1 manages metadata, workflow setup, model settings, health, and audit. It does not store repository code, pull request diffs, prompts, or model responses by default.",
   },
   {
     label: "Provider secrets",

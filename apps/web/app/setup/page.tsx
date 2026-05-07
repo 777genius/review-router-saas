@@ -65,6 +65,10 @@ export default async function SetupPage({
     setupNotice,
     signedIn: mutationStatus.signedIn,
   });
+  const setupHeroTitle =
+    setupNotice || installationId
+      ? "Finish ReviewRouter setup."
+      : "Set up ReviewRouter.";
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
@@ -98,7 +102,7 @@ export default async function SetupPage({
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <div className="min-w-0 space-y-4">
             <h1 className="max-w-full text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-cyan-50 [overflow-wrap:anywhere] sm:max-w-3xl sm:text-4xl sm:tracking-[-0.04em] md:text-6xl">
-              Finish repository setup.
+              {setupHeroTitle}
             </h1>
             <p className="max-w-full text-base leading-7 text-[#a0a8c0] [overflow-wrap:anywhere] sm:max-w-2xl">
               {heroBody}
@@ -119,15 +123,15 @@ export default async function SetupPage({
                 size="lg"
                 className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
               >
-                Install or manage App
+                Install GitHub App
               </LinkButton>
             ) : installation ? (
               <LinkButton
-                href="#sync-repositories"
+                href="/dashboard"
                 size="lg"
                 className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
               >
-                Refresh repository list
+                Open dashboard
               </LinkButton>
             ) : appInstallReturned ? (
               <LinkButton
@@ -143,7 +147,7 @@ export default async function SetupPage({
                 size="lg"
                 className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
               >
-                Install or manage App
+                Install GitHub App
               </LinkButton>
             ) : (
               <LinkButton
@@ -162,7 +166,7 @@ export default async function SetupPage({
                 variant="outline"
                 className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
               >
-                Sign in
+                Already installed? Sign in
               </GitHubSignInButton>
             ) : appInstallUrl && !installation && !appInstallReturned ? (
               <LinkButton
@@ -178,14 +182,8 @@ export default async function SetupPage({
         </div>
       </section>
 
-      {setupNotice ? (
-        <GitHubAppInstallHandoffCard
-          appInstallUrl={appInstallUrl}
-          installation={installation}
-          notice={setupNotice}
-          signedIn={mutationStatus.signedIn}
-          signInCallbackUrl={signInCallbackUrl}
-        />
+      {setupNotice && mutationStatus.signedIn ? (
+        <GitHubAppInstallHandoffCard notice={setupNotice} />
       ) : null}
 
       {resultNotice ? (
@@ -204,21 +202,7 @@ export default async function SetupPage({
         />
       ) : null}
 
-      {!mutationStatus.signedIn ? (
-        setupNotice ? null : (
-          <Card className="rounded-2xl p-5 sm:p-6">
-            <Badge tone="accent">Next</Badge>
-            <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
-              One sign-in finishes the handoff.
-            </h2>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-              After sign-in, ReviewRouter maps this GitHub App installation to
-              your dashboard workspace. Repository search, setup PRs, provider
-              secrets, policy, and health live in the dashboard.
-            </p>
-          </Card>
-        )
-      ) : !installationId ? (
+      {!mutationStatus.signedIn ? null : !installationId ? (
         <SetupStartCard appInstallUrl={appInstallUrl} />
       ) : setupNotice ? null : (
         <SetupStepCard
@@ -258,110 +242,58 @@ function buildSetupHeroBody(input: {
   readonly signedIn: boolean;
 }): string {
   if (!input.setupNotice) {
-    return "Install the GitHub App, sign in, then open the dashboard to choose a repository, create the setup PR, and copy the provider setup command.";
+    return "Install the GitHub App, sign in, then use the dashboard to choose one repository, create the setup PR, and run the provider command from your machine.";
   }
 
   if (!input.signedIn) {
-    return "GitHub confirmed the App installation. Sign in once to link it to your ReviewRouter workspace and continue setup.";
+    return "GitHub confirmed the App installation. Sign in once to link it to your dashboard workspace.";
   }
 
   if (input.installation) {
-    return `${input.installation.accountLogin} is linked. Repository metadata normally syncs automatically from GitHub. Open the dashboard to choose a repository and continue setup.`;
+    return `${input.installation.accountLogin} is linked. Repository metadata normally syncs automatically from GitHub. Open the dashboard to choose a repository and create the setup PR.`;
   }
 
   return "GitHub confirmed the App installation. ReviewRouter is waiting for the signed GitHub webhook, which normally arrives within a few seconds.";
 }
 
 function GitHubAppInstallHandoffCard({
-  appInstallUrl,
-  installation,
   notice,
-  signedIn,
-  signInCallbackUrl,
 }: {
-  readonly appInstallUrl: string | null;
-  readonly installation: SetupInstallation | null;
   readonly notice: NonNullable<ReturnType<typeof buildGitHubAppSetupNotice>>;
-  readonly signedIn: boolean;
-  readonly signInCallbackUrl: string;
 }): React.ReactElement {
-  const state = !signedIn
-    ? {
-        badge: "Next step",
-        title: "GitHub confirmed the App install. Sign in to finish setup.",
-        body: "One GitHub sign-in maps this installation to your ReviewRouter workspace. After that you can refresh repositories if needed and create the setup PR.",
-        tone: "accent" as const,
-      }
-    : installation
-      ? {
-          badge: "Ready",
-          title: `${installation.accountLogin} is connected.`,
-          body: `${formatAccountType(installation.accountType)} install. GitHub webhooks normally sync repository metadata automatically. Use refresh if repositories are missing, then choose one repository and create the setup PR. ReviewRouter will not create PRs in every repository automatically.`,
-          tone: "success" as const,
-        }
-      : {
-          badge: "Waiting",
-          title:
-            "GitHub confirmed the App install. ReviewRouter is waiting for the signed webhook.",
-          body: "This normally updates within a few seconds. Refresh this page, or open the dashboard after GitHub metadata catches up.",
-          tone: "warning" as const,
-        };
-
   return (
     <Card className="rounded-2xl border-lime-300/20 bg-lime-300/[0.045] p-5 sm:p-6">
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="success">GitHub App installed</Badge>
-            <Badge tone={state.tone}>{state.badge}</Badge>
-            {installation ? (
-              <Badge tone="accent">
-                {formatAccountTypeBadge(installation.accountType)}
-              </Badge>
-            ) : null}
+            <Badge tone="warning">Syncing</Badge>
             <span className="rounded-full border border-white/10 bg-slate-950/50 px-3 py-1 font-mono text-[0.66rem] font-semibold uppercase tracking-[0.14em] text-slate-300">
               Installation #{notice.installationId}
             </span>
           </div>
-          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
-            {state.title}
+          <h2 className="mt-4 min-w-0 text-2xl font-semibold text-cyan-50">
+            Waiting for GitHub metadata.
           </h2>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
-            {state.body}
+            GitHub confirmed the App installation. ReviewRouter is waiting for
+            the signed webhook, which normally arrives within a few seconds.
+            Refresh this page or open the dashboard after metadata catches up.
           </p>
         </div>
         <div className="grid gap-3 sm:flex sm:flex-wrap lg:justify-end">
-          {!signedIn ? (
-            <GitHubSignInButton
-              callbackUrl={signInCallbackUrl}
-              className="rounded-2xl"
-            >
-              Sign in with GitHub
-            </GitHubSignInButton>
-          ) : installation ? (
-            <LinkButton href="#sync-repositories" className="rounded-2xl">
-              Refresh repository list
-            </LinkButton>
-          ) : (
-            <LinkButton
-              href={buildSetupRefreshHref({
-                installationId: notice.installationId,
-                setupAction: "install",
-              })}
-              className="rounded-2xl"
-            >
-              Refresh status
-            </LinkButton>
-          )}
-          {appInstallUrl ? (
-            <LinkButton
-              href={appInstallUrl}
-              variant="outline"
-              className="rounded-2xl"
-            >
-              Manage App access
-            </LinkButton>
-          ) : null}
+          <LinkButton
+            href={buildSetupRefreshHref({
+              installationId: notice.installationId,
+              setupAction: "install",
+            })}
+            className="rounded-2xl"
+          >
+            Refresh status
+          </LinkButton>
+          <LinkButton href="/dashboard" variant="outline" className="rounded-2xl">
+            Open dashboard
+          </LinkButton>
         </div>
       </div>
     </Card>
@@ -382,10 +314,10 @@ function SetupStartCard({
             Start by selecting repositories.
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-            Install or manage the GitHub App for a personal account or
-            organization. Select only the repositories that should run
-            ReviewRouter, then GitHub will send you back here with a link to the
-            dashboard.
+            Install the GitHub App for a personal account or organization.
+            Select only the repositories that should run ReviewRouter, then
+            GitHub will send you back here with a link to the dashboard. You can
+            manage repository access later from GitHub.
           </p>
           <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm leading-6 text-slate-300">
             <p className="font-semibold text-cyan-50">
@@ -402,7 +334,7 @@ function SetupStartCard({
         <div className="flex flex-wrap gap-3 lg:justify-end">
           {appInstallUrl ? (
             <LinkButton href={appInstallUrl} size="lg">
-              Install or manage App
+              Install GitHub App
             </LinkButton>
           ) : null}
           <LinkButton href="/dashboard" variant="outline" size="lg">
@@ -587,6 +519,7 @@ async function loadSetupInstallation(input: {
       githubInstallationId: true,
       accountLogin: true,
       accountType: true,
+      accountAvatarUrl: true,
       repositorySelection: true,
       workspace: {
         select: { id: true, name: true, slug: true },
@@ -619,6 +552,7 @@ async function loadSetupInstallation(input: {
     githubInstallationId: installation.githubInstallationId.toString(),
     accountLogin: installation.accountLogin,
     accountType: installation.accountType,
+    accountAvatarUrl: installation.accountAvatarUrl,
     repositorySelection: installation.repositorySelection,
     repositoryCount: installation._count.repositories,
     repositories: installation.repositories.map((repository) => ({
@@ -652,12 +586,4 @@ function buildSetupRefreshHref(input: {
   if (input.installationId) query.set("installation_id", input.installationId);
   query.set("setup_action", input.setupAction || "install");
   return `/setup?${query.toString()}`;
-}
-
-function formatAccountType(accountType: string): string {
-  return accountType === "Organization" ? "organization" : "personal account";
-}
-
-function formatAccountTypeBadge(accountType: string): string {
-  return accountType === "Organization" ? "Organization" : "Personal";
 }
