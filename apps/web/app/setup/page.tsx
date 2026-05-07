@@ -258,7 +258,7 @@ function buildSetupHeroBody(input: {
   readonly signedIn: boolean;
 }): string {
   if (!input.setupNotice) {
-    return "Install the GitHub App, sign in, refresh the repository list if needed, and create the setup PR from one guided flow.";
+    return "Install the GitHub App, sign in, then open the dashboard to choose a repository, create the setup PR, and copy the provider setup command.";
   }
 
   if (!input.signedIn) {
@@ -266,7 +266,7 @@ function buildSetupHeroBody(input: {
   }
 
   if (input.installation) {
-    return `${input.installation.accountLogin} is linked. Repository metadata normally syncs automatically from GitHub. Refresh if repositories are missing, then create the setup PR.`;
+    return `${input.installation.accountLogin} is linked. Repository metadata normally syncs automatically from GitHub. Open the dashboard to choose a repository and continue setup.`;
   }
 
   return "GitHub confirmed the App installation. ReviewRouter is waiting for the signed GitHub webhook, which normally arrives within a few seconds.";
@@ -384,8 +384,8 @@ function SetupStartCard({
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
             Install or manage the GitHub App for a personal account or
             organization. Select only the repositories that should run
-            ReviewRouter, then GitHub will send you back here to refresh the
-            repository list if needed and create the setup PR.
+            ReviewRouter, then GitHub will send you back here with a link to the
+            dashboard.
           </p>
           <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm leading-6 text-slate-300">
             <p className="font-semibold text-cyan-50">
