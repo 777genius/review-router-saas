@@ -985,6 +985,9 @@ function WorkspaceCard({
               repositories={repositories}
               health={health}
               provisioning={provisioning}
+              repositoryConfigs={repositoryConfigs}
+              activeConfig={activeConfig}
+              activeConfigVersion={activeConfigVersion}
               mutationsEnabled={mutationsEnabled}
             />
           </>
@@ -1153,24 +1156,21 @@ function WorkspaceCard({
         ) : null}
 
         {selectedSection === "policy" ? (
-          <details
-            open
-            className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
-          >
-            <summary className="cursor-pointer list-none">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <Badge tone="accent">Review policy</Badge>
-                  <p className="mt-2 text-sm text-slate-400">
-                    Workspace defaults and optional per-repository overrides.
-                  </p>
-                </div>
-                <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
-                  v{activeConfigVersion}
-                </span>
+          <section className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <Badge tone="accent">Review policy</Badge>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+                  Workspace defaults apply to every repository unless a
+                  repository override is saved.
+                </p>
               </div>
-            </summary>
-            <div className="mt-5 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
+              <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
+                workspace config v{activeConfigVersion}
+              </span>
+            </div>
+
+            <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 <Badge tone="accent">Workspace default</Badge>
                 <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
@@ -1280,7 +1280,7 @@ function WorkspaceCard({
                 </div>
               </div>
             ) : null}
-          </details>
+          </section>
         ) : null}
 
         {selectedSection === "repositories" &&
@@ -1567,6 +1567,9 @@ function RepositoryTable({
   repositories,
   health,
   provisioning,
+  repositoryConfigs,
+  activeConfig,
+  activeConfigVersion,
   mutationsEnabled,
 }: {
   readonly workspace: DashboardWorkspace;
@@ -1574,6 +1577,9 @@ function RepositoryTable({
   readonly repositories: DashboardWorkspaceData["repositories"];
   readonly health: DashboardWorkspaceData["health"];
   readonly provisioning: DashboardWorkspaceData["provisioning"];
+  readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
+  readonly activeConfig: ReviewConfiguration;
+  readonly activeConfigVersion: number;
   readonly mutationsEnabled: boolean;
 }): React.ReactElement {
   if (repositories.length === 0) {
@@ -1588,6 +1594,10 @@ function RepositoryTable({
       </div>
     );
   }
+
+  const repositoryConfigById = new Map(
+    repositoryConfigs.map((item) => [item.repositoryId, item.config] as const),
+  );
 
   const rows = repositories.map((repository) => {
     const repositoryHealth = health.find(
@@ -1610,6 +1620,9 @@ function RepositoryTable({
       repository.setupStatus,
       repositoryHealth?.status,
     );
+    const repositoryConfig = repositoryConfigById.get(repository.id) ?? null;
+    const effectiveConfig = repositoryConfig?.config ?? activeConfig;
+    const configVersion = repositoryConfig?.version ?? activeConfigVersion;
 
     return {
       repository,
@@ -1619,6 +1632,9 @@ function RepositoryTable({
       setupView,
       setupPullRequestUrl,
       workflowCurrent,
+      repositoryConfig,
+      effectiveConfig,
+      configVersion,
     };
   });
 
@@ -1659,6 +1675,9 @@ function RepositoryTable({
             setupView,
             setupPullRequestUrl,
             workflowCurrent,
+            repositoryConfig,
+            effectiveConfig,
+            configVersion,
           }) => (
             <div
               key={repository.id}
@@ -1747,6 +1766,14 @@ function RepositoryTable({
                 workflowCurrent={workflowCurrent}
                 mutationsEnabled={mutationsEnabled}
               />
+              <RepositoryPolicyEditor
+                workspaceId={workspace.id}
+                repository={repository}
+                repositoryConfig={repositoryConfig}
+                effectiveConfig={effectiveConfig}
+                configVersion={configVersion}
+                mutationsEnabled={mutationsEnabled}
+              />
             </div>
           ),
         )}
@@ -1771,6 +1798,9 @@ function RepositoryTable({
                 setupView,
                 setupPullRequestUrl,
                 workflowCurrent,
+                repositoryConfig,
+                effectiveConfig,
+                configVersion,
               }) => {
                 return (
                   <tr
@@ -1844,6 +1874,14 @@ function RepositoryTable({
                         archived={repository.archived}
                         setupStatus={repository.setupStatus}
                         workflowCurrent={workflowCurrent}
+                        mutationsEnabled={mutationsEnabled}
+                      />
+                      <RepositoryPolicyEditor
+                        workspaceId={workspace.id}
+                        repository={repository}
+                        repositoryConfig={repositoryConfig}
+                        effectiveConfig={effectiveConfig}
+                        configVersion={configVersion}
                         mutationsEnabled={mutationsEnabled}
                       />
                     </td>
@@ -2082,6 +2120,86 @@ function RepositorySetupActionForm({
         }
       />
     </form>
+  );
+}
+
+function RepositoryPolicyEditor({
+  workspaceId,
+  repository,
+  repositoryConfig,
+  effectiveConfig,
+  configVersion,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly repository: DashboardWorkspaceData["repositories"][number];
+  readonly repositoryConfig:
+    | DashboardWorkspaceData["repositoryConfigs"][number]["config"]
+    | null;
+  readonly effectiveConfig: ReviewConfiguration;
+  readonly configVersion: number;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  const canEdit =
+    mutationsEnabled && repository.selected && !repository.archived;
+  const policyMode = repositoryConfig ? "override" : "inherits workspace";
+
+  return (
+    <details className="group mt-2">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-2xl border border-cyan-300/25 px-3 py-2 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200">
+        <span className="font-mono uppercase tracking-[0.14em]">
+          Edit policy
+        </span>
+        <span className="text-slate-500">/</span>
+        <span className="text-slate-300">{policyMode}</span>
+      </summary>
+
+      <div className="mt-3 grid gap-4 rounded-2xl border border-cyan-200/10 bg-slate-950/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={repositoryConfig ? "warning" : "success"}>
+                {repositoryConfig ? "Repository override" : "Workspace default"}
+              </Badge>
+              <span className="font-mono text-[0.68rem] uppercase tracking-[0.14em] text-slate-500">
+                v{configVersion}
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-400">
+              {formatReviewConfigSummary(effectiveConfig)}
+            </p>
+          </div>
+        </div>
+
+        <ReviewConfigForm
+          action={saveRepositoryReviewConfigAction}
+          config={effectiveConfig}
+          hiddenFields={[
+            { name: "workspaceId", value: workspaceId },
+            { name: "repositoryId", value: repository.id },
+          ]}
+          mutationsEnabled={canEdit}
+          submitLabel={
+            repositoryConfig ? "Update repo policy" : "Save repo policy"
+          }
+        />
+
+        {repositoryConfig ? (
+          <form action={clearRepositoryReviewConfigAction}>
+            <input type="hidden" name="workspaceId" value={workspaceId} />
+            <input type="hidden" name="repositoryId" value={repository.id} />
+            <Button
+              type="submit"
+              variant="outline"
+              size="sm"
+              disabled={!canEdit}
+            >
+              Inherit workspace default
+            </Button>
+          </form>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -2504,6 +2622,28 @@ function ProviderSetupFact({
       </p>
     </div>
   );
+}
+
+function formatReviewConfigSummary(config: ReviewConfiguration): string {
+  return [
+    formatProviderAuthMode(config.provider.authMode),
+    config.provider.model,
+    `${config.provider.reasoningEffort} effort`,
+    `fails on ${config.blockingPolicy.failOnSeverity}`,
+  ].join(" / ");
+}
+
+function formatProviderAuthMode(
+  authMode: ReviewConfiguration["provider"]["authMode"],
+): string {
+  switch (authMode) {
+    case "codex_subscription_oauth":
+      return "Codex OAuth";
+    case "codex_openai_api_key":
+      return "Codex API key";
+    case "openrouter_api_key":
+      return "OpenRouter API key";
+  }
 }
 
 function providerSecretKindForAuthMode(
