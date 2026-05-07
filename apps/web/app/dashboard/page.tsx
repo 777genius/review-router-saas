@@ -434,8 +434,8 @@ const dashboardSectionMeta: Record<
     eyebrow: "Connection",
     title: "Setup",
     description:
-      "Sync GitHub App repositories and seed provider credentials directly into GitHub Actions secrets.",
-    navDescription: "App sync and secrets",
+      "Refresh GitHub App repository metadata and manage installation access. Provider commands appear after choosing a repository.",
+    navDescription: "App sync and access",
   },
   policy: {
     eyebrow: "Review behavior",
@@ -960,7 +960,6 @@ function WorkspaceCard({
           selectedSection={selectedSection}
           repositoryCount={repositoryCount}
           workspaceHealth={workspaceHealth}
-          primaryRepositoryFullName={selectedRepository?.fullName ?? null}
           activeConfig={activeConfig}
         />
         <WorkspaceActionNotice params={params} orgRuleset={orgRuleset} />
@@ -1452,13 +1451,11 @@ function DashboardSectionHeader({
   selectedSection,
   repositoryCount,
   workspaceHealth,
-  primaryRepositoryFullName,
   activeConfig,
 }: {
   readonly selectedSection: DashboardSection;
   readonly repositoryCount: number;
   readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
-  readonly primaryRepositoryFullName: string | null;
   readonly activeConfig: ReviewConfiguration;
 }): React.ReactElement {
   const meta = dashboardSectionMeta[selectedSection];
@@ -1468,9 +1465,7 @@ function DashboardSectionHeader({
       : selectedSection === "policy"
         ? `${activeConfig.provider.model} / ${activeConfig.provider.reasoningEffort}`
         : selectedSection === "setup"
-          ? primaryRepositoryFullName
-            ? `Selected repo: ${primaryRepositoryFullName}`
-            : "Select a repository first"
+          ? "App connection"
           : "Metadata only";
 
   return (
