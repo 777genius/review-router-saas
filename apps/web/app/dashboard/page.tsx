@@ -944,6 +944,9 @@ function WorkspaceCard({
         health.find((item) => item.repositoryId === repository.id)?.status,
     ),
   );
+  const activeInstallations = workspace.installations.filter(
+    (installation) => installation.status === "active",
+  );
 
   return (
     <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
@@ -1007,7 +1010,7 @@ function WorkspaceCard({
                     </p>
                   </div>
                   <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
-                    {workspace.installations.length} connected
+                    {activeInstallations.length} connected
                   </span>
                 </div>
               </summary>
@@ -1023,7 +1026,7 @@ function WorkspaceCard({
                 </p>
               </div>
               <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {workspace.installations.map((installation) => {
+                {activeInstallations.map((installation) => {
                   const selectedRepositories = repositories
                     .filter(
                       (repository) =>
