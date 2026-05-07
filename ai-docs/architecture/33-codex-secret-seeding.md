@@ -10,7 +10,7 @@ Ship a separate narrow `curl | bash` secret-seeding script for Codex OAuth.
 
 The script:
 
-- finds `~/.codex/auth.json` or `$CODEX_HOME/auth.json`
+- finds legacy `~/.codex/auth.json`, `$CODEX_HOME/auth.json`, or the active Codex account auth under `$CODEX_HOME/accounts/*.auth.json`
 - validates `auth_mode=chatgpt`
 - validates `tokens.refresh_token` exists
 - fails with a clear `reseed auth.json` recovery hint before any `gh secret set`
@@ -42,11 +42,20 @@ curl -fsSL https://reviewrouter.site/install/codex | \
   bash
 ```
 
-Equivalent direct command:
+Legacy-only direct command:
 
 ```bash
 gh secret set CODEX_AUTH_JSON --repo owner/repo < ~/.codex/auth.json
 ```
+
+For newer Codex CLI installs, the source file may instead be the active account auth resolved from:
+
+```text
+~/.codex/accounts/registry.json
+~/.codex/accounts/<active-account>.auth.json
+```
+
+Do not hand-build this path in user-facing docs. Prefer `scripts/seed-codex-auth.sh`, because it validates the active account and avoids printing secrets.
 
 Direct local dry-run:
 
@@ -71,7 +80,7 @@ curl -fsSL https://reviewrouter.site/install/codex | \
   bash
 ```
 
-Equivalent direct command:
+Legacy-only direct command:
 
 ```bash
 gh secret set CODEX_AUTH_JSON --org my-org --repos repo-a,repo-b --app actions < ~/.codex/auth.json

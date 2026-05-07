@@ -15,7 +15,8 @@ INCLUDE_CODEX_CONFIG="${REVIEW_ROUTER_INCLUDE_CODEX_CONFIG:-0}"
 DRY_RUN="${REVIEW_ROUTER_DRY_RUN:-0}"
 CONFIRM_WRITE="${REVIEW_ROUTER_CONFIRM_WRITE:-${REVIEW_ROUTER_YES:-0}}"
 CODEX_BASE_HOME="${REVIEW_ROUTER_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
-CODEX_AUTH_FILE="${REVIEW_ROUTER_CODEX_AUTH_FILE:-$CODEX_BASE_HOME/auth.json}"
+CODEX_AUTH_FILE="${REVIEW_ROUTER_CODEX_AUTH_FILE:-}"
+CODEX_AUTH_FILE_EXPLICIT="${REVIEW_ROUTER_CODEX_AUTH_FILE:+1}"
 CODEX_CONFIG_FILE="${REVIEW_ROUTER_CODEX_CONFIG_FILE:-$CODEX_BASE_HOME/config.toml}"
 CODEX_AUTH_STALE_DAYS="${REVIEW_ROUTER_CODEX_AUTH_STALE_DAYS:-30}"
 
@@ -54,8 +55,8 @@ Options:
   --org org                 Organization for org selected-repository secrets.
   --repos repo-a,repo-b     Selected repositories for org-scoped secrets.
   --include-config          Also write CODEX_CONFIG_TOML.
-  --codex-home path         Codex home containing auth.json and config.toml.
-  --auth-file path          Explicit Codex auth.json path.
+  --codex-home path         Codex home containing auth.json or accounts/registry.json.
+  --auth-file path          Explicit Codex auth JSON path.
   --config-file path        Explicit Codex config.toml path.
   --stale-days days         Warn when auth.json last_refresh is older than this. Defaults to 30.
   -h, --help                Show this help.
@@ -117,13 +118,16 @@ parse_args() {
         shift
         require_arg "--codex-home" "${1:-}"
         CODEX_BASE_HOME="$1"
-        CODEX_AUTH_FILE="$CODEX_BASE_HOME/auth.json"
+        if [ "${CODEX_AUTH_FILE_EXPLICIT:-0}" != "1" ]; then
+          CODEX_AUTH_FILE=""
+        fi
         CODEX_CONFIG_FILE="$CODEX_BASE_HOME/config.toml"
         ;;
       --auth-file)
         shift
         require_arg "--auth-file" "${1:-}"
         CODEX_AUTH_FILE="$1"
+        CODEX_AUTH_FILE_EXPLICIT="1"
         ;;
       --config-file)
         shift
@@ -278,6 +282,108 @@ normalize_org_repos() {
   ORG_SELECTED_REPOS="$normalized"
 }
 
+resolve_codex_auth_file() {
+  if [ -n "$CODEX_AUTH_FILE" ]; then
+    return
+  fi
+
+  legacy_auth_file="$CODEX_BASE_HOME/auth.json"
+  if [ -f "$legacy_auth_file" ]; then
+    CODEX_AUTH_FILE="$legacy_auth_file"
+    return
+  fi
+
+  active_auth_file=""
+  if command -v node >/dev/null 2>&1; then
+    active_auth_file="$(
+      node - "$CODEX_BASE_HOME" <<'NODE' 2>/dev/null || true
+const fs = require('node:fs');
+const path = require('node:path');
+
+const codexHome = process.argv[2];
+const accountsDir = path.join(codexHome, 'accounts');
+const registryPath = path.join(accountsDir, 'registry.json');
+
+function authPathForAccountKey(accountKey) {
+  const encoded = Buffer.from(accountKey, 'utf8').toString('base64url');
+  return path.join(accountsDir, `${encoded}.auth.json`);
+}
+
+try {
+  if (fs.existsSync(registryPath)) {
+    const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    const activeAccountKey = registry.active_account_key;
+    if (typeof activeAccountKey === 'string' && activeAccountKey.length > 0) {
+      const activeAuthPath = authPathForAccountKey(activeAccountKey);
+      if (fs.existsSync(activeAuthPath)) {
+        console.log(activeAuthPath);
+        process.exit(0);
+      }
+    }
+  }
+
+  if (fs.existsSync(accountsDir)) {
+    const candidates = fs
+      .readdirSync(accountsDir)
+      .filter((entry) => entry.endsWith('.auth.json'))
+      .map((entry) => path.join(accountsDir, entry));
+    if (candidates.length === 1) {
+      console.log(candidates[0]);
+    }
+  }
+} catch {
+  process.exit(0);
+}
+NODE
+    )"
+  elif command -v python3 >/dev/null 2>&1; then
+    active_auth_file="$(
+      python3 - "$CODEX_BASE_HOME" <<'PY' 2>/dev/null || true
+import base64
+import json
+import os
+import sys
+
+codex_home = sys.argv[1]
+accounts_dir = os.path.join(codex_home, 'accounts')
+registry_path = os.path.join(accounts_dir, 'registry.json')
+
+def auth_path_for_account_key(account_key):
+    encoded = base64.urlsafe_b64encode(account_key.encode('utf-8')).decode('ascii').rstrip('=')
+    return os.path.join(accounts_dir, f'{encoded}.auth.json')
+
+try:
+    if os.path.exists(registry_path):
+        with open(registry_path, 'r', encoding='utf-8') as f:
+            registry = json.load(f)
+        active_account_key = registry.get('active_account_key')
+        if isinstance(active_account_key, str) and active_account_key:
+            active_auth_path = auth_path_for_account_key(active_account_key)
+            if os.path.exists(active_auth_path):
+                print(active_auth_path)
+                raise SystemExit(0)
+
+    if os.path.isdir(accounts_dir):
+        candidates = [
+            os.path.join(accounts_dir, entry)
+            for entry in os.listdir(accounts_dir)
+            if entry.endswith('.auth.json')
+        ]
+        if len(candidates) == 1:
+            print(candidates[0])
+except Exception:
+    pass
+PY
+    )"
+  fi
+
+  if [ -n "$active_auth_file" ]; then
+    CODEX_AUTH_FILE="$active_auth_file"
+  else
+    CODEX_AUTH_FILE="$legacy_auth_file"
+  fi
+}
+
 validate_codex_auth_file() {
   [ -f "$CODEX_AUTH_FILE" ] || fatal "Codex auth file not found: $CODEX_AUTH_FILE. To reseed auth.json, run: codex login"
   [ -r "$CODEX_AUTH_FILE" ] || fatal "Codex auth file is not readable: $CODEX_AUTH_FILE. To reseed auth.json, run: codex login"
@@ -390,8 +496,9 @@ main() {
   fi
 
   gh auth status >/dev/null 2>&1 || fatal "gh is not authenticated. Run: gh auth login"
+  resolve_codex_auth_file
   validate_codex_auth_file
-  ok "Validated auth.json before writing secrets"
+  ok "Validated Codex auth JSON before writing secrets"
 
   info "Target repo: $TARGET_REPO"
   if [ "$SECRET_SCOPE" = "org" ]; then

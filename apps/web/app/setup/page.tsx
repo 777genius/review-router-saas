@@ -466,7 +466,7 @@ function ProviderSecretSetupCard({
             label="Validation"
             value={
               recommendedCommand.validatesBeforeWrite
-                ? "Checks auth.json before writing"
+                ? "Checks Codex auth JSON before writing"
                 : "GitHub validates secret write"
             }
           />

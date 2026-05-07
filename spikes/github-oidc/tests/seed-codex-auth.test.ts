@@ -27,7 +27,7 @@ describe("seed-codex-auth.sh", () => {
 
     expect(result.stdout).toContain("ReviewRouter Codex OAuth secret seeding");
     expect(result.stdout).toContain(
-      "Validated auth.json before writing secrets",
+      "Validated Codex auth JSON before writing secrets",
     );
     expect(result.stdout).toContain(
       "[dry-run] gh secret set CODEX_AUTH_JSON --repo 777genius/example <",
@@ -51,6 +51,24 @@ describe("seed-codex-auth.sh", () => {
     );
     expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
   });
+
+  it("detects active Codex account auth when legacy auth.json is absent", async () => {
+    const fixture = await createFixture({ authStorage: "active-account" });
+
+    const result = await runSeedScript(fixture, {
+      REVIEW_ROUTER_DRY_RUN: "1",
+      REVIEW_ROUTER_SECRET_SCOPE: "repo",
+      REVIEW_ROUTER_REPO: "777genius/example",
+    });
+
+    expect(result.stdout).toContain(
+      "Validated Codex auth JSON before writing secrets",
+    );
+    expect(result.stdout).toContain("/accounts/");
+    expect(result.stdout).toContain(".auth.json");
+    expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
+  });
+
 
   it("fails before secret writes when auth.json is not ChatGPT OAuth", async () => {
     const fixture = await createFixture({
@@ -162,6 +180,7 @@ describe("seed-codex-auth.sh", () => {
 
 async function createFixture(input?: {
   readonly authJson?: Record<string, unknown>;
+  readonly authStorage?: "legacy" | "active-account";
 }): Promise<{
   readonly root: string;
   readonly codexHome: string;
@@ -175,15 +194,27 @@ async function createFixture(input?: {
   await mkdir(binDir, { recursive: true });
 
   const refreshToken = "refresh-token-that-must-not-leak";
-  await writeFile(
-    path.join(codexHome, "auth.json"),
-    JSON.stringify(
-      input?.authJson ?? {
-        auth_mode: "chatgpt",
-        tokens: { refresh_token: refreshToken },
-      },
-    ),
-  );
+  const authJson = input?.authJson ?? {
+    auth_mode: "chatgpt",
+    tokens: { refresh_token: refreshToken },
+  };
+  if (input?.authStorage === "active-account") {
+    const accountsDir = path.join(codexHome, "accounts");
+    await mkdir(accountsDir, { recursive: true });
+    const activeAccountKey =
+      "user-review-router-test::00000000-0000-4000-8000-000000000000";
+    const encoded = Buffer.from(activeAccountKey, "utf8").toString("base64url");
+    await writeFile(
+      path.join(accountsDir, "registry.json"),
+      JSON.stringify({ active_account_key: activeAccountKey }),
+    );
+    await writeFile(
+      path.join(accountsDir, `${encoded}.auth.json`),
+      JSON.stringify(authJson),
+    );
+  } else {
+    await writeFile(path.join(codexHome, "auth.json"), JSON.stringify(authJson));
+  }
 
   const ghPath = path.join(binDir, "gh");
   await writeFile(

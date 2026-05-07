@@ -118,7 +118,7 @@ jobId
 
 ## Codex OAuth in SaaS Setup
 
-ReviewRouter SaaS must not receive `~/.codex/auth.json` plaintext.
+ReviewRouter SaaS must not receive local Codex OAuth auth plaintext. This includes legacy `~/.codex/auth.json` and active account files under `~/.codex/accounts/*.auth.json`.
 
 One-click SaaS setup creates workflow PRs, but provider authentication is still customer-side:
 

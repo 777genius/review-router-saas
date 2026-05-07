@@ -91,7 +91,7 @@ export function buildProviderSecretSetupGuidance(input: {
         },
       ],
       warnings: [
-        "Run this on a trusted machine where Codex CLI is already logged in with ChatGPT subscription auth.",
+        "Run this on a trusted machine where Codex CLI is already logged in with ChatGPT subscription auth. The seed script detects both legacy ~/.codex/auth.json and the active ~/.codex/accounts/*.auth.json account.",
         "The generated command includes REVIEW_ROUTER_CONFIRM_WRITE=1 so non-interactive curl usage can write GitHub secrets only after the target is explicit in the command.",
         "ReviewRouter SaaS never receives CODEX_AUTH_JSON; the script writes directly to GitHub Actions secrets through gh.",
         "For public repositories, fork pull requests are skipped for secret-backed provider execution by default.",
