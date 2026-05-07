@@ -25,7 +25,7 @@ describe("buildGitHubAppSetupNotice", () => {
       }),
     ).toEqual({
       title: "GitHub App access updated",
-      body: "Repository sync should start from the signed GitHub webhook. If repositories do not appear within a minute, request a sync from the dashboard.",
+      body: "Repository metadata should refresh from the signed GitHub webhook. If repositories do not appear within a minute, request a refresh from the dashboard.",
       installationId: "456",
     });
   });

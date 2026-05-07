@@ -117,7 +117,7 @@ export function describeRepositoryHealth(
         label: "Unknown",
         summary: fallbackSummary,
         nextAction:
-          "Sync repositories or run a setup PR to collect health data.",
+          "Refresh repositories or run a setup PR to collect health data.",
         blocksReview: false,
       };
   }

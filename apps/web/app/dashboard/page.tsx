@@ -70,6 +70,7 @@ import {
   GitHubSignOutButton,
 } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
+import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 import { DashboardSectionTabs } from "./dashboard-section-tabs";
 import { DashboardWorkspaceTabs } from "./dashboard-workspace-tabs";
@@ -514,6 +515,7 @@ export default async function DashboardPage({
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 md:py-10">
+      <DashboardActionToast params={params} />
       <section className="relative overflow-hidden rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/80 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-6">
         <div className="absolute right-[-8rem] top-[-8rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl" />
         <div className="relative grid gap-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
@@ -635,8 +637,8 @@ function OnboardingDashboard({
       ? [
           [
             "1",
-            "Sync repositories",
-            "Import the selected repositories from the App installation.",
+            "Refresh repository list",
+            "Use only if GitHub webhook metadata has not appeared yet.",
           ],
           [
             "2",
@@ -653,7 +655,7 @@ function OnboardingDashboard({
           ["1", "Sign in", "Authorize dashboard access for this GitHub user."],
           [
             "2",
-            "Sync repositories",
+            "Refresh repository list",
             "ReviewRouter maps the installation to your workspace.",
           ],
           [
@@ -1081,8 +1083,9 @@ function WorkspaceCard({
                             </div>
                           ) : (
                             <p className="mt-2 text-xs leading-5 text-slate-300">
-                              Sync repositories to show the exact selected
-                              repository list.
+                              Refresh repositories to show the exact selected
+                              repository list if the GitHub webhook has not
+                              synced it yet.
                             </p>
                           )}
                         </div>
@@ -1119,7 +1122,7 @@ function WorkspaceCard({
                             installation.status !== "active"
                           }
                         >
-                          Sync repos
+                          Refresh repos
                         </Button>
                       </form>
                     </div>
@@ -2678,6 +2681,46 @@ function readParam(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
+function DashboardActionToast({
+  params,
+}: {
+  readonly params: Record<string, string | string[] | undefined>;
+}): React.ReactElement | null {
+  const notice = readParam(params.notice);
+  const error = readParam(params.error);
+  const repository = readParam(params.repository);
+  const prUrl = safeGitHubDashboardLink(readParam(params.pr)) ?? undefined;
+
+  if (error) {
+    return (
+      <ActionToast
+        tone="danger"
+        title="Action needs attention"
+        body={dashboardErrorText(error)}
+      />
+    );
+  }
+
+  if (!notice) return null;
+
+  const autoOpenSetupPr = notice === "setup_pr_ready" ? prUrl : undefined;
+  return (
+    <ActionToast
+      tone={dashboardNoticeTone(notice)}
+      title={dashboardNoticeTitle(notice)}
+      body={dashboardNoticeText(notice, repository)}
+      actionUrl={prUrl}
+      actionLabel={prUrl ? "Open setup PR" : undefined}
+      autoOpenUrl={autoOpenSetupPr}
+      storageKey={
+        autoOpenSetupPr
+          ? `reviewrouter:dashboard-setup-pr:${autoOpenSetupPr}`
+          : undefined
+      }
+    />
+  );
+}
+
 function resolveDashboardSection(
   params: Record<string, string | string[] | undefined>,
 ): DashboardSection {
@@ -2761,9 +2804,9 @@ function setupQueryString(
 function dashboardNoticeText(notice: string, repository: string): string {
   switch (notice) {
     case "sync_requested":
-      return "Repository sync was queued. Refresh in a few seconds if the repository list does not update immediately.";
+      return "Repository metadata refresh was queued. Reload in a few seconds if the repository list does not update immediately.";
     case "sync_already_requested":
-      return "Repository sync was already queued for this installation recently.";
+      return "Repository metadata refresh was already queued for this installation recently.";
     case "setup_pr_ready":
       return repository
         ? `Setup PR is ready for ${repository}.`
@@ -2799,7 +2842,7 @@ function dashboardNoticeTitle(notice: string): string {
   switch (notice) {
     case "sync_requested":
     case "sync_already_requested":
-      return "Sync queued";
+      return "Refresh queued";
     case "setup_pr_ready":
       return "Setup PR ready";
     case "workflow_already_current":
@@ -2816,6 +2859,26 @@ function dashboardNoticeTitle(notice: string): string {
       return "Retry updated";
     default:
       return "Action complete";
+  }
+}
+
+function dashboardNoticeTone(
+  notice: string,
+): "success" | "warning" | "danger" | "accent" {
+  switch (notice) {
+    case "setup_pr_ready":
+    case "workflow_already_current":
+    case "review_config_saved":
+    case "repository_review_config_saved":
+    case "repository_review_config_cleared":
+      return "success";
+    case "sync_already_requested":
+      return "accent";
+    case "outbox_retry_not_found":
+    case "outbox_retry_not_dead_letter":
+      return "warning";
+    default:
+      return "accent";
   }
 }
 

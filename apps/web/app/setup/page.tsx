@@ -10,6 +10,7 @@ import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-not
 import { getPrisma } from "../../src/server/prisma";
 import { requestInstallationSyncAction } from "../dashboard/actions";
 import { FormSubmitButton } from "../form-submit-button";
+import { ActionToast } from "../action-toast";
 import {
   GitHubSignInButton,
   GitHubSignOutButton,
@@ -122,7 +123,7 @@ export default async function SetupPage({
                 size="lg"
                 className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
               >
-                Sync repositories
+                Refresh repository list
               </LinkButton>
             ) : appInstallReturned ? (
               <LinkButton
@@ -183,7 +184,21 @@ export default async function SetupPage({
         />
       ) : null}
 
-      {resultNotice ? <SetupResultNotice notice={resultNotice} /> : null}
+      {resultNotice ? (
+        <ActionToast
+          tone={resultNotice.tone}
+          title={resultNotice.title}
+          body={resultNotice.body}
+          actionUrl={resultNotice.prUrl}
+          actionLabel={resultNotice.prUrl ? "Open setup PR" : undefined}
+          autoOpenUrl={resultNotice.prUrl}
+          storageKey={
+            resultNotice.prUrl
+              ? `reviewrouter:setup-pr:${resultNotice.prUrl}`
+              : undefined
+          }
+        />
+      ) : null}
 
       {!mutationStatus.signedIn ? (
         setupNotice ? null : (
@@ -194,7 +209,7 @@ export default async function SetupPage({
             </h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
               After sign-in, ReviewRouter maps this GitHub App installation to
-              your workspace, lets you sync selected repositories, and creates
+              your workspace, lets you refresh selected repositories, and creates
               the setup PR from the same guided page.
             </p>
           </Card>
@@ -234,7 +249,7 @@ function buildSetupHeroBody(input: {
   readonly signedIn: boolean;
 }): string {
   if (!input.setupNotice) {
-    return "Install the GitHub App, sign in, sync repositories, and create the setup PR from one guided flow.";
+    return "Install the GitHub App, sign in, refresh the repository list if needed, and create the setup PR from one guided flow.";
   }
 
   if (!input.signedIn) {
@@ -242,7 +257,7 @@ function buildSetupHeroBody(input: {
   }
 
   if (input.installation) {
-    return `${input.installation.accountLogin} is linked. Sync repository metadata, choose a repository, then create the setup PR.`;
+    return `${input.installation.accountLogin} is linked. Repository metadata normally syncs automatically from GitHub. Refresh if repositories are missing, then create the setup PR.`;
   }
 
   return "GitHub confirmed the App installation. ReviewRouter is waiting for the signed GitHub webhook, which normally arrives within a few seconds.";
@@ -265,14 +280,14 @@ function GitHubAppInstallHandoffCard({
     ? {
         badge: "Next step",
         title: "GitHub confirmed the App install. Sign in to finish setup.",
-        body: "One GitHub sign-in maps this installation to your ReviewRouter workspace. After that you can sync repositories and create the setup PR.",
+        body: "One GitHub sign-in maps this installation to your ReviewRouter workspace. After that you can refresh repositories if needed and create the setup PR.",
         tone: "accent" as const,
       }
     : installation
       ? {
           badge: "Ready",
           title: `${installation.accountLogin} is connected.`,
-          body: "Sync repository metadata next, then choose one repository and create the setup PR. ReviewRouter will not create PRs in every repository automatically.",
+          body: `${formatAccountType(installation.accountType)} install. GitHub webhooks normally sync repository metadata automatically. Use refresh if repositories are missing, then choose one repository and create the setup PR. ReviewRouter will not create PRs in every repository automatically.`,
           tone: "success" as const,
         }
       : {
@@ -289,6 +304,11 @@ function GitHubAppInstallHandoffCard({
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="success">GitHub App installed</Badge>
             <Badge tone={state.tone}>{state.badge}</Badge>
+            {installation ? (
+              <Badge tone="accent">
+                {formatAccountTypeBadge(installation.accountType)}
+              </Badge>
+            ) : null}
             <span className="rounded-full border border-white/10 bg-slate-950/50 px-3 py-1 font-mono text-[0.66rem] font-semibold uppercase tracking-[0.14em] text-slate-300">
               Installation #{notice.installationId}
             </span>
@@ -310,7 +330,7 @@ function GitHubAppInstallHandoffCard({
             </GitHubSignInButton>
           ) : installation ? (
             <LinkButton href="#sync-repositories" className="rounded-2xl">
-              Sync repositories
+              Refresh repository list
             </LinkButton>
           ) : (
             <LinkButton
@@ -354,8 +374,8 @@ function SetupStartCard({
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
             Install or manage the GitHub App for a personal account or
             organization. Select only the repositories that should run
-            ReviewRouter, then GitHub will send you back here to sync and create
-            the setup PR.
+            ReviewRouter, then GitHub will send you back here to refresh the
+            repository list if needed and create the setup PR.
           </p>
           <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm leading-6 text-slate-300">
             <p className="font-semibold text-cyan-50">
@@ -439,8 +459,8 @@ function SignedInSetup({
         id="sync-repositories"
         badge="Step 2"
         status={repositoriesSynced ? "done" : syncQueued ? "current" : "todo"}
-        title="Sync selected repositories"
-        body={`${installation.accountLogin} is connected. Sync imports repository metadata only. ReviewRouter does not open setup PRs automatically, even when the GitHub App is installed on all repositories.`}
+        title="Refresh repository list"
+        body={`${installation.accountLogin} is connected as a ${formatAccountType(installation.accountType).toLowerCase()} install. GitHub webhooks normally refresh repository metadata automatically. Use this only if repositories are missing or you changed App access.`}
         primary={
           <form action={requestInstallationSyncAction}>
             <SetupReturnFields
@@ -459,8 +479,8 @@ function SignedInSetup({
             />
             <FormSubmitButton
               disabled={!mutationsEnabled}
-              idleLabel="Sync repositories"
-              pendingLabel="Syncing repositories..."
+              idleLabel="Refresh repository list"
+              pendingLabel="Refreshing repositories..."
             />
           </form>
         }
@@ -470,8 +490,6 @@ function SignedInSetup({
           </LinkButton>
         }
       />
-
-      <CurrentInstallHint installation={installation} />
 
       <RepositorySelectionExplainer installation={installation} />
 
@@ -500,8 +518,8 @@ function SignedInSetup({
 
         {installation.repositories.length === 0 ? (
           <p className="mt-5 text-sm leading-6 text-slate-300">
-            No repositories are synced yet. Click sync above, then refresh this
-            page or open the dashboard.
+            No repositories are synced yet. Refresh the repository list above,
+            then reload this page or open the dashboard.
           </p>
         ) : (
           <RepositoryPicker
@@ -539,34 +557,11 @@ function SignedInSetup({
           badge="Step 3"
           status="todo"
           title="Choose a repository, then connect Codex"
-          body="Sync repositories, create the setup PR for one repository, then this step will show exact commands for Codex subscription OAuth or Codex API key mode. The commands write only to GitHub Actions secrets."
+          body="Refresh repositories if needed, create the setup PR for one repository, then this step will show exact commands for Codex subscription OAuth or Codex API key mode. The commands write only to GitHub Actions secrets."
           primary={null}
         />
       )}
     </div>
-  );
-}
-
-function CurrentInstallHint({
-  installation,
-}: {
-  readonly installation: SetupInstallation;
-}): React.ReactElement {
-  const personal = installation.accountType !== "Organization";
-  return (
-    <Card className="rounded-2xl border-cyan-200/15 bg-cyan-300/[0.035] p-5">
-      <Badge tone={personal ? "accent" : "success"}>
-        {personal ? "Personal account" : "Organization"}
-      </Badge>
-      <h2 className="mt-3 text-xl font-semibold text-cyan-50">
-        You are configuring {installation.accountLogin}.
-      </h2>
-      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-        {personal
-          ? "This is your personal GitHub account install. For personal repositories, choose your username on the GitHub App install screen. Provider credentials are stored as repository Actions secrets."
-          : "This is an organization install. For organization repositories, you can use repository secrets or one organization selected-repository secret for shared provider credentials."}
-      </p>
-    </Card>
   );
 }
 
@@ -598,8 +593,8 @@ function RepositorySelectionExplainer({
           </h2>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-300">
             {isAllRepositories
-              ? "GitHub grants the App access to all current and future repositories for this account. ReviewRouter syncs metadata, then you choose which repositories receive setup PRs and provider secrets. It will not spam every repository with a PR."
-              : "To add another repository, manage the GitHub App installation and select it there. Then sync here and create a setup PR for the repository you want to enable."}
+              ? "GitHub grants the App access to all current and future repositories for this account. ReviewRouter syncs metadata from webhooks, then you choose which repositories receive setup PRs and provider secrets. It will not spam every repository with a PR."
+              : "To add another repository, manage the GitHub App installation and select it there. GitHub should sync it automatically, but you can refresh here if it is missing."}
           </p>
           {installation.accountType === "Organization" ? (
             <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
@@ -630,8 +625,8 @@ function RepositorySelectionExplainer({
                 </div>
               ) : (
                 <p className="mt-2 text-sm leading-6 text-slate-300">
-                  No selected repositories are synced yet. Sync the
-                  installation, then refresh this page.
+                  No selected repositories are synced yet. Refresh the
+                  installation, then reload this page.
                 </p>
               )}
             </div>
@@ -673,12 +668,12 @@ function SetupProgressTracker({
       status: "done" as const,
     },
     {
-      label: "Sync repos",
+      label: "Repo list",
       body: repositoriesSynced
         ? "Repository metadata is available."
         : syncQueued
-          ? "Sync is queued. Refresh in a few seconds."
-          : "Import selected repository metadata.",
+          ? "Refresh is queued. Reload in a few seconds."
+          : "GitHub webhook syncs automatically. Refresh only if needed.",
       status: repositoriesSynced
         ? ("done" as const)
         : syncQueued
@@ -826,35 +821,6 @@ function SetupStepCard({
   );
 }
 
-function SetupResultNotice({
-  notice,
-}: {
-  readonly notice: {
-    readonly tone: "success" | "warning" | "danger" | "accent";
-    readonly title: string;
-    readonly body: string;
-    readonly prUrl?: string;
-  };
-}): React.ReactElement {
-  return (
-    <Card className="rounded-2xl border-cyan-200/15 p-5 sm:p-6">
-      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-        <div>
-          <Badge tone={notice.tone}>{notice.title}</Badge>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-200">
-            {notice.body}
-          </p>
-        </div>
-        {notice.prUrl ? (
-          <LinkButton href={notice.prUrl} target="_blank" rel="noreferrer">
-            Open setup PR
-          </LinkButton>
-        ) : null}
-      </div>
-    </Card>
-  );
-}
-
 function SetupReturnFields({
   installationId,
   setupAction,
@@ -900,14 +866,14 @@ function buildSetupResultNotice(
     case "sync_requested":
       return {
         tone: "success",
-        title: "Repository sync queued",
-        body: "ReviewRouter queued a repository sync. If the list does not update immediately, refresh this page in a few seconds after GitHub metadata catches up.",
+        title: "Repository refresh queued",
+        body: "ReviewRouter queued a repository metadata refresh. If the list does not update immediately, reload this page in a few seconds after GitHub metadata catches up.",
       };
     case "sync_already_requested":
       return {
         tone: "accent",
-        title: "Repository sync already queued",
-        body: "A repository sync was already requested recently. Refresh this page in a few seconds.",
+        title: "Repository refresh already queued",
+        body: "A repository metadata refresh was already requested recently. Reload this page in a few seconds.",
       };
     case "setup_pr_ready":
       return stripUndefinedPrUrl({
