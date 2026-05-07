@@ -115,7 +115,7 @@ assertIncludes(
 assertSetupCallback(installNotice.html);
 assertIncludes(
   installNotice.html,
-  "One sign-in finishes the handoff.",
+  "Sign in to finish setup",
   "install redirect dashboard must show sign-in as the next onboarding step",
 );
 assertNotIncludes(
