@@ -155,7 +155,7 @@ export function renderReviewRouterInteractionWorkflow(
 
 on:
   pull_request_review_comment:
-    types: [created]
+    types: [created, edited]
   workflow_dispatch:
 
 permissions:
@@ -246,7 +246,7 @@ export function renderReviewRouterReusableInteractionWorkflow(
 
 on:
   pull_request_review_comment:
-    types: [created]
+    types: [created, edited]
   workflow_dispatch:
 
 permissions:
