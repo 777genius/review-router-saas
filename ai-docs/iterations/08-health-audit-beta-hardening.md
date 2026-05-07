@@ -71,8 +71,9 @@ node scripts/run-with-env.mjs pnpm spike:support-diagnostics:e2e
 - Real smoke command:
 
 ```bash
-REVIEW_ROUTER_TARGET_REPO=777genius/review-router-saas-e2e \
+REVIEW_ROUTER_TARGET_REPO=owner/fresh-disposable-reviewrouter-smoke \
   node scripts/run-with-env.mjs pnpm spike:repo-health:e2e
 ```
 
-Expected for the current smoke repo main branch: `check.status = "missing"`.
+Use a fresh disposable repository for this smoke. Older fixed smoke repositories
+were deleted during the May 8, 2026 cleanup.

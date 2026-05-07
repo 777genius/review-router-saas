@@ -33,6 +33,10 @@ Reusable workflows can reduce the generated YAML, but they do not remove the sec
 
 ## Prototype Results
 
+Note: the disposable caller repository referenced in this section was deleted
+during the May 8, 2026 cleanup. The result is retained as historical evidence;
+new reusable-workflow validation should create a fresh disposable caller repo.
+
 Prototype branch:
 
 - `777genius/review-router@spike/reusable-workflow-prototype-20260506`

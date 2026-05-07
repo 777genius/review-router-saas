@@ -81,6 +81,11 @@ Why:
 
 ## Real Smoke Tests
 
+Note: the disposable smoke repositories referenced in this section were deleted
+during the May 8, 2026 cleanup. The captured claim lists and conclusions remain
+valid as historical evidence; rerun the spike against a fresh disposable repo
+when new proof is needed.
+
 ### Test 1 - OIDC Claims Only
 
 Repository:

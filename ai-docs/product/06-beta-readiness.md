@@ -22,6 +22,12 @@ Validated on real GitHub repositories:
 - intentional failed check on critical finding
 - inline review comment on the changed line
 
+Historical E2E links in this document may point to disposable GitHub
+repositories that were deleted during the May 8, 2026 cleanup. Keep the entries
+as historical evidence of what was validated, but do not depend on those
+repositories for future runs. New real E2E validation should create a fresh
+disposable repository and record the new repo, PR, and workflow run.
+
 The current MVP is showable to trusted testers when the latest full-review
 smoke passes after the latest action/runtime provisioning change.
 

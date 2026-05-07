@@ -59,6 +59,11 @@ SaaS owns:
 
 ## Latest Real E2E Validation
 
+Note: older disposable smoke repositories referenced below may have been deleted
+during the May 8, 2026 cleanup. These entries are retained as historical
+evidence only. For a new validation, create a fresh disposable repository and
+record fresh PR/run links instead of reusing the deleted repos.
+
 On 2026-05-03, the SaaS provisioning path and separate action runtime were
 validated against a real public smoke repository:
 
