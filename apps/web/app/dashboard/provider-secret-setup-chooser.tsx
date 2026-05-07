@@ -51,7 +51,7 @@ export function ProviderSecretSetupChooser({
         ? {
             badge: "Codex subscription",
             title: "Use your ChatGPT Codex subscription",
-            body: "Run this on the trusted machine where Codex CLI is already logged in. The script validates the active Codex account and writes CODEX_AUTH_JSON directly to GitHub Actions secrets.",
+            body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The script validates the active Codex account and writes CODEX_AUTH_JSON directly to GitHub Actions secrets.`,
             footnote:
               "If Codex later says the token is stale, run codex login again and rerun this same command.",
           }
@@ -59,14 +59,14 @@ export function ProviderSecretSetupChooser({
           ? {
               badge: "Codex API key",
               title: "Use OpenAI API billing for Codex",
-              body: "Store OPENAI_API_KEY directly in GitHub Actions secrets. Then keep the dashboard policy on Codex API key mode for this repository.",
+              body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. It stores OPENAI_API_KEY directly in GitHub Actions secrets, then the dashboard policy can use Codex API key mode for this repository.`,
               footnote:
                 "This does not use the ChatGPT subscription OAuth file. It uses normal OpenAI API billing.",
             }
           : {
               badge: "OpenRouter API key",
               title: "Use OpenRouter billing",
-              body: "Store OPENROUTER_API_KEY directly in GitHub Actions secrets. Then keep the dashboard policy on OpenRouter mode for this repository.",
+              body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. It stores OPENROUTER_API_KEY directly in GitHub Actions secrets, then the dashboard policy can use OpenRouter mode for this repository.`,
               footnote:
                 "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
             },
@@ -134,8 +134,14 @@ export function ProviderSecretSetupChooser({
           {providerDetails.body}
         </p>
         <ol className="mt-4 grid list-decimal gap-2 pl-5 text-sm leading-6 text-emerald-50/90">
-          <li>Create and merge the setup PR for {repositoryFullName}.</li>
-          <li>Run the command below on your trusted machine.</li>
+          <li>Merge the setup PR for {repositoryFullName}.</li>
+          <li>
+            On your own computer, open a terminal in the {repositoryFullName}
+            repository directory.
+          </li>
+          <li>
+            Run the command below to connect this AI provider to the repository.
+          </li>
           <li>Open a test pull request and ReviewRouter will run in CI.</li>
         </ol>
         {activeCommand ? (

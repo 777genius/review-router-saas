@@ -251,6 +251,7 @@ export async function createSetupPullRequestAction(
         pr: pullRequest.url,
         workspace: workspaceId,
         section: "repositories",
+        q: repository.name,
       };
     }
   } catch (error) {

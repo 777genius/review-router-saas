@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { LinkButton } from "@reviewrouter/ui";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 type ActionToastTone = "success" | "warning" | "danger" | "accent";
 
@@ -11,6 +10,7 @@ type ActionToastProps = {
   readonly body: string;
   readonly actionUrl?: string | undefined;
   readonly actionLabel?: string | undefined;
+  readonly secondaryAction?: ReactNode | undefined;
   readonly autoOpenUrl?: string | undefined;
   readonly storageKey?: string | undefined;
 };
@@ -28,6 +28,7 @@ export function ActionToast({
   body,
   actionUrl,
   actionLabel = "Open",
+  secondaryAction,
   autoOpenUrl,
   storageKey,
 }: ActionToastProps): React.ReactElement | null {
@@ -76,17 +77,19 @@ export function ActionToast({
             Close
           </button>
         </div>
-        {actionUrl ? (
-          <div className="mt-4">
-            <LinkButton
-              href={actionUrl}
-              target="_blank"
-              rel="noreferrer"
-              size="sm"
-              className="rounded-xl"
-            >
-              {actionLabel}
-            </LinkButton>
+        {actionUrl || secondaryAction ? (
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            {secondaryAction}
+            {actionUrl ? (
+              <a
+                href={actionUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm font-semibold text-cyan-100 underline decoration-cyan-300/55 underline-offset-4 transition hover:text-cyan-50 hover:decoration-cyan-100"
+              >
+                {actionLabel}
+              </a>
+            ) : null}
           </div>
         ) : null}
       </div>

@@ -1,4 +1,11 @@
-import { Badge, Button, Card, LinkButton, SelectField } from "@reviewrouter/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  Dialog,
+  LinkButton,
+  SelectField,
+} from "@reviewrouter/ui";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
@@ -516,7 +523,6 @@ export default async function DashboardPage({
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 md:py-10">
-      <DashboardActionToast params={params} />
       <section className="relative overflow-hidden rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/80 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-6">
         <div className="absolute right-[-8rem] top-[-8rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl" />
         <div className="relative grid gap-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
@@ -947,6 +953,21 @@ function WorkspaceCard({
   const activeInstallations = workspace.installations.filter(
     (installation) => installation.status === "active",
   );
+  const setupReadyEnableReviewAction =
+    readParam(params.notice) === "setup_pr_ready" &&
+    selectedRepository &&
+    selectedInstallation &&
+    providerGuidanceSet ? (
+      <RepositoryProviderSecretsDialog
+        repositoryFullName={selectedRepository.fullName}
+        installation={selectedInstallation}
+        guidanceSet={providerGuidanceSet}
+        triggerLabel="Enable review"
+        triggerVariant="solid"
+        triggerSize="sm"
+        triggerClassName="rounded-xl"
+      />
+    ) : null;
 
   return (
     <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
@@ -959,6 +980,10 @@ function WorkspaceCard({
         workspaceKey={workspaceKey}
       />
       <div id="dashboard-section-content" className="space-y-5 scroll-mt-28">
+        <DashboardActionToast
+          params={params}
+          secondaryAction={setupReadyEnableReviewAction}
+        />
         <DashboardSectionHeader
           selectedSection={selectedSection}
           repositoryCount={repositoryCount}
@@ -983,15 +1008,6 @@ function WorkspaceCard({
               searchQuery={repositorySearchQuery}
               selectedRepositoryFullName={selectedRepository?.fullName ?? null}
             />
-            {selectedRepository &&
-            selectedInstallation &&
-            providerGuidanceSet ? (
-              <RepositoryProviderSetupPanel
-                repositoryFullName={selectedRepository.fullName}
-                installation={selectedInstallation}
-                guidanceSet={providerGuidanceSet}
-              />
-            ) : null}
           </>
         ) : null}
 
@@ -1520,7 +1536,7 @@ function DashboardSectionHeader({
               Next: create or update the setup PR, merge it, then use
               <span className="text-[var(--rr-foreground)]">
                 {" "}
-                Show provider command{" "}
+                Enable review{" "}
               </span>
               on that repository.
             </p>
@@ -1860,25 +1876,26 @@ function RepositoryTable({
                     </div>
                   </div>
 
-                  <RepositorySetupActionForm
-                    workspaceId={workspace.id}
-                    repositoryId={repository.id}
-                    selected={repository.selected}
-                    archived={repository.archived}
-                    setupStatus={repository.setupStatus}
-                    workflowCurrent={workflowCurrent}
-                    mutationsEnabled={mutationsEnabled}
-                  />
-                  <a
-                    href={dashboardRepositoryHref({
-                      workspaceKey,
-                      repositoryFullName: repository.fullName,
-                      searchQuery,
-                    })}
-                    className="inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                  >
-                    Show provider command
-                  </a>
+                  <div className="grid gap-2">
+                    <RepositorySetupActionForm
+                      workspaceId={workspace.id}
+                      repositoryId={repository.id}
+                      selected={repository.selected}
+                      archived={repository.archived}
+                      setupStatus={repository.setupStatus}
+                      workflowCurrent={workflowCurrent}
+                      mutationsEnabled={mutationsEnabled}
+                    />
+                    <RepositoryProviderSecretsAction
+                      workspace={workspace}
+                      repository={repository}
+                      disabled={
+                        !mutationsEnabled ||
+                        !repository.selected ||
+                        repository.archived
+                      }
+                    />
+                  </div>
                   <RepositoryPolicyEditor
                     workspaceId={workspace.id}
                     repository={repository}
@@ -1988,25 +2005,26 @@ function RepositoryTable({
                           ) : null}
                         </td>
                         <td className="px-4 py-4 align-top">
-                          <RepositorySetupActionForm
-                            workspaceId={workspace.id}
-                            repositoryId={repository.id}
-                            selected={repository.selected}
-                            archived={repository.archived}
-                            setupStatus={repository.setupStatus}
-                            workflowCurrent={workflowCurrent}
-                            mutationsEnabled={mutationsEnabled}
-                          />
-                          <a
-                            href={dashboardRepositoryHref({
-                              workspaceKey,
-                              repositoryFullName: repository.fullName,
-                              searchQuery,
-                            })}
-                            className="mt-2 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                          >
-                            Show provider command
-                          </a>
+                          <div className="grid gap-2">
+                            <RepositorySetupActionForm
+                              workspaceId={workspace.id}
+                              repositoryId={repository.id}
+                              selected={repository.selected}
+                              archived={repository.archived}
+                              setupStatus={repository.setupStatus}
+                              workflowCurrent={workflowCurrent}
+                              mutationsEnabled={mutationsEnabled}
+                            />
+                            <RepositoryProviderSecretsAction
+                              workspace={workspace}
+                              repository={repository}
+                              disabled={
+                                !mutationsEnabled ||
+                                !repository.selected ||
+                                repository.archived
+                              }
+                            />
+                          </div>
                           <RepositoryPolicyEditor
                             workspaceId={workspace.id}
                             repository={repository}
@@ -2039,14 +2057,58 @@ type ProviderSecretGuidanceSet = {
   >;
 };
 
-function RepositoryProviderSetupPanel({
+function RepositoryProviderSecretsAction({
+  workspace,
+  repository,
+  disabled,
+}: {
+  readonly workspace: DashboardWorkspace;
+  readonly repository: DashboardWorkspaceData["repositories"][number];
+  readonly disabled: boolean;
+}): React.ReactElement | null {
+  const installation = findInstallationForRepository(
+    workspace,
+    repository.fullName,
+  );
+  if (!installation) {
+    return null;
+  }
+
+  return (
+    <RepositoryProviderSecretsDialog
+      repositoryFullName={repository.fullName}
+      installation={installation}
+      guidanceSet={buildProviderSecretGuidanceSet({
+        repositoryFullName: repository.fullName,
+        installation,
+      })}
+      disabled={disabled}
+      triggerLabel="Enable review"
+      triggerVariant="outline"
+      triggerSize="sm"
+      triggerClassName="w-full"
+    />
+  );
+}
+
+function RepositoryProviderSecretsDialog({
   repositoryFullName,
   installation,
   guidanceSet,
+  triggerLabel,
+  triggerVariant = "outline",
+  triggerSize = "sm",
+  triggerClassName,
+  disabled = false,
 }: {
   readonly repositoryFullName: string;
   readonly installation: DashboardInstallation;
   readonly guidanceSet: ProviderSecretGuidanceSet;
+  readonly triggerLabel: string;
+  readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
+  readonly triggerSize?: "sm" | "md" | "lg";
+  readonly triggerClassName?: string;
+  readonly disabled?: boolean;
 }): React.ReactElement {
   const organizationLogin =
     installation.accountType === "Organization"
@@ -2054,36 +2116,65 @@ function RepositoryProviderSetupPanel({
       : null;
 
   return (
-    <section
-      id="provider-setup"
-      className="scroll-mt-28 rounded-[1.5rem] border border-emerald-300/20 bg-emerald-300/[0.07] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
-    >
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Badge tone="success">Provider secrets</Badge>
-          <h2 className="mt-3 text-xl font-semibold text-emerald-50">
-            Connect model credentials for {repositoryFullName}
-          </h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-            Create and merge the setup PR first, then run one command below.
-            Secrets are written directly to GitHub Actions; ReviewRouter SaaS
-            only stores metadata and policy.
-          </p>
-        </div>
-        <Badge tone={organizationLogin ? "accent" : "neutral"}>
-          {organizationLogin
-            ? `${organizationLogin} selected repo secret`
-            : "repository secret"}
-        </Badge>
-      </div>
-      <ProviderSecretSetupChooser
-        repositoryFullName={repositoryFullName}
-        organizationLogin={organizationLogin}
-        codexOAuthGuidance={guidanceSet.codexOAuth}
-        codexApiKeyGuidance={guidanceSet.codexApiKey}
-        openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}
-      />
-    </section>
+    <Dialog.Root>
+      <Dialog.Trigger
+        render={
+          <Button
+            variant={triggerVariant}
+            size={triggerSize}
+            className={triggerClassName}
+            disabled={disabled}
+          />
+        }
+      >
+        {triggerLabel}
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="z-50" />
+        <Dialog.Popup className="z-[60] max-h-[86vh] w-[min(96vw,58rem)] overflow-y-auto border-emerald-300/20 bg-[#061015] p-0 shadow-[0_30px_120px_rgba(0,0,0,0.62),0_0_90px_-48px_rgba(190,255,61,0.7)]">
+          <div className="border-b border-emerald-300/15 p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <Badge tone="success">Provider secrets</Badge>
+                <Dialog.Title className="mt-3 text-xl font-semibold text-emerald-50">
+                  Connect model credentials for {repositoryFullName}
+                </Dialog.Title>
+                <Dialog.Description className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+                  Merge the setup PR first, then run one command from your own
+                  computer. The command connects your AI provider to{" "}
+                  {repositoryFullName}; secrets are written directly to GitHub
+                  Actions, while ReviewRouter SaaS stores only metadata and
+                  policy. Run it in a terminal from the {repositoryFullName}{" "}
+                  repository directory.
+                </Dialog.Description>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={organizationLogin ? "accent" : "neutral"}>
+                  {organizationLogin
+                    ? `${organizationLogin} selected repo secret`
+                    : "repository secret"}
+                </Badge>
+                <Dialog.Close
+                  render={<Button variant="ghost" size="sm" />}
+                  aria-label="Close provider secrets dialog"
+                >
+                  Close
+                </Dialog.Close>
+              </div>
+            </div>
+          </div>
+          <div className="p-5 sm:p-6">
+            <ProviderSecretSetupChooser
+              repositoryFullName={repositoryFullName}
+              organizationLogin={organizationLogin}
+              codexOAuthGuidance={guidanceSet.codexOAuth}
+              codexApiKeyGuidance={guidanceSet.codexApiKey}
+              openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}
+            />
+          </div>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -2513,6 +2604,7 @@ function WorkspaceActionNotice({
       ? "org_rulesets_not_supported"
       : rawError;
   if (!notice && !error) return null;
+  if (!error && notice === "setup_pr_ready") return null;
 
   const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
   const tone = error ? "danger" : "success";
@@ -2873,8 +2965,10 @@ function readParam(value: string | string[] | undefined): string {
 
 function DashboardActionToast({
   params,
+  secondaryAction,
 }: {
   readonly params: Record<string, string | string[] | undefined>;
+  readonly secondaryAction?: React.ReactNode;
 }): React.ReactElement | null {
   const notice = readParam(params.notice);
   const error = readParam(params.error);
@@ -2901,6 +2995,7 @@ function DashboardActionToast({
       body={dashboardNoticeText(notice, repository)}
       actionUrl={prUrl}
       actionLabel={prUrl ? "Open setup PR" : undefined}
+      secondaryAction={secondaryAction}
       autoOpenUrl={autoOpenSetupPr}
       storageKey={
         autoOpenSetupPr
@@ -2957,23 +3052,6 @@ function dashboardSectionHref(
   const query = new URLSearchParams({ section });
   if (workspaceKey) query.set("workspace", workspaceKey);
   return `/dashboard?${query.toString()}#dashboard-section-content`;
-}
-
-function dashboardRepositoryHref({
-  workspaceKey,
-  repositoryFullName,
-  searchQuery,
-}: {
-  readonly workspaceKey: string;
-  readonly repositoryFullName: string;
-  readonly searchQuery?: string | undefined;
-}): string {
-  return dashboardRepositoriesHref({
-    workspaceKey,
-    repositoryFullName,
-    searchQuery,
-    hash: "provider-setup",
-  });
 }
 
 function dashboardRepositoriesHref({
