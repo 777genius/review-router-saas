@@ -13,32 +13,18 @@ export async function findInstallationForRepo(
   owner: string,
   repo: string,
 ): Promise<number | null> {
-  const appOctokit = app.octokit;
-  const { data: installations } = await appOctokit.request(
-    "GET /app/installations",
-    {
-      per_page: 100,
-    },
-  );
-
-  for (const installation of installations) {
-    const installationOctokit = await app.getInstallationOctokit(
-      installation.id,
+  try {
+    const response = await app.octokit.request(
+      "GET /repos/{owner}/{repo}/installation",
+      { owner, repo },
     );
-    try {
-      await installationOctokit.request("GET /repos/{owner}/{repo}", {
-        owner,
-        repo,
-      });
-      return installation.id;
-    } catch (error: unknown) {
-      const status =
-        typeof error === "object" && error !== null && "status" in error
-          ? Number(error.status)
-          : 0;
-      if (status !== 404 && status !== 403) throw error;
-    }
+    return response.data.id;
+  } catch (error: unknown) {
+    const status =
+      typeof error === "object" && error !== null && "status" in error
+        ? Number(error.status)
+        : 0;
+    if (status === 404) return null;
+    throw error;
   }
-
-  return null;
 }

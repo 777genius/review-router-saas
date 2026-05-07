@@ -286,21 +286,20 @@ async function findInstallationForRepo(app, installations, repoFullName) {
     return null;
   }
 
-  for (const installation of installations) {
-    const installationOctokit = await app.getInstallationOctokit(
-      installation.id,
+  try {
+    const { data: repositoryInstallation } = await app.octokit.request(
+      "GET /repos/{owner}/{repo}/installation",
+      { owner, repo },
     );
-    try {
-      await installationOctokit.request("GET /repos/{owner}/{repo}", {
-        owner,
-        repo,
-      });
-      return installation;
-    } catch (error) {
-      if (!isNotFoundOrForbidden(error)) throw error;
-    }
+    return (
+      installations.find(
+        (installation) => installation.id === repositoryInstallation.id,
+      ) ?? repositoryInstallation
+    );
+  } catch (error) {
+    if (isNotFound(error)) return null;
+    throw error;
   }
-  return null;
 }
 
 function requireValue(name) {
@@ -333,12 +332,12 @@ function readPrivateKey() {
   return readFileSync(keyFile, "utf8");
 }
 
-function isNotFoundOrForbidden(error) {
+function isNotFound(error) {
   return (
     typeof error === "object" &&
     error !== null &&
     "status" in error &&
-    (Number(error.status) === 403 || Number(error.status) === 404)
+    Number(error.status) === 404
   );
 }
 
