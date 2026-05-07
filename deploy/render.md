@@ -48,13 +48,14 @@ export RENDER_ENVIRONMENT_ID=evm-d7s67t0g4nts73d4l40g
 export RENDER_REPO=https://github.com/777genius/review-router-saas
 export REVIEW_ROUTER_WEB_URL=https://reviewrouter.site
 export REVIEW_ROUTER_API_URL=https://api.reviewrouter.site
-REVIEW_ROUTER_RENDER_ENV_FILE=.env.local pnpm deploy:render:hosted-beta
+pnpm deploy:render:hosted-beta
 ```
 
 The helper creates or reuses `reviewrouter-db`, `reviewrouter-web`,
 `reviewrouter-api`, and `reviewrouter-worker`, syncs service env vars,
 links resources to the Render environment when possible, and triggers deploys.
-It intentionally does not log secret values.
+It reads `.env.production` by default, refuses localhost/local App values unless
+explicitly overridden, and intentionally does not log secret values.
 
 Current hosted beta resources created by this helper:
 

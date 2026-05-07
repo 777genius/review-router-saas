@@ -58,6 +58,48 @@ function readGithubPrivateKey(env) {
   );
 }
 
+function isLocalUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function assertHostedDeployEnv({ apiUrl, env, envFile, webUrl }) {
+  if (env.REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV === "1") return;
+
+  const appSlug = String(env.GITHUB_APP_SLUG ?? "");
+  const localValues = [
+    ["REVIEW_ROUTER_WEB_URL", webUrl],
+    ["REVIEW_ROUTER_API_URL", apiUrl],
+    ["NEXTAUTH_URL", env.NEXTAUTH_URL],
+  ].filter(([, value]) => isLocalUrl(value));
+
+  const issues = [];
+  if (path.basename(envFile) === ".env.local") {
+    issues.push("deployment env file is .env.local");
+  }
+  for (const [key, value] of localValues) {
+    issues.push(`${key} points to ${value}`);
+  }
+  if (appSlug.toLowerCase().includes("local")) {
+    issues.push(`GITHUB_APP_SLUG looks local: ${appSlug}`);
+  }
+
+  if (issues.length > 0) {
+    throw new Error(
+      [
+        "Refusing hosted Render deploy with local-looking configuration.",
+        ...issues.map((issue) => `- ${issue}`),
+        "Use REVIEW_ROUTER_RENDER_ENV_FILE=.env.production or set REVIEW_ROUTER_ALLOW_LOCAL_DEPLOY_ENV=1 only for an intentional staging deploy.",
+      ].join("\n"),
+    );
+  }
+}
+
 function asEnvVars(values) {
   return Object.entries(values).map(([key, value]) => ({
     key,
@@ -266,7 +308,7 @@ async function triggerDeploy(client, service) {
   });
 }
 
-const envFile = process.env.REVIEW_ROUTER_RENDER_ENV_FILE ?? ".env.local";
+const envFile = process.env.REVIEW_ROUTER_RENDER_ENV_FILE ?? ".env.production";
 const env = { ...readOptionalDotenv(envFile), ...process.env };
 const ownerId = requiredEnv("RENDER_OWNER_ID", env);
 const environmentId = requiredEnv("RENDER_ENVIRONMENT_ID", env);
@@ -274,6 +316,7 @@ const repo = requiredEnv("RENDER_REPO", env);
 const branch = env.RENDER_BRANCH ?? "main";
 const webUrl = env.REVIEW_ROUTER_WEB_URL ?? "https://reviewrouter.site";
 const apiUrl = env.REVIEW_ROUTER_API_URL ?? "https://api.reviewrouter.site";
+assertHostedDeployEnv({ apiUrl, env, envFile, webUrl });
 const privateKey = readGithubPrivateKey(env);
 const client = new RenderClient(readRenderApiKey());
 
