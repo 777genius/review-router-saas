@@ -1502,8 +1502,12 @@ function DashboardSectionHeader({
           ) : null}
           {selectedSection === "repositories" ? (
             <p className="mt-3 text-sm leading-6 text-slate-400">
-              Next: create or update the setup PR, merge it, then seed provider
-              secrets from Setup.
+              Next: create or update the setup PR, merge it, then use
+              <span className="text-[var(--rr-foreground)]">
+                {" "}
+                Show provider command{" "}
+              </span>
+              on that repository.
             </p>
           ) : null}
         </div>
