@@ -268,7 +268,7 @@ try {
   const syncDashboardHtml = await syncDashboardResponse.text();
   assertIncludes(
     syncDashboardHtml,
-    "Refresh in a few seconds",
+    "Reload in a few seconds",
     "dashboard sync notice should give customer-facing next steps",
   );
   assertNotIncludes(

@@ -156,7 +156,7 @@ assertNotIncludes(
 const syncDashboardNotice = await fetchHtml("/dashboard?notice=sync_requested");
 assertIncludes(
   syncDashboardNotice.html,
-  "Refresh in a few seconds",
+  "Reload in a few seconds",
   "dashboard sync notice should give customer-facing next steps",
 );
 assertNotIncludes(
