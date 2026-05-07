@@ -3,7 +3,11 @@ import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { LogoMark } from "./logo-mark";
 import { PrimaryNav } from "./primary-nav";
 import "./globals.css";
-import { reviewRouterWebUrl } from "./public-urls";
+import {
+  reviewRouterContactEmail,
+  reviewRouterContactMailto,
+  reviewRouterWebUrl,
+} from "./public-urls";
 
 export const metadata: Metadata = {
   metadataBase: new URL(reviewRouterWebUrl),
@@ -91,6 +95,12 @@ export default function RootLayout({
               by default.
             </p>
             <div className="flex flex-wrap gap-2">
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href={reviewRouterContactMailto}
+              >
+                {reviewRouterContactEmail}
+              </a>
               <a
                 className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
                 href="/support"

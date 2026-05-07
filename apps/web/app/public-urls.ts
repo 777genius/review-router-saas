@@ -1,5 +1,6 @@
 const hostedApiUrl = "https://api.reviewrouter.site";
 const hostedWebUrl = "https://reviewrouter.site";
+const contactEmail = "quantjumppro@gmail.com";
 
 export const reviewRouterWebUrl = (
   process.env.REVIEW_ROUTER_PUBLIC_WEB_URL ??
@@ -15,3 +16,5 @@ export const reviewRouterApiUrl = (
 ).replace(/\/+$/, "");
 
 export const reviewRouterApiDemoUrl = `${reviewRouterApiUrl}/docs`;
+export const reviewRouterContactEmail = contactEmail;
+export const reviewRouterContactMailto = `mailto:${contactEmail}`;

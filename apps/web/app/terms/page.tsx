@@ -1,4 +1,5 @@
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
+import { reviewRouterContactEmail } from "../public-urls";
 
 const responsibilities = [
   "Install the GitHub App only on repositories you are authorized to manage.",
@@ -10,7 +11,7 @@ const responsibilities = [
 const limitations = [
   "AI review output can be incomplete or wrong and must not replace human code ownership.",
   "Critical findings can intentionally fail CI depending on repository policy.",
-  "Trusted beta support is best-effort and not an uptime or incident-response SLA.",
+  `Trusted beta support is best-effort through ${reviewRouterContactEmail} and is not an uptime or incident-response SLA.`,
   "Public pricing, paid plans, enterprise terms, and managed cloud review are outside the local beta scope.",
 ] as const;
 

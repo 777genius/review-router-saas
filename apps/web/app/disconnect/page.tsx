@@ -1,4 +1,8 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import {
+  reviewRouterContactEmail,
+  reviewRouterContactMailto,
+} from "../public-urls";
 
 const uninstallPath =
   "GitHub -> Settings -> Applications -> Installed GitHub Apps -> ReviewRouter -> Configure -> Uninstall";
@@ -23,7 +27,7 @@ const disconnectSteps = [
   },
   {
     title: "Request workspace metadata deletion",
-    body: "For trusted beta, request deletion through the support path. Production should replace this with an owner self-service deletion flow and a published retention window.",
+    body: `For trusted beta, request deletion through ${reviewRouterContactEmail}. Production should replace this with an owner self-service deletion flow and a published retention window.`,
   },
 ] as const;
 
@@ -42,6 +46,9 @@ export default function DisconnectPage(): React.ReactElement {
             workflow files and Actions secrets.
           </p>
           <div className="flex flex-wrap gap-3">
+            <LinkButton href={reviewRouterContactMailto}>
+              Email support
+            </LinkButton>
             <LinkButton href="/support">Support</LinkButton>
             <LinkButton href="/privacy" variant="soft" tone="success">
               Privacy

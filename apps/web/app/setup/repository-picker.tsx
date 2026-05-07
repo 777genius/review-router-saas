@@ -21,6 +21,7 @@ export type RepositoryPickerProps = {
   readonly workspaceId: string;
   readonly installationId: string;
   readonly setupAction: string;
+  readonly initialQuery?: string;
   readonly mutationsEnabled: boolean;
   readonly repositories: readonly SetupRepository[];
 };
@@ -29,10 +30,11 @@ export function RepositoryPicker({
   workspaceId,
   installationId,
   setupAction,
+  initialQuery = "",
   mutationsEnabled,
   repositories,
 }: RepositoryPickerProps): React.ReactElement {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredRepositories = useMemo(
     () =>

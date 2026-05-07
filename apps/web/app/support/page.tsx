@@ -1,6 +1,11 @@
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import {
+  reviewRouterContactEmail,
+  reviewRouterContactMailto,
+} from "../public-urls";
 
-const safeReport = `Repository: owner/repo
+const safeReport = `To: ${reviewRouterContactEmail}
+Repository: owner/repo
 Pull request: https://github.com/owner/repo/pull/123
 Workflow run: https://github.com/owner/repo/actions/runs/123456
 ReviewRouter action ref: 777genius/review-router@main
@@ -25,7 +30,7 @@ const supportSteps = [
   },
   {
     title: "Escalate security privately",
-    body: "If a report could involve leaked credentials, tenant isolation, or workflow secret exposure, do not open a public issue. Use the private beta support channel agreed with the maintainer until the production security contact is published.",
+    body: `If a report could involve leaked credentials, tenant isolation, or workflow secret exposure, do not open a public issue. Email ${reviewRouterContactEmail} with links and safe error categories first.`,
   },
 ] as const;
 
@@ -41,9 +46,18 @@ export default function SupportPage(): React.ReactElement {
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
             ReviewRouter support should be able to diagnose installation,
             workflow, provider, and health problems without seeing customer
-            code, diffs, or provider credentials.
+            code, diffs, or provider credentials. Contact:{" "}
+            <a
+              href={reviewRouterContactMailto}
+              className="font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+            >
+              {reviewRouterContactEmail}
+            </a>
           </p>
           <div className="flex flex-wrap gap-3">
+            <LinkButton href={reviewRouterContactMailto}>
+              Email support
+            </LinkButton>
             <LinkButton href="/getting-started">Getting started</LinkButton>
             <LinkButton href="/security" variant="soft" tone="success">
               Security model
@@ -63,8 +77,15 @@ export default function SupportPage(): React.ReactElement {
             Send links and categories first.
           </h2>
           <p className="text-sm leading-6 text-slate-300">
-            For trusted beta, use the private support channel or GitHub issue
-            only after redacting anything sensitive. Start with this shape:
+            For trusted beta, email{" "}
+            <a
+              href={reviewRouterContactMailto}
+              className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+            >
+              {reviewRouterContactEmail}
+            </a>{" "}
+            first. Use GitHub issues only after redacting anything sensitive.
+            Start with this shape:
           </p>
           <CodeBlock code={safeReport} />
         </Card>

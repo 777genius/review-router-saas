@@ -1,4 +1,8 @@
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
+import {
+  reviewRouterContactEmail,
+  reviewRouterContactMailto,
+} from "../public-urls";
 
 const collectedMetadata = [
   "GitHub account login, avatar URL, and GitHub user id after sign-in",
@@ -104,8 +108,14 @@ export default function PrivacyPage(): React.ReactElement {
           <Badge tone="warning">Deletion</Badge>
           <p className="text-sm leading-6 text-slate-300">
             Uninstalling the GitHub App stops future access. Workspace metadata
-            deletion should be requested through the support path until an owner
-            self-serve deletion flow exists.
+            deletion should be requested through{" "}
+            <a
+              href={reviewRouterContactMailto}
+              className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+            >
+              {reviewRouterContactEmail}
+            </a>{" "}
+            until an owner self-serve deletion flow exists.
           </p>
         </Card>
         <Card className="space-y-3">

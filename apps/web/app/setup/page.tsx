@@ -1,4 +1,4 @@
-import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import { Badge, Card, LinkButton } from "@reviewrouter/ui";
 import { buildProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import {
   getDashboardMutationStatus,
@@ -14,6 +14,7 @@ import { GitHubSignInButton } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
+import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
 import { RepositoryPicker } from "./repository-picker";
 
 export const dynamic = "force-dynamic";
@@ -161,6 +162,7 @@ export default async function SetupPage({
           installation={installation}
           mutationsEnabled={mutationStatus.enabled}
           setupAction={setupAction}
+          syncQueued={readParam(params.notice) === "sync_requested"}
           setupRepositoryFullName={readParam(params.repository)}
         />
       ) : !installationId ? (
@@ -203,6 +205,17 @@ function SetupStartCard({
             ReviewRouter, then GitHub will send you back here to sync and create
             the setup PR.
           </p>
+          <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm leading-6 text-slate-300">
+            <p className="font-semibold text-cyan-50">
+              Choose personal account on GitHub
+            </p>
+            <p className="mt-1">
+              On the GitHub install screen, pick your username for a personal
+              repository or pick an organization for organization repositories.
+              ReviewRouter shows each install as a separate workspace after you
+              sign in.
+            </p>
+          </div>
         </div>
         <div className="flex flex-wrap gap-3 lg:justify-end">
           {appInstallUrl ? (
@@ -223,11 +236,13 @@ function SignedInSetup({
   installation,
   mutationsEnabled,
   setupAction,
+  syncQueued,
   setupRepositoryFullName,
 }: {
   readonly installation: SetupInstallation;
   readonly mutationsEnabled: boolean;
   readonly setupAction: string;
+  readonly syncQueued: boolean;
   readonly setupRepositoryFullName: string;
 }): React.ReactElement {
   const setupRepository = setupRepositoryFullName
@@ -235,7 +250,7 @@ function SignedInSetup({
         (repository) => repository.fullName === setupRepositoryFullName,
       )
     : null;
-  const providerGuidance = setupRepository
+  const codexOAuthGuidance = setupRepository
     ? buildProviderSecretSetupGuidance({
         provider: "codex_oauth",
         repoFullName: setupRepository.fullName,
@@ -246,12 +261,32 @@ function SignedInSetup({
             : null,
       })
     : null;
+  const codexApiKeyGuidance = setupRepository
+    ? buildProviderSecretSetupGuidance({
+        provider: "openai_api_key",
+        repoFullName: setupRepository.fullName,
+        organizationLogin:
+          installation.accountType === "Organization"
+            ? installation.accountLogin
+            : null,
+      })
+    : null;
+  const repositoriesSynced = installation.repositories.length > 0;
+  const selectedRepositorySetupStatus = setupRepository?.setupStatus ?? null;
 
   return (
     <div className="grid gap-6">
+      <SetupProgressTracker
+        repositoriesSynced={repositoriesSynced}
+        repositorySelected={Boolean(setupRepository)}
+        selectedRepositorySetupStatus={selectedRepositorySetupStatus}
+        syncQueued={syncQueued}
+      />
+
       <SetupStepCard
         id="sync-repositories"
         badge="Step 2"
+        status={repositoriesSynced ? "done" : syncQueued ? "current" : "todo"}
         title="Sync selected repositories"
         body={`${installation.accountLogin} is connected. Sync imports repository metadata only. ReviewRouter does not open setup PRs automatically, even when the GitHub App is installed on all repositories.`}
         primary={
@@ -284,25 +319,9 @@ function SignedInSetup({
         }
       />
 
-      <RepositorySelectionExplainer installation={installation} />
+      <CurrentInstallHint installation={installation} />
 
-      {providerGuidance && setupRepository ? (
-        <ProviderSecretSetupCard
-          repositoryFullName={setupRepository.fullName}
-          guidance={providerGuidance}
-        />
-      ) : (
-        <SetupStepCard
-          badge="Step 3"
-          title="Connect Codex after choosing a repository"
-          body="After you create and merge a setup PR, this page will show the exact Codex OAuth command for that repository. The command writes CODEX_AUTH_JSON directly to GitHub Actions secrets through gh; ReviewRouter SaaS does not receive it."
-          primary={
-            <LinkButton href="/getting-started" variant="outline">
-              Read provider setup
-            </LinkButton>
-          }
-        />
-      )}
+      <RepositorySelectionExplainer installation={installation} />
 
       <Card className="rounded-2xl p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -337,12 +356,65 @@ function SignedInSetup({
             workspaceId={installation.workspace.id}
             installationId={installation.githubInstallationId}
             setupAction={setupAction}
+            initialQuery={setupRepository?.fullName ?? ""}
             mutationsEnabled={mutationsEnabled}
             repositories={installation.repositories}
           />
         )}
       </Card>
+
+      {codexOAuthGuidance && codexApiKeyGuidance && setupRepository ? (
+        <SetupStepCard
+          badge="Step 3"
+          status="current"
+          title={`Connect provider secrets for ${setupRepository.fullName}`}
+          body="Choose how ReviewRouter should authenticate the model, then run the exact GitHub secret command. Credentials go directly to GitHub Actions secrets, not to ReviewRouter SaaS."
+          primary={null}
+        >
+          <ProviderSecretSetupChooser
+            repositoryFullName={setupRepository.fullName}
+            organizationLogin={
+              installation.accountType === "Organization"
+                ? installation.accountLogin
+                : null
+            }
+            codexOAuthGuidance={codexOAuthGuidance}
+            codexApiKeyGuidance={codexApiKeyGuidance}
+          />
+        </SetupStepCard>
+      ) : (
+        <SetupStepCard
+          badge="Step 3"
+          status="todo"
+          title="Choose a repository, then connect Codex"
+          body="Sync repositories, create the setup PR for one repository, then this step will show exact commands for Codex subscription OAuth or Codex API key mode. The commands write only to GitHub Actions secrets."
+          primary={null}
+        />
+      )}
     </div>
+  );
+}
+
+function CurrentInstallHint({
+  installation,
+}: {
+  readonly installation: SetupInstallation;
+}): React.ReactElement {
+  const personal = installation.accountType !== "Organization";
+  return (
+    <Card className="rounded-2xl border-cyan-200/15 bg-cyan-300/[0.035] p-5">
+      <Badge tone={personal ? "accent" : "success"}>
+        {personal ? "Personal account" : "Organization"}
+      </Badge>
+      <h2 className="mt-3 text-xl font-semibold text-cyan-50">
+        You are configuring {installation.accountLogin}.
+      </h2>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
+        {personal
+          ? "This is your personal GitHub account install. For personal repositories, choose your username on the GitHub App install screen. Provider credentials are stored as repository Actions secrets."
+          : "This is an organization install. For organization repositories, you can use repository secrets or one organization selected-repository secret for shared provider credentials."}
+      </p>
+    </Card>
   );
 }
 
@@ -423,99 +495,95 @@ function RepositorySelectionExplainer({
   );
 }
 
-function ProviderSecretSetupCard({
-  repositoryFullName,
-  guidance,
+type SetupStepStatus = "done" | "current" | "todo";
+
+function SetupProgressTracker({
+  repositoriesSynced,
+  repositorySelected,
+  selectedRepositorySetupStatus,
+  syncQueued,
 }: {
-  readonly repositoryFullName: string;
-  readonly guidance: ReturnType<typeof buildProviderSecretSetupGuidance>;
+  readonly repositoriesSynced: boolean;
+  readonly repositorySelected: boolean;
+  readonly selectedRepositorySetupStatus: string | null;
+  readonly syncQueued: boolean;
 }): React.ReactElement {
-  const recommendedCommand = guidance.commands[0];
+  const setupPrStatus = setupStepStatus({
+    repositoriesSynced,
+    repositorySelected,
+    selectedRepositorySetupStatus,
+  });
+  const providerSecretStatus = repositorySelected ? "current" : "todo";
+  const steps = [
+    {
+      label: "Install App",
+      body: "GitHub App is connected.",
+      status: "done" as const,
+    },
+    {
+      label: "Sync repos",
+      body: repositoriesSynced
+        ? "Repository metadata is available."
+        : syncQueued
+          ? "Sync is queued. Refresh in a few seconds."
+          : "Import selected repository metadata.",
+      status: repositoriesSynced
+        ? ("done" as const)
+        : syncQueued
+          ? ("current" as const)
+          : ("todo" as const),
+    },
+    {
+      label: "Setup PR",
+      body: setupStepBody({
+        repositoriesSynced,
+        repositorySelected,
+        selectedRepositorySetupStatus,
+      }),
+      status: setupPrStatus,
+    },
+    {
+      label: "Provider secret",
+      body: repositorySelected
+        ? "Run the command shown below."
+        : "Appears after repository selection.",
+      status: providerSecretStatus,
+    },
+  ];
 
   return (
-    <Card className="rounded-2xl border-emerald-300/20 bg-emerald-300/[0.08] p-5 sm:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Badge tone="success">Step 3 - Codex OAuth</Badge>
-          <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
-            Seed Codex for {repositoryFullName}
-          </h2>
-          <p className="mt-3 max-w-3xl text-sm leading-6 text-emerald-50">
-            Run the recommended command on a trusted machine where Codex CLI is
-            already logged in. It writes secrets directly to GitHub Actions
-            through <code>gh</code>; ReviewRouter never receives your Codex
-            OAuth file.
-          </p>
-        </div>
-        <Badge tone="success">
-          {guidance.recommendedScope.replaceAll("_", " ")}
-        </Badge>
-      </div>
-
-      {recommendedCommand ? (
-        <div className="mt-5 grid gap-3 md:grid-cols-3">
-          <SetupFact
-            label="Secret destination"
-            value={recommendedCommand.targetLabel}
-          />
-          <SetupFact
-            label="Selected repositories"
-            value={recommendedCommand.selectedRepositories.join(", ")}
-          />
-          <SetupFact
-            label="Validation"
-            value={
-              recommendedCommand.validatesBeforeWrite
-                ? "Checks Codex auth JSON before writing"
-                : "GitHub validates secret write"
-            }
-          />
-        </div>
-      ) : null}
-
-      {guidance.warnings.length > 0 ? (
-        <ul className="mt-4 list-disc space-y-1 pl-5 text-xs leading-5 text-emerald-100/90">
-          {guidance.warnings.map((warning) => (
-            <li key={warning}>{warning}</li>
-          ))}
-        </ul>
-      ) : null}
-
-      <div className="mt-5 grid gap-3">
-        {guidance.commands.map((command, index) => (
+    <Card className="rounded-2xl p-4 sm:p-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {steps.map((step, index) => (
           <div
-            key={command.title}
-            className="rounded-2xl border border-emerald-200/10 bg-slate-950/80 p-4"
+            key={step.label}
+            className={`rounded-2xl border p-4 ${
+              step.status === "done"
+                ? "border-lime-300/25 bg-lime-300/[0.07]"
+                : step.status === "current"
+                  ? "border-cyan-300/30 bg-cyan-300/[0.08]"
+                  : "border-white/10 bg-white/[0.03]"
+            }`}
           >
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={index === 0 ? "success" : "neutral"}>
-                {index === 0 ? "Recommended" : "Alternative"}
-              </Badge>
-              <h3 className="text-sm font-semibold text-emerald-50">
-                {command.title}
-              </h3>
+            <div className="flex items-center gap-2">
+              <span
+                className={`grid h-7 w-7 place-items-center rounded-full border text-xs font-bold ${
+                  step.status === "done"
+                    ? "border-lime-300/40 bg-lime-300/15 text-lime-100"
+                    : step.status === "current"
+                      ? "border-cyan-300/45 bg-cyan-300/15 text-cyan-100"
+                      : "border-white/15 bg-white/[0.04] text-slate-400"
+                }`}
+              >
+                {step.status === "done" ? "✓" : index + 1}
+              </span>
+              <p className="font-mono text-[0.66rem] font-semibold uppercase tracking-[0.16em] text-cyan-50">
+                {step.label}
+              </p>
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-400">
-              {command.description}
+            <p className="mt-3 text-xs leading-5 text-slate-400">
+              {step.body}
             </p>
-            <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 sm:grid-cols-3">
-              <span>
-                <strong className="text-emerald-100">Secrets:</strong>{" "}
-                {command.secretNames.join(", ")}
-              </span>
-              <span>
-                <strong className="text-emerald-100">Target:</strong>{" "}
-                {command.targetLabel}
-              </span>
-              <span>
-                <strong className="text-emerald-100">Recovery:</strong>{" "}
-                {command.failureRecovery}
-              </span>
-            </div>
-            <CodeBlock
-              code={command.command}
-              className="mt-3 rounded-xl p-3 text-xs leading-5"
-            />
           </div>
         ))}
       </div>
@@ -523,55 +591,85 @@ function ProviderSecretSetupCard({
   );
 }
 
-function SetupFact({
-  label,
-  value,
-}: {
-  readonly label: string;
-  readonly value: string;
-}): React.ReactElement {
-  return (
-    <div className="min-w-0 rounded-2xl border border-emerald-200/10 bg-slate-950/70 p-4">
-      <p className="font-mono text-[0.62rem] uppercase tracking-[0.16em] text-emerald-100/70">
-        {label}
-      </p>
-      <p className="mt-2 break-words text-sm font-semibold leading-6 text-emerald-50">
-        {value}
-      </p>
-    </div>
-  );
+function setupStepStatus(input: {
+  readonly repositoriesSynced: boolean;
+  readonly repositorySelected: boolean;
+  readonly selectedRepositorySetupStatus: string | null;
+}): SetupStepStatus {
+  if (input.selectedRepositorySetupStatus === "configured") return "done";
+  if (input.repositorySelected) return "current";
+  if (input.repositoriesSynced) return "current";
+  return "todo";
+}
+
+function setupStepBody(input: {
+  readonly repositoriesSynced: boolean;
+  readonly repositorySelected: boolean;
+  readonly selectedRepositorySetupStatus: string | null;
+}): string {
+  if (input.selectedRepositorySetupStatus === "configured") {
+    return "Workflow is installed.";
+  }
+  if (input.selectedRepositorySetupStatus === "setup_pr_open") {
+    return "Setup PR is open. Merge it.";
+  }
+  if (input.repositorySelected) {
+    return "Create and merge the setup PR.";
+  }
+  if (input.repositoriesSynced) {
+    return "Choose a repository and create setup PR.";
+  }
+  return "Waiting for repository sync.";
 }
 
 function SetupStepCard({
   id,
   badge,
+  status = "current",
   title,
   body,
   primary,
   secondary,
+  children,
 }: {
   readonly id?: string;
   readonly badge: string;
+  readonly status?: SetupStepStatus;
   readonly title: string;
   readonly body: string;
   readonly primary: React.ReactNode;
   readonly secondary?: React.ReactNode;
+  readonly children?: React.ReactNode;
 }): React.ReactElement {
+  const statusBadge =
+    status === "done"
+      ? { tone: "success" as const, label: "✓ Done" }
+      : status === "current"
+        ? { tone: "accent" as const, label: "Current" }
+        : { tone: "neutral" as const, label: "Waiting" };
   return (
     <Card id={id} className="scroll-mt-24 rounded-2xl p-5 sm:p-6">
       <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
         <div>
-          <Badge tone="accent">{badge}</Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={status === "done" ? "success" : "accent"}>
+              {badge}
+            </Badge>
+            <Badge tone={statusBadge.tone}>{statusBadge.label}</Badge>
+          </div>
           <h2 className="mt-4 text-2xl font-semibold text-cyan-50">{title}</h2>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
             {body}
           </p>
         </div>
-        <div className="flex flex-wrap gap-3 md:justify-end">
-          {primary}
-          {secondary}
-        </div>
+        {primary || secondary ? (
+          <div className="flex flex-wrap gap-3 md:justify-end">
+            {primary}
+            {secondary}
+          </div>
+        ) : null}
       </div>
+      {children ? <div className="mt-5">{children}</div> : null}
     </Card>
   );
 }
