@@ -2,7 +2,7 @@
 
 ## Short Privacy Copy
 
-ReviewRouter manages configuration and setup. Your code review runs inside your GitHub Actions workflow. In v1, ReviewRouter SaaS does not store your repository code, pull request diffs, Codex OAuth files, or model API keys.
+ReviewRouter manages configuration and setup. Your code review runs inside your GitHub Actions workflow. ReviewRouter SaaS does not store your repository code, pull request diffs, Codex OAuth files, prompts, or model API keys.
 
 ## Codex OAuth Copy
 

@@ -35,6 +35,7 @@ import {
   listRepositoryWorkflowProvisioning,
   PrismaWorkflowProvisioningQuery,
 } from "@reviewrouter/features-workflow-provisioning";
+import { redirect } from "next/navigation";
 import {
   findReviewConfiguration,
   PrismaReviewConfigurationRepository,
@@ -71,7 +72,6 @@ import { FormSubmitButton } from "../form-submit-button";
 import {
   GitHubSignInButton,
   GitHubSignInInlineButton,
-  GitHubSignOutButton,
 } from "../github-sign-in-button";
 import { GitHubAccountAvatar } from "../github-account-avatar";
 import { LogoMark } from "../logo-mark";
@@ -528,6 +528,10 @@ export default async function DashboardPage({
   const selectedSection = resolveDashboardSection(params);
 
   if (workspaces.length === 0) {
+    if (!appSetupNotice) {
+      redirect("/");
+    }
+
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 md:py-16">
         <DashboardNotice
@@ -570,28 +574,6 @@ export default async function DashboardPage({
               <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-500">
                 Reviews run in customer CI
               </span>
-              {mutationStatus.signedIn ? (
-                <>
-                  {mutationStatus.githubLogin ? (
-                    <GitHubAccountAvatar
-                      avatarUrl={mutationStatus.githubAvatarUrl}
-                      login={mutationStatus.githubLogin}
-                      size="sm"
-                    />
-                  ) : null}
-                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-slate-300">
-                    Signed in
-                    {mutationStatus.githubLogin
-                      ? ` as ${mutationStatus.githubLogin}`
-                      : ""}
-                  </span>
-                  <GitHubSignOutButton
-                    variant="ghost"
-                    size="sm"
-                    className="rounded-xl"
-                  />
-                </>
-              ) : null}
             </div>
             <h1 className="mt-5 max-w-3xl break-words text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-cyan-50 sm:text-4xl md:text-5xl">
               Manage repository review rollout.
@@ -624,12 +606,12 @@ export default async function DashboardPage({
               </LinkButton>
             ) : null}
             <LinkButton
-              href="/setup"
+              href="/getting-started"
               variant="ghost"
               size="md"
               className="w-full"
             >
-              Guided setup
+              Setup guide
             </LinkButton>
           </div>
         </div>
@@ -1803,7 +1785,7 @@ function RepositoryTable({
   );
 
   return (
-    <div className="overflow-hidden rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+    <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
       <div className="grid gap-4 border-b border-cyan-200/10 bg-white/[0.025] p-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] lg:items-end">
         <div>
           <Badge tone="accent">Repositories</Badge>
@@ -1962,9 +1944,9 @@ function RepositoryTable({
         )}
       </div>
 
-      <div className="hidden overflow-x-auto lg:block">
+      <div className="hidden lg:block">
         <table className="w-full min-w-[860px] text-left text-sm">
-          <thead className="bg-cyan-300/[0.08] text-xs uppercase tracking-[0.16em] text-cyan-100">
+          <thead className="sticky top-16 z-30 border-b border-cyan-200/10 bg-[#0b1824]/95 text-xs uppercase tracking-[0.16em] text-cyan-100 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
             <tr>
               <th className="px-4 py-3">Repository</th>
               <th className="px-4 py-3">Setup PR</th>

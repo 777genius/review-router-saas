@@ -9,10 +9,7 @@ import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url"
 import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { getPrisma } from "../../src/server/prisma";
 import { ActionToast } from "../action-toast";
-import {
-  GitHubSignInButton,
-  GitHubSignOutButton,
-} from "../github-sign-in-button";
+import { GitHubSignInButton } from "../github-sign-in-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 
@@ -67,8 +64,24 @@ export default async function SetupPage({
   });
   const setupHeroTitle =
     setupNotice || installationId
-      ? "Finish ReviewRouter setup."
-      : "Set up ReviewRouter.";
+      ? "Finish ReviewRouter setup"
+      : "Set up ReviewRouter";
+  const primarySetupAction = buildPrimarySetupAction({
+    appInstallReturned,
+    appInstallUrl,
+    installation,
+    installationId,
+    mutationStatusSignedIn: mutationStatus.signedIn,
+    setupAction,
+    signInCallbackUrl,
+  });
+  const secondarySetupAction = buildSecondarySetupAction({
+    appInstallReturned,
+    installation,
+    installationId,
+    mutationStatusSignedIn: mutationStatus.signedIn,
+    signInCallbackUrl,
+  });
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
@@ -83,21 +96,6 @@ export default async function SetupPage({
               Installation #{setupNotice.installationId}
             </span>
           ) : null}
-          {mutationStatus.signedIn ? (
-            <>
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-slate-300">
-                Signed in
-                {mutationStatus.githubLogin
-                  ? ` as ${mutationStatus.githubLogin}`
-                  : ""}
-              </span>
-              <GitHubSignOutButton
-                variant="ghost"
-                size="sm"
-                className="rounded-xl"
-              />
-            </>
-          ) : null}
         </div>
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <div className="min-w-0 space-y-4">
@@ -109,75 +107,8 @@ export default async function SetupPage({
             </p>
           </div>
           <div className="grid w-full gap-3 sm:flex sm:w-auto sm:flex-wrap lg:justify-end">
-            {!mutationStatus.signedIn && installationId ? (
-              <GitHubSignInButton
-                callbackUrl={signInCallbackUrl}
-                size="lg"
-                className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
-              >
-                Sign in with GitHub
-              </GitHubSignInButton>
-            ) : !mutationStatus.signedIn && appInstallUrl ? (
-              <LinkButton
-                href={appInstallUrl}
-                size="lg"
-                className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
-              >
-                Install GitHub App
-              </LinkButton>
-            ) : installation ? (
-              <LinkButton
-                href="/dashboard"
-                size="lg"
-                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
-              >
-                Open dashboard
-              </LinkButton>
-            ) : appInstallReturned ? (
-              <LinkButton
-                href={buildSetupRefreshHref({ installationId, setupAction })}
-                size="lg"
-                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
-              >
-                Refresh install status
-              </LinkButton>
-            ) : appInstallUrl ? (
-              <LinkButton
-                href={appInstallUrl}
-                size="lg"
-                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
-              >
-                Install GitHub App
-              </LinkButton>
-            ) : (
-              <LinkButton
-                href="/dashboard"
-                variant="outline"
-                size="lg"
-                className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
-              >
-                Open dashboard
-              </LinkButton>
-            )}
-            {!mutationStatus.signedIn && !installationId ? (
-              <GitHubSignInButton
-                callbackUrl={signInCallbackUrl}
-                size="lg"
-                variant="outline"
-                className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
-              >
-                Already installed? Sign in
-              </GitHubSignInButton>
-            ) : appInstallUrl && !installation && !appInstallReturned ? (
-              <LinkButton
-                href="/dashboard"
-                variant="outline"
-                size="lg"
-                className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
-              >
-                Open dashboard
-              </LinkButton>
-            ) : null}
+            {primarySetupAction}
+            {secondarySetupAction}
           </div>
         </div>
       </section>
@@ -256,6 +187,113 @@ function buildSetupHeroBody(input: {
   return "GitHub confirmed the App installation. ReviewRouter is waiting for the signed GitHub webhook, which normally arrives within a few seconds.";
 }
 
+function buildPrimarySetupAction(input: {
+  readonly appInstallReturned: boolean;
+  readonly appInstallUrl: string | null;
+  readonly installation: SetupInstallation | null;
+  readonly installationId: string;
+  readonly mutationStatusSignedIn: boolean;
+  readonly setupAction: string;
+  readonly signInCallbackUrl: string;
+}): React.ReactNode {
+  if (!input.mutationStatusSignedIn && input.installationId) {
+    return (
+      <GitHubSignInButton
+        callbackUrl={input.signInCallbackUrl}
+        size="lg"
+        className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
+      >
+        Sign in with GitHub
+      </GitHubSignInButton>
+    );
+  }
+
+  if (input.installation) {
+    return (
+      <LinkButton
+        href="/dashboard"
+        size="lg"
+        className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
+      >
+        Open dashboard
+      </LinkButton>
+    );
+  }
+
+  if (input.appInstallReturned) {
+    return (
+      <LinkButton
+        href={buildSetupRefreshHref({
+          installationId: input.installationId,
+          setupAction: input.setupAction,
+        })}
+        size="lg"
+        className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
+      >
+        Refresh install status
+      </LinkButton>
+    );
+  }
+
+  if (input.appInstallUrl) {
+    return (
+      <LinkButton
+        href={input.appInstallUrl}
+        size="lg"
+        className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
+      >
+        Install GitHub App
+      </LinkButton>
+    );
+  }
+
+  return (
+    <span className="inline-flex min-h-14 w-full items-center justify-center rounded-2xl border border-amber-300/25 bg-amber-300/[0.06] px-6 py-3 text-center font-mono text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-amber-100 sm:min-w-52 sm:w-auto">
+      Install URL not configured
+    </span>
+  );
+}
+
+function buildSecondarySetupAction(input: {
+  readonly appInstallReturned: boolean;
+  readonly installation: SetupInstallation | null;
+  readonly installationId: string;
+  readonly mutationStatusSignedIn: boolean;
+  readonly signInCallbackUrl: string;
+}): React.ReactNode {
+  if (!input.mutationStatusSignedIn && !input.installationId) {
+    return (
+      <GitHubSignInButton
+        callbackUrl={input.signInCallbackUrl}
+        size="lg"
+        variant="outline"
+        className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
+      >
+        Already installed? Sign in
+      </GitHubSignInButton>
+    );
+  }
+
+  if (
+    input.mutationStatusSignedIn &&
+    !input.installation &&
+    !input.appInstallReturned
+  ) {
+    return (
+      <LinkButton
+        href="/dashboard"
+        variant="outline"
+        size="lg"
+        className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
+      >
+        Open dashboard
+      </LinkButton>
+    );
+  }
+
+  return null;
+}
+
 function GitHubAppInstallHandoffCard({
   notice,
 }: {
@@ -291,7 +329,11 @@ function GitHubAppInstallHandoffCard({
           >
             Refresh status
           </LinkButton>
-          <LinkButton href="/dashboard" variant="outline" className="rounded-2xl">
+          <LinkButton
+            href="/dashboard"
+            variant="outline"
+            className="rounded-2xl"
+          >
             Open dashboard
           </LinkButton>
         </div>

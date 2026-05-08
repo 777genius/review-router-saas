@@ -10,7 +10,7 @@ const orgCodexCommandFragment =
 const commonTexts = ["ReviewRouter", "Dashboard", "Security", "Support"];
 
 const pages = [
-  ["/", ["AI pull request review that runs in your CI", "Install GitHub App"]],
+  ["/", ["AI code review that stays inside your CI", "Install GitHub App"]],
   [
     "/auth/signin",
     ["Sign in to ReviewRouter", "Continue with GitHub", "No secret custody"],
@@ -22,7 +22,7 @@ const pages = [
       "GitHub returned an OAuth callback error",
     ],
   ],
-  ["/dashboard", ["GitHub setup"]],
+  ["/dashboard", ["AI code review that stays inside your CI"]],
   ["/setup", ["Set up ReviewRouter", "Install GitHub App"]],
   [
     "/getting-started",
@@ -249,13 +249,13 @@ try {
   const setupPrDashboardHtml = await setupPrDashboardResponse.text();
   assertIncludes(
     setupPrDashboardHtml,
-    "Setup PR ready",
-    "dashboard setup PR notice should use a specific success title",
+    "AI code review that stays inside your CI",
+    "dashboard setup PR notice without a workspace should redirect to landing",
   );
   assertNotIncludes(
     setupPrDashboardHtml,
-    ">Done<",
-    "dashboard setup PR notice should not use a generic Done label",
+    "This page couldn",
+    "dashboard setup PR notice should not render an error page when no workspace exists",
   );
 
   const syncDashboardResponse = await fetch(
@@ -269,8 +269,8 @@ try {
   const syncDashboardHtml = await syncDashboardResponse.text();
   assertIncludes(
     syncDashboardHtml,
-    "Reload in a few seconds",
-    "dashboard sync notice should give customer-facing next steps",
+    "AI code review that stays inside your CI",
+    "dashboard sync notice without a workspace should redirect to landing",
   );
   assertNotIncludes(
     syncDashboardHtml,

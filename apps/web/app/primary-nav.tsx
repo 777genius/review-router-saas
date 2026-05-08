@@ -4,7 +4,6 @@ import { usePathname } from "next/navigation";
 
 const primaryNav = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/setup", label: "Setup" },
   { href: "/getting-started", label: "Guide" },
   { href: "/security", label: "Security" },
   { href: "/status", label: "Status" },

@@ -57,12 +57,12 @@ export default async function SignInPage({
               Continue with GitHub
             </GitHubSignInButton>
             <LinkButton
-              href="/setup"
+              href="/"
               variant="outline"
               size="lg"
               className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
             >
-              Back to setup
+              Back to home
             </LinkButton>
           </div>
         </div>

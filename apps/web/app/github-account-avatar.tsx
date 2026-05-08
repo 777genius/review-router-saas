@@ -1,13 +1,14 @@
 type GitHubAccountAvatarProps = {
   readonly avatarUrl?: string | null | undefined;
   readonly login: string;
-  readonly size?: "sm" | "md";
+  readonly size?: "sm" | "md" | "profile";
   readonly className?: string;
 };
 
 const sizeClasses = {
   sm: "h-7 w-7 rounded-xl",
   md: "h-10 w-10 rounded-2xl",
+  profile: "h-8 w-8 rounded-2xl",
 } as const;
 
 export function GitHubAccountAvatar({

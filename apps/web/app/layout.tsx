@@ -1,13 +1,16 @@
 import type { Metadata, Viewport } from "next";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import { getServerSession } from "next-auth";
 import { LogoMark } from "./logo-mark";
 import { PrimaryNav } from "./primary-nav";
+import { HeaderProfileMenu } from "./header-profile-menu";
 import "./globals.css";
 import {
   reviewRouterContactEmail,
   reviewRouterContactMailto,
   reviewRouterWebUrl,
 } from "./public-urls";
+import { authOptions } from "../src/auth/auth-options";
 
 export const metadata: Metadata = {
   metadataBase: new URL(reviewRouterWebUrl),
@@ -55,9 +58,11 @@ const jetBrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
-}: Readonly<{ children: React.ReactNode }>): React.ReactElement {
+}: Readonly<{ children: React.ReactNode }>): Promise<React.ReactElement> {
+  const profile = await loadHeaderProfile();
+
   return (
     <html
       lang="en"
@@ -83,7 +88,13 @@ export default function RootLayout({
                 </span>
               </span>
             </a>
-            <PrimaryNav />
+            <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center md:justify-end">
+              <PrimaryNav />
+              <HeaderProfileMenu
+                githubLogin={profile.githubLogin}
+                githubAvatarUrl={profile.githubAvatarUrl}
+              />
+            </div>
           </div>
         </header>
         <div id="content">{children}</div>
@@ -137,4 +148,19 @@ export default function RootLayout({
       </body>
     </html>
   );
+}
+
+async function loadHeaderProfile(): Promise<{
+  readonly githubLogin: string | null;
+  readonly githubAvatarUrl: string | null;
+}> {
+  try {
+    const session = await getServerSession(authOptions);
+    return {
+      githubLogin: session?.user?.githubLogin ?? null,
+      githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
+    };
+  } catch {
+    return { githubLogin: null, githubAvatarUrl: null };
+  }
 }
