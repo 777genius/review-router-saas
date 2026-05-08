@@ -919,7 +919,6 @@ function WorkspaceSwitcher({
 function DashboardSectionNav({
   workspace,
   repositoryCount,
-  entitlement,
   workspaceHealth,
   selectedSection,
   workspaceKey,
@@ -927,7 +926,6 @@ function DashboardSectionNav({
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repositoryCount: number;
-  readonly entitlement: DashboardWorkspaceData["entitlement"];
   readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
   readonly selectedSection: DashboardSection;
   readonly workspaceKey: string;
@@ -974,14 +972,6 @@ function DashboardSectionNav({
           <div className="mt-4 flex flex-wrap gap-2">
             <Badge tone="neutral">{repositoryCount} repos</Badge>
             <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
-            <Badge tone="accent" className="max-w-full break-words">
-              {entitlement.plan.replace("_", " ")} plan
-            </Badge>
-            {entitlement.status === "active" ? null : (
-              <Badge tone="warning" className="max-w-full break-words">
-                {entitlement.status} workspace
-              </Badge>
-            )}
           </div>
         </div>
         <DashboardSectionTabs items={items} selectedSection={selectedSection} />
@@ -1014,7 +1004,6 @@ function WorkspaceCard({
     workspace,
     repositoryCount,
     repositories,
-    entitlement,
     health,
     provisioning,
     repositoryConfigs,
@@ -1073,7 +1062,6 @@ function WorkspaceCard({
       <DashboardSectionNav
         workspace={workspace}
         repositoryCount={repositoryCount}
-        entitlement={entitlement}
         workspaceHealth={workspaceHealth}
         selectedSection={selectedSection}
         workspaceKey={workspaceKey}
