@@ -137,6 +137,26 @@ export async function requestInstallationSyncAction(
 export async function createSetupPullRequestAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await createSetupPullRequestMutation(formData);
+
+  revalidatePath("/dashboard");
+  revalidatePath("/setup");
+  redirectAfterMutation(formData, params);
+}
+
+export async function createSetupPullRequestClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await createSetupPullRequestMutation(formData);
+
+  revalidatePath("/dashboard");
+  revalidatePath("/setup");
+  return { params };
+}
+
+async function createSetupPullRequestMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   const repositoryId = readFormString(formData, "repositoryId");
   const workspaceId = readFormString(formData, "workspaceId");
@@ -251,7 +271,6 @@ export async function createSetupPullRequestAction(
         pr: pullRequest.url,
         workspace: workspaceId,
         section: "repositories",
-        q: repository.name,
       };
     }
   } catch (error) {
@@ -262,9 +281,7 @@ export async function createSetupPullRequestAction(
     };
   }
 
-  revalidatePath("/dashboard");
-  revalidatePath("/setup");
-  redirectAfterMutation(formData, params);
+  return params;
 }
 
 export async function enableOrgRulesetWorkflowAction(

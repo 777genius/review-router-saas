@@ -87,6 +87,15 @@ class FakeRequester {
         },
       };
     }
+    if (route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}") {
+      const pullNumber = Number(parameters?.pull_number ?? 10);
+      return {
+        data: {
+          html_url: `https://github.com/777genius/example/pull/${pullNumber}`,
+          number: pullNumber,
+        },
+      };
+    }
 
     throw new Error(`unexpected_route:${route}`);
   }
@@ -162,6 +171,24 @@ describe("OctokitWorkflowSetupGateway", () => {
       sha: "workflow-sha",
       content: Buffer.from(primaryWorkflow.content).toString("base64"),
     });
+  });
+
+  it("refreshes existing setup pull request title and body", async () => {
+    const requester = new FakeRequester(primaryWorkflow.content);
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await gateway.createOrUpdateSetupPullRequest(setupInput);
+
+    const patchCall = requester.calls.find(
+      (call) => call.route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+    );
+    expect(patchCall?.parameters).toMatchObject({
+      pull_number: 10,
+      title: "chore: add ReviewRouter workflow",
+    });
+    expect(String(patchCall?.parameters?.body)).toContain(
+      "compact mode keeps small caller workflows",
+    );
   });
 
   it("re-reads workflow content once when GitHub reports a write conflict", async () => {

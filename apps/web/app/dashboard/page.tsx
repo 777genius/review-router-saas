@@ -54,7 +54,6 @@ import {
 import { getPrisma } from "../../src/server/prisma";
 import {
   clearRepositoryReviewConfigAction,
-  createSetupPullRequestAction,
   requestInstallationSyncAction,
   retryOutboxEventAction,
   enableOrgRulesetWorkflowAction,
@@ -86,6 +85,7 @@ import {
   RepositoryLiveSearch,
   type RepositorySearchIndexItem,
 } from "./repository-live-search";
+import { RepositorySetupActionButton } from "./repository-setup-action-button";
 
 export const dynamic = "force-dynamic";
 
@@ -2488,25 +2488,15 @@ function RepositorySetupActionForm({
   readonly mutationsEnabled: boolean;
 }): React.ReactElement {
   return (
-    <form action={createSetupPullRequestAction} className="grid gap-2">
-      <input type="hidden" name="workspaceId" value={workspaceId} />
-      <input type="hidden" name="repositoryId" value={repositoryId} />
-      <input type="hidden" name="workflowStyle" value="reusable" />
-      <FormSubmitButton
-        variant="solid"
-        size="sm"
-        className="w-full"
-        disabled={!mutationsEnabled || !selected || archived || workflowCurrent}
-        idleLabel={
-          workflowCurrent ? "Installed" : setupPrButtonLabel(setupStatus)
-        }
-        pendingLabel={
-          setupStatus === "setup_pr_open"
-            ? "Updating setup PR..."
-            : "Creating setup PR..."
-        }
-      />
-    </form>
+    <RepositorySetupActionButton
+      workspaceId={workspaceId}
+      repositoryId={repositoryId}
+      selected={selected}
+      archived={archived}
+      setupStatus={setupStatus}
+      workflowCurrent={workflowCurrent}
+      mutationsEnabled={mutationsEnabled}
+    />
   );
 }
 
@@ -3225,12 +3215,6 @@ function workflowSetupAlreadyCurrent(status: string | undefined): boolean {
   ].includes(status ?? "");
 }
 
-function setupPrButtonLabel(setupStatus: string): string {
-  return setupStatus === "setup_pr_open"
-    ? "Update setup PR"
-    : "Create setup PR";
-}
-
 function describeRepositorySetup(
   setupStatus: string,
   healthStatus: string | undefined,
@@ -3349,6 +3333,8 @@ function dashboardErrorText(error: string): string {
       return "Too many dashboard requests for this resource. Wait a bit before retrying.";
     case "invalid_form":
       return "The submitted form is invalid. Refresh the dashboard and try again.";
+    case "dashboard_action_failed":
+      return "The dashboard could not complete this action. Refresh and try again.";
     case "server_misconfigured":
       return "Server setup is incomplete. Check GitHub App credentials and the public ReviewRouter API URL.";
     case "repository_not_selected":

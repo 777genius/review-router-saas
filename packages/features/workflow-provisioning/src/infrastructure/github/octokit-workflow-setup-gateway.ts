@@ -123,7 +123,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
   ): Promise<GitHubPullRequest> {
     const existing = await this.findOpenSetupPullRequest(input);
     if (existing) {
-      return existing;
+      return this.updateSetupPullRequestMetadata(input, existing);
     }
 
     try {
@@ -132,24 +132,10 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         {
           owner: input.owner,
           repo: input.repo,
-          title: "chore: add ReviewRouter workflow",
+          title: setupPullRequestTitle,
           head: input.setupBranch,
           base: input.baseBranch,
-          body: [
-            "This PR installs the ReviewRouter GitHub Actions workflows.",
-            "",
-            "Security defaults:",
-            "- uses pull_request, not pull_request_target",
-            "- checks out code with persist-credentials: false",
-            "- skips secret-backed review for fork pull requests by default",
-            "- uses GitHub OIDC for SaaS runtime config",
-            "- keeps provider secrets in this repository or organization Actions secrets",
-            "- compact mode keeps small caller workflows here and runs versioned ReviewRouter runtime from `777genius/review-router`",
-            "",
-            "Workflow files:",
-            "- `.github/workflows/reviewrouter.yml` - pull request review gate",
-            "- `.github/workflows/reviewrouter-interaction.yml` - `/rr` comment commands and discussion routing",
-          ].join("\n"),
+          body: setupPullRequestBody,
         },
       );
       return parsePullRequest(data);
@@ -159,10 +145,27 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       }
       const racedPullRequest = await this.findOpenSetupPullRequest(input);
       if (racedPullRequest) {
-        return racedPullRequest;
+        return this.updateSetupPullRequestMetadata(input, racedPullRequest);
       }
       throw error;
     }
+  }
+
+  private async updateSetupPullRequestMetadata(
+    input: WorkflowSetupGatewayInput,
+    pullRequest: GitHubPullRequest,
+  ): Promise<GitHubPullRequest> {
+    const { data } = await this.octokit.request(
+      "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner: input.owner,
+        repo: input.repo,
+        pull_number: pullRequest.number,
+        title: setupPullRequestTitle,
+        body: setupPullRequestBody,
+      },
+    );
+    return parsePullRequest(data);
   }
 
   private async findOpenSetupPullRequest(
@@ -185,6 +188,24 @@ type GitHubPullRequest = {
   readonly html_url: string;
   readonly number: number;
 };
+
+const setupPullRequestTitle = "chore: add ReviewRouter workflow";
+
+const setupPullRequestBody = [
+  "This PR installs the ReviewRouter GitHub Actions workflows.",
+  "",
+  "Security defaults:",
+  "- uses pull_request, not pull_request_target",
+  "- checks out code with persist-credentials: false",
+  "- skips secret-backed review for fork pull requests by default",
+  "- uses GitHub OIDC for SaaS runtime config",
+  "- keeps provider secrets in this repository or organization Actions secrets",
+  "- compact mode keeps small caller workflows here and runs versioned ReviewRouter runtime from `777genius/review-router`",
+  "",
+  "Workflow files:",
+  "- `.github/workflows/reviewrouter.yml` - pull request review gate",
+  "- `.github/workflows/reviewrouter-interaction.yml` - `/rr` comment commands and discussion routing",
+].join("\n");
 
 function parseWorkflowFile(data: unknown): {
   readonly sha: string | null;
