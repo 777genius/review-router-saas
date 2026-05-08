@@ -59,6 +59,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       setupStatus: true,
       selected: true,
       archived: true,
+      stargazersCount: true,
     },
   });
 
@@ -73,6 +74,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         repository.defaultBranch,
         repository.visibility,
         repository.setupStatus,
+        `${repository.stargazersCount} stars`,
         repository.selected ? "selected" : "not selected unselected",
         repository.archived ? "archived" : "active",
       ]

@@ -240,6 +240,7 @@ async function processInstallationSyncOutbox(): Promise<{
               defaultBranch: "main",
               visibility: "private",
               archived: false,
+              stargazersCount: 0,
             },
           ]),
           repositories: new PrismaRepositoryConnectionRepository(prisma),

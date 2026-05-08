@@ -87,6 +87,7 @@ model RepositoryConnection {
   visibility         RepositoryVisibility
   selected           Boolean               @default(true)
   archived           Boolean               @default(false)
+  stargazersCount    Int                   @default(0)
   setupStatus        RepositorySetupStatus @default(not_configured)
   lastSyncedAt       DateTime?
   createdAt          DateTime              @default(now())

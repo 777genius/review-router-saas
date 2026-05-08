@@ -8,6 +8,7 @@ export type GitHubRepositorySnapshot = {
   readonly defaultBranch: string;
   readonly visibility: RepositoryVisibility;
   readonly archived: boolean;
+  readonly stargazersCount: number;
 };
 
 export type RepositoryConnectionSummary = GitHubRepositorySnapshot & {

@@ -1852,11 +1852,16 @@ function RepositoryTable({
               ].join(" ")}
             >
               <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                <RepositoryNameLink
-                  fullName={repository.fullName}
-                  repositoryUrl={repositoryUrl}
-                  className="break-words font-medium text-cyan-50"
-                />
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <RepositoryNameLink
+                    fullName={repository.fullName}
+                    repositoryUrl={repositoryUrl}
+                    className="break-words font-medium text-cyan-50"
+                  />
+                  <RepositoryStarsBadge
+                    stargazersCount={repository.stargazersCount}
+                  />
+                </div>
                 <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                   <RepositoryVisibilityBadge
                     visibility={repository.visibility}
@@ -1997,11 +2002,16 @@ function RepositoryTable({
                   <td className="px-4 py-4 align-top">
                     <div className="grid gap-2">
                       <div className="flex items-start justify-between gap-3">
-                        <RepositoryNameLink
-                          fullName={repository.fullName}
-                          repositoryUrl={repositoryUrl}
-                          className="font-medium text-cyan-50"
-                        />
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <RepositoryNameLink
+                            fullName={repository.fullName}
+                            repositoryUrl={repositoryUrl}
+                            className="min-w-0 break-words font-medium text-cyan-50"
+                          />
+                          <RepositoryStarsBadge
+                            stargazersCount={repository.stargazersCount}
+                          />
+                        </div>
                         <RepositoryVisibilityBadge
                           visibility={repository.visibility}
                         />
@@ -2132,10 +2142,43 @@ function RepositoryNameLink({
   }
 
   return (
-    <a href={repositoryUrl} target="_blank" rel="noreferrer" className={classes}>
+    <a
+      href={repositoryUrl}
+      target="_blank"
+      rel="noreferrer"
+      className={classes}
+    >
       {fullName}
     </a>
   );
+}
+
+function RepositoryStarsBadge({
+  stargazersCount,
+}: {
+  readonly stargazersCount: number;
+}): React.ReactElement {
+  const safeCount = Math.max(0, stargazersCount);
+
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-200/20 bg-amber-200/[0.055] px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-100/90"
+      title={`${safeCount} GitHub stars`}
+      aria-label={`${safeCount} GitHub stars`}
+    >
+      <span aria-hidden="true">★</span>
+      {formatRepositoryStars(safeCount)}
+    </span>
+  );
+}
+
+function formatRepositoryStars(count: number): string {
+  if (count < 1000) return String(count);
+
+  return new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(count);
 }
 
 type DashboardInstallation = DashboardWorkspace["installations"][number];

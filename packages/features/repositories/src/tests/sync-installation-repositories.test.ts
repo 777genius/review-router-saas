@@ -62,6 +62,7 @@ describe("syncInstallationRepositories", () => {
         defaultBranch: "main",
         visibility: "public",
         archived: false,
+        stargazersCount: 42,
       } satisfies GitHubRepositorySnapshot,
     ];
     const store = new CapturingRepositoryStore();
@@ -125,5 +126,6 @@ function repositorySnapshot(
     defaultBranch: "main",
     visibility: "public",
     archived: false,
+    stargazersCount: 0,
   };
 }
