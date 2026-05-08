@@ -13,7 +13,6 @@ import {
   LinkButton,
   SelectField,
 } from "@reviewrouter/ui";
-import { Fragment } from "react";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
@@ -976,8 +975,13 @@ function DashboardSectionNav({
             <Badge tone="neutral">{repositoryCount} repos</Badge>
             <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
             <Badge tone="accent" className="max-w-full break-words">
-              {entitlement.plan.replace("_", " ")} / {entitlement.status}
+              {entitlement.plan.replace("_", " ")} plan
             </Badge>
+            {entitlement.status === "active" ? null : (
+              <Badge tone="warning" className="max-w-full break-words">
+                {entitlement.status} workspace
+              </Badge>
+            )}
           </div>
         </div>
         <DashboardSectionTabs items={items} selectedSection={selectedSection} />
@@ -1975,115 +1979,98 @@ function RepositoryTable({
                 effectiveConfig,
                 configVersion,
               }) => (
-                <Fragment key={repository.id}>
-                  <tr
-                    data-repository-row-id={repository.id}
-                    hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
-                    className={[
-                      "transition hover:bg-cyan-300/[0.035]",
-                      repository.selected ? "" : "opacity-50",
-                      repository.fullName === selectedRepositoryFullName
-                        ? "bg-cyan-300/[0.045]"
-                        : "",
-                    ].join(" ")}
-                  >
-                    <td className="px-4 py-4 align-top">
-                      <div className="grid gap-2 pr-24">
+                <tr
+                  key={repository.id}
+                  data-repository-row-id={repository.id}
+                  hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
+                  className={[
+                    "transition hover:bg-cyan-300/[0.035]",
+                    repository.selected ? "" : "opacity-50",
+                    repository.fullName === selectedRepositoryFullName
+                      ? "bg-cyan-300/[0.045]"
+                      : "",
+                  ].join(" ")}
+                >
+                  <td className="px-4 py-4 align-top">
+                    <div className="grid gap-2">
+                      <div className="flex items-start justify-between gap-3">
                         <p className="font-medium text-cyan-50">
                           {repository.fullName}
                         </p>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
-                            {repository.defaultBranch}
-                          </span>
-                          {repository.archived ? (
-                            <Badge tone="warning">Archived</Badge>
-                          ) : null}
-                        </div>
+                        <RepositoryVisibilityBadge
+                          visibility={repository.visibility}
+                        />
                       </div>
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <Badge tone={setupView.tone}>{setupView.label}</Badge>
-                      {setupView.hint ? (
-                        <span className="mt-1 block text-xs leading-5 text-slate-500">
-                          {setupView.hint}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
+                          {repository.defaultBranch}
                         </span>
-                      ) : null}
-                      {setupPullRequestUrl ? (
-                        <a
-                          className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                          href={setupPullRequestUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open setup PR
-                        </a>
-                      ) : null}
-                      {repositoryProvisioning?.errorMessage ? (
-                        <span className="mt-1 block text-xs text-red-200">
-                          {repositoryProvisioning.errorMessage.slice(0, 120)}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                      <span className="mt-2 block text-xs leading-5 text-slate-300">
-                        {healthView.summary}
-                      </span>
+                        {repository.archived ? (
+                          <Badge tone="warning">Archived</Badge>
+                        ) : null}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 align-top">
+                    <Badge tone={setupView.tone}>{setupView.label}</Badge>
+                    {setupView.hint ? (
                       <span className="mt-1 block text-xs leading-5 text-slate-500">
-                        Next: {healthView.nextAction}
+                        {setupView.hint}
                       </span>
-                      {repositoryHealth?.latestActionHealthTelemetry ? (
-                        <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
-                          Latest run:{" "}
-                          {formatActionHealthTelemetry(
-                            repositoryHealth.latestActionHealthTelemetry,
-                          )}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <div className="grid gap-2">
-                        <RepositorySetupActionForm
-                          workspaceId={workspace.id}
-                          repositoryId={repository.id}
-                          selected={repository.selected}
-                          archived={repository.archived}
-                          setupStatus={repository.setupStatus}
-                          workflowCurrent={workflowCurrent}
-                          mutationsEnabled={mutationsEnabled}
-                        />
-                        <RepositoryProviderSecretsAction
-                          workspace={workspace}
-                          repository={repository}
-                          disabled={
-                            !mutationsEnabled ||
-                            !repository.selected ||
-                            repository.archived
-                          }
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                  <tr
-                    data-repository-row-id={repository.id}
-                    hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
-                    className={[
-                      "transition hover:bg-cyan-300/[0.02]",
-                      repository.selected ? "" : "opacity-50",
-                      repository.fullName === selectedRepositoryFullName
-                        ? "bg-cyan-300/[0.045]"
-                        : "",
-                    ].join(" ")}
-                  >
-                    <td colSpan={4} className="px-4 pb-5 pt-0">
-                      <div className="flex justify-end">
-                        <div className="mb-3">
-                          <RepositoryVisibilityBadge
-                            visibility={repository.visibility}
-                          />
-                        </div>
-                      </div>
+                    ) : null}
+                    {setupPullRequestUrl ? (
+                      <a
+                        className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+                        href={setupPullRequestUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open setup PR
+                      </a>
+                    ) : null}
+                    {repositoryProvisioning?.errorMessage ? (
+                      <span className="mt-1 block text-xs text-red-200">
+                        {repositoryProvisioning.errorMessage.slice(0, 120)}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-4 align-top">
+                    <Badge tone={healthView.tone}>{healthView.label}</Badge>
+                    <span className="mt-2 block text-xs leading-5 text-slate-300">
+                      {healthView.summary}
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-500">
+                      Next: {healthView.nextAction}
+                    </span>
+                    {repositoryHealth?.latestActionHealthTelemetry ? (
+                      <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
+                        Latest run:{" "}
+                        {formatActionHealthTelemetry(
+                          repositoryHealth.latestActionHealthTelemetry,
+                        )}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-4 align-top">
+                    <div className="grid gap-2">
+                      <RepositorySetupActionForm
+                        workspaceId={workspace.id}
+                        repositoryId={repository.id}
+                        selected={repository.selected}
+                        archived={repository.archived}
+                        setupStatus={repository.setupStatus}
+                        workflowCurrent={workflowCurrent}
+                        mutationsEnabled={mutationsEnabled}
+                      />
+                      <RepositoryProviderSecretsAction
+                        workspace={workspace}
+                        repository={repository}
+                        disabled={
+                          !mutationsEnabled ||
+                          !repository.selected ||
+                          repository.archived
+                        }
+                      />
                       <RepositoryPolicyEditor
                         workspaceId={workspace.id}
                         repository={repository}
@@ -2092,9 +2079,9 @@ function RepositoryTable({
                         configVersion={configVersion}
                         mutationsEnabled={mutationsEnabled}
                       />
-                    </td>
-                  </tr>
-                </Fragment>
+                    </div>
+                  </td>
+                </tr>
               ),
             )}
           </tbody>
@@ -2522,7 +2509,7 @@ function RepositoryPolicyEditor({
   const policyMode = repositoryConfig ? "override" : "inherits workspace";
 
   return (
-    <details className="group mt-3 w-full">
+    <details className="group w-full">
       <summary className="flex w-full cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200">
         <span className="font-mono uppercase tracking-[0.14em]">
           Edit model
