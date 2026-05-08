@@ -1151,15 +1151,22 @@ function WorkspaceCard({
                       key={`${workspace.id}-${installation.githubInstallationId}`}
                       className="grid gap-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4"
                     >
-                      <div>
-                        <p className="text-sm font-semibold text-cyan-50">
-                          {installation.accountLogin}
-                        </p>
-                        <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                          {formatAccountTypeLabel(installation.accountType)} /{" "}
-                          {installation.status} /{" "}
-                          {installation.repositorySelection}
-                        </p>
+                      <div className="flex min-w-0 items-center gap-3">
+                        <GitHubAccountAvatar
+                          avatarUrl={installation.accountAvatarUrl}
+                          login={installation.accountLogin}
+                          size="sm"
+                        />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-cyan-50">
+                            {installation.accountLogin}
+                          </p>
+                          <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                            {formatAccountTypeLabel(installation.accountType)} /{" "}
+                            {installation.status} /{" "}
+                            {installation.repositorySelection}
+                          </p>
+                        </div>
                       </div>
                       {installation.accountType === "Organization" ? (
                         <div className="rounded-xl border border-cyan-200/10 bg-slate-950/55 p-3">
