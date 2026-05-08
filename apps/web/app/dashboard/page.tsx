@@ -1612,11 +1612,13 @@ function DashboardSectionHeader({
                 value={workspaceHealth.needsSetup}
                 tone="warning"
               />
-              <ReadinessInlineStat
-                label="Need attention"
-                value={workspaceHealth.needsAttention}
-                tone="danger"
-              />
+              {workspaceHealth.needsAttention > 0 ? (
+                <ReadinessInlineStat
+                  label="Need attention"
+                  value={workspaceHealth.needsAttention}
+                  tone="danger"
+                />
+              ) : null}
             </div>
           ) : null}
           {selectedSection === "repositories" ? (
@@ -1740,6 +1742,7 @@ function RepositoryTable({
     const repositoryConfig = repositoryConfigById.get(repository.id) ?? null;
     const effectiveConfig = repositoryConfig?.config ?? activeConfig;
     const configVersion = repositoryConfig?.version ?? activeConfigVersion;
+    const repositoryUrl = githubRepositoryUrl(repository.fullName);
 
     const searchableText = [
       repository.fullName,
@@ -1768,6 +1771,7 @@ function RepositoryTable({
       repositoryConfig,
       effectiveConfig,
       configVersion,
+      repositoryUrl,
       searchableText,
     };
   });
@@ -1826,6 +1830,7 @@ function RepositoryTable({
             repositoryConfig,
             effectiveConfig,
             configVersion,
+            repositoryUrl,
           }) => (
             <div
               key={repository.id}
@@ -1840,9 +1845,11 @@ function RepositoryTable({
               ].join(" ")}
             >
               <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                <p className="break-words font-medium text-cyan-50">
-                  {repository.fullName}
-                </p>
+                <RepositoryNameLink
+                  fullName={repository.fullName}
+                  repositoryUrl={repositoryUrl}
+                  className="break-words font-medium text-cyan-50"
+                />
                 <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                   <RepositoryVisibilityBadge
                     visibility={repository.visibility}
@@ -1966,6 +1973,7 @@ function RepositoryTable({
                 repositoryConfig,
                 effectiveConfig,
                 configVersion,
+                repositoryUrl,
               }) => (
                 <tr
                   key={repository.id}
@@ -1982,9 +1990,11 @@ function RepositoryTable({
                   <td className="px-4 py-4 align-top">
                     <div className="grid gap-2">
                       <div className="flex items-start justify-between gap-3">
-                        <p className="font-medium text-cyan-50">
-                          {repository.fullName}
-                        </p>
+                        <RepositoryNameLink
+                          fullName={repository.fullName}
+                          repositoryUrl={repositoryUrl}
+                          className="font-medium text-cyan-50"
+                        />
                         <RepositoryVisibilityBadge
                           visibility={repository.visibility}
                         />
@@ -2081,6 +2091,44 @@ function RepositoryTable({
 
 function tokenizeRepositorySearch(query: string): string[] {
   return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function githubRepositoryUrl(fullName: string): string | null {
+  const parts = fullName.split("/");
+  if (parts.length !== 2) return null;
+  const [owner, repo] = parts;
+  if (!owner || !repo) return null;
+
+  return safeGitHubDashboardLink(
+    `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+  );
+}
+
+function RepositoryNameLink({
+  fullName,
+  repositoryUrl,
+  className,
+}: {
+  readonly fullName: string;
+  readonly repositoryUrl: string | null;
+  readonly className: string;
+}): React.ReactElement {
+  const classes = [
+    className,
+    repositoryUrl
+      ? "transition hover:text-cyan-100 hover:underline hover:decoration-cyan-300/50 hover:underline-offset-4"
+      : "",
+  ].join(" ");
+
+  if (!repositoryUrl) {
+    return <p className={classes}>{fullName}</p>;
+  }
+
+  return (
+    <a href={repositoryUrl} target="_blank" rel="noreferrer" className={classes}>
+      {fullName}
+    </a>
+  );
 }
 
 type DashboardInstallation = DashboardWorkspace["installations"][number];
