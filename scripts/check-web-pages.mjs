@@ -41,11 +41,11 @@ const pages = [
   ["/disconnect", ["Disconnect"]],
   ["/privacy", ["Privacy"]],
   ["/terms", ["Terms"]],
-  ["/status", ["Hosted demo is live", "API demo"]],
   ["/support", ["Trusted beta support"]],
 ];
 
 const redirectChecks = [
+  ["/status", "/support"],
   [
     "/install/codex",
     "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh",

@@ -1598,7 +1598,6 @@ function RepositoryTable({
               hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
               className={[
                 "grid gap-4 border-t border-cyan-200/10 px-1 py-5 first:border-t-0",
-                repository.selected ? "" : "opacity-50",
                 repository.fullName === selectedRepositoryFullName
                   ? "rounded-2xl bg-cyan-300/[0.045] px-3"
                   : "",
@@ -1716,13 +1715,27 @@ function RepositoryTable({
       </div>
 
       <div className="hidden lg:block">
-        <table className="w-full min-w-[860px] text-left text-sm">
-          <thead className="sticky top-16 z-30 border-b border-cyan-200/10 bg-[#0b1824]/95 text-xs uppercase tracking-[0.16em] text-cyan-100 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+        <table className="w-full table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[47%]" />
+            <col className="w-[13%]" />
+            <col className="w-[17%]" />
+            <col className="w-[23%]" />
+          </colgroup>
+          <thead className="border-b border-cyan-200/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
             <tr>
-              <th className="px-4 py-3">Repository</th>
-              <th className="px-4 py-3">Setup PR</th>
-              <th className="px-4 py-3">Runtime health</th>
-              <th className="px-4 py-3">Action</th>
+              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                Repository
+              </th>
+              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                Setup PR
+              </th>
+              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                Runtime health
+              </th>
+              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+                Action
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-cyan-200/10 text-slate-200">
@@ -1746,7 +1759,6 @@ function RepositoryTable({
                   hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
                   className={[
                     "transition hover:bg-cyan-300/[0.035]",
-                    repository.selected ? "" : "opacity-50",
                     repository.fullName === selectedRepositoryFullName
                       ? "bg-cyan-300/[0.045]"
                       : "",

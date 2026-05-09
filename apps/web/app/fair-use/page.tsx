@@ -41,9 +41,6 @@ export default function FairUsePage(): React.ReactElement {
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/terms">Terms</LinkButton>
-            <LinkButton href="/status" variant="outline">
-              Status
-            </LinkButton>
             <LinkButton href="/support" variant="ghost">
               Support
             </LinkButton>

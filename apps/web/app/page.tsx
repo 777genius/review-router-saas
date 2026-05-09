@@ -1,4 +1,9 @@
 import { Badge, LinkButton } from "@reviewrouter/ui";
+import {
+  getDashboardMutationStatus,
+  getDashboardWorkspaceScope,
+} from "../src/server/dashboard-mutations";
+import { countConnectedGitHubInstallations } from "../src/server/connected-installations";
 import { getGitHubAppInstallUrl } from "../src/server/github-app-install-url";
 
 const setupSteps = [
@@ -27,8 +32,22 @@ const supportBadges = [
   "Organizations",
 ] as const;
 
-export default function HomePage(): React.ReactElement {
+export default async function HomePage(): Promise<React.ReactElement> {
   const appInstallUrl = getGitHubAppInstallUrl();
+  const [mutationStatus, workspaceScope] = await Promise.all([
+    getDashboardMutationStatus(),
+    getDashboardWorkspaceScope(),
+  ]);
+  const connectedInstallations = mutationStatus.signedIn
+    ? await countConnectedGitHubInstallations(workspaceScope)
+    : 0;
+  const hasConnectedApp = connectedInstallations > 0;
+  const primaryHref = hasConnectedApp ? "/dashboard" : (appInstallUrl ?? "/setup");
+  const primaryLabel = hasConnectedApp ? "Open dashboard" : "Install GitHub App";
+  const secondaryHref =
+    hasConnectedApp && appInstallUrl ? appInstallUrl : "/getting-started";
+  const secondaryLabel =
+    hasConnectedApp && appInstallUrl ? "Manage App access" : "See setup steps";
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 md:py-10">
@@ -47,19 +66,19 @@ export default function HomePage(): React.ReactElement {
 
           <div className="mt-7 grid w-full max-w-xl gap-3 sm:flex sm:justify-center">
             <LinkButton
-              href={appInstallUrl ?? "/setup"}
+              href={primaryHref}
               size="lg"
               className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
             >
-              Install GitHub App
+              {primaryLabel}
             </LinkButton>
             <LinkButton
-              href="/getting-started"
+              href={secondaryHref}
               variant="outline"
               size="lg"
               className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
             >
-              See setup steps
+              {secondaryLabel}
             </LinkButton>
           </div>
 

@@ -6,7 +6,6 @@ const signedInPrimaryNav = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/getting-started", label: "Guide" },
   { href: "/security", label: "Security" },
-  { href: "/status", label: "Status" },
 ] as const;
 
 const signedOutPrimaryNav = signedInPrimaryNav.filter(

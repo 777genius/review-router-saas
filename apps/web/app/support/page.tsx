@@ -65,9 +65,6 @@ export default function SupportPage(): React.ReactElement {
             <LinkButton href="/dashboard" variant="outline">
               Dashboard
             </LinkButton>
-            <LinkButton href="/status" variant="ghost">
-              Status
-            </LinkButton>
           </div>
         </div>
 
