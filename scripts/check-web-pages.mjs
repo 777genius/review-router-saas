@@ -23,7 +23,7 @@ const pages = [
     ],
   ],
   ["/dashboard", ["AI code review that stays inside your CI"]],
-  ["/setup", ["Set up ReviewRouter", "Install GitHub App"]],
+  ["/setup", ["Set up ReviewRouter", "Already installed? Sign in"]],
   [
     "/getting-started",
     [
