@@ -39,7 +39,9 @@ describe("platform config", () => {
     } as NodeJS.ProcessEnv);
 
     expect(env.REVIEW_ROUTER_ACTION_VERSION).toBe("v1");
-    expect(resolveReviewRouterActionRef(env)).toBe("777genius/review-router@v1");
+    expect(resolveReviewRouterActionRef(env)).toBe(
+      "777genius/review-router@v1",
+    );
   });
 
   it("requires explicit workflow provisioning enablement and lets disable win", () => {

@@ -447,7 +447,9 @@ function workspaceAvatarUrl(
   );
 }
 
-function githubAvatarUrlForLogin(login: string | null | undefined): string | null {
+function githubAvatarUrlForLogin(
+  login: string | null | undefined,
+): string | null {
   if (!login || !/^[A-Za-z0-9-]+$/.test(login)) {
     return null;
   }
@@ -2032,7 +2034,7 @@ function RepositoryProviderSecretsAction({
       triggerLabel="Enable review"
       triggerVariant="outline"
       triggerSize="sm"
-                  triggerClassName="w-full min-w-0 px-3 sm:w-auto sm:min-w-[9rem] sm:px-5"
+      triggerClassName="w-full min-w-0 px-3 sm:w-auto sm:min-w-[9rem] sm:px-5"
     />
   );
 }
@@ -2497,9 +2499,7 @@ function RepositoryPolicyEditor({
 
   return (
     <details className="group w-full">
-      <summary
-        className="flex w-full cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 [&::-webkit-details-marker]:hidden"
-      >
+      <summary className="flex w-full cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 [&::-webkit-details-marker]:hidden">
         <span className="font-mono uppercase tracking-[0.14em]">
           Edit model
         </span>

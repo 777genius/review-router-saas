@@ -69,7 +69,6 @@ describe("seed-codex-auth.sh", () => {
     expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
   });
 
-
   it("fails before secret writes when auth.json is not ChatGPT OAuth", async () => {
     const fixture = await createFixture({
       authJson: { auth_mode: "api_key", tokens: { refresh_token: "bad" } },
@@ -213,7 +212,10 @@ async function createFixture(input?: {
       JSON.stringify(authJson),
     );
   } else {
-    await writeFile(path.join(codexHome, "auth.json"), JSON.stringify(authJson));
+    await writeFile(
+      path.join(codexHome, "auth.json"),
+      JSON.stringify(authJson),
+    );
   }
 
   const ghPath = path.join(binDir, "gh");

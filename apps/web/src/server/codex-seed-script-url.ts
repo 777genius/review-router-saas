@@ -45,9 +45,7 @@ function normalizeWebUrl(value: string): string {
 function isLocalWebUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
-    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
-      parsed.hostname,
-    );
+    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname);
   } catch {
     return false;
   }

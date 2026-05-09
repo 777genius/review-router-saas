@@ -43,8 +43,12 @@ export default async function HomePage(): Promise<React.ReactElement> {
     ? await countConnectedGitHubInstallations(workspaceScope)
     : 0;
   const hasConnectedApp = connectedInstallations > 0;
-  const primaryHref = hasConnectedApp ? "/dashboard" : (appInstallUrl ?? "/setup");
-  const primaryLabel = hasConnectedApp ? "Open dashboard" : "Install GitHub App";
+  const primaryHref = hasConnectedApp
+    ? "/dashboard"
+    : (appInstallUrl ?? "/setup");
+  const primaryLabel = hasConnectedApp
+    ? "Open dashboard"
+    : "Install GitHub App";
   const secondaryHref =
     hasConnectedApp && appInstallUrl ? appInstallUrl : "/getting-started";
   const secondaryLabel =

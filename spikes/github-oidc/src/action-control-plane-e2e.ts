@@ -31,10 +31,12 @@ class StaticOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
   }
 }
 
-const targetRepo = requireEnv(
-  "REVIEW_ROUTER_TARGET_REPO",
-  "Use a fresh disposable repository, for example owner/reviewrouter-action-control-plane-e2e-<timestamp>.",
-);
+const targetRepo =
+  process.env.REVIEW_ROUTER_TARGET_REPO?.trim() ??
+  "reviewrouter-ci-e2e/action-control-plane-fixture";
+if (!targetRepo.includes("/")) {
+  throw new Error("REVIEW_ROUTER_TARGET_REPO must be owner/repo");
+}
 const actionSessionSecret =
   process.env.REVIEW_ROUTER_ACTION_SESSION_SECRET ?? process.env.AUTH_SECRET;
 if (!actionSessionSecret) {
@@ -299,12 +301,4 @@ async function ensureRepositoryFixture() {
       owner: true,
     },
   });
-}
-
-function requireEnv(name: string, hint: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`${name} is required. ${hint}`);
-  }
-  return value;
 }

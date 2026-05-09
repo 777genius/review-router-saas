@@ -180,7 +180,8 @@ describe("OctokitWorkflowSetupGateway", () => {
     await gateway.createOrUpdateSetupPullRequest(setupInput);
 
     const patchCall = requester.calls.find(
-      (call) => call.route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      (call) =>
+        call.route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
     );
     expect(patchCall?.parameters).toMatchObject({
       pull_number: 10,
