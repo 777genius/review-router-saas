@@ -89,7 +89,7 @@ export default async function RootLayout({
               </span>
             </a>
             <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center md:justify-end">
-              <PrimaryNav />
+              <PrimaryNav signedIn={profile.signedIn} />
               <HeaderProfileMenu
                 githubLogin={profile.githubLogin}
                 githubAvatarUrl={profile.githubAvatarUrl}
@@ -151,16 +151,18 @@ export default async function RootLayout({
 }
 
 async function loadHeaderProfile(): Promise<{
+  readonly signedIn: boolean;
   readonly githubLogin: string | null;
   readonly githubAvatarUrl: string | null;
 }> {
   try {
     const session = await getServerSession(authOptions);
     return {
+      signedIn: Boolean(session?.user),
       githubLogin: session?.user?.githubLogin ?? null,
       githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
     };
   } catch {
-    return { githubLogin: null, githubAvatarUrl: null };
+    return { signedIn: false, githubLogin: null, githubAvatarUrl: null };
   }
 }

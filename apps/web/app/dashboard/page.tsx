@@ -1,7 +1,6 @@
 import {
   Badge,
   Button,
-  Card,
   DialogBackdrop,
   DialogClose,
   DialogDescription,
@@ -61,7 +60,6 @@ import {
   saveWorkspaceReviewConfigAction,
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
-import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 import {
   describeRepositoryHealth,
@@ -69,10 +67,6 @@ import {
 } from "../../src/server/repository-health-view";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
 import { FormSubmitButton } from "../form-submit-button";
-import {
-  GitHubSignInButton,
-  GitHubSignInInlineButton,
-} from "../github-sign-in-button";
 import { GitHubAccountAvatar } from "../github-account-avatar";
 import { LogoMark } from "../logo-mark";
 import { ActionToast } from "../action-toast";
@@ -501,15 +495,16 @@ export default async function DashboardPage({
   searchParams,
 }: DashboardPageProps): Promise<React.ReactElement> {
   const params = searchParams ? await searchParams : {};
+  const appInstallCallbackRedirect =
+    buildDashboardAppInstallCallbackRedirect(params);
+  if (appInstallCallbackRedirect) {
+    redirect(appInstallCallbackRedirect);
+  }
+
   const [mutationStatus, workspaceScope] = await Promise.all([
     getDashboardMutationStatus(),
     getDashboardWorkspaceScope(),
   ]);
-  const appSetupNotice = buildGitHubAppSetupNotice({
-    installationId: readParam(params.installation_id),
-    setupAction: readParam(params.setup_action),
-    signedIn: mutationStatus.signedIn,
-  });
 
   const supportAudit =
     workspaceScope.kind === "all" &&
@@ -524,31 +519,10 @@ export default async function DashboardPage({
     await loadDashboardData(workspaceScope, supportAudit),
   );
   const appInstallUrl = getGitHubAppInstallUrl();
-  const dashboardSignInCallbackUrl = buildDashboardSignInCallbackUrl(params);
   const selectedSection = resolveDashboardSection(params);
 
   if (workspaces.length === 0) {
-    if (!appSetupNotice) {
-      redirect("/");
-    }
-
-    return (
-      <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-10 sm:px-6 md:py-16">
-        <DashboardNotice
-          params={params}
-          mutationStatus={mutationStatus}
-          showReadOnlyHint={false}
-          appSetupNotice={appSetupNotice}
-          signInCallbackUrl={dashboardSignInCallbackUrl}
-        />
-        <OnboardingDashboard
-          appSetupActive={Boolean(appSetupNotice)}
-          appInstallUrl={appInstallUrl}
-          signedIn={mutationStatus.signedIn}
-          signInCallbackUrl={dashboardSignInCallbackUrl}
-        />
-      </main>
-    );
+    redirect("/");
   }
 
   const selectedWorkspace = selectDashboardWorkspace(
@@ -642,209 +616,6 @@ export default async function DashboardPage({
         />
       </section>
     </main>
-  );
-}
-
-function OnboardingDashboard({
-  appSetupActive,
-  appInstallUrl,
-  signedIn,
-  signInCallbackUrl,
-}: {
-  readonly appSetupActive: boolean;
-  readonly appInstallUrl: string | null;
-  readonly signedIn: boolean;
-  readonly signInCallbackUrl: string;
-}): React.ReactElement {
-  const primaryAction =
-    appSetupActive && !signedIn
-      ? { kind: "sign-in" as const, label: "Sign in to finish setup" }
-      : appInstallUrl
-        ? {
-            kind: "link" as const,
-            href: appInstallUrl,
-            label: "Install GitHub App",
-          }
-        : { kind: "sign-in" as const, label: "Sign in with GitHub" };
-  const secondaryAction =
-    appSetupActive || signedIn
-      ? {
-          kind: "link" as const,
-          href: "/getting-started",
-          label: "Setup guide",
-        }
-      : { kind: "sign-in" as const, label: "Already installed? Sign in" };
-  const onboardingSteps = appSetupActive
-    ? signedIn
-      ? [
-          [
-            "1",
-            "Open dashboard",
-            "Choose the workspace that GitHub just connected.",
-          ],
-          [
-            "2",
-            "Create setup PR",
-            "ReviewRouter opens a workflow PR in the selected repo.",
-          ],
-          [
-            "3",
-            "Connect provider",
-            "Codex or API keys stay in GitHub Actions secrets.",
-          ],
-        ]
-      : [
-          ["1", "Sign in", "Authorize dashboard access for this GitHub user."],
-          [
-            "2",
-            "Open dashboard",
-            "ReviewRouter maps the installation to your workspace.",
-          ],
-          [
-            "3",
-            "Create setup PR",
-            "Pick one repository and add the review workflow.",
-          ],
-        ]
-    : [
-        [
-          "1",
-          "Install App",
-          "Choose the personal account or organization and selected repos.",
-        ],
-        [
-          "2",
-          "Sign in",
-          "Map the GitHub App install to your ReviewRouter dashboard.",
-        ],
-        [
-          "3",
-          "Create setup PR",
-          "Add the small workflow caller to one repository.",
-        ],
-        [
-          "4",
-          "Connect provider",
-          "Run the Codex or API key command from your machine.",
-        ],
-      ];
-
-  return (
-    <section className="grid min-h-[72vh] items-center">
-      <div className="relative overflow-hidden rounded-[2.75rem]">
-        <div className="absolute -inset-6 rounded-[2.5rem] bg-[radial-gradient(circle_at_20%_20%,rgba(0,240,255,0.18),transparent_34%),radial-gradient(circle_at_80%_30%,rgba(255,0,255,0.16),transparent_30%),radial-gradient(circle_at_50%_90%,rgba(57,255,20,0.08),transparent_32%)] blur-2xl" />
-        <Card className="relative min-w-0 overflow-hidden rounded-[2rem] border-cyan-300/[0.16] bg-[#0a0a0f]/90 p-6 shadow-[0_30px_90px_rgba(0,0,0,0.55),0_0_80px_-40px_rgba(0,240,255,0.85)] sm:p-10">
-          <div className="absolute right-0 top-0 h-56 w-56 rounded-full bg-cyan-300/10 blur-3xl" />
-          <div className="relative mx-auto grid max-w-3xl justify-items-center gap-8 text-center">
-            <div className="grid justify-items-center gap-4">
-              <LogoMark size="lg" />
-              <Badge tone="accent">
-                {appSetupActive ? "Finish setup" : "GitHub setup"}
-              </Badge>
-            </div>
-
-            <div className="space-y-5">
-              <h1 className="max-w-full bg-[image:var(--rr-gradient-brand)] bg-clip-text text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-transparent [overflow-wrap:anywhere] sm:text-5xl sm:tracking-[-0.045em] md:text-7xl">
-                {appSetupActive
-                  ? "Finish ReviewRouter setup."
-                  : "Connect ReviewRouter."}
-              </h1>
-              <p className="mx-auto max-w-full text-base leading-7 text-[#a0a8c0] [overflow-wrap:anywhere] sm:max-w-2xl sm:text-lg sm:leading-8">
-                {appSetupActive
-                  ? "The GitHub App install returned successfully. Sign in to map it to your dashboard, then choose one repository."
-                  : "Start with the GitHub App install. Then sign in, choose one repository, create the setup PR, and connect Codex or an API key directly in GitHub Actions."}
-              </p>
-            </div>
-
-            <div className="grid w-full max-w-xl gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <OnboardingActionButton
-                action={primaryAction}
-                callbackUrl={signInCallbackUrl}
-                className="h-16 w-full rounded-2xl px-8 text-lg font-semibold"
-              />
-              <OnboardingActionButton
-                action={secondaryAction}
-                callbackUrl={signInCallbackUrl}
-                variant="outline"
-                className="h-16 w-full rounded-2xl px-8"
-              />
-            </div>
-
-            <div className="grid w-full gap-3 text-left sm:grid-cols-2 lg:grid-cols-4">
-              {onboardingSteps.map(([step, title, body]) => (
-                <div
-                  key={step}
-                  className="rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4"
-                >
-                  <span className="font-mono text-xs font-bold text-cyan-100">
-                    STEP {step}
-                  </span>
-                  <h2 className="mt-3 text-base font-bold text-[#e0e6ff]">
-                    {title}
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
-                    {body}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex flex-wrap justify-center gap-4 font-mono text-xs text-[#8892b0]">
-              <span className="text-cyan-100">No code custody</span>
-              <span>Runs in customer CI</span>
-              <span>Selected repositories only</span>
-            </div>
-          </div>
-        </Card>
-      </div>
-    </section>
-  );
-}
-
-type OnboardingAction =
-  | {
-      readonly kind: "link";
-      readonly href: string;
-      readonly label: string;
-    }
-  | {
-      readonly kind: "sign-in";
-      readonly label: string;
-    };
-
-function OnboardingActionButton({
-  action,
-  callbackUrl,
-  className,
-  variant,
-}: {
-  readonly action: OnboardingAction;
-  readonly callbackUrl: string;
-  readonly className: string;
-  readonly variant?: "outline";
-}): React.ReactElement {
-  if (action.kind === "sign-in") {
-    return (
-      <GitHubSignInButton
-        callbackUrl={callbackUrl}
-        size="lg"
-        variant={variant}
-        className={className}
-      >
-        {action.label}
-      </GitHubSignInButton>
-    );
-  }
-
-  return (
-    <LinkButton
-      href={action.href}
-      size="lg"
-      variant={variant}
-      className={className}
-    >
-      {action.label}
-    </LinkButton>
   );
 }
 
@@ -2949,114 +2720,28 @@ function formatProviderAuthMode(
   }
 }
 
-function DashboardNotice({
-  appSetupNotice,
-  params,
-  mutationStatus,
-  signInCallbackUrl,
-  showReadOnlyHint = true,
-}: {
-  readonly appSetupNotice?: ReturnType<typeof buildGitHubAppSetupNotice>;
-  readonly params: Record<string, string | string[] | undefined>;
-  readonly mutationStatus: Awaited<
-    ReturnType<typeof getDashboardMutationStatus>
-  >;
-  readonly signInCallbackUrl: string;
-  readonly showReadOnlyHint?: boolean;
-}): React.ReactElement | null {
-  const notice = readParam(params.notice);
-  const error = readParam(params.error);
-  if (notice) {
-    const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
-    return (
-      <Card className="rounded-[2rem] border-lime-300/25 bg-lime-300/10 p-6 shadow-[0_18px_58px_rgba(190,255,61,0.08)] sm:p-7">
-        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-          <Badge tone="success">{dashboardNoticeTitle(notice)}</Badge>
-          <p className="text-sm leading-7 text-lime-50">
-            {dashboardNoticeText(notice, readParam(params.repository))}
-            {pullRequestUrl ? (
-              <>
-                {" "}
-                <a
-                  className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                  href={pullRequestUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open pull request
-                </a>
-              </>
-            ) : null}
-          </p>
-        </div>
-      </Card>
-    );
-  }
-  if (error) {
-    return (
-      <Card className="rounded-[2rem] border-red-300/25 bg-red-300/10 p-6 shadow-[0_18px_58px_rgba(248,113,113,0.08)] sm:p-7">
-        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-          <Badge tone="danger">Action failed</Badge>
-          <p className="text-sm leading-7 text-red-50">
-            {dashboardErrorText(error)}
-          </p>
-        </div>
-      </Card>
-    );
-  }
-  if (appSetupNotice) {
-    return (
-      <Card className="rounded-[2rem] border-lime-300/25 bg-lime-300/10 p-6 shadow-[0_18px_58px_rgba(190,255,61,0.08)] sm:p-7">
-        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-          <div className="flex flex-wrap gap-2">
-            <Badge tone="success">{appSetupNotice.title}</Badge>
-            <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-3 py-1 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
-              Installation #{appSetupNotice.installationId}
-            </span>
-          </div>
-          <p className="text-sm leading-7 text-lime-50">
-            {appSetupNotice.body}
-          </p>
-        </div>
-      </Card>
-    );
-  }
-  if (!mutationStatus.enabled && showReadOnlyHint) {
-    return (
-      <Card className="rounded-[2rem] border-amber-300/25 bg-amber-300/10 p-6 shadow-[0_18px_58px_rgba(251,191,36,0.08)] sm:p-7">
-        <div className="grid gap-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-          <Badge tone="warning">Read-only dashboard</Badge>
-          <p className="text-sm leading-7 text-amber-50">
-            {mutationStatus.reason === "signed_out"
-              ? "Sign in with GitHub to request repository syncs or setup PRs."
-              : mutationStatus.reason === "auth_misconfigured"
-                ? "GitHub OAuth is not configured. Set AUTH_SECRET, GITHUB_APP_CLIENT_ID, and GITHUB_APP_CLIENT_SECRET before using the dashboard."
-                : "Dashboard mutations are disabled. Set REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS=1 and REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING=1 for local beta provisioning."}
-            {mutationStatus.reason === "signed_out" ? (
-              <>
-                {" "}
-                <GitHubSignInInlineButton
-                  className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                  callbackUrl={signInCallbackUrl}
-                >
-                  Sign in
-                </GitHubSignInInlineButton>
-              </>
-            ) : null}
-          </p>
-        </div>
-      </Card>
-    );
-  }
-
-  return null;
-}
-
 function readParam(value: string | string[] | undefined): string {
   if (Array.isArray(value)) {
     return value[0] ?? "";
   }
   return value ?? "";
+}
+
+function buildDashboardAppInstallCallbackRedirect(
+  params: Record<string, string | string[] | undefined>,
+): string | null {
+  const installationId = readParam(params.installation_id).trim();
+  if (!installationId || !/^\d+$/.test(installationId)) return null;
+
+  const setupAction = readParam(params.setup_action).trim();
+  if (setupAction && setupAction !== "install" && setupAction !== "update") {
+    return null;
+  }
+
+  const query = new URLSearchParams({ installation_id: installationId });
+  if (setupAction) query.set("setup_action", setupAction);
+
+  return `/setup?${query.toString()}`;
 }
 
 function DashboardActionToast({
@@ -3148,31 +2833,6 @@ function dashboardSectionHref(
   const query = new URLSearchParams({ section });
   if (workspaceKey) query.set("workspace", workspaceKey);
   return `/dashboard?${query.toString()}#dashboard-section-content`;
-}
-
-function buildDashboardSignInCallbackUrl(
-  params: Record<string, string | string[] | undefined>,
-): string {
-  const callbackParams = new URLSearchParams();
-  for (const key of [
-    "installation_id",
-    "setup_action",
-    "notice",
-    "error",
-    "repository",
-    "pr",
-    "workspace",
-    "section",
-    "q",
-  ]) {
-    const value = readParam(params[key]);
-    if (value) callbackParams.set(key, value);
-  }
-
-  const query = callbackParams.toString();
-  const callbackPath = query ? `/dashboard?${query}` : "/dashboard";
-
-  return callbackPath;
 }
 
 function dashboardNoticeText(notice: string, repository: string): string {

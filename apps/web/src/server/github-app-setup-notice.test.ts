@@ -11,7 +11,7 @@ describe("buildGitHubAppSetupNotice", () => {
       }),
     ).toEqual({
       title: "GitHub App installed",
-      body: "Sign in to map the installation to your dashboard workspace.",
+      body: "Sign in once so ReviewRouter can show the repositories you just installed the App on.",
       installationId: "123",
     });
   });

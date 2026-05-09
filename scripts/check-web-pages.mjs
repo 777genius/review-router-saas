@@ -7,7 +7,7 @@ const repoCodexCommandFragment =
   "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash";
 const orgCodexCommandFragment =
   "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash";
-const commonTexts = ["ReviewRouter", "Dashboard", "Security", "Support"];
+const commonTexts = ["ReviewRouter", "Security", "Support"];
 
 const pages = [
   ["/", ["AI code review that stays inside your CI", "Install GitHub App"]],
@@ -135,21 +135,29 @@ try {
     `${baseUrl}/dashboard?installation_id=123&setup_action=install`,
     { redirect: "manual" },
   );
-  if (!dashboardPostInstallResponse.ok) {
+  if (
+    ![301, 302, 303, 307, 308].includes(dashboardPostInstallResponse.status)
+  ) {
     await fail(
-      `/dashboard post-install returned HTTP ${dashboardPostInstallResponse.status}`,
+      `/dashboard post-install returned HTTP ${dashboardPostInstallResponse.status}; expected redirect to setup handoff`,
     );
   }
-  const dashboardPostInstallHtml = await dashboardPostInstallResponse.text();
+  const dashboardPostInstallLocation =
+    dashboardPostInstallResponse.headers.get("location") ?? "";
   assertIncludes(
-    dashboardPostInstallHtml,
-    "GitHub App installed",
-    "dashboard post-install should keep the App install handoff visible",
+    dashboardPostInstallLocation,
+    "/setup?",
+    "dashboard post-install should redirect to setup handoff",
   );
   assertIncludes(
-    dashboardPostInstallHtml,
-    "Sign in to finish setup",
-    "dashboard post-install should show sign-in as the next action when signed out",
+    dashboardPostInstallLocation,
+    "installation_id=123",
+    "dashboard post-install redirect should preserve installation id",
+  );
+  assertIncludes(
+    dashboardPostInstallLocation,
+    "setup_action=install",
+    "dashboard post-install redirect should preserve setup action",
   );
 
   const postInstallResponse = await fetch(

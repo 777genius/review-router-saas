@@ -27,13 +27,21 @@ describe("HeaderProfileMenu", () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Open profile menu for 777genius",
-      }),
-    );
+    const profileButton = screen.getByRole("button", {
+      name: "Open profile menu for 777genius",
+    });
+
+    expect(profileButton.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(profileButton);
 
     expect(screen.getByRole("menu", { name: "Profile menu" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Close profile menu for 777genius",
+      }),
+    ).toBeTruthy();
+    expect(profileButton.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getAllByText("777genius")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
   });

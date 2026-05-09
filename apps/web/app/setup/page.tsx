@@ -177,7 +177,7 @@ function buildSetupHeroBody(input: {
   }
 
   if (!input.signedIn) {
-    return "GitHub confirmed the App installation. Sign in once to link it to your dashboard workspace.";
+    return "GitHub confirmed the App installation. Sign in once so ReviewRouter can show the repositories you just installed the App on.";
   }
 
   if (input.installation) {

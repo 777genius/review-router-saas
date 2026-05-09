@@ -64,7 +64,7 @@ export function HeaderProfileMenu({
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Open profile menu for ${githubLogin}`}
+        aria-label={`${open ? "Close" : "Open"} profile menu for ${githubLogin}`}
         className="group inline-flex min-h-11 items-center gap-2 rounded-2xl border border-cyan-200/15 bg-white/[0.035] px-2.5 py-2 text-left transition hover:border-cyan-200/40 hover:bg-cyan-300/[0.08] hover:shadow-[0_0_28px_-18px_rgba(0,240,255,0.95)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
         onClick={() => {
           setOpen((value) => !value);
@@ -74,9 +74,7 @@ export function HeaderProfileMenu({
           {githubLogin}
         </span>
         <ProfileAvatar githubLogin={githubLogin} avatarUrl={githubAvatarUrl} />
-        <span className="text-cyan-100/70 transition group-hover:text-cyan-50">
-          {open ? "⌃" : "⌄"}
-        </span>
+        <ProfileMenuChevron open={open} />
       </button>
 
       {open ? (
@@ -107,6 +105,31 @@ export function HeaderProfileMenu({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ProfileMenuChevron({
+  open,
+}: {
+  readonly open: boolean;
+}): React.ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      fill="none"
+      className={`h-4 w-4 shrink-0 text-cyan-100/70 transition duration-150 group-hover:text-cyan-50 ${
+        open ? "rotate-180" : "rotate-0"
+      }`}
+    >
+      <path
+        d="M5 7.5 10 12.5 15 7.5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2.2"
+      />
+    </svg>
   );
 }
 

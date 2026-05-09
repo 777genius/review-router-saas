@@ -2,22 +2,31 @@
 
 import { usePathname } from "next/navigation";
 
-const primaryNav = [
+const signedInPrimaryNav = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/getting-started", label: "Guide" },
   { href: "/security", label: "Security" },
   { href: "/status", label: "Status" },
 ] as const;
 
-export function PrimaryNav(): React.ReactElement {
+const signedOutPrimaryNav = signedInPrimaryNav.filter(
+  (item) => item.href !== "/dashboard",
+);
+
+export function PrimaryNav({
+  signedIn,
+}: {
+  readonly signedIn: boolean;
+}): React.ReactElement {
   const pathname = usePathname();
+  const items = signedIn ? signedInPrimaryNav : signedOutPrimaryNav;
 
   return (
     <nav
       aria-label="Primary navigation"
       className="flex w-full min-w-0 flex-wrap gap-2 font-mono text-xs uppercase tracking-[0.14em] md:w-auto md:justify-end md:tracking-[0.16em]"
     >
-      {primaryNav.map((item) => {
+      {items.map((item) => {
         const active = isActivePath(pathname, item.href);
         return (
           <a
