@@ -806,7 +806,6 @@ function WorkspaceCard({
           <>
             <RepositoryTable
               workspace={workspace}
-              repositoryCount={repositoryCount}
               repositories={repositories}
               health={health}
               provisioning={provisioning}
@@ -1404,7 +1403,6 @@ function ReadinessInlineStat({
 
 function RepositoryTable({
   workspace,
-  repositoryCount,
   repositories,
   health,
   provisioning,
@@ -1417,7 +1415,6 @@ function RepositoryTable({
   selectedRepositoryFullName,
 }: {
   readonly workspace: DashboardWorkspace;
-  readonly repositoryCount: number;
   readonly repositories: DashboardWorkspaceData["repositories"];
   readonly health: DashboardWorkspaceData["health"];
   readonly provisioning: DashboardWorkspaceData["provisioning"];
