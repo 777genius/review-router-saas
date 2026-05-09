@@ -160,6 +160,31 @@ try {
     "dashboard post-install redirect should preserve setup action",
   );
 
+  const dashboardCleanResponse = await fetch(
+    `${baseUrl}/dashboard?workspace=777genius&section=repositories&notice=app_installed&installation_id=123`,
+    { redirect: "manual" },
+  );
+  if (![301, 302, 303, 307, 308].includes(dashboardCleanResponse.status)) {
+    await fail(
+      `/dashboard stale install query returned HTTP ${dashboardCleanResponse.status}; expected redirect to cleaned dashboard URL`,
+    );
+  }
+  const dashboardCleanLocation =
+    dashboardCleanResponse.headers.get("location") ?? "";
+  assertIncludes(
+    dashboardCleanLocation,
+    "/dashboard?",
+    "stale install query should stay on dashboard",
+  );
+  assertIncludes(
+    dashboardCleanLocation,
+    "workspace=777genius",
+    "stale install query should preserve workspace",
+  );
+  if (dashboardCleanLocation.includes("installation_id=")) {
+    await fail("stale install query should drop installation_id");
+  }
+
   const postInstallResponse = await fetch(
     `${baseUrl}/setup?installation_id=123&setup_action=install`,
   );

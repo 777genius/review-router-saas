@@ -162,7 +162,6 @@ function buildSetupDashboardRedirect(installation: SetupInstallation): string {
       installation.workspace.id,
     section: "repositories",
     notice: "app_installed",
-    installation_id: installation.githubInstallationId,
   });
   return `/dashboard?${query.toString()}`;
 }

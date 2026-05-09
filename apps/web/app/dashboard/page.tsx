@@ -2733,6 +2733,19 @@ function buildDashboardAppInstallCallbackRedirect(
   const installationId = readParam(params.installation_id).trim();
   if (!installationId || !/^\d+$/.test(installationId)) return null;
 
+  const workspace = readParam(params.workspace).trim();
+  if (workspace) {
+    const query = new URLSearchParams();
+    copyQueryParam(query, "workspace", workspace);
+    copyQueryParam(query, "section", readParam(params.section).trim());
+    copyQueryParam(query, "notice", readParam(params.notice).trim());
+    copyQueryParam(query, "repository", readParam(params.repository).trim());
+    copyQueryParam(query, "error", readParam(params.error).trim());
+
+    const cleanQuery = query.toString();
+    return cleanQuery ? `/dashboard?${cleanQuery}` : "/dashboard";
+  }
+
   const setupAction = readParam(params.setup_action).trim();
   if (setupAction && setupAction !== "install" && setupAction !== "update") {
     return null;
@@ -2742,6 +2755,14 @@ function buildDashboardAppInstallCallbackRedirect(
   if (setupAction) query.set("setup_action", setupAction);
 
   return `/setup?${query.toString()}`;
+}
+
+function copyQueryParam(
+  query: URLSearchParams,
+  key: string,
+  value: string,
+): void {
+  if (value) query.set(key, value);
 }
 
 function DashboardActionToast({
