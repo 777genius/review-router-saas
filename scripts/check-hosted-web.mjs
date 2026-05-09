@@ -21,7 +21,11 @@ const expectedAppSlug = String(
 
 const dashboard = await fetchHtml("/dashboard");
 assertIncludes(dashboard.html, "ReviewRouter", "dashboard missing product");
-assertIncludes(dashboard.html, "GitHub setup", "dashboard missing setup hero");
+assertIncludes(
+  dashboard.html,
+  "AI code review that stays inside your CI",
+  "dashboard signed-out redirect missing landing hero",
+);
 assertIncludes(
   dashboard.html,
   "Install GitHub App",
@@ -137,25 +141,25 @@ const setupPrDashboardNotice = await fetchHtml(
 );
 assertIncludes(
   setupPrDashboardNotice.html,
-  "Setup PR ready",
-  "dashboard setup PR notice should use a specific success title",
+  "AI code review that stays inside your CI",
+  "signed-out dashboard setup PR notice should fall back to landing",
 );
 assertNotIncludes(
   setupPrDashboardNotice.html,
-  ">Done<",
-  "dashboard setup PR notice should not use a generic Done label",
+  "This page couldn't load",
+  "dashboard setup PR notice should not render an error page when signed out",
 );
 
 const syncDashboardNotice = await fetchHtml("/dashboard?notice=sync_requested");
 assertIncludes(
   syncDashboardNotice.html,
-  "Reload in a few seconds",
-  "dashboard sync notice should give customer-facing next steps",
+  "AI code review that stays inside your CI",
+  "signed-out dashboard sync notice should fall back to landing",
 );
 assertNotIncludes(
   syncDashboardNotice.html,
-  "Run the worker",
-  "dashboard sync notice must not expose internal worker language",
+  "This page couldn't load",
+  "dashboard sync notice should not render an error page when signed out",
 );
 
 const setupSyncNotice = await fetchHtml("/setup?notice=sync_requested");
