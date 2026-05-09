@@ -23,7 +23,7 @@ export function DashboardWorkspaceTabs({
       <Tabs.List
         aria-label="Workspace"
         activateOnFocus
-        className="flex gap-8 overflow-x-auto border-b border-cyan-200/15"
+        className="flex gap-4 overflow-x-auto overflow-y-hidden border-b border-cyan-200/15 pb-px [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {items.map((item) => (
           <Tabs.Tab
@@ -40,7 +40,7 @@ export function DashboardWorkspaceTabs({
             }
             className={({ active }) =>
               [
-                "group relative -mb-px inline-flex min-h-12 shrink-0 items-center gap-2 border-b-2 px-0 py-3 text-sm font-semibold transition duration-200 ease-out hover:-translate-y-0.5 hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 active:translate-y-0",
+                "group relative inline-flex min-h-12 shrink-0 items-center gap-2 rounded-t-xl border-b-2 px-2 py-3 text-sm font-semibold transition duration-200 ease-out hover:bg-cyan-300/[0.04] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200",
                 active
                   ? "border-cyan-200 text-cyan-50"
                   : "border-transparent text-slate-300 hover:border-cyan-300/35 hover:text-cyan-50",

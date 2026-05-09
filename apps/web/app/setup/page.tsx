@@ -11,6 +11,7 @@ import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-not
 import { getPrisma } from "../../src/server/prisma";
 import { ActionToast } from "../action-toast";
 import { GitHubSignInButton } from "../github-sign-in-button";
+import { LoadingLinkButton } from "../loading-link-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 
@@ -216,40 +217,43 @@ function buildPrimarySetupAction(input: {
 
   if (input.installation) {
     return (
-      <LinkButton
+      <LoadingLinkButton
         href="/dashboard"
         size="lg"
         className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
+        pendingLabel="Opening dashboard..."
       >
         Open dashboard
-      </LinkButton>
+      </LoadingLinkButton>
     );
   }
 
   if (input.appInstallReturned) {
     return (
-      <LinkButton
+      <LoadingLinkButton
         href={buildSetupRefreshHref({
           installationId: input.installationId,
           setupAction: input.setupAction,
         })}
         size="lg"
         className="w-full rounded-2xl sm:min-w-44 sm:w-auto"
+        pendingLabel="Refreshing..."
       >
         Refresh install status
-      </LinkButton>
+      </LoadingLinkButton>
     );
   }
 
   if (input.appInstallUrl) {
     return (
-      <LinkButton
+      <LoadingLinkButton
         href={input.appInstallUrl}
         size="lg"
         className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
+        pendingLabel="Opening GitHub..."
       >
         Install GitHub App
-      </LinkButton>
+      </LoadingLinkButton>
     );
   }
 
@@ -286,14 +290,15 @@ function buildSecondarySetupAction(input: {
     !input.appInstallReturned
   ) {
     return (
-      <LinkButton
+      <LoadingLinkButton
         href="/dashboard"
         variant="outline"
         size="lg"
         className="w-full rounded-2xl sm:min-w-36 sm:w-auto"
+        pendingLabel="Opening dashboard..."
       >
         Open dashboard
-      </LinkButton>
+      </LoadingLinkButton>
     );
   }
 
@@ -326,22 +331,24 @@ function GitHubAppInstallHandoffCard({
           </p>
         </div>
         <div className="grid gap-3 sm:flex sm:flex-wrap lg:justify-end">
-          <LinkButton
+          <LoadingLinkButton
             href={buildSetupRefreshHref({
               installationId: notice.installationId,
               setupAction: "install",
             })}
             className="rounded-2xl"
+            pendingLabel="Refreshing..."
           >
             Refresh status
-          </LinkButton>
-          <LinkButton
+          </LoadingLinkButton>
+          <LoadingLinkButton
             href="/dashboard"
             variant="outline"
             className="rounded-2xl"
+            pendingLabel="Opening dashboard..."
           >
             Open dashboard
-          </LinkButton>
+          </LoadingLinkButton>
         </div>
       </div>
     </Card>
@@ -390,18 +397,31 @@ function SetupStartCard({
         </div>
         <div className="flex flex-wrap gap-3 lg:justify-end">
           {hasConnectedApp ? (
-            <LinkButton href="/dashboard" size="lg">
+            <LoadingLinkButton
+              href="/dashboard"
+              size="lg"
+              pendingLabel="Opening dashboard..."
+            >
               Open dashboard
-            </LinkButton>
+            </LoadingLinkButton>
           ) : appInstallUrl ? (
-            <LinkButton href={appInstallUrl} size="lg">
+            <LoadingLinkButton
+              href={appInstallUrl}
+              size="lg"
+              pendingLabel="Opening GitHub..."
+            >
               Install GitHub App
-            </LinkButton>
+            </LoadingLinkButton>
           ) : null}
           {appInstallUrl ? (
-            <LinkButton href={appInstallUrl} variant="outline" size="lg">
+            <LoadingLinkButton
+              href={appInstallUrl}
+              variant="outline"
+              size="lg"
+              pendingLabel="Opening GitHub..."
+            >
               {hasConnectedApp ? "Manage App access" : "Already installed?"}
-            </LinkButton>
+            </LoadingLinkButton>
           ) : null}
         </div>
       </div>

@@ -1,10 +1,37 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Tabs } from "@base-ui/react/tabs";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { Badge, CodeBlock } from "@reviewrouter/ui";
 
 type ProviderChoice = "codex_oauth" | "codex_api_key" | "openrouter_api_key";
+
+const providerChoices: readonly {
+  readonly value: ProviderChoice;
+  readonly testId: string;
+  readonly title: string;
+  readonly body: string;
+}[] = [
+  {
+    value: "codex_oauth",
+    testId: "provider-choice-codex-oauth",
+    title: "Codex subscription",
+    body: "Use Codex CLI OAuth from your ChatGPT account.",
+  },
+  {
+    value: "codex_api_key",
+    testId: "provider-choice-codex-api-key",
+    title: "Codex API key",
+    body: "Use OPENAI_API_KEY and API billing.",
+  },
+  {
+    value: "openrouter_api_key",
+    testId: "provider-choice-openrouter-api-key",
+    title: "OpenRouter API key",
+    body: "Use OPENROUTER_API_KEY from GitHub Actions.",
+  },
+];
 
 export type ProviderSecretSetupChooserProps = {
   readonly repositoryFullName: string;
@@ -70,34 +97,46 @@ export function ProviderSecretSetupChooser({
               footnote:
                 "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
             },
-    [providerChoice],
+    [providerChoice, repositoryFullName],
   );
 
   return (
     <div className="grid gap-5">
-      <div className="grid gap-3 lg:grid-cols-3">
-        <ProviderChoiceButton
-          active={providerChoice === "codex_oauth"}
-          testId="provider-choice-codex-oauth"
-          title="Codex subscription"
-          body="Use Codex CLI OAuth from your ChatGPT account."
-          onClick={() => setProviderChoice("codex_oauth")}
-        />
-        <ProviderChoiceButton
-          active={providerChoice === "codex_api_key"}
-          testId="provider-choice-codex-api-key"
-          title="Codex API key"
-          body="Use OPENAI_API_KEY and API billing."
-          onClick={() => setProviderChoice("codex_api_key")}
-        />
-        <ProviderChoiceButton
-          active={providerChoice === "openrouter_api_key"}
-          testId="provider-choice-openrouter-api-key"
-          title="OpenRouter API key"
-          body="Use OPENROUTER_API_KEY from GitHub Actions."
-          onClick={() => setProviderChoice("openrouter_api_key")}
-        />
-      </div>
+      <Tabs.Root
+        value={providerChoice}
+        onValueChange={(value) => {
+          if (isProviderChoice(value)) setProviderChoice(value);
+        }}
+      >
+        <Tabs.List
+          aria-label="Provider credential type"
+          activateOnFocus
+          className="grid overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/70 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:grid-cols-3"
+        >
+          {providerChoices.map((choice) => (
+            <Tabs.Tab
+              key={choice.value}
+              value={choice.value}
+              data-testid={choice.testId}
+              className={({ active }) =>
+                [
+                  "group min-h-20 rounded-xl px-4 py-3 text-left transition duration-200 ease-out hover:-translate-y-0.5 hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 active:translate-y-0",
+                  active
+                    ? "bg-cyan-300/[0.13] text-cyan-50 shadow-[0_16px_40px_-30px_rgba(0,240,255,0.95)]"
+                    : "text-slate-300 hover:bg-cyan-300/[0.05] hover:text-cyan-50",
+                ].join(" ")
+              }
+            >
+              <span className="block text-sm font-semibold">
+                {choice.title}
+              </span>
+              <span className="mt-1 block text-xs leading-5 text-slate-400 group-hover:text-slate-300 group-data-[active]:text-cyan-100/80">
+                {choice.body}
+              </span>
+            </Tabs.Tab>
+          ))}
+        </Tabs.List>
+      </Tabs.Root>
 
       {organizationLogin ? (
         <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-cyan-200/10 bg-slate-950/70 p-4 text-sm leading-6 text-slate-300 transition hover:border-cyan-200/25 hover:bg-cyan-300/[0.04]">
@@ -136,7 +175,7 @@ export function ProviderSecretSetupChooser({
         <ol className="mt-4 grid list-decimal gap-2 pl-5 text-sm leading-6 text-emerald-50/90">
           <li>Merge the setup PR for {repositoryFullName}.</li>
           <li>
-            On your own computer, open a terminal in the {repositoryFullName}
+            On your own computer, open a terminal in the {repositoryFullName}{" "}
             repository directory.
           </li>
           <li>
@@ -147,6 +186,7 @@ export function ProviderSecretSetupChooser({
         {activeCommand ? (
           <CodeBlock
             code={activeCommand.command}
+            language="bash"
             className="mt-4 rounded-xl p-3 text-xs leading-5"
           />
         ) : (
@@ -163,35 +203,6 @@ export function ProviderSecretSetupChooser({
   );
 }
 
-function ProviderChoiceButton({
-  active,
-  testId,
-  title,
-  body,
-  onClick,
-}: {
-  readonly active: boolean;
-  readonly testId: string;
-  readonly title: string;
-  readonly body: string;
-  readonly onClick: () => void;
-}): React.ReactElement {
-  return (
-    <button
-      data-testid={testId}
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`rounded-2xl border p-4 text-left transition duration-200 hover:-translate-y-0.5 hover:saturate-125 active:translate-y-0 ${
-        active
-          ? "border-cyan-300/45 bg-cyan-300/[0.12] shadow-[0_16px_40px_-28px_rgba(0,240,255,0.95)]"
-          : "border-cyan-200/10 bg-slate-950/60 hover:border-cyan-200/25 hover:bg-cyan-300/[0.04]"
-      }`}
-    >
-      <span className="block text-sm font-semibold text-cyan-50">{title}</span>
-      <span className="mt-1 block text-xs leading-5 text-slate-400">
-        {body}
-      </span>
-    </button>
-  );
+function isProviderChoice(value: unknown): value is ProviderChoice {
+  return providerChoices.some((choice) => choice.value === value);
 }

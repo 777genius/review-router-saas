@@ -33,7 +33,7 @@ export function GitHubSignInButton({
         });
       }}
     >
-      {pending ? pendingLabel : children}
+      {pending ? <ButtonPendingLabel label={pendingLabel} /> : children}
     </Button>
   );
 }
@@ -68,7 +68,17 @@ export function GitHubSignInInlineButton({
         });
       }}
     >
-      {pending ? "Opening GitHub..." : children}
+      {pending ? (
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            aria-hidden="true"
+            className="h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"
+          />
+          <span>Opening GitHub...</span>
+        </span>
+      ) : (
+        children
+      )}
     </button>
   );
 }
@@ -102,7 +112,19 @@ export function GitHubSignOutButton({
         });
       }}
     >
-      {pending ? pendingLabel : children}
+      {pending ? <ButtonPendingLabel label={pendingLabel} /> : children}
     </Button>
+  );
+}
+
+function ButtonPendingLabel({ label }: { readonly label: string }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span
+        aria-hidden="true"
+        className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"
+      />
+      <span>{label}</span>
+    </span>
   );
 }

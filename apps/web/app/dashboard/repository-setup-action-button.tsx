@@ -51,7 +51,7 @@ export function RepositorySetupActionButton({
             });
         });
       }}
-      className="grid gap-2"
+      className="min-w-0"
     >
       <input type="hidden" name="workspaceId" value={workspaceId} />
       <input type="hidden" name="repositoryId" value={repositoryId} />
@@ -60,7 +60,7 @@ export function RepositorySetupActionButton({
         type="submit"
         variant="solid"
         size="sm"
-        className="w-full"
+        className="w-full min-w-0 px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
         disabled={disabled}
         aria-busy={isPending}
       >

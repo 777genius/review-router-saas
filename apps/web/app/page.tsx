@@ -1,4 +1,5 @@
 import { Badge, LinkButton } from "@reviewrouter/ui";
+import { LoadingLinkButton } from "./loading-link-button";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -65,21 +66,29 @@ export default async function HomePage(): Promise<React.ReactElement> {
           </p>
 
           <div className="mt-7 grid w-full max-w-xl gap-3 sm:flex sm:justify-center">
-            <LinkButton
+            <LoadingLinkButton
               href={primaryHref}
               size="lg"
               className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
+              pendingLabel={
+                hasConnectedApp ? "Opening dashboard..." : "Opening GitHub..."
+              }
             >
               {primaryLabel}
-            </LinkButton>
-            <LinkButton
+            </LoadingLinkButton>
+            <LoadingLinkButton
               href={secondaryHref}
               variant="outline"
               size="lg"
               className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
+              pendingLabel={
+                hasConnectedApp && appInstallUrl
+                  ? "Opening GitHub..."
+                  : "Opening guide..."
+              }
             >
               {secondaryLabel}
-            </LinkButton>
+            </LoadingLinkButton>
           </div>
 
           <div className="mt-6 flex max-w-3xl flex-wrap justify-center gap-2 text-sm text-slate-400">
