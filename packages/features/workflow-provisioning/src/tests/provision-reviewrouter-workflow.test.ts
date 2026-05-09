@@ -134,10 +134,10 @@ describe("provisionReviewRouterWorkflow", () => {
       files.get(".github/workflows/reviewrouter-interaction.yml"),
     ).toContain("types: [created, edited]");
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      '"CODEX_MODEL":"gpt-5.4-mini"',
+      '"CODEX_MODEL": "gpt-5.4-mini"',
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      '"FAIL_ON_SEVERITY":"major"',
+      '"FAIL_ON_SEVERITY": "major"',
     );
     expect(provisioning.opened).toMatchObject({
       status: "setup_pr_open",
@@ -257,10 +257,10 @@ describe("provisionReviewRouterWorkflow", () => {
       ]),
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      '"CODEX_MODEL":"gpt-5.4-mini"',
+      '"CODEX_MODEL": "gpt-5.4-mini"',
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      '"FAIL_ON_SEVERITY":"off"',
+      '"FAIL_ON_SEVERITY": "off"',
     );
     expect(auditLog.events[0]).toMatchObject({ actor: "user:maintainer" });
   });

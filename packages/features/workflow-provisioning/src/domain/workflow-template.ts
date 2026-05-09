@@ -225,8 +225,8 @@ jobs:
       runtime_ref: ${template.runtimeRef}
       api_url: ${JSON.stringify(options.apiUrl)}
       runtime_config_mode: ${options.runtimeConfigMode}
-      static_runtime_env_json: >-
-        ${template.staticRuntimeEnvJson}
+      static_runtime_env_json: |-
+${template.staticRuntimeEnvJsonBlock}
       pr_number: \${{ github.event.pull_request.number || inputs.pr_number }}
     secrets:
       REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
@@ -416,7 +416,7 @@ function prepareReusableWorkflowTemplate(
   options: ReviewRouterWorkflowOptions,
 ): {
   readonly runtimeRef: string;
-  readonly staticRuntimeEnvJson: string;
+  readonly staticRuntimeEnvJsonBlock: string;
 } {
   assertSafeApiUrl(options.apiUrl);
   const runtimeRef = extractReusableRuntimeRef(options.actionRef);
@@ -430,8 +430,18 @@ function prepareReusableWorkflowTemplate(
 
   return {
     runtimeRef,
-    staticRuntimeEnvJson: JSON.stringify(staticRuntimeEnv),
+    staticRuntimeEnvJsonBlock: indentMultiline(
+      JSON.stringify(staticRuntimeEnv, null, 2),
+      "        ",
+    ),
   };
+}
+
+function indentMultiline(value: string, indent: string): string {
+  return value
+    .split("\n")
+    .map((line) => `${indent}${line}`)
+    .join("\n");
 }
 
 function prepareWorkflowTemplate(options: ReviewRouterWorkflowOptions): {

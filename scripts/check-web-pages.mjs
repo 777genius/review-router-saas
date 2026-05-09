@@ -17,10 +17,7 @@ const pages = [
   ],
   [
     "/auth/signin?error=OAuthCallback",
-    [
-      "GitHub did not complete sign-in",
-      "GitHub returned an OAuth callback error",
-    ],
+    ["Finish dashboard sign-in", "GitHub returned from the App installation"],
   ],
   ["/dashboard", ["AI code review that stays inside your CI"]],
   ["/setup", ["Set up ReviewRouter", "Already installed? Sign in"]],

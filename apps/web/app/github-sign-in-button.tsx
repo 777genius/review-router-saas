@@ -26,9 +26,10 @@ export function GitHubSignInButton({
       {...props}
       type="button"
       disabled={pending || props.disabled}
+      aria-busy={pending}
       onClick={() => {
         setPending(true);
-        void signIn("github", { callbackUrl }).finally(() => {
+        startGitHubSignIn(callbackUrl, () => {
           setPending(false);
         });
       }}
@@ -55,6 +56,7 @@ export function GitHubSignInInlineButton({
     <button
       type="button"
       disabled={pending}
+      aria-busy={pending}
       className={[
         "inline cursor-pointer bg-transparent p-0 text-left disabled:cursor-wait disabled:opacity-70",
         className,
@@ -63,7 +65,7 @@ export function GitHubSignInInlineButton({
         .join(" ")}
       onClick={() => {
         setPending(true);
-        void signIn("github", { callbackUrl }).finally(() => {
+        startGitHubSignIn(callbackUrl, () => {
           setPending(false);
         });
       }}
@@ -127,4 +129,17 @@ function ButtonPendingLabel({ label }: { readonly label: string }) {
       <span>{label}</span>
     </span>
   );
+}
+
+function startGitHubSignIn(callbackUrl: string, onSettled: () => void): void {
+  const start = () => {
+    void signIn("github", { callbackUrl }).finally(onSettled);
+  };
+
+  if (typeof window === "undefined") {
+    start();
+    return;
+  }
+
+  window.requestAnimationFrame(start);
 }

@@ -146,7 +146,13 @@ describe("renderReviewRouterWorkflow", () => {
     expect(reviewWorkflow).toContain('api_url: "https://app.reviewrouter.dev"');
     expect(reviewWorkflow).toContain("runtime_config_mode: oidc");
     expect(reviewWorkflow).toContain(
-      'static_runtime_env_json: >-\n        {"REVIEW_AUTH_MODE":"codex-oauth","CODEX_MODEL":"gpt-5.5"}',
+      [
+        "static_runtime_env_json: |-",
+        "        {",
+        '          "REVIEW_AUTH_MODE": "codex-oauth",',
+        '          "CODEX_MODEL": "gpt-5.5"',
+        "        }",
+      ].join("\n"),
     );
     expect(reviewWorkflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",

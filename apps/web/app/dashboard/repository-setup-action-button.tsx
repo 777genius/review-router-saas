@@ -13,6 +13,7 @@ export function RepositorySetupActionButton({
   setupStatus,
   workflowCurrent,
   mutationsEnabled,
+  variant = "solid",
 }: {
   readonly workspaceId: string;
   readonly repositoryId: string;
@@ -21,6 +22,7 @@ export function RepositorySetupActionButton({
   readonly setupStatus: string;
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
+  readonly variant?: "solid" | "soft" | "outline" | "ghost";
 }): ReactElement {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -58,7 +60,7 @@ export function RepositorySetupActionButton({
       <input type="hidden" name="workflowStyle" value="reusable" />
       <Button
         type="submit"
-        variant="solid"
+        variant={variant}
         size="sm"
         className="w-full min-w-0 px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
         disabled={disabled}

@@ -17,13 +17,11 @@ export function RepositoryLiveSearch({
   workspaceKey,
   selectedRepositoryFullName,
   initialQuery,
-  totalCount,
   searchIndex,
 }: {
   readonly workspaceKey: string;
   readonly selectedRepositoryFullName: string | null;
   readonly initialQuery: string;
-  readonly totalCount: number;
   readonly searchIndex: readonly RepositorySearchIndexItem[];
 }): React.ReactElement {
   const [query, setQuery] = useState(initialQuery);
@@ -117,13 +115,16 @@ export function RepositoryLiveSearch({
     if (hasActiveQuery) {
       return `${matchingCount} matching ${matchingCount === 1 ? "repository" : "repositories"}.`;
     }
-    return `Showing all ${totalCount} synced repositories. Type to filter without reloading the dashboard.`;
-  }, [hasActiveQuery, matchingCount, state, totalCount]);
+    return "";
+  }, [hasActiveQuery, matchingCount, state]);
 
   return (
-    <div className="grid gap-2" data-repository-live-search>
-      <label className="grid gap-2">
-        <span className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
+    <div
+      className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"
+      data-repository-live-search
+    >
+      <label className="grid gap-1.5">
+        <span className="font-mono text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
           Find repository
         </span>
         <input
@@ -136,16 +137,18 @@ export function RepositoryLiveSearch({
           spellCheck={false}
         />
       </label>
-      <div className="flex min-h-7 flex-wrap items-center gap-3">
-        <p
-          className={[
-            "text-xs leading-5",
-            state === "error" ? "text-amber-100" : "text-slate-500",
-          ].join(" ")}
-          aria-live="polite"
-        >
-          {helperText}
-        </p>
+      <div className="flex min-h-7 flex-wrap items-center gap-3 md:justify-end md:self-end md:pb-2.5">
+        {helperText ? (
+          <p
+            className={[
+              "text-xs leading-5",
+              state === "error" ? "text-amber-100" : "text-slate-500",
+            ].join(" ")}
+            aria-live="polite"
+          >
+            {helperText}
+          </p>
+        ) : null}
         {hasActiveQuery ? (
           <button
             type="button"

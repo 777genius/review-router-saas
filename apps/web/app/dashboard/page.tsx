@@ -69,7 +69,6 @@ import {
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
 import { FormSubmitButton } from "../form-submit-button";
 import { GitHubAccountAvatar } from "../github-account-avatar";
-import { LogoMark } from "../logo-mark";
 import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 import { DashboardSectionTabs } from "./dashboard-section-tabs";
@@ -320,23 +319,6 @@ type DashboardWorkspaceData = Awaited<
   ReturnType<typeof loadDashboardData>
 >[number];
 
-function summarizeDashboardWorkspaces(
-  workspaces: readonly DashboardWorkspaceData[],
-): { readonly needsSetup: number } {
-  return workspaces.reduce(
-    (summary, workspace) => {
-      const workspaceHealth = summarizeWorkspaceHealth(
-        workspace.health.map((repositoryHealth) => repositoryHealth.status),
-      );
-
-      return {
-        needsSetup: summary.needsSetup + workspaceHealth.needsSetup,
-      };
-    },
-    { needsSetup: 0 },
-  );
-}
-
 function filterVisibleDashboardWorkspaces(
   workspaces: readonly DashboardWorkspaceData[],
 ): readonly DashboardWorkspaceData[] {
@@ -551,53 +533,9 @@ export default async function DashboardPage({
     selectedWorkspace.workspace,
     workspaces,
   );
-  const dashboardSummary = summarizeDashboardWorkspaces([selectedWorkspace]);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 md:py-10">
-      <section className="relative overflow-hidden rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/80 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-6">
-        <div className="absolute right-[-8rem] top-[-8rem] h-64 w-64 rounded-full bg-cyan-300/10 blur-3xl" />
-        <div className="relative grid gap-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-3">
-              <LogoMark size="sm" />
-              <Badge tone="accent">Dashboard</Badge>
-              <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-500">
-                Reviews run in customer CI
-              </span>
-            </div>
-            <h1 className="mt-5 max-w-3xl break-words text-3xl font-extrabold leading-[1.08] tracking-[-0.035em] text-cyan-50 sm:text-4xl md:text-5xl">
-              Manage repository review rollout.
-            </h1>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-[#a0a8c0] sm:text-base sm:leading-7">
-              Start from repositories. Setup, model settings, and diagnostics
-              are separated into focused sections so the primary action stays
-              clear.
-            </p>
-          </div>
-
-          <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[22rem]">
-            <LinkButton
-              href={dashboardSectionHref("repositories", selectedWorkspaceKey)}
-              size="lg"
-              className="w-full"
-            >
-              {dashboardSummary.needsSetup > 0
-                ? "Set up repo"
-                : "Review repositories"}
-            </LinkButton>
-            <LinkButton
-              href="/getting-started"
-              variant="ghost"
-              size="md"
-              className="w-full"
-            >
-              Setup guide
-            </LinkButton>
-          </div>
-        </div>
-      </section>
-
       <WorkspaceSwitcher
         workspaces={workspaces}
         selectedWorkspaceId={selectedWorkspace.workspace.id}
@@ -1420,12 +1358,14 @@ function DashboardSectionHeader({
             </p>
           ) : null}
         </div>
-        <div className="flex flex-wrap gap-2 xl:justify-end">
-          <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
-          <Badge tone="neutral" className="max-w-full break-words">
-            {status}
-          </Badge>
-        </div>
+        {selectedSection === "repositories" ? null : (
+          <div className="flex flex-wrap gap-2 xl:justify-end">
+            <Badge tone={workspaceHealth.tone}>{workspaceHealth.label}</Badge>
+            <Badge tone="neutral" className="max-w-full break-words">
+              {status}
+            </Badge>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1527,6 +1467,7 @@ function RepositoryTable({
       repository.setupStatus,
       repositoryHealth?.status,
     );
+    const showRuntimeHealthBadge = setupView.label !== healthView.label;
     const repositoryConfig = repositoryConfigById.get(repository.id) ?? null;
     const effectiveConfig = repositoryConfig?.config ?? activeConfig;
     const configVersion = repositoryConfig?.version ?? activeConfigVersion;
@@ -1554,6 +1495,7 @@ function RepositoryTable({
       repositoryProvisioning,
       healthView,
       setupView,
+      showRuntimeHealthBadge,
       setupPullRequestUrl,
       workflowCurrent,
       repositoryConfig,
@@ -1585,22 +1527,11 @@ function RepositoryTable({
 
   return (
     <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
-      <div className="grid gap-4 border-b border-cyan-200/10 bg-white/[0.025] p-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] lg:items-end">
-        <div>
-          <Badge tone="accent">Repositories</Badge>
-          <p className="mt-2 text-sm leading-6 text-slate-400">
-            Search synced App repositories, create or update setup PRs, then
-            choose a repository for provider secret commands.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Badge tone="neutral">{repositoryCount} synced repositories</Badge>
-          </div>
-        </div>
+      <div className="border-b border-cyan-200/10 bg-white/[0.025] p-3 sm:p-4">
         <RepositoryLiveSearch
           workspaceKey={workspaceKey}
           selectedRepositoryFullName={selectedRepositoryFullName}
           initialQuery={searchQuery}
-          totalCount={repositoryCount}
           searchIndex={searchIndex}
         />
       </div>
@@ -1613,6 +1544,7 @@ function RepositoryTable({
             repositoryProvisioning,
             healthView,
             setupView,
+            showRuntimeHealthBadge,
             setupPullRequestUrl,
             workflowCurrent,
             repositoryConfig,
@@ -1689,9 +1621,11 @@ function RepositoryTable({
                   <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
                     Runtime health
                   </p>
-                  <div className="mt-2">
-                    <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                  </div>
+                  {showRuntimeHealthBadge ? (
+                    <div className="mt-2">
+                      <Badge tone={healthView.tone}>{healthView.label}</Badge>
+                    </div>
+                  ) : null}
                   <p className="mt-2 text-xs leading-5 text-slate-300">
                     {healthView.summary}
                   </p>
@@ -1719,10 +1653,16 @@ function RepositoryTable({
                     setupStatus={repository.setupStatus}
                     workflowCurrent={workflowCurrent}
                     mutationsEnabled={mutationsEnabled}
+                    variant={
+                      repository.setupStatus === "setup_pr_open"
+                        ? "outline"
+                        : "solid"
+                    }
                   />
                   <RepositoryProviderSecretsAction
                     workspace={workspace}
                     repository={repository}
+                    setupStatus={repository.setupStatus}
                     disabled={
                       !mutationsEnabled ||
                       !repository.selected ||
@@ -1769,7 +1709,7 @@ function RepositoryTable({
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-cyan-200/10 text-slate-200">
+          <tbody className="text-slate-200">
             {rows.map(
               ({
                 repository,
@@ -1777,6 +1717,7 @@ function RepositoryTable({
                 repositoryProvisioning,
                 healthView,
                 setupView,
+                showRuntimeHealthBadge,
                 setupPullRequestUrl,
                 workflowCurrent,
                 repositoryConfig,
@@ -1789,7 +1730,7 @@ function RepositoryTable({
                     data-repository-row-id={repository.id}
                     hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
                     className={[
-                      "transition hover:bg-cyan-300/[0.035]",
+                      "border-t border-cyan-200/10 transition first:border-t-0 hover:bg-cyan-300/[0.035]",
                       repository.fullName === selectedRepositoryFullName
                         ? "bg-cyan-300/[0.045]"
                         : "",
@@ -1846,8 +1787,15 @@ function RepositoryTable({
                       ) : null}
                     </td>
                     <td className="px-4 py-4 align-top">
-                      <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                      <span className="mt-2 block text-xs leading-5 text-slate-300">
+                      {showRuntimeHealthBadge ? (
+                        <Badge tone={healthView.tone}>{healthView.label}</Badge>
+                      ) : null}
+                      <span
+                        className={[
+                          showRuntimeHealthBadge ? "mt-2 " : "",
+                          "block text-xs leading-5 text-slate-300",
+                        ].join("")}
+                      >
                         {healthView.summary}
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-slate-500">
@@ -1872,10 +1820,16 @@ function RepositoryTable({
                           setupStatus={repository.setupStatus}
                           workflowCurrent={workflowCurrent}
                           mutationsEnabled={mutationsEnabled}
+                          variant={
+                            repository.setupStatus === "setup_pr_open"
+                              ? "outline"
+                              : "solid"
+                          }
                         />
                         <RepositoryProviderSecretsAction
                           workspace={workspace}
                           repository={repository}
+                          setupStatus={repository.setupStatus}
                           disabled={
                             !mutationsEnabled ||
                             !repository.selected ||
@@ -2008,10 +1962,12 @@ type ProviderSecretGuidanceSet = {
 function RepositoryProviderSecretsAction({
   workspace,
   repository,
+  setupStatus,
   disabled,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repository: DashboardWorkspaceData["repositories"][number];
+  readonly setupStatus: string;
   readonly disabled: boolean;
 }): React.ReactElement | null {
   const installation = findInstallationForRepository(
@@ -2032,7 +1988,7 @@ function RepositoryProviderSecretsAction({
       })}
       disabled={disabled}
       triggerLabel="Enable review"
-      triggerVariant="outline"
+      triggerVariant={setupStatus === "setup_pr_open" ? "solid" : "outline"}
       triggerSize="sm"
       triggerClassName="w-full min-w-0 px-3 sm:w-auto sm:min-w-[9rem] sm:px-5"
     />
@@ -2374,6 +2330,7 @@ function RepositorySetupActionForm({
   setupStatus,
   workflowCurrent,
   mutationsEnabled,
+  variant = "solid",
 }: {
   readonly workspaceId: string;
   readonly repositoryId: string;
@@ -2382,6 +2339,7 @@ function RepositorySetupActionForm({
   readonly setupStatus: string;
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
+  readonly variant?: "solid" | "soft" | "outline" | "ghost";
 }): React.ReactElement {
   return (
     <RepositorySetupActionButton
@@ -2392,6 +2350,7 @@ function RepositorySetupActionForm({
       setupStatus={setupStatus}
       workflowCurrent={workflowCurrent}
       mutationsEnabled={mutationsEnabled}
+      variant={variant}
     />
   );
 }
@@ -2422,7 +2381,7 @@ function RepositoryPolicyEditor({
   const editorPanel = (
     <div
       className={[
-        "mt-3 grid gap-4 rounded-2xl border border-cyan-200/10 bg-slate-950/70 p-4 sm:p-5",
+        "mt-4 grid gap-4 px-1 pb-1 sm:px-2",
         compact ? "col-span-full w-full flex-[1_0_100%]" : "",
       ].join(" ")}
     >

@@ -56,12 +56,12 @@ assertIncludes(
 const signInError = await fetchHtml("/auth/signin?error=OAuthCallback");
 assertIncludes(
   signInError.html,
-  "GitHub did not complete sign-in",
+  "Finish dashboard sign-in",
   "sign-in error missing customer-facing title",
 );
 assertIncludes(
   signInError.html,
-  "GitHub returned an OAuth callback error",
+  "GitHub returned from the App installation",
   "sign-in error missing customer-facing guidance",
 );
 
