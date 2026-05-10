@@ -21,9 +21,9 @@ export const seoKeywords = [
 ] as const;
 
 const defaultSocialImage = {
-  url: "/review-router-logo.png",
-  width: 795,
-  height: 713,
+  url: "/opengraph-image",
+  width: 1200,
+  height: 630,
   alt: "ReviewRouter privacy-first AI code review control plane",
 } as const;
 
@@ -35,25 +35,55 @@ export function createPublicPageMetadata(input: {
   const title = `${input.title} | ${siteName}`;
 
   return {
-    title,
+    title: {
+      absolute: title,
+    },
     description: input.description,
     keywords: [...seoKeywords],
+    category: "Developer tools",
     alternates: {
       canonical: input.path,
+      languages: {
+        "en-US": input.path,
+        "x-default": input.path,
+      },
     },
     openGraph: {
       title,
       description: input.description,
       url: input.path,
       siteName,
+      locale: "en_US",
       type: "website",
       images: [defaultSocialImage],
     },
     twitter: {
-      card: "summary",
-      title: input.title,
+      card: "summary_large_image",
+      title,
       description: input.description,
       images: [defaultSocialImage.url],
+    },
+  };
+}
+
+export function createNoIndexPageMetadata(input: {
+  readonly title: string;
+  readonly description?: string;
+}): Metadata {
+  const title = `${input.title} | ${siteName}`;
+
+  return {
+    title: {
+      absolute: title,
+    },
+    description: input.description,
+    robots: {
+      index: false,
+      follow: true,
+      googleBot: {
+        index: false,
+        follow: true,
+      },
     },
   };
 }

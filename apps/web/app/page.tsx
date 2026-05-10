@@ -7,10 +7,11 @@ import {
 } from "../src/server/dashboard-mutations";
 import { countConnectedGitHubInstallations } from "../src/server/connected-installations";
 import { getGitHubAppInstallUrl } from "../src/server/github-app-install-url";
-import { reviewRouterWebUrl } from "./public-urls";
+import { reviewRouterGitHubRepoUrl, reviewRouterWebUrl } from "./public-urls";
 import {
   createPublicPageMetadata,
   defaultSeoDescription,
+  defaultSeoTitle,
   siteName,
 } from "./seo";
 
@@ -50,13 +51,41 @@ const supportBadges = [
 
 const structuredData = {
   "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  name: siteName,
-  applicationCategory: "DeveloperApplication",
-  operatingSystem: "GitHub Actions",
-  description: defaultSeoDescription,
-  url: reviewRouterWebUrl,
-  softwareRequirements: "GitHub App and GitHub Actions",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${reviewRouterWebUrl}/#organization`,
+      name: siteName,
+      url: reviewRouterWebUrl,
+      logo: `${reviewRouterWebUrl}/review-router-icon.png`,
+      sameAs: [reviewRouterGitHubRepoUrl],
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${reviewRouterWebUrl}/#website`,
+      name: siteName,
+      url: reviewRouterWebUrl,
+      description: defaultSeoDescription,
+      inLanguage: "en-US",
+      publisher: {
+        "@id": `${reviewRouterWebUrl}/#organization`,
+      },
+    },
+    {
+      "@type": "WebPage",
+      "@id": `${reviewRouterWebUrl}/#webpage`,
+      name: defaultSeoTitle,
+      url: reviewRouterWebUrl,
+      description: defaultSeoDescription,
+      isPartOf: {
+        "@id": `${reviewRouterWebUrl}/#website`,
+      },
+      about: {
+        "@id": `${reviewRouterWebUrl}/#organization`,
+      },
+      inLanguage: "en-US",
+    },
+  ],
 } as const;
 
 export default async function HomePage(): Promise<React.ReactElement> {

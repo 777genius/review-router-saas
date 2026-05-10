@@ -20,7 +20,7 @@ export const buttonStyles = tv({
       danger: "border-red-300/40 text-red-100",
     },
     size: {
-      sm: "min-h-10 px-4 py-2 text-sm",
+      sm: "min-h-11 px-4 py-2 text-sm",
       md: "min-h-11 px-5 py-2.5 text-sm",
       lg: "min-h-[3.25rem] px-7 py-3.5 text-base",
     },

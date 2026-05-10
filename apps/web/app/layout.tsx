@@ -31,6 +31,7 @@ export const metadata: Metadata = {
   creator: siteName,
   publisher: siteName,
   manifest: "/manifest.webmanifest",
+  category: "Developer tools",
   icons: {
     icon: [
       { url: "/favicon.ico", type: "image/x-icon" },
@@ -60,18 +61,18 @@ export const metadata: Metadata = {
     type: "website",
     images: [
       {
-        url: "/review-router-logo.png",
-        width: 795,
-        height: 713,
+        url: "/opengraph-image",
+        width: 1200,
+        height: 630,
         alt: "ReviewRouter privacy-first AI code review control plane",
       },
     ],
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title: defaultSeoTitle,
     description: defaultSeoDescription,
-    images: ["/review-router-logo.png"],
+    images: ["/opengraph-image"],
   },
 };
 

@@ -19,6 +19,7 @@ export const reviewRouterApiUrl = (
 export const reviewRouterApiDemoUrl = `${reviewRouterApiUrl}/docs`;
 export const reviewRouterContactEmail = contactEmail;
 export const reviewRouterContactMailto = `mailto:${contactEmail}`;
+export const reviewRouterGitHubRepoUrl = publicGitHubRepoUrl;
 export const reviewRouterGitHubIssuesChooseUrl = `${publicGitHubRepoUrl}/issues/new/choose`;
 export const reviewRouterGitHubSetupIssueUrl = `${publicGitHubRepoUrl}/issues/new?template=setup-help.yml`;
 export const reviewRouterGitHubBugIssueUrl = `${publicGitHubRepoUrl}/issues/new?template=bug-report.yml`;

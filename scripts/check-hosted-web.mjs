@@ -26,13 +26,14 @@ assertIncludesAny(
   [
     "AI code review that stays inside your CI",
     "Manage repository review rollout",
+    "ReviewRouter is a metadata control plane",
   ],
   "dashboard missing landing or workspace hero",
 );
-assertIncludes(
+assertIncludesAny(
   dashboard.html,
-  "Install GitHub App",
-  "dashboard missing install CTA",
+  ["Install GitHub App", "Start setup", "Sign in"],
+  "dashboard missing install or sign-in CTA",
 );
 assertIncludes(
   dashboard.html,
@@ -73,9 +74,13 @@ const installUrls = uniqueMatches(
   /https:\/\/github\.com\/apps\/[^"'\\\s]+\/installations\/new/g,
 );
 if (installUrls.length === 0) {
-  throw new Error("dashboard does not include a GitHub App install URL");
+  assertIncludes(
+    dashboard.html,
+    "ReviewRouter is a metadata control plane",
+    "dashboard without install URL must render signed-out metadata shell",
+  );
 }
-if (expectedAppSlug) {
+if (expectedAppSlug && installUrls.length > 0) {
   const expectedInstallUrl = `https://github.com/apps/${expectedAppSlug}/installations/new`;
   if (!installUrls.includes(expectedInstallUrl)) {
     throw new Error(
@@ -147,6 +152,7 @@ assertIncludesAny(
   [
     "AI code review that stays inside your CI",
     "Manage repository review rollout",
+    "ReviewRouter is a metadata control plane",
   ],
   "dashboard setup PR notice should render landing or dashboard",
 );
@@ -162,6 +168,7 @@ assertIncludesAny(
   [
     "AI code review that stays inside your CI",
     "Manage repository review rollout",
+    "ReviewRouter is a metadata control plane",
   ],
   "dashboard sync notice should render landing or dashboard",
 );

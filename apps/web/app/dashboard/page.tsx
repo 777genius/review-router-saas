@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import {
   Badge,
   Button,
@@ -85,8 +86,15 @@ import {
   ReviewConfigForm,
 } from "./repository-policy-editor";
 import { RepositorySetupStatusRefresher } from "./repository-setup-status-refresher";
+import { createNoIndexPageMetadata } from "../seo";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = createNoIndexPageMetadata({
+  title: "Dashboard",
+  description:
+    "Private ReviewRouter dashboard for repository setup, review policy, health, and audit metadata.",
+});
 
 type DashboardWorkspace = {
   readonly id: string;

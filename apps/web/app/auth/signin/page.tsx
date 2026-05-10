@@ -1,8 +1,16 @@
+import type { Metadata } from "next";
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
 import { GitHubSignInButton } from "../../github-sign-in-button";
 import { LogoMark } from "../../logo-mark";
+import { createNoIndexPageMetadata } from "../../seo";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = createNoIndexPageMetadata({
+  title: "Sign in",
+  description:
+    "Sign in to connect GitHub installation metadata to the ReviewRouter dashboard.",
+});
 
 type SignInPageProps = {
   readonly searchParams?: Promise<

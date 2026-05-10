@@ -61,7 +61,7 @@ export default function SupportPage(): React.ReactElement {
             code, diffs, or provider credentials. Contact:{" "}
             <a
               href={reviewRouterContactMailto}
-              className="font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+              className="inline-flex min-h-11 items-center align-middle font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
             >
               {reviewRouterContactEmail}
             </a>
@@ -93,7 +93,7 @@ export default function SupportPage(): React.ReactElement {
             security-sensitive data, email{" "}
             <a
               href={reviewRouterContactMailto}
-              className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+              className="inline-flex min-h-11 items-center align-middle text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
             >
               {reviewRouterContactEmail}
             </a>{" "}

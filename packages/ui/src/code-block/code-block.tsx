@@ -35,7 +35,7 @@ export function CodeBlock({
         onClick={() => {
           void copyCode();
         }}
-        className="absolute right-2 top-2 z-10 rounded-full border border-cyan-200/15 bg-slate-950/85 px-3 py-1 font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-cyan-100 shadow-[0_10px_30px_-22px_rgba(0,240,255,0.9)] transition hover:-translate-y-0.5 hover:border-cyan-200/35 hover:bg-cyan-300/[0.09] hover:text-cyan-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 active:translate-y-0"
+        className="absolute right-2 top-2 z-10 inline-flex min-h-11 items-center rounded-full border border-cyan-200/15 bg-slate-950/85 px-4 py-2 font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-cyan-100 shadow-[0_10px_30px_-22px_rgba(0,240,255,0.9)] transition hover:-translate-y-0.5 hover:border-cyan-200/35 hover:bg-cyan-300/[0.09] hover:text-cyan-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 active:translate-y-0"
         aria-label="Copy code"
       >
         {copied ? "Copied" : "Copy"}

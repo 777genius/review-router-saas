@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
 import {
@@ -14,8 +15,15 @@ import { GitHubSignInButton } from "../github-sign-in-button";
 import { LoadingLinkButton } from "../loading-link-button";
 import { LogoMark } from "../logo-mark";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
+import { createNoIndexPageMetadata } from "../seo";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = createNoIndexPageMetadata({
+  title: "Setup",
+  description:
+    "ReviewRouter GitHub App setup flow for connecting installations to the private dashboard.",
+});
 
 type SetupPageProps = {
   readonly searchParams?: Promise<

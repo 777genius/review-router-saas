@@ -120,7 +120,7 @@ export default function PrivacyPage(): React.ReactElement {
             deletion should be requested through{" "}
             <a
               href={reviewRouterContactMailto}
-              className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
+              className="inline-flex min-h-11 items-center align-middle text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
             >
               {reviewRouterContactEmail}
             </a>{" "}

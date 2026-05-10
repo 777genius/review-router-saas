@@ -78,15 +78,47 @@ export async function registerGitHubWebhookRoutes(
           .send({ processed: false, ignored: true, eventName });
       }
 
-      const result =
-        await dependencies.pullRequests.handleGitHubPullRequestWebhook({
-          deliveryId,
-          eventName,
-          payloadHash: hashGitHubWebhookPayload(rawPayload),
-          payload: parsedPullRequestPayload.data,
-        });
+      const started = await dependencies.deliveries.tryStartProcessing({
+        deliveryId,
+        eventName,
+        action: parsedPullRequestPayload.data.action,
+        installationId: String(parsedPullRequestPayload.data.installation.id),
+        ...(rawPayload
+          ? { payloadHash: hashGitHubWebhookPayload(rawPayload) }
+          : {}),
+        normalizedEvent: {
+          type: "github.pull_request",
+          version: 1,
+          action: parsedPullRequestPayload.data.action,
+          installationId: String(parsedPullRequestPayload.data.installation.id),
+          repositoryId: String(parsedPullRequestPayload.data.repository.id),
+          repositoryFullName:
+            parsedPullRequestPayload.data.repository.full_name,
+          pullRequestNumber: parsedPullRequestPayload.data.pull_request.number,
+          merged: parsedPullRequestPayload.data.pull_request.merged,
+        },
+      });
+      if (!started) {
+        return reply.send({ processed: false });
+      }
 
-      return reply.send(result);
+      try {
+        const result =
+          await dependencies.pullRequests.handleGitHubPullRequestWebhook({
+            deliveryId,
+            eventName,
+            payloadHash: hashGitHubWebhookPayload(rawPayload),
+            payload: parsedPullRequestPayload.data,
+          });
+        await dependencies.deliveries.markProcessed(deliveryId);
+        return reply.send(result);
+      } catch (error) {
+        await dependencies.deliveries.markFailed({
+          deliveryId,
+          errorSummary: safeErrorSummary(error),
+        });
+        throw error;
+      }
     }
 
     const parsedPayload = githubInstallationWebhookPayloadSchema.safeParse(
@@ -108,4 +140,9 @@ export async function registerGitHubWebhookRoutes(
 
     return reply.send(result);
   });
+}
+
+function safeErrorSummary(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown_error";
+  return message.slice(0, 500);
 }
