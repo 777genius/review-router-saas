@@ -79,9 +79,9 @@ export default function SupportPage(): React.ReactElement {
             Send links and categories first.
           </h2>
           <p className="text-sm leading-6 text-slate-300">
-            Use the GitHub issue templates for normal setup and bug reports.
-            If a report may include credentials, private code, tenant isolation,
-            or security-sensitive data, email{" "}
+            Use the GitHub issue templates for normal setup and bug reports. If
+            a report may include credentials, private code, tenant isolation, or
+            security-sensitive data, email{" "}
             <a
               href={reviewRouterContactMailto}
               className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
