@@ -3108,7 +3108,7 @@ function dashboardErrorText(error: string): string {
     case "provider_secret_not_available_to_repository":
       return "The organization Actions secret exists, but it is not available to this repository. Add this repository to the selected-repository secret access, then try again.";
     case "provider_secret_check_permission_required":
-      return "ReviewRouter needs GitHub App Secrets: read permission to verify Actions secret metadata. Approve the App permission update, then try again.";
+      return "ReviewRouter needs GitHub App Secrets: read for repository secrets, or Organization secrets: read for organization secrets, to verify Actions secret metadata. Approve the App permission update, then try again.";
     case "entitlement_denied":
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
     case "workflow_provisioning_disabled":
