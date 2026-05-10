@@ -110,7 +110,11 @@ function RepositorySearchLoadingSkeleton(): React.ReactElement {
       <section className="rounded-[1.65rem] border border-cyan-300/25 bg-[#071421]/90 px-5 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_22px_80px_rgba(0,0,0,0.22),0_0_70px_-56px_rgba(103,232,249,0.95)] sm:px-6 sm:py-6 xl:px-12 xl:py-11">
         <SkeletonText className="mb-5 h-3 w-36" />
         <div className="grid gap-5 xl:grid-cols-[minmax(22rem,0.96fr)_minmax(25rem,1fr)] xl:items-start">
-          <SkeletonBlock className="min-h-[3.75rem] rounded-[1.15rem] border border-cyan-300/35 bg-slate-950/70" />
+          <div className="grid min-h-[3.75rem] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.15rem] border border-cyan-300/35 bg-slate-950/70 px-5 shadow-[0_0_44px_-34px_rgba(103,232,249,0.95),inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <SkeletonBlock className="h-6 w-6 rounded-full bg-slate-700/55" />
+            <SkeletonText className="h-4 w-60 max-w-full" />
+            <SkeletonBlock className="hidden h-8 w-14 rounded-lg bg-cyan-200/[0.035] 2xl:block" />
+          </div>
           <div className="grid min-w-0 gap-4">
             <div className="grid min-h-[3.75rem] overflow-hidden rounded-[1.15rem] border border-slate-700/70 bg-slate-950/55 sm:grid-cols-4">
               {["All", "Private", "Public", "Needs setup"].map(
@@ -118,11 +122,18 @@ function RepositorySearchLoadingSkeleton(): React.ReactElement {
                   <div
                     key={label}
                     className={[
-                      "grid min-h-12 place-items-center border-slate-700/70 px-2 sm:min-h-full",
+                      "flex min-h-12 items-center justify-center gap-2 border-slate-700/70 px-2 sm:min-h-full",
                       index === 0 ? "" : "border-t sm:border-l sm:border-t-0",
+                      index === 0
+                        ? "border-cyan-300 bg-cyan-300/[0.075] shadow-[inset_0_0_0_1px_rgba(103,232,249,0.65),0_0_45px_-32px_rgba(103,232,249,0.95)]"
+                        : "",
                     ].join(" ")}
                   >
-                    <SkeletonText className="h-3 w-20" />
+                    <SkeletonBlock className="h-4 w-4 rounded-full" />
+                    <SkeletonText className="h-3 w-16" />
+                    {index === 0 ? (
+                      <SkeletonBlock className="h-[1.125rem] w-[1.125rem] rounded-full bg-cyan-200/75" />
+                    ) : null}
                   </div>
                 ),
               )}
@@ -142,13 +153,13 @@ function RepositoryRowLoadingSkeleton(): React.ReactElement {
     <div className="grid gap-4 border-t border-cyan-200/10 px-1 py-5 first:border-t-0 lg:px-6 lg:py-6">
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <SkeletonText className="h-9 w-80 max-w-full" />
+          <SkeletonText className="h-9 w-[22rem] max-w-full sm:h-10" />
           <SkeletonBlock className="h-8 w-16 rounded-full" />
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           <SkeletonBlock className="h-8 w-28 rounded-full" />
           <SkeletonBlock className="h-8 w-20 rounded-full" />
-          <SkeletonBlock className="h-9 w-44 rounded-xl" />
+          <SkeletonBlock className="h-8 w-28 rounded-full" />
         </div>
       </div>
     </div>

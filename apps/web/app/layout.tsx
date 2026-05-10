@@ -10,12 +10,27 @@ import {
   reviewRouterContactMailto,
   reviewRouterWebUrl,
 } from "./public-urls";
+import {
+  defaultSeoDescription,
+  defaultSeoTitle,
+  seoKeywords,
+  siteName,
+} from "./seo";
 import { authOptions } from "../src/auth/auth-options";
 
 export const metadata: Metadata = {
   metadataBase: new URL(reviewRouterWebUrl),
-  title: "ReviewRouter",
-  description: "AI review control plane for GitHub pull requests.",
+  applicationName: siteName,
+  title: {
+    default: defaultSeoTitle,
+    template: `%s | ${siteName}`,
+  },
+  description: defaultSeoDescription,
+  keywords: [...seoKeywords],
+  authors: [{ name: siteName }],
+  creator: siteName,
+  publisher: siteName,
+  manifest: "/manifest.webmanifest",
   icons: {
     icon: [
       { url: "/favicon.ico", type: "image/x-icon" },
@@ -26,15 +41,36 @@ export const metadata: Metadata = {
       { url: "/review-router-icon.png", type: "image/png", sizes: "512x512" },
     ],
   },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-video-preview": -1,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
   openGraph: {
-    title: "ReviewRouter",
-    description: "AI review control plane for GitHub pull requests.",
-    images: [{ url: "/review-router-logo.png", alt: "ReviewRouter logo" }],
+    title: defaultSeoTitle,
+    description: defaultSeoDescription,
+    url: "/",
+    siteName,
+    type: "website",
+    images: [
+      {
+        url: "/review-router-logo.png",
+        width: 795,
+        height: 713,
+        alt: "ReviewRouter privacy-first AI code review control plane",
+      },
+    ],
   },
   twitter: {
     card: "summary",
-    title: "ReviewRouter",
-    description: "AI review control plane for GitHub pull requests.",
+    title: defaultSeoTitle,
+    description: defaultSeoDescription,
     images: ["/review-router-logo.png"],
   },
 };

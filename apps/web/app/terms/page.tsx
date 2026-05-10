@@ -1,5 +1,14 @@
+import type { Metadata } from "next";
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
 import { reviewRouterContactEmail } from "../public-urls";
+import { createPublicPageMetadata } from "../seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "Trusted beta terms",
+  description:
+    "Trusted beta usage guidelines for ReviewRouter AI code review, including customer responsibilities, CI execution boundaries, and support limitations.",
+  path: "/terms",
+});
 
 const responsibilities = [
   "Install the GitHub App only on repositories you are authorized to manage.",

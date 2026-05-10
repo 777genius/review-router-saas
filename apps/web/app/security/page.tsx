@@ -1,5 +1,14 @@
+import type { Metadata } from "next";
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import { resolveCodexSeedScriptUrl } from "@/server/codex-seed-script-url";
+import { createPublicPageMetadata } from "../seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "Security model for AI code review",
+  description:
+    "ReviewRouter security model for privacy-first AI code review: GitHub App setup, GitHub Actions execution, OIDC runtime config, and secret boundaries.",
+  path: "/security",
+});
 
 const secretCommand = `curl -fsSL ${resolveCodexSeedScriptUrl()} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`;
 

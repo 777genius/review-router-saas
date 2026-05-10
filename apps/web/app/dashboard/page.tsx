@@ -76,11 +76,15 @@ import {
   type RepositorySearchFilter,
   type RepositorySearchIndexItem,
 } from "./repository-live-search";
-import { RepositorySetupActionButton } from "./repository-setup-action-button";
+import {
+  RepositorySetupActionButton,
+  RepositorySetupMergedButton,
+} from "./repository-setup-action-button";
 import {
   RepositoryPolicyEditor,
   ReviewConfigForm,
 } from "./repository-policy-editor";
+import { RepositorySetupStatusRefresher } from "./repository-setup-status-refresher";
 
 export const dynamic = "force-dynamic";
 
@@ -1457,8 +1461,11 @@ function RepositoryTable({
     );
     const searchableText = [
       repository.fullName,
+      repository.owner,
+      repository.name,
       repository.defaultBranch,
       repository.visibility,
+      `${repository.stargazersCount} stars`,
       repository.archived ? "archived" : "active",
       repository.selected ? "selected" : "not selected unselected",
       repository.setupStatus,
@@ -1519,9 +1526,11 @@ function RepositoryTable({
   const initiallyVisibleRepositoryIds = new Set(
     displayRows.map((row) => row.repository.id),
   );
-
   return (
-    <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+    <div
+      data-repository-table
+      className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
+    >
       <div className="border-b border-cyan-200/10 bg-transparent p-0">
         <RepositoryLiveSearch
           workspaceKey={workspaceKey}
@@ -1535,7 +1544,38 @@ function RepositoryTable({
         />
       </div>
 
-      <div className="grid gap-3 p-3 text-slate-200 lg:gap-0 lg:p-0">
+      <div
+        data-repository-search-loader
+        hidden
+        className="border-t border-cyan-200/10 px-3 py-5 text-slate-200 lg:px-6 lg:py-6"
+      >
+        <div className="grid gap-4">
+          <p className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
+            Searching repositories
+          </p>
+          {Array.from({ length: 4 }, (_, index) => (
+            <div
+              key={index}
+              className="grid gap-3 border-t border-cyan-200/10 py-5 first:border-t-0 first:pt-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="h-8 w-80 max-w-full animate-pulse rounded-full bg-slate-700/45" />
+                <span className="h-8 w-16 animate-pulse rounded-full bg-slate-800/55" />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                <span className="h-8 w-28 animate-pulse rounded-full bg-slate-800/55" />
+                <span className="h-8 w-20 animate-pulse rounded-full bg-slate-800/55" />
+                <span className="h-9 w-40 animate-pulse rounded-xl bg-slate-800/55" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div
+        data-repository-results
+        className="grid gap-3 p-3 text-slate-200 lg:gap-0 lg:p-0"
+      >
         {displayRows.map(
           ({
             repository,
@@ -1566,6 +1606,12 @@ function RepositoryTable({
                   type="checkbox"
                   className="peer sr-only"
                 />
+                {setupProgressStep === 2 ? (
+                  <RepositorySetupStatusRefresher
+                    enabled
+                    disclosureId={setupDisclosureId}
+                  />
+                ) : null}
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <RepositoryNameLink
@@ -1804,6 +1850,16 @@ function RepositorySetupProgressPanel({
         mutationsEnabled={mutationsEnabled}
       />
     ) : null;
+  const mergeConfirmAction =
+    currentStep === 2 ? (
+      <RepositorySetupMergedButton
+        workspaceId={workspace.id}
+        repositoryId={repository.id}
+        selected={repository.selected}
+        archived={repository.archived}
+        mutationsEnabled={mutationsEnabled}
+      />
+    ) : null;
   const enableReviewAction =
     currentStep === 3 && installation ? (
       <RepositoryProviderSecretsAction
@@ -1840,6 +1896,7 @@ function RepositorySetupProgressPanel({
         currentStep > 2
           ? "Workflow is on the default branch."
           : "Merge on GitHub.",
+      action: mergeConfirmAction,
     },
     {
       number: 3,
@@ -2507,6 +2564,7 @@ function WorkspaceActionNotice({
     !error &&
     [
       "setup_pr_ready",
+      "setup_pr_merged",
       "review_config_saved",
       "repository_review_config_saved",
       "repository_review_config_cleared",
@@ -2662,6 +2720,7 @@ function resolveDashboardSection(
     [
       "app_installed",
       "setup_pr_ready",
+      "setup_pr_merged",
       "workflow_already_current",
       "sync_requested",
       "sync_already_requested",
@@ -2711,6 +2770,10 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return repository
         ? `Setup PR is ready for ${repository}.`
         : "Setup PR is ready.";
+    case "setup_pr_merged":
+      return repository
+        ? `Setup PR merge was confirmed for ${repository}.`
+        : "Setup PR merge was confirmed.";
     case "workflow_already_current":
       return repository
         ? `ReviewRouter workflow is already current for ${repository}.`
@@ -2747,6 +2810,8 @@ function dashboardNoticeTitle(notice: string): string {
       return "Refresh queued";
     case "setup_pr_ready":
       return "Setup PR ready";
+    case "setup_pr_merged":
+      return "Setup PR merged";
     case "workflow_already_current":
       return "Workflow installed";
     case "org_ruleset_queued":
@@ -2769,6 +2834,7 @@ function dashboardNoticeTone(
 ): "success" | "warning" | "danger" | "accent" {
   switch (notice) {
     case "setup_pr_ready":
+    case "setup_pr_merged":
     case "app_installed":
     case "workflow_already_current":
     case "review_config_saved":
@@ -2922,6 +2988,8 @@ function dashboardErrorText(error: string): string {
       return "Archived repositories cannot be provisioned.";
     case "installation_not_active":
       return "The GitHub App installation is not active.";
+    case "setup_pr_not_merged":
+      return "The setup PR is not merged yet, or the workflow file is not visible on the default branch yet.";
     case "entitlement_denied":
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
     case "workflow_provisioning_disabled":

@@ -154,6 +154,16 @@ export async function createSetupPullRequestClientAction(
   return { params };
 }
 
+export async function confirmSetupPullRequestMergedClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await confirmSetupPullRequestMergedMutation(formData);
+
+  revalidatePath("/dashboard");
+  revalidatePath("/setup");
+  return { params };
+}
+
 async function createSetupPullRequestMutation(
   formData: FormData,
 ): Promise<Record<string, string>> {
@@ -273,6 +283,132 @@ async function createSetupPullRequestMutation(
         section: "repositories",
       };
     }
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "repositories",
+    };
+  }
+
+  return params;
+}
+
+async function confirmSetupPullRequestMergedMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const repositoryId = readFormString(formData, "repositoryId");
+  const workspaceId = readFormString(formData, "workspaceId");
+  let params: Record<string, string>;
+
+  try {
+    const repository = await prisma.repositoryConnection.findUnique({
+      where: { id: repositoryId },
+      select: {
+        id: true,
+        workspaceId: true,
+        owner: true,
+        name: true,
+        fullName: true,
+        defaultBranch: true,
+        selected: true,
+        archived: true,
+        installation: {
+          select: { status: true, githubInstallationId: true },
+        },
+        provisioning: {
+          where: { status: "setup_pr_open" },
+          orderBy: { updatedAt: "desc" },
+          take: 1,
+          select: {
+            branch: true,
+            pullRequestUrl: true,
+          },
+        },
+      },
+    });
+    if (!repository || repository.workspaceId !== workspaceId) {
+      throw new Error("repository_not_found");
+    }
+    assertRepositoryConfigMutable(repository);
+
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "workflow_provisioning",
+    });
+
+    const octokit = await createGitHubAppInstallationOctokit(
+      repository.installation.githubInstallationId.toString(),
+    );
+    const setupProvisioning = repository.provisioning[0] ?? null;
+    const pullRequestNumber = pullRequestNumberFromUrl(
+      setupProvisioning?.pullRequestUrl ?? "",
+    );
+    const setupPullRequestMerged = pullRequestNumber
+      ? await checkSetupPullRequestMerged(
+          {
+            owner: repository.owner,
+            name: repository.name,
+            pullRequestNumber,
+            setupBranch: setupProvisioning?.branch ?? null,
+          },
+          octokit,
+        )
+      : false;
+    const workflowReady = setupPullRequestMerged
+      ? true
+      : await isWorkflowSetupAlreadyCurrent(
+          {
+            githubInstallationId:
+              repository.installation.githubInstallationId.toString(),
+            owner: repository.owner,
+            name: repository.name,
+            defaultBranch: repository.defaultBranch,
+            actionRef: resolveReviewRouterActionRef(),
+          },
+          {
+            workflowProbe: new OctokitRepositoryWorkflowProbe({
+              createRequester: async () => octokit,
+            }),
+          },
+        );
+
+    if (!setupPullRequestMerged && !workflowReady) {
+      throw new Error("setup_pr_not_merged");
+    }
+
+    await markRepositoryWorkflowConfigured({
+      prisma,
+      repositoryId,
+      setupBranch: setupProvisioning?.branch ?? null,
+      pullRequestNumber,
+    });
+    await recordAuditEvent(
+      {
+        workspaceId,
+        actor: actor.actor,
+        action: "workflow.setup_pr_merged_confirmed",
+        targetType: "repository",
+        targetId: repositoryId,
+        metadata: {
+          repository: repository.fullName,
+          source: setupPullRequestMerged ? "github_pull_request" : "workflow",
+          pullRequestNumber,
+        },
+      },
+      { auditLog: new PrismaAuditLogRepository(prisma) },
+    );
+
+    params = {
+      notice: "setup_pr_merged",
+      repository: repository.fullName,
+      workspace: workspaceId,
+      section: "repositories",
+    };
   } catch (error) {
     params = {
       error: safeDashboardErrorCode(error),
@@ -734,6 +870,91 @@ async function loadStaticRuntimeEnv(input: {
   return resolved.runtimeEnv;
 }
 
+async function checkSetupPullRequestMerged(
+  input: {
+    readonly owner: string;
+    readonly name: string;
+    readonly pullRequestNumber: number;
+    readonly setupBranch: string | null;
+  },
+  octokit: Awaited<ReturnType<typeof createGitHubAppInstallationOctokit>>,
+): Promise<boolean> {
+  try {
+    const response = await octokit.request(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner: input.owner,
+        repo: input.name,
+        pull_number: input.pullRequestNumber,
+      },
+    );
+    const pullRequest = response.data as {
+      readonly merged?: unknown;
+      readonly head?: { readonly ref?: unknown };
+    };
+
+    if (input.setupBranch && pullRequest.head?.ref !== input.setupBranch) {
+      return false;
+    }
+
+    return pullRequest.merged === true;
+  } catch {
+    return false;
+  }
+}
+
+async function markRepositoryWorkflowConfigured(input: {
+  readonly prisma: PrismaClient;
+  readonly repositoryId: string;
+  readonly setupBranch: string | null;
+  readonly pullRequestNumber: number | null;
+}): Promise<void> {
+  const provisioningWhere =
+    input.setupBranch || input.pullRequestNumber
+      ? {
+          repositoryId: input.repositoryId,
+          status: "setup_pr_open" as const,
+          OR: [
+            ...(input.setupBranch ? [{ branch: input.setupBranch }] : []),
+            ...(input.pullRequestNumber
+              ? [
+                  {
+                    pullRequestUrl: {
+                      endsWith: `/pull/${input.pullRequestNumber}`,
+                    },
+                  },
+                ]
+              : []),
+          ],
+        }
+      : {
+          repositoryId: input.repositoryId,
+          status: "setup_pr_open" as const,
+        };
+
+  await input.prisma.$transaction([
+    input.prisma.workflowProvisioning.updateMany({
+      where: provisioningWhere,
+      data: {
+        status: "configured",
+        errorMessage: null,
+      },
+    }),
+    input.prisma.repositoryConnection.update({
+      where: { id: input.repositoryId },
+      data: { setupStatus: "configured" },
+    }),
+  ]);
+}
+
+function pullRequestNumberFromUrl(url: string): number | null {
+  const match = /\/pull\/(\d+)(?:$|[?#])/.exec(url);
+  if (!match) return null;
+
+  const value = Number(match[1]);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
 function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
   const authMode = readFormString(
     formData,
@@ -837,6 +1058,7 @@ function safeDashboardErrorCode(error: unknown): string {
       "repository_not_selected",
       "repository_archived",
       "installation_not_active",
+      "setup_pr_not_merged",
       "workflow_provisioning_disabled",
       "org_ruleset_requires_organization_installation",
       "org_ruleset_no_selected_repositories",

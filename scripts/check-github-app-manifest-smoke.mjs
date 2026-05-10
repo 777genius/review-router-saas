@@ -24,11 +24,11 @@ assertEqual(
 assertEqual(manifest.setup_on_update, true, "setup_on_update");
 assertEqual(manifest.public, true, "public");
 
-if ("default_events" in manifest) {
-  throw new Error(
-    "manifest must not include default_events; installation lifecycle events are delivered by GitHub Apps by default",
-  );
-}
+assertEqual(
+  JSON.stringify(manifest.default_events ?? []),
+  JSON.stringify(["pull_request"]),
+  "default_events",
+);
 
 assertPermission("actions", "read");
 assertPermission("contents", "write");

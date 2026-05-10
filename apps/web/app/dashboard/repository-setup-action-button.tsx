@@ -3,7 +3,10 @@
 import { useRouter } from "next/navigation";
 import { useTransition, type ReactElement } from "react";
 import { Button } from "@reviewrouter/ui";
-import { createSetupPullRequestClientAction } from "./actions";
+import {
+  confirmSetupPullRequestMergedClientAction,
+  createSetupPullRequestClientAction,
+} from "./actions";
 
 export function RepositorySetupActionButton({
   workspaceId,
@@ -85,6 +88,75 @@ export function RepositorySetupActionButton({
             <SetupPrIcon />
             {setupPrButtonLabel(setupStatus)}
           </>
+        )}
+      </Button>
+    </form>
+  );
+}
+
+export function RepositorySetupMergedButton({
+  workspaceId,
+  repositoryId,
+  selected,
+  archived,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly selected: boolean;
+  readonly archived: boolean;
+  readonly mutationsEnabled: boolean;
+}): ReactElement {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  const disabled = !mutationsEnabled || !selected || archived || isPending;
+
+  return (
+    <form
+      action={(formData) => {
+        startTransition(() => {
+          void confirmSetupPullRequestMergedClientAction(formData)
+            .then(({ params }) => {
+              router.replace(buildDashboardMutationUrl(params), {
+                scroll: false,
+              });
+              router.refresh();
+            })
+            .catch(() => {
+              router.replace(
+                buildDashboardMutationUrl({
+                  error: "dashboard_action_failed",
+                  workspace: workspaceId,
+                  section: "repositories",
+                }),
+                { scroll: false },
+              );
+              router.refresh();
+            });
+        });
+      }}
+      className="min-w-0"
+    >
+      <input type="hidden" name="workspaceId" value={workspaceId} />
+      <input type="hidden" name="repositoryId" value={repositoryId} />
+      <Button
+        type="submit"
+        variant="ghost"
+        size="sm"
+        className="min-h-9 w-full min-w-0 rounded-lg border border-cyan-300/20 bg-cyan-300/[0.035] px-3 text-xs sm:w-auto"
+        disabled={disabled}
+        aria-busy={isPending}
+      >
+        {isPending ? (
+          <span className="inline-flex items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"
+            />
+            Checking...
+          </span>
+        ) : (
+          "I merged it"
         )}
       </Button>
     </form>

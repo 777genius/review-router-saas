@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   Check,
   Globe2,
@@ -65,14 +65,25 @@ export function RepositoryLiveSearch({
     () => new Set(filterLocalSearch(searchIndex, initialQuery, initialFilter)),
   );
   const [state, setState] = useState<"idle" | "searching" | "error">("idle");
+  const [isRoutePending, startRouteTransition] = useTransition();
   const latestRequestId = useRef(0);
   const normalizedQuery = query.trim();
   const matchingCount = matchingIds.size;
   const hasActiveQuery = normalizedQuery.length > 0;
   const hasActiveFilter = hasActiveQuery || activeFilter !== "all";
+  const isSearchLoading = state === "searching" || isRoutePending;
   const renderedCountLabel = Math.min(matchingCount, rowLimit);
+  const updateLocalMatches = (
+    nextQuery: string,
+    nextFilter: RepositorySearchFilter,
+  ) => {
+    setMatchingIds(
+      new Set(filterLocalSearch(searchIndex, nextQuery.trim(), nextFilter)),
+    );
+  };
   const helperText = useRepositorySearchHelperText({
     state,
+    isSearchLoading,
     hasActiveQuery,
     activeFilter,
     matchingCount,
@@ -87,9 +98,16 @@ export function RepositoryLiveSearch({
   }, [matchingIds]);
 
   useEffect(() => {
+    applyRepositorySearchLoading(isSearchLoading);
+  }, [isSearchLoading]);
+
+  useEffect(() => {
     const requestId = latestRequestId.current + 1;
     latestRequestId.current = requestId;
     const controller = new AbortController();
+    const optimisticMatchingIds = new Set(
+      filterLocalSearch(searchIndex, normalizedQuery, activeFilter),
+    );
 
     const nextUrl = buildSearchUrl({
       workspaceKey,
@@ -98,10 +116,11 @@ export function RepositoryLiveSearch({
       filter: activeFilter,
     });
 
+    setMatchingIds(optimisticMatchingIds);
+
     if (!hasActiveQuery) {
       setState("idle");
-      setMatchingIds(new Set(filterLocalSearch(searchIndex, "", activeFilter)));
-      replaceSearchUrl(router, nextUrl);
+      replaceSearchUrl(router, nextUrl, startRouteTransition);
       return () => controller.abort();
     }
 
@@ -126,8 +145,8 @@ export function RepositoryLiveSearch({
         .then((payload) => {
           if (latestRequestId.current !== requestId) return;
           setMatchingIds(new Set(payload.repositoryIds));
+          replaceSearchUrl(router, nextUrl, startRouteTransition);
           setState("idle");
-          replaceSearchUrl(router, nextUrl);
         })
         .catch((error: unknown) => {
           if (
@@ -147,7 +166,7 @@ export function RepositoryLiveSearch({
           );
           setState("error");
         });
-    }, 280);
+    }, 180);
 
     return () => {
       window.clearTimeout(timeout);
@@ -160,6 +179,7 @@ export function RepositoryLiveSearch({
     router,
     searchIndex,
     selectedRepositoryFullName,
+    startRouteTransition,
     workspaceKey,
   ]);
 
@@ -183,7 +203,11 @@ export function RepositoryLiveSearch({
           <input
             type="search"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              const nextQuery = event.target.value;
+              setQuery(nextQuery);
+              updateLocalMatches(nextQuery, activeFilter);
+            }}
             placeholder="repo, branch, setup status..."
             className="h-11 w-full rounded-xl border border-cyan-300/45 bg-slate-950/70 pl-10 pr-3 text-sm font-medium text-cyan-50 shadow-[0_0_44px_-34px_rgba(103,232,249,0.95),inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition placeholder:text-slate-600 hover:border-cyan-300/70 focus:border-cyan-200 focus:ring-2 focus:ring-cyan-300/20 2xl:pr-14"
             autoComplete="off"
@@ -211,7 +235,10 @@ export function RepositoryLiveSearch({
                 key={option.value}
                 type="button"
                 aria-pressed={selected}
-                onClick={() => setActiveFilter(option.value)}
+                onClick={() => {
+                  setActiveFilter(option.value);
+                  updateLocalMatches(normalizedQuery, option.value);
+                }}
                 className={[
                   "relative flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-cyan-200 sm:min-h-0 sm:h-full",
                   selected
@@ -269,6 +296,7 @@ export function RepositoryLiveSearch({
                 onClick={() => {
                   setQuery("");
                   setActiveFilter("all");
+                  updateLocalMatches("", "all");
                 }}
                 className="inline-flex text-xs font-semibold text-cyan-200 transition hover:text-cyan-50"
               >
@@ -279,7 +307,7 @@ export function RepositoryLiveSearch({
         </div>
       ) : null}
 
-      {hasActiveFilter && matchingCount === 0 ? (
+      {hasActiveFilter && !isSearchLoading && matchingCount === 0 ? (
         <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.055] p-3">
           <p className="font-mono text-xs font-semibold uppercase tracking-[0.16em] text-amber-100">
             No matches
@@ -298,6 +326,7 @@ export function RepositoryLiveSearch({
 
 function useRepositorySearchHelperText({
   state,
+  isSearchLoading,
   hasActiveQuery,
   activeFilter,
   matchingCount,
@@ -307,6 +336,7 @@ function useRepositorySearchHelperText({
   totalRepositoryCount,
 }: {
   readonly state: "idle" | "searching" | "error";
+  readonly isSearchLoading: boolean;
   readonly hasActiveQuery: boolean;
   readonly activeFilter: RepositorySearchFilter;
   readonly matchingCount: number;
@@ -316,7 +346,10 @@ function useRepositorySearchHelperText({
   readonly totalRepositoryCount: number;
 }): string {
   return useMemo(() => {
-    if (state === "searching") return "Searching synced repositories...";
+    if (isSearchLoading && (hasActiveQuery || activeFilter !== "all")) {
+      return `${matchingCount} ${repositoryFilterResultLabel(activeFilter)}. Updating results...`;
+    }
+    if (isSearchLoading) return "Updating repositories...";
     if (state === "error") {
       return "Live API search is temporarily unavailable. Showing local matches.";
     }
@@ -334,6 +367,7 @@ function useRepositorySearchHelperText({
   }, [
     activeFilter,
     hasActiveQuery,
+    isSearchLoading,
     matchingCount,
     renderedCountLabel,
     renderedRepositoryCount,
@@ -400,6 +434,27 @@ function applyRepositoryVisibility(matchingIds: ReadonlySet<string>): void {
     });
 }
 
+function applyRepositorySearchLoading(loading: boolean): void {
+  const search = document.querySelector<HTMLElement>(
+    "[data-repository-live-search]",
+  );
+  const table = search?.closest<HTMLElement>("[data-repository-table]");
+  const results = table?.querySelector<HTMLElement>(
+    "[data-repository-results]",
+  );
+  const loader = table?.querySelector<HTMLElement>(
+    "[data-repository-search-loader]",
+  );
+
+  if (results) {
+    results.hidden = loading;
+    results.setAttribute("aria-busy", loading ? "true" : "false");
+  }
+  if (loader) {
+    loader.hidden = !loading;
+  }
+}
+
 function buildSearchUrl({
   workspaceKey,
   selectedRepositoryFullName,
@@ -445,11 +500,14 @@ function appendFilterParams(
 function replaceSearchUrl(
   router: ReturnType<typeof useRouter>,
   nextUrl: string,
+  startTransition: (callback: () => void) => void,
 ): void {
   if (searchUrlMatchesCurrentPage(nextUrl)) return;
 
-  router.replace(nextUrl, { scroll: false });
-  router.refresh();
+  startTransition(() => {
+    router.replace(nextUrl, { scroll: false });
+    router.refresh();
+  });
 }
 
 function searchUrlMatchesCurrentPage(nextUrl: string): boolean {

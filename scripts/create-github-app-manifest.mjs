@@ -38,6 +38,7 @@ const manifest = {
   setup_url: `${webUrl}/setup`,
   setup_on_update: true,
   request_oauth_on_install: false,
+  default_events: ["pull_request"],
   public: true,
   description:
     "ReviewRouter connects GitHub pull request review setup while reviews run in customer GitHub Actions.",

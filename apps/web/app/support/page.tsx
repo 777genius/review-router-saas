@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import {
   reviewRouterContactEmail,
@@ -6,6 +7,14 @@ import {
   reviewRouterGitHubIssuesChooseUrl,
   reviewRouterGitHubSetupIssueUrl,
 } from "../public-urls";
+import { createPublicPageMetadata } from "../seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "ReviewRouter support",
+  description:
+    "Get ReviewRouter beta support with safe metadata, workflow run links, and issue templates without sharing source code, PR diffs, or provider secrets.",
+  path: "/support",
+});
 
 const safeReport = `To: ${reviewRouterContactEmail}
 Repository: owner/repo

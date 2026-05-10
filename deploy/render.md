@@ -129,6 +129,7 @@ Metadata: read
 Required webhook events:
 
 ```text
+Pull request
 Installation
 Installation repositories
 ```

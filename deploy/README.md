@@ -107,6 +107,7 @@ Metadata: read
 Required webhook event subscriptions:
 
 ```text
+Pull request
 Installation
 Installation repositories
 ```

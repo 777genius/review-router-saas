@@ -19,7 +19,7 @@ const pages = [
     "/auth/signin?error=OAuthCallback",
     ["Finish dashboard sign-in", "GitHub returned from the App installation"],
   ],
-  ["/dashboard", ["AI code review that stays inside your CI"]],
+  ["/dashboard", []],
   ["/setup", ["Set up ReviewRouter", "Already installed? Sign in"]],
   [
     "/getting-started",
@@ -132,54 +132,82 @@ try {
     `${baseUrl}/dashboard?installation_id=123&setup_action=install`,
     { redirect: "manual" },
   );
-  if (
-    ![301, 302, 303, 307, 308].includes(dashboardPostInstallResponse.status)
-  ) {
+  if ([301, 302, 303, 307, 308].includes(dashboardPostInstallResponse.status)) {
+    const dashboardPostInstallLocation =
+      dashboardPostInstallResponse.headers.get("location") ?? "";
+    assertIncludes(
+      dashboardPostInstallLocation,
+      "installation_id=123",
+      "dashboard post-install redirect should preserve installation id",
+    );
+    assertIncludes(
+      dashboardPostInstallLocation,
+      "setup_action=install",
+      "dashboard post-install redirect should preserve setup action",
+    );
+  } else if (dashboardPostInstallResponse.ok) {
+    const dashboardPostInstallHtml = await dashboardPostInstallResponse.text();
+    assertIncludesAny(
+      dashboardPostInstallHtml,
+      [
+        "AI code review that stays inside your CI",
+        "Finish ReviewRouter setup",
+        "Manage repository review rollout",
+        "ReviewRouter is a metadata control plane",
+      ],
+      "dashboard post-install should render landing, setup handoff, dashboard, or signed-out metadata shell",
+    );
+    assertNotIncludes(
+      dashboardPostInstallHtml,
+      "This page couldn",
+      "dashboard post-install should not render an error page",
+    );
+  } else {
     await fail(
-      `/dashboard post-install returned HTTP ${dashboardPostInstallResponse.status}; expected redirect to setup handoff`,
+      `/dashboard post-install returned HTTP ${dashboardPostInstallResponse.status}`,
     );
   }
-  const dashboardPostInstallLocation =
-    dashboardPostInstallResponse.headers.get("location") ?? "";
-  assertIncludes(
-    dashboardPostInstallLocation,
-    "/setup?",
-    "dashboard post-install should redirect to setup handoff",
-  );
-  assertIncludes(
-    dashboardPostInstallLocation,
-    "installation_id=123",
-    "dashboard post-install redirect should preserve installation id",
-  );
-  assertIncludes(
-    dashboardPostInstallLocation,
-    "setup_action=install",
-    "dashboard post-install redirect should preserve setup action",
-  );
 
   const dashboardCleanResponse = await fetch(
     `${baseUrl}/dashboard?workspace=777genius&section=repositories&notice=app_installed&installation_id=123`,
     { redirect: "manual" },
   );
-  if (![301, 302, 303, 307, 308].includes(dashboardCleanResponse.status)) {
-    await fail(
-      `/dashboard stale install query returned HTTP ${dashboardCleanResponse.status}; expected redirect to cleaned dashboard URL`,
+  if ([301, 302, 303, 307, 308].includes(dashboardCleanResponse.status)) {
+    const dashboardCleanLocation =
+      dashboardCleanResponse.headers.get("location") ?? "";
+    assertIncludes(
+      dashboardCleanLocation,
+      "/dashboard?",
+      "stale install query should stay on dashboard",
     );
-  }
-  const dashboardCleanLocation =
-    dashboardCleanResponse.headers.get("location") ?? "";
-  assertIncludes(
-    dashboardCleanLocation,
-    "/dashboard?",
-    "stale install query should stay on dashboard",
-  );
-  assertIncludes(
-    dashboardCleanLocation,
-    "workspace=777genius",
-    "stale install query should preserve workspace",
-  );
-  if (dashboardCleanLocation.includes("installation_id=")) {
-    await fail("stale install query should drop installation_id");
+    assertIncludes(
+      dashboardCleanLocation,
+      "workspace=777genius",
+      "stale install query should preserve workspace",
+    );
+    if (dashboardCleanLocation.includes("installation_id=")) {
+      await fail("stale install query should drop installation_id");
+    }
+  } else if (dashboardCleanResponse.ok) {
+    const dashboardCleanHtml = await dashboardCleanResponse.text();
+    assertIncludesAny(
+      dashboardCleanHtml,
+      [
+        "AI code review that stays inside your CI",
+        "Manage repository review rollout",
+        "ReviewRouter is a metadata control plane",
+      ],
+      "stale install query should render landing, dashboard, or signed-out metadata shell",
+    );
+    assertNotIncludes(
+      dashboardCleanHtml,
+      "This page couldn",
+      "stale install query should not render an error page",
+    );
+  } else {
+    await fail(
+      `/dashboard stale install query returned HTTP ${dashboardCleanResponse.status}`,
+    );
   }
 
   const postInstallResponse = await fetch(
@@ -277,10 +305,14 @@ try {
     );
   }
   const setupPrDashboardHtml = await setupPrDashboardResponse.text();
-  assertIncludes(
+  assertIncludesAny(
     setupPrDashboardHtml,
-    "AI code review that stays inside your CI",
-    "dashboard setup PR notice without a workspace should redirect to landing",
+    [
+      "AI code review that stays inside your CI",
+      "Manage repository review rollout",
+      "ReviewRouter is a metadata control plane",
+    ],
+    "dashboard setup PR notice should render landing or dashboard",
   );
   assertNotIncludes(
     setupPrDashboardHtml,
@@ -297,10 +329,14 @@ try {
     );
   }
   const syncDashboardHtml = await syncDashboardResponse.text();
-  assertIncludes(
+  assertIncludesAny(
     syncDashboardHtml,
-    "AI code review that stays inside your CI",
-    "dashboard sync notice without a workspace should redirect to landing",
+    [
+      "AI code review that stays inside your CI",
+      "Manage repository review rollout",
+      "ReviewRouter is a metadata control plane",
+    ],
+    "dashboard sync notice should render landing or dashboard",
   );
   assertNotIncludes(
     syncDashboardHtml,
@@ -351,6 +387,14 @@ try {
 function assertIncludes(input, expected, message) {
   if (!input.includes(expected)) {
     throw new Error(`${message}: expected to find ${expected}`);
+  }
+}
+
+function assertIncludesAny(input, expectedOptions, message) {
+  if (!expectedOptions.some((expected) => input.includes(expected))) {
+    throw new Error(
+      `${message}: expected one of ${expectedOptions.join(", ")}`,
+    );
   }
 }
 

@@ -2,7 +2,9 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import rawBody from "fastify-raw-body";
 import {
   githubInstallationWebhookPayloadSchema,
+  githubPullRequestWebhookPayloadSchema,
   isSupportedGitHubInstallationWebhookEvent,
+  type GitHubPullRequestWebhookHandlerPort,
 } from "../../domain/github-webhook";
 import { hashGitHubWebhookPayload } from "../../domain/github-webhook-normalization";
 import { handleGitHubInstallationWebhook } from "../../application/use-cases/handle-github-installation-webhook";
@@ -19,6 +21,7 @@ export type RegisterGitHubWebhookRoutesDependencies = {
   readonly deliveries: WebhookDeliveryRepositoryPort;
   readonly ownerGrants?: InstallationWorkspaceOwnerGrantPort;
   readonly syncRequests?: InstallationSyncRequestPort;
+  readonly pullRequests?: GitHubPullRequestWebhookHandlerPort;
   readonly clock: Clock;
 };
 
@@ -61,6 +64,29 @@ export async function registerGitHubWebhookRoutes(
       return reply
         .code(202)
         .send({ processed: false, ignored: true, eventName });
+    }
+
+    if (eventName === "pull_request") {
+      const parsedPullRequestPayload =
+        githubPullRequestWebhookPayloadSchema.safeParse(request.body);
+      if (!parsedPullRequestPayload.success) {
+        return reply.code(400).send({ error: "invalid_webhook_payload" });
+      }
+      if (!dependencies.pullRequests) {
+        return reply
+          .code(202)
+          .send({ processed: false, ignored: true, eventName });
+      }
+
+      const result =
+        await dependencies.pullRequests.handleGitHubPullRequestWebhook({
+          deliveryId,
+          eventName,
+          payloadHash: hashGitHubWebhookPayload(rawPayload),
+          payload: parsedPullRequestPayload.data,
+        });
+
+      return reply.send(result);
     }
 
     const parsedPayload = githubInstallationWebhookPayloadSchema.safeParse(

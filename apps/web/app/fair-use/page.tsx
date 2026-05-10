@@ -1,5 +1,14 @@
+import type { Metadata } from "next";
 import { freeBetaLimits } from "@reviewrouter/features-entitlements";
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
+import { createPublicPageMetadata } from "../seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "Fair use limits",
+  description:
+    "ReviewRouter fair use limits for beta workspaces, repository sync, setup PRs, OIDC exchange, health reports, and dashboard writes.",
+  path: "/fair-use",
+});
 
 const freeLimits = [
   ["Workspaces per GitHub user", String(freeBetaLimits.maxWorkspacesPerUser)],

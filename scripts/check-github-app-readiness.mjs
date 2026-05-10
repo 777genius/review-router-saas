@@ -28,6 +28,7 @@ const requiredPermissions = {
   issues: "write",
   metadata: "read",
 };
+const requiredWebhookEvents = ["pull_request"];
 
 const errors = [];
 const warnings = [];
@@ -74,7 +75,7 @@ async function checkGitHubApp() {
   }
   assertPermissions(appData.permissions ?? {});
   assertWebhookConfig(webhookConfig);
-  warnAboutLifecycleEvents(appData.events ?? []);
+  assertWebhookEvents(appData.events ?? []);
 
   const installations = await listInstallations(app);
   const installUrl = `https://github.com/apps/${actualSlug || appSlug}/installations/new`;
@@ -203,8 +204,16 @@ function assertPermissions(actualPermissions) {
   }
 }
 
-function warnAboutLifecycleEvents(actualEvents) {
+function assertWebhookEvents(actualEvents) {
   const actual = new Set(actualEvents);
+  for (const event of requiredWebhookEvents) {
+    if (!actual.has(event)) {
+      errors.push(
+        `GitHub App webhook event ${event} must be enabled; current events are ${actualEvents.length ? actualEvents.join(", ") : "none"}.`,
+      );
+    }
+  }
+
   if (actual.has("installation") || actual.has("installation_repositories")) {
     warnings.push(
       "GitHub returned installation lifecycle events in appData.events, but they are default GitHub App events and should not be configured in the manifest.",
@@ -213,7 +222,7 @@ function warnAboutLifecycleEvents(actualEvents) {
 
   if (isHostedMode) {
     warnings.push(
-      "Hosted lifecycle sync relies on GitHub's default installation and installation_repositories events. Verify actual deliveries in the GitHub App Advanced webhook delivery log after installation.",
+      "Hosted lifecycle sync relies on GitHub's default installation and installation_repositories events. Pull request merge detection additionally requires the pull_request webhook event.",
     );
   }
 }

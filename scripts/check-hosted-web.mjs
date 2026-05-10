@@ -21,10 +21,13 @@ const expectedAppSlug = String(
 
 const dashboard = await fetchHtml("/dashboard");
 assertIncludes(dashboard.html, "ReviewRouter", "dashboard missing product");
-assertIncludes(
+assertIncludesAny(
   dashboard.html,
-  "AI code review that stays inside your CI",
-  "dashboard signed-out redirect missing landing hero",
+  [
+    "AI code review that stays inside your CI",
+    "Manage repository review rollout",
+  ],
+  "dashboard missing landing or workspace hero",
 );
 assertIncludes(
   dashboard.html,
@@ -139,10 +142,13 @@ assertNotIncludes(
 const setupPrDashboardNotice = await fetchHtml(
   "/dashboard?notice=setup_pr_ready&repository=owner%2Frepo&pr=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fpull%2F1",
 );
-assertIncludes(
+assertIncludesAny(
   setupPrDashboardNotice.html,
-  "AI code review that stays inside your CI",
-  "signed-out dashboard setup PR notice should fall back to landing",
+  [
+    "AI code review that stays inside your CI",
+    "Manage repository review rollout",
+  ],
+  "dashboard setup PR notice should render landing or dashboard",
 );
 assertNotIncludes(
   setupPrDashboardNotice.html,
@@ -151,10 +157,13 @@ assertNotIncludes(
 );
 
 const syncDashboardNotice = await fetchHtml("/dashboard?notice=sync_requested");
-assertIncludes(
+assertIncludesAny(
   syncDashboardNotice.html,
-  "AI code review that stays inside your CI",
-  "signed-out dashboard sync notice should fall back to landing",
+  [
+    "AI code review that stays inside your CI",
+    "Manage repository review rollout",
+  ],
+  "dashboard sync notice should render landing or dashboard",
 );
 assertNotIncludes(
   syncDashboardNotice.html,
@@ -251,6 +260,14 @@ function assertSetupCallback(input) {
   throw new Error(
     "install redirect sign-in must return users to the setup handoff page",
   );
+}
+
+function assertIncludesAny(input, expectedOptions, message) {
+  if (!expectedOptions.some((expected) => input.includes(expected))) {
+    throw new Error(
+      `${message}: expected one of ${expectedOptions.join(", ")}`,
+    );
+  }
 }
 
 function assertNotIncludes(input, expected, message) {

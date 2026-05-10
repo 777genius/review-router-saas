@@ -1,8 +1,17 @@
+import type { Metadata } from "next";
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
 import {
   reviewRouterContactEmail,
   reviewRouterContactMailto,
 } from "../public-urls";
+import { createPublicPageMetadata } from "../seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "Privacy-first AI code review",
+  description:
+    "Privacy model for ReviewRouter: AI pull request review runs in customer CI while code, PR diffs, prompts, and provider secrets stay out of the SaaS by default.",
+  path: "/privacy",
+});
 
 const collectedMetadata = [
   "GitHub account login, avatar URL, and GitHub user id after sign-in",

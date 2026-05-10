@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { Badge, LinkButton } from "@reviewrouter/ui";
 import { LoadingLinkButton } from "./loading-link-button";
 import {
@@ -6,16 +7,28 @@ import {
 } from "../src/server/dashboard-mutations";
 import { countConnectedGitHubInstallations } from "../src/server/connected-installations";
 import { getGitHubAppInstallUrl } from "../src/server/github-app-install-url";
+import { reviewRouterWebUrl } from "./public-urls";
+import {
+  createPublicPageMetadata,
+  defaultSeoDescription,
+  siteName,
+} from "./seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "Privacy-first AI code review in CI",
+  description: defaultSeoDescription,
+  path: "/",
+});
 
 const setupSteps = [
   {
     title: "Install GitHub App",
-    body: "Choose one repository, selected repositories, or an organization. ReviewRouter only syncs metadata.",
+    body: "Choose one repository, selected repositories, or an organization. ReviewRouter syncs metadata, not source code.",
     badge: "Step 1",
   },
   {
     title: "Merge setup PR",
-    body: "A compact reusable workflow is added through a pull request, so your repository controls what runs.",
+    body: "A compact reusable workflow is added through a pull request, so your repository controls what runs in CI.",
     badge: "Step 2",
   },
   {
@@ -26,12 +39,25 @@ const setupSteps = [
 ] as const;
 
 const supportBadges = [
+  "Privacy-first",
   "Codex OAuth",
   "OpenAI API key",
   "OpenRouter",
+  "No code custody",
   "Personal repos",
   "Organizations",
 ] as const;
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: siteName,
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "GitHub Actions",
+  description: defaultSeoDescription,
+  url: reviewRouterWebUrl,
+  softwareRequirements: "GitHub App and GitHub Actions",
+} as const;
 
 export default async function HomePage(): Promise<React.ReactElement> {
   const appInstallUrl = getGitHubAppInstallUrl();
@@ -56,17 +82,23 @@ export default async function HomePage(): Promise<React.ReactElement> {
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 md:py-10">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+      />
       <section className="relative px-1 py-8 sm:px-4 sm:py-10 lg:px-8">
         <div className="relative mx-auto flex max-w-5xl flex-col items-center text-center">
           <div className="pointer-events-none absolute left-1/2 top-0 h-72 w-72 -translate-x-1/2 rounded-full bg-cyan-300/12 blur-3xl" />
           <div className="pointer-events-none absolute right-4 top-44 h-56 w-56 rounded-full bg-fuchsia-400/10 blur-3xl" />
-          <Badge tone="success">3 minute setup</Badge>
-          <h1 className="mt-6 max-w-5xl text-4xl font-extrabold leading-[0.98] tracking-[-0.06em] text-cyan-50 [overflow-wrap:anywhere] sm:text-6xl md:text-7xl">
-            AI code review that stays inside your CI
+          <Badge tone="success">Privacy-first setup</Badge>
+          <h1 className="mt-6 max-w-5xl text-4xl font-extrabold leading-[0.98] text-cyan-50 [overflow-wrap:anywhere] sm:text-6xl md:text-7xl">
+            Privacy-first AI code review that stays inside your CI
           </h1>
           <p className="mt-5 max-w-3xl text-base leading-7 text-slate-300 [overflow-wrap:anywhere] sm:text-xl sm:leading-8">
             Install the GitHub App, merge one compact workflow PR, then connect
-            Codex or API keys directly to GitHub Actions secrets.
+            Codex, OpenAI, or OpenRouter directly to GitHub Actions secrets.
+            Code, PR diffs, prompts, and provider credentials stay out of the
+            SaaS by default.
           </p>
 
           <div className="mt-7 grid w-full max-w-xl gap-3 sm:flex sm:justify-center">
@@ -113,7 +145,7 @@ export default async function HomePage(): Promise<React.ReactElement> {
                 className="group min-h-56 rounded-[2rem] border border-white/10 bg-white/[0.035] p-6 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] transition hover:-translate-y-1 hover:border-cyan-200/25 hover:bg-cyan-300/[0.055] sm:p-7"
               >
                 <Badge tone="neutral">{item.badge}</Badge>
-                <h2 className="mt-6 text-2xl font-semibold tracking-[-0.03em] text-cyan-50">
+                <h2 className="mt-6 text-2xl font-semibold text-cyan-50">
                   {item.title}
                 </h2>
                 <p className="mt-4 text-base leading-7 text-slate-300">
@@ -128,9 +160,9 @@ export default async function HomePage(): Promise<React.ReactElement> {
       <section className="rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/72 p-6 shadow-[0_20px_90px_-58px_rgba(0,240,255,0.7)] sm:p-8">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
           <div className="min-w-0">
-            <Badge tone="accent">Runtime boundary</Badge>
-            <h2 className="mt-4 text-2xl font-semibold tracking-[-0.03em] text-cyan-50">
-              SaaS configures. GitHub Actions executes.
+            <Badge tone="accent">Privacy boundary</Badge>
+            <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
+              Control plane for AI PR review. No code custody by default.
             </h2>
             <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-300 sm:text-base sm:leading-7">
               ReviewRouter stores installation metadata, model settings, health,

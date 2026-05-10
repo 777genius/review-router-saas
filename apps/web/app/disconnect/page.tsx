@@ -1,8 +1,17 @@
+import type { Metadata } from "next";
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import {
   reviewRouterContactEmail,
   reviewRouterContactMailto,
 } from "../public-urls";
+import { createPublicPageMetadata } from "../seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "Disconnect ReviewRouter",
+  description:
+    "How to disconnect ReviewRouter cleanly by uninstalling the GitHub App, removing workflow files, rotating secrets, and requesting metadata deletion.",
+  path: "/disconnect",
+});
 
 const uninstallPath =
   "GitHub -> Settings -> Applications -> Installed GitHub Apps -> ReviewRouter -> Configure -> Uninstall";

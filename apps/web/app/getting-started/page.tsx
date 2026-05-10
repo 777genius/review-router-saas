@@ -1,5 +1,14 @@
+import type { Metadata } from "next";
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import { resolveCodexSeedScriptUrl } from "@/server/codex-seed-script-url";
+import { createPublicPageMetadata } from "../seo";
+
+export const metadata: Metadata = createPublicPageMetadata({
+  title: "Set up AI code review in GitHub Actions",
+  description:
+    "Install ReviewRouter on GitHub, merge a setup PR, and run Codex, OpenAI, or OpenRouter code review inside your own GitHub Actions environment.",
+  path: "/getting-started",
+});
 
 const seedScriptUrl = resolveCodexSeedScriptUrl();
 const repoCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`;

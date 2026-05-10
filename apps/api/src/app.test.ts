@@ -21,6 +21,8 @@ import {
 import type {
   GitHubInstallationRepositoryPort,
   GitHubInstallationSnapshot,
+  GitHubPullRequestWebhookEnvelope,
+  GitHubPullRequestWebhookHandlerPort,
   InstallationWorkspaceOwnerGrant,
   InstallationWorkspaceOwnerGrantPort,
   WebhookDeliveryRecord,
@@ -94,6 +96,17 @@ class InMemoryOwnerGrants implements InstallationWorkspaceOwnerGrantPort {
     grant: InstallationWorkspaceOwnerGrant,
   ): Promise<void> {
     this.grants.push(grant);
+  }
+}
+
+class CapturingPullRequestWebhookHandler implements GitHubPullRequestWebhookHandlerPort {
+  public envelopes: GitHubPullRequestWebhookEnvelope[] = [];
+
+  async handleGitHubPullRequestWebhook(
+    envelope: GitHubPullRequestWebhookEnvelope,
+  ): Promise<Record<string, unknown>> {
+    this.envelopes.push(envelope);
+    return { processed: true, status: "configured" };
   }
 }
 
@@ -430,6 +443,76 @@ describe("API app", () => {
         githubLogin: "777genius",
         avatarUrl: null,
       },
+    ]);
+  });
+
+  it("handles signed GitHub setup pull request merge webhooks", async () => {
+    const pullRequests = new CapturingPullRequestWebhookHandler();
+    const secret = "webhook-secret";
+    const app = await createApiApp({
+      githubWebhookDependencies: {
+        webhookSecret: secret,
+        installations: new InMemoryInstallations(),
+        deliveries: new InMemoryDeliveries(),
+        pullRequests,
+        clock: fixedClock,
+      },
+    });
+    const payload = JSON.stringify({
+      action: "closed",
+      installation: {
+        id: 129154876,
+        account: { login: "777genius", type: "User" },
+        repository_selection: "all",
+      },
+      repository: {
+        id: 123456,
+        name: "example",
+        full_name: "777genius/example",
+      },
+      pull_request: {
+        number: 7,
+        html_url: "https://github.com/777genius/example/pull/7",
+        state: "closed",
+        merged: true,
+        base: { ref: "main" },
+        head: { ref: "reviewrouter/setup" },
+      },
+      sender: { id: 777, login: "777genius" },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-api-pr-merge-test",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signGitHubWebhookPayload(payload, secret),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      processed: true,
+      status: "configured",
+    });
+    expect(pullRequests.envelopes).toEqual([
+      expect.objectContaining({
+        deliveryId: "delivery-api-pr-merge-test",
+        eventName: "pull_request",
+        payload: expect.objectContaining({
+          action: "closed",
+          repository: expect.objectContaining({
+            full_name: "777genius/example",
+          }),
+          pull_request: expect.objectContaining({
+            number: 7,
+            merged: true,
+          }),
+        }),
+      }),
     ]);
   });
 
