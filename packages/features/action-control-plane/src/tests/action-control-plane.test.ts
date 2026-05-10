@@ -702,11 +702,13 @@ describe("action control plane", () => {
       provider: {
         model: "gpt-5.5",
         reasoningEffort: "medium",
+        fastMode: false,
         secretBackedProviderEnabled: true,
       },
       runtimeEnv: {
         REVIEW_AUTH_MODE: "codex-oauth",
         CODEX_MODEL: "gpt-5.5",
+        CODEX_FAST_MODE: "false",
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);

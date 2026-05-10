@@ -11,6 +11,8 @@ type WorkspaceCandidate = {
   readonly installations: readonly { readonly accountLogin: string }[];
 };
 
+type RepositorySearchFilter = "all" | "private" | "public" | "needs_setup";
+
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const scope = await getDashboardWorkspaceScope();
   if (scope.kind === "none") {
@@ -21,6 +23,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     request.nextUrl.searchParams.get("workspace") ?? "",
   );
   const query = normalizeQuery(request.nextUrl.searchParams.get("q") ?? "");
+  const filter = readRepositorySearchFilter(request.nextUrl.searchParams);
   const prisma = getPrisma();
   const workspaceWhere =
     scope.kind === "workspace_ids"
@@ -66,6 +69,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const tokens = tokenize(query);
   const repositoryIds = repositories
     .filter((repository) => {
+      if (!repositoryMatchesFilter(repository, filter)) return false;
       if (tokens.length === 0) return true;
       const searchable = [
         repository.fullName,
@@ -88,7 +92,37 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     repositoryIds,
     total: repositories.length,
     query,
+    filter,
   });
+}
+
+function readRepositorySearchFilter(
+  params: URLSearchParams,
+): RepositorySearchFilter {
+  if (params.get("setup") === "needed") return "needs_setup";
+
+  const visibility = params.get("visibility");
+  if (visibility === "private" || visibility === "public") {
+    return visibility;
+  }
+
+  return "all";
+}
+
+function repositoryMatchesFilter(
+  repository: { readonly visibility: string; readonly setupStatus: string },
+  filter: RepositorySearchFilter,
+): boolean {
+  switch (filter) {
+    case "private":
+      return repository.visibility === "private";
+    case "public":
+      return repository.visibility === "public";
+    case "needs_setup":
+      return repository.setupStatus !== "configured";
+    case "all":
+      return true;
+  }
 }
 
 function selectWorkspace(

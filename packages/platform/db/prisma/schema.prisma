@@ -133,6 +133,7 @@ model ReviewConfigurationVersion {
   model                String
   reasoningEffort      String
   agenticContext       Boolean  @default(true)
+  fastMode             Boolean  @default(false)
   failOnSeverity       String
   inlineMaxComments    Int
   targetTokensPerBatch Int

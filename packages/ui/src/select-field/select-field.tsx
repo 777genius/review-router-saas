@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { Select as BaseSelect } from "@base-ui/react/select";
 import { cn } from "../utils/cn";
 
@@ -11,7 +12,7 @@ export type SelectFieldOption = {
 
 export type SelectFieldProps = {
   readonly name: string;
-  readonly label: string;
+  readonly label: ReactNode;
   readonly defaultValue: string;
   readonly options: readonly SelectFieldOption[];
   readonly disabled?: boolean;

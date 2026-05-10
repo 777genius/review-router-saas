@@ -77,6 +77,7 @@ export async function getActionRuntimeConfig(
       model: config.provider.model,
       reasoningEffort: config.provider.reasoningEffort,
       agenticContext: config.provider.agenticContext,
+      fastMode: config.provider.fastMode,
       secretBackedProviderEnabled: true,
     },
     blockingPolicy: { failOnSeverity: config.blockingPolicy.failOnSeverity },

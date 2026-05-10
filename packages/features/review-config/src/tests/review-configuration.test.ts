@@ -52,6 +52,7 @@ describe("review configuration", () => {
       CODEX_MODEL: "gpt-5.5",
       CODEX_REASONING_EFFORT: "medium",
       CODEX_AGENTIC_CONTEXT: "true",
+      CODEX_FAST_MODE: "false",
       FAIL_ON_SEVERITY: "critical",
       INLINE_MAX_COMMENTS: "5",
     });
@@ -95,6 +96,7 @@ describe("review configuration", () => {
           provider: {
             ...safeDefaultReviewConfiguration.provider,
             reasoningEffort: "high",
+            fastMode: true,
           },
         },
       },
@@ -106,7 +108,7 @@ describe("review configuration", () => {
       findReviewConfiguration(target, { configurations }),
     ).resolves.toMatchObject({
       version: 2,
-      config: { provider: { reasoningEffort: "high" } },
+      config: { provider: { reasoningEffort: "high", fastMode: true } },
     });
   });
 
@@ -170,6 +172,7 @@ describe("review configuration", () => {
       source: "repository",
       runtimeEnv: {
         CODEX_MODEL: "gpt-5.4-mini",
+        CODEX_FAST_MODE: "false",
         FAIL_ON_SEVERITY: "major",
       },
     });

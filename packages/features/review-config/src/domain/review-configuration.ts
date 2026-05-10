@@ -10,8 +10,11 @@ export const reviewConfigurationSchema = z.object({
       "openrouter_api_key",
     ]),
     model: z.string().min(1),
-    reasoningEffort: z.enum(["low", "medium", "high"]).default("medium"),
+    reasoningEffort: z
+      .enum(["low", "medium", "high", "xhigh"])
+      .default("medium"),
     agenticContext: z.boolean().default(true),
+    fastMode: z.boolean().default(false),
   }),
   blockingPolicy: z.object({
     failOnSeverity: z.enum(["off", "critical", "major"]).default("critical"),
@@ -31,6 +34,7 @@ export const safeDefaultReviewConfiguration = reviewConfigurationSchema.parse({
     model: "gpt-5.5",
     reasoningEffort: "medium",
     agenticContext: true,
+    fastMode: false,
   },
   blockingPolicy: { failOnSeverity: "critical" },
   limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },

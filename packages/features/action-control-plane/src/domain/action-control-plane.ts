@@ -88,8 +88,9 @@ export const actionRuntimeConfigResponseSchema = z.object({
       "openrouter_api_key",
     ]),
     model: z.string().min(1),
-    reasoningEffort: z.enum(["low", "medium", "high"]),
+    reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
     agenticContext: z.boolean(),
+    fastMode: z.boolean(),
     secretBackedProviderEnabled: z.boolean(),
   }),
   blockingPolicy: z.object({

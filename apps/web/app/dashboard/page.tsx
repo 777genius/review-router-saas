@@ -12,12 +12,10 @@ import {
   LinkButton,
   SelectField,
 } from "@reviewrouter/ui";
-import { Fragment } from "react";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
   listWorkspaceRepositoryHealth,
-  OctokitRepositoryWorkflowProbe,
   PrismaRepositoryHealthRepository,
 } from "@reviewrouter/features-repo-health";
 import {
@@ -47,7 +45,6 @@ import {
   PrismaSupportDiagnosticsRepository,
 } from "@reviewrouter/features-support-diagnostics";
 import {
-  createGitHubAppInstallationOctokit,
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
 } from "../../src/server/dashboard-mutations";
@@ -76,9 +73,14 @@ import { DashboardWorkspaceTabs } from "./dashboard-workspace-tabs";
 import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
 import {
   RepositoryLiveSearch,
+  type RepositorySearchFilter,
   type RepositorySearchIndexItem,
 } from "./repository-live-search";
 import { RepositorySetupActionButton } from "./repository-setup-action-button";
+import {
+  RepositoryPolicyEditor,
+  ReviewConfigForm,
+} from "./repository-policy-editor";
 
 export const dynamic = "force-dynamic";
 
@@ -152,7 +154,6 @@ async function loadDashboardData(
   });
   const repositoryStore = new PrismaRepositoryConnectionRepository(prisma);
   const healthStore = new PrismaRepositoryHealthRepository(prisma);
-  const workflowProbe = createDashboardWorkflowProbe();
   const entitlementStore = new PrismaEntitlementRepository(prisma);
   const reviewConfigStore = new PrismaReviewConfigurationRepository(prisma);
   const outboxStore = new PrismaOutboxEventRepository(prisma);
@@ -199,12 +200,9 @@ async function loadDashboardData(
           {
             workspaceId: workspace.id,
             expectedActionRef: resolveReviewRouterActionRef(),
-            workflowProbeMaxRepositories: 8,
+            workflowProbeMaxRepositories: 0,
           },
-          {
-            repositories: healthStore,
-            ...(workflowProbe ? { workflowProbe } : {}),
-          },
+          { repositories: healthStore },
         );
         const reviewConfig = await findReviewConfiguration(
           { scope: "workspace", workspaceId: workspace.id },
@@ -304,15 +302,6 @@ function workspaceSortScore(data: SortableDashboardWorkspace): number {
     (installation) => installation.status === "active",
   ).length;
   return data.repositoryCount * 100 + activeInstallations * 10;
-}
-
-function createDashboardWorkflowProbe(): OctokitRepositoryWorkflowProbe | null {
-  if (!process.env.GITHUB_APP_ID || !process.env.GITHUB_APP_PRIVATE_KEY_FILE) {
-    return null;
-  }
-  return new OctokitRepositoryWorkflowProbe({
-    createRequester: createGitHubAppInstallationOctokit,
-  });
 }
 
 type DashboardWorkspaceData = Awaited<
@@ -489,6 +478,8 @@ const dashboardSectionMeta: Record<
     navDescription: "Queue, audit, support",
   },
 };
+
+const MAX_RENDERED_REPOSITORY_ROWS = 24;
 
 export default async function DashboardPage({
   searchParams,
@@ -738,6 +729,7 @@ function WorkspaceCard({
   const activeConfigVersion = data.reviewConfig?.version ?? 1;
   const requestedRepositoryFullName = readParam(params.repository);
   const repositorySearchQuery = readParam(params.q);
+  const repositorySearchFilter = readRepositorySearchFilter(params);
   const requestedRepository = requestedRepositoryFullName
     ? repositories.find(
         (repository) => repository.fullName === requestedRepositoryFullName,
@@ -811,10 +803,10 @@ function WorkspaceCard({
               provisioning={provisioning}
               repositoryConfigs={repositoryConfigs}
               activeConfig={activeConfig}
-              activeConfigVersion={activeConfigVersion}
               mutationsEnabled={mutationsEnabled}
               workspaceKey={workspaceKey}
               searchQuery={repositorySearchQuery}
+              searchFilter={repositorySearchFilter}
               selectedRepositoryFullName={selectedRepository?.fullName ?? null}
             />
           </>
@@ -1346,16 +1338,6 @@ function DashboardSectionHeader({
               ) : null}
             </div>
           ) : null}
-          {selectedSection === "repositories" ? (
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              Next: create or update the setup PR, merge it, then use
-              <span className="text-[var(--rr-foreground)]">
-                {" "}
-                Enable review{" "}
-              </span>
-              on that repository.
-            </p>
-          ) : null}
         </div>
         {selectedSection === "repositories" ? null : (
           <div className="flex flex-wrap gap-2 xl:justify-end">
@@ -1408,10 +1390,10 @@ function RepositoryTable({
   provisioning,
   repositoryConfigs,
   activeConfig,
-  activeConfigVersion,
   mutationsEnabled,
   workspaceKey,
   searchQuery,
+  searchFilter,
   selectedRepositoryFullName,
 }: {
   readonly workspace: DashboardWorkspace;
@@ -1420,10 +1402,10 @@ function RepositoryTable({
   readonly provisioning: DashboardWorkspaceData["provisioning"];
   readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
   readonly activeConfig: ReviewConfiguration;
-  readonly activeConfigVersion: number;
   readonly mutationsEnabled: boolean;
   readonly workspaceKey: string;
   readonly searchQuery: string;
+  readonly searchFilter: RepositorySearchFilter;
   readonly selectedRepositoryFullName: string | null;
 }): React.ReactElement {
   if (repositories.length === 0) {
@@ -1442,17 +1424,21 @@ function RepositoryTable({
   const repositoryConfigById = new Map(
     repositoryConfigs.map((item) => [item.repositoryId, item.config] as const),
   );
+  const repositoryHealthById = new Map(
+    health.map((item) => [item.repositoryId, item] as const),
+  );
+  const repositoryProvisioningById = new Map(
+    provisioning.map((item) => [item.repositoryId, item] as const),
+  );
 
   const rows = repositories.map((repository) => {
-    const repositoryHealth = health.find(
-      (item) => item.repositoryId === repository.id,
-    );
+    const repositoryHealth = repositoryHealthById.get(repository.id);
     const healthView = describeRepositoryHealth(
       repositoryHealth?.status,
       repositoryHealth?.summary,
     );
-    const repositoryProvisioning = provisioning.find(
-      (item) => item.repositoryId === repository.id,
+    const repositoryProvisioning = repositoryProvisioningById.get(
+      repository.id,
     );
     const setupPullRequestUrl = safeGitHubDashboardLink(
       repositoryProvisioning?.pullRequestUrl ?? "",
@@ -1460,16 +1446,15 @@ function RepositoryTable({
     const workflowCurrent = workflowSetupAlreadyCurrent(
       repositoryHealth?.status,
     );
+    const setupProgressStep = repositorySetupProgressStep({
+      setupStatus: repository.setupStatus,
+      healthStatus: repositoryHealth?.status,
+      workflowCurrent,
+    });
     const setupView = describeRepositorySetup(
       repository.setupStatus,
       repositoryHealth?.status,
     );
-    const showRuntimeHealthBadge = setupView.label !== healthView.label;
-    const repositoryConfig = repositoryConfigById.get(repository.id) ?? null;
-    const effectiveConfig = repositoryConfig?.config ?? activeConfig;
-    const configVersion = repositoryConfig?.version ?? activeConfigVersion;
-    const repositoryUrl = githubRepositoryUrl(repository.fullName);
-
     const searchableText = [
       repository.fullName,
       repository.defaultBranch,
@@ -1489,16 +1474,9 @@ function RepositoryTable({
     return {
       repository,
       repositoryHealth,
-      repositoryProvisioning,
-      healthView,
-      setupView,
-      showRuntimeHealthBadge,
       setupPullRequestUrl,
       workflowCurrent,
-      repositoryConfig,
-      effectiveConfig,
-      configVersion,
-      repositoryUrl,
+      setupProgressStep,
       searchableText,
     };
   });
@@ -1507,360 +1485,140 @@ function RepositoryTable({
     (row): RepositorySearchIndexItem => ({
       id: row.repository.id,
       searchText: row.searchableText,
+      visibility: row.repository.visibility,
+      needsSetup: row.setupProgressStep < 4,
     }),
   );
   const initialSearchTokens = tokenizeRepositorySearch(searchQuery);
-  const initiallyVisibleRepositoryIds = new Set(
-    initialSearchTokens.length === 0
-      ? rows.map((row) => row.repository.id)
-      : rows
-          .filter((row) =>
+  const matchingRows =
+    initialSearchTokens.length === 0 && searchFilter === "all"
+      ? rows
+      : rows.filter(
+          (row) =>
+            repositoryMatchesSearchFilter(row, searchFilter) &&
             initialSearchTokens.every((token) =>
               row.searchableText.includes(token),
             ),
-          )
-          .map((row) => row.repository.id),
+        );
+  const selectedRow = selectedRepositoryFullName
+    ? (rows.find(
+        (row) => row.repository.fullName === selectedRepositoryFullName,
+      ) ?? null)
+    : null;
+  const cappedRows = matchingRows.slice(0, MAX_RENDERED_REPOSITORY_ROWS);
+  const selectedRowMatches = Boolean(
+    selectedRow &&
+    matchingRows.some((row) => row.repository.id === selectedRow.repository.id),
+  );
+  const displayRows =
+    selectedRow &&
+    selectedRowMatches &&
+    !cappedRows.some((row) => row.repository.id === selectedRow.repository.id)
+      ? [selectedRow, ...cappedRows.slice(0, MAX_RENDERED_REPOSITORY_ROWS - 1)]
+      : cappedRows;
+  const initiallyVisibleRepositoryIds = new Set(
+    displayRows.map((row) => row.repository.id),
   );
 
   return (
     <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
-      <div className="border-b border-cyan-200/10 bg-white/[0.025] p-3 sm:p-4">
+      <div className="border-b border-cyan-200/10 bg-transparent p-0">
         <RepositoryLiveSearch
           workspaceKey={workspaceKey}
           selectedRepositoryFullName={selectedRepositoryFullName}
           initialQuery={searchQuery}
+          initialFilter={searchFilter}
           searchIndex={searchIndex}
+          totalRepositoryCount={rows.length}
+          renderedRepositoryCount={displayRows.length}
+          rowLimit={MAX_RENDERED_REPOSITORY_ROWS}
         />
       </div>
 
-      <div className="grid gap-3 p-3 lg:hidden">
-        {rows.map(
+      <div className="grid gap-3 p-3 text-slate-200 lg:gap-0 lg:p-0">
+        {displayRows.map(
           ({
             repository,
-            repositoryHealth,
-            repositoryProvisioning,
-            healthView,
-            setupView,
-            showRuntimeHealthBadge,
             setupPullRequestUrl,
             workflowCurrent,
-            repositoryConfig,
-            effectiveConfig,
-            configVersion,
-            repositoryUrl,
-          }) => (
-            <div
-              key={repository.id}
-              data-repository-row-id={repository.id}
-              hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
-              className={[
-                "grid gap-4 border-t border-cyan-200/10 px-1 py-5 first:border-t-0",
-                repository.fullName === selectedRepositoryFullName
-                  ? "rounded-2xl bg-cyan-300/[0.045] px-3"
-                  : "",
-              ].join(" ")}
-            >
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <RepositoryNameLink
-                    fullName={repository.fullName}
-                    repositoryUrl={repositoryUrl}
-                    className="break-words font-medium text-cyan-50"
-                  />
-                  <RepositoryStarsBadge
-                    stargazersCount={repository.stargazersCount}
-                  />
-                </div>
-                <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                  <RepositoryVisibilityBadge
-                    visibility={repository.visibility}
-                  />
-                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
-                    {repository.defaultBranch}
-                  </span>
-                  {repository.archived ? (
-                    <Badge tone="warning">Archived</Badge>
-                  ) : null}
-                </div>
-              </div>
+            setupProgressStep,
+          }) => {
+            const repositoryConfig =
+              repositoryConfigById.get(repository.id) ?? null;
+            const effectiveConfig = repositoryConfig?.config ?? activeConfig;
+            const repositoryUrl = githubRepositoryUrl(repository.fullName);
+            const setupDisclosureId = `repo-setup-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                    Setup PR
-                  </p>
-                  <div className="mt-2">
-                    <Badge tone={setupView.tone}>{setupView.label}</Badge>
-                  </div>
-                  {setupView.hint ? (
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
-                      {setupView.hint}
-                    </p>
-                  ) : null}
-                  {setupPullRequestUrl ? (
-                    <a
-                      className="mt-1 inline-flex text-xs font-semibold text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                      href={setupPullRequestUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open setup PR
-                    </a>
-                  ) : null}
-                  {repositoryProvisioning?.errorMessage ? (
-                    <span className="mt-1 block text-xs text-red-200">
-                      {repositoryProvisioning.errorMessage.slice(0, 120)}
-                    </span>
-                  ) : null}
-                </div>
-
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
-                    Runtime health
-                  </p>
-                  {showRuntimeHealthBadge ? (
-                    <div className="mt-2">
-                      <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                    </div>
-                  ) : null}
-                  <p className="mt-2 text-xs leading-5 text-slate-300">
-                    {healthView.summary}
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">
-                    Next: {healthView.nextAction}
-                  </p>
-                  {repositoryHealth?.latestActionHealthTelemetry ? (
-                    <p className="mt-1 text-[11px] leading-5 text-cyan-100/80">
-                      Latest run:{" "}
-                      {formatActionHealthTelemetry(
-                        repositoryHealth.latestActionHealthTelemetry,
-                      )}
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="grid gap-2">
-                <div className="flex flex-wrap items-start gap-2">
-                  <RepositorySetupActionForm
-                    workspaceId={workspace.id}
-                    repositoryId={repository.id}
-                    selected={repository.selected}
-                    archived={repository.archived}
-                    setupStatus={repository.setupStatus}
-                    workflowCurrent={workflowCurrent}
-                    mutationsEnabled={mutationsEnabled}
-                    variant={
-                      repository.setupStatus === "setup_pr_open"
-                        ? "outline"
-                        : "solid"
-                    }
-                  />
-                  <RepositoryProviderSecretsAction
-                    workspace={workspace}
-                    repository={repository}
-                    setupStatus={repository.setupStatus}
-                    disabled={
-                      !mutationsEnabled ||
-                      !repository.selected ||
-                      repository.archived
-                    }
-                  />
-                </div>
-                <RepositoryPolicyEditor
-                  workspaceId={workspace.id}
-                  repository={repository}
-                  repositoryConfig={repositoryConfig}
-                  effectiveConfig={effectiveConfig}
-                  configVersion={configVersion}
-                  mutationsEnabled={mutationsEnabled}
-                  compact
+            return (
+              <div
+                key={repository.id}
+                data-repository-row-id={repository.id}
+                hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
+                className={[
+                  "grid gap-4 border-t border-cyan-200/10 px-1 py-5 transition first:border-t-0 hover:bg-cyan-300/[0.035] lg:px-6 lg:py-6",
+                  repository.fullName === selectedRepositoryFullName
+                    ? "rounded-2xl bg-cyan-300/[0.045] px-3 lg:rounded-none"
+                    : "",
+                ].join(" ")}
+              >
+                <input
+                  id={setupDisclosureId}
+                  type="checkbox"
+                  className="peer sr-only"
                 />
-              </div>
-            </div>
-          ),
-        )}
-      </div>
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <RepositoryNameLink
+                      fullName={repository.fullName}
+                      repositoryUrl={repositoryUrl}
+                      className="min-w-0 break-words text-xl font-semibold leading-tight text-cyan-50 sm:text-2xl xl:text-[1.65rem]"
+                    />
+                    <RepositoryStarsBadge
+                      stargazersCount={repository.stargazersCount}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 peer-focus-visible:[&_.setup-toggle]:outline peer-focus-visible:[&_.setup-toggle]:outline-2 peer-focus-visible:[&_.setup-toggle]:outline-offset-2 peer-focus-visible:[&_.setup-toggle]:outline-cyan-200 peer-checked:[&_.setup-chevron]:rotate-180 sm:justify-end">
+                    <RepositoryVisibilityBadge
+                      visibility={repository.visibility}
+                    />
+                    <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
+                      {repository.defaultBranch}
+                    </span>
+                    {repository.archived ? (
+                      <Badge tone="warning">Archived</Badge>
+                    ) : null}
+                    <RepositorySetupDisclosureToggle
+                      disclosureId={setupDisclosureId}
+                      currentStep={setupProgressStep}
+                    />
+                  </div>
+                </div>
 
-      <div className="hidden lg:block">
-        <table className="w-full table-fixed text-left text-sm">
-          <colgroup>
-            <col className="w-[47%]" />
-            <col className="w-[13%]" />
-            <col className="w-[17%]" />
-            <col className="w-[23%]" />
-          </colgroup>
-          <thead className="border-b border-cyan-200/10 text-xs uppercase tracking-[0.16em] text-cyan-100">
-            <tr>
-              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-                Repository
-              </th>
-              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-                Setup PR
-              </th>
-              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-                Runtime health
-              </th>
-              <th className="sticky top-16 z-30 bg-[#0b1824]/98 px-4 py-3 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-                Action
-              </th>
-            </tr>
-          </thead>
-          <tbody className="text-slate-200">
-            {rows.map(
-              ({
-                repository,
-                repositoryHealth,
-                repositoryProvisioning,
-                healthView,
-                setupView,
-                showRuntimeHealthBadge,
-                setupPullRequestUrl,
-                workflowCurrent,
-                repositoryConfig,
-                effectiveConfig,
-                configVersion,
-                repositoryUrl,
-              }) => (
-                <Fragment key={repository.id}>
-                  <tr
-                    data-repository-row-id={repository.id}
-                    hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
-                    className={[
-                      "border-t border-cyan-200/10 transition first:border-t-0 hover:bg-cyan-300/[0.035]",
-                      repository.fullName === selectedRepositoryFullName
-                        ? "bg-cyan-300/[0.045]"
-                        : "",
-                    ].join(" ")}
-                  >
-                    <td className="px-4 py-4 align-top">
-                      <div className="grid gap-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <RepositoryNameLink
-                              fullName={repository.fullName}
-                              repositoryUrl={repositoryUrl}
-                              className="min-w-0 break-words font-medium text-cyan-50"
-                            />
-                            <RepositoryStarsBadge
-                              stargazersCount={repository.stargazersCount}
-                            />
-                          </div>
-                          <RepositoryVisibilityBadge
-                            visibility={repository.visibility}
-                          />
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
-                            {repository.defaultBranch}
-                          </span>
-                          {repository.archived ? (
-                            <Badge tone="warning">Archived</Badge>
-                          ) : null}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <Badge tone={setupView.tone}>{setupView.label}</Badge>
-                      {setupView.hint ? (
-                        <span className="mt-1 block text-xs leading-5 text-slate-500">
-                          {setupView.hint}
-                        </span>
-                      ) : null}
-                      {setupPullRequestUrl ? (
-                        <a
-                          className="mt-1 block text-xs text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
-                          href={setupPullRequestUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open setup PR
-                        </a>
-                      ) : null}
-                      {repositoryProvisioning?.errorMessage ? (
-                        <span className="mt-1 block text-xs text-red-200">
-                          {repositoryProvisioning.errorMessage.slice(0, 120)}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      {showRuntimeHealthBadge ? (
-                        <Badge tone={healthView.tone}>{healthView.label}</Badge>
-                      ) : null}
-                      <span
-                        className={[
-                          showRuntimeHealthBadge ? "mt-2 " : "",
-                          "block text-xs leading-5 text-slate-300",
-                        ].join("")}
-                      >
-                        {healthView.summary}
-                      </span>
-                      <span className="mt-1 block text-xs leading-5 text-slate-500">
-                        Next: {healthView.nextAction}
-                      </span>
-                      {repositoryHealth?.latestActionHealthTelemetry ? (
-                        <span className="mt-1 block text-[11px] leading-5 text-cyan-100/80">
-                          Latest run:{" "}
-                          {formatActionHealthTelemetry(
-                            repositoryHealth.latestActionHealthTelemetry,
-                          )}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-4 py-4 align-top">
-                      <div className="flex flex-wrap items-start gap-2">
-                        <RepositorySetupActionForm
-                          workspaceId={workspace.id}
-                          repositoryId={repository.id}
-                          selected={repository.selected}
-                          archived={repository.archived}
-                          setupStatus={repository.setupStatus}
-                          workflowCurrent={workflowCurrent}
-                          mutationsEnabled={mutationsEnabled}
-                          variant={
-                            repository.setupStatus === "setup_pr_open"
-                              ? "outline"
-                              : "solid"
-                          }
-                        />
-                        <RepositoryProviderSecretsAction
-                          workspace={workspace}
-                          repository={repository}
-                          setupStatus={repository.setupStatus}
-                          disabled={
-                            !mutationsEnabled ||
-                            !repository.selected ||
-                            repository.archived
-                          }
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                  <tr
-                    data-repository-row-id={repository.id}
-                    hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
-                    className={[
-                      repository.fullName === selectedRepositoryFullName
-                        ? "bg-cyan-300/[0.045]"
-                        : "",
-                    ].join(" ")}
-                  >
-                    <td colSpan={4} className="px-4 pb-5 pt-0">
-                      <RepositoryPolicyEditor
-                        workspaceId={workspace.id}
-                        repository={repository}
-                        repositoryConfig={repositoryConfig}
-                        effectiveConfig={effectiveConfig}
-                        configVersion={configVersion}
-                        mutationsEnabled={mutationsEnabled}
-                      />
-                    </td>
-                  </tr>
-                </Fragment>
-              ),
-            )}
-          </tbody>
-        </table>
+                <div className="hidden peer-checked:block">
+                  <div className="rounded-2xl border border-cyan-200/10 bg-slate-950/45 px-4 pb-1 pt-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:px-5">
+                    <RepositorySetupProgressPanel
+                      workspace={workspace}
+                      repository={repository}
+                      setupPullRequestUrl={setupPullRequestUrl}
+                      workflowCurrent={workflowCurrent}
+                      mutationsEnabled={mutationsEnabled}
+                      currentStep={setupProgressStep}
+                    />
+                  </div>
+                </div>
+                {setupProgressStep === 4 ? (
+                  <RepositoryPolicyEditor
+                    workspaceId={workspace.id}
+                    repository={repository}
+                    repositoryConfig={repositoryConfig}
+                    effectiveConfig={effectiveConfig}
+                    mutationsEnabled={mutationsEnabled}
+                  />
+                ) : null}
+              </div>
+            );
+          },
+        )}
       </div>
     </div>
   );
@@ -1868,6 +1626,25 @@ function RepositoryTable({
 
 function tokenizeRepositorySearch(query: string): string[] {
   return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function repositoryMatchesSearchFilter(
+  row: {
+    readonly repository: { readonly visibility: string };
+    readonly setupProgressStep: 1 | 2 | 3 | 4;
+  },
+  filter: RepositorySearchFilter,
+): boolean {
+  switch (filter) {
+    case "private":
+      return row.repository.visibility === "private";
+    case "public":
+      return row.repository.visibility === "public";
+    case "needs_setup":
+      return row.setupProgressStep < 4;
+    case "all":
+      return true;
+  }
 }
 
 function githubRepositoryUrl(fullName: string): string | null {
@@ -1890,6 +1667,7 @@ function RepositoryNameLink({
   readonly repositoryUrl: string | null;
   readonly className: string;
 }): React.ReactElement {
+  const displayName = repositoryDisplayName(fullName);
   const classes = [
     className,
     repositoryUrl
@@ -1898,7 +1676,11 @@ function RepositoryNameLink({
   ].join(" ");
 
   if (!repositoryUrl) {
-    return <p className={classes}>{fullName}</p>;
+    return (
+      <p className={classes} title={fullName}>
+        {displayName}
+      </p>
+    );
   }
 
   return (
@@ -1907,10 +1689,17 @@ function RepositoryNameLink({
       target="_blank"
       rel="noreferrer"
       className={classes}
+      title={fullName}
+      aria-label={fullName}
     >
-      {fullName}
+      {displayName}
     </a>
   );
+}
+
+function repositoryDisplayName(fullName: string): string {
+  const [, repo] = fullName.split("/");
+  return repo || fullName;
 }
 
 function RepositoryStarsBadge({
@@ -1946,6 +1735,323 @@ function formatRepositoryStars(count: number): string {
   }).format(count);
 }
 
+function RepositorySetupDisclosureToggle({
+  disclosureId,
+  currentStep,
+}: {
+  readonly disclosureId: string;
+  readonly currentStep: 1 | 2 | 3 | 4;
+}): React.ReactElement {
+  return (
+    <label
+      htmlFor={disclosureId}
+      title={repositorySetupProgressSummary(currentStep)}
+      className="setup-toggle inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-cyan-300/25 bg-cyan-300/[0.035] px-2.5 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-cyan-100 transition duration-200 ease-out hover:border-cyan-300/50 hover:bg-cyan-300/[0.075] hover:saturate-125"
+    >
+      <span>Setup</span>
+      <span className="text-[0.65rem] tracking-normal text-slate-400">
+        {currentStep}/4
+      </span>
+      <SetupDisclosureChevron />
+    </label>
+  );
+}
+
+function RepositorySetupProgressPanel({
+  workspace,
+  repository,
+  setupPullRequestUrl,
+  workflowCurrent,
+  mutationsEnabled,
+  currentStep,
+}: {
+  readonly workspace: DashboardWorkspace;
+  readonly repository: DashboardWorkspaceData["repositories"][number];
+  readonly setupPullRequestUrl: string | null;
+  readonly workflowCurrent: boolean;
+  readonly mutationsEnabled: boolean;
+  readonly currentStep: 1 | 2 | 3 | 4;
+}): React.ReactElement {
+  const canManage =
+    mutationsEnabled && repository.selected && !repository.archived;
+  const installation = findInstallationForRepository(
+    workspace,
+    repository.fullName,
+  );
+  const setupPrAction =
+    repository.setupStatus === "setup_pr_open" && setupPullRequestUrl ? (
+      <LinkButton
+        href={setupPullRequestUrl}
+        target="_blank"
+        rel="noreferrer"
+        variant="outline"
+        size="sm"
+        className="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
+      >
+        Open setup PR
+        <span aria-hidden="true" className="text-xs">
+          ↗
+        </span>
+      </LinkButton>
+    ) : currentStep === 1 ? (
+      <RepositorySetupActionForm
+        workspaceId={workspace.id}
+        repositoryId={repository.id}
+        selected={repository.selected}
+        archived={repository.archived}
+        setupStatus={repository.setupStatus}
+        workflowCurrent={workflowCurrent}
+        mutationsEnabled={mutationsEnabled}
+      />
+    ) : null;
+  const enableReviewAction =
+    currentStep === 3 && installation ? (
+      <RepositoryProviderSecretsAction
+        workspace={workspace}
+        repository={repository}
+        setupStatus={repository.setupStatus}
+        disabled={!canManage}
+        triggerVariant="outline"
+        triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
+      />
+    ) : currentStep < 4 ? (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
+        disabled
+      >
+        Enable review
+        <SetupProgressLockIcon />
+      </Button>
+    ) : null;
+  const steps: readonly RepositorySetupProgressStep[] = [
+    {
+      number: 1,
+      title: "Create setup PR",
+      helper: currentStep > 1 ? "Setup PR exists." : "Add the workflow by PR.",
+      action: setupPrAction,
+    },
+    {
+      number: 2,
+      title: "Merge setup PR",
+      helper:
+        currentStep > 2
+          ? "Workflow is on the default branch."
+          : "Merge on GitHub.",
+    },
+    {
+      number: 3,
+      title: "Enable review",
+      helper:
+        currentStep > 3
+          ? "Provider access is configured."
+          : currentStep === 3
+            ? "Seed provider access."
+            : "Available after merge.",
+      action: enableReviewAction,
+    },
+    {
+      number: 4,
+      title: "Ready",
+      helper: null,
+    },
+  ];
+
+  return (
+    <section className="mb-4 pt-1">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-cyan-100">
+          Setup progress
+        </p>
+        <span className="font-mono text-xs text-slate-400">
+          {repositorySetupProgressSummary(currentStep)}
+        </span>
+      </div>
+
+      <div className="relative mt-3">
+        <span
+          aria-hidden="true"
+          className="absolute left-4 right-4 top-6 hidden h-px bg-cyan-300/12 md:block"
+        />
+        <span
+          aria-hidden="true"
+          className="absolute left-4 top-6 hidden h-px bg-cyan-300/45 md:block"
+          style={{ width: repositorySetupProgressTrackWidth(currentStep) }}
+        />
+        <ol className="relative z-10 grid gap-3 md:grid-cols-4">
+          {steps.map((step) => (
+            <RepositorySetupProgressStepItem
+              key={step.number}
+              step={step}
+              currentStep={currentStep}
+            />
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
+function SetupDisclosureChevron(): React.ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="setup-chevron h-3.5 w-3.5 shrink-0 text-cyan-100 transition"
+      fill="none"
+    >
+      <path
+        d="M4 6l4 4 4-4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+type RepositorySetupProgressStep = {
+  readonly number: 1 | 2 | 3 | 4;
+  readonly title: string;
+  readonly helper: string | null;
+  readonly action?: React.ReactNode;
+};
+
+function RepositorySetupProgressStepItem({
+  step,
+  currentStep,
+}: {
+  readonly step: RepositorySetupProgressStep;
+  readonly currentStep: number;
+}): React.ReactElement {
+  const isActive = step.number === currentStep;
+  const isComplete = step.number < currentStep;
+  const isFuture = step.number > currentStep;
+  const circleClass = isActive
+    ? "border-cyan-200 bg-cyan-200 text-slate-950 shadow-[0_0_18px_rgba(103,232,249,0.28)]"
+    : isComplete
+      ? "border-cyan-300/45 bg-cyan-300/[0.08] text-cyan-100"
+      : "border-slate-700 bg-slate-950 text-slate-500";
+  const desktopAlignment =
+    step.number === 1
+      ? "md:items-start md:text-left"
+      : step.number === 4
+        ? "md:items-end md:text-right"
+        : "md:items-center md:text-center";
+
+  return (
+    <li className="relative min-w-0">
+      <div
+        className={[
+          "relative z-10 flex min-w-0 items-start gap-3 py-2 pr-3 md:flex-col md:gap-0 md:pr-0",
+          "md:min-h-[8.25rem]",
+          desktopAlignment,
+        ].join(" ")}
+      >
+        <span
+          className={[
+            "grid h-8 w-8 shrink-0 place-items-center rounded-full border font-mono text-xs font-bold leading-none",
+            circleClass,
+          ].join(" ")}
+        >
+          {step.number}
+        </span>
+        <div className="min-w-0 md:mt-3">
+          <p
+            className={[
+              "text-sm font-semibold leading-5",
+              isFuture ? "text-slate-500" : "text-cyan-50",
+            ].join(" ")}
+          >
+            {step.title}
+          </p>
+          {step.helper ? (
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              {step.helper}
+            </p>
+          ) : null}
+          {step.action ? (
+            <div
+              className={[
+                "mt-3",
+                step.number === 4
+                  ? "md:flex md:justify-end"
+                  : step.number === 1
+                    ? "md:flex md:justify-start"
+                    : "md:flex md:justify-center",
+              ].join(" ")}
+            >
+              {step.action}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function repositorySetupProgressTrackWidth(step: 1 | 2 | 3 | 4): string {
+  return `calc((100% - 2rem) * ${(step - 1) / 3})`;
+}
+
+function SetupProgressLockIcon(): React.ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-3.5 w-3.5 shrink-0"
+      fill="none"
+    >
+      <path
+        d="M5 7V5.4C5 3.7 6.3 2.5 8 2.5s3 1.2 3 2.9V7"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M4.2 7h7.6v5.8H4.2z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function repositorySetupProgressStep({
+  setupStatus,
+  healthStatus,
+  workflowCurrent,
+}: {
+  readonly setupStatus: string;
+  readonly healthStatus: string | undefined;
+  readonly workflowCurrent: boolean;
+}): 1 | 2 | 3 | 4 {
+  if (healthStatus === "healthy") return 4;
+  if (workflowCurrent) return 3;
+  if (setupStatus === "setup_pr_open" || healthStatus === "setup_pr_open") {
+    return 2;
+  }
+
+  return 1;
+}
+
+function repositorySetupProgressSummary(step: 1 | 2 | 3 | 4): string {
+  switch (step) {
+    case 1:
+      return "1 of 4 - setup PR needed";
+    case 2:
+      return "2 of 4 - merge setup PR";
+    case 3:
+      return "3 of 4 - enable review";
+    case 4:
+      return "4 of 4 - complete";
+  }
+}
+
 type DashboardInstallation = DashboardWorkspace["installations"][number];
 
 type ProviderSecretGuidanceSet = {
@@ -1961,11 +2067,15 @@ function RepositoryProviderSecretsAction({
   repository,
   setupStatus,
   disabled,
+  triggerVariant,
+  triggerClassName,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repository: DashboardWorkspaceData["repositories"][number];
   readonly setupStatus: string;
   readonly disabled: boolean;
+  readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
+  readonly triggerClassName?: string;
 }): React.ReactElement | null {
   const installation = findInstallationForRepository(
     workspace,
@@ -1985,9 +2095,15 @@ function RepositoryProviderSecretsAction({
       })}
       disabled={disabled}
       triggerLabel="Enable review"
-      triggerVariant={setupStatus === "setup_pr_open" ? "solid" : "outline"}
+      triggerVariant={
+        triggerVariant ??
+        (setupStatus === "setup_pr_open" ? "solid" : "outline")
+      }
       triggerSize="sm"
-      triggerClassName="w-full min-w-0 px-3 sm:w-auto sm:min-w-[9rem] sm:px-5"
+      triggerClassName={
+        triggerClassName ??
+        "w-full min-w-0 px-3 sm:w-auto sm:min-w-[9rem] sm:px-5"
+      }
     />
   );
 }
@@ -2352,129 +2468,6 @@ function RepositorySetupActionForm({
   );
 }
 
-function RepositoryPolicyEditor({
-  workspaceId,
-  repository,
-  repositoryConfig,
-  effectiveConfig,
-  configVersion,
-  mutationsEnabled,
-  compact = false,
-}: {
-  readonly workspaceId: string;
-  readonly repository: DashboardWorkspaceData["repositories"][number];
-  readonly repositoryConfig:
-    | DashboardWorkspaceData["repositoryConfigs"][number]["config"]
-    | null;
-  readonly effectiveConfig: ReviewConfiguration;
-  readonly configVersion: number;
-  readonly mutationsEnabled: boolean;
-  readonly compact?: boolean;
-}): React.ReactElement {
-  const canEdit =
-    mutationsEnabled && repository.selected && !repository.archived;
-  const policyMode = repositoryConfig ? "override" : "inherits workspace";
-  const disclosureId = `repo-model-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  const editorPanel = (
-    <div
-      className={[
-        "mt-4 grid gap-4 px-1 pb-1 sm:px-2",
-        compact ? "col-span-full w-full flex-[1_0_100%]" : "",
-      ].join(" ")}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge tone={repositoryConfig ? "warning" : "success"}>
-              {repositoryConfig ? "Repository override" : "Workspace default"}
-            </Badge>
-            <span className="font-mono text-[0.68rem] uppercase tracking-[0.14em] text-slate-500">
-              v{configVersion}
-            </span>
-          </div>
-          <p className="mt-2 text-xs leading-5 text-slate-400">
-            {formatReviewConfigSummary(effectiveConfig)}
-          </p>
-        </div>
-      </div>
-
-      <ReviewConfigForm
-        action={saveRepositoryReviewConfigAction}
-        config={effectiveConfig}
-        hiddenFields={[
-          { name: "workspaceId", value: workspaceId },
-          { name: "repositoryId", value: repository.id },
-        ]}
-        mutationsEnabled={canEdit}
-        submitLabel={repositoryConfig ? "Update repo model" : "Save repo model"}
-      />
-
-      {repositoryConfig ? (
-        <form action={clearRepositoryReviewConfigAction}>
-          <input type="hidden" name="workspaceId" value={workspaceId} />
-          <input type="hidden" name="repositoryId" value={repository.id} />
-          <FormSubmitButton
-            variant="outline"
-            size="sm"
-            disabled={!canEdit}
-            idleLabel="Inherit workspace default"
-            pendingLabel="Saving..."
-          />
-        </form>
-      ) : null}
-    </div>
-  );
-
-  if (compact) {
-    return (
-      <>
-        <input id={disclosureId} type="checkbox" className="peer sr-only" />
-        <label
-          htmlFor={disclosureId}
-          className="flex w-full min-w-0 cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-3 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-cyan-200 peer-checked:[&_.model-chevron]:rotate-180 sm:px-4"
-        >
-          <span className="font-mono uppercase tracking-[0.14em]">
-            Edit model
-          </span>
-          <span className="inline-flex min-w-0 items-center gap-2 text-right text-slate-300">
-            <span className="hidden truncate sm:inline">{policyMode}</span>
-            <span
-              aria-hidden="true"
-              className="model-chevron text-cyan-100 transition"
-            >
-              ⌄
-            </span>
-          </span>
-        </label>
-        <div className="col-span-full hidden w-full flex-[1_0_100%] peer-checked:block">
-          {editorPanel}
-        </div>
-      </>
-    );
-  }
-
-  return (
-    <details className="group w-full">
-      <summary className="flex w-full cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 [&::-webkit-details-marker]:hidden">
-        <span className="font-mono uppercase tracking-[0.14em]">
-          Edit model
-        </span>
-        <span className="inline-flex min-w-0 items-center gap-2 text-right text-slate-300">
-          <span className="truncate">{policyMode}</span>
-          <span
-            aria-hidden="true"
-            className="text-cyan-100 transition group-open:rotate-180"
-          >
-            ⌄
-          </span>
-        </span>
-      </summary>
-
-      {editorPanel}
-    </details>
-  );
-}
-
 function SupportMetric({
   label,
   value,
@@ -2495,46 +2488,6 @@ function SupportMetric({
   );
 }
 
-type DashboardActionHealthTelemetry = NonNullable<
-  Awaited<
-    ReturnType<typeof listWorkspaceRepositoryHealth>
-  >[number]["latestActionHealthTelemetry"]
->;
-
-function formatActionHealthTelemetry(
-  telemetry: DashboardActionHealthTelemetry,
-): string {
-  const findings = [
-    countLabel(telemetry.findingCounts.critical, "critical"),
-    countLabel(telemetry.findingCounts.major, "major"),
-    countLabel(telemetry.findingCounts.minor, "minor"),
-    countLabel(telemetry.findingCounts.info, "info"),
-  ].filter(Boolean);
-  const comments = [
-    countLabel(telemetry.commentCounts.inline, "inline"),
-    countLabel(telemetry.commentCounts.summary, "summary"),
-  ].filter(Boolean);
-  const source = telemetry.configSource
-    ? telemetry.configSource.replaceAll("_", " ")
-    : null;
-  const skipped =
-    telemetry.skippedReasonCategory &&
-    telemetry.skippedReasonCategory !== "none"
-      ? `skipped: ${telemetry.skippedReasonCategory.replaceAll("_", " ")}`
-      : null;
-
-  return [source, findings.join(" / "), comments.join(" / "), skipped]
-    .filter(Boolean)
-    .join(" - ");
-}
-
-function countLabel(value: number | null, label: string): string | null {
-  if (typeof value !== "number" || value <= 0) {
-    return null;
-  }
-  return `${value} ${label}`;
-}
-
 function WorkspaceActionNotice({
   params,
   orgRuleset,
@@ -2550,7 +2503,17 @@ function WorkspaceActionNotice({
       ? "org_rulesets_not_supported"
       : rawError;
   if (!notice && !error) return null;
-  if (!error && notice === "setup_pr_ready") return null;
+  if (
+    !error &&
+    [
+      "setup_pr_ready",
+      "review_config_saved",
+      "repository_review_config_saved",
+      "repository_review_config_cleared",
+    ].includes(notice)
+  ) {
+    return null;
+  }
 
   const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
   const tone = error ? "danger" : "success";
@@ -2586,215 +2549,25 @@ function WorkspaceActionNotice({
   );
 }
 
-type DashboardFormAction = (formData: FormData) => void | Promise<void>;
-
-const providerAuthOptions = [
-  {
-    value: "codex_subscription_oauth",
-    label: "Codex OAuth",
-    description: "Uses the user's Codex subscription in GitHub Actions.",
-  },
-  {
-    value: "codex_openai_api_key",
-    label: "Codex API key",
-    description: "Uses OPENAI_API_KEY from GitHub Actions secrets.",
-  },
-  {
-    value: "openrouter_api_key",
-    label: "OpenRouter API key",
-    description: "Uses OPENROUTER_API_KEY from GitHub Actions secrets.",
-  },
-] as const;
-
-const reasoningEffortOptions = [
-  { value: "low", label: "Low", description: "Faster and cheaper." },
-  { value: "medium", label: "Medium", description: "Balanced default." },
-  { value: "high", label: "High", description: "Deeper review pass." },
-] as const;
-
-const failOnSeverityOptions = [
-  { value: "off", label: "Off", description: "Never fail the check." },
-  {
-    value: "critical",
-    label: "Critical",
-    description: "Block only critical findings.",
-  },
-  { value: "major", label: "Major", description: "Block major and critical." },
-] as const;
-
-const agenticContextOptions = [
-  {
-    value: "true",
-    label: "Enabled",
-    description: "Codex can read related files in read-only sandbox.",
-  },
-  {
-    value: "false",
-    label: "Disabled",
-    description: "Use supplied diff and deterministic context only.",
-  },
-] as const;
-
-function ReviewConfigForm({
-  action,
-  config,
-  hiddenFields,
-  mutationsEnabled,
-  submitLabel,
-}: {
-  readonly action: DashboardFormAction;
-  readonly config: ReviewConfiguration;
-  readonly hiddenFields: readonly {
-    readonly name: string;
-    readonly value: string;
-  }[];
-  readonly mutationsEnabled: boolean;
-  readonly submitLabel: string;
-}): React.ReactElement {
-  return (
-    <form
-      action={action}
-      className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(13rem,1fr))]"
-    >
-      {hiddenFields.map((field) => (
-        <input
-          key={`${field.name}:${field.value}`}
-          type="hidden"
-          name={field.name}
-          value={field.value}
-        />
-      ))}
-      <SelectField
-        name="providerAuthMode"
-        label="Provider auth"
-        defaultValue={config.provider.authMode}
-        disabled={!mutationsEnabled}
-        options={providerAuthOptions}
-      />
-      <DashboardTextField
-        name="model"
-        label="Model"
-        defaultValue={config.provider.model}
-        disabled={!mutationsEnabled}
-      />
-      <SelectField
-        name="reasoningEffort"
-        label="Reasoning effort"
-        defaultValue={config.provider.reasoningEffort}
-        disabled={!mutationsEnabled}
-        options={reasoningEffortOptions}
-      />
-      <SelectField
-        name="failOnSeverity"
-        label="Fail on severity"
-        defaultValue={config.blockingPolicy.failOnSeverity}
-        disabled={!mutationsEnabled}
-        options={failOnSeverityOptions}
-      />
-      <DashboardTextField
-        name="inlineMaxComments"
-        label="Inline max comments"
-        type="number"
-        min={0}
-        max={50}
-        defaultValue={config.limits.inlineMaxComments}
-        disabled={!mutationsEnabled}
-      />
-      <DashboardTextField
-        name="targetTokensPerBatch"
-        label="Target tokens per batch"
-        type="number"
-        min={4000}
-        max={200000}
-        step={1000}
-        defaultValue={config.limits.targetTokensPerBatch}
-        disabled={!mutationsEnabled}
-      />
-      <SelectField
-        name="agenticContext"
-        label="Agentic context"
-        defaultValue={String(config.provider.agenticContext)}
-        disabled={!mutationsEnabled}
-        options={agenticContextOptions}
-      />
-      <div className="flex min-w-0 items-end">
-        <FormSubmitButton
-          variant="solid"
-          className="w-full"
-          disabled={!mutationsEnabled}
-          idleLabel={submitLabel}
-          pendingLabel="Saving..."
-        />
-      </div>
-    </form>
-  );
-}
-
-function DashboardTextField({
-  name,
-  label,
-  defaultValue,
-  disabled,
-  type = "text",
-  min,
-  max,
-  step,
-}: {
-  readonly name: string;
-  readonly label: string;
-  readonly defaultValue: string | number;
-  readonly disabled: boolean;
-  readonly type?: string;
-  readonly min?: number;
-  readonly max?: number;
-  readonly step?: number;
-}): React.ReactElement {
-  return (
-    <label className="grid min-w-0 gap-2 text-sm text-slate-300">
-      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-        {label}
-      </span>
-      <input
-        name={name}
-        type={type}
-        min={min}
-        max={max}
-        step={step}
-        defaultValue={defaultValue}
-        disabled={disabled}
-        className="min-h-11 w-full rounded-xl border border-cyan-200/15 bg-slate-950/80 px-3 py-2 text-cyan-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition placeholder:text-slate-500 hover:border-cyan-200/30 focus:border-cyan-300/55 focus:ring-2 focus:ring-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
-      />
-    </label>
-  );
-}
-
-function formatReviewConfigSummary(config: ReviewConfiguration): string {
-  return [
-    formatProviderAuthMode(config.provider.authMode),
-    config.provider.model,
-    `${config.provider.reasoningEffort} effort`,
-    `fails on ${config.blockingPolicy.failOnSeverity}`,
-  ].join(" / ");
-}
-
-function formatProviderAuthMode(
-  authMode: ReviewConfiguration["provider"]["authMode"],
-): string {
-  switch (authMode) {
-    case "codex_subscription_oauth":
-      return "Codex OAuth";
-    case "codex_openai_api_key":
-      return "Codex API key";
-    case "openrouter_api_key":
-      return "OpenRouter API key";
-  }
-}
-
 function readParam(value: string | string[] | undefined): string {
   if (Array.isArray(value)) {
     return value[0] ?? "";
   }
   return value ?? "";
+}
+
+function readRepositorySearchFilter(
+  params: Record<string, string | string[] | undefined>,
+): RepositorySearchFilter {
+  const setup = readParam(params.setup);
+  if (setup === "needed") return "needs_setup";
+
+  const visibility = readParam(params.visibility);
+  if (visibility === "private" || visibility === "public") {
+    return visibility;
+  }
+
+  return "all";
 }
 
 function buildDashboardAppInstallCallbackRedirect(

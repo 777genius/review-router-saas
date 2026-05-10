@@ -17,6 +17,7 @@ type InstallationRepository = {
   readonly private: boolean;
   readonly archived: boolean;
   readonly stargazers_count?: number | null;
+  readonly watchers_count?: number | null;
 };
 
 function normalizeVisibility(
@@ -63,7 +64,8 @@ export class OctokitGitHubRepositorySource implements GitHubRepositorySourcePort
       defaultBranch: repository.default_branch ?? "main",
       visibility: normalizeVisibility(repository),
       archived: repository.archived,
-      stargazersCount: repository.stargazers_count ?? 0,
+      stargazersCount:
+        repository.stargazers_count ?? repository.watchers_count ?? 0,
     }));
   }
 }

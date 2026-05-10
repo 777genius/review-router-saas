@@ -2,6 +2,9 @@ import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import {
   reviewRouterContactEmail,
   reviewRouterContactMailto,
+  reviewRouterGitHubBugIssueUrl,
+  reviewRouterGitHubIssuesChooseUrl,
+  reviewRouterGitHubSetupIssueUrl,
 } from "../public-urls";
 
 const safeReport = `To: ${reviewRouterContactEmail}
@@ -55,15 +58,17 @@ export default function SupportPage(): React.ReactElement {
             </a>
           </p>
           <div className="flex flex-wrap gap-3">
+            <LinkButton href={reviewRouterGitHubIssuesChooseUrl}>
+              Open GitHub issue
+            </LinkButton>
+            <LinkButton href={reviewRouterGitHubSetupIssueUrl} variant="soft">
+              Setup help template
+            </LinkButton>
+            <LinkButton href={reviewRouterGitHubBugIssueUrl} variant="outline">
+              Bug report template
+            </LinkButton>
             <LinkButton href={reviewRouterContactMailto}>
               Email support
-            </LinkButton>
-            <LinkButton href="/getting-started">Getting started</LinkButton>
-            <LinkButton href="/security" variant="soft" tone="success">
-              Security model
-            </LinkButton>
-            <LinkButton href="/dashboard" variant="outline">
-              Dashboard
             </LinkButton>
           </div>
         </div>
@@ -74,15 +79,16 @@ export default function SupportPage(): React.ReactElement {
             Send links and categories first.
           </h2>
           <p className="text-sm leading-6 text-slate-300">
-            For trusted beta, email{" "}
+            Use the GitHub issue templates for normal setup and bug reports.
+            If a report may include credentials, private code, tenant isolation,
+            or security-sensitive data, email{" "}
             <a
               href={reviewRouterContactMailto}
               className="text-cyan-100 underline decoration-cyan-300/50 underline-offset-4"
             >
               {reviewRouterContactEmail}
             </a>{" "}
-            first. Use GitHub issues only after redacting anything sensitive.
-            Start with this shape:
+            first instead of opening a public issue. Start with this shape:
           </p>
           <CodeBlock code={safeReport} />
         </Card>

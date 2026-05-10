@@ -8,6 +8,7 @@ export function mapConfigToRuntimeEnv(
     CODEX_MODEL: config.provider.model,
     CODEX_REASONING_EFFORT: config.provider.reasoningEffort,
     CODEX_AGENTIC_CONTEXT: String(config.provider.agenticContext),
+    CODEX_FAST_MODE: String(config.provider.fastMode),
     INLINE_MAX_COMMENTS: String(config.limits.inlineMaxComments),
     TARGET_TOKENS_PER_BATCH: String(config.limits.targetTokensPerBatch),
     FAIL_ON_SEVERITY: config.blockingPolicy.failOnSeverity,

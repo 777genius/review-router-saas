@@ -431,6 +431,24 @@ export async function saveWorkspaceReviewConfigAction(
 export async function saveRepositoryReviewConfigAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await saveRepositoryReviewConfigMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function saveRepositoryReviewConfigClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await saveRepositoryReviewConfigMutation(formData);
+
+  revalidatePath("/dashboard");
+  return { params };
+}
+
+async function saveRepositoryReviewConfigMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const repositoryId = readFormString(formData, "repositoryId");
@@ -495,13 +513,30 @@ export async function saveRepositoryReviewConfigAction(
     params = { error: safeDashboardErrorCode(error) };
   }
 
-  revalidatePath("/dashboard");
-  redirectWithParams(params);
+  return params;
 }
 
 export async function clearRepositoryReviewConfigAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await clearRepositoryReviewConfigMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function clearRepositoryReviewConfigClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await clearRepositoryReviewConfigMutation(formData);
+
+  revalidatePath("/dashboard");
+  return { params };
+}
+
+async function clearRepositoryReviewConfigMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const repositoryId = readFormString(formData, "repositoryId");
@@ -557,8 +592,7 @@ export async function clearRepositoryReviewConfigAction(
     params = { error: safeDashboardErrorCode(error) };
   }
 
-  revalidatePath("/dashboard");
-  redirectWithParams(params);
+  return params;
 }
 
 export async function retryOutboxEventAction(
@@ -717,6 +751,7 @@ function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
         "reasoningEffort",
       ) as ReviewConfiguration["provider"]["reasoningEffort"],
       agenticContext: readFormBoolean(formData, "agenticContext"),
+      fastMode: readFormBoolean(formData, "fastMode"),
     },
     blockingPolicy: {
       failOnSeverity: readFormString(

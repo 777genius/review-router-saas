@@ -62,7 +62,7 @@ export function RepositorySetupActionButton({
         type="submit"
         variant={variant}
         size="sm"
-        className="w-full min-w-0 px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
+        className="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
         disabled={disabled}
         aria-busy={isPending}
       >
@@ -81,10 +81,43 @@ export function RepositorySetupActionButton({
         ) : workflowCurrent ? (
           "Installed"
         ) : (
-          setupPrButtonLabel(setupStatus)
+          <>
+            <SetupPrIcon />
+            {setupPrButtonLabel(setupStatus)}
+          </>
         )}
       </Button>
     </form>
+  );
+}
+
+function SetupPrIcon(): ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-4 w-4 shrink-0"
+      fill="none"
+    >
+      <path
+        d="M4 2.5h5l3 3v8H4z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9 2.5V6h3"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 8.3v3.2M6.4 9.9h3.2"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 

@@ -1,6 +1,7 @@
 const hostedApiUrl = "https://api.reviewrouter.site";
 const hostedWebUrl = "https://reviewrouter.site";
 const contactEmail = "quantjumppro@gmail.com";
+const publicGitHubRepoUrl = "https://github.com/777genius/review-router";
 
 export const reviewRouterWebUrl = (
   process.env.REVIEW_ROUTER_PUBLIC_WEB_URL ??
@@ -18,3 +19,6 @@ export const reviewRouterApiUrl = (
 export const reviewRouterApiDemoUrl = `${reviewRouterApiUrl}/docs`;
 export const reviewRouterContactEmail = contactEmail;
 export const reviewRouterContactMailto = `mailto:${contactEmail}`;
+export const reviewRouterGitHubIssuesChooseUrl = `${publicGitHubRepoUrl}/issues/new/choose`;
+export const reviewRouterGitHubSetupIssueUrl = `${publicGitHubRepoUrl}/issues/new?template=setup-help.yml`;
+export const reviewRouterGitHubBugIssueUrl = `${publicGitHubRepoUrl}/issues/new?template=bug-report.yml`;

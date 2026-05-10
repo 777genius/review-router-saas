@@ -221,6 +221,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             model: true,
             reasoningEffort: true,
             agenticContext: true,
+            fastMode: true,
             failOnSeverity: true,
             inlineMaxComments: true,
             targetTokensPerBatch: true,
@@ -243,6 +244,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
           model: version.model,
           reasoningEffort: toReasoningEffort(version.reasoningEffort),
           agenticContext: version.agenticContext,
+          fastMode: version.fastMode,
         },
         blockingPolicy: {
           failOnSeverity: toFailOnSeverity(version.failOnSeverity),
@@ -320,6 +322,7 @@ function toReasoningEffort(value: string) {
     case "low":
     case "medium":
     case "high":
+    case "xhigh":
       return value;
     default:
       return "medium";

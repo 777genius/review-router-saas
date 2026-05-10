@@ -89,6 +89,7 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
           model: config.provider.model,
           reasoningEffort: config.provider.reasoningEffort,
           agenticContext: config.provider.agenticContext,
+          fastMode: config.provider.fastMode,
           failOnSeverity: config.blockingPolicy.failOnSeverity,
           inlineMaxComments: config.limits.inlineMaxComments,
           targetTokensPerBatch: config.limits.targetTokensPerBatch,
@@ -120,6 +121,7 @@ const versionSelect = {
   model: true,
   reasoningEffort: true,
   agenticContext: true,
+  fastMode: true,
   failOnSeverity: true,
   inlineMaxComments: true,
   targetTokensPerBatch: true,
@@ -133,6 +135,7 @@ type VersionRecord = {
   readonly model: string;
   readonly reasoningEffort: string;
   readonly agenticContext: boolean;
+  readonly fastMode: boolean;
   readonly failOnSeverity: string;
   readonly inlineMaxComments: number;
   readonly targetTokensPerBatch: number;
@@ -151,6 +154,7 @@ function toPersistedConfiguration(
         model: version.model,
         reasoningEffort: version.reasoningEffort,
         agenticContext: version.agenticContext,
+        fastMode: version.fastMode,
       },
       blockingPolicy: { failOnSeverity: version.failOnSeverity },
       limits: {
