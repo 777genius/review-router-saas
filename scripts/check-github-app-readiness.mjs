@@ -33,9 +33,11 @@ const requiredPermissions = {
   pull_requests: "write",
   issues: "write",
   secrets: "read",
+  organization_secrets: "read",
   statuses: "write",
   metadata: "read",
 };
+const organizationOnlyPermissions = new Set(["organization_secrets"]);
 const requiredWebhookEvents = [
   "check_run",
   "issue_comment",
@@ -226,6 +228,10 @@ function assertInstallationPermissions(installations) {
   for (const installation of installations) {
     const missing = Object.entries(requiredPermissions).filter(
       ([permission, requiredAccess]) =>
+        !(
+          organizationOnlyPermissions.has(permission) &&
+          installation.account?.type !== "Organization"
+        ) &&
         !permissionSatisfies(
           installation.permissions?.[permission],
           requiredAccess,

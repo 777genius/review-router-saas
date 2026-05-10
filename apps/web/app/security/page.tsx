@@ -56,6 +56,10 @@ const permissionRows = [
     "Verify required GitHub Actions secret names exist after provider setup. Secret values are never readable.",
   ],
   [
+    "organization_secrets: read",
+    "Verify selected-repository organization secret metadata exists for organization-owned repositories. Secret values are never readable.",
+  ],
+  [
     "statuses: write",
     "Publish ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.",
   ],

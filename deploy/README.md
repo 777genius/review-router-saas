@@ -102,6 +102,7 @@ Workflows: write
 Pull requests: write
 Issues: write
 Secrets: read
+Organization secrets: read
 Actions: read
 Checks: write
 Commit statuses: write

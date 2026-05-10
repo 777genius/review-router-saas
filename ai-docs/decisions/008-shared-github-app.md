@@ -31,6 +31,7 @@ workflows: write
 pull_requests: write
 issues: write
 secrets: read
+organization_secrets: read
 statuses: write
 ```
 
