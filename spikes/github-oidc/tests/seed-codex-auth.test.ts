@@ -30,6 +30,15 @@ describe("seed-codex-auth.sh", () => {
       "Validated Codex auth JSON before writing secrets",
     );
     expect(result.stdout).toContain(
+      "Skipped optional CODEX_CONFIG_TOML. Normal Codex OAuth setup only needs CODEX_AUTH_JSON.",
+    );
+    expect(result.stdout).toContain(
+      "Dry run complete. No GitHub secrets were written.",
+    );
+    expect(result.stdout).toContain(
+      "Next step: rerun without --dry-run when the target looks correct.",
+    );
+    expect(result.stdout).toContain(
       "[dry-run] gh secret set CODEX_AUTH_JSON --repo 777genius/example <",
     );
     expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
@@ -162,6 +171,36 @@ describe("seed-codex-auth.sh", () => {
 
     expect(result.stdout).toContain(
       "Stored repo secret CODEX_AUTH_JSON for 777genius/example",
+    );
+    expect(result.stdout).toContain(
+      "ReviewRouter is ready to use Codex OAuth for this target.",
+    );
+    expect(result.stdout).toContain("Ready target: repo 777genius/example");
+    expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
+  });
+
+  it("explains when optional Codex config is included", async () => {
+    const fixture = await createFixture();
+    await writeFile(
+      path.join(fixture.codexHome, "config.toml"),
+      'model = "gpt-5.2"\n',
+    );
+
+    const result = await runSeedScript(fixture, {
+      REVIEW_ROUTER_CONFIRM_WRITE: "1",
+      REVIEW_ROUTER_INCLUDE_CODEX_CONFIG: "1",
+      REVIEW_ROUTER_SECRET_SCOPE: "repo",
+      REVIEW_ROUTER_REPO: "777genius/example",
+    });
+
+    expect(result.stdout).toContain(
+      "Including CODEX_CONFIG_TOML copies your local Codex config.toml into CI.",
+    );
+    expect(result.stdout).toContain(
+      "Stored repo secret CODEX_CONFIG_TOML for 777genius/example",
+    );
+    expect(result.stdout).toContain(
+      "Stored optional secret: CODEX_CONFIG_TOML",
     );
     expect(result.stdout + result.stderr).not.toContain(fixture.refreshToken);
   });

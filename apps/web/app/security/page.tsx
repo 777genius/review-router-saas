@@ -37,12 +37,28 @@ const securitySections = [
 
 const permissionRows = [
   ["metadata: read", "Discover repository identity and default branch."],
+  [
+    "actions: read",
+    "Read workflow run metadata for live setup and health state.",
+  ],
+  [
+    "checks: write",
+    "Publish ReviewRouter-owned check runs when direct GitHub check integration is enabled.",
+  ],
   ["contents: write", "Create workflow setup branches and commits."],
   [
     "workflows: write",
     "Open PRs that add or update the ReviewRouter workflow.",
   ],
   ["pull_requests: write", "Create setup PRs and read setup PR state."],
+  [
+    "secrets: read",
+    "Verify required GitHub Actions secret names exist after provider setup. Secret values are never readable.",
+  ],
+  [
+    "statuses: write",
+    "Publish ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.",
+  ],
   [
     "issues: write",
     "Support setup/help comments and issue-style PR conversations when the SaaS needs to guide maintainers. Review execution still runs from CI.",
@@ -57,6 +73,34 @@ const webhookRows = [
   [
     "installation_repositories",
     "Repository added/removed events so selected-repository installs stay in sync without manual refresh.",
+  ],
+  [
+    "pull_request",
+    "Detect when setup PRs are merged and advance repository setup state automatically.",
+  ],
+  [
+    "repository",
+    "Refresh repository metadata such as rename, archived state, visibility, and default branch.",
+  ],
+  [
+    "workflow_job",
+    "Track job-level Actions state for runner and review diagnostics.",
+  ],
+  [
+    "workflow_run",
+    "Track workflow completion metadata for live health/status updates.",
+  ],
+  [
+    "check_run",
+    "Receive ReviewRouter-owned check run lifecycle events and rerun requests.",
+  ],
+  [
+    "issue_comment",
+    "Support future slash-command workflows such as rerun or enable review.",
+  ],
+  [
+    "status",
+    "Track commit status updates when direct status integration is enabled.",
   ],
 ] as const;
 

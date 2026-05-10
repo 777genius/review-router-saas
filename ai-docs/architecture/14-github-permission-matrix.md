@@ -8,15 +8,17 @@ If a permission cannot be explained clearly, do not request it until a feature n
 
 ## Expected v1 Permissions
 
-| Permission    |     Access | Why                                                                                                     |
-| ------------- | ---------: | ------------------------------------------------------------------------------------------------------- |
-| Metadata      |       Read | Required baseline for GitHub Apps and repository identity.                                              |
-| Contents      | Read/Write | Create setup/update branch and workflow/config files through PR.                                        |
-| Pull requests | Read/Write | Create setup/update PRs and read setup PR state for provisioning.                                       |
-| Workflows     |      Write | Required to create or update `.github/workflows/reviewrouter.yml` through the GitHub App.               |
-| Issues        |      Write | Support issue-style PR summary/setup/help conversations when App-bot identity or SaaS guidance is used. |
-| Actions       |     Not v1 | Only needed if SaaS later manages workflow runs. v1 avoids it because runtime health reports use OIDC.  |
-| Checks        |     Not v1 | Only needed if SaaS creates check runs directly. v1 avoids this because the action handles status.      |
+| Permission    |     Access | Why                                                                                                                                     |
+| ------------- | ---------: | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Metadata      |       Read | Required baseline for GitHub Apps and repository identity.                                                                              |
+| Contents      | Read/Write | Create setup/update branch and workflow/config files through PR.                                                                        |
+| Pull requests | Read/Write | Create setup/update PRs and read setup PR state for provisioning.                                                                       |
+| Workflows     |      Write | Required to create or update `.github/workflows/reviewrouter.yml` through the GitHub App.                                               |
+| Issues        |      Write | Support issue-style PR summary/setup/help conversations when App-bot identity or SaaS guidance is used.                                 |
+| Secrets       |       Read | Verify GitHub Actions secret metadata exists before marking provider setup complete. Secret values are never readable through this API. |
+| Actions       |       Read | Receive workflow run metadata for live health/status updates without managing workflow execution.                                      |
+| Checks        |      Write | Create or update ReviewRouter-owned check runs when direct GitHub check integration is enabled.                                        |
+| Commit statuses |    Write | Create or update ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.                                  |
 
 ## Optional Advanced Permission Profile
 
@@ -50,7 +52,6 @@ Avoid unless a specific feature requires them:
 
 ```text
 Members
-Secrets
 Deployments
 Packages
 Organization webhooks beyond App installation webhook needs
@@ -74,7 +75,7 @@ If workflow permission looks too strong for a customer, fallback options:
 Example:
 
 ```text
-ReviewRouter needs Contents and Workflows write to open a pull request that adds or updates `.github/workflows/reviewrouter.yml`. It needs Issues write for PR summary/setup/help conversations when App-bot identity or SaaS guidance is enabled. It does not push directly to your default branch.
+ReviewRouter needs Contents and Workflows write to open a pull request that adds or updates `.github/workflows/reviewrouter.yml`. It needs Pull requests write to create and inspect setup PRs, Issues write for PR summary/setup/help conversations when App-bot identity or SaaS guidance is enabled, and Secrets read only to verify that required GitHub Actions secret names exist. GitHub never returns secret values. Actions read, Checks write, and Commit statuses write are used for live workflow/status integration owned by ReviewRouter. It does not push directly to your default branch.
 
 Advanced org-wide mode additionally needs Organization Administration write to create or update a GitHub organization ruleset. Provider secrets still stay in GitHub Actions and are never sent to ReviewRouter.
 ```

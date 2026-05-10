@@ -12,6 +12,14 @@ const installationSchema = z.object({
   repository_selection: z.string().min(1).default("selected"),
 });
 
+const installationReferenceSchema = z
+  .object({
+    id: z.number().int().positive(),
+    account: accountSchema.optional(),
+    repository_selection: z.string().min(1).optional(),
+  })
+  .passthrough();
+
 const installationRepositorySchema = z
   .object({
     id: z.number().int().positive(),
@@ -53,6 +61,27 @@ const pullRequestRepositorySchema = z
   })
   .passthrough();
 
+const repositoryOwnerSchema = z
+  .object({
+    login: z.string().min(1),
+  })
+  .passthrough();
+
+const repositoryWebhookRepositorySchema = z
+  .object({
+    id: z.number().int().positive(),
+    name: z.string().min(1),
+    full_name: z.string().min(1),
+    owner: repositoryOwnerSchema,
+    default_branch: z.string().min(1).nullable().optional(),
+    visibility: z.string().min(1).optional(),
+    private: z.boolean().optional(),
+    archived: z.boolean().default(false),
+    stargazers_count: z.number().int().nonnegative().nullable().optional(),
+    watchers_count: z.number().int().nonnegative().nullable().optional(),
+  })
+  .passthrough();
+
 export const githubInstallationWebhookPayloadSchema = z.object({
   action: z.string().min(1),
   installation: installationSchema,
@@ -68,7 +97,7 @@ export type GitHubInstallationWebhookPayload = z.infer<
 
 export const githubPullRequestWebhookPayloadSchema = z.object({
   action: z.string().min(1),
-  installation: installationSchema,
+  installation: installationReferenceSchema,
   repository: pullRequestRepositorySchema,
   pull_request: pullRequestSchema,
   sender: senderSchema.optional(),
@@ -76,6 +105,17 @@ export const githubPullRequestWebhookPayloadSchema = z.object({
 
 export type GitHubPullRequestWebhookPayload = z.infer<
   typeof githubPullRequestWebhookPayloadSchema
+>;
+
+export const githubRepositoryWebhookPayloadSchema = z.object({
+  action: z.string().min(1),
+  installation: installationReferenceSchema,
+  repository: repositoryWebhookRepositorySchema,
+  sender: senderSchema.optional(),
+});
+
+export type GitHubRepositoryWebhookPayload = z.infer<
+  typeof githubRepositoryWebhookPayloadSchema
 >;
 
 export type GitHubWebhookEnvelope = {
@@ -92,9 +132,22 @@ export type GitHubPullRequestWebhookEnvelope = {
   readonly payload: GitHubPullRequestWebhookPayload;
 };
 
+export type GitHubRepositoryWebhookEnvelope = {
+  readonly deliveryId: string;
+  readonly eventName: "repository";
+  readonly payloadHash?: string;
+  readonly payload: GitHubRepositoryWebhookPayload;
+};
+
 export type GitHubPullRequestWebhookHandlerPort = {
   handleGitHubPullRequestWebhook(
     envelope: GitHubPullRequestWebhookEnvelope,
+  ): Promise<Record<string, unknown>>;
+};
+
+export type GitHubRepositoryWebhookHandlerPort = {
+  handleGitHubRepositoryWebhook(
+    envelope: GitHubRepositoryWebhookEnvelope,
   ): Promise<Record<string, unknown>>;
 };
 
@@ -102,6 +155,7 @@ export const supportedGitHubInstallationWebhookEvents = [
   "installation",
   "installation_repositories",
   "pull_request",
+  "repository",
 ] as const;
 
 export function isSupportedGitHubInstallationWebhookEvent(

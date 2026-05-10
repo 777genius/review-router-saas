@@ -38,15 +38,26 @@ const manifest = {
   setup_url: `${webUrl}/setup`,
   setup_on_update: true,
   request_oauth_on_install: false,
-  default_events: ["pull_request"],
+  default_events: [
+    "check_run",
+    "issue_comment",
+    "pull_request",
+    "repository",
+    "status",
+    "workflow_job",
+    "workflow_run",
+  ],
   public: true,
   description:
     "ReviewRouter connects GitHub pull request review setup while reviews run in customer GitHub Actions.",
   default_permissions: {
     actions: "read",
+    checks: "write",
     contents: "write",
     issues: "write",
     pull_requests: "write",
+    secrets: "read",
+    statuses: "write",
     workflows: "write",
     ...(permissionProfile === "org-ruleset"
       ? { organization_administration: "write" }

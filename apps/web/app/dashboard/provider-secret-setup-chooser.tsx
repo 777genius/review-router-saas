@@ -1,11 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useMemo, useState, useTransition } from "react";
 import { Tabs } from "@base-ui/react/tabs";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
-import { Badge, CodeBlock } from "@reviewrouter/ui";
+import { Badge, Button, CodeBlock } from "@reviewrouter/ui";
+import { confirmProviderSecretSetupClientAction } from "./actions";
 
 type ProviderChoice = "codex_oauth" | "codex_api_key" | "openrouter_api_key";
+type VerificationFallbackError =
+  | "repository_not_visible_to_github_app"
+  | "provider_secret_not_found"
+  | "provider_secret_not_available_to_repository"
+  | "provider_secret_check_permission_required";
 
 const providerChoices: readonly {
   readonly value: ProviderChoice;
@@ -34,6 +41,8 @@ const providerChoices: readonly {
 ];
 
 export type ProviderSecretSetupChooserProps = {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
   readonly repositoryFullName: string;
   readonly organizationLogin: string | null;
   readonly codexOAuthGuidance: ProviderSecretSetupGuidance;
@@ -42,17 +51,23 @@ export type ProviderSecretSetupChooserProps = {
 };
 
 export function ProviderSecretSetupChooser({
+  workspaceId,
+  repositoryId,
   repositoryFullName,
   organizationLogin,
   codexOAuthGuidance,
   codexApiKeyGuidance,
   openRouterApiKeyGuidance,
 }: ProviderSecretSetupChooserProps): React.ReactElement {
+  const router = useRouter();
   const [providerChoice, setProviderChoice] =
     useState<ProviderChoice>("codex_oauth");
   const [useOrganizationSecret, setUseOrganizationSecret] = useState(
     Boolean(organizationLogin),
   );
+  const [verificationError, setVerificationError] =
+    useState<VerificationFallbackError | null>(null);
+  const [isPending, startTransition] = useTransition();
 
   const activeGuidance =
     providerChoice === "codex_oauth"
@@ -71,6 +86,11 @@ export function ProviderSecretSetupChooser({
       ? organizationCommand
       : repositoryCommand;
   const secretNames = activeCommand?.secretNames.join(", ") ?? "GitHub secret";
+  const providerSetupSelection = providerChoiceToSetupSelection(providerChoice);
+  const secretScope =
+    activeCommand?.storesSecretIn === "github_org_secret"
+      ? "organization_selected_repositories"
+      : "repository";
 
   const providerDetails = useMemo(
     () =>
@@ -105,7 +125,10 @@ export function ProviderSecretSetupChooser({
       <Tabs.Root
         value={providerChoice}
         onValueChange={(value) => {
-          if (isProviderChoice(value)) setProviderChoice(value);
+          if (isProviderChoice(value)) {
+            setProviderChoice(value);
+            setVerificationError(null);
+          }
         }}
       >
         <Tabs.List
@@ -144,9 +167,10 @@ export function ProviderSecretSetupChooser({
             data-testid="provider-scope-organization"
             type="checkbox"
             checked={useOrganizationSecret}
-            onChange={(event) =>
-              setUseOrganizationSecret(event.currentTarget.checked)
-            }
+            onChange={(event) => {
+              setUseOrganizationSecret(event.currentTarget.checked);
+              setVerificationError(null);
+            }}
             className="mt-1 h-4 w-4 accent-cyan-300"
           />
           <span>
@@ -194,6 +218,90 @@ export function ProviderSecretSetupChooser({
             No command is available for this provider and scope.
           </p>
         )}
+        <form
+          action={(formData) => {
+            const submittedConfirmationMode =
+              readSubmittedConfirmationMode(formData);
+            startTransition(() => {
+              void confirmProviderSecretSetupClientAction(formData)
+                .then(({ params }) => {
+                  if (
+                    submittedConfirmationMode === "verified" &&
+                    isVerificationFallbackError(params.error)
+                  ) {
+                    setVerificationError(params.error);
+                    return;
+                  }
+                  closeProviderSecretsDialog();
+                  router.replace(buildDashboardMutationUrl(params), {
+                    scroll: false,
+                  });
+                })
+                .catch(() => {
+                  closeProviderSecretsDialog();
+                  router.replace(
+                    buildDashboardMutationUrl({
+                      error: "dashboard_action_failed",
+                      workspace: workspaceId,
+                      section: "repositories",
+                      repository: repositoryFullName,
+                    }),
+                    { scroll: false },
+                  );
+                });
+            });
+          }}
+          className="mt-4"
+        >
+          <input type="hidden" name="workspaceId" value={workspaceId} />
+          <input type="hidden" name="repositoryId" value={repositoryId} />
+          <input
+            type="hidden"
+            name="providerKind"
+            value={providerSetupSelection.providerKind}
+          />
+          <input
+            type="hidden"
+            name="authMode"
+            value={providerSetupSelection.authMode}
+          />
+          <input type="hidden" name="secretScope" value={secretScope} />
+          <input
+            type="hidden"
+            name="confirmationMode"
+            value={verificationError ? "manual" : "verified"}
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              type="submit"
+              variant="solid"
+              size="sm"
+              className="min-h-11 rounded-xl px-5"
+              disabled={isPending || !activeCommand}
+              aria-busy={isPending}
+            >
+              {isPending ? (
+                <span className="inline-flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"
+                  />
+                  {verificationError ? "Saving..." : "Checking secrets..."}
+                </span>
+              ) : verificationError ? (
+                "Confirm manually"
+              ) : (
+                "I ran this script"
+              )}
+            </Button>
+            {verificationError ? (
+              <p className="max-w-xl text-xs leading-5 text-amber-100/85">
+                Could not verify automatically. Confirm manually if GitHub shows
+                the secret.
+              </p>
+            ) : null}
+          </div>
+        </form>
         <p className="mt-3 text-xs leading-5 text-emerald-100/80">
           {providerDetails.footnote} ReviewRouter SaaS never receives provider
           credentials.
@@ -203,6 +311,73 @@ export function ProviderSecretSetupChooser({
   );
 }
 
+function providerChoiceToSetupSelection(value: ProviderChoice): {
+  readonly providerKind: "codex" | "openrouter";
+  readonly authMode:
+    | "codex_subscription_oauth"
+    | "codex_openai_api_key"
+    | "openrouter_api_key";
+} {
+  switch (value) {
+    case "codex_oauth":
+      return {
+        providerKind: "codex",
+        authMode: "codex_subscription_oauth",
+      };
+    case "codex_api_key":
+      return {
+        providerKind: "codex",
+        authMode: "codex_openai_api_key",
+      };
+    case "openrouter_api_key":
+      return {
+        providerKind: "openrouter",
+        authMode: "openrouter_api_key",
+      };
+  }
+}
+
 function isProviderChoice(value: unknown): value is ProviderChoice {
   return providerChoices.some((choice) => choice.value === value);
+}
+
+function isVerificationFallbackError(
+  value: unknown,
+): value is VerificationFallbackError {
+  return (
+    value === "repository_not_visible_to_github_app" ||
+    value === "provider_secret_not_found" ||
+    value === "provider_secret_not_available_to_repository" ||
+    value === "provider_secret_check_permission_required"
+  );
+}
+
+function readSubmittedConfirmationMode(
+  formData: FormData,
+): "verified" | "manual" {
+  return formData.get("confirmationMode") === "manual" ? "manual" : "verified";
+}
+
+function buildDashboardMutationUrl(params: Record<string, string>): string {
+  const search = new URLSearchParams(window.location.search);
+
+  search.delete("notice");
+  search.delete("error");
+  search.delete("pr");
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value) {
+      search.set(key, value);
+    }
+  }
+
+  return `/dashboard?${search.toString()}${window.location.hash}`;
+}
+
+function closeProviderSecretsDialog(): void {
+  document
+    .querySelector<HTMLButtonElement>(
+      '[aria-label="Close provider secrets dialog"]',
+    )
+    ?.click();
 }

@@ -16,19 +16,35 @@ const expectedWebhookUrl = resolveExpectedWebhookUrl(env, isHostedMode);
 const requireInstallation =
   String(env.REVIEW_ROUTER_GITHUB_APP_REQUIRE_INSTALLATION ?? "").trim() ===
   "1";
+const requireInstallationPermissionApproval =
+  String(
+    env.REVIEW_ROUTER_GITHUB_APP_REQUIRE_INSTALLATION_PERMISSION_APPROVAL ?? "",
+  ).trim() === "1";
 const checkOrgRulesetPermission =
   String(
     env.REVIEW_ROUTER_GITHUB_APP_CHECK_ORG_RULESET_PERMISSION ?? "",
   ).trim() === "1";
 
 const requiredPermissions = {
+  actions: "read",
+  checks: "write",
   contents: "write",
   workflows: "write",
   pull_requests: "write",
   issues: "write",
+  secrets: "read",
+  statuses: "write",
   metadata: "read",
 };
-const requiredWebhookEvents = ["pull_request"];
+const requiredWebhookEvents = [
+  "check_run",
+  "issue_comment",
+  "pull_request",
+  "repository",
+  "status",
+  "workflow_job",
+  "workflow_run",
+];
 
 const errors = [];
 const warnings = [];
@@ -78,6 +94,7 @@ async function checkGitHubApp() {
   assertWebhookEvents(appData.events ?? []);
 
   const installations = await listInstallations(app);
+  assertInstallationPermissions(installations);
   const installUrl = `https://github.com/apps/${actualSlug || appSlug}/installations/new`;
   if (installations.length === 0) {
     const message = `GitHub App has no installations. Install it on at least one selected test repository before setup PR E2E: ${installUrl}`;
@@ -128,6 +145,7 @@ async function checkGitHubApp() {
       account: installation.account?.login ?? null,
       accountType: installation.account?.type ?? null,
       repositorySelection: installation.repository_selection,
+      permissions: pickPermissions(installation.permissions ?? {}),
     })),
     expectedRepo: expectedRepo
       ? {
@@ -204,6 +222,36 @@ function assertPermissions(actualPermissions) {
   }
 }
 
+function assertInstallationPermissions(installations) {
+  for (const installation of installations) {
+    const missing = Object.entries(requiredPermissions).filter(
+      ([permission, requiredAccess]) =>
+        !permissionSatisfies(
+          installation.permissions?.[permission],
+          requiredAccess,
+        ),
+    );
+    if (missing.length === 0) continue;
+
+    const account = installation.account?.login ?? "unknown account";
+    const missingSummary = missing
+      .map(
+        ([permission, requiredAccess]) =>
+          `${permission}:${requiredAccess}`,
+      )
+      .join(", ");
+    const message = [
+      `GitHub App installation ${installation.id} (${account}) has not approved the latest required permissions: ${missingSummary}.`,
+      "Existing installations must approve the App permission update before installation tokens receive these permissions.",
+    ].join(" ");
+    if (requireInstallationPermissionApproval) {
+      errors.push(message);
+    } else {
+      warnings.push(message);
+    }
+  }
+}
+
 function assertWebhookEvents(actualEvents) {
   const actual = new Set(actualEvents);
   for (const event of requiredWebhookEvents) {
@@ -222,7 +270,7 @@ function assertWebhookEvents(actualEvents) {
 
   if (isHostedMode) {
     warnings.push(
-      "Hosted lifecycle sync relies on GitHub's default installation and installation_repositories events. Pull request merge detection additionally requires the pull_request webhook event.",
+      "Hosted lifecycle sync relies on GitHub's default installation and installation_repositories events. Pull request merge detection requires pull_request, and live workflow health updates require workflow_run.",
     );
   }
 }

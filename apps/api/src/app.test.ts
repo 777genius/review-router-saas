@@ -23,6 +23,8 @@ import type {
   GitHubInstallationSnapshot,
   GitHubPullRequestWebhookEnvelope,
   GitHubPullRequestWebhookHandlerPort,
+  GitHubRepositoryWebhookEnvelope,
+  GitHubRepositoryWebhookHandlerPort,
   InstallationWorkspaceOwnerGrant,
   InstallationWorkspaceOwnerGrantPort,
   WebhookDeliveryRecord,
@@ -107,6 +109,17 @@ class CapturingPullRequestWebhookHandler implements GitHubPullRequestWebhookHand
   ): Promise<Record<string, unknown>> {
     this.envelopes.push(envelope);
     return { processed: true, status: "configured" };
+  }
+}
+
+class CapturingRepositoryWebhookHandler implements GitHubRepositoryWebhookHandlerPort {
+  public envelopes: GitHubRepositoryWebhookEnvelope[] = [];
+
+  async handleGitHubRepositoryWebhook(
+    envelope: GitHubRepositoryWebhookEnvelope,
+  ): Promise<Record<string, unknown>> {
+    this.envelopes.push(envelope);
+    return { processed: true, status: "synced" };
   }
 }
 
@@ -510,6 +523,71 @@ describe("API app", () => {
           pull_request: expect.objectContaining({
             number: 7,
             merged: true,
+          }),
+        }),
+      }),
+    ]);
+  });
+
+  it("handles signed GitHub repository metadata webhooks", async () => {
+    const repositories = new CapturingRepositoryWebhookHandler();
+    const secret = "webhook-secret";
+    const app = await createApiApp({
+      githubWebhookDependencies: {
+        webhookSecret: secret,
+        installations: new InMemoryInstallations(),
+        deliveries: new InMemoryDeliveries(),
+        repositories,
+        clock: fixedClock,
+      },
+    });
+    const payload = JSON.stringify({
+      action: "edited",
+      installation: {
+        id: 129154876,
+        account: { login: "777genius", type: "User" },
+        repository_selection: "all",
+      },
+      repository: {
+        id: 123456,
+        name: "renamed-example",
+        full_name: "777genius/renamed-example",
+        owner: { login: "777genius" },
+        default_branch: "main",
+        visibility: "private",
+        private: true,
+        archived: false,
+        stargazers_count: 7,
+      },
+      sender: { id: 777, login: "777genius" },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-api-repository-test",
+        "x-github-event": "repository",
+        "x-hub-signature-256": signGitHubWebhookPayload(payload, secret),
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      processed: true,
+      status: "synced",
+    });
+    expect(repositories.envelopes).toEqual([
+      expect.objectContaining({
+        deliveryId: "delivery-api-repository-test",
+        eventName: "repository",
+        payload: expect.objectContaining({
+          action: "edited",
+          repository: expect.objectContaining({
+            full_name: "777genius/renamed-example",
+            archived: false,
           }),
         }),
       }),

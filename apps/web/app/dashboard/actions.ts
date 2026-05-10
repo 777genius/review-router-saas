@@ -164,6 +164,15 @@ export async function confirmSetupPullRequestMergedClientAction(
   return { params };
 }
 
+export async function confirmProviderSecretSetupClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await confirmProviderSecretSetupMutation(formData);
+
+  revalidatePath("/dashboard");
+  return { params };
+}
+
 async function createSetupPullRequestMutation(
   formData: FormData,
 ): Promise<Record<string, string>> {
@@ -410,6 +419,123 @@ async function confirmSetupPullRequestMergedMutation(
       section: "repositories",
     };
   } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "repositories",
+    };
+  }
+
+  return params;
+}
+
+async function confirmProviderSecretSetupMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const repositoryId = readFormString(formData, "repositoryId");
+  const providerSetup = readProviderSetupSelection(formData);
+  const secretScope = readProviderSecretScope(formData);
+  const confirmationMode = readProviderSetupConfirmationMode(formData);
+  const secretNames = providerSecretNamesForAuthMode(providerSetup.authMode);
+  let params: Record<string, string>;
+
+  try {
+    const repository = await loadRepositoryForWorkspace({
+      prisma,
+      workspaceId,
+      repositoryId,
+    });
+    assertRepositoryConfigMutable(repository);
+
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "action_control_plane",
+    });
+    await createDashboardRateLimitPolicy(prisma).assertReviewConfigSaveAllowed({
+      workspaceId,
+      resourceId: repositoryId,
+    });
+    if (confirmationMode === "verified") {
+      const octokit = await createGitHubAppInstallationOctokit(
+        repository.installation.githubInstallationId.toString(),
+      );
+      await assertRepositoryVisibleToGitHubApp({ octokit, repository });
+      await verifyProviderSecrets({
+        octokit,
+        repository,
+        secretNames,
+        secretScope,
+      });
+    }
+
+    await prisma.providerSetupState.upsert({
+      where: {
+        workspaceId_targetKey_providerKind_authMode: {
+          workspaceId,
+          targetKey: `repo:${repositoryId}`,
+          providerKind: providerSetup.providerKind,
+          authMode: providerSetup.authMode,
+        },
+      },
+      update: {
+        repositoryId,
+        state: "configured",
+      },
+      create: {
+        workspaceId,
+        repositoryId,
+        targetKey: `repo:${repositoryId}`,
+        providerKind: providerSetup.providerKind,
+        authMode: providerSetup.authMode,
+        state: "configured",
+      },
+    });
+    await recordAuditEvent(
+      {
+        workspaceId,
+        actor: actor.actor,
+        action: "provider_secret_setup.confirmed",
+        targetType: "repository",
+        targetId: repositoryId,
+        metadata: {
+          repository: repository.fullName,
+          providerKind: providerSetup.providerKind,
+          authMode: providerSetup.authMode,
+          confirmationMode,
+          credentialScope: secretScope,
+          requiredCredentialCount: secretNames.length,
+        },
+      },
+      { auditLog: new PrismaAuditLogRepository(prisma) },
+    );
+
+    params = {
+      notice: "provider_setup_confirmed",
+      repository: repository.fullName,
+      workspace: workspaceId,
+      section: "repositories",
+    };
+  } catch (error) {
+    const failedState = providerSetupStateForSecretCheckError(error);
+    if (failedState) {
+      await prisma.providerSetupState.updateMany({
+        where: {
+          workspaceId,
+          targetKey: `repo:${repositoryId}`,
+          providerKind: providerSetup.providerKind,
+          authMode: providerSetup.authMode,
+        },
+        data: {
+          repositoryId,
+          state: failedState,
+        },
+      });
+    }
     params = {
       error: safeDashboardErrorCode(error),
       workspace: workspaceId,
@@ -814,20 +940,31 @@ async function loadRepositoryForWorkspace(input: {
 }): Promise<{
   readonly id: string;
   readonly workspaceId: string;
+  readonly githubRepositoryId: bigint;
+  readonly owner: string;
+  readonly name: string;
   readonly fullName: string;
+  readonly visibility: string;
   readonly selected: boolean;
   readonly archived: boolean;
-  readonly installation: { readonly status: string };
+  readonly installation: {
+    readonly status: string;
+    readonly githubInstallationId: bigint;
+  };
 }> {
   const repository = await input.prisma.repositoryConnection.findUnique({
     where: { id: input.repositoryId },
     select: {
       id: true,
       workspaceId: true,
+      githubRepositoryId: true,
+      owner: true,
+      name: true,
       fullName: true,
+      visibility: true,
       selected: true,
       archived: true,
-      installation: { select: { status: true } },
+      installation: { select: { status: true, githubInstallationId: true } },
     },
   });
   if (!repository || repository.workspaceId !== input.workspaceId) {
@@ -835,6 +972,206 @@ async function loadRepositoryForWorkspace(input: {
   }
 
   return repository;
+}
+
+async function verifyProviderSecrets(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+  readonly secretNames: readonly string[];
+  readonly secretScope: "repository" | "organization_selected_repositories";
+}): Promise<void> {
+  for (const secretName of input.secretNames) {
+    if (input.secretScope === "repository") {
+      await verifyRepositorySecret({
+        octokit: input.octokit,
+        repository: input.repository,
+        secretName,
+      });
+    } else {
+      await verifyOrganizationSecret({
+        octokit: input.octokit,
+        repository: input.repository,
+        secretName,
+      });
+    }
+  }
+}
+
+async function assertRepositoryVisibleToGitHubApp(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+}): Promise<void> {
+  try {
+    await input.octokit.request("GET /repos/{owner}/{repo}", {
+      owner: input.repository.owner,
+      repo: input.repository.name,
+    });
+  } catch (error) {
+    const status = githubApiStatus(error);
+    if (status === 401 || status === 403 || status === 404) {
+      throw new Error("repository_not_visible_to_github_app", {
+        cause: error,
+      });
+    }
+
+    throw error;
+  }
+}
+
+async function verifyRepositorySecret(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+  readonly secretName: string;
+}): Promise<void> {
+  await requestProviderSecretMetadata(async () => {
+    await input.octokit.request(
+      "GET /repos/{owner}/{repo}/actions/secrets/{secret_name}",
+      {
+        owner: input.repository.owner,
+        repo: input.repository.name,
+        secret_name: input.secretName,
+      },
+    );
+  });
+}
+
+async function verifyOrganizationSecret(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+  readonly secretName: string;
+}): Promise<void> {
+  const secret = await requestProviderSecretMetadata(async () => {
+    const response = await input.octokit.request(
+      "GET /orgs/{org}/actions/secrets/{secret_name}",
+      {
+        org: input.repository.owner,
+        secret_name: input.secretName,
+      },
+    );
+    return response.data as { readonly visibility?: string };
+  });
+  const visibility = secret.visibility;
+
+  if (visibility === "all") return;
+  if (visibility === "private" && input.repository.visibility === "private") {
+    return;
+  }
+  if (visibility !== "selected") {
+    throw new Error("provider_secret_not_available_to_repository");
+  }
+
+  const selected = await organizationSecretIncludesRepository({
+    octokit: input.octokit,
+    org: input.repository.owner,
+    secretName: input.secretName,
+    githubRepositoryId: input.repository.githubRepositoryId,
+  });
+  if (!selected) {
+    throw new Error("provider_secret_not_available_to_repository");
+  }
+}
+
+async function organizationSecretIncludesRepository(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly org: string;
+  readonly secretName: string;
+  readonly githubRepositoryId: bigint;
+}): Promise<boolean> {
+  const expectedId = input.githubRepositoryId.toString();
+
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await requestProviderSecretMetadata(async () => {
+      return input.octokit.request(
+        "GET /orgs/{org}/actions/secrets/{secret_name}/repositories",
+        {
+          org: input.org,
+          secret_name: input.secretName,
+          per_page: 100,
+          page,
+        },
+      );
+    });
+    const repositories = toRepositoryIdRecords(response.data);
+
+    if (repositories.some((repository) => repository.id === expectedId)) {
+      return true;
+    }
+    if (repositories.length < 100) return false;
+  }
+
+  return false;
+}
+
+async function requestProviderSecretMetadata<T>(
+  request: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await request();
+  } catch (error) {
+    const status = githubApiStatus(error);
+    if (status === 401 || status === 403) {
+      throw new Error("provider_secret_check_permission_required", {
+        cause: error,
+      });
+    }
+    if (status === 404) {
+      throw new Error("provider_secret_not_found", { cause: error });
+    }
+
+    throw error;
+  }
+}
+
+function githubApiStatus(error: unknown): number | null {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number"
+  ) {
+    return error.status;
+  }
+
+  return null;
+}
+
+function toRepositoryIdRecords(
+  value: unknown,
+): readonly { readonly id: string }[] {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("repositories" in value) ||
+    !Array.isArray(value.repositories)
+  ) {
+    return [];
+  }
+
+  return value.repositories
+    .map((repository) => {
+      if (
+        typeof repository === "object" &&
+        repository !== null &&
+        "id" in repository
+      ) {
+        return { id: String(repository.id) };
+      }
+
+      return null;
+    })
+    .filter((repository): repository is { readonly id: string } =>
+      Boolean(repository),
+    );
 }
 
 function assertRepositoryConfigMutable(input: {
@@ -1000,6 +1337,89 @@ function readWorkflowStyle(formData: FormData): "reusable" | "explicit" {
   return value === "explicit" ? "explicit" : "reusable";
 }
 
+function readProviderSetupSelection(formData: FormData): {
+  readonly providerKind: "codex" | "openrouter";
+  readonly authMode:
+    | "codex_subscription_oauth"
+    | "codex_openai_api_key"
+    | "openrouter_api_key";
+} {
+  const providerKind = readFormString(formData, "providerKind");
+  const authMode = readFormString(formData, "authMode");
+
+  if (
+    providerKind === "codex" &&
+    (authMode === "codex_subscription_oauth" ||
+      authMode === "codex_openai_api_key")
+  ) {
+    return { providerKind, authMode };
+  }
+  if (providerKind === "openrouter" && authMode === "openrouter_api_key") {
+    return { providerKind, authMode };
+  }
+
+  throw new Error("invalid_form_value:providerSetup");
+}
+
+function readProviderSecretScope(
+  formData: FormData,
+): "repository" | "organization_selected_repositories" {
+  const value = readFormString(formData, "secretScope");
+  if (
+    value === "repository" ||
+    value === "organization_selected_repositories"
+  ) {
+    return value;
+  }
+
+  throw new Error("invalid_form_value:secretScope");
+}
+
+function readProviderSetupConfirmationMode(
+  formData: FormData,
+): "verified" | "manual" {
+  const value = formData.get("confirmationMode");
+  if (value === null) return "verified";
+  if (value === "verified" || value === "manual") return value;
+
+  throw new Error("invalid_form_value:confirmationMode");
+}
+
+function providerSecretNamesForAuthMode(
+  authMode:
+    | "codex_subscription_oauth"
+    | "codex_openai_api_key"
+    | "openrouter_api_key",
+): readonly string[] {
+  switch (authMode) {
+    case "codex_subscription_oauth":
+      return ["CODEX_AUTH_JSON"];
+    case "codex_openai_api_key":
+      return ["OPENAI_API_KEY"];
+    case "openrouter_api_key":
+      return ["OPENROUTER_API_KEY"];
+  }
+}
+
+function providerSetupStateForSecretCheckError(
+  error: unknown,
+): "missing" | "stale_or_invalid" | "unknown" | null {
+  if (!(error instanceof Error)) return null;
+
+  switch (error.message) {
+    case "provider_secret_not_found":
+      return "missing";
+    case "provider_secret_not_available_to_repository":
+      return "stale_or_invalid";
+    case "provider_secret_check_permission_required":
+      return "unknown";
+    case "repository_not_visible_to_github_app":
+      return "unknown";
+    default:
+      return null;
+  }
+}
+
 function readFormNumber(formData: FormData, key: string): number {
   const value = Number(readFormString(formData, key));
   if (!Number.isFinite(value)) {
@@ -1044,7 +1464,8 @@ function safeDashboardErrorCode(error: unknown): string {
   if (
     message.startsWith("missing_form_value:") ||
     message.startsWith("invalid_form_number:") ||
-    message.startsWith("invalid_form_boolean:")
+    message.startsWith("invalid_form_boolean:") ||
+    message.startsWith("invalid_form_value:")
   ) {
     return "invalid_form";
   }
@@ -1059,6 +1480,10 @@ function safeDashboardErrorCode(error: unknown): string {
       "repository_archived",
       "installation_not_active",
       "setup_pr_not_merged",
+      "repository_not_visible_to_github_app",
+      "provider_secret_not_found",
+      "provider_secret_not_available_to_repository",
+      "provider_secret_check_permission_required",
       "workflow_provisioning_disabled",
       "org_ruleset_requires_organization_installation",
       "org_ruleset_no_selected_repositories",

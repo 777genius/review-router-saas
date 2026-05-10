@@ -26,14 +26,25 @@ assertEqual(manifest.public, true, "public");
 
 assertEqual(
   JSON.stringify(manifest.default_events ?? []),
-  JSON.stringify(["pull_request"]),
+  JSON.stringify([
+    "check_run",
+    "issue_comment",
+    "pull_request",
+    "repository",
+    "status",
+    "workflow_job",
+    "workflow_run",
+  ]),
   "default_events",
 );
 
 assertPermission("actions", "read");
+assertPermission("checks", "write");
 assertPermission("contents", "write");
 assertPermission("issues", "write");
 assertPermission("pull_requests", "write");
+assertPermission("secrets", "read");
+assertPermission("statuses", "write");
 assertPermission("workflows", "write");
 assertPermissionMissing("organization_administration");
 

@@ -485,6 +485,33 @@ store_secret_from_file() {
   fi
 }
 
+print_completion_summary() {
+  log ""
+  if is_true "$DRY_RUN"; then
+    ok "Dry run complete. No GitHub secrets were written."
+  else
+    ok "ReviewRouter is ready to use Codex OAuth for this target."
+  fi
+  if [ "$SECRET_SCOPE" = "org" ]; then
+    info "Ready target: org $ORG_NAME selected repos: $ORG_SELECTED_REPOS"
+  else
+    info "Ready target: repo $TARGET_REPO"
+  fi
+  if is_true "$DRY_RUN"; then
+    info "Would store secret: CODEX_AUTH_JSON"
+    if is_true "$INCLUDE_CODEX_CONFIG"; then
+      info "Would store optional secret: CODEX_CONFIG_TOML"
+    fi
+    info "Next step: rerun without --dry-run when the target looks correct."
+  else
+    info "Stored secret: CODEX_AUTH_JSON"
+    if is_true "$INCLUDE_CODEX_CONFIG"; then
+      info "Stored optional secret: CODEX_CONFIG_TOML"
+    fi
+    info "Next step: open or update a pull request and let the ReviewRouter workflow run."
+  fi
+}
+
 main() {
   parse_args "$@"
   log "${PRODUCT_NAME} Codex OAuth secret seeding"
@@ -513,13 +540,14 @@ main() {
 
   if is_true "$INCLUDE_CODEX_CONFIG"; then
     [ -f "$CODEX_CONFIG_FILE" ] || fatal "Codex config file not found: $CODEX_CONFIG_FILE"
-    warn "Including CODEX_CONFIG_TOML can carry local config into CI. Only do this if you intentionally need it."
+    warn "Including CODEX_CONFIG_TOML copies your local Codex config.toml into CI. Use this only when CI needs custom Codex settings from that file."
     store_secret_from_file CODEX_CONFIG_TOML "$CODEX_CONFIG_FILE"
   else
-    warn "Skipped CODEX_CONFIG_TOML by default. Set REVIEW_ROUTER_INCLUDE_CODEX_CONFIG=1 only if needed."
+    info "Skipped optional CODEX_CONFIG_TOML. Normal Codex OAuth setup only needs CODEX_AUTH_JSON."
+    info "Set REVIEW_ROUTER_INCLUDE_CODEX_CONFIG=1 only if your CI run needs custom settings from $CODEX_CONFIG_FILE."
   fi
 
-  ok "Codex OAuth secret seeding complete"
+  print_completion_summary
 }
 
 main "$@"

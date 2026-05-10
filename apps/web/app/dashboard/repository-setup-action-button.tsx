@@ -41,7 +41,6 @@ export function RepositorySetupActionButton({
               router.replace(buildDashboardMutationUrl(params), {
                 scroll: false,
               });
-              router.refresh();
             })
             .catch(() => {
               router.replace(
@@ -52,7 +51,6 @@ export function RepositorySetupActionButton({
                 }),
                 { scroll: false },
               );
-              router.refresh();
             });
         });
       }}
@@ -120,7 +118,6 @@ export function RepositorySetupMergedButton({
               router.replace(buildDashboardMutationUrl(params), {
                 scroll: false,
               });
-              router.refresh();
             })
             .catch(() => {
               router.replace(
@@ -131,7 +128,6 @@ export function RepositorySetupMergedButton({
                 }),
                 { scroll: false },
               );
-              router.refresh();
             });
         });
       }}
@@ -212,5 +208,5 @@ function buildDashboardMutationUrl(params: Record<string, string>): string {
     }
   }
 
-  return `/dashboard?${search.toString()}`;
+  return `/dashboard?${search.toString()}${window.location.hash}`;
 }

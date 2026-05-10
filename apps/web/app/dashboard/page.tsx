@@ -188,6 +188,11 @@ async function loadDashboardData(
         provisioning: readonly Awaited<
           ReturnType<typeof listRepositoryWorkflowProvisioning>
         >[number][];
+        providerSetup: readonly {
+          readonly repositoryId: string | null;
+          readonly state: string;
+          readonly updatedAt: Date;
+        }[];
         entitlement: ReturnType<typeof freeBetaEntitlement>;
         reviewConfig: Awaited<ReturnType<typeof findReviewConfiguration>>;
         repositoryConfigs: readonly {
@@ -244,6 +249,19 @@ async function loadDashboardData(
           },
           { provisioning: new PrismaWorkflowProvisioningQuery(prisma) },
         );
+        const providerSetup = await prisma.providerSetupState.findMany({
+          where: {
+            workspaceId: workspace.id,
+            repositoryId: {
+              in: repositories.map((repository) => repository.id),
+            },
+          },
+          select: {
+            repositoryId: true,
+            state: true,
+            updatedAt: true,
+          },
+        });
         const supportDiagnostics = await getWorkspaceSupportDiagnostics(
           {
             workspaceId: workspace.id,
@@ -276,6 +294,7 @@ async function loadDashboardData(
           repositoryCount: repositories.length,
           repositories,
           provisioning,
+          providerSetup,
           entitlement,
           health,
           reviewConfig,
@@ -731,6 +750,7 @@ function WorkspaceCard({
     repositories,
     health,
     provisioning,
+    providerSetup,
     repositoryConfigs,
     outboxFailures,
     supportDiagnostics,
@@ -740,6 +760,10 @@ function WorkspaceCard({
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
   const activeConfigVersion = data.reviewConfig?.version ?? 1;
   const requestedRepositoryFullName = readParam(params.repository);
+  const providerSecretCheckFailedRepositoryFullName =
+    isProviderSecretCheckError(readParam(params.error))
+      ? requestedRepositoryFullName
+      : null;
   const repositorySearchQuery = readParam(params.q);
   const repositorySearchFilter = readRepositorySearchFilter(params);
   const requestedRepository = requestedRepositoryFullName
@@ -773,6 +797,8 @@ function WorkspaceCard({
     selectedInstallation &&
     providerGuidanceSet ? (
       <RepositoryProviderSecretsDialog
+        workspaceId={workspace.id}
+        repositoryId={selectedRepository.id}
         repositoryFullName={selectedRepository.fullName}
         installation={selectedInstallation}
         guidanceSet={providerGuidanceSet}
@@ -813,6 +839,7 @@ function WorkspaceCard({
               repositories={repositories}
               health={health}
               provisioning={provisioning}
+              providerSetup={providerSetup}
               repositoryConfigs={repositoryConfigs}
               activeConfig={activeConfig}
               mutationsEnabled={mutationsEnabled}
@@ -820,6 +847,9 @@ function WorkspaceCard({
               searchQuery={repositorySearchQuery}
               searchFilter={repositorySearchFilter}
               selectedRepositoryFullName={selectedRepository?.fullName ?? null}
+              providerSecretCheckFailedRepositoryFullName={
+                providerSecretCheckFailedRepositoryFullName || null
+              }
             />
           </>
         ) : null}
@@ -1400,6 +1430,7 @@ function RepositoryTable({
   repositories,
   health,
   provisioning,
+  providerSetup,
   repositoryConfigs,
   activeConfig,
   mutationsEnabled,
@@ -1407,11 +1438,13 @@ function RepositoryTable({
   searchQuery,
   searchFilter,
   selectedRepositoryFullName,
+  providerSecretCheckFailedRepositoryFullName,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repositories: DashboardWorkspaceData["repositories"];
   readonly health: DashboardWorkspaceData["health"];
   readonly provisioning: DashboardWorkspaceData["provisioning"];
+  readonly providerSetup: DashboardWorkspaceData["providerSetup"];
   readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
   readonly activeConfig: ReviewConfiguration;
   readonly mutationsEnabled: boolean;
@@ -1419,6 +1452,7 @@ function RepositoryTable({
   readonly searchQuery: string;
   readonly searchFilter: RepositorySearchFilter;
   readonly selectedRepositoryFullName: string | null;
+  readonly providerSecretCheckFailedRepositoryFullName: string | null;
 }): React.ReactElement {
   if (repositories.length === 0) {
     return (
@@ -1442,6 +1476,22 @@ function RepositoryTable({
   const repositoryProvisioningById = new Map(
     provisioning.map((item) => [item.repositoryId, item] as const),
   );
+  const configuredProviderSetupByRepositoryId = new Map<
+    string,
+    { readonly updatedAt: Date }
+  >();
+  for (const item of providerSetup) {
+    if (!item.repositoryId || item.state !== "configured") continue;
+
+    const existing = configuredProviderSetupByRepositoryId.get(
+      item.repositoryId,
+    );
+    if (!existing || existing.updatedAt < item.updatedAt) {
+      configuredProviderSetupByRepositoryId.set(item.repositoryId, {
+        updatedAt: item.updatedAt,
+      });
+    }
+  }
 
   const rows = repositories.map((repository) => {
     const repositoryHealth = repositoryHealthById.get(repository.id);
@@ -1458,10 +1508,22 @@ function RepositoryTable({
     const workflowCurrent = workflowSetupAlreadyCurrent(
       repositoryHealth?.status,
     );
+    const providerSetupConfirmedAt = configuredProviderSetupByRepositoryId.get(
+      repository.id,
+    )?.updatedAt;
+    const providerSecretCheckFailed =
+      repository.fullName === providerSecretCheckFailedRepositoryFullName;
+    const providerSetupConfirmed =
+      !providerSecretCheckFailed &&
+      providerSetupConfirmedAt !== undefined &&
+      (!repositoryHealth?.latestActionHealthReceivedAt ||
+        providerSetupConfirmedAt >=
+          repositoryHealth.latestActionHealthReceivedAt);
     const setupProgressStep = repositorySetupProgressStep({
       setupStatus: repository.setupStatus,
       healthStatus: repositoryHealth?.status,
       workflowCurrent,
+      providerSetupConfirmed,
     });
     const setupView = describeRepositorySetup(
       repository.setupStatus,
@@ -1612,7 +1674,10 @@ function RepositoryTable({
                 <input
                   id={setupDisclosureId}
                   type="checkbox"
-                  className="peer sr-only"
+                  defaultChecked={
+                    repository.fullName === selectedRepositoryFullName
+                  }
+                  className="repository-setup-disclosure peer sr-only"
                 />
                 {setupProgressStep === 2 ? (
                   <RepositorySetupStatusRefresher
@@ -1620,7 +1685,7 @@ function RepositoryTable({
                     disclosureId={setupDisclosureId}
                   />
                 ) : null}
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                <div className="repository-setup-row-header grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <RepositoryNameLink
                       fullName={repository.fullName}
@@ -1631,7 +1696,7 @@ function RepositoryTable({
                       stargazersCount={repository.stargazersCount}
                     />
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 peer-focus-visible:[&_.setup-toggle]:outline peer-focus-visible:[&_.setup-toggle]:outline-2 peer-focus-visible:[&_.setup-toggle]:outline-offset-2 peer-focus-visible:[&_.setup-toggle]:outline-cyan-200 peer-checked:[&_.setup-chevron]:rotate-180 sm:justify-end">
+                  <div className="repository-setup-toggle-row flex flex-wrap items-center gap-2 peer-focus-visible:[&_.setup-toggle]:outline peer-focus-visible:[&_.setup-toggle]:outline-2 peer-focus-visible:[&_.setup-toggle]:outline-offset-2 peer-focus-visible:[&_.setup-toggle]:outline-cyan-200 sm:justify-end">
                     <RepositoryVisibilityBadge
                       visibility={repository.visibility}
                     />
@@ -1964,7 +2029,7 @@ function SetupDisclosureChevron(): React.ReactElement {
     <svg
       aria-hidden="true"
       viewBox="0 0 16 16"
-      className="setup-chevron h-3.5 w-3.5 shrink-0 text-cyan-100 transition"
+      className="setup-chevron h-3.5 w-3.5 shrink-0 text-cyan-100 transition-transform duration-200 ease-out motion-reduce:transition-none"
       fill="none"
     >
       <path
@@ -1998,7 +2063,7 @@ function RepositorySetupProgressStepItem({
   const circleClass = isActive
     ? "border-cyan-200 bg-cyan-200 text-slate-950 shadow-[0_0_18px_rgba(103,232,249,0.28)]"
     : isComplete
-      ? "border-cyan-300/45 bg-cyan-300/[0.08] text-cyan-100"
+      ? "border-cyan-300/45 bg-slate-950 text-cyan-100 shadow-[inset_0_0_18px_rgba(103,232,249,0.12)]"
       : "border-slate-700 bg-slate-950 text-slate-500";
   const desktopAlignment =
     step.number === 1
@@ -2059,7 +2124,16 @@ function RepositorySetupProgressStepItem({
 }
 
 function repositorySetupProgressTrackWidth(step: 1 | 2 | 3 | 4): string {
-  return `calc((100% - 2rem) * ${(step - 1) / 3})`;
+  switch (step) {
+    case 1:
+      return "0";
+    case 2:
+      return "calc(37.5% - 1rem)";
+    case 3:
+      return "calc(62.5% - 1rem)";
+    case 4:
+      return "calc(100% - 2rem)";
+  }
 }
 
 function SetupProgressLockIcon(): React.ReactElement {
@@ -2090,12 +2164,15 @@ function repositorySetupProgressStep({
   setupStatus,
   healthStatus,
   workflowCurrent,
+  providerSetupConfirmed,
 }: {
   readonly setupStatus: string;
   readonly healthStatus: string | undefined;
   readonly workflowCurrent: boolean;
+  readonly providerSetupConfirmed: boolean;
 }): 1 | 2 | 3 | 4 {
   if (healthStatus === "healthy") return 4;
+  if (workflowCurrent && providerSetupConfirmed) return 4;
   if (workflowCurrent) return 3;
   if (setupStatus === "setup_pr_open" || healthStatus === "setup_pr_open") {
     return 2;
@@ -2152,6 +2229,8 @@ function RepositoryProviderSecretsAction({
 
   return (
     <RepositoryProviderSecretsDialog
+      workspaceId={workspace.id}
+      repositoryId={repository.id}
       repositoryFullName={repository.fullName}
       installation={installation}
       guidanceSet={buildProviderSecretGuidanceSet({
@@ -2174,6 +2253,8 @@ function RepositoryProviderSecretsAction({
 }
 
 function RepositoryProviderSecretsDialog({
+  workspaceId,
+  repositoryId,
   repositoryFullName,
   installation,
   guidanceSet,
@@ -2183,6 +2264,8 @@ function RepositoryProviderSecretsDialog({
   triggerClassName,
   disabled = false,
 }: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
   readonly repositoryFullName: string;
   readonly installation: DashboardInstallation;
   readonly guidanceSet: ProviderSecretGuidanceSet;
@@ -2256,6 +2339,8 @@ function RepositoryProviderSecretsDialog({
           </div>
           <div className="p-5 sm:p-6">
             <ProviderSecretSetupChooser
+              workspaceId={workspaceId}
+              repositoryId={repositoryId}
               repositoryFullName={repositoryFullName}
               organizationLogin={organizationLogin}
               codexOAuthGuidance={guidanceSet.codexOAuth}
@@ -2573,6 +2658,7 @@ function WorkspaceActionNotice({
     [
       "setup_pr_ready",
       "setup_pr_merged",
+      "provider_setup_confirmed",
       "review_config_saved",
       "repository_review_config_saved",
       "repository_review_config_cleared",
@@ -2729,6 +2815,7 @@ function resolveDashboardSection(
       "app_installed",
       "setup_pr_ready",
       "setup_pr_merged",
+      "provider_setup_confirmed",
       "workflow_already_current",
       "sync_requested",
       "sync_already_requested",
@@ -2782,6 +2869,10 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return repository
         ? `Setup PR merge was confirmed for ${repository}.`
         : "Setup PR merge was confirmed.";
+    case "provider_setup_confirmed":
+      return repository
+        ? `Provider setup was marked complete for ${repository}.`
+        : "Provider setup was marked complete.";
     case "workflow_already_current":
       return repository
         ? `ReviewRouter workflow is already current for ${repository}.`
@@ -2820,6 +2911,8 @@ function dashboardNoticeTitle(notice: string): string {
       return "Setup PR ready";
     case "setup_pr_merged":
       return "Setup PR merged";
+    case "provider_setup_confirmed":
+      return "Provider setup confirmed";
     case "workflow_already_current":
       return "Workflow installed";
     case "org_ruleset_queued":
@@ -2843,6 +2936,7 @@ function dashboardNoticeTone(
   switch (notice) {
     case "setup_pr_ready":
     case "setup_pr_merged":
+    case "provider_setup_confirmed":
     case "app_installed":
     case "workflow_already_current":
     case "review_config_saved":
@@ -2857,6 +2951,15 @@ function dashboardNoticeTone(
     default:
       return "accent";
   }
+}
+
+function isProviderSecretCheckError(error: string): boolean {
+  return (
+    error === "repository_not_visible_to_github_app" ||
+    error === "provider_secret_not_found" ||
+    error === "provider_secret_not_available_to_repository" ||
+    error === "provider_secret_check_permission_required"
+  );
 }
 
 function workflowSetupAlreadyCurrent(status: string | undefined): boolean {
@@ -2998,6 +3101,14 @@ function dashboardErrorText(error: string): string {
       return "The GitHub App installation is not active.";
     case "setup_pr_not_merged":
       return "The setup PR is not merged yet, or the workflow file is not visible on the default branch yet.";
+    case "repository_not_visible_to_github_app":
+      return "The GitHub App installation cannot read this repository. Update App repository access or sync repositories, then try again.";
+    case "provider_secret_not_found":
+      return "GitHub does not show the required Actions secret yet. Run the command, then try again.";
+    case "provider_secret_not_available_to_repository":
+      return "The organization Actions secret exists, but it is not available to this repository. Add this repository to the selected-repository secret access, then try again.";
+    case "provider_secret_check_permission_required":
+      return "ReviewRouter needs GitHub App Secrets: read permission to verify Actions secret metadata. Approve the App permission update, then try again.";
     case "entitlement_denied":
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
     case "workflow_provisioning_disabled":

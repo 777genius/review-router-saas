@@ -101,6 +101,10 @@ Contents: write
 Workflows: write
 Pull requests: write
 Issues: write
+Secrets: read
+Actions: read
+Checks: write
+Commit statuses: write
 Metadata: read
 ```
 
@@ -108,6 +112,12 @@ Required webhook event subscriptions:
 
 ```text
 Pull request
+Workflow run
+Repository
+Workflow job
+Check run
+Issue comment
+Status
 Installation
 Installation repositories
 ```

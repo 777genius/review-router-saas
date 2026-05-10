@@ -83,6 +83,12 @@ canvas {
   font-family: var(--font-mono), "JetBrains Mono", "Fira Code", monospace;
 }
 
+.repository-setup-disclosure:checked
+  ~ .repository-setup-row-header
+  .setup-chevron {
+  transform: rotate(180deg);
+}
+
 :not(pre) > code {
   border: 1px solid rgba(103, 232, 249, 0.16);
   border-radius: 0.45rem;

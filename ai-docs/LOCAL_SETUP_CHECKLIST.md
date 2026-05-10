@@ -117,7 +117,10 @@ Contents: Read and write
 Workflows: Read and write
 Pull requests: Read and write
 Issues: Read and write
-Actions: no access for minimal v1
+Secrets: Read-only
+Actions: Read-only
+Checks: Read and write
+Commit statuses: Read and write
 ```
 
 Organization/account permissions:
@@ -125,7 +128,7 @@ Organization/account permissions:
 ```text
 Members: no access for local v1
 Administration: no access
-Secrets: no access
+Secrets: Read-only
 ```
 
 Why these are needed:
@@ -134,7 +137,10 @@ Why these are needed:
 - `workflows: write` writes `.github/workflows/reviewrouter.yml`
 - `pull_requests: write` creates setup/update PRs
 - `issues: write` supports PR summary/setup/help conversations when App-bot identity or SaaS guidance is used
-- `actions: write` is not required for minimal v1; action health reports use GitHub Actions OIDC instead
+- `secrets: read` verifies GitHub Actions secret names exist after provider setup; GitHub does not return secret values
+- `actions: read` supports workflow run event metadata for live health/status updates
+- `checks: write` allows ReviewRouter-owned check runs when direct GitHub check integration is enabled
+- `statuses: write` allows ReviewRouter-owned commit statuses when direct GitHub status integration is enabled
 
 The app must still create PRs only. It must not push directly to default branches.
 
@@ -146,6 +152,12 @@ For first local development:
 Installation
 Installation repositories
 Pull request
+Workflow run
+Repository
+Workflow job
+Check run
+Issue comment
+Status
 ```
 
 Later, if dashboard health needs GitHub workflow event ingestion:
