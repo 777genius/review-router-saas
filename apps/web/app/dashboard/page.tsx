@@ -1712,10 +1712,7 @@ function RepositoryTable({
                   className="repository-setup-disclosure peer sr-only"
                 />
                 {setupProgressStep === 2 ? (
-                  <RepositorySetupStatusRefresher
-                    enabled
-                    disclosureId={setupDisclosureId}
-                  />
+                  <RepositorySetupStatusRefresher enabled />
                 ) : null}
                 <div className="repository-setup-row-header grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
