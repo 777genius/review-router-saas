@@ -252,8 +252,7 @@ describe("review configuration", () => {
       };
     };
     const versions: VersionRow[] = [];
-    let prisma: PrismaStub;
-    prisma = {
+    const prisma: PrismaStub = {
       $transaction: async <T>(callback: (tx: PrismaStub) => Promise<T>) =>
         callback(prisma),
       reviewConfiguration: {
