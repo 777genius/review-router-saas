@@ -2779,7 +2779,7 @@ function dashboardErrorText(error: string): string {
     case "installation_not_active":
       return "The GitHub App installation is not active.";
     case "setup_pr_not_merged":
-      return "The setup PR is not merged yet, or the workflow file is not visible on the default branch yet.";
+      return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
     case "repository_not_visible_to_github_app":
       return "The GitHub App installation cannot read this repository. Update App repository access or sync repositories, then try again.";
     case "provider_secret_not_found":
