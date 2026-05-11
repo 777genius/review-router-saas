@@ -241,10 +241,7 @@ function assertInstallationPermissions(installations) {
 
     const account = installation.account?.login ?? "unknown account";
     const missingSummary = missing
-      .map(
-        ([permission, requiredAccess]) =>
-          `${permission}:${requiredAccess}`,
-      )
+      .map(([permission, requiredAccess]) => `${permission}:${requiredAccess}`)
       .join(", ");
     const message = [
       `GitHub App installation ${installation.id} (${account}) has not approved the latest required permissions: ${missingSummary}.`,
