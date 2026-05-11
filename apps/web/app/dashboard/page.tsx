@@ -1690,9 +1690,14 @@ function RepositoryTable({
                 data-repository-row-id={repository.id}
                 hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
                 className={[
-                  "grid gap-4 border-t border-cyan-200/10 px-1 py-5 transition first:border-t-0 hover:bg-cyan-300/[0.035] lg:px-6 lg:py-6",
+                  "grid gap-4 border-t border-cyan-200/10 px-1 py-5 transition first:border-t-0 lg:px-6 lg:py-6",
+                  setupProgressStep === 4
+                    ? "bg-emerald-400/[0.045] hover:bg-emerald-400/[0.07]"
+                    : "hover:bg-cyan-300/[0.035]",
                   repository.fullName === selectedRepositoryFullName
-                    ? "rounded-2xl bg-cyan-300/[0.045] px-3 lg:rounded-none"
+                    ? setupProgressStep === 4
+                      ? "rounded-2xl bg-emerald-400/[0.075] px-3 lg:rounded-none"
+                      : "rounded-2xl bg-cyan-300/[0.045] px-3 lg:rounded-none"
                     : "",
                 ].join(" ")}
               >
@@ -1866,17 +1871,28 @@ function RepositorySetupDisclosureToggle({
   readonly disclosureId: string;
   readonly currentStep: 1 | 2 | 3 | 4;
 }): React.ReactElement {
+  const isComplete = currentStep === 4;
   return (
     <label
       htmlFor={disclosureId}
       title={repositorySetupProgressSummary(currentStep)}
-      className="setup-toggle inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-cyan-300/25 bg-cyan-300/[0.035] px-2.5 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-cyan-100 transition duration-200 ease-out hover:border-cyan-300/50 hover:bg-cyan-300/[0.075] hover:saturate-125"
+      className={[
+        "setup-toggle inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition duration-200 ease-out hover:saturate-125",
+        isComplete
+          ? "border-emerald-300/40 bg-emerald-400/[0.09] text-emerald-100 hover:border-emerald-300/60 hover:bg-emerald-400/[0.14]"
+          : "border-cyan-300/25 bg-cyan-300/[0.035] text-cyan-100 hover:border-cyan-300/50 hover:bg-cyan-300/[0.075]",
+      ].join(" ")}
     >
       <span>Setup</span>
-      <span className="text-[0.65rem] tracking-normal text-slate-400">
+      <span
+        className={[
+          "text-[0.65rem] tracking-normal",
+          isComplete ? "text-emerald-200/80" : "text-slate-400",
+        ].join(" ")}
+      >
         {currentStep}/4
       </span>
-      <SetupDisclosureChevron />
+      {isComplete ? <SetupCompleteCheckIcon /> : <SetupDisclosureChevron />}
     </label>
   );
 }
@@ -1903,7 +1919,7 @@ function RepositorySetupProgressPanel({
     repository.fullName,
   );
   const enableReviewAction =
-    currentStep === 3 && installation ? (
+    installation ? (
       <RepositoryProviderSecretsAction
         workspace={workspace}
         repository={repository}
@@ -1941,6 +1957,26 @@ function SetupDisclosureChevron(): React.ReactElement {
     >
       <path
         d="M4 6l4 4 4-4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+
+function SetupCompleteCheckIcon(): React.ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-3.5 w-3.5 shrink-0 text-emerald-200"
+      fill="none"
+    >
+      <path
+        d="M3.5 8.5l3 3 6-6"
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"

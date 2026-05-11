@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { Button, LinkButton } from "@reviewrouter/ui";
 import { ActionToast } from "../action-toast";
 import {
@@ -44,6 +45,7 @@ export function RepositorySetupProgressPanel({
   readonly initialStep: SetupStep;
   readonly enableReviewAction?: ReactNode;
 }): React.ReactElement {
+  const router = useRouter();
   const [setupStatus, setSetupStatus] = useState(initialSetupStatus);
   const [setupPullRequestUrl, setSetupPullRequestUrl] = useState(
     initialSetupPullRequestUrl,
@@ -95,6 +97,7 @@ export function RepositorySetupProgressPanel({
     if (params.notice === "workflow_already_current") {
       setSetupStatus("configured");
       setCurrentStep(3);
+      router.refresh();
       setToast({
         tone: "success",
         title: "Workflow installed",
@@ -122,6 +125,7 @@ export function RepositorySetupProgressPanel({
     if (params.notice === "setup_pr_merged") {
       setSetupStatus("configured");
       setCurrentStep(3);
+      router.refresh();
       setToast({
         tone: "success",
         title: "Setup PR merged",
