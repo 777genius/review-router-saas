@@ -15,16 +15,18 @@ export type MemoryParsedIntent = {
 };
 
 const commandPattern =
-  /^\/rr\s+remember\s+(repo|repository|workspace|user|prefs|user_prefs)\s+(.+)$/is;
+  /^\/rr\s+remember\s+(repo|repository|project|workspace|team|user|prefs|user_prefs)\s+(.+)$/is;
 const naturalLanguagePatterns: readonly RegExp[] = [
-  /^(?:запомни|сохрани)\s+(?:для\s+проекта|для\s+репозитория|для\s+repo)\s*:?\s*(.+)$/is,
-  /^(?:запомни|сохрани)\s+(?:для\s+команды|для\s+workspace)\s*:?\s*(.+)$/is,
+  /^(?:запомни|сохрани)\s+(?:это\s+)?(?:для\s+проекта|для\s+репозитория|для\s+repo|как\s+правило\s+репозитория)\s*:?\s*(.+)$/is,
+  /^(?:запомни|сохрани)\s+(?:это\s+)?(?:для\s+команды|для\s+workspace|как\s+правило\s+команды)\s*:?\s*(.+)$/is,
   /^(?:remember|save)\s+(?:for\s+this\s+repo|for\s+this\s+repository)\s*:?\s*(.+)$/is,
+  /^(?:please\s+)?(?:remember|save)\s+(?:this\s+)?(?:for\s+this\s+repo|for\s+this\s+repository)\s*:?\s*(.+)$/is,
   /^(?:remember|save)\s+(?:as\s+workspace\s+memory|for\s+this\s+team)\s*:?\s*(.+)$/is,
+  /^(?:please\s+)?(?:remember|save)\s+(?:this\s+)?(?:as\s+workspace\s+memory|for\s+this\s+team)\s*:?\s*(.+)$/is,
   /^(?:remember|save)\s+(?:as\s+user\s+preference|as\s+my\s+preference)\s*:?\s*(.+)$/is,
 ];
 const ambiguousReferencePattern =
-  /\b(?:это|выше|наш\s+разговор|обсуждение|this|that|above|our\s+discussion|the\s+thread)\b/i;
+  /(?:это|выше|наш\s+разговор|обсуждение)|\b(?:this|that|above|our\s+discussion|the\s+thread)\b/i;
 
 export function parseMemoryIntent(text: string): MemoryParsedIntent {
   const trimmed = text.trim();
@@ -48,7 +50,8 @@ export function parseMemoryIntent(text: string): MemoryParsedIntent {
   }
 
   if (
-    /\b(?:запомни|сохрани|remember|save)\b/i.test(trimmed) &&
+    isMemoryQuestion(trimmed) === false &&
+    /(?:запомни|сохрани)|\b(?:remember|save)\b/i.test(trimmed) &&
     ambiguousReferencePattern.test(trimmed)
   ) {
     return {
@@ -65,8 +68,15 @@ export function parseMemoryIntent(text: string): MemoryParsedIntent {
   };
 }
 
+function isMemoryQuestion(value: string): boolean {
+  return (
+    /^(?:do|could|would|what|why|how|can)\b.+\?$/i.test(value) ||
+    /^(?:можешь|можно|почему|как|что)\b.+\?$/i.test(value)
+  );
+}
+
 function scopeFromCommand(value: string): MemoryScope {
-  if (value === "workspace") return "workspace";
+  if (value === "workspace" || value === "team") return "workspace";
   if (value === "user" || value === "prefs" || value === "user_prefs") {
     return "user_prefs";
   }

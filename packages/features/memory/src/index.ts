@@ -28,6 +28,8 @@ export * from "./application/use-cases/memory-use-case-types";
 export * from "./application/use-cases/propose-memory-from-interaction";
 export * from "./application/use-cases/remember-memory-directly";
 export * from "./application/use-cases/reject-memory-suggestion";
+export * from "./interface/interaction/memory-command-parser";
+export * from "./interface/interaction/memory-interaction-event-normalizer";
 export * from "./infrastructure/crypto-memory-id-generator";
 export * from "./infrastructure/prisma/prisma-memory-audit";
 export * from "./infrastructure/prisma/prisma-memory-item-repository";

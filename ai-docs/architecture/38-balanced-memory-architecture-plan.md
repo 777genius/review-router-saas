@@ -26,7 +26,7 @@
 
 ## Implementation Progress - 2026-05-12
 
-Готов первый production-shaped slice:
+Готовы первые production-shaped slices:
 
 - создан bounded context `@reviewrouter/features-memory`;
 - domain/application отделены от Prisma, Fastify, Next.js и React;
@@ -37,12 +37,23 @@
 - dashboard получил Memory section по сохранённым design references: left scope/repository rail, pending suggestions, confirmed table, detail/policy panel;
 - action runtime получил `GET /api/action/v1/memory`, который возвращает scoped bundle только по action session token;
 - добавлены unit/API tests для permission, duplicate races, tenant isolation, pagination, expired suggestions, item lifecycle и runtime bundle endpoint.
+- action API получил `POST /api/action/v1/memory-candidates`, который принимает только bounded distilled candidate и safe metadata из interaction workflows;
+- action session claim теперь несёт GitHub actor login для audit/permission boundary без передачи raw comment context;
+- Prisma permission adapter вынесен в memory infrastructure и переиспользуется dashboard/API composition roots, чтобы не дублировать role rules;
+- dashboard memory UI вынесен из page-level монолита в отдельный component + pure view-model слой с unit tests;
+- OpenAPI/demo contract публикует memory bundle и memory candidate endpoints с явным privacy wording;
+- добавлен `features/memory/interface/interaction` parser/normalizer для `/rr remember ...` и natural-language requests:
+  - игнорирует команды внутри code fences, blockquotes, markdown tables и HTML comments;
+  - валидирует `issue_comment` только для PR comments;
+  - возвращает AST без side effects;
+  - эмитит action candidate payload только для repository/workspace scopes, а `user_prefs` оставляет как instruction для будущего linked-user flow;
+  - хэширует source text и отправляет только redacted excerpt/candidate body, не raw thread.
 
 Текущие проверки:
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 56 files, 284 tests passed;
+- `pnpm test` - 58 files, 296 tests passed;
 - `pnpm lint` - passed;
 - targeted builds: `@reviewrouter/features-memory`, `@reviewrouter/api` - passed.
 
