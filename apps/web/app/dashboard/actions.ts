@@ -173,6 +173,56 @@ export async function confirmProviderSecretSetupClientAction(
   return { params };
 }
 
+export async function checkOpenRouterRepositorySecretClientAction(
+  formData: FormData,
+): Promise<{
+  readonly status:
+    | "available_repository"
+    | "available_organization"
+    | "missing"
+    | "permission_required"
+    | "unknown";
+}> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const repositoryId = readFormString(formData, "repositoryId");
+
+  try {
+    const repository = await loadRepositoryForWorkspace({
+      prisma,
+      workspaceId,
+      repositoryId,
+    });
+    const actor = await assertDashboardMutationAllowed(workspaceId);
+    await assertDashboardEntitlement({
+      prisma,
+      workspaceId,
+      actor: actor.actor,
+      feature: "action_control_plane",
+    });
+
+    const octokit = await createGitHubAppInstallationOctokit(
+      repository.installation.githubInstallationId.toString(),
+    );
+    await assertRepositoryVisibleToGitHubApp({ octokit, repository });
+
+    return await checkOpenRouterSecretAvailability({
+      octokit,
+      repository,
+    });
+  } catch (error) {
+    const failedState = providerSetupStateForSecretCheckError(error);
+    if (failedState === "missing" || failedState === "stale_or_invalid") {
+      return { status: "missing" };
+    }
+    if (failedState === "unknown") {
+      return { status: "permission_required" };
+    }
+
+    return { status: "unknown" };
+  }
+}
+
 async function createSetupPullRequestMutation(
   formData: FormData,
 ): Promise<Record<string, string>> {
@@ -996,6 +1046,50 @@ async function verifyProviderSecrets(input: {
         secretName,
       });
     }
+  }
+}
+
+async function checkOpenRouterSecretAvailability(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+}): Promise<{
+  readonly status:
+    | "available_repository"
+    | "available_organization"
+    | "missing"
+    | "permission_required"
+    | "unknown";
+}> {
+  try {
+    await verifyRepositorySecret({
+      octokit: input.octokit,
+      repository: input.repository,
+      secretName: "OPENROUTER_API_KEY",
+    });
+    return { status: "available_repository" };
+  } catch (error) {
+    const state = providerSetupStateForSecretCheckError(error);
+    if (state === "unknown") return { status: "permission_required" };
+    if (state !== "missing") return { status: "unknown" };
+  }
+
+  try {
+    await verifyOrganizationSecret({
+      octokit: input.octokit,
+      repository: input.repository,
+      secretName: "OPENROUTER_API_KEY",
+    });
+    return { status: "available_organization" };
+  } catch (error) {
+    const state = providerSetupStateForSecretCheckError(error);
+    if (state === "unknown") return { status: "permission_required" };
+    if (state === "missing" || state === "stale_or_invalid") {
+      return { status: "missing" };
+    }
+
+    return { status: "unknown" };
   }
 }
 

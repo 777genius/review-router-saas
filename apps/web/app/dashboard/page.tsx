@@ -1145,6 +1145,10 @@ function WorkspaceCard({
                               !repository.archived
                             }
                             repositoryFullName={repository.fullName}
+                            repositorySecretCheckTarget={{
+                              workspaceId: workspace.id,
+                              repositoryId: repository.id,
+                            }}
                             submitLabel={
                               repositoryConfig
                                 ? "Update override"

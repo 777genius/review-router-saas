@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useId, useMemo, useState, type FocusEvent } from "react";
+import { useEffect, useId, useMemo, useState, type FocusEvent } from "react";
 import * as RadixSelect from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
@@ -10,6 +10,7 @@ import type {
 } from "@reviewrouter/features-review-config";
 import { FormSubmitButton } from "../form-submit-button";
 import {
+  checkOpenRouterRepositorySecretClientAction,
   clearRepositoryReviewConfigClientAction,
   saveRepositoryReviewConfigClientAction,
 } from "./actions";
@@ -27,6 +28,11 @@ type RepositoryPolicyEditorConfig = {
   readonly version: number;
   readonly config: ReviewConfiguration;
 } | null;
+
+type RepositorySecretCheckTarget = {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+};
 
 type ReviewModelOption = {
   readonly value: string;
@@ -128,22 +134,98 @@ const OPENROUTER_API_KEYS_URL = "https://openrouter.ai/workspaces/default/keys";
 
 function OpenRouterSecretNotice({
   repositoryFullName,
+  secretCheckTarget,
 }: {
   readonly repositoryFullName?: string | undefined;
+  readonly secretCheckTarget?: RepositorySecretCheckTarget | undefined;
 }): React.ReactElement {
+  const [secretStatus, setSecretStatus] = useState<
+    | "checking"
+    | "available_repository"
+    | "available_organization"
+    | "missing"
+    | "permission_required"
+    | "unknown"
+  >(secretCheckTarget ? "checking" : "missing");
   const command = repositoryFullName
     ? `gh secret set OPENROUTER_API_KEY --repo ${repositoryFullName}`
     : "gh secret set OPENROUTER_API_KEY --repo <owner>/<repo>";
+  const secretWorkspaceId = secretCheckTarget?.workspaceId;
+  const secretRepositoryId = secretCheckTarget?.repositoryId;
+
+  useEffect(() => {
+    if (!secretWorkspaceId || !secretRepositoryId) {
+      setSecretStatus("missing");
+      return;
+    }
+
+    let cancelled = false;
+    const formData = new FormData();
+    formData.set("workspaceId", secretWorkspaceId);
+    formData.set("repositoryId", secretRepositoryId);
+    setSecretStatus("checking");
+
+    void checkOpenRouterRepositorySecretClientAction(formData)
+      .then((result) => {
+        if (!cancelled) setSecretStatus(result.status);
+      })
+      .catch(() => {
+        if (!cancelled) setSecretStatus("unknown");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [secretRepositoryId, secretWorkspaceId]);
+
+  if (
+    secretStatus === "available_repository" ||
+    secretStatus === "available_organization"
+  ) {
+    return (
+      <div
+        role="status"
+        className="rounded-xl border border-emerald-300/30 bg-emerald-300/[0.07] p-3 text-xs leading-5 text-emerald-100"
+      >
+        <p className="font-semibold text-emerald-50">
+          <code className="font-mono">OPENROUTER_API_KEY</code>{" "}
+          {secretStatus === "available_repository"
+            ? "is set in this repository's GitHub Actions secrets."
+            : "is available to this repository from organization GitHub Actions secrets."}
+        </p>
+        <p className="mt-1 text-emerald-100/85">
+          OpenRouter providers can use this secret in CI.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
       role="note"
       className="rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-xs leading-5 text-amber-100"
     >
       <p className="font-semibold text-amber-50">
-        OpenRouter requires <code className="font-mono">OPENROUTER_API_KEY</code>{" "}
-        in {repositoryFullName ? "this repository's" : "the repository"} GitHub
-        Actions secrets.
+        {secretStatus === "checking" ? (
+          <>
+            Checking whether <code className="font-mono">OPENROUTER_API_KEY</code>{" "}
+            is available to this repository...
+          </>
+        ) : (
+          <>
+            OpenRouter requires{" "}
+            <code className="font-mono">OPENROUTER_API_KEY</code> in{" "}
+            {repositoryFullName ? "this repository's" : "the repository"}{" "}
+            GitHub Actions secrets.
+          </>
+        )}
       </p>
+      {secretStatus === "permission_required" || secretStatus === "unknown" ? (
+        <p className="mt-1 text-amber-100/85">
+          ReviewRouter could not verify GitHub secret metadata right now, so
+          keep this setup command handy.
+        </p>
+      ) : null}
       <p className="mt-1 text-amber-100/85">
         Set it from a terminal opened in the repository directory:
       </p>
@@ -250,6 +332,10 @@ export function RepositoryPolicyEditor({
               repositoryConfig ? "Update repo settings" : "Save repo settings"
             }
             repositoryFullName={repository.fullName}
+            repositorySecretCheckTarget={{
+              workspaceId,
+              repositoryId: repository.id,
+            }}
           />
 
           {repositoryConfig ? (
@@ -318,6 +404,7 @@ export function ReviewConfigForm({
   mutationsEnabled,
   submitLabel,
   repositoryFullName,
+  repositorySecretCheckTarget,
 }: {
   readonly action: DashboardFormAction;
   readonly config: ReviewConfiguration;
@@ -329,6 +416,9 @@ export function ReviewConfigForm({
   readonly mutationsEnabled: boolean;
   readonly submitLabel: string;
   readonly repositoryFullName?: string | undefined;
+  readonly repositorySecretCheckTarget?:
+    | RepositorySecretCheckTarget
+    | undefined;
 }): React.ReactElement {
   const initialProviders =
     config.providers.length > 0 ? [...config.providers] : [config.provider];
@@ -579,6 +669,7 @@ export function ReviewConfigForm({
                   {provider.kind === "openrouter" ? (
                     <OpenRouterSecretNotice
                       repositoryFullName={repositoryFullName}
+                      secretCheckTarget={repositorySecretCheckTarget}
                     />
                   ) : null}
                 </div>

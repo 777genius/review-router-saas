@@ -4,11 +4,23 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-config";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  safeDefaultReviewConfiguration,
+  type ReviewConfiguration,
+  type ReviewProviderConfiguration,
+} from "@reviewrouter/features-review-config";
+import { checkOpenRouterRepositorySecretClientAction } from "./actions";
 import { ReviewConfigForm } from "./repository-policy-editor";
+
+vi.mock("./actions", () => ({
+  checkOpenRouterRepositorySecretClientAction: vi.fn(),
+  clearRepositoryReviewConfigClientAction: vi.fn(),
+  saveRepositoryReviewConfigClientAction: vi.fn(),
+}));
 
 const modelOptions = [
   {
@@ -35,6 +47,7 @@ const modelOptions = [
 ];
 
 afterEach(() => {
+  vi.clearAllMocks();
   cleanup();
 });
 
@@ -149,17 +162,90 @@ describe("ReviewConfigForm", () => {
 
     expect(updatedModelInput.value).toBe("custom/model-123");
   });
+
+  it("shows a green OpenRouter secret status when the repository secret exists", async () => {
+    vi.mocked(checkOpenRouterRepositorySecretClientAction).mockResolvedValue({
+      status: "available_repository",
+    });
+
+    renderReviewConfigForm({
+      config: openRouterReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      const status = screen.getByRole("status");
+      expect(status.textContent).toContain(
+        "OPENROUTER_API_KEY is set in this repository's GitHub Actions secrets",
+      );
+    });
+    expect(screen.queryByText(/OpenRouter requires/i)).toBeNull();
+  });
+
+  it("keeps the setup warning when OpenRouter secret metadata is missing", async () => {
+    vi.mocked(checkOpenRouterRepositorySecretClientAction).mockResolvedValue({
+      status: "missing",
+    });
+
+    renderReviewConfigForm({
+      config: openRouterReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/OpenRouter requires/i)).toBeTruthy();
+    });
+    expect(
+      screen.getByText(
+        "gh secret set OPENROUTER_API_KEY --repo 777genius/agent-teams-ai",
+      ),
+    ).toBeTruthy();
+  });
 });
 
-function renderReviewConfigForm(): void {
+function renderReviewConfigForm(input?: {
+  readonly config?: ReviewConfiguration;
+  readonly repositoryFullName?: string;
+  readonly repositorySecretCheckTarget?: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+  };
+}): void {
   render(
     <ReviewConfigForm
       action={() => undefined}
-      config={safeDefaultReviewConfiguration}
+      config={input?.config ?? safeDefaultReviewConfiguration}
       modelOptions={modelOptions}
       hiddenFields={[{ name: "workspaceId", value: "workspace_1" }]}
       mutationsEnabled={true}
       submitLabel="Save workspace default"
+      repositoryFullName={input?.repositoryFullName}
+      repositorySecretCheckTarget={input?.repositorySecretCheckTarget}
     />,
   );
+}
+
+function openRouterReviewConfiguration(): ReviewConfiguration {
+  const openRouterProvider: ReviewProviderConfiguration = {
+    kind: "openrouter",
+    authMode: "openrouter_api_key",
+    model: "poolside/laguna-m.1:free",
+    reasoningEffort: "medium",
+    agenticContext: true,
+    fastMode: false,
+  };
+
+  return {
+    ...safeDefaultReviewConfiguration,
+    provider: openRouterProvider,
+    providers: [openRouterProvider],
+  };
 }
