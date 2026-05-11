@@ -236,6 +236,9 @@ export function ProviderSecretSetupChooser({
                   router.replace(buildDashboardMutationUrl(params), {
                     scroll: false,
                   });
+                  if (params.notice === "provider_setup_confirmed") {
+                    router.refresh();
+                  }
                 })
                 .catch(() => {
                   closeProviderSecretsDialog();

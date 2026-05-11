@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Button, LinkButton } from "@reviewrouter/ui";
 import { ActionToast } from "../action-toast";
 import {
@@ -50,6 +50,12 @@ export function RepositorySetupProgressPanel({
   const [currentStep, setCurrentStep] = useState(initialStep);
   const [toast, setToast] = useState<SetupToast | null>(null);
   const canManage = mutationsEnabled && selected && !archived;
+
+  useEffect(() => {
+    setSetupStatus(initialSetupStatus);
+    setSetupPullRequestUrl(initialSetupPullRequestUrl);
+    setCurrentStep(initialStep);
+  }, [initialSetupPullRequestUrl, initialSetupStatus, initialStep]);
 
   const handleSetupMutation = (params: Record<string, string>) => {
     updateBrowserUrl(params);
