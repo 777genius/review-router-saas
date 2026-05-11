@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useId, useMemo, useState, type FocusEvent } from "react";
+import * as RadixSelect from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
   ReviewConfiguration,
@@ -82,6 +83,12 @@ const agenticContextOptions = [
     description: "Use supplied diff and deterministic context only.",
   },
 ] as const;
+
+type DashboardSelectOption = {
+  readonly value: string;
+  readonly label: string;
+  readonly description?: string;
+};
 
 const fieldHelp = {
   providerAuthMode:
@@ -405,7 +412,7 @@ export function ReviewConfigForm({
               const providerOptions = modelOptionsByProvider[provider.kind];
               return (
                 <div
-                  key={`${index}:${provider.authMode}:${provider.model}`}
+                  key={`${index}:${provider.authMode}`}
                   className="grid gap-5 rounded-xl border border-cyan-200/20 bg-slate-950/45 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] md:p-5"
                 >
                   <div className="flex items-center justify-between gap-3">
@@ -430,7 +437,7 @@ export function ReviewConfigForm({
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2 md:gap-x-8 md:gap-y-5">
-                    <DashboardSelectField
+                    <DashboardRadixSelectField
                       name={`providerAuthMode.${index}`}
                       label="Provider auth"
                       helpText={fieldHelp.providerAuthMode}
@@ -704,11 +711,7 @@ function DashboardSelectField({
   readonly helpText: string;
   readonly value: string;
   readonly disabled: boolean;
-  readonly options: readonly {
-    readonly value: string;
-    readonly label: string;
-    readonly description?: string;
-  }[];
+  readonly options: readonly DashboardSelectOption[];
   readonly onValueChange?: (value: string) => void;
 }): React.ReactElement {
   const [internalValue, setInternalValue] = useState(value);
@@ -742,6 +745,88 @@ function DashboardSelectField({
           <ChevronIcon open={false} />
         </span>
       </span>
+    </label>
+  );
+}
+
+function DashboardRadixSelectField({
+  name,
+  label,
+  helpText,
+  value,
+  disabled,
+  options,
+  onValueChange,
+}: {
+  readonly name: string;
+  readonly label: string;
+  readonly helpText: string;
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly options: readonly DashboardSelectOption[];
+  readonly onValueChange: (value: string) => void;
+}): React.ReactElement {
+  const selectedOption = options.find((option) => option.value === value);
+
+  return (
+    <label className="grid min-w-0 gap-2 text-sm text-slate-300">
+      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        <DashboardFieldLabel label={label} helpText={helpText} />
+      </span>
+      <RadixSelect.Root
+        name={name}
+        value={value}
+        disabled={disabled}
+        onValueChange={onValueChange}
+      >
+        <RadixSelect.Trigger
+          aria-label={label}
+          className={[
+            dashboardInputClassName,
+            "flex items-center justify-between gap-3 text-left",
+          ].join(" ")}
+        >
+          <RadixSelect.Value>
+            <span className="min-w-0 truncate">
+              {selectedOption?.label ?? value}
+            </span>
+          </RadixSelect.Value>
+          <RadixSelect.Icon className="grid h-7 w-7 shrink-0 place-items-center text-cyan-100/80">
+            <ChevronIcon open={false} />
+          </RadixSelect.Icon>
+        </RadixSelect.Trigger>
+        <RadixSelect.Portal>
+          <RadixSelect.Content
+            position="popper"
+            sideOffset={8}
+            collisionPadding={12}
+            className="z-[90] max-h-80 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-cyan-200/20 bg-[#061015] p-1 text-cyan-50 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
+          >
+            <RadixSelect.Viewport>
+              {options.map((option) => (
+                <RadixSelect.Item
+                  key={option.value}
+                  value={option.value}
+                  textValue={option.label}
+                  className="flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-sm text-slate-300 outline-none transition data-[highlighted]:bg-cyan-300/[0.08] data-[highlighted]:text-cyan-50 data-[state=checked]:bg-cyan-300/[0.1] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                >
+                  <RadixSelect.ItemIndicator className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-emerald-300">
+                    ✓
+                  </RadixSelect.ItemIndicator>
+                  <RadixSelect.ItemText>
+                    <span className="block font-semibold">{option.label}</span>
+                    {option.description ? (
+                      <span className="mt-0.5 block text-xs leading-5 text-slate-400">
+                        {option.description}
+                      </span>
+                    ) : null}
+                  </RadixSelect.ItemText>
+                </RadixSelect.Item>
+              ))}
+            </RadixSelect.Viewport>
+          </RadixSelect.Content>
+        </RadixSelect.Portal>
+      </RadixSelect.Root>
     </label>
   );
 }
@@ -832,24 +917,21 @@ function DashboardModelField({
         <DashboardFieldLabel label={label} helpText={helpText} />
       </span>
       <span className="relative block">
-        <input type="hidden" name={name} value={value} disabled={disabled} />
-        <button
-          type="button"
+        <input
+          name={name}
+          value={value}
           disabled={disabled}
-          onClick={() => setOpen((current) => !current)}
+          onChange={(event) => onValueChange(event.target.value)}
+          onFocus={() => setOpen(true)}
           aria-controls={listboxId}
           aria-expanded={open}
-          aria-haspopup="listbox"
-          aria-label={`Model ${selectedOption?.label ?? value}`}
+          aria-autocomplete="list"
+          aria-label={label}
           className={[
             dashboardInputClassName,
-            "flex items-center pr-24 text-left",
+            selectedOption?.badge ? "pr-24" : "pr-12",
           ].join(" ")}
-        >
-          <span className="min-w-0 truncate">
-            {selectedOption?.label ?? value}
-          </span>
-        </button>
+        />
         {selectedOption?.badge ? (
           <span className="pointer-events-none absolute right-11 top-1/2 -translate-y-1/2">
             <ModelBadge badge={selectedOption.badge} />

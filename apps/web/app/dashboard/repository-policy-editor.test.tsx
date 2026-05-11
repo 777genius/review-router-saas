@@ -52,8 +52,12 @@ describe("ReviewConfigForm", () => {
 
     expect(screen.getByText("Provider 2")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: /Poolside: Laguna M\.1/ }),
-    ).toBeTruthy();
+      screen.getAllByRole("combobox", { name: "Provider auth" }),
+    ).toHaveLength(2);
+    expect(
+      (screen.getAllByRole("textbox", { name: "Model" })[1] as HTMLInputElement)
+        .value,
+    ).toBe("poolside/laguna-m.1:free");
     expect(screen.getAllByText("FREE").length).toBeGreaterThan(0);
     expect(
       (
@@ -68,21 +72,46 @@ describe("ReviewConfigForm", () => {
     renderReviewConfigForm();
 
     fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
-    fireEvent.click(screen.getByRole("button", { name: /gpt-5\.5/ }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Open model options" })[0]!,
+    );
 
     expect(screen.getByRole("option", { name: /gpt-5\.5/ })).toBeTruthy();
     expect(screen.queryByRole("option", { name: /Poolside/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /gpt-5\.5/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Poolside/ }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Open model options" })[1]!,
+    );
 
-    const listbox = screen.getByRole("listbox");
+    const listboxes = screen.getAllByRole("listbox");
+    const listbox = listboxes[listboxes.length - 1]!;
     expect(
       within(listbox).getByRole("option", { name: /Poolside/ }),
     ).toBeTruthy();
     expect(
       within(listbox).getByRole("option", { name: /Anthropic: Claude/ }),
     ).toHaveProperty("disabled", true);
+  });
+
+  it("allows custom model text", () => {
+    renderReviewConfigForm();
+
+    const modelInput = screen.getByRole("textbox", {
+      name: "Model",
+    }) as HTMLInputElement;
+    modelInput.focus();
+    fireEvent.change(modelInput, { target: { value: "custom/model-1" } });
+
+    const updatedModelInput = screen.getByRole("textbox", {
+      name: "Model",
+    }) as HTMLInputElement;
+    expect(document.activeElement).toBe(updatedModelInput);
+
+    fireEvent.change(updatedModelInput, {
+      target: { value: "custom/model-123" },
+    });
+
+    expect(updatedModelInput.value).toBe("custom/model-123");
   });
 });
 
