@@ -77,21 +77,29 @@ export type ActionSessionClaims = {
   readonly protocolVersion: 1;
 };
 
+const actionRuntimeProviderSchema = z.object({
+  kind: z.enum(["codex", "openrouter"]),
+  authMode: z.enum([
+    "codex_subscription_oauth",
+    "codex_openai_api_key",
+    "openrouter_api_key",
+  ]),
+  model: z.string().min(1),
+  reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
+  agenticContext: z.boolean(),
+  fastMode: z.boolean(),
+  secretBackedProviderEnabled: z.boolean(),
+});
+
 export const actionRuntimeConfigResponseSchema = z.object({
   protocolVersion: z.literal(1),
   configVersion: z.number().int().min(1),
-  provider: z.object({
-    kind: z.enum(["codex", "openrouter"]),
-    authMode: z.enum([
-      "codex_subscription_oauth",
-      "codex_openai_api_key",
-      "openrouter_api_key",
-    ]),
-    model: z.string().min(1),
-    reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
-    agenticContext: z.boolean(),
-    fastMode: z.boolean(),
-    secretBackedProviderEnabled: z.boolean(),
+  provider: actionRuntimeProviderSchema,
+  providers: z.array(actionRuntimeProviderSchema).min(1),
+  execution: z.object({
+    providerLimit: z.number().int().min(1),
+    providerMaxParallel: z.number().int().min(1),
+    inlineMinAgreement: z.number().int().min(1),
   }),
   blockingPolicy: z.object({
     failOnSeverity: z.enum(["off", "critical", "major"]),

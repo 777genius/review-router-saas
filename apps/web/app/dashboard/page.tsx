@@ -65,7 +65,12 @@ import {
   summarizeWorkspaceHealth,
 } from "../../src/server/repository-health-view";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
+import {
+  getReviewModelOptions,
+  type ReviewModelOption,
+} from "../../src/server/openrouter-model-catalog";
 import { FormSubmitButton } from "../form-submit-button";
+import { GitHubAppInstallPermissionDialog } from "../github-app-install-permission-dialog";
 import { GitHubAccountAvatar } from "../github-account-avatar";
 import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
@@ -536,9 +541,11 @@ export default async function DashboardPage({
           reason: "local_admin_override" as const,
         }
       : undefined;
-  const workspaces = filterVisibleDashboardWorkspaces(
-    await loadDashboardData(workspaceScope, supportAudit),
-  );
+  const [dashboardData, modelOptions] = await Promise.all([
+    loadDashboardData(workspaceScope, supportAudit),
+    getReviewModelOptions(),
+  ]);
+  const workspaces = filterVisibleDashboardWorkspaces(dashboardData);
   const appInstallUrl = getGitHubAppInstallUrl();
   const selectedSection = resolveDashboardSection(params);
 
@@ -577,6 +584,7 @@ export default async function DashboardPage({
           params={params}
           workspaceKey={selectedWorkspaceKey}
           appInstallUrl={appInstallUrl}
+          modelOptions={modelOptions}
           fallbackUser={{
             githubLogin: mutationStatus.githubLogin,
             githubAvatarUrl: mutationStatus.githubAvatarUrl,
@@ -632,7 +640,7 @@ function WorkspaceSwitcher({
             </p>
           </div>
           {appInstallUrl ? (
-            <LinkButton
+            <GitHubAppInstallPermissionDialog
               href={appInstallUrl}
               variant="outline"
               size="sm"
@@ -646,7 +654,7 @@ function WorkspaceSwitcher({
                 <span className="absolute left-1/2 top-1/2 h-2 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
               </span>
               Add repos
-            </LinkButton>
+            </GitHubAppInstallPermissionDialog>
           ) : null}
         </div>
         {workspaces.length > 1 ? (
@@ -731,6 +739,7 @@ function WorkspaceCard({
   params,
   workspaceKey,
   appInstallUrl,
+  modelOptions,
   fallbackUser,
 }: {
   readonly data: DashboardWorkspaceData;
@@ -739,6 +748,7 @@ function WorkspaceCard({
   readonly params: Record<string, string | string[] | undefined>;
   readonly workspaceKey: string;
   readonly appInstallUrl: string | null;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly fallbackUser: {
     readonly githubLogin: string | null;
     readonly githubAvatarUrl: string | null;
@@ -842,6 +852,7 @@ function WorkspaceCard({
               providerSetup={providerSetup}
               repositoryConfigs={repositoryConfigs}
               activeConfig={activeConfig}
+              modelOptions={modelOptions}
               mutationsEnabled={mutationsEnabled}
               workspaceKey={workspaceKey}
               searchQuery={repositorySearchQuery}
@@ -1026,20 +1037,18 @@ function WorkspaceCard({
                 </p>
               </div>
               <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
-                workspace config v{activeConfigVersion}
+                Workspace default
               </span>
             </div>
 
             <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 <Badge tone="accent">Workspace default</Badge>
-                <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                  v{activeConfigVersion}
-                </span>
               </div>
               <ReviewConfigForm
                 action={saveWorkspaceReviewConfigAction}
                 config={activeConfig}
+                modelOptions={modelOptions}
                 hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
                 mutationsEnabled={mutationsEnabled}
                 submitLabel="Save workspace default"
@@ -1047,8 +1056,8 @@ function WorkspaceCard({
             </div>
 
             {repositories.length > 0 ? (
-              <details className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
-                <summary className="cursor-pointer list-none">
+              <details className="group mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
+                <summary className="cursor-pointer list-none rounded-xl outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300/40">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge tone="accent">Repository overrides</Badge>
@@ -1056,14 +1065,34 @@ function WorkspaceCard({
                         optional per-repository provider/model/effort
                       </span>
                     </div>
-                    <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
-                      advanced
+                    <span className="inline-flex items-center gap-2 rounded-full border border-cyan-200/30 bg-cyan-300/[0.08] px-3 py-2 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100 transition group-hover:border-cyan-200/50 group-hover:bg-cyan-300/[0.12]">
+                      <span className="group-open:hidden">Open overrides</span>
+                      <span className="hidden group-open:inline">
+                        Hide overrides
+                      </span>
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 16 16"
+                        className="h-3.5 w-3.5 shrink-0 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none"
+                        fill="none"
+                      >
+                        <path
+                          d="M4 6l4 4 4-4"
+                          stroke="currentColor"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="1.8"
+                        />
+                      </svg>
                     </span>
                   </div>
                   <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
                     Most repositories should inherit the workspace default. Open
                     this only when one repository needs a different provider,
                     model, effort, or gate.
+                  </p>
+                  <p className="mt-2 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200/80 group-open:hidden">
+                    Click to expand repository-specific settings
                   </p>
                 </summary>
                 <div className="mt-4 grid gap-3">
@@ -1104,6 +1133,7 @@ function WorkspaceCard({
                           <ReviewConfigForm
                             action={saveRepositoryReviewConfigAction}
                             config={effectiveConfig}
+                            modelOptions={modelOptions}
                             hiddenFields={[
                               { name: "workspaceId", value: workspace.id },
                               { name: "repositoryId", value: repository.id },
@@ -1433,6 +1463,7 @@ function RepositoryTable({
   providerSetup,
   repositoryConfigs,
   activeConfig,
+  modelOptions,
   mutationsEnabled,
   workspaceKey,
   searchQuery,
@@ -1447,6 +1478,7 @@ function RepositoryTable({
   readonly providerSetup: DashboardWorkspaceData["providerSetup"];
   readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
   readonly activeConfig: ReviewConfiguration;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
   readonly workspaceKey: string;
   readonly searchQuery: string;
@@ -1731,6 +1763,7 @@ function RepositoryTable({
                     repository={repository}
                     repositoryConfig={repositoryConfig}
                     effectiveConfig={effectiveConfig}
+                    modelOptions={modelOptions}
                     mutationsEnabled={mutationsEnabled}
                   />
                 ) : null}
@@ -2560,13 +2593,14 @@ function OrgRulesetAdvancedCard({
 
           <div className="mt-4 flex flex-wrap gap-2 border-t border-amber-200/10 pt-4">
             {permissionMissing && permissionApprovalUrl ? (
-              <LinkButton
+              <GitHubAppInstallPermissionDialog
                 href={permissionApprovalUrl}
                 variant="outline"
                 size="sm"
+                continueLabel="Continue to GitHub permissions"
               >
                 Review App permissions
-              </LinkButton>
+              </GitHubAppInstallPermissionDialog>
             ) : null}
             <LinkButton
               href={dashboardSectionHref(

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Badge, Card, CodeBlock, LinkButton } from "@reviewrouter/ui";
 import { resolveCodexSeedScriptUrl } from "@/server/codex-seed-script-url";
+import { githubSecretPermissionDocs } from "../github-app-permission-doc-links";
 import { createPublicPageMetadata } from "../seo";
 
 export const metadata: Metadata = createPublicPageMetadata({
@@ -35,38 +36,75 @@ const securitySections = [
   },
 ] as const;
 
-const permissionRows = [
-  ["metadata: read", "Discover repository identity and default branch."],
-  [
-    "actions: read",
-    "Read workflow run metadata for live setup and health state.",
-  ],
-  [
-    "checks: write",
-    "Publish ReviewRouter-owned check runs when direct GitHub check integration is enabled.",
-  ],
-  ["contents: write", "Create workflow setup branches and commits."],
-  [
-    "workflows: write",
-    "Open PRs that add or update the ReviewRouter workflow.",
-  ],
-  ["pull_requests: write", "Create setup PRs and read setup PR state."],
-  [
-    "secrets: read",
-    "Verify required GitHub Actions secret names exist after provider setup. Secret values are never readable.",
-  ],
-  [
-    "organization_secrets: read",
-    "Verify selected-repository organization secret metadata exists for organization-owned repositories. Secret values are never readable.",
-  ],
-  [
-    "statuses: write",
-    "Publish ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.",
-  ],
-  [
-    "issues: write",
-    "Support setup/help comments and issue-style PR conversations when the SaaS needs to guide maintainers. Review execution still runs from CI.",
-  ],
+const permissionRows: readonly {
+  readonly permission: string;
+  readonly reason: string;
+  readonly docs?: readonly {
+    readonly label: string;
+    readonly href: string;
+  }[];
+}[] = [
+  {
+    permission: "metadata: read",
+    reason: "Discover repository identity and default branch.",
+  },
+  {
+    permission: "actions: read",
+    reason: "Read workflow run metadata for live setup and health state.",
+  },
+  {
+    permission: "checks: write",
+    reason:
+      "Publish ReviewRouter-owned check runs when direct GitHub check integration is enabled.",
+  },
+  {
+    permission: "contents: write",
+    reason: "Create workflow setup branches and commits.",
+  },
+  {
+    permission: "workflows: write",
+    reason: "Open PRs that add or update the ReviewRouter workflow.",
+  },
+  {
+    permission: "pull_requests: write",
+    reason: "Create setup PRs and read setup PR state.",
+  },
+  {
+    permission: "secrets: read",
+    reason:
+      "Verify required GitHub Actions secret metadata after provider setup: name, timestamps, visibility, and selected repository access. GitHub does not expose decrypted secret values through this API.",
+    docs: [
+      {
+        label: "GitHub Docs: Get a repository secret",
+        href: githubSecretPermissionDocs.repositorySecret,
+      },
+    ],
+  },
+  {
+    permission: "organization_secrets: read",
+    reason:
+      "Verify org-level selected-repository secret metadata for organization-owned repos. ReviewRouter checks whether the current repository is allowed to use the secret; GitHub does not expose decrypted values.",
+    docs: [
+      {
+        label: "GitHub Docs: Get an organization secret",
+        href: githubSecretPermissionDocs.organizationSecret,
+      },
+      {
+        label: "GitHub Docs: List selected repositories",
+        href: githubSecretPermissionDocs.organizationSecretRepositories,
+      },
+    ],
+  },
+  {
+    permission: "statuses: write",
+    reason:
+      "Publish ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.",
+  },
+  {
+    permission: "issues: write",
+    reason:
+      "Support setup/help comments and issue-style PR conversations when the SaaS needs to guide maintainers. Review execution still runs from CI.",
+  },
 ] as const;
 
 const webhookRows = [
@@ -175,19 +213,39 @@ export default function SecurityPage(): React.ReactElement {
               </tr>
             </thead>
             <tbody className="text-slate-300">
-              {permissionRows.map(([permission, reason]) => (
-                <tr key={permission}>
+              {permissionRows.map((row) => (
+                <tr key={row.permission}>
                   <td className="border-b border-cyan-200/10 px-3 py-3 font-mono text-cyan-50">
-                    {permission}
+                    {row.permission}
                   </td>
                   <td className="border-b border-cyan-200/10 px-3 py-3">
-                    {reason}
+                    <p>{row.reason}</p>
+                    {row.docs?.length ? (
+                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                        {row.docs.map((doc) => (
+                          <a
+                            key={doc.href}
+                            href={doc.href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 hover:text-cyan-50"
+                          >
+                            {doc.label}
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        <p className="text-sm leading-6 text-slate-400">
+          GitHub&apos;s repository and organization secret endpoints return
+          metadata without revealing encrypted values. ReviewRouter uses those
+          metadata checks only for setup verification.
+        </p>
       </Card>
 
       <Card className="space-y-4">

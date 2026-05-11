@@ -8,18 +8,18 @@ If a permission cannot be explained clearly, do not request it until a feature n
 
 ## Expected v1 Permissions
 
-| Permission    |     Access | Why                                                                                                                                     |
-| ------------- | ---------: | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Metadata      |       Read | Required baseline for GitHub Apps and repository identity.                                                                              |
-| Contents      | Read/Write | Create setup/update branch and workflow/config files through PR.                                                                        |
-| Pull requests | Read/Write | Create setup/update PRs and read setup PR state for provisioning.                                                                       |
-| Workflows     |      Write | Required to create or update `.github/workflows/reviewrouter.yml` through the GitHub App.                                               |
-| Issues        |      Write | Support issue-style PR summary/setup/help conversations when App-bot identity or SaaS guidance is used.                                 |
-| Secrets       |       Read | Verify GitHub Actions secret metadata exists before marking provider setup complete. Secret values are never readable through this API. |
-| Organization secrets | Read | Verify selected-repository organization secret metadata for organization-owned repositories. Secret values are never readable.           |
-| Actions       |       Read | Receive workflow run metadata for live health/status updates without managing workflow execution.                                      |
-| Checks        |      Write | Create or update ReviewRouter-owned check runs when direct GitHub check integration is enabled.                                        |
-| Commit statuses |    Write | Create or update ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.                                  |
+| Permission           |     Access | Why                                                                                                                                     |
+| -------------------- | ---------: | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Metadata             |       Read | Required baseline for GitHub Apps and repository identity.                                                                              |
+| Contents             | Read/Write | Create setup/update branch and workflow/config files through PR.                                                                        |
+| Pull requests        | Read/Write | Create setup/update PRs and read setup PR state for provisioning.                                                                       |
+| Workflows            |      Write | Required to create or update `.github/workflows/reviewrouter.yml` through the GitHub App.                                               |
+| Issues               |      Write | Support issue-style PR summary/setup/help conversations when App-bot identity or SaaS guidance is used.                                 |
+| Secrets              |       Read | Verify GitHub Actions secret metadata exists before marking provider setup complete. Secret values are never readable through this API. |
+| Organization secrets |       Read | Verify selected-repository organization secret metadata for organization-owned repositories. Secret values are never readable.          |
+| Actions              |       Read | Receive workflow run metadata for live health/status updates without managing workflow execution.                                       |
+| Checks               |      Write | Create or update ReviewRouter-owned check runs when direct GitHub check integration is enabled.                                         |
+| Commit statuses      |      Write | Create or update ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.                                   |
 
 ## Optional Advanced Permission Profile
 

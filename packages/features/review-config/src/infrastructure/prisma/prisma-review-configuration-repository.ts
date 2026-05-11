@@ -92,7 +92,21 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
           fastMode: config.provider.fastMode,
           failOnSeverity: config.blockingPolicy.failOnSeverity,
           inlineMaxComments: config.limits.inlineMaxComments,
+          providerLimit: config.execution.providerLimit,
+          providerMaxParallel: config.execution.providerMaxParallel,
+          inlineMinAgreement: config.execution.inlineMinAgreement,
           targetTokensPerBatch: config.limits.targetTokensPerBatch,
+          providers: {
+            create: config.providers.map((provider, index) => ({
+              order: index,
+              providerKind: provider.kind,
+              providerAuthMode: provider.authMode,
+              model: provider.model,
+              reasoningEffort: provider.reasoningEffort,
+              agenticContext: provider.agenticContext,
+              fastMode: provider.fastMode,
+            })),
+          },
         },
         select: versionSelect,
       });
@@ -124,7 +138,21 @@ const versionSelect = {
   fastMode: true,
   failOnSeverity: true,
   inlineMaxComments: true,
+  providerLimit: true,
+  providerMaxParallel: true,
+  inlineMinAgreement: true,
   targetTokensPerBatch: true,
+  providers: {
+    orderBy: { order: "asc" },
+    select: {
+      providerKind: true,
+      providerAuthMode: true,
+      model: true,
+      reasoningEffort: true,
+      agenticContext: true,
+      fastMode: true,
+    },
+  },
 } as const;
 
 type VersionRecord = {
@@ -138,7 +166,18 @@ type VersionRecord = {
   readonly fastMode: boolean;
   readonly failOnSeverity: string;
   readonly inlineMaxComments: number;
+  readonly providerLimit: number;
+  readonly providerMaxParallel: number;
+  readonly inlineMinAgreement: number;
   readonly targetTokensPerBatch: number;
+  readonly providers: readonly {
+    readonly providerKind: string;
+    readonly providerAuthMode: string;
+    readonly model: string;
+    readonly reasoningEffort: string;
+    readonly agenticContext: boolean;
+    readonly fastMode: boolean;
+  }[];
 };
 
 function toPersistedConfiguration(
@@ -147,7 +186,26 @@ function toPersistedConfiguration(
   return {
     version: version.version,
     config: parseReviewConfiguration({
-      schemaVersion: version.schemaVersion,
+      schemaVersion: 2,
+      providers: version.providers.length
+        ? version.providers.map((provider) => ({
+            kind: provider.providerKind,
+            authMode: provider.providerAuthMode,
+            model: provider.model,
+            reasoningEffort: provider.reasoningEffort,
+            agenticContext: provider.agenticContext,
+            fastMode: provider.fastMode,
+          }))
+        : [
+            {
+              kind: version.providerKind,
+              authMode: version.providerAuthMode,
+              model: version.model,
+              reasoningEffort: version.reasoningEffort,
+              agenticContext: version.agenticContext,
+              fastMode: version.fastMode,
+            },
+          ],
       provider: {
         kind: version.providerKind,
         authMode: version.providerAuthMode,
@@ -155,6 +213,11 @@ function toPersistedConfiguration(
         reasoningEffort: version.reasoningEffort,
         agenticContext: version.agenticContext,
         fastMode: version.fastMode,
+      },
+      execution: {
+        providerLimit: version.providerLimit,
+        providerMaxParallel: version.providerMaxParallel,
+        inlineMinAgreement: version.inlineMinAgreement,
       },
       blockingPolicy: { failOnSeverity: version.failOnSeverity },
       limits: {

@@ -1293,23 +1293,37 @@ function pullRequestNumberFromUrl(url: string): number | null {
 }
 
 function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
-  const authMode = readFormString(
-    formData,
-    "providerAuthMode",
-  ) as ReviewConfiguration["provider"]["authMode"];
+  const providerCount = readFormNumber(formData, "providerCount");
+  const providers = Array.from({ length: providerCount }, (_, index) => {
+    const authMode = readFormString(
+      formData,
+      `providerAuthMode.${index}`,
+    ) as ReviewConfiguration["provider"]["authMode"];
 
-  return {
-    schemaVersion: 1,
-    provider: {
+    return {
       kind: authMode === "openrouter_api_key" ? "openrouter" : "codex",
       authMode,
-      model: readFormString(formData, "model"),
+      model: readFormString(formData, `providerModel.${index}`),
       reasoningEffort: readFormString(
         formData,
-        "reasoningEffort",
+        `providerReasoningEffort.${index}`,
       ) as ReviewConfiguration["provider"]["reasoningEffort"],
-      agenticContext: readFormBoolean(formData, "agenticContext"),
-      fastMode: readFormBoolean(formData, "fastMode"),
+      agenticContext: readFormBoolean(
+        formData,
+        `providerAgenticContext.${index}`,
+      ),
+      fastMode: readFormBoolean(formData, `providerFastMode.${index}`),
+    } satisfies ReviewConfiguration["provider"];
+  });
+
+  return {
+    schemaVersion: 2,
+    providers,
+    provider: providers[0]!,
+    execution: {
+      providerLimit: providers.length,
+      providerMaxParallel: readFormNumber(formData, "providerMaxParallel"),
+      inlineMinAgreement: readFormNumber(formData, "inlineMinAgreement"),
     },
     blockingPolicy: {
       failOnSeverity: readFormString(

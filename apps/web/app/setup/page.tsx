@@ -11,6 +11,7 @@ import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url"
 import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { getPrisma } from "../../src/server/prisma";
 import { ActionToast } from "../action-toast";
+import { GitHubAppInstallPermissionDialog } from "../github-app-install-permission-dialog";
 import { GitHubSignInButton } from "../github-sign-in-button";
 import { LoadingLinkButton } from "../loading-link-button";
 import { LogoMark } from "../logo-mark";
@@ -159,9 +160,13 @@ export default async function SetupPage({
           primary={<LinkButton href="/dashboard">Open dashboard</LinkButton>}
           secondary={
             appInstallUrl ? (
-              <LinkButton href={appInstallUrl} variant="outline">
+              <GitHubAppInstallPermissionDialog
+                href={appInstallUrl}
+                variant="outline"
+                continueLabel="Continue to GitHub App access"
+              >
                 Manage App access
-              </LinkButton>
+              </GitHubAppInstallPermissionDialog>
             ) : null
           }
         />
@@ -254,14 +259,13 @@ function buildPrimarySetupAction(input: {
 
   if (input.appInstallUrl) {
     return (
-      <LoadingLinkButton
+      <GitHubAppInstallPermissionDialog
         href={input.appInstallUrl}
         size="lg"
         className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
-        pendingLabel="Opening GitHub..."
       >
         Install GitHub App
-      </LoadingLinkButton>
+      </GitHubAppInstallPermissionDialog>
     );
   }
 
@@ -413,23 +417,19 @@ function SetupStartCard({
               Open dashboard
             </LoadingLinkButton>
           ) : appInstallUrl ? (
-            <LoadingLinkButton
-              href={appInstallUrl}
-              size="lg"
-              pendingLabel="Opening GitHub..."
-            >
+            <GitHubAppInstallPermissionDialog href={appInstallUrl} size="lg">
               Install GitHub App
-            </LoadingLinkButton>
+            </GitHubAppInstallPermissionDialog>
           ) : null}
           {appInstallUrl ? (
-            <LoadingLinkButton
+            <GitHubAppInstallPermissionDialog
               href={appInstallUrl}
               variant="outline"
               size="lg"
-              pendingLabel="Opening GitHub..."
+              continueLabel="Continue to GitHub App access"
             >
               {hasConnectedApp ? "Manage App access" : "Already installed?"}
-            </LoadingLinkButton>
+            </GitHubAppInstallPermissionDialog>
           ) : null}
         </div>
       </div>

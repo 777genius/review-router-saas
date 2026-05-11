@@ -150,8 +150,7 @@ export async function registerGitHubWebhookRoutes(
           action: parsedRepositoryPayload.data.action,
           installationId: String(parsedRepositoryPayload.data.installation.id),
           repositoryId: String(parsedRepositoryPayload.data.repository.id),
-          repositoryFullName:
-            parsedRepositoryPayload.data.repository.full_name,
+          repositoryFullName: parsedRepositoryPayload.data.repository.full_name,
           defaultBranch:
             parsedRepositoryPayload.data.repository.default_branch ?? null,
           visibility: normalizeRepositoryWebhookVisibility(

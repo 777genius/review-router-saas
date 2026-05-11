@@ -96,15 +96,32 @@ try {
   });
 
   const configurations = new PrismaReviewConfigurationRepository(prisma);
+  const workspaceProvider = {
+    ...safeDefaultReviewConfiguration.provider,
+    model: "gpt-5.4",
+  };
+  const repositoryProviders = [
+    {
+      ...safeDefaultReviewConfiguration.provider,
+      model: "gpt-5.4-mini",
+      reasoningEffort: "high" as const,
+    },
+    {
+      kind: "openrouter" as const,
+      authMode: "openrouter_api_key" as const,
+      model: "poolside/laguna-m.1:free",
+      reasoningEffort: "medium" as const,
+      agenticContext: true,
+      fastMode: false,
+    },
+  ];
   const workspaceConfig = await saveReviewConfiguration(
     {
       target: { scope: "workspace", workspaceId: workspace.id },
       config: {
         ...safeDefaultReviewConfiguration,
-        provider: {
-          ...safeDefaultReviewConfiguration.provider,
-          model: "gpt-5.4",
-        },
+        provider: workspaceProvider,
+        providers: [workspaceProvider],
         blockingPolicy: { failOnSeverity: "critical" },
       },
     },
@@ -119,10 +136,12 @@ try {
       },
       config: {
         ...safeDefaultReviewConfiguration,
-        provider: {
-          ...safeDefaultReviewConfiguration.provider,
-          model: "gpt-5.4-mini",
-          reasoningEffort: "high",
+        provider: repositoryProviders[0]!,
+        providers: repositoryProviders,
+        execution: {
+          providerLimit: 2,
+          providerMaxParallel: 2,
+          inlineMinAgreement: 2,
         },
         blockingPolicy: { failOnSeverity: "major" },
       },
@@ -175,6 +194,9 @@ try {
     reasoningEffort: "high",
     failOnSeverity: "major",
     version: repositoryConfig.version,
+    runtimeProviders: "codex/gpt-5.4-mini,openrouter/poolside/laguna-m.1:free",
+    providerMaxParallel: "2",
+    inlineMinAgreement: "2",
   });
 
   const cleared = await clearReviewConfiguration(
@@ -198,6 +220,9 @@ try {
     reasoningEffort: "medium",
     failOnSeverity: "critical",
     version: workspaceConfig.version,
+    runtimeProviders: "codex/gpt-5.4",
+    providerMaxParallel: "1",
+    inlineMinAgreement: "1",
   });
 
   console.log(
@@ -208,7 +233,9 @@ try {
         override: {
           configVersion: overrideConfig.configVersion,
           model: overrideConfig.provider.model,
+          providers: overrideConfig.providers.map((provider) => provider.model),
           failOnSeverity: overrideConfig.blockingPolicy.failOnSeverity,
+          runtimeProviders: overrideConfig.runtimeEnv.REVIEW_PROVIDERS,
         },
         fallback: {
           configVersion: fallbackConfig.configVersion,
@@ -235,6 +262,14 @@ type RuntimeConfigResponse = {
   readonly provider: {
     readonly model: string;
     readonly reasoningEffort: string;
+  };
+  readonly providers: readonly {
+    readonly model: string;
+  }[];
+  readonly execution: {
+    readonly providerLimit: number;
+    readonly providerMaxParallel: number;
+    readonly inlineMinAgreement: number;
   };
   readonly blockingPolicy: {
     readonly failOnSeverity: string;
@@ -275,6 +310,9 @@ function assertConfig(
     readonly reasoningEffort: string;
     readonly failOnSeverity: string;
     readonly version: number;
+    readonly runtimeProviders: string;
+    readonly providerMaxParallel: string;
+    readonly inlineMinAgreement: string;
   },
 ): void {
   if (actual.configVersion !== expected.version) {
@@ -300,6 +338,23 @@ function assertConfig(
   if (actual.runtimeEnv.CODEX_MODEL !== expected.model) {
     throw new Error(
       `expected runtime CODEX_MODEL ${expected.model}, got ${actual.runtimeEnv.CODEX_MODEL}`,
+    );
+  }
+  if (actual.runtimeEnv.REVIEW_PROVIDERS !== expected.runtimeProviders) {
+    throw new Error(
+      `expected REVIEW_PROVIDERS ${expected.runtimeProviders}, got ${actual.runtimeEnv.REVIEW_PROVIDERS}`,
+    );
+  }
+  if (
+    actual.runtimeEnv.PROVIDER_MAX_PARALLEL !== expected.providerMaxParallel
+  ) {
+    throw new Error(
+      `expected PROVIDER_MAX_PARALLEL ${expected.providerMaxParallel}, got ${actual.runtimeEnv.PROVIDER_MAX_PARALLEL}`,
+    );
+  }
+  if (actual.runtimeEnv.INLINE_MIN_AGREEMENT !== expected.inlineMinAgreement) {
+    throw new Error(
+      `expected INLINE_MIN_AGREEMENT ${expected.inlineMinAgreement}, got ${actual.runtimeEnv.INLINE_MIN_AGREEMENT}`,
     );
   }
 }

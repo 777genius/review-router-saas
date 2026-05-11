@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Badge, LinkButton } from "@reviewrouter/ui";
 import { LoadingLinkButton } from "./loading-link-button";
+import { GitHubAppInstallPermissionDialog } from "./github-app-install-permission-dialog";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -119,7 +120,7 @@ export default async function HomePage(): Promise<React.ReactElement> {
         <div className="relative mx-auto flex max-w-5xl flex-col items-center text-center">
           <div className="pointer-events-none absolute left-1/2 top-0 h-72 w-72 -translate-x-1/2 rounded-full bg-cyan-300/12 blur-3xl" />
           <div className="pointer-events-none absolute right-4 top-44 h-56 w-56 rounded-full bg-fuchsia-400/10 blur-3xl" />
-          <Badge tone="success">Privacy-first setup</Badge>
+          <Badge tone="success">Setup in 5 minutes</Badge>
           <h1 className="mt-6 max-w-5xl text-4xl font-extrabold leading-[0.98] text-cyan-50 [overflow-wrap:anywhere] sm:text-6xl md:text-7xl">
             Privacy-first AI code review that stays inside your CI
           </h1>
@@ -131,29 +132,47 @@ export default async function HomePage(): Promise<React.ReactElement> {
           </p>
 
           <div className="mt-7 grid w-full max-w-xl gap-3 sm:flex sm:justify-center">
-            <LoadingLinkButton
-              href={primaryHref}
-              size="lg"
-              className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
-              pendingLabel={
-                hasConnectedApp ? "Opening dashboard..." : "Opening GitHub..."
-              }
-            >
-              {primaryLabel}
-            </LoadingLinkButton>
-            <LoadingLinkButton
-              href={secondaryHref}
-              variant="outline"
-              size="lg"
-              className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
-              pendingLabel={
-                hasConnectedApp && appInstallUrl
-                  ? "Opening GitHub..."
-                  : "Opening guide..."
-              }
-            >
-              {secondaryLabel}
-            </LoadingLinkButton>
+            {!hasConnectedApp && appInstallUrl ? (
+              <GitHubAppInstallPermissionDialog
+                href={appInstallUrl}
+                size="lg"
+                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
+              >
+                {primaryLabel}
+              </GitHubAppInstallPermissionDialog>
+            ) : (
+              <LoadingLinkButton
+                href={primaryHref}
+                size="lg"
+                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
+                pendingLabel={
+                  hasConnectedApp ? "Opening dashboard..." : "Opening setup..."
+                }
+              >
+                {primaryLabel}
+              </LoadingLinkButton>
+            )}
+            {hasConnectedApp && appInstallUrl ? (
+              <GitHubAppInstallPermissionDialog
+                href={appInstallUrl}
+                variant="outline"
+                size="lg"
+                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
+                continueLabel="Continue to GitHub App access"
+              >
+                {secondaryLabel}
+              </GitHubAppInstallPermissionDialog>
+            ) : (
+              <LoadingLinkButton
+                href={secondaryHref}
+                variant="outline"
+                size="lg"
+                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
+                pendingLabel="Opening guide..."
+              >
+                {secondaryLabel}
+              </LoadingLinkButton>
+            )}
           </div>
 
           <div className="mt-6 flex max-w-3xl flex-wrap justify-center gap-2 text-sm text-slate-400">

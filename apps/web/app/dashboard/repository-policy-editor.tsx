@@ -1,10 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useId, useState, type FocusEvent } from "react";
+import { useId, useMemo, useState, type FocusEvent } from "react";
+import * as RadixSelect from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { SelectField } from "@reviewrouter/ui";
-import type { ReviewConfiguration } from "@reviewrouter/features-review-config";
+import type {
+  ReviewConfiguration,
+  ReviewProviderConfiguration,
+} from "@reviewrouter/features-review-config";
 import { FormSubmitButton } from "../form-submit-button";
 import {
   clearRepositoryReviewConfigClientAction,
@@ -23,6 +26,15 @@ type RepositoryPolicyEditorConfig = {
   readonly version: number;
   readonly config: ReviewConfiguration;
 } | null;
+
+type ReviewModelOption = {
+  readonly value: string;
+  readonly label: string;
+  readonly provider: "codex" | "openrouter";
+  readonly description?: string;
+  readonly badge?: "FREE" | "PAID" | "Unsupported";
+  readonly disabled?: boolean;
+};
 
 const providerAuthOptions = [
   {
@@ -72,14 +84,11 @@ const agenticContextOptions = [
   },
 ] as const;
 
-const modelOptions = [
-  { value: "gpt-5.5", label: "GPT-5.5" },
-  { value: "gpt-5.4", label: "GPT-5.4" },
-  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
-  { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
-  { value: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
-  { value: "gpt-5.2", label: "GPT-5.2" },
-] as const;
+type DashboardSelectOption = {
+  readonly value: string;
+  readonly label: string;
+  readonly description?: string;
+};
 
 const fieldHelp = {
   providerAuthMode:
@@ -98,13 +107,28 @@ const fieldHelp = {
     "Approximate context budget per review batch. Higher values let the runtime inspect more context per pass.",
   agenticContext:
     "Allows Codex to inspect related files in the repository instead of relying only on the supplied diff.",
+  providers: "Run one or more providers in parallel and merge their findings.",
+  providerMaxParallel:
+    "Maximum number of selected providers ReviewRouter may run at the same time.",
+  inlineMinAgreement:
+    "Number of providers that should agree before an inline finding is treated as agreed.",
 } as const;
+
+const defaultCodexProvider = {
+  kind: "codex",
+  authMode: "codex_subscription_oauth",
+  model: "gpt-5.5",
+  reasoningEffort: "medium",
+  agenticContext: true,
+  fastMode: false,
+} satisfies ReviewProviderConfiguration;
 
 export function RepositoryPolicyEditor({
   workspaceId,
   repository,
   repositoryConfig,
   effectiveConfig,
+  modelOptions,
   mutationsEnabled,
   compact = false,
 }: {
@@ -112,6 +136,7 @@ export function RepositoryPolicyEditor({
   readonly repository: RepositoryPolicyEditorRepository;
   readonly repositoryConfig: RepositoryPolicyEditorConfig;
   readonly effectiveConfig: ReviewConfiguration;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
   readonly compact?: boolean;
 }): React.ReactElement {
@@ -172,6 +197,7 @@ export function RepositoryPolicyEditor({
           <ReviewConfigForm
             action={saveRepositorySettings}
             config={effectiveConfig}
+            modelOptions={modelOptions}
             hiddenFields={[
               { name: "workspaceId", value: workspaceId },
               { name: "repositoryId", value: repository.id },
@@ -243,12 +269,14 @@ function buildDashboardMutationUrl(params: Record<string, string>): string {
 export function ReviewConfigForm({
   action,
   config,
+  modelOptions,
   hiddenFields,
   mutationsEnabled,
   submitLabel,
 }: {
   readonly action: DashboardFormAction;
   readonly config: ReviewConfiguration;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly hiddenFields: readonly {
     readonly name: string;
     readonly value: string;
@@ -256,12 +284,99 @@ export function ReviewConfigForm({
   readonly mutationsEnabled: boolean;
   readonly submitLabel: string;
 }): React.ReactElement {
+  const initialProviders =
+    config.providers.length > 0 ? [...config.providers] : [config.provider];
+  const [providers, setProviders] = useState(initialProviders);
+  const [providerMaxParallel, setProviderMaxParallel] = useState(
+    Math.min(config.execution.providerMaxParallel, initialProviders.length),
+  );
+  const [inlineMinAgreement, setInlineMinAgreement] = useState(
+    Math.min(config.execution.inlineMinAgreement, initialProviders.length),
+  );
+
+  const modelOptionsByProvider = useMemo(
+    () => ({
+      codex: modelOptions.filter((option) => option.provider === "codex"),
+      openrouter: modelOptions.filter(
+        (option) => option.provider === "openrouter",
+      ),
+    }),
+    [modelOptions],
+  );
+
+  function updateProvider(
+    index: number,
+    updater: (
+      provider: ReviewProviderConfiguration,
+    ) => ReviewProviderConfiguration,
+  ): void {
+    setProviders((current) =>
+      current.map((provider, providerIndex) =>
+        providerIndex === index ? updater(provider) : provider,
+      ),
+    );
+  }
+
+  function addProvider(): void {
+    const openRouterDefault = firstSelectableModel(
+      modelOptionsByProvider.openrouter,
+    );
+    setProviders((current) => {
+      const nextProvider: ReviewProviderConfiguration = openRouterDefault
+        ? {
+            kind: "openrouter",
+            authMode: "openrouter_api_key",
+            model: openRouterDefault.value,
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          }
+        : defaultCodexProvider;
+      const next = [...current, nextProvider];
+      setProviderMaxParallel((value) =>
+        Math.min(Math.max(value, 2), next.length),
+      );
+      return next;
+    });
+  }
+
+  function removeProvider(index: number): void {
+    setProviders((current) => {
+      if (current.length <= 1) {
+        return current;
+      }
+      const next = current.filter(
+        (_, providerIndex) => providerIndex !== index,
+      );
+      setProviderMaxParallel((value) => Math.min(value, next.length));
+      setInlineMinAgreement((value) => Math.min(value, next.length));
+      return next;
+    });
+  }
+
+  function changeProviderAuth(
+    index: number,
+    authMode: ReviewProviderConfiguration["authMode"],
+  ): void {
+    const kind = authMode === "openrouter_api_key" ? "openrouter" : "codex";
+    const nextOptions = modelOptionsByProvider[kind];
+    updateProvider(index, (provider) => ({
+      ...provider,
+      kind,
+      authMode,
+      model:
+        nextOptions.find(
+          (option) => option.value === provider.model && !option.disabled,
+        )?.value ??
+        firstSelectableModel(nextOptions)?.value ??
+        nextOptions[0]?.value ??
+        provider.model,
+    }));
+  }
+
   return (
     <Tooltip.Provider delayDuration={180} skipDelayDuration={80}>
-      <form
-        action={action}
-        className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(13rem,1fr))]"
-      >
+      <form action={action} className="grid gap-5">
         {hiddenFields.map((field) => (
           <input
             key={`${field.name}:${field.value}`}
@@ -270,94 +385,208 @@ export function ReviewConfigForm({
             value={field.value}
           />
         ))}
-        <SelectField
-          name="providerAuthMode"
-          label={
-            <DashboardFieldLabel
-              label="Provider auth"
-              helpText={fieldHelp.providerAuthMode}
+        <input type="hidden" name="providerCount" value={providers.length} />
+        <input
+          type="hidden"
+          name="inlineMaxComments"
+          value={config.limits.inlineMaxComments}
+        />
+        <input
+          type="hidden"
+          name="targetTokensPerBatch"
+          value={config.limits.targetTokensPerBatch}
+        />
+
+        <section className="grid gap-3">
+          <div>
+            <div className="font-mono text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Providers
+            </div>
+            <p className="mt-1 text-sm leading-6 text-slate-400">
+              Run one or more providers in parallel and merge their findings.
+            </p>
+          </div>
+
+          <div className="grid gap-4">
+            {providers.map((provider, index) => {
+              const providerOptions = modelOptionsByProvider[provider.kind];
+              return (
+                <div
+                  key={`${index}:${provider.authMode}`}
+                  className="grid gap-5 rounded-xl border border-cyan-200/20 bg-slate-950/45 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] md:p-5"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="text-base font-semibold text-cyan-50">
+                        Provider {index + 1}
+                      </span>
+                      {index === 0 ? (
+                        <span className="rounded-full bg-slate-700/70 px-2 py-0.5 text-xs font-semibold text-slate-300">
+                          Default
+                        </span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!mutationsEnabled || providers.length === 1}
+                      onClick={() => removeProvider(index)}
+                      className="text-sm font-semibold text-cyan-300 transition hover:text-cyan-100 disabled:cursor-not-allowed disabled:text-slate-500"
+                    >
+                      Remove
+                    </button>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2 md:gap-x-8 md:gap-y-5">
+                    <DashboardRadixSelectField
+                      name={`providerAuthMode.${index}`}
+                      label="Provider auth"
+                      helpText={fieldHelp.providerAuthMode}
+                      value={provider.authMode}
+                      disabled={!mutationsEnabled}
+                      options={providerAuthOptions}
+                      onValueChange={(value) =>
+                        changeProviderAuth(
+                          index,
+                          value as ReviewProviderConfiguration["authMode"],
+                        )
+                      }
+                    />
+                    <DashboardModelField
+                      name={`providerModel.${index}`}
+                      label="Model"
+                      helpText={fieldHelp.model}
+                      value={provider.model}
+                      disabled={!mutationsEnabled}
+                      options={providerOptions}
+                      onValueChange={(value) =>
+                        updateProvider(index, (current) => ({
+                          ...current,
+                          model: value,
+                        }))
+                      }
+                    />
+                    {provider.kind === "codex" ? (
+                      <>
+                        <DashboardSelectField
+                          name={`providerReasoningEffort.${index}`}
+                          label="Reasoning effort"
+                          helpText={fieldHelp.reasoningEffort}
+                          value={provider.reasoningEffort}
+                          disabled={!mutationsEnabled}
+                          options={reasoningEffortOptions}
+                          onValueChange={(value) =>
+                            updateProvider(index, (current) => ({
+                              ...current,
+                              reasoningEffort:
+                                value as ReviewProviderConfiguration["reasoningEffort"],
+                            }))
+                          }
+                        />
+                        <DashboardSwitchField
+                          name={`providerFastMode.${index}`}
+                          label="Fast mode"
+                          helpText={fieldHelp.fastMode}
+                          checked={provider.fastMode}
+                          disabled={!mutationsEnabled}
+                          onCheckedChange={(checked) =>
+                            updateProvider(index, (current) => ({
+                              ...current,
+                              fastMode: checked,
+                            }))
+                          }
+                        />
+                        <DashboardSelectField
+                          name={`providerAgenticContext.${index}`}
+                          label="Agentic context"
+                          helpText={fieldHelp.agenticContext}
+                          value={String(provider.agenticContext)}
+                          disabled={!mutationsEnabled}
+                          options={agenticContextOptions}
+                          onValueChange={(value) =>
+                            updateProvider(index, (current) => ({
+                              ...current,
+                              agenticContext: value === "true",
+                            }))
+                          }
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          type="hidden"
+                          name={`providerReasoningEffort.${index}`}
+                          value={provider.reasoningEffort}
+                        />
+                        <input
+                          type="hidden"
+                          name={`providerFastMode.${index}`}
+                          value={String(provider.fastMode)}
+                        />
+                        <input
+                          type="hidden"
+                          name={`providerAgenticContext.${index}`}
+                          value={String(provider.agenticContext)}
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            aria-label="Add provider"
+            disabled={!mutationsEnabled}
+            onClick={addProvider}
+            className="inline-flex w-fit items-center gap-2 rounded-lg border border-cyan-300/50 px-3 py-2 text-sm font-semibold text-cyan-300 transition hover:border-cyan-200 hover:bg-cyan-300/[0.08] hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="text-lg leading-none">+</span>
+            Add provider
+          </button>
+        </section>
+
+        <section className="grid gap-3">
+          <div className="font-mono text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">
+            Execution
+          </div>
+          <div className="grid gap-4 md:grid-cols-3 md:gap-x-8">
+            <DashboardNumberField
+              name="providerMaxParallel"
+              label="Max parallel providers"
+              helpText={fieldHelp.providerMaxParallel}
+              value={providerMaxParallel}
+              min={1}
+              max={providers.length}
+              disabled={!mutationsEnabled}
+              onValueChange={setProviderMaxParallel}
             />
-          }
-          defaultValue={config.provider.authMode}
-          disabled={!mutationsEnabled}
-          options={providerAuthOptions}
-        />
-        <DashboardModelField
-          name="model"
-          label="Model"
-          helpText={fieldHelp.model}
-          defaultValue={config.provider.model}
-          disabled={!mutationsEnabled}
-          options={modelOptions}
-        />
-        <SelectField
-          name="reasoningEffort"
-          label={
-            <DashboardFieldLabel
-              label="Reasoning effort"
-              helpText={fieldHelp.reasoningEffort}
+            <DashboardNumberField
+              name="inlineMinAgreement"
+              label="Inline agreement"
+              helpText={fieldHelp.inlineMinAgreement}
+              value={inlineMinAgreement}
+              min={1}
+              max={providers.length}
+              disabled={!mutationsEnabled}
+              onValueChange={setInlineMinAgreement}
             />
-          }
-          defaultValue={config.provider.reasoningEffort}
-          disabled={!mutationsEnabled}
-          options={reasoningEffortOptions}
-        />
-        <DashboardSwitchField
-          name="fastMode"
-          label="Fast mode"
-          helpText={fieldHelp.fastMode}
-          defaultChecked={config.provider.fastMode}
-          disabled={!mutationsEnabled}
-        />
-        <SelectField
-          name="failOnSeverity"
-          label={
-            <DashboardFieldLabel
+            <DashboardSelectField
+              name="failOnSeverity"
               label="Fail on severity"
               helpText={fieldHelp.failOnSeverity}
+              value={config.blockingPolicy.failOnSeverity}
+              disabled={!mutationsEnabled}
+              options={failOnSeverityOptions}
             />
-          }
-          defaultValue={config.blockingPolicy.failOnSeverity}
-          disabled={!mutationsEnabled}
-          options={failOnSeverityOptions}
-        />
-        <DashboardTextField
-          name="inlineMaxComments"
-          label="Inline max comments"
-          helpText={fieldHelp.inlineMaxComments}
-          type="number"
-          min={0}
-          max={50}
-          defaultValue={config.limits.inlineMaxComments}
-          disabled={!mutationsEnabled}
-        />
-        <DashboardTextField
-          name="targetTokensPerBatch"
-          label="Target tokens per batch"
-          helpText={fieldHelp.targetTokensPerBatch}
-          type="number"
-          min={4000}
-          max={200000}
-          step={1000}
-          defaultValue={config.limits.targetTokensPerBatch}
-          disabled={!mutationsEnabled}
-        />
-        <SelectField
-          name="agenticContext"
-          label={
-            <DashboardFieldLabel
-              label="Agentic context"
-              helpText={fieldHelp.agenticContext}
-            />
-          }
-          defaultValue={String(config.provider.agenticContext)}
-          disabled={!mutationsEnabled}
-          options={agenticContextOptions}
-        />
-        <div className="flex min-w-0 items-end">
+          </div>
+        </section>
+
+        <div className="flex min-w-0 items-end border-t border-cyan-200/10 pt-4">
           <FormSubmitButton
             variant="solid"
-            className="w-full"
+            className="w-full sm:w-auto sm:min-w-64"
             disabled={!mutationsEnabled}
             idleLabel={submitLabel}
             pendingLabel="Saving..."
@@ -366,6 +595,12 @@ export function ReviewConfigForm({
       </form>
     </Tooltip.Provider>
   );
+}
+
+function firstSelectableModel(
+  options: readonly ReviewModelOption[],
+): ReviewModelOption | undefined {
+  return options.find((option) => !option.disabled) ?? options[0];
 }
 
 function DashboardFieldLabel({
@@ -419,26 +654,24 @@ function DashboardFieldHelp({
   );
 }
 
-function DashboardTextField({
+function DashboardNumberField({
   name,
   label,
   helpText,
-  defaultValue,
-  disabled,
-  type = "text",
+  value,
   min,
   max,
-  step,
+  disabled,
+  onValueChange,
 }: {
   readonly name: string;
   readonly label: string;
   readonly helpText: string;
-  readonly defaultValue: string | number;
+  readonly value: number;
+  readonly min: number;
+  readonly max: number;
   readonly disabled: boolean;
-  readonly type?: string;
-  readonly min?: number;
-  readonly max?: number;
-  readonly step?: number;
+  readonly onValueChange: (value: number) => void;
 }): React.ReactElement {
   return (
     <label className="grid min-w-0 gap-2 text-sm text-slate-300">
@@ -447,14 +680,153 @@ function DashboardTextField({
       </span>
       <input
         name={name}
-        type={type}
+        type="number"
         min={min}
         max={max}
-        step={step}
-        defaultValue={defaultValue}
+        value={Math.min(value, max)}
         disabled={disabled}
+        onChange={(event) => {
+          const parsed = Number(event.target.value);
+          if (Number.isFinite(parsed)) {
+            onValueChange(Math.min(Math.max(parsed, min), max));
+          }
+        }}
         className={dashboardInputClassName}
       />
+    </label>
+  );
+}
+
+function DashboardSelectField({
+  name,
+  label,
+  helpText,
+  value,
+  disabled,
+  options,
+  onValueChange,
+}: {
+  readonly name: string;
+  readonly label: string;
+  readonly helpText: string;
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly options: readonly DashboardSelectOption[];
+  readonly onValueChange?: (value: string) => void;
+}): React.ReactElement {
+  const [internalValue, setInternalValue] = useState(value);
+  const selectedValue = onValueChange ? value : internalValue;
+
+  return (
+    <label className="grid min-w-0 gap-2 text-sm text-slate-300">
+      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        <DashboardFieldLabel label={label} helpText={helpText} />
+      </span>
+      <span className="relative block">
+        <select
+          name={name}
+          value={selectedValue}
+          disabled={disabled}
+          onChange={(event) => {
+            setInternalValue(event.target.value);
+            onValueChange?.(event.target.value);
+          }}
+          className={[dashboardInputClassName, "appearance-none pr-12"].join(
+            " ",
+          )}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <span className="pointer-events-none absolute right-3 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center text-cyan-100/80">
+          <ChevronIcon open={false} />
+        </span>
+      </span>
+    </label>
+  );
+}
+
+function DashboardRadixSelectField({
+  name,
+  label,
+  helpText,
+  value,
+  disabled,
+  options,
+  onValueChange,
+}: {
+  readonly name: string;
+  readonly label: string;
+  readonly helpText: string;
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly options: readonly DashboardSelectOption[];
+  readonly onValueChange: (value: string) => void;
+}): React.ReactElement {
+  const selectedOption = options.find((option) => option.value === value);
+
+  return (
+    <label className="grid min-w-0 gap-2 text-sm text-slate-300">
+      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        <DashboardFieldLabel label={label} helpText={helpText} />
+      </span>
+      <RadixSelect.Root
+        name={name}
+        value={value}
+        disabled={disabled}
+        onValueChange={onValueChange}
+      >
+        <RadixSelect.Trigger
+          aria-label={label}
+          className={[
+            dashboardInputClassName,
+            "flex items-center justify-between gap-3 text-left",
+          ].join(" ")}
+        >
+          <RadixSelect.Value>
+            <span className="min-w-0 truncate">
+              {selectedOption?.label ?? value}
+            </span>
+          </RadixSelect.Value>
+          <RadixSelect.Icon className="grid h-7 w-7 shrink-0 place-items-center text-cyan-100/80">
+            <ChevronIcon open={false} />
+          </RadixSelect.Icon>
+        </RadixSelect.Trigger>
+        <RadixSelect.Portal>
+          <RadixSelect.Content
+            position="popper"
+            sideOffset={8}
+            collisionPadding={12}
+            className="z-[90] max-h-80 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-cyan-200/20 bg-[#061015] p-1 text-cyan-50 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
+          >
+            <RadixSelect.Viewport>
+              {options.map((option) => (
+                <RadixSelect.Item
+                  key={option.value}
+                  value={option.value}
+                  textValue={option.label}
+                  className="flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-sm text-slate-300 outline-none transition data-[highlighted]:bg-cyan-300/[0.08] data-[highlighted]:text-cyan-50 data-[state=checked]:bg-cyan-300/[0.1] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                >
+                  <RadixSelect.ItemIndicator className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-emerald-300">
+                    ✓
+                  </RadixSelect.ItemIndicator>
+                  <RadixSelect.ItemText>
+                    <span className="block font-semibold">{option.label}</span>
+                    {option.description ? (
+                      <span className="mt-0.5 block text-xs leading-5 text-slate-400">
+                        {option.description}
+                      </span>
+                    ) : null}
+                  </RadixSelect.ItemText>
+                </RadixSelect.Item>
+              ))}
+            </RadixSelect.Viewport>
+          </RadixSelect.Content>
+        </RadixSelect.Portal>
+      </RadixSelect.Root>
     </label>
   );
 }
@@ -463,17 +835,17 @@ function DashboardSwitchField({
   name,
   label,
   helpText,
-  defaultChecked,
+  checked,
   disabled,
+  onCheckedChange,
 }: {
   readonly name: string;
   readonly label: string;
   readonly helpText: string;
-  readonly defaultChecked: boolean;
+  readonly checked: boolean;
   readonly disabled: boolean;
+  readonly onCheckedChange: (checked: boolean) => void;
 }): React.ReactElement {
-  const [checked, setChecked] = useState(defaultChecked);
-
   return (
     <label className="grid min-w-0 gap-2 text-sm text-slate-300">
       <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
@@ -491,7 +863,7 @@ function DashboardSwitchField({
             value="true"
             checked={checked}
             disabled={disabled}
-            onChange={(event) => setChecked(event.target.checked)}
+            onChange={(event) => onCheckedChange(event.target.checked)}
           />
           <input type="hidden" name={name} value="false" disabled={disabled} />
           <span
@@ -508,23 +880,22 @@ function DashboardModelField({
   name,
   label,
   helpText,
-  defaultValue,
+  value,
   disabled,
   options,
+  onValueChange,
 }: {
   readonly name: string;
   readonly label: string;
   readonly helpText: string;
-  readonly defaultValue: string;
+  readonly value: string;
   readonly disabled: boolean;
-  readonly options: readonly {
-    readonly value: string;
-    readonly label: string;
-  }[];
+  readonly options: readonly ReviewModelOption[];
+  readonly onValueChange: (value: string) => void;
 }): React.ReactElement {
-  const [value, setValue] = useState(defaultValue);
   const [open, setOpen] = useState(false);
   const listboxId = useId();
+  const selectedOption = options.find((option) => option.value === value);
 
   function closeWhenFocusLeaves(event: FocusEvent<HTMLLabelElement>): void {
     const nextTarget = event.relatedTarget;
@@ -549,14 +920,23 @@ function DashboardModelField({
         <input
           name={name}
           value={value}
-          onChange={(event) => setValue(event.target.value)}
           disabled={disabled}
-          autoComplete="off"
+          onChange={(event) => onValueChange(event.target.value)}
+          onFocus={() => setOpen(true)}
           aria-controls={listboxId}
           aria-expanded={open}
-          aria-haspopup="listbox"
-          className={[dashboardInputClassName, "pr-12"].join(" ")}
+          aria-autocomplete="list"
+          aria-label={label}
+          className={[
+            dashboardInputClassName,
+            selectedOption?.badge ? "pr-24" : "pr-12",
+          ].join(" ")}
         />
+        {selectedOption?.badge ? (
+          <span className="pointer-events-none absolute right-11 top-1/2 -translate-y-1/2">
+            <ModelBadge badge={selectedOption.badge} />
+          </span>
+        ) : null}
         <button
           type="button"
           disabled={disabled}
@@ -571,7 +951,7 @@ function DashboardModelField({
         <div
           id={listboxId}
           role="listbox"
-          className="absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-cyan-200/20 bg-[#061015] p-1 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
+          className="absolute left-0 right-0 top-full z-40 mt-2 max-h-96 overflow-y-auto rounded-xl border border-cyan-200/20 bg-[#061015] p-1 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
         >
           {options.map((option) => {
             const selected = option.value === value;
@@ -583,24 +963,59 @@ function DashboardModelField({
                 aria-selected={selected}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
-                  setValue(option.value);
+                  if (option.disabled) {
+                    return;
+                  }
+                  onValueChange(option.value);
                   setOpen(false);
                 }}
+                disabled={option.disabled}
                 className={[
-                  "grid w-full gap-0.5 rounded-lg px-3 py-2 text-left transition hover:bg-cyan-300/[0.08] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200",
+                  "grid w-full gap-0.5 rounded-lg px-3 py-2 text-left transition hover:bg-cyan-300/[0.08] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200 disabled:cursor-not-allowed disabled:opacity-55",
                   selected
                     ? "bg-cyan-300/[0.1] text-cyan-50"
                     : "text-slate-300",
                 ].join(" ")}
               >
-                <span className="text-sm font-semibold">{option.value}</span>
-                <span className="text-xs text-slate-500">{option.label}</span>
+                <span className="flex min-w-0 items-center justify-between gap-3 text-sm font-semibold">
+                  <span className="min-w-0 truncate">{option.label}</span>
+                  {option.badge ? <ModelBadge badge={option.badge} /> : null}
+                </span>
+                <span className="text-xs text-slate-500">{option.value}</span>
+                {option.description ? (
+                  <span className="text-xs leading-5 text-slate-400">
+                    {option.description}
+                  </span>
+                ) : null}
               </button>
             );
           })}
         </div>
       ) : null}
     </label>
+  );
+}
+
+function ModelBadge({
+  badge,
+}: {
+  readonly badge: NonNullable<ReviewModelOption["badge"]>;
+}): React.ReactElement {
+  const className =
+    badge === "FREE"
+      ? "border-emerald-400/60 bg-emerald-400/15 text-emerald-300"
+      : badge === "PAID"
+        ? "border-amber-300/50 bg-amber-300/10 text-amber-200"
+        : "border-slate-500/60 bg-slate-500/10 text-slate-300";
+  return (
+    <span
+      className={[
+        "rounded-md border px-1.5 py-0.5 text-[0.62rem] font-bold uppercase leading-none",
+        className,
+      ].join(" ")}
+    >
+      {badge}
+    </span>
   );
 }
 
