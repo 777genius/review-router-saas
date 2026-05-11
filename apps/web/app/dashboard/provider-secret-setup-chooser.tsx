@@ -67,6 +67,7 @@ export function ProviderSecretSetupChooser({
   );
   const [verificationError, setVerificationError] =
     useState<VerificationFallbackError | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const activeGuidance =
@@ -137,6 +138,7 @@ export function ProviderSecretSetupChooser({
           if (isProviderChoice(value)) {
             setProviderChoice(value);
             setVerificationError(null);
+            setSubmitError(null);
           }
         }}
       >
@@ -179,6 +181,7 @@ export function ProviderSecretSetupChooser({
             onChange={(event) => {
               setUseOrganizationSecret(event.currentTarget.checked);
               setVerificationError(null);
+              setSubmitError(null);
             }}
             className="mt-1 h-4 w-4 accent-cyan-300"
           />
@@ -246,6 +249,7 @@ export function ProviderSecretSetupChooser({
           action={(formData) => {
             const submittedConfirmationMode =
               readSubmittedConfirmationMode(formData);
+            setSubmitError(null);
             startTransition(() => {
               void confirmProviderSecretSetupClientAction(formData)
                 .then(({ params }) => {
@@ -254,6 +258,11 @@ export function ProviderSecretSetupChooser({
                     isVerificationFallbackError(params.error)
                   ) {
                     setVerificationError(params.error);
+                    setSubmitError(null);
+                    return;
+                  }
+                  if (params.error) {
+                    setSubmitError(params.error);
                     return;
                   }
                   closeProviderSecretsDialog();
@@ -265,16 +274,7 @@ export function ProviderSecretSetupChooser({
                   }
                 })
                 .catch(() => {
-                  closeProviderSecretsDialog();
-                  router.replace(
-                    buildDashboardMutationUrl({
-                      error: "dashboard_action_failed",
-                      workspace: workspaceId,
-                      section: "repositories",
-                      repository: repositoryFullName,
-                    }),
-                    { scroll: false },
-                  );
+                  setSubmitError("dashboard_action_failed");
                 });
             });
           }}
@@ -328,6 +328,11 @@ export function ProviderSecretSetupChooser({
               </p>
             ) : null}
           </div>
+          {submitError ? (
+            <p className="mt-3 rounded-xl border border-red-300/25 bg-red-400/[0.08] p-3 text-sm leading-6 text-red-100">
+              {providerSetupSubmitErrorText(submitError)}
+            </p>
+          ) : null}
         </form>
         <p className="mt-3 text-xs leading-5 text-emerald-100/80">
           {providerDetails.footnote} ReviewRouter SaaS never receives provider
@@ -336,6 +341,25 @@ export function ProviderSecretSetupChooser({
       </div>
     </div>
   );
+}
+
+function providerSetupSubmitErrorText(error: string): string {
+  switch (error) {
+    case "dashboard_action_failed":
+      return "The dashboard action failed. Retry once; if it repeats, keep this dialog open and check server logs.";
+    case "github_operation_failed":
+      return "GitHub did not complete the verification request. Retry once; if the secret exists in GitHub, use manual confirmation after a verification warning.";
+    case "invalid_form":
+      return "The submitted provider setup form is invalid. Reopen the dialog and try again.";
+    case "rate_limited":
+      return "Too many dashboard requests for this repository. Wait a bit before retrying.";
+    case "workspace_mutation_forbidden":
+      return "Your GitHub user is not allowed to change this workspace.";
+    case "entitlement_denied":
+      return "This workspace plan does not allow provider setup confirmation.";
+    default:
+      return "The dashboard could not save provider setup. Retry once, then check server logs if it repeats.";
+  }
 }
 
 function providerChoiceToSetupSelection(value: ProviderChoice): {
