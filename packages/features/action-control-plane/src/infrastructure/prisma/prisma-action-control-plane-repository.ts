@@ -1,5 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
-import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-config";
+import {
+  parseReviewConfiguration,
+  safeDefaultReviewConfiguration,
+} from "@reviewrouter/features-review-config";
 import type {
   ActionHealthReport,
   ActionRepositoryContext,
@@ -224,7 +227,21 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             fastMode: true,
             failOnSeverity: true,
             inlineMaxComments: true,
+            providerLimit: true,
+            providerMaxParallel: true,
+            inlineMinAgreement: true,
             targetTokensPerBatch: true,
+            providers: {
+              orderBy: { order: "asc" },
+              select: {
+                providerKind: true,
+                providerAuthMode: true,
+                model: true,
+                reasoningEffort: true,
+                agenticContext: true,
+                fastMode: true,
+              },
+            },
           },
         },
       },
@@ -234,17 +251,36 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       return null;
     }
 
+    const providers = version.providers.length
+      ? version.providers.map((provider) => ({
+          kind: toProviderKind(provider.providerKind),
+          authMode: toAuthMode(provider.providerAuthMode),
+          model: provider.model,
+          reasoningEffort: toReasoningEffort(provider.reasoningEffort),
+          agenticContext: provider.agenticContext,
+          fastMode: provider.fastMode,
+        }))
+      : [
+          {
+            kind: toProviderKind(version.providerKind),
+            authMode: toAuthMode(version.providerAuthMode),
+            model: version.model,
+            reasoningEffort: toReasoningEffort(version.reasoningEffort),
+            agenticContext: version.agenticContext,
+            fastMode: version.fastMode,
+          },
+        ];
+
     return {
       version: version.version,
-      config: {
-        schemaVersion: 1,
-        provider: {
-          kind: version.providerKind === "openrouter" ? "openrouter" : "codex",
-          authMode: toAuthMode(version.providerAuthMode),
-          model: version.model,
-          reasoningEffort: toReasoningEffort(version.reasoningEffort),
-          agenticContext: version.agenticContext,
-          fastMode: version.fastMode,
+      config: parseReviewConfiguration({
+        schemaVersion: 2,
+        providers,
+        provider: providers[0],
+        execution: {
+          providerLimit: version.providerLimit,
+          providerMaxParallel: version.providerMaxParallel,
+          inlineMinAgreement: version.inlineMinAgreement,
         },
         blockingPolicy: {
           failOnSeverity: toFailOnSeverity(version.failOnSeverity),
@@ -255,7 +291,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             version.targetTokensPerBatch ??
             safeDefaultReviewConfiguration.limits.targetTokensPerBatch,
         },
-      },
+      }),
     };
   }
 }
@@ -315,6 +351,10 @@ function toAuthMode(value: string) {
     default:
       return "codex_subscription_oauth";
   }
+}
+
+function toProviderKind(value: string) {
+  return value === "openrouter" ? "openrouter" : "codex";
 }
 
 function toReasoningEffort(value: string) {

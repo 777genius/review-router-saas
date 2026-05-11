@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
-import { safeDefaultReviewConfiguration } from "@reviewrouter/features-review-config";
+import {
+  parseReviewConfiguration,
+  safeDefaultReviewConfiguration,
+} from "@reviewrouter/features-review-config";
 import type { Clock } from "@reviewrouter/shared";
 import type {
   ActionOidcReplayNonceCleanupPort,
@@ -69,6 +72,7 @@ const sessionClaims: ActionSessionClaims = {
 class InMemoryActionControlPlaneRepository implements ActionControlPlaneRepositoryPort {
   public healthReports: ActionHealthReport[] = [];
   public repository: ActionRepositoryContext | null = repositoryContext;
+  public runtimeConfig = safeDefaultReviewConfiguration;
 
   async findSelectedRepositoryByGithubId(
     githubRepositoryId: string,
@@ -80,7 +84,7 @@ class InMemoryActionControlPlaneRepository implements ActionControlPlaneReposito
   }
 
   async findRuntimeReviewConfiguration() {
-    return { version: 7, config: safeDefaultReviewConfiguration };
+    return { version: 7, config: this.runtimeConfig };
   }
 
   async recordHealthReport(input: {
@@ -705,6 +709,17 @@ describe("action control plane", () => {
         fastMode: false,
         secretBackedProviderEnabled: true,
       },
+      providers: [
+        {
+          model: "gpt-5.5",
+          secretBackedProviderEnabled: true,
+        },
+      ],
+      execution: {
+        providerLimit: 1,
+        providerMaxParallel: 1,
+        inlineMinAgreement: 1,
+      },
       runtimeEnv: {
         REVIEW_AUTH_MODE: "codex-oauth",
         CODEX_MODEL: "gpt-5.5",
@@ -712,6 +727,62 @@ describe("action control plane", () => {
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("returns multi-provider runtime config for the action", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth",
+          model: "gpt-5.5",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "poolside/laguna-m.1:free",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+      ],
+      execution: {
+        providerLimit: 2,
+        providerMaxParallel: 2,
+        inlineMinAgreement: 2,
+      },
+    });
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService(),
+        clock,
+      },
+    );
+
+    expect(config.providers.map((provider) => provider.model)).toEqual([
+      "gpt-5.5",
+      "poolside/laguna-m.1:free",
+    ]);
+    expect(config.execution).toEqual({
+      providerLimit: 2,
+      providerMaxParallel: 2,
+      inlineMinAgreement: 2,
+    });
+    expect(config.runtimeEnv).toMatchObject({
+      REVIEW_PROVIDERS: "codex/gpt-5.5,openrouter/poolside/laguna-m.1:free",
+      PROVIDER_LIMIT: "2",
+      PROVIDER_MAX_PARALLEL: "2",
+      INLINE_MIN_AGREEMENT: "2",
+      SYNTHESIS_MODEL: "codex/gpt-5.5",
+    });
   });
 
   it("adds a derived ledger key to runtime config when configured", async () => {

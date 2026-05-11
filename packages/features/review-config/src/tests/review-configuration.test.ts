@@ -210,7 +210,15 @@ describe("review configuration", () => {
   });
 
   it("persists normalized provider rows through the Prisma repository", async () => {
-    const versions: Array<{
+    type ProviderRow = {
+      providerKind: string;
+      providerAuthMode: string;
+      model: string;
+      reasoningEffort: string;
+      agenticContext: boolean;
+      fastMode: boolean;
+    };
+    type VersionRow = {
       version: number;
       schemaVersion: number;
       providerKind: string;
@@ -225,17 +233,28 @@ describe("review configuration", () => {
       providerMaxParallel: number;
       inlineMinAgreement: number;
       targetTokensPerBatch: number;
-      providers: Array<{
-        providerKind: string;
-        providerAuthMode: string;
-        model: string;
-        reasoningEffort: string;
-        agenticContext: boolean;
-        fastMode: boolean;
-      }>;
-    }> = [];
-    const prisma = {
-      $transaction: async <T>(callback: (tx: typeof prisma) => Promise<T>) =>
+      providers: ProviderRow[];
+    };
+    type PrismaStub = {
+      $transaction<T>(callback: (tx: PrismaStub) => Promise<T>): Promise<T>;
+      reviewConfiguration: {
+        upsert(): Promise<{ id: string }>;
+        findUnique(): Promise<{ versions: VersionRow[] }>;
+        deleteMany(): Promise<{ count: number }>;
+      };
+      reviewConfigurationVersion: {
+        findFirst(): Promise<{ version: number } | null>;
+        create(input: {
+          data: Omit<VersionRow, "providers"> & {
+            providers: { create: ProviderRow[] };
+          };
+        }): Promise<VersionRow>;
+      };
+    };
+    const versions: VersionRow[] = [];
+    let prisma: PrismaStub;
+    prisma = {
+      $transaction: async <T>(callback: (tx: PrismaStub) => Promise<T>) =>
         callback(prisma),
       reviewConfiguration: {
         upsert: async () => ({ id: "review_config_1" }),
@@ -252,30 +271,9 @@ describe("review configuration", () => {
         create: async ({
           data,
         }: {
-          data: {
-            version: number;
-            schemaVersion: number;
-            providerKind: string;
-            providerAuthMode: string;
-            model: string;
-            reasoningEffort: string;
-            agenticContext: boolean;
-            fastMode: boolean;
-            failOnSeverity: string;
-            inlineMaxComments: number;
-            providerLimit: number;
-            providerMaxParallel: number;
-            inlineMinAgreement: number;
-            targetTokensPerBatch: number;
+          data: Omit<VersionRow, "providers"> & {
             providers: {
-              create: Array<{
-                providerKind: string;
-                providerAuthMode: string;
-                model: string;
-                reasoningEffort: string;
-                agenticContext: boolean;
-                fastMode: boolean;
-              }>;
+              create: ProviderRow[];
             };
           };
         }) => {

@@ -67,19 +67,22 @@ export async function getActionRuntimeConfig(
   if (ledgerKey) {
     runtimeEnv.REVIEW_ROUTER_LEDGER_KEY = ledgerKey;
   }
+  const providers = config.providers.map((provider) => ({
+    kind: provider.kind,
+    authMode: provider.authMode,
+    model: provider.model,
+    reasoningEffort: provider.reasoningEffort,
+    agenticContext: provider.agenticContext,
+    fastMode: provider.fastMode,
+    secretBackedProviderEnabled: true,
+  }));
 
   return {
     protocolVersion: 1,
     configVersion: version,
-    provider: {
-      kind: config.provider.kind,
-      authMode: config.provider.authMode,
-      model: config.provider.model,
-      reasoningEffort: config.provider.reasoningEffort,
-      agenticContext: config.provider.agenticContext,
-      fastMode: config.provider.fastMode,
-      secretBackedProviderEnabled: true,
-    },
+    provider: providers[0]!,
+    providers,
+    execution: config.execution,
     blockingPolicy: { failOnSeverity: config.blockingPolicy.failOnSeverity },
     limits: {
       inlineMaxComments: config.limits.inlineMaxComments,
