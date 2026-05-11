@@ -44,8 +44,8 @@ const cacheTtlMs = 30 * 60 * 1000;
 const fetchTimeoutMs = 4000;
 
 const recommendedFreeOpenRouterModelIds = [
-  "nvidia/nemotron-3-super-120b-a12b:free",
   "poolside/laguna-m.1:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
   "inclusionai/ring-2.6-1t:free",
   "openai/gpt-oss-120b:free",
   "openrouter/owl-alpha",
@@ -96,18 +96,18 @@ const codexModelOptions: readonly ReviewModelOption[] = [
 
 const fallbackOpenRouterCatalog: readonly OpenRouterCatalogModel[] = [
   {
-    id: "nvidia/nemotron-3-super-120b-a12b:free",
-    name: "NVIDIA: Nemotron 3 Super (free)",
-    contextTokens: 262144,
+    id: "poolside/laguna-m.1:free",
+    name: "Poolside: Laguna M.1 (free)",
+    contextTokens: 131072,
     promptUsdPer1M: 0,
     completionUsdPer1M: 0,
     isFree: true,
     supportsReviewText: true,
   },
   {
-    id: "poolside/laguna-m.1:free",
-    name: "Poolside: Laguna M.1 (free)",
-    contextTokens: 131072,
+    id: "nvidia/nemotron-3-super-120b-a12b:free",
+    name: "NVIDIA: Nemotron 3 Super (free)",
+    contextTokens: 262144,
     promptUsdPer1M: 0,
     completionUsdPer1M: 0,
     isFree: true,
