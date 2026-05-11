@@ -1056,8 +1056,8 @@ function WorkspaceCard({
             </div>
 
             {repositories.length > 0 ? (
-              <details className="mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
-                <summary className="cursor-pointer list-none">
+              <details className="group mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
+                <summary className="cursor-pointer list-none rounded-xl outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300/40">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge tone="accent">Repository overrides</Badge>
@@ -1065,14 +1065,34 @@ function WorkspaceCard({
                         optional per-repository provider/model/effort
                       </span>
                     </div>
-                    <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
-                      advanced
+                    <span className="inline-flex items-center gap-2 rounded-full border border-cyan-200/30 bg-cyan-300/[0.08] px-3 py-2 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100 transition group-hover:border-cyan-200/50 group-hover:bg-cyan-300/[0.12]">
+                      <span className="group-open:hidden">Open overrides</span>
+                      <span className="hidden group-open:inline">
+                        Hide overrides
+                      </span>
+                      <svg
+                        aria-hidden="true"
+                        viewBox="0 0 16 16"
+                        className="h-3.5 w-3.5 shrink-0 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none"
+                        fill="none"
+                      >
+                        <path
+                          d="M4 6l4 4 4-4"
+                          stroke="currentColor"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="1.8"
+                        />
+                      </svg>
                     </span>
                   </div>
                   <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
                     Most repositories should inherit the workspace default. Open
                     this only when one repository needs a different provider,
                     model, effort, or gate.
+                  </p>
+                  <p className="mt-2 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200/80 group-open:hidden">
+                    Click to expand repository-specific settings
                   </p>
                 </summary>
                 <div className="mt-4 grid gap-3">

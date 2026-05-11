@@ -120,7 +120,7 @@ export default async function HomePage(): Promise<React.ReactElement> {
         <div className="relative mx-auto flex max-w-5xl flex-col items-center text-center">
           <div className="pointer-events-none absolute left-1/2 top-0 h-72 w-72 -translate-x-1/2 rounded-full bg-cyan-300/12 blur-3xl" />
           <div className="pointer-events-none absolute right-4 top-44 h-56 w-56 rounded-full bg-fuchsia-400/10 blur-3xl" />
-          <Badge tone="success">Privacy-first setup</Badge>
+          <Badge tone="success">Setup in 5 minutes</Badge>
           <h1 className="mt-6 max-w-5xl text-4xl font-extrabold leading-[0.98] text-cyan-50 [overflow-wrap:anywhere] sm:text-6xl md:text-7xl">
             Privacy-first AI code review that stays inside your CI
           </h1>
