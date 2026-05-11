@@ -105,24 +105,29 @@ describe("openrouter model catalog", () => {
     );
 
     expect(free).toMatchObject({
-      label: "OpenRouter: Vendor Free",
+      label: "Vendor Free",
+      provider: "openrouter",
+      badge: "FREE",
     });
     expect(free?.disabled).toBeUndefined();
     expect(free?.description).toContain("$0/$0 per 1M");
     expect(paid).toMatchObject({
-      label: "OpenRouter: Vendor Paid",
+      label: "Vendor Paid",
+      badge: "PAID",
       disabled: true,
     });
     expect(paid?.description).toContain("$0.50/$1.00 per 1M");
     expect(openRouterOwned).toMatchObject({
-      label: "OpenRouter: OpenRouter Free Router",
+      label: "OpenRouter Free Router",
+      badge: "Unsupported",
       disabled: true,
     });
     expect(openRouterOwned?.description).toContain(
       "router-owned ids need action runtime support",
     );
     expect(audioOutput).toMatchObject({
-      label: "OpenRouter: Vendor Audio Output",
+      label: "Vendor Audio Output",
+      badge: "Unsupported",
       disabled: true,
     });
     expect(audioOutput?.description).toContain("Not a text review model");

@@ -4,6 +4,7 @@ import {
   clearReviewConfiguration,
   mapConfigToRuntimeEnv,
   parseReviewConfiguration,
+  PrismaReviewConfigurationRepository,
   reviewConfigurationTargetKey,
   resolveReviewConfiguration,
   resolveReviewRuntimeEnv,
@@ -53,6 +54,11 @@ describe("review configuration", () => {
       CODEX_REASONING_EFFORT: "medium",
       CODEX_AGENTIC_CONTEXT: "true",
       CODEX_FAST_MODE: "false",
+      REVIEW_PROVIDERS: "codex/gpt-5.5",
+      SYNTHESIS_MODEL: "codex/gpt-5.5",
+      PROVIDER_LIMIT: "1",
+      PROVIDER_MAX_PARALLEL: "1",
+      INLINE_MIN_AGREEMENT: "1",
       FAIL_ON_SEVERITY: "critical",
       INLINE_MAX_COMMENTS: "5",
     });
@@ -61,14 +67,16 @@ describe("review configuration", () => {
   });
 
   it("maps OpenRouter API-key config to fully-qualified runtime models", () => {
+    const provider = {
+      ...safeDefaultReviewConfiguration.provider,
+      kind: "openrouter" as const,
+      authMode: "openrouter_api_key" as const,
+      model: "poolside/laguna-m.1:free",
+    };
     const env = mapConfigToRuntimeEnv({
       ...safeDefaultReviewConfiguration,
-      provider: {
-        ...safeDefaultReviewConfiguration.provider,
-        kind: "openrouter",
-        authMode: "openrouter_api_key",
-        model: "poolside/laguna-m.1:free",
-      },
+      provider,
+      providers: [provider],
     });
 
     expect(env).toMatchObject({
@@ -76,9 +84,77 @@ describe("review configuration", () => {
       REVIEW_PROVIDERS: "openrouter/poolside/laguna-m.1:free",
       SYNTHESIS_MODEL: "openrouter/poolside/laguna-m.1:free",
       CODEX_MODEL: "poolside/laguna-m.1:free",
+      PROVIDER_LIMIT: "1",
+      PROVIDER_MAX_PARALLEL: "1",
     });
     expect(Object.keys(env).join("\n")).not.toContain("SECRET");
     expect(Object.keys(env).join("\n")).not.toContain("KEY");
+  });
+
+  it("normalizes legacy v1 config into v2 provider list", () => {
+    const config = parseReviewConfiguration({
+      schemaVersion: 1,
+      provider: {
+        kind: "codex",
+        authMode: "codex_subscription_oauth",
+        model: "gpt-5.4",
+      },
+      blockingPolicy: { failOnSeverity: "critical" },
+      limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+    });
+
+    expect(config).toMatchObject({
+      schemaVersion: 2,
+      provider: { model: "gpt-5.4" },
+      providers: [{ model: "gpt-5.4" }],
+      execution: {
+        providerLimit: 1,
+        providerMaxParallel: 1,
+        inlineMinAgreement: 1,
+      },
+    });
+  });
+
+  it("maps mixed provider config to parallel runtime env", () => {
+    const env = mapConfigToRuntimeEnv(
+      parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        providers: [
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth",
+            model: "gpt-5.5",
+            reasoningEffort: "high",
+            agenticContext: true,
+            fastMode: false,
+          },
+          {
+            kind: "openrouter",
+            authMode: "openrouter_api_key",
+            model: "poolside/laguna-m.1:free",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+        ],
+        execution: {
+          providerLimit: 2,
+          providerMaxParallel: 2,
+          inlineMinAgreement: 2,
+        },
+      }),
+    );
+
+    expect(env).toMatchObject({
+      REVIEW_AUTH_MODE: "codex-oauth",
+      REVIEW_PROVIDERS: "codex/gpt-5.5,openrouter/poolside/laguna-m.1:free",
+      SYNTHESIS_MODEL: "codex/gpt-5.5",
+      CODEX_MODEL: "gpt-5.5",
+      CODEX_REASONING_EFFORT: "high",
+      PROVIDER_LIMIT: "2",
+      PROVIDER_MAX_PARALLEL: "2",
+      INLINE_MIN_AGREEMENT: "2",
+    });
   });
 
   it("rejects invalid limits", () => {
@@ -131,6 +207,147 @@ describe("review configuration", () => {
       version: 2,
       config: { provider: { reasoningEffort: "high", fastMode: true } },
     });
+  });
+
+  it("persists normalized provider rows through the Prisma repository", async () => {
+    const versions: Array<{
+      version: number;
+      schemaVersion: number;
+      providerKind: string;
+      providerAuthMode: string;
+      model: string;
+      reasoningEffort: string;
+      agenticContext: boolean;
+      fastMode: boolean;
+      failOnSeverity: string;
+      inlineMaxComments: number;
+      providerLimit: number;
+      providerMaxParallel: number;
+      inlineMinAgreement: number;
+      targetTokensPerBatch: number;
+      providers: Array<{
+        providerKind: string;
+        providerAuthMode: string;
+        model: string;
+        reasoningEffort: string;
+        agenticContext: boolean;
+        fastMode: boolean;
+      }>;
+    }> = [];
+    const prisma = {
+      $transaction: async <T>(callback: (tx: typeof prisma) => Promise<T>) =>
+        callback(prisma),
+      reviewConfiguration: {
+        upsert: async () => ({ id: "review_config_1" }),
+        findUnique: async () => ({
+          versions: versions.length ? [versions[versions.length - 1]!] : [],
+        }),
+        deleteMany: async () => ({ count: 1 }),
+      },
+      reviewConfigurationVersion: {
+        findFirst: async () =>
+          versions.length
+            ? { version: versions[versions.length - 1]!.version }
+            : null,
+        create: async ({
+          data,
+        }: {
+          data: {
+            version: number;
+            schemaVersion: number;
+            providerKind: string;
+            providerAuthMode: string;
+            model: string;
+            reasoningEffort: string;
+            agenticContext: boolean;
+            fastMode: boolean;
+            failOnSeverity: string;
+            inlineMaxComments: number;
+            providerLimit: number;
+            providerMaxParallel: number;
+            inlineMinAgreement: number;
+            targetTokensPerBatch: number;
+            providers: {
+              create: Array<{
+                providerKind: string;
+                providerAuthMode: string;
+                model: string;
+                reasoningEffort: string;
+                agenticContext: boolean;
+                fastMode: boolean;
+              }>;
+            };
+          };
+        }) => {
+          const record = {
+            version: data.version,
+            schemaVersion: data.schemaVersion,
+            providerKind: data.providerKind,
+            providerAuthMode: data.providerAuthMode,
+            model: data.model,
+            reasoningEffort: data.reasoningEffort,
+            agenticContext: data.agenticContext,
+            fastMode: data.fastMode,
+            failOnSeverity: data.failOnSeverity,
+            inlineMaxComments: data.inlineMaxComments,
+            providerLimit: data.providerLimit,
+            providerMaxParallel: data.providerMaxParallel,
+            inlineMinAgreement: data.inlineMinAgreement,
+            targetTokensPerBatch: data.targetTokensPerBatch,
+            providers: data.providers.create,
+          };
+          versions.push(record);
+          return record;
+        },
+      },
+    };
+    const repository = new PrismaReviewConfigurationRepository(prisma as never);
+    const config = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth",
+          model: "gpt-5.5",
+          reasoningEffort: "high",
+          agenticContext: true,
+          fastMode: false,
+        },
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "poolside/laguna-m.1:free",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+      ],
+      execution: {
+        providerLimit: 2,
+        providerMaxParallel: 2,
+        inlineMinAgreement: 2,
+      },
+    });
+
+    const saved = await repository.saveNextVersion({
+      target: { scope: "workspace", workspaceId: "workspace_1" },
+      config,
+    });
+    const latest = await repository.findLatest({
+      scope: "workspace",
+      workspaceId: "workspace_1",
+    });
+
+    expect(saved.config.providers).toHaveLength(2);
+    expect(latest?.config.providers.map((provider) => provider.model)).toEqual([
+      "gpt-5.5",
+      "poolside/laguna-m.1:free",
+    ]);
+    expect(versions[0]?.model).toBe("gpt-5.5");
+    expect(versions[0]?.providers.map((provider) => provider.model)).toEqual([
+      "gpt-5.5",
+      "poolside/laguna-m.1:free",
+    ]);
   });
 
   it("resolves repository config before workspace default and safe default", async () => {

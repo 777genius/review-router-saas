@@ -23,7 +23,9 @@ type OpenRouterModelsResponse = {
 export type ReviewModelOption = {
   readonly value: string;
   readonly label: string;
+  readonly provider: "codex" | "openrouter";
   readonly description?: string;
+  readonly badge?: "FREE" | "PAID" | "Unsupported";
   readonly disabled?: boolean;
 };
 
@@ -42,24 +44,42 @@ const cacheTtlMs = 30 * 60 * 1000;
 const fetchTimeoutMs = 4000;
 
 const codexModelOptions: readonly ReviewModelOption[] = [
-  { value: "gpt-5.5", label: "GPT-5.5", description: "Codex default model." },
-  { value: "gpt-5.4", label: "GPT-5.4", description: "Codex model." },
+  {
+    value: "gpt-5.5",
+    label: "gpt-5.5",
+    provider: "codex",
+    description: "Codex default model.",
+  },
+  {
+    value: "gpt-5.4",
+    label: "gpt-5.4",
+    provider: "codex",
+    description: "Codex model.",
+  },
   {
     value: "gpt-5.4-mini",
-    label: "GPT-5.4 Mini",
+    label: "gpt-5.4-mini",
+    provider: "codex",
     description: "Lower-latency Codex model.",
   },
   {
     value: "gpt-5.3-codex",
-    label: "GPT-5.3 Codex",
+    label: "gpt-5.3-codex",
+    provider: "codex",
     description: "Codex-specialized model.",
   },
   {
     value: "gpt-5.3-codex-spark",
-    label: "GPT-5.3 Codex Spark",
+    label: "gpt-5.3-codex-spark",
+    provider: "codex",
     description: "Fast Codex-specialized model.",
   },
-  { value: "gpt-5.2", label: "GPT-5.2", description: "Codex model." },
+  {
+    value: "gpt-5.2",
+    label: "gpt-5.2",
+    provider: "codex",
+    description: "Codex model.",
+  },
 ];
 
 const fallbackOpenRouterCatalog: readonly OpenRouterCatalogModel[] = [
@@ -244,15 +264,28 @@ function formatOpenRouterModelOption(
     ? `${formatTokenCount(model.contextTokens)} context`
     : "context unknown";
   const disabledReason = getDisabledReason(model);
+  const badge = disabledReason
+    ? model.isFree
+      ? "Unsupported"
+      : "PAID"
+    : model.isFree
+      ? "FREE"
+      : undefined;
 
   return {
     value: model.id,
-    label: `OpenRouter: ${model.name}`,
+    label: cleanOpenRouterModelName(model.name),
+    provider: "openrouter",
     description: disabledReason
       ? `${model.id} - ${pricing} - ${context}. ${disabledReason}`
       : `${model.id} - ${pricing} - ${context}`,
+    ...(badge ? { badge } : {}),
     ...(disabledReason ? { disabled: true } : {}),
   };
+}
+
+function cleanOpenRouterModelName(value: string): string {
+  return value.replace(/\s+\(free\)$/i, "");
 }
 
 function getDisabledReason(model: OpenRouterCatalogModel): string | null {

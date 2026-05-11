@@ -1037,16 +1037,13 @@ function WorkspaceCard({
                 </p>
               </div>
               <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
-                workspace config v{activeConfigVersion}
+                Workspace default
               </span>
             </div>
 
             <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 <Badge tone="accent">Workspace default</Badge>
-                <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                  v{activeConfigVersion}
-                </span>
               </div>
               <ReviewConfigForm
                 action={saveWorkspaceReviewConfigAction}

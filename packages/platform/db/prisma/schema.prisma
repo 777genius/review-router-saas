@@ -136,13 +136,34 @@ model ReviewConfigurationVersion {
   fastMode             Boolean  @default(false)
   failOnSeverity       String
   inlineMaxComments    Int
+  providerLimit        Int      @default(1)
+  providerMaxParallel  Int      @default(1)
+  inlineMinAgreement   Int      @default(1)
   targetTokensPerBatch Int
   createdAt            DateTime @default(now())
 
-  configuration ReviewConfiguration @relation(fields: [configurationId], references: [id], onDelete: Cascade)
+  configuration ReviewConfiguration                  @relation(fields: [configurationId], references: [id], onDelete: Cascade)
+  providers     ReviewConfigurationVersionProvider[]
 
   @@unique([configurationId, version])
   @@index([configurationId, createdAt])
+}
+
+model ReviewConfigurationVersionProvider {
+  id                     String  @id @default(cuid())
+  configurationVersionId String
+  order                  Int
+  providerKind           String
+  providerAuthMode       String
+  model                  String
+  reasoningEffort        String
+  agenticContext         Boolean @default(true)
+  fastMode               Boolean @default(false)
+
+  configurationVersion ReviewConfigurationVersion @relation(fields: [configurationVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([configurationVersionId, order])
+  @@index([configurationVersionId])
 }
 
 model ProviderSetupState {
