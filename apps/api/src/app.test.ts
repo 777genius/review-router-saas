@@ -19,8 +19,23 @@ import {
   StaticActionRuntimeCompatibilityPolicy,
 } from "@reviewrouter/features-action-control-plane";
 import type {
+  MemoryActor,
+  MemoryAuditEvent,
+  MemoryAuditPort,
+  MemoryIdGeneratorPort,
+  MemoryItem,
   MemoryItemRepositoryPort,
   MemoryItemSnapshot,
+  MemoryOutboxEvent,
+  MemoryOutboxPort,
+  MemoryPermissionDecision,
+  MemoryPermissionPort,
+  MemorySuggestion,
+  MemorySuggestionRepositoryPort,
+  MemorySuggestionSnapshot,
+  MemoryTransactionPort,
+  MemoryTransactionalPorts,
+  MemoryUseCaseDependencies,
 } from "@reviewrouter/features-memory";
 import {
   createDashboardMemorySource,
@@ -164,16 +179,45 @@ class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
 }
 
 class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
-  constructor(private readonly snapshots: readonly MemoryItemSnapshot[]) {}
+  public readonly snapshots = new Map<string, MemoryItemSnapshot>();
 
-  async save(): Promise<void> {}
-
-  async findById(): Promise<MemoryItemSnapshot | null> {
-    return null;
+  constructor(snapshots: readonly MemoryItemSnapshot[] = []) {
+    for (const snapshot of snapshots) {
+      this.snapshots.set(snapshot.id, snapshot);
+    }
   }
 
-  async findActiveByBodyHash(): Promise<MemoryItemSnapshot | null> {
-    return null;
+  async save(item: MemoryItem): Promise<void> {
+    const snapshot = item.snapshot();
+    this.snapshots.set(snapshot.id, snapshot);
+  }
+
+  async findById(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+  }): Promise<MemoryItemSnapshot | null> {
+    const snapshot = this.snapshots.get(input.itemId);
+    return snapshot?.workspaceId === input.workspaceId ? snapshot : null;
+  }
+
+  async findActiveByBodyHash(input: {
+    readonly workspaceId: string;
+    readonly scope: MemoryItemSnapshot["scope"];
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly bodyHash: string;
+  }): Promise<MemoryItemSnapshot | null> {
+    return (
+      this.values().find(
+        (item) =>
+          item.workspaceId === input.workspaceId &&
+          item.status === "active" &&
+          item.scope === input.scope &&
+          item.repositoryId === input.repositoryId &&
+          item.userId === input.userId &&
+          item.bodyHash === input.bodyHash,
+      ) ?? null
+    );
   }
 
   async listActiveForBundle(input: {
@@ -182,7 +226,7 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
     readonly userId: string | null;
     readonly limit: number;
   }): Promise<readonly MemoryItemSnapshot[]> {
-    return this.snapshots
+    return this.values()
       .filter((item) => item.workspaceId === input.workspaceId)
       .filter((item) => item.status === "active")
       .filter(
@@ -195,8 +239,141 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
       .slice(0, input.limit);
   }
 
-  async listForDashboard(): Promise<readonly MemoryItemSnapshot[]> {
-    return this.snapshots;
+  async listForDashboard(input: {
+    readonly workspaceId: string;
+    readonly repositoryId?: string | null;
+    readonly scope?: MemoryItemSnapshot["scope"];
+    readonly statuses: readonly MemoryItemSnapshot["status"][];
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    return this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => input.statuses.includes(item.status))
+      .filter((item) =>
+        input.repositoryId === undefined
+          ? true
+          : item.repositoryId === input.repositoryId,
+      )
+      .filter((item) => (input.scope ? item.scope === input.scope : true))
+      .slice(0, input.limit);
+  }
+
+  values(): MemoryItemSnapshot[] {
+    return Array.from(this.snapshots.values());
+  }
+}
+
+class InMemoryMemorySuggestions implements MemorySuggestionRepositoryPort {
+  public readonly snapshots = new Map<string, MemorySuggestionSnapshot>();
+
+  async save(suggestion: MemorySuggestion): Promise<void> {
+    const snapshot = suggestion.snapshot();
+    this.snapshots.set(snapshot.id, snapshot);
+  }
+
+  async findById(input: {
+    readonly workspaceId: string;
+    readonly suggestionId: string;
+  }): Promise<MemorySuggestionSnapshot | null> {
+    const snapshot = this.snapshots.get(input.suggestionId);
+    return snapshot?.workspaceId === input.workspaceId ? snapshot : null;
+  }
+
+  async findPendingByDedupeKey(input: {
+    readonly workspaceId: string;
+    readonly dedupeKey: string;
+  }): Promise<MemorySuggestionSnapshot | null> {
+    return (
+      this.values().find(
+        (suggestion) =>
+          suggestion.workspaceId === input.workspaceId &&
+          suggestion.status === "pending" &&
+          suggestion.dedupeKey === input.dedupeKey,
+      ) ?? null
+    );
+  }
+
+  async listForDashboard(input: {
+    readonly workspaceId: string;
+    readonly repositoryId?: string | null;
+    readonly scope?: MemorySuggestionSnapshot["suggestedScope"];
+    readonly statuses: readonly MemorySuggestionSnapshot["status"][];
+    readonly limit: number;
+    readonly notExpiredAt?: Date;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    return this.values()
+      .filter((suggestion) => suggestion.workspaceId === input.workspaceId)
+      .filter((suggestion) => input.statuses.includes(suggestion.status))
+      .filter((suggestion) =>
+        input.repositoryId === undefined
+          ? true
+          : suggestion.repositoryId === input.repositoryId,
+      )
+      .filter((suggestion) =>
+        input.scope ? suggestion.suggestedScope === input.scope : true,
+      )
+      .filter((suggestion) =>
+        input.notExpiredAt ? suggestion.expiresAt > input.notExpiredAt : true,
+      )
+      .slice(0, input.limit);
+  }
+
+  values(): MemorySuggestionSnapshot[] {
+    return Array.from(this.snapshots.values());
+  }
+}
+
+class AllowingMemoryPermissions implements MemoryPermissionPort {
+  public readonly calls: Array<{
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemoryItemSnapshot["scope"];
+    readonly actor: MemoryActor;
+  }> = [];
+
+  async canConfirmMemory(
+    input: Parameters<MemoryPermissionPort["canConfirmMemory"]>[0],
+  ): Promise<MemoryPermissionDecision> {
+    this.calls.push(input);
+    return { allowed: true };
+  }
+}
+
+class IncrementingMemoryIds implements MemoryIdGeneratorPort {
+  private next = 1;
+
+  newId(prefix: "mem" | "mem_suggestion"): string {
+    return `${prefix}_test_${this.next++}`;
+  }
+}
+
+class CapturingMemoryAudit implements MemoryAuditPort {
+  public readonly events: MemoryAuditEvent[] = [];
+
+  async record(event: MemoryAuditEvent): Promise<void> {
+    this.events.push(event);
+  }
+}
+
+class CapturingMemoryOutbox implements MemoryOutboxPort {
+  public readonly events: MemoryOutboxEvent[] = [];
+
+  async enqueue(
+    event: MemoryOutboxEvent,
+  ): Promise<{ readonly created: boolean }> {
+    this.events.push(event);
+    return { created: true };
+  }
+}
+
+class SameObjectMemoryTransaction implements MemoryTransactionPort {
+  constructor(private readonly ports: MemoryTransactionalPorts) {}
+
+  async run<T>(
+    work: (ports: MemoryTransactionalPorts) => Promise<T>,
+  ): Promise<T> {
+    return work(this.ports);
   }
 }
 
@@ -274,6 +451,48 @@ class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
 const fixedClock: Clock = {
   now: () => new Date("2026-05-03T12:00:00.000Z"),
 };
+
+function createActionMemoryDependencies(
+  input: {
+    readonly memoryItems?: InMemoryActionMemoryItems;
+    readonly memorySuggestions?: InMemoryMemorySuggestions;
+    readonly permissions?: MemoryPermissionPort;
+  } = {},
+): {
+  readonly memory: MemoryUseCaseDependencies;
+  readonly memoryItems: InMemoryActionMemoryItems;
+  readonly memorySuggestions: InMemoryMemorySuggestions;
+  readonly permissions: MemoryPermissionPort;
+  readonly audit: CapturingMemoryAudit;
+  readonly outbox: CapturingMemoryOutbox;
+} {
+  const memoryItems = input.memoryItems ?? new InMemoryActionMemoryItems();
+  const memorySuggestions =
+    input.memorySuggestions ?? new InMemoryMemorySuggestions();
+  const permissions = input.permissions ?? new AllowingMemoryPermissions();
+  const audit = new CapturingMemoryAudit();
+  const outbox = new CapturingMemoryOutbox();
+  return {
+    memory: {
+      memoryItems,
+      memorySuggestions,
+      memoryPermissions: permissions,
+      memoryIds: new IncrementingMemoryIds(),
+      memoryTransaction: new SameObjectMemoryTransaction({
+        memoryItems,
+        memorySuggestions,
+        memoryAudit: audit,
+        memoryOutbox: outbox,
+      }),
+      clock: fixedClock,
+    },
+    memoryItems,
+    memorySuggestions,
+    permissions,
+    audit,
+    outbox,
+  };
+}
 
 function actionMemorySnapshot(
   overrides: Partial<MemoryItemSnapshot>,
@@ -792,6 +1011,7 @@ describe("API app", () => {
         repositoryId: "repo_other",
       }),
     ]);
+    const actionMemory = createActionMemoryDependencies({ memoryItems });
     const app = await createApiApp({
       actionControlPlaneDependencies: {
         repositories,
@@ -804,7 +1024,7 @@ describe("API app", () => {
       actionMemoryDependencies: {
         repositories,
         sessions,
-        memoryItems,
+        memory: actionMemory.memory,
         clock: fixedClock,
       },
     });
@@ -895,6 +1115,248 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("accepts natural-language memory candidates from interaction workflows as suggestions", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:issue_comment",
+          event_name: "issue_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const session = exchange.json<{ sessionToken: string }>();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_natural_language",
+        requestedScope: "repository",
+        candidateBody: "Prefer small cohesive pull requests.",
+        sourceTextHash:
+          "d5ebe75097ed1ac4cdd7ed02a75ed252b07b729f1639adc519c88418a1f08d71",
+        extractionMethod: "explicit_natural_language",
+        extractionVersion: 1,
+        source: {
+          sourceId: "issue_comment:12345",
+          githubCommentId: "12345",
+          githubPullRequestNumber: 17,
+          url: "https://github.com/777genius/example/pull/17#issuecomment-12345",
+          redactedExcerpt: "/reviewrouter remember: prefer small PRs",
+          sourceHash:
+            "d5ebe75097ed1ac4cdd7ed02a75ed252b07b729f1639adc519c88418a1f08d71",
+          sourceVisibility: "private",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "created",
+      id: "mem_suggestion_test_1",
+      version: 1,
+    });
+    expect(actionMemory.memorySuggestions.values()).toEqual([
+      expect.objectContaining({
+        id: "mem_suggestion_test_1",
+        suggestedScope: "repository",
+        suggestedBody: "Prefer small cohesive pull requests.",
+        status: "pending",
+        createdByActor: "github_user:github-login:777genius",
+        source: expect.objectContaining({
+          type: "pr_comment",
+          sourceId: "issue_comment:12345",
+          githubCommentId: "12345",
+          githubPullRequestNumber: 17,
+          actorLogin: "777genius",
+        }),
+      }),
+    ]);
+    expect(actionMemory.audit.events).toEqual([
+      expect.objectContaining({
+        action: "memory.suggestion.created",
+        targetId: "mem_suggestion_test_1",
+      }),
+    ]);
+    expect(actionMemory.outbox.events).toHaveLength(1);
+  });
+
+  it("stores explicit memory commands from interaction workflows when the actor is allowed", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:pull_request_review_comment",
+          event_name: "pull_request_review_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const session = exchange.json<{ sessionToken: string }>();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_command",
+        requestedScope: "repository",
+        candidateBody: "Prefer guard clauses before nested conditionals.",
+        extractionMethod: "explicit_command",
+        extractionVersion: 1,
+        source: {
+          sourceId: "review_comment:98765",
+          githubCommentId: "98765",
+          githubPullRequestNumber: 18,
+          redactedExcerpt: "/reviewrouter save memory: prefer guard clauses",
+          sourceVisibility: "private",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "created",
+      id: "mem_test_1",
+      version: 1,
+    });
+    expect(actionMemory.memoryItems.values()).toEqual([
+      expect.objectContaining({
+        id: "mem_test_1",
+        scope: "repository",
+        body: "Prefer guard clauses before nested conditionals.",
+        createdBy: "github_user:github-login:777genius",
+        confirmedBy: "github_user:github-login:777genius",
+        source: expect.objectContaining({
+          type: "review_comment",
+          sourceId: "review_comment:98765",
+          actorLogin: "777genius",
+        }),
+      }),
+    ]);
+    expect(actionMemory.permissions).toBeInstanceOf(AllowingMemoryPermissions);
+    expect(
+      (actionMemory.permissions as AllowingMemoryPermissions).calls,
+    ).toEqual([
+      expect.objectContaining({
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        scope: "repository",
+        actor: expect.objectContaining({ login: "777genius" }),
+      }),
+    ]);
+  });
+
+  it("rejects memory candidate submission outside interaction workflows", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_natural_language",
+        requestedScope: "repository",
+        candidateBody: "Prefer small cohesive pull requests.",
+        extractionMethod: "explicit_natural_language",
+        extractionVersion: 1,
+        source: {
+          sourceId: "pull_request:17",
+          sourceVisibility: "private",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({
+      error: {
+        code: "memory_interaction_event_required",
+        message:
+          "Memory candidates can only be submitted from interaction workflows.",
+        retryable: false,
+      },
+    });
+    expect(actionMemory.memorySuggestions.values()).toEqual([]);
+    expect(actionMemory.memoryItems.values()).toEqual([]);
   });
 
   it("returns a safe error when App comment identity is unavailable", async () => {

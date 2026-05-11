@@ -28,7 +28,13 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
-import { PrismaMemoryItemRepository } from "@reviewrouter/features-memory";
+import {
+  CryptoMemoryIdGenerator,
+  PrismaMemoryItemRepository,
+  PrismaMemoryPermission,
+  PrismaMemorySuggestionRepository,
+  PrismaMemoryTransaction,
+} from "@reviewrouter/features-memory";
 import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
@@ -176,7 +182,18 @@ export async function createApiApp(
       ? {
           repositories: actionControlPlaneDependencies.repositories,
           sessions: actionControlPlaneDependencies.sessions,
-          memoryItems: new PrismaMemoryItemRepository(prisma),
+          memory: {
+            memoryItems: new PrismaMemoryItemRepository(prisma),
+            memorySuggestions: new PrismaMemorySuggestionRepository(prisma),
+            memoryPermissions: new PrismaMemoryPermission(prisma, {
+              localAdminGithubLogins: parseCommaSeparatedEnv(
+                process.env.REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS,
+              ),
+            }),
+            memoryIds: new CryptoMemoryIdGenerator(),
+            memoryTransaction: new PrismaMemoryTransaction(prisma),
+            clock: actionControlPlaneDependencies.clock,
+          },
           ...(actionControlPlaneDependencies.entitlements
             ? { entitlements: actionControlPlaneDependencies.entitlements }
             : {}),

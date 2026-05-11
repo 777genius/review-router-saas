@@ -63,6 +63,7 @@ const sessionClaims: ActionSessionClaims = {
   repositoryId: "repo_1",
   githubRepositoryId: "123456",
   repository: "777genius/example",
+  githubActorLogin: "777genius",
   githubRunId: "1001",
   githubRunAttempt: "1",
   eventName: "pull_request",
@@ -259,6 +260,7 @@ describe("action control plane", () => {
     expect(sessions.signedClaims).toMatchObject({
       workspaceId: "workspace_1",
       repositoryId: "repo_1",
+      githubActorLogin: "777genius",
       githubRunId: "1001",
       protocolVersion: 1,
     });

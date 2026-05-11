@@ -59,6 +59,7 @@ export class JoseActionSessionTokenService implements ActionSessionTokenServiceP
         "githubRepositoryId",
       ),
       repository: assertString(payload.repository, "repository"),
+      githubActorLogin: optionalString(payload.githubActorLogin),
       githubRunId: assertString(payload.githubRunId, "githubRunId"),
       githubRunAttempt: assertString(
         payload.githubRunAttempt,
@@ -68,6 +69,10 @@ export class JoseActionSessionTokenService implements ActionSessionTokenServiceP
       protocolVersion: 1,
     };
   }
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function assertString(value: unknown, claim: string): string {

@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
 import {
+  type ActionSessionClaims,
   validateActionSessionAgainstRepository,
   type ActionControlPlaneRepositoryPort,
   type ActionEntitlementPolicyPort,
@@ -7,24 +9,81 @@ import {
 } from "@reviewrouter/features-action-control-plane";
 import {
   buildActionMemoryBundle,
-  type MemoryItemRepositoryPort,
+  createMemoryBodyHash,
+  memoryBodyMaxCharacters,
+  memoryRedactedExcerptMaxCharacters,
+  normalizeMemoryBody,
+  proposeMemoryFromInteraction,
+  type MemoryActor,
+  type MemoryMutationResult,
+  type MemorySource,
+  type MemoryUseCaseDependencies,
 } from "@reviewrouter/features-memory";
 import type { Clock } from "@reviewrouter/shared";
 
 export type RegisterActionMemoryRoutesDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
   readonly sessions: ActionSessionTokenServicePort;
-  readonly memoryItems: MemoryItemRepositoryPort;
+  readonly memory: MemoryUseCaseDependencies;
   readonly entitlements?: ActionEntitlementPolicyPort;
   readonly clock: Clock;
   readonly controlPlaneEnabled?: boolean;
 };
 
+const actionMemoryCandidateMaxBytes = 32 * 1024;
+const memoryCandidateScopeSchema = z.enum(["repository", "workspace"]);
+const memoryCandidateBodySchema = z
+  .object({
+    protocolVersion: z.literal(1).default(1),
+    intent: z.enum([
+      "explicit_command",
+      "explicit_natural_language",
+      "model_suggested_candidate",
+      "ambiguous_discussion",
+      "no_memory_intent",
+    ]),
+    requestedScope: memoryCandidateScopeSchema.nullable().optional(),
+    candidateBody: z.string().max(memoryBodyMaxCharacters),
+    sourceTextHash: z.string().min(1).max(256).nullable().optional(),
+    extractionMethod: z.enum([
+      "explicit_command",
+      "explicit_natural_language",
+      "model_suggested_candidate",
+    ]),
+    extractionVersion: z.number().int().min(1).max(100).default(1),
+    source: z
+      .object({
+        sourceId: z.string().min(1).max(200),
+        githubCommentId: z.string().min(1).max(80).nullable().optional(),
+        githubPullRequestNumber: z
+          .number()
+          .int()
+          .min(1)
+          .max(1_000_000)
+          .nullable()
+          .optional(),
+        url: z.string().url().max(2_000).nullable().optional(),
+        redactedExcerpt: z
+          .string()
+          .max(memoryRedactedExcerptMaxCharacters)
+          .nullable()
+          .optional(),
+        sourceHash: z.string().min(1).max(256).nullable().optional(),
+        sourceVisibility: z
+          .enum(["private", "internal", "public"])
+          .default("internal"),
+      })
+      .strict(),
+  })
+  .strict();
+
+type MemoryCandidateBody = z.infer<typeof memoryCandidateBodySchema>;
+
 export async function registerActionMemoryRoutes(
   app: FastifyInstance,
   dependencies: RegisterActionMemoryRoutesDependencies,
 ): Promise<void> {
-  const handler = async (
+  const getMemoryHandler = async (
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<unknown> => {
@@ -33,23 +92,7 @@ export async function registerActionMemoryRoutes(
     }
 
     try {
-      const session = await dependencies.sessions.verify({
-        token: readBearerToken(request),
-        now: dependencies.clock.now(),
-      });
-      const repository =
-        await dependencies.repositories.findSelectedRepositoryByGithubId(
-          session.githubRepositoryId,
-        );
-      if (!repository) {
-        throw new Error("repository_not_registered");
-      }
-      validateActionSessionAgainstRepository({ session, repository });
-      await dependencies.entitlements?.assertActionControlPlaneAllowed({
-        workspaceId: session.workspaceId,
-        repositoryId: session.repositoryId,
-        repositoryFullName: session.repository,
-      });
+      const session = await resolveActionMemorySession(request, dependencies);
 
       const bundle = await buildActionMemoryBundle(
         {
@@ -58,20 +101,83 @@ export async function registerActionMemoryRoutes(
           userId: null,
           policy: { includeUserPrefs: false },
         },
-        { memoryItems: dependencies.memoryItems },
+        { memoryItems: dependencies.memory.memoryItems },
       );
       return reply.send(bundle);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown_error";
-      return sendMemoryError(
-        reply,
-        safeActionMemoryErrorCode(message),
-        statusCodeForActionMemoryError(message),
-      );
+      return sendCaughtMemoryError(reply, error);
     }
   };
 
-  app.get("/api/action/v1/memory", handler);
+  const submitCandidateHandler = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return sendMemoryError(reply, "action_control_plane_disabled", 503);
+    }
+
+    try {
+      const session = await resolveActionMemorySession(request, dependencies);
+      assertMemoryCandidateEvent(session.eventName);
+      const body = memoryCandidateBodySchema.parse(request.body);
+      const result = await proposeMemoryFromInteraction(
+        {
+          envelope: {
+            workspaceId: session.workspaceId,
+            repositoryId: session.repositoryId,
+            userId: null,
+            source: memorySourceFromCandidate(session, body),
+            actor: memoryActorFromSession(session),
+            intent: body.intent,
+            requestedScope: body.requestedScope ?? "repository",
+            candidateBody: normalizeMemoryBody(body.candidateBody),
+            candidateBodyHash: createMemoryBodyHash(body.candidateBody),
+            redactedSourceExcerpt: body.source.redactedExcerpt ?? null,
+            sourceTextHash:
+              body.sourceTextHash ?? body.source.sourceHash ?? null,
+            extractionMethod: body.extractionMethod,
+            extractionVersion: body.extractionVersion,
+          },
+        },
+        dependencies.memory,
+      );
+      return reply.send(memoryMutationResponse(result));
+    } catch (error) {
+      return sendCaughtMemoryError(reply, error);
+    }
+  };
+
+  app.get("/api/action/v1/memory", getMemoryHandler);
+  app.post(
+    "/api/action/v1/memory-candidates",
+    { bodyLimit: actionMemoryCandidateMaxBytes },
+    submitCandidateHandler,
+  );
+}
+
+async function resolveActionMemorySession(
+  request: FastifyRequest,
+  dependencies: RegisterActionMemoryRoutesDependencies,
+): Promise<ActionSessionClaims> {
+  const session = await dependencies.sessions.verify({
+    token: readBearerToken(request),
+    now: dependencies.clock.now(),
+  });
+  const repository =
+    await dependencies.repositories.findSelectedRepositoryByGithubId(
+      session.githubRepositoryId,
+    );
+  if (!repository) {
+    throw new Error("repository_not_registered");
+  }
+  validateActionSessionAgainstRepository({ session, repository });
+  await dependencies.entitlements?.assertActionControlPlaneAllowed({
+    workspaceId: session.workspaceId,
+    repositoryId: session.repositoryId,
+    repositoryFullName: session.repository,
+  });
+  return session;
 }
 
 function readBearerToken(request: FastifyRequest): string {
@@ -84,6 +190,92 @@ function readBearerToken(request: FastifyRequest): string {
     throw new Error("invalid_action_session_token");
   }
   return match[1];
+}
+
+function assertMemoryCandidateEvent(
+  eventName: ActionSessionClaims["eventName"],
+): void {
+  if (
+    eventName !== "pull_request_review_comment" &&
+    eventName !== "issue_comment"
+  ) {
+    throw new Error("memory_interaction_event_required");
+  }
+}
+
+function memoryActorFromSession(session: ActionSessionClaims): MemoryActor {
+  const login = session.githubActorLogin?.trim();
+  if (!login) {
+    throw new Error("memory_actor_unavailable");
+  }
+  return {
+    kind: "github_user",
+    id: `github-login:${login.toLowerCase()}`,
+    githubUserId: null,
+    login,
+  };
+}
+
+function memorySourceFromCandidate(
+  session: ActionSessionClaims,
+  body: MemoryCandidateBody,
+): MemorySource {
+  return {
+    type:
+      session.eventName === "pull_request_review_comment"
+        ? "review_comment"
+        : "pr_comment",
+    sourceId: body.source.sourceId,
+    githubCommentId: body.source.githubCommentId ?? null,
+    githubPullRequestNumber: body.source.githubPullRequestNumber ?? null,
+    githubRepositoryId: session.githubRepositoryId,
+    url: body.source.url ?? null,
+    actorLogin: session.githubActorLogin,
+    redactedExcerpt: body.source.redactedExcerpt ?? null,
+    sourceHash: body.source.sourceHash ?? body.sourceTextHash ?? null,
+    sourceVisibility: body.source.sourceVisibility,
+  };
+}
+
+function memoryMutationResponse(
+  result: MemoryMutationResult,
+): Record<string, unknown> {
+  if (result.status === "created" || result.status === "updated") {
+    return {
+      protocolVersion: 1,
+      status: result.status,
+      id: result.id,
+      version: result.version,
+    };
+  }
+  if (result.status === "noop") {
+    return {
+      protocolVersion: 1,
+      status: result.status,
+      reason: result.reason,
+      ...(result.id ? { id: result.id } : {}),
+    };
+  }
+  return {
+    protocolVersion: 1,
+    status: result.status,
+    reason: result.reason,
+    retryable: result.retryable ?? false,
+  };
+}
+
+function sendCaughtMemoryError(
+  reply: { code(statusCode: number): { send(payload: unknown): unknown } },
+  error: unknown,
+): unknown {
+  const message = error instanceof Error ? error.message : "unknown_error";
+  return sendMemoryError(
+    reply,
+    error instanceof z.ZodError
+      ? "invalid_action_memory_candidate"
+      : safeActionMemoryErrorCode(message),
+    statusCodeForActionMemoryError(message),
+  );
 }
 
 function statusCodeForActionMemoryError(message: string): number {
@@ -101,7 +293,9 @@ function statusCodeForActionMemoryError(message: string): number {
     message.includes("repository_not_selected") ||
     message.includes("installation_not_active") ||
     message.includes("mismatch") ||
-    message.includes("entitlement_denied")
+    message.includes("entitlement_denied") ||
+    message.includes("memory_interaction_event_required") ||
+    message.includes("memory_actor_unavailable")
   ) {
     return 403;
   }
@@ -123,6 +317,15 @@ function safeActionMemoryErrorCode(message: string): string {
   }
   if (message.includes("entitlement_denied")) {
     return "action_control_plane_entitlement_denied";
+  }
+  if (message.includes("memory_interaction_event_required")) {
+    return "memory_interaction_event_required";
+  }
+  if (message.includes("memory_actor_unavailable")) {
+    return "memory_actor_unavailable";
+  }
+  if (message.includes("ZodError") || message.includes("invalid_type")) {
+    return "invalid_action_memory_candidate";
   }
   if (
     message.startsWith("missing_action_session") ||
@@ -168,6 +371,12 @@ function safeActionMemoryErrorMessage(code: string): string {
       return "GitHub OIDC repository claims do not match the selected repository.";
     case "action_control_plane_entitlement_denied":
       return "Action control plane is not enabled for this workspace.";
+    case "memory_interaction_event_required":
+      return "Memory candidates can only be submitted from interaction workflows.";
+    case "memory_actor_unavailable":
+      return "GitHub actor identity is unavailable for this action session.";
+    case "invalid_action_memory_candidate":
+      return "Action memory candidate payload is invalid.";
     case "missing_action_session_token":
       return "Action session token is missing.";
     case "invalid_action_session_token":

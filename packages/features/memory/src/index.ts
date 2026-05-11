@@ -32,5 +32,6 @@ export * from "./infrastructure/crypto-memory-id-generator";
 export * from "./infrastructure/prisma/prisma-memory-audit";
 export * from "./infrastructure/prisma/prisma-memory-item-repository";
 export * from "./infrastructure/prisma/prisma-memory-outbox";
+export * from "./infrastructure/prisma/prisma-memory-permission";
 export * from "./infrastructure/prisma/prisma-memory-suggestion-repository";
 export * from "./infrastructure/prisma/prisma-memory-transaction";
