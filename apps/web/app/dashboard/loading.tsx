@@ -15,7 +15,7 @@ export default function DashboardLoading(): React.ReactElement {
             className="space-y-5 scroll-mt-28"
           >
             <DashboardSectionHeaderSkeleton />
-            <RepositoryTableLoadingSkeleton />
+            <DashboardSectionBodySkeleton />
           </div>
         </div>
       </section>
@@ -34,10 +34,14 @@ function WorkspaceSwitcherSkeleton(): React.ReactElement {
           </div>
           <SkeletonBlock className="h-9 w-28 rounded-xl" />
         </div>
-        <div className="grid gap-2 sm:grid-cols-3">
-          <SkeletonBlock className="h-16 rounded-2xl" />
-          <SkeletonBlock className="h-16 rounded-2xl" />
-          <SkeletonBlock className="h-16 rounded-2xl" />
+        <div className="flex flex-wrap items-center gap-6 px-1 pt-1">
+          {Array.from({ length: 2 }, (_, index) => (
+            <div key={index} className="flex items-center gap-3">
+              <SkeletonBlock className="h-9 w-9 rounded-full" />
+              <SkeletonText className="h-4 w-24" />
+              <SkeletonText className="h-3 w-16" />
+            </div>
+          ))}
         </div>
       </div>
     </section>
@@ -49,7 +53,7 @@ function DashboardNavSkeleton(): React.ReactElement {
     <aside className="p-4 lg:p-5">
       <div className="grid gap-4 lg:sticky lg:top-24">
         <div className="px-1 py-1">
-          <SkeletonText className="h-3 w-36" />
+          <SkeletonText className="h-3 w-32" />
           <div className="mt-3 flex min-w-0 items-center gap-3">
             <SkeletonBlock className="h-12 w-12 rounded-full" />
             <SkeletonText className="h-7 w-36" />
@@ -62,8 +66,8 @@ function DashboardNavSkeleton(): React.ReactElement {
           </div>
         </div>
         <div className="grid gap-3">
-          {["Repositories", "Setup", "Model", "Diagnostics"].map((label) => (
-            <div key={label} className="grid gap-2 px-4 py-3">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index} className="grid gap-2 px-4 py-3">
               <SkeletonText className="h-3 w-28" />
               <SkeletonText className="h-3 w-40" />
             </div>
@@ -80,89 +84,33 @@ function DashboardSectionHeaderSkeleton(): React.ReactElement {
       <SkeletonText className="h-3 w-36" />
       <SkeletonText className="mt-3 h-8 w-56 max-w-full" />
       <SkeletonText className="mt-3 h-4 w-[32rem] max-w-full" />
+      <div className="mt-4 flex flex-wrap gap-2">
+        <SkeletonBlock className="h-7 w-24 rounded-full" />
+        <SkeletonBlock className="h-7 w-32 rounded-full" />
+      </div>
     </section>
   );
 }
 
-function RepositoryTableLoadingSkeleton(): React.ReactElement {
+function DashboardSectionBodySkeleton(): React.ReactElement {
   return (
-    <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
-      <RepositorySearchLoadingSkeleton />
-
-      <div className="hidden border-b border-cyan-200/10 text-xs uppercase tracking-[0.16em] text-cyan-100 lg:block">
-        <div className="sticky top-16 z-30 bg-[#0b1824]/98 px-6 py-4 shadow-[0_12px_24px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-          Repository
+    <section className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:p-6">
+      <div className="grid gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SkeletonText className="h-3 w-28" />
+          <SkeletonBlock className="h-8 w-32 rounded-full" />
+        </div>
+        <SkeletonBlock className="h-12 w-full rounded-2xl" />
+        <div className="grid gap-3">
+          {Array.from({ length: 5 }, (_, index) => (
+            <SkeletonBlock
+              key={index}
+              className="h-16 w-full rounded-2xl"
+            />
+          ))}
         </div>
       </div>
-
-      <div className="grid gap-3 p-3 text-slate-200 lg:gap-0 lg:p-0">
-        {Array.from({ length: 6 }, (_, index) => (
-          <RepositoryRowLoadingSkeleton key={index} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function RepositorySearchLoadingSkeleton(): React.ReactElement {
-  return (
-    <div className="border-b border-cyan-200/10 bg-transparent p-0">
-      <section className="rounded-[1.65rem] border border-cyan-300/25 bg-[#071421]/90 px-5 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_22px_80px_rgba(0,0,0,0.22),0_0_70px_-56px_rgba(103,232,249,0.95)] sm:px-6 sm:py-6 xl:px-12 xl:py-11">
-        <SkeletonText className="mb-5 h-3 w-36" />
-        <div className="grid gap-5 xl:grid-cols-[minmax(22rem,0.96fr)_minmax(25rem,1fr)] xl:items-start">
-          <div className="grid min-h-[3.75rem] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 rounded-[1.15rem] border border-cyan-300/35 bg-slate-950/70 px-5 shadow-[0_0_44px_-34px_rgba(103,232,249,0.95),inset_0_1px_0_rgba(255,255,255,0.04)]">
-            <SkeletonBlock className="h-6 w-6 rounded-full bg-slate-700/55" />
-            <SkeletonText className="h-4 w-60 max-w-full" />
-            <SkeletonBlock className="hidden h-8 w-14 rounded-lg bg-cyan-200/[0.035] 2xl:block" />
-          </div>
-          <div className="grid min-w-0 gap-4">
-            <div className="grid min-h-[3.75rem] overflow-hidden rounded-[1.15rem] border border-slate-700/70 bg-slate-950/55 sm:grid-cols-4">
-              {["All", "Private", "Public", "Needs setup"].map(
-                (label, index) => (
-                  <div
-                    key={label}
-                    className={[
-                      "flex min-h-12 items-center justify-center gap-2 border-slate-700/70 px-2 sm:min-h-full",
-                      index === 0 ? "" : "border-t sm:border-l sm:border-t-0",
-                      index === 0
-                        ? "border-cyan-300 bg-cyan-300/[0.075] shadow-[inset_0_0_0_1px_rgba(103,232,249,0.65),0_0_45px_-32px_rgba(103,232,249,0.95)]"
-                        : "",
-                    ].join(" ")}
-                  >
-                    <SkeletonBlock className="h-4 w-4 rounded-full" />
-                    <SkeletonText className="h-3 w-16" />
-                    {index === 0 ? (
-                      <SkeletonBlock className="h-[1.125rem] w-[1.125rem] rounded-full bg-cyan-200/75" />
-                    ) : null}
-                  </div>
-                ),
-              )}
-            </div>
-            <div className="flex min-h-7 items-center justify-end pt-7">
-              <SkeletonText className="h-4 w-96 max-w-full" />
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function RepositoryRowLoadingSkeleton(): React.ReactElement {
-  return (
-    <div className="grid gap-4 border-t border-cyan-200/10 px-1 py-5 first:border-t-0 lg:px-6 lg:py-6">
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <SkeletonText className="h-9 w-[22rem] max-w-full sm:h-10" />
-          <SkeletonBlock className="h-8 w-16 rounded-full" />
-        </div>
-        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-          <SkeletonBlock className="h-8 w-28 rounded-full" />
-          <SkeletonBlock className="h-8 w-20 rounded-full" />
-          <SkeletonBlock className="h-8 w-28 rounded-full" />
-        </div>
-      </div>
-    </div>
+    </section>
   );
 }
 

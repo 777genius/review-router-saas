@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { getServerSession } from "next-auth";
+import { AppToaster } from "./app-toaster";
 import { LogoMark } from "./logo-mark";
 import { PrimaryNav } from "./primary-nav";
 import { HeaderProfileMenu } from "./header-profile-menu";
@@ -135,6 +136,7 @@ export default async function RootLayout({
           </div>
         </header>
         <div id="content">{children}</div>
+        <AppToaster />
         <footer className="border-t border-cyan-200/10 bg-slate-950/55">
           <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-8 text-sm text-slate-400 sm:px-6 md:grid-cols-[1fr_auto] md:items-center">
             <p>

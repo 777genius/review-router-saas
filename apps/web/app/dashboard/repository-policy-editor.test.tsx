@@ -22,7 +22,7 @@ const modelOptions = [
     label: "Poolside: Laguna M.1",
     provider: "openrouter" as const,
     description: "poolside/laguna-m.1:free - $0/$0 per 1M - 131K context",
-    badge: "FREE" as const,
+    badge: "FREE RECOMMENDED" as const,
   },
   {
     value: "anthropic/claude-sonnet-4.5",
@@ -31,7 +31,6 @@ const modelOptions = [
     description:
       "anthropic/claude-sonnet-4.5 - $3.00/$15.00 per 1M input/output",
     badge: "PAID" as const,
-    disabled: true,
   },
 ];
 
@@ -58,7 +57,7 @@ describe("ReviewConfigForm", () => {
       (screen.getAllByRole("textbox", { name: "Model" })[1] as HTMLInputElement)
         .value,
     ).toBe("poolside/laguna-m.1:free");
-    expect(screen.getAllByText("FREE").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("FREE RECOMMENDED").length).toBeGreaterThan(0);
     expect(
       (
         screen.getAllByRole("button", {
@@ -68,7 +67,7 @@ describe("ReviewConfigForm", () => {
     ).toBe(false);
   });
 
-  it("filters model options by selected provider and disables paid options", () => {
+  it("filters model options by selected provider", () => {
     renderReviewConfigForm();
 
     fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
@@ -78,19 +77,56 @@ describe("ReviewConfigForm", () => {
 
     expect(screen.getByRole("option", { name: /gpt-5\.5/ })).toBeTruthy();
     expect(screen.queryByRole("option", { name: /Poolside/ })).toBeNull();
+  });
 
-    fireEvent.click(
-      screen.getAllByRole("button", { name: "Open model options" })[1]!,
-    );
+  it("allows paid model options when they match the typed search", () => {
+    renderReviewConfigForm();
 
-    const listboxes = screen.getAllByRole("listbox");
-    const listbox = listboxes[listboxes.length - 1]!;
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    const modelInput = screen.getAllByRole("textbox", {
+      name: "Model",
+    })[1] as HTMLInputElement;
+    modelInput.focus();
+    fireEvent.change(modelInput, { target: { value: "anthropic" } });
+
+    const listbox = screen.getByRole("listbox");
+    const paidOption = within(listbox).getByRole("option", {
+      name: /Anthropic: Claude/,
+    });
+    expect(paidOption).toHaveProperty("disabled", false);
     expect(
-      within(listbox).getByRole("option", { name: /Poolside/ }),
-    ).toBeTruthy();
+      within(listbox).queryByRole("option", { name: /Poolside/ }),
+    ).toBeNull();
+
+    fireEvent.click(paidOption);
+    expect(
+      (screen.getAllByRole("textbox", { name: "Model" })[1] as HTMLInputElement)
+        .value,
+    ).toBe("anthropic/claude-sonnet-4.5");
+  });
+
+  it("filters model options by typed model text while keeping custom input", () => {
+    renderReviewConfigForm();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    const modelInput = screen.getAllByRole("textbox", {
+      name: "Model",
+    })[1] as HTMLInputElement;
+    modelInput.focus();
+    fireEvent.change(modelInput, { target: { value: "anthropic" } });
+
+    const listbox = screen.getByRole("listbox");
     expect(
       within(listbox).getByRole("option", { name: /Anthropic: Claude/ }),
-    ).toHaveProperty("disabled", true);
+    ).toBeTruthy();
+    expect(
+      within(listbox).queryByRole("option", { name: /Poolside/ }),
+    ).toBeNull();
+
+    fireEvent.change(modelInput, { target: { value: "custom/new-model" } });
+
+    expect(modelInput.value).toBe("custom/new-model");
+    expect(screen.getByText(/custom model value will be saved/i)).toBeTruthy();
   });
 
   it("allows custom model text", () => {

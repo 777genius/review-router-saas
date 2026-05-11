@@ -176,7 +176,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 function readRepositorySearchFilter(
   params: URLSearchParams,
 ): RepositorySearchFilter {
-  if (params.get("setup") === "needed") return "needs_setup";
+  const setup = params.get("setup");
+  if (setup === "needed") return "needs_setup";
+  if (setup === "ready") return "ready";
 
   const visibility = params.get("visibility");
   if (visibility === "private" || visibility === "public") {

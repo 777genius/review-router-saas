@@ -18,6 +18,7 @@ type DashboardFormAction = (formData: FormData) => void | Promise<void>;
 
 type RepositoryPolicyEditorRepository = {
   readonly id: string;
+  readonly fullName: string;
   readonly selected: boolean;
   readonly archived: boolean;
 };
@@ -32,7 +33,7 @@ type ReviewModelOption = {
   readonly label: string;
   readonly provider: "codex" | "openrouter";
   readonly description?: string;
-  readonly badge?: "FREE" | "PAID" | "Unsupported";
+  readonly badge?: "FREE RECOMMENDED" | "FREE" | "PAID" | "Unsupported";
   readonly disabled?: boolean;
 };
 
@@ -123,6 +124,48 @@ const defaultCodexProvider = {
   fastMode: false,
 } satisfies ReviewProviderConfiguration;
 
+const OPENROUTER_API_KEYS_URL = "https://openrouter.ai/workspaces/default/keys";
+
+function OpenRouterSecretNotice({
+  repositoryFullName,
+}: {
+  readonly repositoryFullName?: string | undefined;
+}): React.ReactElement {
+  const command = repositoryFullName
+    ? `gh secret set OPENROUTER_API_KEY --repo ${repositoryFullName}`
+    : "gh secret set OPENROUTER_API_KEY --repo <owner>/<repo>";
+  return (
+    <div
+      role="note"
+      className="rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-xs leading-5 text-amber-100"
+    >
+      <p className="font-semibold text-amber-50">
+        OpenRouter requires <code className="font-mono">OPENROUTER_API_KEY</code>{" "}
+        in {repositoryFullName ? "this repository's" : "the repository"} GitHub
+        Actions secrets.
+      </p>
+      <p className="mt-1 text-amber-100/85">
+        Set it from a terminal opened in the repository directory:
+      </p>
+      <pre className="mt-1.5 overflow-x-auto rounded-md bg-slate-950/80 px-2.5 py-1.5 font-mono text-[11px] leading-5 text-amber-50">
+        {command}
+      </pre>
+      <p className="mt-1.5 text-amber-100/85">
+        Get a key at{" "}
+        <a
+          href={OPENROUTER_API_KEYS_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="font-semibold text-amber-50 underline-offset-4 hover:underline"
+        >
+          openrouter.ai/workspaces/default/keys
+        </a>
+        . Without this secret, OpenRouter providers will fail in CI.
+      </p>
+    </div>
+  );
+}
+
 export function RepositoryPolicyEditor({
   workspaceId,
   repository,
@@ -206,6 +249,7 @@ export function RepositoryPolicyEditor({
             submitLabel={
               repositoryConfig ? "Update repo settings" : "Save repo settings"
             }
+            repositoryFullName={repository.fullName}
           />
 
           {repositoryConfig ? (
@@ -273,6 +317,7 @@ export function ReviewConfigForm({
   hiddenFields,
   mutationsEnabled,
   submitLabel,
+  repositoryFullName,
 }: {
   readonly action: DashboardFormAction;
   readonly config: ReviewConfiguration;
@@ -283,6 +328,7 @@ export function ReviewConfigForm({
   }[];
   readonly mutationsEnabled: boolean;
   readonly submitLabel: string;
+  readonly repositoryFullName?: string | undefined;
 }): React.ReactElement {
   const initialProviders =
     config.providers.length > 0 ? [...config.providers] : [config.provider];
@@ -437,7 +483,7 @@ export function ReviewConfigForm({
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2 md:gap-x-8 md:gap-y-5">
-                    <DashboardRadixSelectField
+                    <DashboardSelectField
                       name={`providerAuthMode.${index}`}
                       label="Provider auth"
                       helpText={fieldHelp.providerAuthMode}
@@ -530,6 +576,11 @@ export function ReviewConfigForm({
                       </>
                     )}
                   </div>
+                  {provider.kind === "openrouter" ? (
+                    <OpenRouterSecretNotice
+                      repositoryFullName={repositoryFullName}
+                    />
+                  ) : null}
                 </div>
               );
             })}
@@ -714,59 +765,12 @@ function DashboardSelectField({
   readonly options: readonly DashboardSelectOption[];
   readonly onValueChange?: (value: string) => void;
 }): React.ReactElement {
-  const [internalValue, setInternalValue] = useState(value);
-  const selectedValue = onValueChange ? value : internalValue;
-
-  return (
-    <label className="grid min-w-0 gap-2 text-sm text-slate-300">
-      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-        <DashboardFieldLabel label={label} helpText={helpText} />
-      </span>
-      <span className="relative block">
-        <select
-          name={name}
-          value={selectedValue}
-          disabled={disabled}
-          onChange={(event) => {
-            setInternalValue(event.target.value);
-            onValueChange?.(event.target.value);
-          }}
-          className={[dashboardInputClassName, "appearance-none pr-12"].join(
-            " ",
-          )}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <span className="pointer-events-none absolute right-3 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center text-cyan-100/80">
-          <ChevronIcon open={false} />
-        </span>
-      </span>
-    </label>
+  const isControlled = onValueChange !== undefined;
+  const [uncontrolledValue, setUncontrolledValue] = useState(value);
+  const currentValue = isControlled ? value : uncontrolledValue;
+  const selectedOption = options.find(
+    (option) => option.value === currentValue,
   );
-}
-
-function DashboardRadixSelectField({
-  name,
-  label,
-  helpText,
-  value,
-  disabled,
-  options,
-  onValueChange,
-}: {
-  readonly name: string;
-  readonly label: string;
-  readonly helpText: string;
-  readonly value: string;
-  readonly disabled: boolean;
-  readonly options: readonly DashboardSelectOption[];
-  readonly onValueChange: (value: string) => void;
-}): React.ReactElement {
-  const selectedOption = options.find((option) => option.value === value);
 
   return (
     <label className="grid min-w-0 gap-2 text-sm text-slate-300">
@@ -775,9 +779,12 @@ function DashboardRadixSelectField({
       </span>
       <RadixSelect.Root
         name={name}
-        value={value}
+        value={currentValue}
         disabled={disabled}
-        onValueChange={onValueChange}
+        onValueChange={(next) => {
+          if (!isControlled) setUncontrolledValue(next);
+          onValueChange?.(next);
+        }}
       >
         <RadixSelect.Trigger
           aria-label={label}
@@ -788,7 +795,7 @@ function DashboardRadixSelectField({
         >
           <RadixSelect.Value>
             <span className="min-w-0 truncate">
-              {selectedOption?.label ?? value}
+              {selectedOption?.label ?? currentValue}
             </span>
           </RadixSelect.Value>
           <RadixSelect.Icon className="grid h-7 w-7 shrink-0 place-items-center text-cyan-100/80">
@@ -896,6 +903,13 @@ function DashboardModelField({
   const [open, setOpen] = useState(false);
   const listboxId = useId();
   const selectedOption = options.find((option) => option.value === value);
+  const filteredOptions = useMemo(() => {
+    const query = normalizeModelSearchQuery(value);
+    if (!query) {
+      return options;
+    }
+    return options.filter((option) => modelOptionMatchesQuery(option, query));
+  }, [options, value]);
 
   function closeWhenFocusLeaves(event: FocusEvent<HTMLLabelElement>): void {
     const nextTarget = event.relatedTarget;
@@ -929,7 +943,7 @@ function DashboardModelField({
           aria-label={label}
           className={[
             dashboardInputClassName,
-            selectedOption?.badge ? "pr-24" : "pr-12",
+            getModelInputPaddingClassName(selectedOption?.badge),
           ].join(" ")}
         />
         {selectedOption?.badge ? (
@@ -953,7 +967,12 @@ function DashboardModelField({
           role="listbox"
           className="absolute left-0 right-0 top-full z-40 mt-2 max-h-96 overflow-y-auto rounded-xl border border-cyan-200/20 bg-[#061015] p-1 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
         >
-          {options.map((option) => {
+          {filteredOptions.length === 0 ? (
+            <div className="px-3 py-3 text-sm text-slate-400">
+              No listed model matches. This custom model value will be saved.
+            </div>
+          ) : null}
+          {filteredOptions.map((option) => {
             const selected = option.value === value;
             return (
               <button
@@ -1002,11 +1021,13 @@ function ModelBadge({
   readonly badge: NonNullable<ReviewModelOption["badge"]>;
 }): React.ReactElement {
   const className =
-    badge === "FREE"
-      ? "border-emerald-400/60 bg-emerald-400/15 text-emerald-300"
-      : badge === "PAID"
-        ? "border-amber-300/50 bg-amber-300/10 text-amber-200"
-        : "border-slate-500/60 bg-slate-500/10 text-slate-300";
+    badge === "FREE RECOMMENDED"
+      ? "border-cyan-300/60 bg-cyan-300/15 text-cyan-100"
+      : badge === "FREE"
+        ? "border-emerald-400/60 bg-emerald-400/15 text-emerald-300"
+        : badge === "PAID"
+          ? "border-amber-300/50 bg-amber-300/10 text-amber-200"
+          : "border-slate-500/60 bg-slate-500/10 text-slate-300";
   return (
     <span
       className={[
@@ -1016,6 +1037,28 @@ function ModelBadge({
     >
       {badge}
     </span>
+  );
+}
+
+function getModelInputPaddingClassName(
+  badge: ReviewModelOption["badge"] | undefined,
+): string {
+  if (badge === "FREE RECOMMENDED") {
+    return "pr-44";
+  }
+  return badge ? "pr-24" : "pr-12";
+}
+
+function normalizeModelSearchQuery(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function modelOptionMatchesQuery(
+  option: ReviewModelOption,
+  query: string,
+): boolean {
+  return [option.label, option.value, option.description ?? ""].some((value) =>
+    value.toLowerCase().includes(query),
   );
 }
 

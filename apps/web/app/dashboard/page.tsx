@@ -1144,6 +1144,7 @@ function WorkspaceCard({
                               repository.selected &&
                               !repository.archived
                             }
+                            repositoryFullName={repository.fullName}
                             submitLabel={
                               repositoryConfig
                                 ? "Update override"
@@ -2445,6 +2446,7 @@ function readRepositorySearchFilter(
 ): RepositorySearchFilter {
   const setup = readParam(params.setup);
   if (setup === "needed") return "needs_setup";
+  if (setup === "ready") return "ready";
 
   const visibility = readParam(params.visibility);
   if (visibility === "private" || visibility === "public") {

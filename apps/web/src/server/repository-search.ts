@@ -11,7 +11,8 @@ export type RepositorySearchFilter =
   | "all"
   | "private"
   | "public"
-  | "needs_setup";
+  | "needs_setup"
+  | "ready";
 
 export type RepositorySetupStep = 1 | 2 | 3 | 4;
 
@@ -77,6 +78,8 @@ export function repositoryMatchesSearchFilter(
       return row.repository.visibility === "public";
     case "needs_setup":
       return row.setupProgressStep < 4;
+    case "ready":
+      return row.setupProgressStep === 4;
     case "all":
       return true;
   }

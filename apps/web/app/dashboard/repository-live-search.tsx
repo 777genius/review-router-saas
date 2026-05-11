@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   Check,
+  CheckCircle2,
   Globe2,
   ListFilter,
   LockKeyhole,
@@ -15,7 +16,8 @@ export type RepositorySearchFilter =
   | "all"
   | "private"
   | "public"
-  | "needs_setup";
+  | "needs_setup"
+  | "ready";
 
 export type RepositorySearchIndexItem = {
   readonly id: string;
@@ -29,6 +31,7 @@ const repositoryFilterOptions = [
   { value: "private", label: "Private", icon: LockKeyhole },
   { value: "public", label: "Public", icon: Globe2 },
   { value: "needs_setup", label: "Needs setup", icon: Wrench },
+  { value: "ready", label: "Ready", icon: CheckCircle2 },
 ] as const;
 
 export function RepositoryLiveSearch({
@@ -163,7 +166,7 @@ export function RepositoryLiveSearch({
         </label>
 
         <div
-          className="grid items-stretch gap-1 rounded-xl border border-slate-700/70 bg-slate-950/55 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:h-11 sm:grid-cols-4"
+          className="grid items-stretch gap-1 rounded-xl border border-slate-700/70 bg-slate-950/55 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:h-11 sm:grid-cols-5"
           role="group"
           aria-label="Repository filters"
         >
@@ -320,6 +323,8 @@ function repositoryFilterResultLabel(filter: RepositorySearchFilter): string {
       return "public repositories";
     case "needs_setup":
       return "repositories need setup";
+    case "ready":
+      return "ready repositories";
     case "all":
       return "matching repositories";
   }
@@ -351,6 +356,8 @@ function repositoryMatchesFilter(
       return item.visibility === "public";
     case "needs_setup":
       return item.needsSetup;
+    case "ready":
+      return !item.needsSetup;
     case "all":
       return true;
   }
@@ -429,6 +436,9 @@ function appendFilterParams(
   }
   if (filter === "needs_setup") {
     params.set("setup", "needed");
+  }
+  if (filter === "ready") {
+    params.set("setup", "ready");
   }
 }
 

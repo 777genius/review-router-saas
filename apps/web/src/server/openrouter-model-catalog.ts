@@ -25,7 +25,7 @@ export type ReviewModelOption = {
   readonly label: string;
   readonly provider: "codex" | "openrouter";
   readonly description?: string;
-  readonly badge?: "FREE" | "PAID" | "Unsupported";
+  readonly badge?: "FREE RECOMMENDED" | "FREE" | "PAID" | "Unsupported";
   readonly disabled?: boolean;
 };
 
@@ -42,6 +42,18 @@ type OpenRouterCatalogModel = {
 const openRouterModelsUrl = "https://openrouter.ai/api/v1/models";
 const cacheTtlMs = 30 * 60 * 1000;
 const fetchTimeoutMs = 4000;
+
+const recommendedFreeOpenRouterModelIds = [
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "poolside/laguna-m.1:free",
+  "inclusionai/ring-2.6-1t:free",
+  "openai/gpt-oss-120b:free",
+  "openrouter/owl-alpha",
+] as const;
+
+const supportedOpenRouterOwnedModelIds = new Set<string>([
+  "openrouter/owl-alpha",
+]);
 
 const codexModelOptions: readonly ReviewModelOption[] = [
   {
@@ -84,6 +96,15 @@ const codexModelOptions: readonly ReviewModelOption[] = [
 
 const fallbackOpenRouterCatalog: readonly OpenRouterCatalogModel[] = [
   {
+    id: "nvidia/nemotron-3-super-120b-a12b:free",
+    name: "NVIDIA: Nemotron 3 Super (free)",
+    contextTokens: 262144,
+    promptUsdPer1M: 0,
+    completionUsdPer1M: 0,
+    isFree: true,
+    supportsReviewText: true,
+  },
+  {
     id: "poolside/laguna-m.1:free",
     name: "Poolside: Laguna M.1 (free)",
     contextTokens: 131072,
@@ -93,9 +114,27 @@ const fallbackOpenRouterCatalog: readonly OpenRouterCatalogModel[] = [
     supportsReviewText: true,
   },
   {
+    id: "inclusionai/ring-2.6-1t:free",
+    name: "inclusionAI: Ring-2.6-1T (free)",
+    contextTokens: 262144,
+    promptUsdPer1M: 0,
+    completionUsdPer1M: 0,
+    isFree: true,
+    supportsReviewText: true,
+  },
+  {
     id: "openai/gpt-oss-120b:free",
     name: "OpenAI: gpt-oss-120b (free)",
     contextTokens: 131072,
+    promptUsdPer1M: 0,
+    completionUsdPer1M: 0,
+    isFree: true,
+    supportsReviewText: true,
+  },
+  {
+    id: "openrouter/owl-alpha",
+    name: "Owl Alpha",
+    contextTokens: 1048756,
     promptUsdPer1M: 0,
     completionUsdPer1M: 0,
     isFree: true,
@@ -238,6 +277,24 @@ function compareOpenRouterCatalogModels(
   left: OpenRouterCatalogModel,
   right: OpenRouterCatalogModel,
 ): number {
+  const leftUnsupported = isUnsupportedOpenRouterModel(left);
+  const rightUnsupported = isUnsupportedOpenRouterModel(right);
+  if (leftUnsupported !== rightUnsupported) {
+    return leftUnsupported ? 1 : -1;
+  }
+
+  const leftRecommendedRank = getRecommendedFreeOpenRouterModelRank(left);
+  const rightRecommendedRank = getRecommendedFreeOpenRouterModelRank(right);
+  if (leftRecommendedRank !== rightRecommendedRank) {
+    if (leftRecommendedRank === null) {
+      return 1;
+    }
+    if (rightRecommendedRank === null) {
+      return -1;
+    }
+    return leftRecommendedRank - rightRecommendedRank;
+  }
+
   if (left.isFree !== right.isFree) {
     return left.isFree ? -1 : 1;
   }
@@ -263,24 +320,25 @@ function formatOpenRouterModelOption(
   const context = model.contextTokens
     ? `${formatTokenCount(model.contextTokens)} context`
     : "context unknown";
-  const disabledReason = getDisabledReason(model);
-  const badge = disabledReason
-    ? model.isFree
-      ? "Unsupported"
-      : "PAID"
-    : model.isFree
-      ? "FREE"
-      : undefined;
+  const unsupportedReason = getUnsupportedReason(model);
+  const recommendedRank = getRecommendedFreeOpenRouterModelRank(model);
+  const badge = unsupportedReason
+    ? "Unsupported"
+    : recommendedRank !== null
+      ? "FREE RECOMMENDED"
+      : model.isFree
+        ? "FREE"
+        : "PAID";
 
   return {
     value: model.id,
     label: cleanOpenRouterModelName(model.name),
     provider: "openrouter",
-    description: disabledReason
-      ? `${model.id} - ${pricing} - ${context}. ${disabledReason}`
+    description: unsupportedReason
+      ? `${model.id} - ${pricing} - ${context}. ${unsupportedReason}`
       : `${model.id} - ${pricing} - ${context}`,
     ...(badge ? { badge } : {}),
-    ...(disabledReason ? { disabled: true } : {}),
+    ...(unsupportedReason ? { disabled: true } : {}),
   };
 }
 
@@ -288,17 +346,34 @@ function cleanOpenRouterModelName(value: string): string {
   return value.replace(/\s+\(free\)$/i, "");
 }
 
-function getDisabledReason(model: OpenRouterCatalogModel): string | null {
+function getUnsupportedReason(model: OpenRouterCatalogModel): string | null {
   if (!model.supportsReviewText) {
     return "Not a text review model.";
   }
-  if (!model.isFree) {
-    return "Paid model, enable paid OpenRouter mode first.";
-  }
-  if (model.id.startsWith("openrouter/")) {
+  if (
+    model.id.startsWith("openrouter/") &&
+    !supportedOpenRouterOwnedModelIds.has(model.id)
+  ) {
     return "OpenRouter router-owned ids need action runtime support first.";
   }
   return null;
+}
+
+function isUnsupportedOpenRouterModel(model: OpenRouterCatalogModel): boolean {
+  return getUnsupportedReason(model) !== null;
+}
+
+function getRecommendedFreeOpenRouterModelRank(
+  model: OpenRouterCatalogModel,
+): number | null {
+  if (!model.isFree || isUnsupportedOpenRouterModel(model)) {
+    return null;
+  }
+
+  const index = recommendedFreeOpenRouterModelIds.indexOf(
+    model.id as (typeof recommendedFreeOpenRouterModelIds)[number],
+  );
+  return index === -1 ? null : index;
 }
 
 function formatPricing(model: OpenRouterCatalogModel): string {
