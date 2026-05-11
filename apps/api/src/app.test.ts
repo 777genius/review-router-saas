@@ -668,6 +668,9 @@ describe("API app", () => {
           ApiDemo: {},
           ApiIndex: {},
           ReadyResponse: {},
+          ActionMemoryBundle: {},
+          ActionMemoryCandidateRequest: {},
+          ActionMemoryMutationResponse: {},
         },
       },
       paths: {
@@ -675,6 +678,8 @@ describe("API app", () => {
         "/demo.md": {},
         "/docs": {},
         "/api/action/v1/session/exchange": {},
+        "/api/action/v1/memory": {},
+        "/api/action/v1/memory-candidates": {},
       },
     });
   });

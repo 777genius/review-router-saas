@@ -536,6 +536,59 @@ export function buildApiDemoOpenApiDocument(input: {
           },
         },
       },
+      "/api/action/v1/memory": {
+        get: {
+          summary: "Scoped action memory bundle",
+          description:
+            "Returns confirmed, scoped memory snippets for the current repository action session. Does not accept code, diffs, prompts, model output, or local search text.",
+          security: [{ reviewRouterActionSession: [] }],
+          responses: {
+            "200": {
+              description: "Repository-scoped memory bundle.",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ActionMemoryBundle" },
+                },
+              },
+            },
+            "401": { description: "Invalid action session." },
+            "403": { description: "Repository or entitlement unavailable." },
+          },
+        },
+      },
+      "/api/action/v1/memory-candidates": {
+        post: {
+          summary: "Submit bounded memory candidate",
+          description:
+            "Accepts only distilled memory candidate text plus safe metadata from interaction workflows. Raw GitHub conversations, code, diffs, prompts, and model output are not valid payloads.",
+          security: [{ reviewRouterActionSession: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ActionMemoryCandidateRequest",
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Candidate processed as created, noop, or rejected.",
+              content: {
+                "application/json": {
+                  schema: {
+                    $ref: "#/components/schemas/ActionMemoryMutationResponse",
+                  },
+                },
+              },
+            },
+            "400": { description: "Invalid memory candidate payload." },
+            "401": { description: "Invalid action session." },
+            "403": { description: "Not an interaction workflow session." },
+          },
+        },
+      },
       "/api/action/v1/health-report": {
         post: {
           summary: "Metadata-only action health report",
@@ -610,6 +663,136 @@ export function buildApiDemoOpenApiDocument(input: {
                 },
               },
             },
+          },
+        },
+        ActionMemoryBundle: {
+          type: "object",
+          required: ["protocolVersion", "memoryVersion", "items"],
+          additionalProperties: false,
+          properties: {
+            protocolVersion: { type: "number", const: 1 },
+            memoryVersion: { type: "number", const: 1 },
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                required: [
+                  "id",
+                  "scope",
+                  "body",
+                  "riskLevel",
+                  "confidence",
+                  "source",
+                ],
+                additionalProperties: true,
+                properties: {
+                  id: { type: "string" },
+                  scope: {
+                    type: "string",
+                    enum: ["repository", "workspace", "user_prefs"],
+                  },
+                  body: { type: "string", maxLength: 1000 },
+                  riskLevel: {
+                    type: "string",
+                    enum: ["low", "medium", "high", "critical"],
+                  },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                  source: {
+                    type: "object",
+                    required: ["type", "sourceVisibility"],
+                    additionalProperties: true,
+                    properties: {
+                      type: { type: "string" },
+                      sourceVisibility: {
+                        type: "string",
+                        enum: ["private", "internal", "public"],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        ActionMemoryCandidateRequest: {
+          type: "object",
+          required: ["intent", "candidateBody", "extractionMethod", "source"],
+          additionalProperties: false,
+          properties: {
+            protocolVersion: { type: "number", const: 1, default: 1 },
+            intent: {
+              type: "string",
+              enum: [
+                "explicit_command",
+                "explicit_natural_language",
+                "model_suggested_candidate",
+                "ambiguous_discussion",
+                "no_memory_intent",
+              ],
+            },
+            requestedScope: {
+              type: ["string", "null"],
+              enum: ["repository", "workspace", null],
+            },
+            candidateBody: {
+              type: "string",
+              maxLength: 1000,
+              description:
+                "Distilled memory text only. Do not send raw comment threads, code, diffs, prompts, or model output.",
+            },
+            sourceTextHash: { type: ["string", "null"], maxLength: 256 },
+            extractionMethod: {
+              type: "string",
+              enum: [
+                "explicit_command",
+                "explicit_natural_language",
+                "model_suggested_candidate",
+              ],
+            },
+            extractionVersion: {
+              type: "number",
+              minimum: 1,
+              maximum: 100,
+              default: 1,
+            },
+            source: {
+              type: "object",
+              required: ["sourceId"],
+              additionalProperties: false,
+              properties: {
+                sourceId: { type: "string", minLength: 1, maxLength: 200 },
+                githubCommentId: { type: ["string", "null"], maxLength: 80 },
+                githubPullRequestNumber: {
+                  type: ["number", "null"],
+                  minimum: 1,
+                  maximum: 1000000,
+                },
+                url: { type: ["string", "null"], format: "uri" },
+                redactedExcerpt: { type: ["string", "null"], maxLength: 500 },
+                sourceHash: { type: ["string", "null"], maxLength: 256 },
+                sourceVisibility: {
+                  type: "string",
+                  enum: ["private", "internal", "public"],
+                  default: "internal",
+                },
+              },
+            },
+          },
+        },
+        ActionMemoryMutationResponse: {
+          type: "object",
+          required: ["protocolVersion", "status"],
+          additionalProperties: false,
+          properties: {
+            protocolVersion: { type: "number", const: 1 },
+            status: {
+              type: "string",
+              enum: ["created", "updated", "noop", "rejected"],
+            },
+            id: { type: "string" },
+            version: { type: "number" },
+            reason: { type: "string" },
+            retryable: { type: "boolean" },
           },
         },
         ApiDemo: {
