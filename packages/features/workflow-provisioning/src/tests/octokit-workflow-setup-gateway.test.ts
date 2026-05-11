@@ -30,6 +30,7 @@ class FakeRequester {
       };
       readonly failPutOnceStatus?: number;
       readonly failPostPullOnceStatus?: number;
+      readonly existingBranches?: readonly string[];
     } = {},
   ) {}
 
@@ -37,7 +38,12 @@ class FakeRequester {
     this.calls.push(parameters ? { route, parameters } : { route });
 
     if (route === "GET /repos/{owner}/{repo}/git/ref/{ref}") {
-      return { data: { object: { sha: "base-sha" } } };
+      const branch = String(parameters?.ref ?? "").replace(/^heads\//, "");
+      const existingBranches = this.options.existingBranches ?? ["main"];
+      if (!existingBranches.includes(branch)) {
+        throw Object.assign(new Error("not found"), { status: 404 });
+      }
+      return { data: { object: { sha: `${branch}-sha` } } };
     }
     if (route === "POST /repos/{owner}/{repo}/git/refs") {
       return { data: {} };
@@ -186,6 +192,7 @@ describe("OctokitWorkflowSetupGateway", () => {
     expect(patchCall?.parameters).toMatchObject({
       pull_number: 10,
       title: "chore: add ReviewRouter workflow",
+      base: "main",
     });
     expect(String(patchCall?.parameters?.body)).toContain(
       "compact mode keeps small caller workflows",
@@ -246,6 +253,46 @@ describe("OctokitWorkflowSetupGateway", () => {
         (call) => call.route === "POST /repos/{owner}/{repo}/pulls",
       ),
     ).toHaveLength(1);
+  });
+
+  it("prefers dev over develop and the repository default branch for setup PRs", async () => {
+    const requester = new FakeRequester(null, {
+      existingBranches: ["main", "develop", "dev"],
+      pullRequestResponses: [[]],
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await gateway.createOrUpdateSetupPullRequest(setupInput);
+
+    const createdRefCall = requester.calls.find(
+      (call) => call.route === "POST /repos/{owner}/{repo}/git/refs",
+    );
+    expect(createdRefCall?.parameters).toMatchObject({ sha: "dev-sha" });
+
+    const postPullCall = requester.calls.find(
+      (call) => call.route === "POST /repos/{owner}/{repo}/pulls",
+    );
+    expect(postPullCall?.parameters).toMatchObject({ base: "dev" });
+  });
+
+  it("falls back to develop before the repository default branch", async () => {
+    const requester = new FakeRequester(null, {
+      existingBranches: ["main", "develop"],
+      pullRequestResponses: [[]],
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await gateway.createOrUpdateSetupPullRequest(setupInput);
+
+    const createdRefCall = requester.calls.find(
+      (call) => call.route === "POST /repos/{owner}/{repo}/git/refs",
+    );
+    expect(createdRefCall?.parameters).toMatchObject({ sha: "develop-sha" });
+
+    const postPullCall = requester.calls.find(
+      (call) => call.route === "POST /repos/{owner}/{repo}/pulls",
+    );
+    expect(postPullCall?.parameters).toMatchObject({ base: "develop" });
   });
 
   it("writes every workflow file into the setup branch", async () => {

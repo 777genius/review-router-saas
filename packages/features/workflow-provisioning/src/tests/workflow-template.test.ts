@@ -78,7 +78,11 @@ describe("renderReviewRouterWorkflow", () => {
 
     expect(workflow).toContain("name: ReviewRouter Interaction");
     expect(workflow).toContain("pull_request_review_comment:");
+    expect(workflow).toContain("issue_comment:");
     expect(workflow).toContain("types: [created, edited]");
+    expect(workflow).toContain(
+      "github.event_name != 'issue_comment' || github.event.issue.pull_request",
+    );
     expect(workflow).not.toContain("pull_request:\n");
     expect(workflow).not.toContain("pull_request_target");
     expect(workflow).toContain("actions: write");
@@ -128,6 +132,10 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflow?.content).toContain(
       "pull_request_review_comment:",
     );
+    expect(interactionWorkflow?.content).toContain("issue_comment:");
+    expect(interactionWorkflow?.content).toContain(
+      "github.event_name != 'issue_comment' || github.event.issue.pull_request",
+    );
   });
 
   it("renders compact reusable caller workflows by default", () => {
@@ -164,7 +172,11 @@ describe("renderReviewRouterWorkflow", () => {
     expect(reviewWorkflow).not.toContain("actions/setup-node@v6");
 
     expect(interactionWorkflow).toContain("pull_request_review_comment:");
+    expect(interactionWorkflow).toContain("issue_comment:");
     expect(interactionWorkflow).toContain("types: [created, edited]");
+    expect(interactionWorkflow).toContain(
+      "github.event_name != 'issue_comment' || github.event.issue.pull_request",
+    );
     expect(interactionWorkflow).toContain("actions: write");
     expect(interactionWorkflow).toContain(
       "uses: 777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml@v1",

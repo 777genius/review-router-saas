@@ -288,6 +288,30 @@ describe("action control plane", () => {
     });
   });
 
+  it("accepts PR conversation comment OIDC claims for interaction commands", async () => {
+    const sessions = new StaticSessionTokenService();
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            event_name: "issue_comment",
+            workflow_ref:
+              "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+          }),
+        ),
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      eventName: "issue_comment",
+      repository: "777genius/example",
+    });
+  });
+
   it("accepts trusted organization required workflow refs for selected repositories", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     repository.repository = {
@@ -1157,6 +1181,25 @@ describe("action control plane", () => {
     const claims: ActionSessionClaims = {
       ...sessionClaims,
       eventName: "pull_request_review_comment",
+    };
+    const signed = await sessions.sign({
+      claims,
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+
+    await expect(
+      sessions.verify({ token: signed.token, now: fixedNow }),
+    ).resolves.toMatchObject(claims);
+  });
+
+  it("verifies PR conversation comment action session tokens for interaction runs", async () => {
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const claims: ActionSessionClaims = {
+      ...sessionClaims,
+      eventName: "issue_comment",
     };
     const signed = await sessions.sign({
       claims,

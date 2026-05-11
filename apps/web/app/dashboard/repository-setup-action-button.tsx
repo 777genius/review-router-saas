@@ -17,6 +17,7 @@ export function RepositorySetupActionButton({
   workflowCurrent,
   mutationsEnabled,
   variant = "solid",
+  onComplete,
 }: {
   readonly workspaceId: string;
   readonly repositoryId: string;
@@ -26,6 +27,7 @@ export function RepositorySetupActionButton({
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
   readonly variant?: "solid" | "soft" | "outline" | "ghost";
+  readonly onComplete?: (params: Record<string, string>) => void;
 }): ReactElement {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -38,11 +40,23 @@ export function RepositorySetupActionButton({
         startTransition(() => {
           void createSetupPullRequestClientAction(formData)
             .then(({ params }) => {
+              if (onComplete) {
+                onComplete(params);
+                return;
+              }
               router.replace(buildDashboardMutationUrl(params), {
                 scroll: false,
               });
             })
             .catch(() => {
+              if (onComplete) {
+                onComplete({
+                  error: "dashboard_action_failed",
+                  workspace: workspaceId,
+                  section: "repositories",
+                });
+                return;
+              }
               router.replace(
                 buildDashboardMutationUrl({
                   error: "dashboard_action_failed",
@@ -98,12 +112,14 @@ export function RepositorySetupMergedButton({
   selected,
   archived,
   mutationsEnabled,
+  onComplete,
 }: {
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly selected: boolean;
   readonly archived: boolean;
   readonly mutationsEnabled: boolean;
+  readonly onComplete?: (params: Record<string, string>) => void;
 }): ReactElement {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -115,11 +131,23 @@ export function RepositorySetupMergedButton({
         startTransition(() => {
           void confirmSetupPullRequestMergedClientAction(formData)
             .then(({ params }) => {
+              if (onComplete) {
+                onComplete(params);
+                return;
+              }
               router.replace(buildDashboardMutationUrl(params), {
                 scroll: false,
               });
             })
             .catch(() => {
+              if (onComplete) {
+                onComplete({
+                  error: "dashboard_action_failed",
+                  workspace: workspaceId,
+                  section: "repositories",
+                });
+                return;
+              }
               router.replace(
                 buildDashboardMutationUrl({
                   error: "dashboard_action_failed",

@@ -82,10 +82,7 @@ import {
   type RepositorySearchFilter,
   type RepositorySearchIndexItem,
 } from "./repository-live-search";
-import {
-  RepositorySetupActionButton,
-  RepositorySetupMergedButton,
-} from "./repository-setup-action-button";
+import { RepositorySetupProgressPanel as RepositorySetupProgressPanelClient } from "./repository-setup-progress-panel";
 import {
   RepositoryPolicyEditor,
   ReviewConfigForm,
@@ -1927,42 +1924,6 @@ function RepositorySetupProgressPanel({
     workspace,
     repository.fullName,
   );
-  const setupPrAction =
-    repository.setupStatus === "setup_pr_open" && setupPullRequestUrl ? (
-      <LinkButton
-        href={setupPullRequestUrl}
-        target="_blank"
-        rel="noreferrer"
-        variant="outline"
-        size="sm"
-        className="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
-      >
-        Open setup PR
-        <span aria-hidden="true" className="text-xs">
-          ↗
-        </span>
-      </LinkButton>
-    ) : currentStep === 1 ? (
-      <RepositorySetupActionForm
-        workspaceId={workspace.id}
-        repositoryId={repository.id}
-        selected={repository.selected}
-        archived={repository.archived}
-        setupStatus={repository.setupStatus}
-        workflowCurrent={workflowCurrent}
-        mutationsEnabled={mutationsEnabled}
-      />
-    ) : null;
-  const mergeConfirmAction =
-    currentStep === 2 ? (
-      <RepositorySetupMergedButton
-        workspaceId={workspace.id}
-        repositoryId={repository.id}
-        selected={repository.selected}
-        archived={repository.archived}
-        mutationsEnabled={mutationsEnabled}
-      />
-    ) : null;
   const enableReviewAction =
     currentStep === 3 && installation ? (
       <RepositoryProviderSecretsAction
@@ -1973,84 +1934,22 @@ function RepositorySetupProgressPanel({
         triggerVariant="outline"
         triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
       />
-    ) : currentStep < 4 ? (
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
-        disabled
-      >
-        Enable review
-        <SetupProgressLockIcon />
-      </Button>
     ) : null;
-  const steps: readonly RepositorySetupProgressStep[] = [
-    {
-      number: 1,
-      title: "Create setup PR",
-      helper: currentStep > 1 ? "Setup PR exists." : "Add the workflow by PR.",
-      action: setupPrAction,
-    },
-    {
-      number: 2,
-      title: "Merge setup PR",
-      helper:
-        currentStep > 2
-          ? "Workflow is on the default branch."
-          : "Merge on GitHub.",
-      action: mergeConfirmAction,
-    },
-    {
-      number: 3,
-      title: "Enable review",
-      helper:
-        currentStep > 3
-          ? "Provider access is configured."
-          : currentStep === 3
-            ? "Seed provider access."
-            : "Available after merge.",
-      action: enableReviewAction,
-    },
-    {
-      number: 4,
-      title: "Ready",
-      helper: null,
-    },
-  ];
 
   return (
-    <section className="mb-4 pt-1">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-cyan-100">
-          Setup progress
-        </p>
-        <span className="font-mono text-xs text-slate-400">
-          {repositorySetupProgressSummary(currentStep)}
-        </span>
-      </div>
-
-      <div className="relative mt-3">
-        <span
-          aria-hidden="true"
-          className="absolute left-4 right-4 top-6 hidden h-px bg-cyan-300/12 md:block"
-        />
-        <span
-          aria-hidden="true"
-          className="absolute left-4 top-6 hidden h-px bg-cyan-300/45 md:block"
-          style={{ width: repositorySetupProgressTrackWidth(currentStep) }}
-        />
-        <ol className="relative z-10 grid gap-3 md:grid-cols-4">
-          {steps.map((step) => (
-            <RepositorySetupProgressStepItem
-              key={step.number}
-              step={step}
-              currentStep={currentStep}
-            />
-          ))}
-        </ol>
-      </div>
-    </section>
+    <RepositorySetupProgressPanelClient
+      workspaceId={workspace.id}
+      repositoryId={repository.id}
+      repositoryFullName={repository.fullName}
+      selected={repository.selected}
+      archived={repository.archived}
+      initialSetupStatus={repository.setupStatus}
+      initialSetupPullRequestUrl={setupPullRequestUrl}
+      workflowCurrent={workflowCurrent}
+      mutationsEnabled={mutationsEnabled}
+      initialStep={currentStep}
+      enableReviewAction={canManage ? enableReviewAction : null}
+    />
   );
 }
 
@@ -2067,123 +1966,6 @@ function SetupDisclosureChevron(): React.ReactElement {
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-type RepositorySetupProgressStep = {
-  readonly number: 1 | 2 | 3 | 4;
-  readonly title: string;
-  readonly helper: string | null;
-  readonly action?: React.ReactNode;
-};
-
-function RepositorySetupProgressStepItem({
-  step,
-  currentStep,
-}: {
-  readonly step: RepositorySetupProgressStep;
-  readonly currentStep: number;
-}): React.ReactElement {
-  const isActive = step.number === currentStep;
-  const isComplete = step.number < currentStep;
-  const isFuture = step.number > currentStep;
-  const circleClass = isActive
-    ? "border-cyan-200 bg-cyan-200 text-slate-950 shadow-[0_0_18px_rgba(103,232,249,0.28)]"
-    : isComplete
-      ? "border-cyan-300/45 bg-slate-950 text-cyan-100 shadow-[inset_0_0_18px_rgba(103,232,249,0.12)]"
-      : "border-slate-700 bg-slate-950 text-slate-500";
-  const desktopAlignment =
-    step.number === 1
-      ? "md:items-start md:text-left"
-      : step.number === 4
-        ? "md:items-end md:text-right"
-        : "md:items-center md:text-center";
-
-  return (
-    <li className="relative min-w-0">
-      <div
-        className={[
-          "relative z-10 flex min-w-0 items-start gap-3 py-2 pr-3 md:flex-col md:gap-0 md:pr-0",
-          "md:min-h-[8.25rem]",
-          desktopAlignment,
-        ].join(" ")}
-      >
-        <span
-          className={[
-            "grid h-8 w-8 shrink-0 place-items-center rounded-full border font-mono text-xs font-bold leading-none",
-            circleClass,
-          ].join(" ")}
-        >
-          {step.number}
-        </span>
-        <div className="min-w-0 md:mt-3">
-          <p
-            className={[
-              "text-sm font-semibold leading-5",
-              isFuture ? "text-slate-500" : "text-cyan-50",
-            ].join(" ")}
-          >
-            {step.title}
-          </p>
-          {step.helper ? (
-            <p className="mt-1 text-xs leading-5 text-slate-500">
-              {step.helper}
-            </p>
-          ) : null}
-          {step.action ? (
-            <div
-              className={[
-                "mt-3",
-                step.number === 4
-                  ? "md:flex md:justify-end"
-                  : step.number === 1
-                    ? "md:flex md:justify-start"
-                    : "md:flex md:justify-center",
-              ].join(" ")}
-            >
-              {step.action}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </li>
-  );
-}
-
-function repositorySetupProgressTrackWidth(step: 1 | 2 | 3 | 4): string {
-  switch (step) {
-    case 1:
-      return "0";
-    case 2:
-      return "calc(37.5% - 1rem)";
-    case 3:
-      return "calc(62.5% - 1rem)";
-    case 4:
-      return "calc(100% - 2rem)";
-  }
-}
-
-function SetupProgressLockIcon(): React.ReactElement {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 16 16"
-      className="h-3.5 w-3.5 shrink-0"
-      fill="none"
-    >
-      <path
-        d="M5 7V5.4C5 3.7 6.3 2.5 8 2.5s3 1.2 3 2.9V7"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M4.2 7h7.6v5.8H4.2z"
-        stroke="currentColor"
-        strokeWidth="1.4"
         strokeLinejoin="round"
       />
     </svg>
@@ -2613,39 +2395,6 @@ function OrgRulesetAdvancedCard({
         </div>
       </div>
     </details>
-  );
-}
-
-function RepositorySetupActionForm({
-  workspaceId,
-  repositoryId,
-  selected,
-  archived,
-  setupStatus,
-  workflowCurrent,
-  mutationsEnabled,
-  variant = "solid",
-}: {
-  readonly workspaceId: string;
-  readonly repositoryId: string;
-  readonly selected: boolean;
-  readonly archived: boolean;
-  readonly setupStatus: string;
-  readonly workflowCurrent: boolean;
-  readonly mutationsEnabled: boolean;
-  readonly variant?: "solid" | "soft" | "outline" | "ghost";
-}): React.ReactElement {
-  return (
-    <RepositorySetupActionButton
-      workspaceId={workspaceId}
-      repositoryId={repositoryId}
-      selected={selected}
-      archived={archived}
-      setupStatus={setupStatus}
-      workflowCurrent={workflowCurrent}
-      mutationsEnabled={mutationsEnabled}
-      variant={variant}
-    />
   );
 }
 

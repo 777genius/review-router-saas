@@ -132,6 +132,9 @@ describe("provisionReviewRouterWorkflow", () => {
     ).toContain("pull_request_review_comment:");
     expect(
       files.get(".github/workflows/reviewrouter-interaction.yml"),
+    ).toContain("issue_comment:");
+    expect(
+      files.get(".github/workflows/reviewrouter-interaction.yml"),
     ).toContain("types: [created, edited]");
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
       '"CODEX_MODEL": "gpt-5.4-mini"',

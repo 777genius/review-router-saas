@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ReviewRouter landing variants</title>
+    <style>
+      :root {
+        --bg: #05070c;
+        --panel: rgba(11, 14, 23, 0.86);
+        --panel2: rgba(15, 22, 34, 0.78);
+        --cyan: #58efff;
+        --cyan2: #b8fbff;
+        --lime: #c6ff4d;
+        --magenta: #ef39ff;
+        --blue: #6b8dff;
+        --text: #edffff;
+        --muted: #9aa7bf;
+        --line: rgba(105, 239, 255, 0.22);
+        --line2: rgba(255, 255, 255, 0.1);
+        --shadow:
+          0 30px 110px rgba(0, 0, 0, 0.56), 0 0 100px rgba(88, 239, 255, 0.1);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      .sheet {
+        display: grid;
+        gap: 36px;
+        padding: 36px;
+        background:
+          radial-gradient(
+            circle at 18% 8%,
+            rgba(88, 239, 255, 0.15),
+            transparent 28%
+          ),
+          radial-gradient(
+            circle at 84% 18%,
+            rgba(239, 57, 255, 0.12),
+            transparent 26%
+          ),
+          linear-gradient(180deg, #05070c, #071014 46%, #05070c);
+      }
+      .variant {
+        width: 1440px;
+        height: 900px;
+        overflow: hidden;
+        position: relative;
+        border: 1px solid rgba(88, 239, 255, 0.17);
+        border-radius: 34px;
+        background:
+          linear-gradient(
+            90deg,
+            rgba(88, 239, 255, 0.055) 0 1px,
+            transparent 1px 96px
+          ),
+          linear-gradient(
+            180deg,
+            rgba(88, 239, 255, 0.035) 0 1px,
+            transparent 1px 96px
+          ),
+          radial-gradient(
+            circle at 18% 14%,
+            rgba(88, 239, 255, 0.18),
+            transparent 24%
+          ),
+          radial-gradient(
+            circle at 75% 30%,
+            rgba(239, 57, 255, 0.15),
+            transparent 30%
+          ),
+          linear-gradient(135deg, #06080f 0%, #0a1018 46%, #07070e 100%);
+        box-shadow: var(--shadow);
+      }
+      .variant::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.04),
+          transparent 22%,
+          transparent 74%,
+          rgba(88, 239, 255, 0.055)
+        );
+      }
+      .topbar {
+        position: absolute;
+        left: 64px;
+        right: 64px;
+        top: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        z-index: 2;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .logo {
+        width: 58px;
+        height: 58px;
+        border-radius: 18px;
+        object-fit: contain;
+        box-shadow: 0 0 32px rgba(88, 239, 255, 0.18);
+      }
+      .wordmark {
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+        letter-spacing: 0.18em;
+        font-weight: 800;
+        font-size: 20px;
+      }
+      .tag {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 4px;
+      }
+      .nav {
+        display: flex;
+        gap: 30px;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        letter-spacing: 0.22em;
+        font-size: 13px;
+        text-transform: uppercase;
+        color: #d7e5ff;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 9px 16px;
+        color: var(--cyan2);
+        background: rgba(88, 239, 255, 0.06);
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        font-weight: 800;
+        font-size: 12px;
+      }
+      .pill.lime {
+        border-color: rgba(198, 255, 77, 0.34);
+        color: #efffca;
+        background: rgba(198, 255, 77, 0.06);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 58px;
+        border-radius: 22px;
+        padding: 0 28px;
+        font-weight: 850;
+        font-size: 18px;
+        text-decoration: none;
+        color: #07080f;
+        background: linear-gradient(120deg, #55e7ff, #78a2ff, #f02cff);
+        box-shadow:
+          0 18px 50px rgba(240, 44, 255, 0.24),
+          inset 0 1px rgba(255, 255, 255, 0.58);
+      }
+      .btn.ghost {
+        color: var(--cyan2);
+        background: rgba(5, 8, 15, 0.45);
+        border: 1px solid var(--line);
+        box-shadow: none;
+      }
+      .panel {
+        border: 1px solid var(--line2);
+        background: var(--panel);
+        border-radius: 32px;
+        box-shadow:
+          inset 0 1px rgba(255, 255, 255, 0.035),
+          0 18px 55px rgba(0, 0, 0, 0.22);
+      }
+      .panel.cyan {
+        border-color: var(--line);
+        background: rgba(5, 13, 22, 0.76);
+      }
+      .headline {
+        font-size: 86px;
+        line-height: 0.98;
+        letter-spacing: -0.065em;
+        margin: 0;
+        max-width: 720px;
+      }
+      .headline.big {
+        font-size: 96px;
+      }
+      .sub {
+        color: #b4bdd1;
+        font-size: 22px;
+        line-height: 1.55;
+        max-width: 680px;
+        margin: 26px 0 0;
+      }
+      .steps {
+        display: grid;
+        gap: 16px;
+      }
+      .step {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 16px;
+        align-items: start;
+        padding: 20px;
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.035);
+        border: 1px solid var(--line2);
+      }
+      .num {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        border-radius: 15px;
+        font-family: "JetBrains Mono", monospace;
+        font-weight: 900;
+        color: #07100d;
+        background: linear-gradient(135deg, var(--lime), var(--cyan));
+      }
+      .step h3 {
+        margin: 0 0 8px;
+        font-size: 22px;
+      }
+      .step p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.48;
+      }
+      .micro {
+        font-family: "JetBrains Mono", monospace;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #7e8aa5;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .kbd {
+        font-family: "JetBrains Mono", monospace;
+        color: #dfffff;
+        background: rgba(88, 239, 255, 0.08);
+        border: 1px solid rgba(88, 239, 255, 0.2);
+        border-radius: 14px;
+        padding: 12px 14px;
+      }
+
+      /* Variant A */
+      #variant-a .hero {
+        position: absolute;
+        left: 70px;
+        top: 132px;
+        width: 720px;
+      }
+      #variant-a .right {
+        position: absolute;
+        right: 70px;
+        top: 142px;
+        width: 520px;
+        padding: 30px;
+      }
+      #variant-a .flow {
+        margin-top: 30px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      #variant-a .flow div {
+        min-height: 94px;
+        border-radius: 22px;
+        border: 1px solid var(--line2);
+        background: rgba(255, 255, 255, 0.035);
+        padding: 16px;
+      }
+      #variant-a .flow strong {
+        display: block;
+        color: #eaffbf;
+        margin-top: 10px;
+      }
+      #variant-a .actions {
+        display: flex;
+        gap: 14px;
+        margin-top: 38px;
+      }
+
+      /* Variant B */
+      #variant-b .center {
+        position: absolute;
+        left: 80px;
+        right: 80px;
+        top: 132px;
+        text-align: center;
+      }
+      #variant-b .center .headline {
+        margin: auto;
+        max-width: 1020px;
+      }
+      #variant-b .center .sub {
+        margin-left: auto;
+        margin-right: auto;
+        max-width: 790px;
+      }
+      #variant-b .step-row {
+        position: absolute;
+        left: 80px;
+        right: 80px;
+        bottom: 80px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 22px;
+      }
+      #variant-b .big-step {
+        padding: 34px;
+        min-height: 250px;
+      }
+      #variant-b .big-step .num {
+        width: 54px;
+        height: 54px;
+        font-size: 20px;
+      }
+      #variant-b .big-step h3 {
+        font-size: 30px;
+        margin: 24px 0 12px;
+      }
+      #variant-b .big-step p {
+        font-size: 18px;
+      }
+      #variant-b .cta-line {
+        display: flex;
+        justify-content: center;
+        gap: 16px;
+        margin-top: 34px;
+      }
+
+      /* Variant C */
+      #variant-c .left {
+        position: absolute;
+        left: 70px;
+        top: 130px;
+        width: 600px;
+      }
+      #variant-c .right {
+        position: absolute;
+        right: 70px;
+        top: 128px;
+        width: 600px;
+        height: 650px;
+        padding: 28px;
+      }
+      #variant-c .diagram {
+        margin-top: 24px;
+        display: grid;
+        gap: 16px;
+      }
+      #variant-c .lane {
+        border: 1px solid var(--line);
+        border-radius: 26px;
+        padding: 22px;
+        background: rgba(88, 239, 255, 0.045);
+      }
+      #variant-c .lane h3 {
+        margin: 0 0 10px;
+        font-size: 24px;
+      }
+      #variant-c .lane p {
+        color: var(--muted);
+        line-height: 1.5;
+        margin: 0;
+      }
+      #variant-c .connector {
+        height: 44px;
+        display: grid;
+        place-items: center;
+        color: var(--lime);
+        font-family: "JetBrains Mono", monospace;
+        letter-spacing: 0.2em;
+      }
+
+      /* Variant D */
+      #variant-d .copy {
+        position: absolute;
+        left: 74px;
+        top: 142px;
+        width: 540px;
+      }
+      #variant-d .console {
+        position: absolute;
+        right: 70px;
+        top: 140px;
+        width: 660px;
+        padding: 24px;
+      }
+      #variant-d .repo {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 14px;
+        align-items: center;
+        padding: 17px;
+        border-radius: 20px;
+        border: 1px solid var(--line2);
+        background: rgba(255, 255, 255, 0.032);
+        margin-top: 13px;
+      }
+      #variant-d .repo strong {
+        font-size: 18px;
+      }
+      #variant-d .repo span {
+        color: var(--muted);
+        font-size: 14px;
+        display: block;
+        margin-top: 4px;
+      }
+      #variant-d .status {
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        color: #efffca;
+        border: 1px solid rgba(198, 255, 77, 0.35);
+      }
+      #variant-d .mini-steps {
+        position: absolute;
+        left: 74px;
+        bottom: 76px;
+        width: 540px;
+        display: grid;
+        gap: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="sheet">
+      <section class="variant" id="variant-a">
+        <div class="topbar">
+          <div class="brand">
+            <img
+              class="logo"
+              src="../../apps/web/public/review-router-icon.png"
+            />
+            <div>
+              <div class="wordmark">ReviewRouter</div>
+              <div class="tag">Reviews run in customer CI</div>
+            </div>
+          </div>
+          <nav class="nav">
+            <span>Dashboard</span><span>Setup</span><span>Security</span>
+          </nav>
+        </div>
+        <div class="hero">
+          <span class="pill">Variant A · Command deck</span>
+          <h1 class="headline big">
+            AI code review that stays inside your CI.
+          </h1>
+          <p class="sub">
+            Install the GitHub App, merge one compact workflow PR, then connect
+            Codex or API keys directly to GitHub Actions secrets.
+          </p>
+          <div class="actions">
+            <a class="btn">Install GitHub App</a
+            ><a class="btn ghost">Open dashboard</a>
+          </div>
+          <div class="flow">
+            <div><span class="micro">Diff</span><strong>PR files</strong></div>
+            <div>
+              <span class="micro">Review</span><strong>Agent context</strong>
+            </div>
+            <div>
+              <span class="micro">Gate</span><strong>Severity policy</strong>
+            </div>
+            <div>
+              <span class="micro">Done</span><strong>Inline comments</strong>
+            </div>
+          </div>
+        </div>
+        <aside class="right panel cyan">
+          <span class="pill lime">3 minute setup</span>
+          <div class="steps" style="margin-top: 24px">
+            <div class="step">
+              <div class="num">1</div>
+              <div>
+                <h3>Install App</h3>
+                <p>
+                  Select one repository or an organization. ReviewRouter only
+                  syncs metadata.
+                </p>
+              </div>
+            </div>
+            <div class="step">
+              <div class="num">2</div>
+              <div>
+                <h3>Merge setup PR</h3>
+                <p>
+                  A tiny reusable workflow is added to the repository. Runtime
+                  code stays versioned.
+                </p>
+              </div>
+            </div>
+            <div class="step">
+              <div class="num">3</div>
+              <div>
+                <h3>Connect provider</h3>
+                <p>
+                  Run one command locally to seed Codex OAuth or API keys into
+                  GitHub Actions secrets.
+                </p>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="variant" id="variant-b">
+        <div class="topbar">
+          <div class="brand">
+            <img
+              class="logo"
+              src="../../apps/web/public/review-router-icon.png"
+            />
+            <div>
+              <div class="wordmark">ReviewRouter</div>
+              <div class="tag">Setup without moving secrets to SaaS</div>
+            </div>
+          </div>
+          <nav class="nav">
+            <span>Dashboard</span><span>Guide</span><span>Status</span>
+          </nav>
+        </div>
+        <div class="center">
+          <span class="pill lime">Variant B · Simple onboarding</span>
+          <h1 class="headline big">Connect one repo. Get useful PR review.</h1>
+          <p class="sub">
+            A focused landing page that sells ease first: three clear actions,
+            one primary button, and a short trust boundary.
+          </p>
+          <div class="cta-line">
+            <a class="btn">Start setup</a
+            ><a class="btn ghost">See how it works</a>
+          </div>
+        </div>
+        <div class="step-row">
+          <div class="big-step panel">
+            <div class="num">1</div>
+            <h3>Install GitHub App</h3>
+            <p>
+              Choose personal or organization repositories. No code is copied
+              into ReviewRouter.
+            </p>
+          </div>
+          <div class="big-step panel">
+            <div class="num">2</div>
+            <h3>Merge setup PR</h3>
+            <p>
+              The PR adds a compact workflow that calls the stable ReviewRouter
+              runtime.
+            </p>
+          </div>
+          <div class="big-step panel">
+            <div class="num">3</div>
+            <h3>Run provider command</h3>
+            <p>
+              Codex OAuth, OpenAI, or OpenRouter credentials go straight to
+              GitHub Actions secrets.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="variant" id="variant-c">
+        <div class="topbar">
+          <div class="brand">
+            <img
+              class="logo"
+              src="../../apps/web/public/review-router-icon.png"
+            />
+            <div>
+              <div class="wordmark">ReviewRouter</div>
+              <div class="tag">Control plane for AI PR review</div>
+            </div>
+          </div>
+          <nav class="nav">
+            <span>Security</span><span>Docs</span><span>Dashboard</span>
+          </nav>
+        </div>
+        <div class="left">
+          <span class="pill">Variant C · Trust blueprint</span>
+          <h1 class="headline">SaaS configures. Your workflow reviews.</h1>
+          <p class="sub">
+            Best if we want security to be the main differentiator while still
+            making setup feel lightweight.
+          </p>
+          <div class="actions">
+            <a class="btn">Install GitHub App</a
+            ><a class="btn ghost">Read security model</a>
+          </div>
+        </div>
+        <aside class="right panel">
+          <span class="pill lime">Boundary model</span>
+          <div class="diagram">
+            <div class="lane">
+              <h3>ReviewRouter SaaS</h3>
+              <p>
+                Stores installation metadata, model settings, health, and audit
+                state.
+              </p>
+            </div>
+            <div class="connector">OIDC CONFIG · NO LONG-LIVED TOKEN</div>
+            <div class="lane">
+              <h3>Customer GitHub Actions</h3>
+              <p>
+                Runs Codex/OpenRouter commands, reads PR diff, posts comments as
+                the GitHub App.
+              </p>
+            </div>
+            <div class="connector">SECRETS STAY IN GITHUB</div>
+            <div class="lane">
+              <h3>Result</h3>
+              <p>
+                Inline comments, PR summary, severity gate, and maintainer
+                override flow.
+              </p>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="variant" id="variant-d">
+        <div class="topbar">
+          <div class="brand">
+            <img
+              class="logo"
+              src="../../apps/web/public/review-router-icon.png"
+            />
+            <div>
+              <div class="wordmark">ReviewRouter</div>
+              <div class="tag">Multi-provider PR review routing</div>
+            </div>
+          </div>
+          <nav class="nav">
+            <span>Providers</span><span>Policy</span><span>Dashboard</span>
+          </nav>
+        </div>
+        <div class="copy">
+          <span class="pill">Variant D · Product console</span>
+          <h1 class="headline">Route reviews by repo, model, and severity.</h1>
+          <p class="sub">
+            This version shows the dashboard outcome immediately: connected
+            repos, model choices, health, and a clear next action.
+          </p>
+          <div class="actions"><a class="btn">Connect repository</a></div>
+        </div>
+        <aside class="console panel cyan">
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 16px;
+            "
+          >
+            <span class="pill lime">Live dashboard</span
+            ><span class="micro">Codex · OpenRouter · Policy</span>
+          </div>
+          <div class="repo">
+            <div>
+              <strong>acme/web-app</strong
+              ><span>gpt-5.5 · medium effort · fails on critical</span>
+            </div>
+            <div class="status">READY</div>
+          </div>
+          <div class="repo">
+            <div>
+              <strong>acme/api</strong
+              ><span>setup PR ready · provider command pending</span>
+            </div>
+            <div class="status">ENABLE</div>
+          </div>
+          <div class="repo">
+            <div>
+              <strong>acme/mobile</strong
+              ><span>OpenRouter fallback · 5 inline comments max</span>
+            </div>
+            <div class="status">READY</div>
+          </div>
+          <div class="kbd" style="margin-top: 22px">
+            curl -fsSL https://reviewrouter.site/install/codex |
+            REVIEW_ROUTER_REPO=acme/api bash
+          </div>
+        </aside>
+        <div class="mini-steps">
+          <div class="step">
+            <div class="num">1</div>
+            <div>
+              <h3>Pick repo</h3>
+              <p>Search installed repositories in dashboard.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="num">2</div>
+            <div>
+              <h3>Enable review</h3>
+              <p>Merge workflow PR and seed credentials.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -25,12 +25,13 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
   async createOrUpdateSetupPullRequest(
     input: WorkflowSetupGatewayInput,
   ): Promise<WorkflowSetupPullRequest> {
+    const baseBranch = await this.resolveSetupPullRequestBaseBranch(input);
     const { data: ref } = await this.octokit.request(
       "GET /repos/{owner}/{repo}/git/ref/{ref}",
       {
         owner: input.owner,
         repo: input.repo,
-        ref: `heads/${input.baseBranch}`,
+        ref: `heads/${baseBranch}`,
       },
     );
     const sha = parseGitRefSha(ref);
@@ -50,13 +51,46 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       await this.createOrUpdateWorkflowFile(input, file);
     }
 
-    const pullRequest = await this.getOrCreateSetupPullRequest(input);
+    const pullRequest = await this.getOrCreateSetupPullRequest({
+      ...input,
+      baseBranch,
+    });
 
     return {
       url: pullRequest.html_url,
       number: pullRequest.number,
       branch: input.setupBranch,
     };
+  }
+
+  private async resolveSetupPullRequestBaseBranch(
+    input: WorkflowSetupGatewayInput,
+  ): Promise<string> {
+    for (const branch of preferredSetupBaseBranches(input.baseBranch)) {
+      if (await this.branchExists(input, branch)) {
+        return branch;
+      }
+    }
+    return input.baseBranch;
+  }
+
+  private async branchExists(
+    input: WorkflowSetupGatewayInput,
+    branch: string,
+  ): Promise<boolean> {
+    try {
+      await this.octokit.request("GET /repos/{owner}/{repo}/git/ref/{ref}", {
+        owner: input.owner,
+        repo: input.repo,
+        ref: `heads/${branch}`,
+      });
+      return true;
+    } catch (error: unknown) {
+      if (getErrorStatus(error) === 404) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   private async createOrUpdateWorkflowFile(
@@ -162,6 +196,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         repo: input.repo,
         pull_number: pullRequest.number,
         title: setupPullRequestTitle,
+        base: input.baseBranch,
         body: setupPullRequestBody,
       },
     );
@@ -190,6 +225,12 @@ type GitHubPullRequest = {
 };
 
 const setupPullRequestTitle = "chore: add ReviewRouter workflow";
+
+function preferredSetupBaseBranches(defaultBranch: string): readonly string[] {
+  return [
+    ...new Set(["dev", "develop", defaultBranch].filter(Boolean)),
+  ] as const;
+}
 
 const setupPullRequestBody = [
   "This PR installs the ReviewRouter GitHub Actions workflows.",

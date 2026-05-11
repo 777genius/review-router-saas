@@ -156,6 +156,8 @@ export function renderReviewRouterInteractionWorkflow(
 on:
   pull_request_review_comment:
     types: [created, edited]
+  issue_comment:
+    types: [created, edited]
   workflow_dispatch:
 
 permissions:
@@ -169,6 +171,7 @@ jobs:
   interaction:
     name: interaction
     runs-on: ubuntu-latest
+    if: \${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
       REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
@@ -247,6 +250,8 @@ export function renderReviewRouterReusableInteractionWorkflow(
 on:
   pull_request_review_comment:
     types: [created, edited]
+  issue_comment:
+    types: [created, edited]
   workflow_dispatch:
 
 permissions:
@@ -259,6 +264,7 @@ permissions:
 jobs:
   interaction:
     name: interaction
+    if: \${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
     uses: ${reusableWorkflowRuntimeRepository}/${reusableInteractionWorkflowPath}@${template.runtimeRef}
     with:
       runtime_ref: ${template.runtimeRef}
