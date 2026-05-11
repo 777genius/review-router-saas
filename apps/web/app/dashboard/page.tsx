@@ -65,7 +65,12 @@ import {
   summarizeWorkspaceHealth,
 } from "../../src/server/repository-health-view";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
+import {
+  getReviewModelOptions,
+  type ReviewModelOption,
+} from "../../src/server/openrouter-model-catalog";
 import { FormSubmitButton } from "../form-submit-button";
+import { GitHubAppInstallPermissionDialog } from "../github-app-install-permission-dialog";
 import { GitHubAccountAvatar } from "../github-account-avatar";
 import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
@@ -536,9 +541,11 @@ export default async function DashboardPage({
           reason: "local_admin_override" as const,
         }
       : undefined;
-  const workspaces = filterVisibleDashboardWorkspaces(
-    await loadDashboardData(workspaceScope, supportAudit),
-  );
+  const [dashboardData, modelOptions] = await Promise.all([
+    loadDashboardData(workspaceScope, supportAudit),
+    getReviewModelOptions(),
+  ]);
+  const workspaces = filterVisibleDashboardWorkspaces(dashboardData);
   const appInstallUrl = getGitHubAppInstallUrl();
   const selectedSection = resolveDashboardSection(params);
 
@@ -577,6 +584,7 @@ export default async function DashboardPage({
           params={params}
           workspaceKey={selectedWorkspaceKey}
           appInstallUrl={appInstallUrl}
+          modelOptions={modelOptions}
           fallbackUser={{
             githubLogin: mutationStatus.githubLogin,
             githubAvatarUrl: mutationStatus.githubAvatarUrl,
@@ -632,7 +640,7 @@ function WorkspaceSwitcher({
             </p>
           </div>
           {appInstallUrl ? (
-            <LinkButton
+            <GitHubAppInstallPermissionDialog
               href={appInstallUrl}
               variant="outline"
               size="sm"
@@ -646,7 +654,7 @@ function WorkspaceSwitcher({
                 <span className="absolute left-1/2 top-1/2 h-2 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
               </span>
               Add repos
-            </LinkButton>
+            </GitHubAppInstallPermissionDialog>
           ) : null}
         </div>
         {workspaces.length > 1 ? (
@@ -731,6 +739,7 @@ function WorkspaceCard({
   params,
   workspaceKey,
   appInstallUrl,
+  modelOptions,
   fallbackUser,
 }: {
   readonly data: DashboardWorkspaceData;
@@ -739,6 +748,7 @@ function WorkspaceCard({
   readonly params: Record<string, string | string[] | undefined>;
   readonly workspaceKey: string;
   readonly appInstallUrl: string | null;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly fallbackUser: {
     readonly githubLogin: string | null;
     readonly githubAvatarUrl: string | null;
@@ -842,6 +852,7 @@ function WorkspaceCard({
               providerSetup={providerSetup}
               repositoryConfigs={repositoryConfigs}
               activeConfig={activeConfig}
+              modelOptions={modelOptions}
               mutationsEnabled={mutationsEnabled}
               workspaceKey={workspaceKey}
               searchQuery={repositorySearchQuery}
@@ -1040,6 +1051,7 @@ function WorkspaceCard({
               <ReviewConfigForm
                 action={saveWorkspaceReviewConfigAction}
                 config={activeConfig}
+                modelOptions={modelOptions}
                 hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
                 mutationsEnabled={mutationsEnabled}
                 submitLabel="Save workspace default"
@@ -1104,6 +1116,7 @@ function WorkspaceCard({
                           <ReviewConfigForm
                             action={saveRepositoryReviewConfigAction}
                             config={effectiveConfig}
+                            modelOptions={modelOptions}
                             hiddenFields={[
                               { name: "workspaceId", value: workspace.id },
                               { name: "repositoryId", value: repository.id },
@@ -1433,6 +1446,7 @@ function RepositoryTable({
   providerSetup,
   repositoryConfigs,
   activeConfig,
+  modelOptions,
   mutationsEnabled,
   workspaceKey,
   searchQuery,
@@ -1447,6 +1461,7 @@ function RepositoryTable({
   readonly providerSetup: DashboardWorkspaceData["providerSetup"];
   readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
   readonly activeConfig: ReviewConfiguration;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
   readonly workspaceKey: string;
   readonly searchQuery: string;
@@ -1731,6 +1746,7 @@ function RepositoryTable({
                     repository={repository}
                     repositoryConfig={repositoryConfig}
                     effectiveConfig={effectiveConfig}
+                    modelOptions={modelOptions}
                     mutationsEnabled={mutationsEnabled}
                   />
                 ) : null}
@@ -2560,13 +2576,14 @@ function OrgRulesetAdvancedCard({
 
           <div className="mt-4 flex flex-wrap gap-2 border-t border-amber-200/10 pt-4">
             {permissionMissing && permissionApprovalUrl ? (
-              <LinkButton
+              <GitHubAppInstallPermissionDialog
                 href={permissionApprovalUrl}
                 variant="outline"
                 size="sm"
+                continueLabel="Continue to GitHub permissions"
               >
                 Review App permissions
-              </LinkButton>
+              </GitHubAppInstallPermissionDialog>
             ) : null}
             <LinkButton
               href={dashboardSectionHref(

@@ -60,6 +60,27 @@ describe("review configuration", () => {
     expect(Object.keys(env).join("\n")).not.toContain("KEY");
   });
 
+  it("maps OpenRouter API-key config to fully-qualified runtime models", () => {
+    const env = mapConfigToRuntimeEnv({
+      ...safeDefaultReviewConfiguration,
+      provider: {
+        ...safeDefaultReviewConfiguration.provider,
+        kind: "openrouter",
+        authMode: "openrouter_api_key",
+        model: "poolside/laguna-m.1:free",
+      },
+    });
+
+    expect(env).toMatchObject({
+      REVIEW_AUTH_MODE: "openrouter-api",
+      REVIEW_PROVIDERS: "openrouter/poolside/laguna-m.1:free",
+      SYNTHESIS_MODEL: "openrouter/poolside/laguna-m.1:free",
+      CODEX_MODEL: "poolside/laguna-m.1:free",
+    });
+    expect(Object.keys(env).join("\n")).not.toContain("SECRET");
+    expect(Object.keys(env).join("\n")).not.toContain("KEY");
+  });
+
   it("rejects invalid limits", () => {
     expect(() =>
       parseReviewConfiguration({

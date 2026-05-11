@@ -23,11 +23,14 @@ import {
 import {
   PrismaReviewConfigurationRepository,
   resolveReviewRuntimeEnv,
+  safeDefaultReviewConfiguration,
+  saveReviewConfiguration,
 } from "../../../packages/features/review-config/src/index.ts";
 import { createGitHubApp, findInstallationForRepo } from "./github-app.js";
 import { loadAppProfile, loadEnvFiles } from "./config.js";
 
 type FreshRepositoryE2EMode = "setup" | "review";
+type FreshRepositoryE2EAuth = "codex" | "openrouter";
 
 type PullRequestView = {
   readonly number: number;
@@ -61,6 +64,12 @@ type ReviewCommentView = {
 loadEnvFiles();
 
 const mode = parseMode(process.env.REVIEW_ROUTER_FRESH_E2E_MODE ?? "setup");
+const reviewAuth = parseReviewAuth(
+  process.env.REVIEW_ROUTER_FRESH_E2E_AUTH ?? "codex",
+);
+const openRouterModel =
+  process.env.REVIEW_ROUTER_FRESH_E2E_OPENROUTER_MODEL?.trim() ||
+  "poolside/laguna-m.1:free";
 const owner =
   process.env.REVIEW_ROUTER_FRESH_E2E_OWNER?.trim() || currentGitHubLogin();
 const repoName =
@@ -79,6 +88,9 @@ const workdir = mkdtempSync(join(tmpdir(), "reviewrouter-fresh-e2e-"));
 
 assertSafeGitHubName(owner, "owner");
 assertSafeGitHubName(repoName, "repository");
+if (mode === "review" && reviewAuth === "openrouter") {
+  requireEnv("OPENROUTER_API_KEY");
+}
 requireCommand("git");
 requireCommand("gh");
 
@@ -132,6 +144,8 @@ try {
       {
         ok: true,
         mode,
+        reviewAuth,
+        openRouterModel: reviewAuth === "openrouter" ? openRouterModel : null,
         targetRepo,
         visibility,
         workdir,
@@ -152,6 +166,7 @@ try {
       {
         ok: false,
         mode,
+        reviewAuth,
         targetRepo,
         created,
         error: error instanceof Error ? error.message : String(error),
@@ -170,8 +185,23 @@ function parseMode(input: string): FreshRepositoryE2EMode {
   throw new Error("REVIEW_ROUTER_FRESH_E2E_MODE must be setup or review");
 }
 
+function parseReviewAuth(input: string): FreshRepositoryE2EAuth {
+  if (input === "codex" || input === "openrouter") {
+    return input;
+  }
+  throw new Error("REVIEW_ROUTER_FRESH_E2E_AUTH must be codex or openrouter");
+}
+
 function currentGitHubLogin(): string {
   return run("gh", ["api", "user", "--jq", ".login"]).trim();
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value || value.trim().length === 0) {
+    throw new Error(`missing_required_env:${name}`);
+  }
+  return value;
 }
 
 function requireCommand(command: string): void {
@@ -292,6 +322,12 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
       );
     }
 
+    await saveRequestedReviewConfiguration({
+      prisma,
+      workspaceId: repository.workspaceId,
+      repositoryId: repository.id,
+    });
+
     const staticRuntimeEnv = await loadStaticRuntimeEnv({
       prisma,
       workspaceId: repository.workspaceId,
@@ -319,6 +355,37 @@ async function provisionSetupPullRequest(installationId: number): Promise<{
   } finally {
     await prisma.$disconnect();
   }
+}
+
+async function saveRequestedReviewConfiguration(input: {
+  readonly prisma: ReturnType<typeof createPrismaClient>;
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+}): Promise<void> {
+  if (reviewAuth !== "openrouter") {
+    return;
+  }
+
+  const configurations = new PrismaReviewConfigurationRepository(input.prisma);
+  await saveReviewConfiguration(
+    {
+      target: {
+        scope: "repository",
+        workspaceId: input.workspaceId,
+        repositoryId: input.repositoryId,
+      },
+      config: {
+        ...safeDefaultReviewConfiguration,
+        provider: {
+          ...safeDefaultReviewConfiguration.provider,
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: openRouterModel,
+        },
+      },
+    },
+    { configurations },
+  );
 }
 
 async function loadStaticRuntimeEnv(input: {
@@ -446,14 +513,11 @@ async function waitForCurrentWorkflow(installationId: number) {
 }
 
 async function runReviewSmoke() {
-  run("bash", ["scripts/seed-codex-auth.sh"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      REVIEW_ROUTER_CONFIRM_WRITE: "1",
-      REVIEW_ROUTER_REPO: targetRepo,
-    },
-  });
+  if (reviewAuth === "openrouter") {
+    seedOpenRouterApiKey();
+  } else {
+    seedCodexAuth();
+  }
 
   run("git", ["fetch", "origin", "main", "-q"], { cwd: workdir });
   run("git", ["checkout", "-q", "main"], { cwd: workdir });
@@ -558,6 +622,34 @@ async function runReviewSmoke() {
       title: firstMarkdownHeading(comment.body),
     })),
   };
+}
+
+function seedCodexAuth(): void {
+  run("bash", ["scripts/seed-codex-auth.sh"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      REVIEW_ROUTER_CONFIRM_WRITE: "1",
+      REVIEW_ROUTER_REPO: targetRepo,
+    },
+  });
+}
+
+function seedOpenRouterApiKey(): void {
+  const result = spawnSync(
+    "gh",
+    ["secret", "set", "OPENROUTER_API_KEY", "--repo", targetRepo],
+    {
+      input: `${requireEnv("OPENROUTER_API_KEY")}\n`,
+      encoding: "utf8",
+      stdio: ["pipe", "ignore", "pipe"],
+    },
+  );
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `failed to seed OPENROUTER_API_KEY secret: ${result.error?.message ?? result.stderr.trim()}`,
+    );
+  }
 }
 
 async function waitForReviewRun(branch: string): Promise<WorkflowRunView> {

@@ -20,11 +20,12 @@ export function mapConfigToRuntimeEnv(
     case "codex_openai_api_key":
       return { ...common, REVIEW_AUTH_MODE: "openai-api" };
     case "openrouter_api_key":
+      const openRouterProvider = `openrouter/${config.provider.model}`;
       return {
         ...common,
         REVIEW_AUTH_MODE: "openrouter-api",
-        REVIEW_PROVIDERS: `openrouter/${config.provider.model}`,
-        SYNTHESIS_MODEL: config.provider.model,
+        REVIEW_PROVIDERS: openRouterProvider,
+        SYNTHESIS_MODEL: openRouterProvider,
       };
   }
 }

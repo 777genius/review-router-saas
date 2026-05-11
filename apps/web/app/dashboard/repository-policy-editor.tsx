@@ -24,6 +24,13 @@ type RepositoryPolicyEditorConfig = {
   readonly config: ReviewConfiguration;
 } | null;
 
+type ReviewModelOption = {
+  readonly value: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly disabled?: boolean;
+};
+
 const providerAuthOptions = [
   {
     value: "codex_subscription_oauth",
@@ -72,15 +79,6 @@ const agenticContextOptions = [
   },
 ] as const;
 
-const modelOptions = [
-  { value: "gpt-5.5", label: "GPT-5.5" },
-  { value: "gpt-5.4", label: "GPT-5.4" },
-  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
-  { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
-  { value: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
-  { value: "gpt-5.2", label: "GPT-5.2" },
-] as const;
-
 const fieldHelp = {
   providerAuthMode:
     "Where the review action gets model credentials. Codex OAuth uses the connected Codex subscription; API-key modes use GitHub Actions secrets.",
@@ -105,6 +103,7 @@ export function RepositoryPolicyEditor({
   repository,
   repositoryConfig,
   effectiveConfig,
+  modelOptions,
   mutationsEnabled,
   compact = false,
 }: {
@@ -112,6 +111,7 @@ export function RepositoryPolicyEditor({
   readonly repository: RepositoryPolicyEditorRepository;
   readonly repositoryConfig: RepositoryPolicyEditorConfig;
   readonly effectiveConfig: ReviewConfiguration;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
   readonly compact?: boolean;
 }): React.ReactElement {
@@ -172,6 +172,7 @@ export function RepositoryPolicyEditor({
           <ReviewConfigForm
             action={saveRepositorySettings}
             config={effectiveConfig}
+            modelOptions={modelOptions}
             hiddenFields={[
               { name: "workspaceId", value: workspaceId },
               { name: "repositoryId", value: repository.id },
@@ -243,12 +244,14 @@ function buildDashboardMutationUrl(params: Record<string, string>): string {
 export function ReviewConfigForm({
   action,
   config,
+  modelOptions,
   hiddenFields,
   mutationsEnabled,
   submitLabel,
 }: {
   readonly action: DashboardFormAction;
   readonly config: ReviewConfiguration;
+  readonly modelOptions: readonly ReviewModelOption[];
   readonly hiddenFields: readonly {
     readonly name: string;
     readonly value: string;
@@ -520,6 +523,8 @@ function DashboardModelField({
   readonly options: readonly {
     readonly value: string;
     readonly label: string;
+    readonly description?: string;
+    readonly disabled?: boolean;
   }[];
 }): React.ReactElement {
   const [value, setValue] = useState(defaultValue);
@@ -571,7 +576,7 @@ function DashboardModelField({
         <div
           id={listboxId}
           role="listbox"
-          className="absolute left-0 right-0 top-full z-40 mt-2 overflow-hidden rounded-xl border border-cyan-200/20 bg-[#061015] p-1 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
+          className="absolute left-0 right-0 top-full z-40 mt-2 max-h-96 overflow-y-auto rounded-xl border border-cyan-200/20 bg-[#061015] p-1 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
         >
           {options.map((option) => {
             const selected = option.value === value;
@@ -583,11 +588,15 @@ function DashboardModelField({
                 aria-selected={selected}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
+                  if (option.disabled) {
+                    return;
+                  }
                   setValue(option.value);
                   setOpen(false);
                 }}
+                disabled={option.disabled}
                 className={[
-                  "grid w-full gap-0.5 rounded-lg px-3 py-2 text-left transition hover:bg-cyan-300/[0.08] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200",
+                  "grid w-full gap-0.5 rounded-lg px-3 py-2 text-left transition hover:bg-cyan-300/[0.08] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200 disabled:cursor-not-allowed disabled:opacity-55",
                   selected
                     ? "bg-cyan-300/[0.1] text-cyan-50"
                     : "text-slate-300",
@@ -595,6 +604,11 @@ function DashboardModelField({
               >
                 <span className="text-sm font-semibold">{option.value}</span>
                 <span className="text-xs text-slate-500">{option.label}</span>
+                {option.description ? (
+                  <span className="text-xs leading-5 text-slate-400">
+                    {option.description}
+                  </span>
+                ) : null}
               </button>
             );
           })}
