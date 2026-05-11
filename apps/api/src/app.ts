@@ -28,6 +28,7 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
+import { PrismaMemoryItemRepository } from "@reviewrouter/features-memory";
 import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
@@ -38,12 +39,17 @@ import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
+import {
+  registerActionMemoryRoutes,
+  type RegisterActionMemoryRoutesDependencies,
+} from "./action-memory-routes.js";
 import { appRouter } from "./trpc.js";
 
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
   readonly githubWebhookDependencies?: RegisterGitHubWebhookRoutesDependencies;
   readonly actionControlPlaneDependencies?: RegisterActionControlPlaneRoutesDependencies;
+  readonly actionMemoryDependencies?: RegisterActionMemoryRoutesDependencies;
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
   readonly actionControlPlaneEnabled?: boolean;
@@ -162,6 +168,27 @@ export async function createApiApp(
 
   if (actionControlPlaneDependencies) {
     await registerActionControlPlaneRoutes(app, actionControlPlaneDependencies);
+  }
+
+  const actionMemoryDependencies =
+    options.actionMemoryDependencies ??
+    (actionControlPlaneDependencies && prisma
+      ? {
+          repositories: actionControlPlaneDependencies.repositories,
+          sessions: actionControlPlaneDependencies.sessions,
+          memoryItems: new PrismaMemoryItemRepository(prisma),
+          ...(actionControlPlaneDependencies.entitlements
+            ? { entitlements: actionControlPlaneDependencies.entitlements }
+            : {}),
+          clock: actionControlPlaneDependencies.clock,
+          ...(options.actionControlPlaneEnabled === false
+            ? { controlPlaneEnabled: false }
+            : {}),
+        }
+      : undefined);
+
+  if (actionMemoryDependencies) {
+    await registerActionMemoryRoutes(app, actionMemoryDependencies);
   }
 
   app.register(fastifyTRPCPlugin, {

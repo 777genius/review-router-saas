@@ -19,6 +19,14 @@ import {
   StaticActionRuntimeCompatibilityPolicy,
 } from "@reviewrouter/features-action-control-plane";
 import type {
+  MemoryItemRepositoryPort,
+  MemoryItemSnapshot,
+} from "@reviewrouter/features-memory";
+import {
+  createDashboardMemorySource,
+  createMemoryBodyHash,
+} from "@reviewrouter/features-memory";
+import type {
   GitHubInstallationRepositoryPort,
   GitHubInstallationSnapshot,
   GitHubPullRequestWebhookEnvelope,
@@ -155,6 +163,43 @@ class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
   }
 }
 
+class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
+  constructor(private readonly snapshots: readonly MemoryItemSnapshot[]) {}
+
+  async save(): Promise<void> {}
+
+  async findById(): Promise<MemoryItemSnapshot | null> {
+    return null;
+  }
+
+  async findActiveByBodyHash(): Promise<MemoryItemSnapshot | null> {
+    return null;
+  }
+
+  async listActiveForBundle(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly userId: string | null;
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    return this.snapshots
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.scope === "workspace" ||
+          (item.scope === "repository" &&
+            item.repositoryId === input.repositoryId) ||
+          (item.scope === "user_prefs" && item.userId === input.userId),
+      )
+      .slice(0, input.limit);
+  }
+
+  async listForDashboard(): Promise<readonly MemoryItemSnapshot[]> {
+    return this.snapshots;
+  }
+}
+
 class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
   constructor(
     private readonly overrides: Partial<GitHubActionsOidcClaims> = {},
@@ -229,6 +274,44 @@ class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
 const fixedClock: Clock = {
   now: () => new Date("2026-05-03T12:00:00.000Z"),
 };
+
+function actionMemorySnapshot(
+  overrides: Partial<MemoryItemSnapshot>,
+): MemoryItemSnapshot {
+  const body = overrides.body ?? "Prefer guard clauses in service methods.";
+  const now = fixedClock.now();
+  return {
+    id: overrides.id ?? "mem_1",
+    schemaVersion: 1,
+    workspaceId: overrides.workspaceId ?? "workspace_1",
+    repositoryId: overrides.repositoryId ?? "repo_1",
+    userId: overrides.userId ?? null,
+    scope: overrides.scope ?? "repository",
+    status: overrides.status ?? "active",
+    body,
+    bodyVersion: overrides.bodyVersion ?? 1,
+    bodyHash: overrides.bodyHash ?? createMemoryBodyHash(body),
+    tags: overrides.tags ?? [],
+    riskLevel: overrides.riskLevel ?? "low",
+    confidence: overrides.confidence ?? 0.92,
+    source:
+      overrides.source ??
+      createDashboardMemorySource({ actorLogin: "maintainer" }),
+    policyVersion: overrides.policyVersion ?? 1,
+    safetyPolicyVersion: overrides.safetyPolicyVersion ?? 1,
+    createdBy: overrides.createdBy ?? "github_user:user_1",
+    confirmedBy: overrides.confirmedBy ?? "github_user:user_1",
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now,
+    lastUsedAt: overrides.lastUsedAt ?? null,
+    expiresAt: overrides.expiresAt ?? null,
+    version: overrides.version ?? 1,
+    visibility: overrides.visibility ?? "repository_runtime",
+    originSuggestionId: overrides.originSuggestionId ?? null,
+    indexState: overrides.indexState ?? "indexed",
+    indexVersion: overrides.indexVersion ?? 1,
+  };
+}
 
 const expectedApiUrl = (
   process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
@@ -685,16 +768,44 @@ describe("API app", () => {
   it("serves action OIDC exchange, config fetch, and safe health report", async () => {
     const repositories = new InMemoryActionRepositories();
     const commentTokens = new InMemoryCommentTokenIssuer();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_repo",
+        body: "Prefer guard clauses in service methods.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+      actionMemorySnapshot({
+        id: "mem_workspace",
+        body: "Use Prisma migrations for schema changes.",
+        scope: "workspace",
+        repositoryId: null,
+        visibility: "workspace_runtime",
+      }),
+      actionMemorySnapshot({
+        id: "mem_other_repo",
+        body: "Other repository memory.",
+        scope: "repository",
+        repositoryId: "repo_other",
+      }),
+    ]);
     const app = await createApiApp({
       actionControlPlaneDependencies: {
         repositories,
         commentTokens,
         oidcVerifier: new StaticActionOidcVerifier(),
-        sessions: new JoseActionSessionTokenService(
-          "0123456789abcdef0123456789abcdef",
-        ),
+        sessions,
         clock: fixedClock,
         oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memoryItems,
+        clock: fixedClock,
       },
     });
 
@@ -720,6 +831,29 @@ describe("API app", () => {
       protocolVersion: 1,
       provider: { model: "gpt-5.5" },
       runtimeEnv: { REVIEW_AUTH_MODE: "codex-oauth" },
+    });
+
+    const memory = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+    });
+    expect(memory.statusCode).toBe(200);
+    expect(memory.json()).toMatchObject({
+      protocolVersion: 1,
+      memoryVersion: 1,
+      items: [
+        {
+          id: "mem_repo",
+          scope: "repository",
+          body: "Prefer guard clauses in service methods.",
+        },
+        {
+          id: "mem_workspace",
+          scope: "workspace",
+          body: "Use Prisma migrations for schema changes.",
+        },
+      ],
     });
 
     const commentToken = await app.inject({

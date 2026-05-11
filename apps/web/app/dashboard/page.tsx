@@ -42,6 +42,14 @@ import {
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
 import {
+  listMemoryItemsForDashboard,
+  listMemorySuggestionsForDashboard,
+  PrismaMemoryItemRepository,
+  PrismaMemorySuggestionRepository,
+  type MemoryDashboardItemDto,
+  type MemoryDashboardSuggestionDto,
+} from "@reviewrouter/features-memory";
+import {
   getWorkspaceSupportDiagnostics,
   PrismaSupportDiagnosticsRepository,
 } from "@reviewrouter/features-support-diagnostics";
@@ -52,7 +60,12 @@ import {
 import { getPrisma } from "../../src/server/prisma";
 import {
   clearRepositoryReviewConfigAction,
+  confirmMemorySuggestionAction,
+  createMemoryItemAction,
+  deleteMemoryItemAction,
+  disableMemoryItemAction,
   requestInstallationSyncAction,
+  rejectMemorySuggestionAction,
   retryOutboxEventAction,
   enableOrgRulesetWorkflowAction,
   saveRepositoryReviewConfigAction,
@@ -177,6 +190,8 @@ async function loadDashboardData(
   const outboxStore = new PrismaOutboxEventRepository(prisma);
   const diagnosticsStore = new PrismaSupportDiagnosticsRepository(prisma);
   const orgRulesetStore = new PrismaOrgRulesetProvisioningRepository(prisma);
+  const memoryItemStore = new PrismaMemoryItemRepository(prisma);
+  const memorySuggestionStore = new PrismaMemorySuggestionRepository(prisma);
 
   const dashboardData = await Promise.all(
     workspaces.map(
@@ -212,6 +227,8 @@ async function loadDashboardData(
         orgRuleset: Awaited<
           ReturnType<typeof orgRulesetStore.findByWorkspaceId>
         >;
+        memoryItems: readonly MemoryDashboardItemDto[];
+        memorySuggestions: readonly MemoryDashboardSuggestionDto[];
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -284,6 +301,19 @@ async function loadDashboardData(
         const orgRuleset = await orgRulesetStore.findByWorkspaceId(
           workspace.id,
         );
+        const [memoryItems, memorySuggestions] = await Promise.all([
+          listMemoryItemsForDashboard(
+            { workspaceId: workspace.id, limit: 25 },
+            { memoryItems: memoryItemStore },
+          ),
+          listMemorySuggestionsForDashboard(
+            { workspaceId: workspace.id, limit: 25 },
+            {
+              memorySuggestions: memorySuggestionStore,
+              clock: { now: () => new Date() },
+            },
+          ),
+        ]);
 
         return {
           workspace: {
@@ -308,6 +338,8 @@ async function loadDashboardData(
           outboxFailures,
           supportDiagnostics,
           orgRuleset,
+          memoryItems: memoryItems.items,
+          memorySuggestions: memorySuggestions.suggestions,
         };
       },
     ),
@@ -475,7 +507,12 @@ type DashboardPageProps = {
   >;
 };
 
-type DashboardSection = "repositories" | "setup" | "policy" | "diagnostics";
+type DashboardSection =
+  | "repositories"
+  | "memory"
+  | "setup"
+  | "policy"
+  | "diagnostics";
 
 const dashboardSectionMeta: Record<
   DashboardSection,
@@ -492,6 +529,13 @@ const dashboardSectionMeta: Record<
     description:
       "Create setup PRs, confirm runtime health, and see what needs attention before reviews run.",
     navDescription: "Setup PRs and health",
+  },
+  memory: {
+    eyebrow: "Memory management",
+    title: "Memory",
+    description:
+      "Confirm suggested memories, manage approved knowledge, and keep runtime context scoped to this workspace.",
+    navDescription: "Suggestions and knowledge",
   },
   setup: {
     eyebrow: "Connection",
@@ -693,14 +737,14 @@ function DashboardSectionNav({
     readonly label: string;
     readonly description: string;
     readonly href: string;
-  }[] = (["repositories", "setup", "policy", "diagnostics"] as const).map(
-    (section) => ({
-      section,
-      label: dashboardSectionMeta[section].title,
-      description: dashboardSectionMeta[section].navDescription,
-      href: dashboardSectionHref(section, workspaceKey),
-    }),
-  );
+  }[] = (
+    ["repositories", "memory", "setup", "policy", "diagnostics"] as const
+  ).map((section) => ({
+    section,
+    label: dashboardSectionMeta[section].title,
+    description: dashboardSectionMeta[section].navDescription,
+    href: dashboardSectionHref(section, workspaceKey),
+  }));
 
   return (
     <aside className="p-4 lg:p-5">
@@ -766,6 +810,8 @@ function WorkspaceCard({
     outboxFailures,
     supportDiagnostics,
     orgRuleset,
+    memoryItems,
+    memorySuggestions,
   } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
@@ -864,6 +910,16 @@ function WorkspaceCard({
               }
             />
           </>
+        ) : null}
+
+        {selectedSection === "memory" ? (
+          <MemoryManagementPanel
+            workspace={workspace}
+            repositories={repositories}
+            memoryItems={memoryItems}
+            memorySuggestions={memorySuggestions}
+            mutationsEnabled={mutationsEnabled}
+          />
         ) : null}
 
         {selectedSection === "setup" ? (
@@ -1378,9 +1434,11 @@ function DashboardSectionHeader({
       ? `${repositoryCount} synced repositories`
       : selectedSection === "policy"
         ? `${activeConfig.provider.model} / ${activeConfig.provider.reasoningEffort}`
-        : selectedSection === "setup"
-          ? "App connection"
-          : "Metadata only";
+        : selectedSection === "memory"
+          ? "Confirm before use"
+          : selectedSection === "setup"
+            ? "App connection"
+            : "Metadata only";
 
   return (
     <section className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -1458,6 +1516,500 @@ function ReadinessInlineStat({
       </span>
       <span className="text-sm text-cyan-50">{value}</span>
     </span>
+  );
+}
+
+function MemoryManagementPanel({
+  workspace,
+  repositories,
+  memoryItems,
+  memorySuggestions,
+  mutationsEnabled,
+}: {
+  readonly workspace: DashboardWorkspace;
+  readonly repositories: DashboardWorkspaceData["repositories"];
+  readonly memoryItems: readonly MemoryDashboardItemDto[];
+  readonly memorySuggestions: readonly MemoryDashboardSuggestionDto[];
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  const activeItems = memoryItems.filter((item) => item.status === "active");
+  const disabledItems = memoryItems.filter(
+    (item) => item.status === "disabled",
+  );
+  const expiredItems = memoryItems.filter((item) => item.status === "expired");
+  const firstDetail = activeItems[0] ?? memoryItems[0] ?? null;
+  const selectedRepositories = repositories.filter(
+    (repository) => repository.selected && !repository.archived,
+  );
+  const defaultRepository = selectedRepositories[0] ?? null;
+
+  return (
+    <section className="grid gap-4 xl:grid-cols-[14rem_minmax(0,1fr)_20rem]">
+      <aside className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+        <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+          Scope
+        </p>
+        <div className="mt-3 grid gap-2 text-sm">
+          <MemoryScopeFilterRow
+            label="Repository"
+            count={
+              memoryItems.filter((item) => item.scope === "repository").length
+            }
+          />
+          <MemoryScopeFilterRow
+            label="Workspace"
+            count={
+              memoryItems.filter((item) => item.scope === "workspace").length
+            }
+          />
+          <MemoryScopeFilterRow
+            label="User prefs"
+            count={
+              memoryItems.filter((item) => item.scope === "user_prefs").length
+            }
+          />
+        </div>
+
+        <div className="mt-5 border-t border-cyan-200/10 pt-4">
+          <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Repositories
+          </p>
+          <div className="mt-3 grid gap-2">
+            <MemoryRepositoryRow
+              label="All repositories"
+              count={memoryItems.length}
+            />
+            {selectedRepositories.slice(0, 8).map((repository) => (
+              <MemoryRepositoryRow
+                key={repository.id}
+                label={repository.name}
+                count={
+                  memoryItems.filter(
+                    (item) => item.repositoryId === repository.id,
+                  ).length
+                }
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-5 border-t border-cyan-200/10 pt-4">
+          <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Status
+          </p>
+          <div className="mt-3 grid gap-2">
+            <MemoryScopeFilterRow label="Active" count={activeItems.length} />
+            <MemoryScopeFilterRow
+              label="Disabled"
+              count={disabledItems.length}
+            />
+            <MemoryScopeFilterRow label="Expired" count={expiredItems.length} />
+          </div>
+        </div>
+      </aside>
+
+      <div className="grid gap-4">
+        <div className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <Badge tone="accent">Add memory</Badge>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Maintainer-approved guidance only. Code, diffs, secrets, and
+                prompts are blocked before storage.
+              </p>
+            </div>
+            <Badge tone="neutral">{memoryItems.length} total</Badge>
+          </div>
+          <form action={createMemoryItemAction} className="mt-4 grid gap-3">
+            <input type="hidden" name="workspaceId" value={workspace.id} />
+            <div className="grid gap-3 md:grid-cols-[12rem_minmax(0,1fr)]">
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                Scope
+                <select
+                  name="scope"
+                  defaultValue="workspace"
+                  className="min-h-11 rounded-xl border border-cyan-200/10 bg-slate-950 px-3 text-sm normal-case tracking-normal text-cyan-50 outline-none transition focus:border-cyan-200/45"
+                >
+                  <option value="workspace">Workspace</option>
+                  <option value="repository">Repository</option>
+                  <option value="user_prefs">User prefs</option>
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                Repository
+                <select
+                  name="repositoryId"
+                  defaultValue={defaultRepository?.id ?? ""}
+                  className="min-h-11 rounded-xl border border-cyan-200/10 bg-slate-950 px-3 text-sm normal-case tracking-normal text-cyan-50 outline-none transition focus:border-cyan-200/45"
+                >
+                  {defaultRepository ? null : (
+                    <option value="">No active repository</option>
+                  )}
+                  {selectedRepositories.map((repository) => (
+                    <option key={repository.id} value={repository.id}>
+                      {repository.fullName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+              Memory
+              <textarea
+                name="body"
+                minLength={8}
+                maxLength={1200}
+                rows={3}
+                placeholder="Prefer guard clauses in service layer methods."
+                className="min-h-24 resize-y rounded-xl border border-cyan-200/10 bg-slate-950 px-3 py-2 text-sm normal-case leading-6 tracking-normal text-cyan-50 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/45"
+              />
+            </label>
+            <div className="flex justify-end">
+              <FormSubmitButton
+                variant="solid"
+                size="sm"
+                disabled={!mutationsEnabled}
+                idleLabel="Add memory"
+                pendingLabel="Saving..."
+              />
+            </div>
+          </form>
+        </div>
+
+        <div className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <Badge tone="warning">Pending</Badge>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Model suggestions stay out of runtime context until a maintainer
+                confirms them.
+              </p>
+            </div>
+            <Badge tone="neutral">{memorySuggestions.length} pending</Badge>
+          </div>
+          <div className="mt-4 grid gap-3">
+            {memorySuggestions.length === 0 ? (
+              <p className="rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm text-slate-400">
+                No pending suggestions.
+              </p>
+            ) : (
+              memorySuggestions.map((suggestion) => (
+                <MemorySuggestionRow
+                  key={suggestion.id}
+                  workspaceId={workspace.id}
+                  suggestion={suggestion}
+                  mutationsEnabled={mutationsEnabled}
+                />
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <Badge tone="success">Confirmed</Badge>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Approved memory available to retrieval, filtered by scope and
+                repository.
+              </p>
+            </div>
+            <Badge tone="neutral">{activeItems.length} active</Badge>
+          </div>
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+              <thead className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                <tr>
+                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                    Memory
+                  </th>
+                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                    Scope
+                  </th>
+                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                    Status
+                  </th>
+                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                    Confidence
+                  </th>
+                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {memoryItems.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-3 py-5 text-center text-sm text-slate-400"
+                    >
+                      No confirmed memories yet.
+                    </td>
+                  </tr>
+                ) : (
+                  memoryItems.map((item) => (
+                    <MemoryItemRow
+                      key={item.id}
+                      workspaceId={workspace.id}
+                      item={item}
+                      mutationsEnabled={mutationsEnabled}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <aside className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+        <div className="grid gap-4">
+          <div>
+            <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+              Policy safeguards
+            </p>
+            <div className="mt-3 grid gap-3 text-sm leading-6 text-slate-300">
+              <MemoryPolicyLine
+                title="Maintainer confirmation"
+                body="Project memory requires workspace admin or repository maintainer approval."
+              />
+              <MemoryPolicyLine
+                title="No code or diff stored"
+                body="Secrets, code blocks, diffs, stack traces, and prompt injection text are blocked."
+              />
+              <MemoryPolicyLine
+                title="Scoped retrieval"
+                body="Repository memory is not shared across repositories; user prefs are limited to safe response preferences."
+              />
+            </div>
+          </div>
+
+          <div className="border-t border-cyan-200/10 pt-4">
+            <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
+              Details
+            </p>
+            {firstDetail ? (
+              <div className="mt-3 grid gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={memoryStatusTone(firstDetail.status)}>
+                    {firstDetail.status}
+                  </Badge>
+                  <Badge tone="neutral">
+                    {memoryScopeLabel(firstDetail.scope)}
+                  </Badge>
+                </div>
+                <p className="text-sm leading-6 text-cyan-50">
+                  {firstDetail.body}
+                </p>
+                <dl className="grid gap-2 text-xs text-slate-400">
+                  <MemoryDetailStat
+                    label="Confidence"
+                    value={formatPercent(firstDetail.confidence)}
+                  />
+                  <MemoryDetailStat
+                    label="Source"
+                    value={memorySourceLabel(firstDetail.source)}
+                  />
+                  <MemoryDetailStat
+                    label="Updated"
+                    value={formatIsoDate(firstDetail.updatedAt)}
+                  />
+                </dl>
+                <div className="rounded-xl border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+                  Privacy-first: only distilled memory is stored. Raw code,
+                  diffs, prompts, and secrets are not saved.
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-sm leading-6 text-slate-400">
+                Select or create memory to populate retrieval preview.
+              </p>
+            )}
+          </div>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function MemoryScopeFilterRow({
+  label,
+  count,
+}: {
+  readonly label: string;
+  readonly count: number;
+}): React.ReactElement {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] px-3 py-2">
+      <span className="min-w-0 truncate text-slate-300">{label}</span>
+      <span className="font-mono text-xs font-semibold text-cyan-100">
+        {count}
+      </span>
+    </div>
+  );
+}
+
+function MemoryRepositoryRow({
+  label,
+  count,
+}: {
+  readonly label: string;
+  readonly count: number;
+}): React.ReactElement {
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs">
+      <span className="min-w-0 truncate text-slate-400">{label}</span>
+      <span className="font-mono text-slate-500">{count}</span>
+    </div>
+  );
+}
+
+function MemorySuggestionRow({
+  workspaceId,
+  suggestion,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly suggestion: MemoryDashboardSuggestionDto;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  return (
+    <div className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 md:grid-cols-[minmax(0,1fr)_12rem]">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={memoryRiskTone(suggestion.safety.riskLevel)}>
+            {suggestion.safety.riskLevel}
+          </Badge>
+          <Badge tone="neutral">
+            {memoryScopeLabel(suggestion.suggestedScope)}
+          </Badge>
+          {suggestion.isExpired ? <Badge tone="warning">Expired</Badge> : null}
+        </div>
+        <p className="mt-3 text-sm leading-6 text-cyan-50">
+          {suggestion.suggestedBody}
+        </p>
+        <p className="mt-2 text-xs leading-5 text-slate-500">
+          {memorySourceLabel(suggestion.source)} / {suggestion.reason} / expires{" "}
+          {formatIsoDate(suggestion.expiresAt)}
+        </p>
+      </div>
+      <div className="grid content-start gap-2">
+        <form action={confirmMemorySuggestionAction}>
+          <input type="hidden" name="workspaceId" value={workspaceId} />
+          <input type="hidden" name="suggestionId" value={suggestion.id} />
+          <FormSubmitButton
+            variant="solid"
+            size="sm"
+            className="w-full"
+            disabled={!mutationsEnabled || suggestion.isExpired}
+            idleLabel="Approve"
+            pendingLabel="Approving..."
+          />
+        </form>
+        <form action={rejectMemorySuggestionAction}>
+          <input type="hidden" name="workspaceId" value={workspaceId} />
+          <input type="hidden" name="suggestionId" value={suggestion.id} />
+          <input type="hidden" name="reason" value="dashboard_reject" />
+          <FormSubmitButton
+            variant="outline"
+            size="sm"
+            className="w-full"
+            disabled={!mutationsEnabled || suggestion.isExpired}
+            idleLabel="Reject"
+            pendingLabel="Rejecting..."
+          />
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function MemoryItemRow({
+  workspaceId,
+  item,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly item: MemoryDashboardItemDto;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  const mutable = mutationsEnabled && item.status !== "deleted";
+  return (
+    <tr className="align-top text-slate-300">
+      <td className="border-b border-cyan-200/10 px-3 py-3">
+        <p className="max-w-md text-sm leading-6 text-cyan-50">{item.body}</p>
+        <p className="mt-1 text-xs text-slate-500">
+          {memorySourceLabel(item.source)} / updated{" "}
+          {formatIsoDate(item.updatedAt)}
+        </p>
+      </td>
+      <td className="border-b border-cyan-200/10 px-3 py-3">
+        <Badge tone="neutral">{memoryScopeLabel(item.scope)}</Badge>
+      </td>
+      <td className="border-b border-cyan-200/10 px-3 py-3">
+        <Badge tone={memoryStatusTone(item.status)}>{item.status}</Badge>
+      </td>
+      <td className="border-b border-cyan-200/10 px-3 py-3 font-mono text-xs text-cyan-100">
+        {formatPercent(item.confidence)}
+      </td>
+      <td className="border-b border-cyan-200/10 px-3 py-3">
+        <div className="flex flex-wrap gap-2">
+          <form action={disableMemoryItemAction}>
+            <input type="hidden" name="workspaceId" value={workspaceId} />
+            <input type="hidden" name="memoryItemId" value={item.id} />
+            <FormSubmitButton
+              variant="outline"
+              size="sm"
+              disabled={!mutable || item.status === "disabled"}
+              idleLabel="Disable"
+              pendingLabel="Saving..."
+            />
+          </form>
+          <form action={deleteMemoryItemAction}>
+            <input type="hidden" name="workspaceId" value={workspaceId} />
+            <input type="hidden" name="memoryItemId" value={item.id} />
+            <FormSubmitButton
+              variant="outline"
+              size="sm"
+              disabled={!mutable}
+              idleLabel="Delete"
+              pendingLabel="Deleting..."
+            />
+          </form>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function MemoryPolicyLine({
+  title,
+  body,
+}: {
+  readonly title: string;
+  readonly body: string;
+}): React.ReactElement {
+  return (
+    <div className="rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-3">
+      <p className="text-sm font-semibold text-cyan-50">{title}</p>
+      <p className="mt-1 text-xs leading-5 text-slate-400">{body}</p>
+    </div>
+  );
+}
+
+function MemoryDetailStat({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.ReactElement {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt>{label}</dt>
+      <dd className="min-w-0 truncate text-cyan-100">{value}</dd>
+    </div>
   );
 }
 
@@ -1918,17 +2470,16 @@ function RepositorySetupProgressPanel({
     workspace,
     repository.fullName,
   );
-  const enableReviewAction =
-    installation ? (
-      <RepositoryProviderSecretsAction
-        workspace={workspace}
-        repository={repository}
-        setupStatus={repository.setupStatus}
-        disabled={!canManage}
-        triggerVariant="outline"
-        triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
-      />
-    ) : null;
+  const enableReviewAction = installation ? (
+    <RepositoryProviderSecretsAction
+      workspace={workspace}
+      repository={repository}
+      setupStatus={repository.setupStatus}
+      disabled={!canManage}
+      triggerVariant="outline"
+      triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
+    />
+  ) : null;
 
   return (
     <RepositorySetupProgressPanelClient
@@ -1965,7 +2516,6 @@ function SetupDisclosureChevron(): React.ReactElement {
     </svg>
   );
 }
-
 
 function SetupCompleteCheckIcon(): React.ReactElement {
   return (
@@ -2602,6 +3152,23 @@ function resolveDashboardSection(
   }
   if (
     [
+      "memory_saved",
+      "memory_suggestion_confirmed",
+      "memory_suggestion_rejected",
+      "memory_disabled",
+      "memory_deleted",
+      "memory_duplicate",
+      "memory_already_confirmed",
+      "memory_already_rejected",
+      "memory_already_disabled",
+      "memory_already_deleted",
+      "memory_noop",
+    ].includes(notice)
+  ) {
+    return "memory";
+  }
+  if (
+    [
       "review_config_saved",
       "repository_review_config_saved",
       "repository_review_config_cleared",
@@ -2610,12 +3177,15 @@ function resolveDashboardSection(
     return "policy";
   }
   if (notice.startsWith("outbox_retry_")) return "diagnostics";
+  if (isMemoryError(readParam(params.error))) return "memory";
   if (readParam(params.error)) return "setup";
   return "repositories";
 }
 
 function isDashboardSection(value: string): value is DashboardSection {
-  return ["repositories", "setup", "policy", "diagnostics"].includes(value);
+  return ["repositories", "memory", "setup", "policy", "diagnostics"].includes(
+    value,
+  );
 }
 
 function dashboardSectionHref(
@@ -2663,6 +3233,25 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return repository
         ? `${repository} now inherits the workspace review configuration.`
         : "Repository override was cleared.";
+    case "memory_saved":
+      return "Memory was saved after policy and safety checks.";
+    case "memory_suggestion_confirmed":
+      return "Suggested memory was confirmed and queued for retrieval indexing.";
+    case "memory_suggestion_rejected":
+      return "Suggested memory was rejected and will not be used in runtime context.";
+    case "memory_disabled":
+      return "Memory was disabled and queued for removal from retrieval.";
+    case "memory_deleted":
+      return "Memory was deleted and queued for removal from retrieval.";
+    case "memory_duplicate":
+      return "A matching active memory already exists, so nothing was changed.";
+    case "memory_already_confirmed":
+    case "memory_already_rejected":
+    case "memory_already_disabled":
+    case "memory_already_deleted":
+      return "Memory state was already up to date.";
+    case "memory_noop":
+      return "No memory change was needed.";
     case "outbox_retry_queued":
       return "Failed background event was queued for retry. Refresh in a few seconds after background processing catches up.";
     case "outbox_retry_not_found":
@@ -2695,6 +3284,24 @@ function dashboardNoticeTitle(notice: string): string {
     case "repository_review_config_saved":
     case "repository_review_config_cleared":
       return "Model settings saved";
+    case "memory_saved":
+      return "Memory saved";
+    case "memory_suggestion_confirmed":
+      return "Suggestion approved";
+    case "memory_suggestion_rejected":
+      return "Suggestion rejected";
+    case "memory_disabled":
+      return "Memory disabled";
+    case "memory_deleted":
+      return "Memory deleted";
+    case "memory_duplicate":
+      return "Duplicate skipped";
+    case "memory_already_confirmed":
+    case "memory_already_rejected":
+    case "memory_already_disabled":
+    case "memory_already_deleted":
+    case "memory_noop":
+      return "Memory unchanged";
     case "outbox_retry_queued":
     case "outbox_retry_not_found":
     case "outbox_retry_not_dead_letter":
@@ -2716,8 +3323,19 @@ function dashboardNoticeTone(
     case "review_config_saved":
     case "repository_review_config_saved":
     case "repository_review_config_cleared":
+    case "memory_saved":
+    case "memory_suggestion_confirmed":
+    case "memory_suggestion_rejected":
+    case "memory_disabled":
+    case "memory_deleted":
       return "success";
     case "sync_already_requested":
+    case "memory_duplicate":
+    case "memory_already_confirmed":
+    case "memory_already_rejected":
+    case "memory_already_disabled":
+    case "memory_already_deleted":
+    case "memory_noop":
       return "accent";
     case "outbox_retry_not_found":
     case "outbox_retry_not_dead_letter":
@@ -2734,6 +3352,25 @@ function isProviderSecretCheckError(error: string): boolean {
     error === "provider_secret_not_available_to_repository" ||
     error === "provider_secret_check_permission_required"
   );
+}
+
+function isMemoryError(error: string): boolean {
+  return [
+    "contains_code_block",
+    "contains_diff_hunk",
+    "contains_large_stacktrace",
+    "contains_prompt_injection",
+    "contains_secret_like_text",
+    "memory_not_found",
+    "memory_safety_blocked",
+    "not_repository_maintainer",
+    "not_user_owner",
+    "not_workspace_admin",
+    "permission_service_unavailable",
+    "repository_unavailable",
+    "too_long",
+    "unsafe_for_user_prefs",
+  ].includes(error);
 }
 
 function workspaceInstallSummary(workspace: DashboardWorkspace): string {
@@ -2753,6 +3390,65 @@ function workspaceInstallSummary(workspace: DashboardWorkspace): string {
 
 function formatAccountTypeLabel(accountType: string): string {
   return accountType === "Organization" ? "Organization" : "Personal";
+}
+
+function memoryScopeLabel(scope: MemoryDashboardItemDto["scope"]): string {
+  switch (scope) {
+    case "repository":
+      return "Repository";
+    case "workspace":
+      return "Workspace";
+    case "user_prefs":
+      return "User prefs";
+  }
+}
+
+function memoryStatusTone(
+  status: MemoryDashboardItemDto["status"],
+): "success" | "warning" | "danger" | "neutral" | "accent" {
+  switch (status) {
+    case "active":
+      return "success";
+    case "disabled":
+      return "warning";
+    case "expired":
+      return "neutral";
+    case "deleted":
+      return "danger";
+  }
+}
+
+function memoryRiskTone(
+  risk: MemoryDashboardItemDto["riskLevel"],
+): "success" | "warning" | "danger" | "neutral" | "accent" {
+  switch (risk) {
+    case "low":
+      return "success";
+    case "medium":
+      return "warning";
+    case "high":
+    case "critical":
+      return "danger";
+  }
+}
+
+function memorySourceLabel(source: MemoryDashboardItemDto["source"]): string {
+  const type = source.type.replaceAll("_", " ");
+  if (source.githubPullRequestNumber) {
+    return `PR #${source.githubPullRequestNumber}`;
+  }
+  if (source.actorLogin) {
+    return `${type} by @${source.actorLogin}`;
+  }
+  return type;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatIsoDate(value: string): string {
+  return value.slice(0, 10);
 }
 
 function orgRulesetStatusTone(
@@ -2842,6 +3538,32 @@ function dashboardErrorText(error: string): string {
       return "GitHub rejected the ruleset permission probe. An organization owner may still need to approve the App permission update.";
     case "github_org_ruleset_validation_failed":
       return "GitHub rejected the ruleset payload. Evaluate mode requires GitHub Enterprise; switch to Active or use per-repository setup PR fallback.";
+    case "not_repository_maintainer":
+      return "Only repository maintainers or workspace admins can confirm repository memory.";
+    case "not_workspace_admin":
+      return "Only workspace admins can change workspace memory.";
+    case "not_user_owner":
+      return "User preference memory can only be changed by that user.";
+    case "repository_unavailable":
+      return "This repository is not available for memory changes. It may be archived, unselected, or outside the workspace.";
+    case "memory_not_found":
+      return "Memory was not found in this workspace.";
+    case "contains_secret_like_text":
+      return "Memory was blocked because it looks like it contains a secret.";
+    case "contains_code_block":
+    case "contains_diff_hunk":
+      return "Memory was blocked because code or diffs must not be stored.";
+    case "contains_large_stacktrace":
+      return "Memory was blocked because stack traces must not be stored as memory.";
+    case "contains_prompt_injection":
+      return "Memory was blocked because it looks like prompt-injection text.";
+    case "too_long":
+      return "Memory is too long. Save a short distilled preference or rule instead.";
+    case "unsafe_for_user_prefs":
+      return "User preference memory can only store safe response preferences, not repository-specific facts.";
+    case "permission_service_unavailable":
+    case "memory_safety_blocked":
+      return "Memory policy blocked this change. Refresh and try again with a safer distilled memory.";
     default:
       return "GitHub operation failed. Check audit events or server logs for the safe error code.";
   }

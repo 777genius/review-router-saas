@@ -30,6 +30,16 @@ import {
   saveReviewConfiguration,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import {
+  confirmMemorySuggestion,
+  createDashboardMemorySource,
+  deleteMemoryItem,
+  disableMemoryItem,
+  rejectMemorySuggestion,
+  rememberMemoryDirectly,
+  type MemoryMutationResult,
+  type MemoryScope,
+} from "@reviewrouter/features-memory";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   isWorkflowProvisioningEnabled,
@@ -48,6 +58,10 @@ import {
   assertDashboardMutationAllowed,
   createGitHubAppInstallationOctokit,
 } from "../../src/server/dashboard-mutations";
+import {
+  createDashboardMemoryDependencies,
+  resolveDashboardMemoryActor,
+} from "../../src/server/dashboard-memory";
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
 import { getPrisma } from "../../src/server/prisma";
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
@@ -171,6 +185,51 @@ export async function confirmProviderSecretSetupClientAction(
 
   revalidatePath("/dashboard");
   return { params };
+}
+
+export async function createMemoryItemAction(
+  formData: FormData,
+): Promise<never> {
+  const params = await createMemoryItemMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectAfterMutation(formData, params);
+}
+
+export async function confirmMemorySuggestionAction(
+  formData: FormData,
+): Promise<never> {
+  const params = await confirmMemorySuggestionMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectAfterMutation(formData, params);
+}
+
+export async function rejectMemorySuggestionAction(
+  formData: FormData,
+): Promise<never> {
+  const params = await rejectMemorySuggestionMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectAfterMutation(formData, params);
+}
+
+export async function disableMemoryItemAction(
+  formData: FormData,
+): Promise<never> {
+  const params = await disableMemoryItemMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectAfterMutation(formData, params);
+}
+
+export async function deleteMemoryItemAction(
+  formData: FormData,
+): Promise<never> {
+  const params = await deleteMemoryItemMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectAfterMutation(formData, params);
 }
 
 export async function checkOpenRouterRepositorySecretClientAction(
@@ -596,6 +655,199 @@ async function confirmProviderSecretSetupMutation(
   return params;
 }
 
+async function createMemoryItemMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  let params: Record<string, string>;
+
+  try {
+    const scope = readMemoryScope(formData);
+    const context = await createMemoryActionContext({
+      prisma,
+      workspaceId,
+      rateLimitResourceId: `memory:${scope}`,
+    });
+    const result = await rememberMemoryDirectly(
+      {
+        workspaceId,
+        repositoryId:
+          scope === "repository"
+            ? readFormString(formData, "repositoryId")
+            : null,
+        userId: scope === "user_prefs" ? context.memoryActor.id : null,
+        scope,
+        body: readFormString(formData, "body"),
+        source: createDashboardMemorySource({
+          actorLogin: context.dashboardActor.githubLogin,
+        }),
+        actor: context.memoryActor,
+      },
+      context.dependencies,
+    );
+    params = memoryMutationParams({
+      workspaceId,
+      successNotice: "memory_saved",
+      result,
+    });
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "memory",
+    };
+  }
+
+  return params;
+}
+
+async function confirmMemorySuggestionMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const suggestionId = readFormString(formData, "suggestionId");
+  let params: Record<string, string>;
+
+  try {
+    const context = await createMemoryActionContext({
+      prisma,
+      workspaceId,
+      rateLimitResourceId: `memory-suggestion:${suggestionId}`,
+    });
+    const result = await confirmMemorySuggestion(
+      {
+        workspaceId,
+        suggestionId,
+        actor: context.memoryActor,
+        ...readOptionalEditedMemory(formData),
+      },
+      context.dependencies,
+    );
+    params = memoryMutationParams({
+      workspaceId,
+      successNotice: "memory_suggestion_confirmed",
+      result,
+    });
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "memory",
+    };
+  }
+
+  return params;
+}
+
+async function rejectMemorySuggestionMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const suggestionId = readFormString(formData, "suggestionId");
+  let params: Record<string, string>;
+
+  try {
+    const context = await createMemoryActionContext({
+      prisma,
+      workspaceId,
+      rateLimitResourceId: `memory-suggestion:${suggestionId}`,
+    });
+    const result = await rejectMemorySuggestion(
+      {
+        workspaceId,
+        suggestionId,
+        actor: context.memoryActor,
+        reason: readOptionalFormString(formData, "reason") ?? "rejected",
+      },
+      context.dependencies,
+    );
+    params = memoryMutationParams({
+      workspaceId,
+      successNotice: "memory_suggestion_rejected",
+      result,
+    });
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "memory",
+    };
+  }
+
+  return params;
+}
+
+async function disableMemoryItemMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const itemId = readFormString(formData, "memoryItemId");
+  let params: Record<string, string>;
+
+  try {
+    const context = await createMemoryActionContext({
+      prisma,
+      workspaceId,
+      rateLimitResourceId: `memory-item:${itemId}`,
+    });
+    const result = await disableMemoryItem(
+      { workspaceId, itemId, actor: context.memoryActor },
+      context.dependencies,
+    );
+    params = memoryMutationParams({
+      workspaceId,
+      successNotice: "memory_disabled",
+      result,
+    });
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "memory",
+    };
+  }
+
+  return params;
+}
+
+async function deleteMemoryItemMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const itemId = readFormString(formData, "memoryItemId");
+  let params: Record<string, string>;
+
+  try {
+    const context = await createMemoryActionContext({
+      prisma,
+      workspaceId,
+      rateLimitResourceId: `memory-item:${itemId}`,
+    });
+    const result = await deleteMemoryItem(
+      { workspaceId, itemId, actor: context.memoryActor },
+      context.dependencies,
+    );
+    params = memoryMutationParams({
+      workspaceId,
+      successNotice: "memory_deleted",
+      result,
+    });
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "memory",
+    };
+  }
+
+  return params;
+}
+
 export async function enableOrgRulesetWorkflowAction(
   formData: FormData,
 ): Promise<never> {
@@ -981,6 +1233,75 @@ async function assertDashboardEntitlement(input: {
       auditLog: new PrismaAuditLogRepository(input.prisma),
     },
   );
+}
+
+async function createMemoryActionContext(input: {
+  readonly prisma: PrismaClient;
+  readonly workspaceId: string;
+  readonly rateLimitResourceId: string;
+}) {
+  const dashboardActor = await assertDashboardMutationAllowed(
+    input.workspaceId,
+  );
+  await assertDashboardEntitlement({
+    prisma: input.prisma,
+    workspaceId: input.workspaceId,
+    actor: dashboardActor.actor,
+    feature: "repository_dashboard",
+  });
+  await createDashboardRateLimitPolicy(
+    input.prisma,
+  ).assertReviewConfigSaveAllowed({
+    workspaceId: input.workspaceId,
+    resourceId: input.rateLimitResourceId,
+  });
+
+  const memoryActor = await resolveDashboardMemoryActor(
+    {
+      githubUserId: dashboardActor.githubUserId,
+      githubLogin: dashboardActor.githubLogin,
+    },
+    input.prisma,
+  );
+
+  return {
+    dashboardActor,
+    memoryActor,
+    dependencies: createDashboardMemoryDependencies({
+      prisma: input.prisma,
+      actor: {
+        githubUserId: dashboardActor.githubUserId,
+        githubLogin: dashboardActor.githubLogin,
+      },
+    }),
+  };
+}
+
+function memoryMutationParams(input: {
+  readonly workspaceId: string;
+  readonly successNotice: string;
+  readonly result: MemoryMutationResult;
+}): Record<string, string> {
+  const base = { workspace: input.workspaceId, section: "memory" };
+  if (input.result.status === "created" || input.result.status === "updated") {
+    return { ...base, notice: input.successNotice, memory: input.result.id };
+  }
+  if (input.result.status === "rejected") {
+    return { ...base, error: input.result.reason };
+  }
+  switch (input.result.reason) {
+    case "memory_duplicate":
+      return { ...base, notice: "memory_duplicate" };
+    case "memory_not_found":
+      return { ...base, error: "memory_not_found" };
+    case "confirmed":
+    case "rejected":
+    case "disabled":
+    case "deleted":
+      return { ...base, notice: `memory_already_${input.result.reason}` };
+    default:
+      return { ...base, notice: "memory_noop" };
+  }
 }
 
 async function loadRepositoryForWorkspace(input: {
@@ -1440,6 +1761,53 @@ function readFormString(formData: FormData, key: string): string {
   return value;
 }
 
+function readOptionalFormString(
+  formData: FormData,
+  key: string,
+): string | null {
+  const value = formData.get(key);
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function readMemoryScope(formData: FormData): MemoryScope {
+  const value = readFormString(formData, "scope");
+  if (
+    value === "repository" ||
+    value === "workspace" ||
+    value === "user_prefs"
+  ) {
+    return value;
+  }
+  throw new Error("invalid_form_value:memoryScope");
+}
+
+function readOptionalEditedMemory(formData: FormData): {
+  readonly optionalEditedBody?: string;
+  readonly optionalScope?: MemoryScope;
+} {
+  const body = readOptionalFormString(formData, "body");
+  const rawScope = readOptionalFormString(formData, "scope");
+  const optionalScope =
+    rawScope === null ? undefined : readMemoryScopeValue(rawScope);
+  return {
+    ...(body === null ? {} : { optionalEditedBody: body }),
+    ...(optionalScope === undefined ? {} : { optionalScope }),
+  };
+}
+
+function readMemoryScopeValue(value: string): MemoryScope {
+  if (
+    value === "repository" ||
+    value === "workspace" ||
+    value === "user_prefs"
+  ) {
+    return value;
+  }
+  throw new Error("invalid_form_value:memoryScope");
+}
+
 function readWorkflowStyle(formData: FormData): "reusable" | "explicit" {
   const value = formData.get("workflowStyle");
   return value === "explicit" ? "explicit" : "reusable";
@@ -1600,6 +1968,20 @@ function safeDashboardErrorCode(error: unknown): string {
       "org_rulesets_not_supported",
       "org_ruleset_permission_update_pending",
       "github_org_ruleset_validation_failed",
+      "contains_code_block",
+      "contains_diff_hunk",
+      "contains_large_stacktrace",
+      "contains_prompt_injection",
+      "contains_secret_like_text",
+      "memory_not_found",
+      "memory_safety_blocked",
+      "not_repository_maintainer",
+      "not_user_owner",
+      "not_workspace_admin",
+      "permission_service_unavailable",
+      "repository_unavailable",
+      "too_long",
+      "unsafe_for_user_prefs",
     ].includes(message)
   ) {
     return message;

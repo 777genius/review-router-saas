@@ -13,16 +13,19 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members       WorkspaceMember[]
-  installations GitHubInstallation[]
-  repositories  RepositoryConnection[]
-  provisioning  WorkflowProvisioning[]
-  orgRulesets   OrgRulesetProvisioning[]
-  reviewConfigs ReviewConfiguration[]
-  providerSetup ProviderSetupState[]
-  actionHealth  ActionRunHealthReport[]
-  auditEvents   AuditEvent[]
-  entitlement   WorkspaceEntitlement?
+  members           WorkspaceMember[]
+  installations     GitHubInstallation[]
+  repositories      RepositoryConnection[]
+  provisioning      WorkflowProvisioning[]
+  orgRulesets       OrgRulesetProvisioning[]
+  reviewConfigs     ReviewConfiguration[]
+  providerSetup     ProviderSetupState[]
+  actionHealth      ActionRunHealthReport[]
+  auditEvents       AuditEvent[]
+  entitlement       WorkspaceEntitlement?
+  memoryItems       MemoryItem[]
+  memorySuggestions MemorySuggestion[]
+  memoryUsageEvents MemoryUsageEvent[]
 }
 
 model User {
@@ -34,7 +37,9 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  memberships WorkspaceMember[]
+  memberships       WorkspaceMember[]
+  memoryItems       MemoryItem[]
+  memorySuggestions MemorySuggestion[]
 
   @@index([githubLogin])
 }
@@ -93,13 +98,16 @@ model RepositoryConnection {
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
 
-  workspace      Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation   GitHubInstallation       @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  provisioning   WorkflowProvisioning[]
-  reviewConfigs  ReviewConfiguration[]
-  providerSetup  ProviderSetupState[]
-  actionHealth   ActionRunHealthReport[]
-  rulesetSources OrgRulesetProvisioning[] @relation("OrgRulesetSourceRepository")
+  workspace         Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation      GitHubInstallation       @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  provisioning      WorkflowProvisioning[]
+  reviewConfigs     ReviewConfiguration[]
+  providerSetup     ProviderSetupState[]
+  actionHealth      ActionRunHealthReport[]
+  rulesetSources    OrgRulesetProvisioning[] @relation("OrgRulesetSourceRepository")
+  memoryItems       MemoryItem[]
+  memorySuggestions MemorySuggestion[]
+  memoryUsageEvents MemoryUsageEvent[]
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
@@ -355,6 +363,109 @@ model WorkspaceEntitlement {
   @@index([plan, status])
 }
 
+model MemoryItem {
+  id                  String               @id @default(cuid())
+  schemaVersion       Int                  @default(1)
+  workspaceId         String
+  repositoryId        String?
+  userId              String?
+  scope               MemoryScope
+  status              MemoryItemStatus     @default(active)
+  body                String
+  bodyVersion         Int                  @default(1)
+  bodyHash            String
+  tags                Json
+  riskLevel           MemoryRiskLevel
+  confidence          Float                @default(1)
+  source              Json
+  policyVersion       Int                  @default(1)
+  safetyPolicyVersion Int                  @default(1)
+  createdBy           String
+  confirmedBy         String
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @default(now()) @updatedAt
+  lastUsedAt          DateTime?
+  expiresAt           DateTime?
+  version             Int                  @default(1)
+  visibility          MemoryItemVisibility
+  originSuggestionId  String?
+  indexState          MemoryIndexState     @default(index_pending)
+  indexVersion        Int?
+
+  workspace   Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository  RepositoryConnection? @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  user        User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageEvents MemoryUsageEvent[]
+
+  @@index([workspaceId, scope, status, updatedAt])
+  @@index([workspaceId, repositoryId, status, updatedAt])
+  @@index([workspaceId, userId, status])
+  @@index([workspaceId, bodyHash])
+  @@index([originSuggestionId])
+}
+
+model MemorySuggestion {
+  id                         String                 @id @default(cuid())
+  schemaVersion              Int                    @default(1)
+  workspaceId                String
+  repositoryId               String?
+  userId                     String?
+  suggestedScope             MemoryScope
+  suggestedBody              String
+  suggestedBodyVersion       Int                    @default(1)
+  suggestedBodyHash          String
+  reason                     String
+  source                     Json
+  safetyReport               Json
+  policyVersion              Int                    @default(1)
+  safetyPolicyVersion        Int                    @default(1)
+  status                     MemorySuggestionStatus @default(pending)
+  createdByActor             String
+  confirmationTokenHash      String?
+  confirmationTokenExpiresAt DateTime?
+  expiresAt                  DateTime
+  dedupeKey                  String
+  relatedMemoryItemId        String?
+  relatedSuggestionId        String?
+  createdAt                  DateTime               @default(now())
+  updatedAt                  DateTime               @default(now()) @updatedAt
+  resolvedAt                 DateTime?
+  resolvedBy                 String?
+  resolutionReason           String?
+  version                    Int                    @default(1)
+
+  workspace  Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection? @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  user       User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, expiresAt])
+  @@index([workspaceId, repositoryId, status, updatedAt])
+  @@index([workspaceId, userId, status])
+  @@index([workspaceId, dedupeKey])
+  @@index([relatedMemoryItemId])
+  @@index([relatedSuggestionId])
+}
+
+model MemoryUsageEvent {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  repositoryId  String
+  memoryItemId  String
+  eventType     String
+  bundleVersion Int?
+  metadata      Json
+  occurredAt    DateTime
+  createdAt     DateTime @default(now())
+
+  workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  memoryItem MemoryItem           @relation(fields: [memoryItemId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, occurredAt])
+  @@index([repositoryId, occurredAt])
+  @@index([memoryItemId, occurredAt])
+}
+
 model RateLimitBucket {
   key          String   @id
   count        Int
@@ -465,4 +576,47 @@ enum OutboxEventStatus {
   retry_wait
   processed
   dead_letter
+}
+
+enum MemoryScope {
+  repository
+  workspace
+  user_prefs
+}
+
+enum MemoryItemStatus {
+  active
+  disabled
+  expired
+  deleted
+}
+
+enum MemoryIndexState {
+  not_indexed
+  index_pending
+  indexed
+  index_failed
+  index_deleted
+}
+
+enum MemoryItemVisibility {
+  repository_runtime
+  workspace_runtime
+  user_preference_runtime
+}
+
+enum MemoryRiskLevel {
+  low
+  medium
+  high
+  critical
+}
+
+enum MemorySuggestionStatus {
+  pending
+  confirmed
+  rejected
+  blocked
+  expired
+  superseded
 }
