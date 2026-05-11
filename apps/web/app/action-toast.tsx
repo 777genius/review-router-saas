@@ -58,10 +58,20 @@ export function ActionToast({
             <button
               type="button"
               aria-label="Dismiss notification"
-              className="rounded-full border border-white/10 px-2 py-1 text-xs text-slate-200 transition hover:border-cyan-300/35 hover:bg-white/[0.08]"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-200 transition hover:border-cyan-300/35 hover:bg-white/[0.08] hover:text-cyan-50"
               onClick={() => toast.dismiss(id)}
             >
-              Close
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+              >
+                <path d="M4 4l8 8M12 4l-8 8" />
+              </svg>
             </button>
           </div>
           {actionUrl || secondaryAction ? (
