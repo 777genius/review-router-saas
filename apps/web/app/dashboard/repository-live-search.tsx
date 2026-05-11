@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   Check,
   Globe2,
@@ -22,13 +22,6 @@ export type RepositorySearchIndexItem = {
   readonly searchText: string;
   readonly visibility: string;
   readonly needsSetup: boolean;
-};
-
-type SearchResponse = {
-  readonly repositoryIds: readonly string[];
-  readonly total: number;
-  readonly query: string;
-  readonly filter: RepositorySearchFilter;
 };
 
 const repositoryFilterOptions = [
@@ -64,14 +57,12 @@ export function RepositoryLiveSearch({
   const [matchingIds, setMatchingIds] = useState<ReadonlySet<string>>(
     () => new Set(filterLocalSearch(searchIndex, initialQuery, initialFilter)),
   );
-  const [state, setState] = useState<"idle" | "searching" | "error">("idle");
   const [isRoutePending, startRouteTransition] = useTransition();
-  const latestRequestId = useRef(0);
   const normalizedQuery = query.trim();
   const matchingCount = matchingIds.size;
   const hasActiveQuery = normalizedQuery.length > 0;
   const hasActiveFilter = hasActiveQuery || activeFilter !== "all";
-  const isSearchLoading = state === "searching" || isRoutePending;
+  const isSearchLoading = isRoutePending;
   const renderedCountLabel = Math.min(matchingCount, rowLimit);
   const updateLocalMatches = (
     nextQuery: string,
@@ -82,7 +73,6 @@ export function RepositoryLiveSearch({
     );
   };
   const helperText = useRepositorySearchHelperText({
-    state,
     isSearchLoading,
     hasActiveQuery,
     activeFilter,
@@ -102,13 +92,9 @@ export function RepositoryLiveSearch({
   }, [isSearchLoading]);
 
   useEffect(() => {
-    const requestId = latestRequestId.current + 1;
-    latestRequestId.current = requestId;
-    const controller = new AbortController();
-    const optimisticMatchingIds = new Set(
+    const nextMatchingIds = new Set(
       filterLocalSearch(searchIndex, normalizedQuery, activeFilter),
     );
-
     const nextUrl = buildSearchUrl({
       workspaceKey,
       selectedRepositoryFullName,
@@ -116,61 +102,16 @@ export function RepositoryLiveSearch({
       filter: activeFilter,
     });
 
-    setMatchingIds(optimisticMatchingIds);
-
-    if (!hasActiveQuery) {
-      setState("idle");
-      replaceSearchUrl(router, nextUrl, startRouteTransition);
-      return () => controller.abort();
-    }
-
-    setState("searching");
-    const timeout = window.setTimeout(() => {
-      const params = new URLSearchParams({
-        workspace: workspaceKey,
-        q: normalizedQuery,
-      });
-      appendFilterParams(params, activeFilter);
-      fetch(`/api/dashboard/repositories/search?${params.toString()}`, {
-        method: "GET",
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-      })
-        .then(async (response) => {
-          if (!response.ok) {
-            throw new Error(`search_failed:${response.status}`);
-          }
-          return (await response.json()) as SearchResponse;
-        })
-        .then((payload) => {
-          if (latestRequestId.current !== requestId) return;
-          setMatchingIds(new Set(payload.repositoryIds));
-          replaceSearchUrl(router, nextUrl, startRouteTransition);
-          setState("idle");
-        })
-        .catch((error: unknown) => {
-          if (
-            controller.signal.aborted ||
-            latestRequestId.current !== requestId
-          ) {
-            return;
-          }
-          console.warn(
-            "ReviewRouter repository search fell back locally",
-            error,
-          );
-          setMatchingIds(
-            new Set(
-              filterLocalSearch(searchIndex, normalizedQuery, activeFilter),
-            ),
-          );
-          setState("error");
-        });
-    }, 180);
+    setMatchingIds(nextMatchingIds);
+    const timeout = window.setTimeout(
+      () => {
+        replaceSearchUrl(router, nextUrl, startRouteTransition);
+      },
+      hasActiveQuery ? 180 : 0,
+    );
 
     return () => {
       window.clearTimeout(timeout);
-      controller.abort();
     };
   }, [
     activeFilter,
@@ -276,7 +217,7 @@ export function RepositoryLiveSearch({
             <p
               className={[
                 "text-xs font-medium leading-5",
-                state === "error" ? "text-amber-100" : "text-slate-500",
+                "text-slate-500",
               ].join(" ")}
               aria-live="polite"
             >
@@ -325,7 +266,6 @@ export function RepositoryLiveSearch({
 }
 
 function useRepositorySearchHelperText({
-  state,
   isSearchLoading,
   hasActiveQuery,
   activeFilter,
@@ -335,7 +275,6 @@ function useRepositorySearchHelperText({
   rowLimit,
   totalRepositoryCount,
 }: {
-  readonly state: "idle" | "searching" | "error";
   readonly isSearchLoading: boolean;
   readonly hasActiveQuery: boolean;
   readonly activeFilter: RepositorySearchFilter;
@@ -350,9 +289,6 @@ function useRepositorySearchHelperText({
       return `${matchingCount} ${repositoryFilterResultLabel(activeFilter)}. Updating results...`;
     }
     if (isSearchLoading) return "Updating repositories...";
-    if (state === "error") {
-      return "Live API search is temporarily unavailable. Showing local matches.";
-    }
     if (hasActiveQuery || activeFilter !== "all") {
       const label = repositoryFilterResultLabel(activeFilter);
       if (matchingCount > rowLimit) {
@@ -372,7 +308,6 @@ function useRepositorySearchHelperText({
     renderedCountLabel,
     renderedRepositoryCount,
     rowLimit,
-    state,
     totalRepositoryCount,
   ]);
 }
@@ -447,11 +382,11 @@ function applyRepositorySearchLoading(loading: boolean): void {
   );
 
   if (results) {
-    results.hidden = loading;
+    results.hidden = false;
     results.setAttribute("aria-busy", loading ? "true" : "false");
   }
   if (loader) {
-    loader.hidden = !loading;
+    loader.hidden = true;
   }
 }
 
@@ -506,7 +441,6 @@ function replaceSearchUrl(
 
   startTransition(() => {
     router.replace(nextUrl, { scroll: false });
-    router.refresh();
   });
 }
 

@@ -60,10 +60,14 @@ import {
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
+import { summarizeWorkspaceHealth } from "../../src/server/repository-health-view";
 import {
-  describeRepositoryHealth,
-  summarizeWorkspaceHealth,
-} from "../../src/server/repository-health-view";
+  buildRepositorySearchText,
+  repositoryMatchesSearchFilter,
+  repositorySetupProgressStep,
+  tokenizeRepositorySearch,
+  workflowSetupAlreadyCurrent,
+} from "../../src/server/repository-search";
 import { resolveCodexSeedScriptUrl } from "../../src/server/codex-seed-script-url";
 import {
   getReviewModelOptions,
@@ -1524,10 +1528,6 @@ function RepositoryTable({
 
   const rows = repositories.map((repository) => {
     const repositoryHealth = repositoryHealthById.get(repository.id);
-    const healthView = describeRepositoryHealth(
-      repositoryHealth?.status,
-      repositoryHealth?.summary,
-    );
     const repositoryProvisioning = repositoryProvisioningById.get(
       repository.id,
     );
@@ -1554,28 +1554,19 @@ function RepositoryTable({
       workflowCurrent,
       providerSetupConfirmed,
     });
-    const setupView = describeRepositorySetup(
-      repository.setupStatus,
-      repositoryHealth?.status,
-    );
-    const searchableText = [
-      repository.fullName,
-      repository.owner,
-      repository.name,
-      repository.defaultBranch,
-      repository.visibility,
-      `${repository.stargazersCount} stars`,
-      repository.archived ? "archived" : "active",
-      repository.selected ? "selected" : "not selected unselected",
-      repository.setupStatus,
-      setupView.label,
-      setupView.hint ?? "",
-      healthView.label,
-      healthView.summary,
-      healthView.nextAction,
-    ]
-      .join(" ")
-      .toLowerCase();
+    const searchableText = buildRepositorySearchText({
+      fullName: repository.fullName,
+      owner: repository.owner,
+      name: repository.name,
+      defaultBranch: repository.defaultBranch,
+      visibility: repository.visibility,
+      stargazersCount: repository.stargazersCount,
+      archived: repository.archived,
+      selected: repository.selected,
+      setupStatus: repository.setupStatus,
+      healthStatus: repositoryHealth?.status,
+      healthSummary: repositoryHealth?.summary,
+    });
 
     return {
       repository,
@@ -1708,8 +1699,13 @@ function RepositoryTable({
                   }
                   className="repository-setup-disclosure peer sr-only"
                 />
-                {setupProgressStep === 2 ? (
-                  <RepositorySetupStatusRefresher enabled />
+                {setupProgressStep < 3 ? (
+                  <RepositorySetupStatusRefresher
+                    enabled
+                    workspaceId={workspace.id}
+                    repositoryId={repository.id}
+                    disclosureId={setupDisclosureId}
+                  />
                 ) : null}
                 <div className="repository-setup-row-header grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -1768,29 +1764,6 @@ function RepositoryTable({
       </div>
     </div>
   );
-}
-
-function tokenizeRepositorySearch(query: string): string[] {
-  return query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-}
-
-function repositoryMatchesSearchFilter(
-  row: {
-    readonly repository: { readonly visibility: string };
-    readonly setupProgressStep: 1 | 2 | 3 | 4;
-  },
-  filter: RepositorySearchFilter,
-): boolean {
-  switch (filter) {
-    case "private":
-      return row.repository.visibility === "private";
-    case "public":
-      return row.repository.visibility === "public";
-    case "needs_setup":
-      return row.setupProgressStep < 4;
-    case "all":
-      return true;
-  }
 }
 
 function githubRepositoryUrl(fullName: string): string | null {
@@ -1970,27 +1943,6 @@ function SetupDisclosureChevron(): React.ReactElement {
       />
     </svg>
   );
-}
-
-function repositorySetupProgressStep({
-  setupStatus,
-  healthStatus,
-  workflowCurrent,
-  providerSetupConfirmed,
-}: {
-  readonly setupStatus: string;
-  readonly healthStatus: string | undefined;
-  readonly workflowCurrent: boolean;
-  readonly providerSetupConfirmed: boolean;
-}): 1 | 2 | 3 | 4 {
-  if (healthStatus === "healthy") return 4;
-  if (workflowCurrent && providerSetupConfirmed) return 4;
-  if (workflowCurrent) return 3;
-  if (setupStatus === "setup_pr_open" || healthStatus === "setup_pr_open") {
-    return 2;
-  }
-
-  return 1;
 }
 
 function repositorySetupProgressSummary(step: 1 | 2 | 3 | 4): string {
@@ -2740,65 +2692,6 @@ function isProviderSecretCheckError(error: string): boolean {
     error === "provider_secret_not_available_to_repository" ||
     error === "provider_secret_check_permission_required"
   );
-}
-
-function workflowSetupAlreadyCurrent(status: string | undefined): boolean {
-  return [
-    "healthy",
-    "provider_needs_setup",
-    "provider_unhealthy",
-    "provider_report_stale",
-  ].includes(status ?? "");
-}
-
-function describeRepositorySetup(
-  setupStatus: string,
-  healthStatus: string | undefined,
-): {
-  readonly label: string;
-  readonly tone: "success" | "warning" | "danger" | "neutral";
-  readonly hint: string | null;
-} {
-  if (healthStatus === "missing_workflow") {
-    return {
-      label: "Setup PR needed",
-      tone: "warning",
-      hint: "Workflow is not on the default branch yet.",
-    };
-  }
-
-  switch (setupStatus) {
-    case "not_configured":
-      return {
-        label: "No setup PR",
-        tone: "neutral",
-        hint: "Create and merge the setup PR first.",
-      };
-    case "setup_pr_open":
-      return {
-        label: "Setup PR open",
-        tone: "warning",
-        hint: "Merge it to install the workflow.",
-      };
-    case "configured":
-      return {
-        label: "Setup recorded",
-        tone: "success",
-        hint: null,
-      };
-    case "needs_attention":
-      return {
-        label: "Needs attention",
-        tone: "danger",
-        hint: "Fix the setup error, then retry.",
-      };
-    default:
-      return {
-        label: setupStatus.replaceAll("_", " "),
-        tone: "neutral",
-        hint: null,
-      };
-  }
 }
 
 function workspaceInstallSummary(workspace: DashboardWorkspace): string {

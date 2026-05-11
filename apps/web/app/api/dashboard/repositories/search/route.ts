@@ -1,6 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
+import {
+  listWorkspaceRepositoryHealth,
+  PrismaRepositoryHealthRepository,
+} from "@reviewrouter/features-repo-health";
+import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { getDashboardWorkspaceScope } from "../../../../../src/server/dashboard-mutations";
 import { getPrisma } from "../../../../../src/server/prisma";
+import {
+  buildRepositorySearchText,
+  repositoryMatchesSearchFilter,
+  repositorySetupProgressStep,
+  tokenizeRepositorySearch,
+  type RepositorySearchFilter,
+  workflowSetupAlreadyCurrent,
+} from "../../../../../src/server/repository-search";
 
 export const dynamic = "force-dynamic";
 
@@ -10,8 +23,6 @@ type WorkspaceCandidate = {
   readonly name: string;
   readonly installations: readonly { readonly accountLogin: string }[];
 };
-
-type RepositorySearchFilter = "all" | "private" | "public" | "needs_setup";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const scope = await getDashboardWorkspaceScope();
@@ -65,25 +76,91 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       stargazersCount: true,
     },
   });
+  const [health, providerSetup] = await Promise.all([
+    listWorkspaceRepositoryHealth(
+      {
+        workspaceId: workspace.id,
+        expectedActionRef: resolveReviewRouterActionRef(),
+        workflowProbeMaxRepositories: 0,
+      },
+      { repositories: new PrismaRepositoryHealthRepository(prisma) },
+    ),
+    prisma.providerSetupState.findMany({
+      where: {
+        workspaceId: workspace.id,
+        repositoryId: {
+          in: repositories.map((repository) => repository.id),
+        },
+      },
+      select: {
+        repositoryId: true,
+        state: true,
+        updatedAt: true,
+      },
+    }),
+  ]);
+  const repositoryHealthById = new Map(
+    health.map((item) => [item.repositoryId, item] as const),
+  );
+  const configuredProviderSetupByRepositoryId = new Map<
+    string,
+    { readonly updatedAt: Date }
+  >();
+  for (const item of providerSetup) {
+    if (!item.repositoryId || item.state !== "configured") continue;
 
-  const tokens = tokenize(query);
+    const existing = configuredProviderSetupByRepositoryId.get(
+      item.repositoryId,
+    );
+    if (!existing || existing.updatedAt < item.updatedAt) {
+      configuredProviderSetupByRepositoryId.set(item.repositoryId, {
+        updatedAt: item.updatedAt,
+      });
+    }
+  }
+
+  const tokens = tokenizeRepositorySearch(query);
   const repositoryIds = repositories
     .filter((repository) => {
-      if (!repositoryMatchesFilter(repository, filter)) return false;
+      const repositoryHealth = repositoryHealthById.get(repository.id);
+      const workflowCurrent = workflowSetupAlreadyCurrent(
+        repositoryHealth?.status,
+      );
+      const providerSetupConfirmedAt =
+        configuredProviderSetupByRepositoryId.get(repository.id)?.updatedAt;
+      const providerSetupConfirmed =
+        providerSetupConfirmedAt !== undefined &&
+        (!repositoryHealth?.latestActionHealthReceivedAt ||
+          providerSetupConfirmedAt >=
+            repositoryHealth.latestActionHealthReceivedAt);
+      const setupProgressStep = repositorySetupProgressStep({
+        setupStatus: repository.setupStatus,
+        healthStatus: repositoryHealth?.status,
+        workflowCurrent,
+        providerSetupConfirmed,
+      });
+      if (
+        !repositoryMatchesSearchFilter(
+          { repository, setupProgressStep },
+          filter,
+        )
+      ) {
+        return false;
+      }
       if (tokens.length === 0) return true;
-      const searchable = [
-        repository.fullName,
-        repository.owner,
-        repository.name,
-        repository.defaultBranch,
-        repository.visibility,
-        repository.setupStatus,
-        `${repository.stargazersCount} stars`,
-        repository.selected ? "selected" : "not selected unselected",
-        repository.archived ? "archived" : "active",
-      ]
-        .join(" ")
-        .toLowerCase();
+      const searchable = buildRepositorySearchText({
+        fullName: repository.fullName,
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+        visibility: repository.visibility,
+        stargazersCount: repository.stargazersCount,
+        archived: repository.archived,
+        selected: repository.selected,
+        setupStatus: repository.setupStatus,
+        healthStatus: repositoryHealth?.status,
+        healthSummary: repositoryHealth?.summary,
+      });
       return tokens.every((token) => searchable.includes(token));
     })
     .map((repository) => repository.id);
@@ -107,22 +184,6 @@ function readRepositorySearchFilter(
   }
 
   return "all";
-}
-
-function repositoryMatchesFilter(
-  repository: { readonly visibility: string; readonly setupStatus: string },
-  filter: RepositorySearchFilter,
-): boolean {
-  switch (filter) {
-    case "private":
-      return repository.visibility === "private";
-    case "public":
-      return repository.visibility === "public";
-    case "needs_setup":
-      return repository.setupStatus !== "configured";
-    case "all":
-      return true;
-  }
 }
 
 function selectWorkspace(
@@ -155,8 +216,4 @@ function normalizeKey(value: string): string {
 
 function normalizeQuery(value: string): string {
   return value.trim().slice(0, 120);
-}
-
-function tokenize(query: string): string[] {
-  return query.toLowerCase().split(/\s+/).filter(Boolean);
 }
