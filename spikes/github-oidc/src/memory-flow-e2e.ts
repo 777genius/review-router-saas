@@ -268,18 +268,96 @@ try {
   assertEqual(confirm.results[0]?.status, "created", "confirm suggestion");
   assertPresent(confirm.results[0]?.id, "confirmed memory item id");
 
-  await postCandidate(baseUrl, otherAdminSession, {
+  const otherRepoItem = await postCandidate(baseUrl, otherAdminSession, {
     sourceId: `memory-e2e-other-repo-${suffix}`,
     body: "Other workspace memory must never leak.",
     intent: "explicit_command",
     extractionMethod: "explicit_command",
     requestedScope: "repository",
   });
+  assertPresent(otherRepoItem.id, "other workspace memory id");
+
+  const otherSuggestion = await postCandidate(baseUrl, otherAdminSession, {
+    sourceId: `memory-e2e-other-suggestion-${suffix}`,
+    body: "Other workspace suggestion must never be confirmable.",
+    intent: "model_suggested_candidate",
+    extractionMethod: "model_suggested_candidate",
+    requestedScope: "repository",
+  });
+  assertPresent(otherSuggestion.id, "other workspace suggestion id");
+
+  const crossTenantDisable = await postCommands(baseUrl, adminSession, [
+    { kind: "disable_memory", memoryItemId: otherRepoItem.id },
+  ]);
+  assertEqual(
+    crossTenantDisable.results[0]?.status,
+    "noop",
+    "cross-tenant disable status",
+  );
+  assertEqual(
+    crossTenantDisable.results[0]?.reason,
+    "memory_not_found",
+    "cross-tenant disable reason",
+  );
+
+  const crossTenantForget = await postCommands(baseUrl, adminSession, [
+    { kind: "forget_memory", memoryItemId: otherRepoItem.id },
+  ]);
+  assertEqual(
+    crossTenantForget.results[0]?.status,
+    "noop",
+    "cross-tenant forget status",
+  );
+  assertEqual(
+    crossTenantForget.results[0]?.reason,
+    "memory_not_found",
+    "cross-tenant forget reason",
+  );
+
+  const crossTenantConfirm = await postCommands(baseUrl, adminSession, [
+    { kind: "confirm_suggestion", suggestionId: otherSuggestion.id },
+  ]);
+  assertEqual(
+    crossTenantConfirm.results[0]?.status,
+    "rejected",
+    "cross-tenant confirm status",
+  );
+  assertEqual(
+    crossTenantConfirm.results[0]?.reason,
+    "memory_not_found",
+    "cross-tenant confirm reason",
+  );
 
   const reviewSession = await exchange(
     baseUrl,
     "primary-review-before-disable",
   );
+  const reviewMutation = await postJson<{
+    readonly error: { readonly code: string };
+  }>(
+    baseUrl,
+    "/api/action/v1/memory-candidates",
+    reviewSession.sessionToken,
+    {
+      protocolVersion: 1,
+      intent: "explicit_command",
+      requestedScope: "repository",
+      candidateBody: "Review event must not save memory.",
+      extractionMethod: "explicit_command",
+      source: memorySource({
+        repositoryFullName: primary.fullName,
+        sourceId: `memory-e2e-review-denied-${suffix}`,
+        body: "Review event must not save memory.",
+      }),
+    },
+    403,
+  );
+  assertEqual(
+    reviewMutation.error.code,
+    "memory_interaction_event_required",
+    "review event memory mutation code",
+  );
+
   const bundle = await getJson<ActionMemoryBundle>(
     baseUrl,
     "/api/action/v1/memory",
@@ -293,6 +371,8 @@ try {
   assertBundleExcludes(bundle, [
     "Member role must not be able to save repository memory.",
     "Other workspace memory must never leak.",
+    "Other workspace suggestion must never be confirmable.",
+    "Review event must not save memory.",
   ]);
 
   const repeatedBundle = await getJson<ActionMemoryBundle>(
