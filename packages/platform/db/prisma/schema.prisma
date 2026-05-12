@@ -400,6 +400,7 @@ model MemoryItem {
   @@index([workspaceId, scope, status, updatedAt])
   @@index([workspaceId, repositoryId, status, updatedAt])
   @@index([workspaceId, userId, status])
+  @@index([status, expiresAt, workspaceId])
   @@index([workspaceId, bodyHash])
   @@index([originSuggestionId])
 }

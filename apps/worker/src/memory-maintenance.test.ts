@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   createDashboardMemorySource,
   evaluateMemorySafety,
+  MemoryItem,
   MemorySuggestion,
   type MemoryAuditPort,
+  type MemoryItemRepositoryPort,
+  type MemoryItemSnapshot,
   type MemoryOutboxPort,
   type MemorySuggestionRepositoryPort,
   type MemorySuggestionSnapshot,
@@ -15,8 +18,10 @@ import type { DistributedLock } from "@reviewrouter/platform-locks";
 import type { Logger } from "@reviewrouter/platform-logger";
 import type { Clock } from "@reviewrouter/shared";
 import {
+  createMemoryItemExpiryMaintenance,
   createMemorySuggestionExpiryMaintenance,
   createMemoryUsageTelemetryMaintenance,
+  memoryItemExpiryLockKey,
   memorySuggestionExpiryLockKey,
   memoryUsageTelemetryRetentionLockKey,
 } from "./memory-maintenance";
@@ -34,8 +39,9 @@ class MutableClock implements Clock {
 }
 
 class CapturingRetention implements MemoryUsageEventRetentionPort {
-  readonly inputs: Parameters<MemoryUsageEventRetentionPort["pruneBefore"]>[0][] =
-    [];
+  readonly inputs: Parameters<
+    MemoryUsageEventRetentionPort["pruneBefore"]
+  >[0][] = [];
   deletedCount = 0;
 
   async pruneBefore(
@@ -134,6 +140,78 @@ class CapturingSuggestionRepository implements MemorySuggestionRepositoryPort {
   }
 }
 
+class CapturingItemRepository implements MemoryItemRepositoryPort {
+  readonly saved: MemoryItemSnapshot[] = [];
+  readonly workspaceListInputs: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }[] = [];
+  readonly expiredListInputs: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }[] = [];
+  workspaceIds: readonly string[] = [];
+  expiredByWorkspace = new Map<string, readonly MemoryItemSnapshot[]>();
+
+  async save(item: MemoryItem): Promise<void> {
+    this.saved.push(item.snapshot());
+  }
+
+  async findById(): Promise<MemoryItemSnapshot | null> {
+    throw new Error("not_implemented");
+  }
+
+  async findActiveByBodyHash(): Promise<MemoryItemSnapshot | null> {
+    throw new Error("not_implemented");
+  }
+
+  async countActiveForWorkspace(): Promise<number> {
+    throw new Error("not_implemented");
+  }
+
+  async listActiveForBundle(): Promise<readonly MemoryItemSnapshot[]> {
+    throw new Error("not_implemented");
+  }
+
+  async listActiveByIdsForBundle(): Promise<readonly MemoryItemSnapshot[]> {
+    throw new Error("not_implemented");
+  }
+
+  async listForDashboard(): Promise<readonly MemoryItemSnapshot[]> {
+    throw new Error("not_implemented");
+  }
+
+  async listExpiredActive(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    this.expiredListInputs.push(input);
+    return this.expiredByWorkspace.get(input.workspaceId) ?? [];
+  }
+
+  async listWorkspaceIdsWithExpiredActive(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    this.workspaceListInputs.push(input);
+    return this.workspaceIds.slice(0, input.limit);
+  }
+
+  async markActiveItemsUsed(): Promise<{ readonly updatedCount: number }> {
+    throw new Error("not_implemented");
+  }
+
+  async markIndexingSucceeded(): Promise<{ readonly updatedCount: number }> {
+    throw new Error("not_implemented");
+  }
+
+  async markIndexingDeleted(): Promise<{ readonly updatedCount: number }> {
+    throw new Error("not_implemented");
+  }
+}
+
 class CapturingMemoryAudit implements MemoryAuditPort {
   readonly records: Parameters<MemoryAuditPort["record"]>[0][] = [];
 
@@ -144,18 +222,38 @@ class CapturingMemoryAudit implements MemoryAuditPort {
 
 class CapturingMemoryTransaction implements MemoryTransactionPort {
   readonly audit = new CapturingMemoryAudit();
+  readonly outbox = new CapturingMemoryOutbox();
 
-  constructor(private readonly suggestions: MemorySuggestionRepositoryPort) {}
+  constructor(
+    private readonly ports: {
+      readonly items?: MemoryItemRepositoryPort;
+      readonly suggestions?: MemorySuggestionRepositoryPort;
+    },
+  ) {}
 
   async run<T>(
     work: (ports: MemoryTransactionalPorts) => Promise<T>,
   ): Promise<T> {
     return work({
-      memoryItems: {} as MemoryTransactionalPorts["memoryItems"],
-      memorySuggestions: this.suggestions,
+      memoryItems:
+        this.ports.items ?? ({} as MemoryTransactionalPorts["memoryItems"]),
+      memorySuggestions:
+        this.ports.suggestions ??
+        ({} as MemoryTransactionalPorts["memorySuggestions"]),
       memoryAudit: this.audit,
-      memoryOutbox: {} as MemoryOutboxPort,
+      memoryOutbox: this.outbox,
     });
+  }
+}
+
+class CapturingMemoryOutbox implements MemoryOutboxPort {
+  readonly events: Parameters<MemoryOutboxPort["enqueue"]>[0][] = [];
+
+  async enqueue(
+    event: Parameters<MemoryOutboxPort["enqueue"]>[0],
+  ): ReturnType<MemoryOutboxPort["enqueue"]> {
+    this.events.push(event);
+    return { created: true };
   }
 }
 
@@ -257,7 +355,9 @@ describe("memory maintenance", () => {
         expiresAt: new Date("2026-05-12T11:59:59.000Z"),
       }),
     ]);
-    const memoryTransaction = new CapturingMemoryTransaction(memorySuggestions);
+    const memoryTransaction = new CapturingMemoryTransaction({
+      suggestions: memorySuggestions,
+    });
     const lock = new CapturingLock();
     const logger = new CapturingLogger();
     const runMaintenance = createMemorySuggestionExpiryMaintenance(
@@ -300,6 +400,112 @@ describe("memory maintenance", () => {
     expect(logger.warnEvents).toHaveLength(0);
   });
 
+  it("expires active memory items under a distributed lock", async () => {
+    const clock = new MutableClock(new Date("2026-05-12T12:00:00.000Z"));
+    const memoryItems = new CapturingItemRepository();
+    memoryItems.workspaceIds = ["workspace_1"];
+    memoryItems.expiredByWorkspace.set("workspace_1", [
+      activeMemoryItem({
+        id: "mem_1",
+        workspaceId: "workspace_1",
+        body: "Expire worker memory item.",
+        expiresAt: new Date("2026-05-12T11:59:59.000Z"),
+      }),
+    ]);
+    const memoryTransaction = new CapturingMemoryTransaction({
+      items: memoryItems,
+    });
+    const lock = new CapturingLock();
+    const logger = new CapturingLogger();
+    const runMaintenance = createMemoryItemExpiryMaintenance(
+      {
+        intervalMs: 60_000,
+        workspaceLimit: 25,
+        perWorkspaceLimit: 10,
+        lockTtlMs: 120_000,
+      },
+      { clock, memoryItems, memoryTransaction, lock, logger },
+    );
+
+    await runMaintenance();
+
+    expect(lock.attempts).toEqual([
+      { key: memoryItemExpiryLockKey, ttlMs: 120_000 },
+    ]);
+    expect(memoryItems.workspaceListInputs).toEqual([
+      {
+        expiredAtOrBefore: new Date("2026-05-12T12:00:00.000Z"),
+        limit: 25,
+      },
+    ]);
+    expect(memoryItems.expiredListInputs).toEqual([
+      {
+        workspaceId: "workspace_1",
+        expiredAtOrBefore: new Date("2026-05-12T12:00:00.000Z"),
+        limit: 10,
+      },
+    ]);
+    expect(memoryItems.saved).toMatchObject([
+      {
+        id: "mem_1",
+        status: "expired",
+        indexState: "index_deleted",
+        indexVersion: null,
+      },
+    ]);
+    expect(memoryTransaction.audit.records).toMatchObject([
+      {
+        actor: "system:memory-retention",
+        action: "memory.item.expired",
+        targetType: "memory_item",
+        targetId: "mem_1",
+      },
+    ]);
+    expect(memoryTransaction.outbox.events.map((event) => event.type)).toEqual([
+      "memory.item.expired",
+      "memory.embedding.delete.requested",
+    ]);
+    expect(JSON.stringify(memoryTransaction.audit.records)).not.toContain(
+      "Expire worker memory item.",
+    );
+    expect(JSON.stringify(memoryTransaction.outbox.events)).not.toContain(
+      "Expire worker memory item.",
+    );
+    expect(logger.infoEvents).toHaveLength(1);
+    expect(logger.warnEvents).toHaveLength(0);
+  });
+
+  it("treats memory item expiry lock contention as expected", async () => {
+    const lock = new CapturingLock();
+    lock.error = new Error(
+      `distributed_lock_not_acquired:${memoryItemExpiryLockKey}`,
+    );
+    const logger = new CapturingLogger();
+    const memoryItems = new CapturingItemRepository();
+    const runMaintenance = createMemoryItemExpiryMaintenance(
+      {
+        intervalMs: 60_000,
+        workspaceLimit: 25,
+        perWorkspaceLimit: 10,
+        lockTtlMs: 120_000,
+      },
+      {
+        clock: new MutableClock(new Date("2026-05-12T12:00:00.000Z")),
+        memoryItems,
+        memoryTransaction: new CapturingMemoryTransaction({
+          items: memoryItems,
+        }),
+        lock,
+        logger,
+      },
+    );
+
+    await runMaintenance();
+
+    expect(logger.infoEvents).toHaveLength(0);
+    expect(logger.warnEvents).toHaveLength(0);
+  });
+
   it("treats suggestion expiry lock contention as expected", async () => {
     const lock = new CapturingLock();
     lock.error = new Error(
@@ -317,7 +523,9 @@ describe("memory maintenance", () => {
       {
         clock: new MutableClock(new Date("2026-05-12T12:00:00.000Z")),
         memorySuggestions,
-        memoryTransaction: new CapturingMemoryTransaction(memorySuggestions),
+        memoryTransaction: new CapturingMemoryTransaction({
+          suggestions: memorySuggestions,
+        }),
         lock,
         logger,
       },
@@ -360,4 +568,35 @@ function pendingSuggestion(input: {
     dedupeKey: `dedupe:${input.id}`,
     now: new Date("2026-05-11T12:00:00.000Z"),
   }).snapshot();
+}
+
+function activeMemoryItem(input: {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly body: string;
+  readonly expiresAt: Date;
+}): MemoryItemSnapshot {
+  return {
+    ...MemoryItem.create({
+      id: input.id,
+      workspaceId: input.workspaceId,
+      repositoryId: "repo_1",
+      userId: null,
+      scope: "repository",
+      body: input.body,
+      riskLevel: "low",
+      confidence: 1,
+      source: createDashboardMemorySource({ actorLogin: "maintainer" }),
+      policyVersion: 1,
+      safetyPolicyVersion: 1,
+      actor: {
+        kind: "github_user",
+        id: "user_1",
+        githubUserId: "1001",
+        login: "maintainer",
+      },
+      now: new Date("2026-05-11T12:00:00.000Z"),
+    }).snapshot(),
+    expiresAt: input.expiresAt,
+  };
 }

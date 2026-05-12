@@ -165,6 +165,24 @@ export class MemoryItem {
     });
   }
 
+  expire(input: { readonly now: Date }): MemoryItem {
+    if (
+      this.value.status !== "active" ||
+      this.value.expiresAt === null ||
+      this.value.expiresAt > input.now
+    ) {
+      throw memoryError("memory_version_conflict");
+    }
+    return new MemoryItem({
+      ...this.value,
+      status: "expired",
+      updatedAt: input.now,
+      version: this.value.version + 1,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+  }
+
   editBody(input: {
     readonly actor: MemoryActor;
     readonly body: string;

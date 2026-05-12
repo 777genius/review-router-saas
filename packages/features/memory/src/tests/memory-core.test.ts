@@ -66,6 +66,10 @@ import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
 import { disableMemoryItem } from "../application/use-cases/disable-memory-item";
 import { editMemoryItem } from "../application/use-cases/edit-memory-item";
 import {
+  expireActiveMemoryItems,
+  expireActiveMemoryItemsAcrossWorkspaces,
+} from "../application/use-cases/expire-active-memory-items";
+import {
   expirePendingMemorySuggestions,
   expirePendingMemorySuggestionsAcrossWorkspaces,
 } from "../application/use-cases/expire-pending-memory-suggestions";
@@ -216,6 +220,52 @@ class InMemoryItems implements MemoryItemRepositoryPort {
         input.cursor ? isAfterDashboardCursor(item, input.cursor) : true,
       )
       .slice(0, input.limit);
+  }
+
+  async listExpiredActive(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    return [...this.items.values()]
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.expiresAt !== null && item.expiresAt <= input.expiredAtOrBefore,
+      )
+      .sort((left, right) => {
+        const expiresAtDelta =
+          (left.expiresAt?.getTime() ?? 0) - (right.expiresAt?.getTime() ?? 0);
+        if (expiresAtDelta !== 0) return expiresAtDelta;
+        return left.id.localeCompare(right.id);
+      })
+      .slice(0, input.limit);
+  }
+
+  async listWorkspaceIdsWithExpiredActive(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        [...this.items.values()]
+          .filter((item) => item.status === "active")
+          .filter(
+            (item) =>
+              item.expiresAt !== null &&
+              item.expiresAt <= input.expiredAtOrBefore,
+          )
+          .sort((left, right) => {
+            const expiresAtDelta =
+              (left.expiresAt?.getTime() ?? 0) -
+              (right.expiresAt?.getTime() ?? 0);
+            if (expiresAtDelta !== 0) return expiresAtDelta;
+            return left.workspaceId.localeCompare(right.workspaceId);
+          })
+          .map((item) => item.workspaceId),
+      ),
+    ].slice(0, input.limit);
   }
 
   async markActiveItemsUsed(
@@ -1904,6 +1954,166 @@ describe("memory core", () => {
     );
   });
 
+  it("expires active memory items through retention use case", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const current = await rememberMemoryDirectly(
+      memoryInput("repository", "Keep current memory active."),
+      deps,
+    );
+    const expired = await rememberMemoryDirectly(
+      memoryInput("repository", "Expire old active memory."),
+      deps,
+    );
+    const disabled = await rememberMemoryDirectly(
+      memoryInput("repository", "Disabled expired memory stays disabled."),
+      deps,
+    );
+    if (
+      current.status !== "created" ||
+      expired.status !== "created" ||
+      disabled.status !== "created"
+    ) {
+      throw new Error("expected_created_memory_items");
+    }
+    setMemoryItemExpiresAt(deps, current.id, new Date(now.getTime() + 60_000));
+    setMemoryItemExpiresAt(deps, expired.id, new Date(now.getTime() - 1_000));
+    setMemoryItemExpiresAt(deps, disabled.id, new Date(now.getTime() - 1_000));
+    await disableMemoryItem(
+      { workspaceId: "workspace_1", itemId: disabled.id, actor: maintainer },
+      deps,
+    );
+
+    const result = await expireActiveMemoryItems(
+      { workspaceId: "workspace_1", limit: 10 },
+      deps,
+    );
+
+    expect(result).toEqual({ status: "expired", expiredCount: 1 });
+    expect(deps.memoryItems.items.get(current.id)?.status).toBe("active");
+    expect(deps.memoryItems.items.get(disabled.id)?.status).toBe("disabled");
+    expect(deps.memoryItems.items.get(expired.id)).toMatchObject({
+      status: "expired",
+      version: 2,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+    expect(deps.memoryAudit.events.at(-1)).toMatchObject({
+      actor: "system:memory-retention",
+      action: "memory.item.expired",
+      targetType: "memory_item",
+      targetId: expired.id,
+      metadata: {
+        scope: "repository",
+        bodyHash: deps.memoryItems.items.get(expired.id)?.bodyHash,
+        bodyVersion: 1,
+        previousVersion: 1,
+        version: 2,
+      },
+    });
+    expect(JSON.stringify(deps.memoryAudit.events.at(-1))).not.toContain(
+      "Expire old active memory",
+    );
+    expect(
+      deps.memoryOutbox.events
+        .filter((event) => event.aggregateId === expired.id)
+        .map((event) => event.type),
+    ).toEqual([
+      "memory.item.created",
+      "memory.embedding.reindex.requested",
+      "memory.item.expired",
+      "memory.embedding.delete.requested",
+    ]);
+    expect(
+      JSON.stringify(
+        deps.memoryOutbox.events.filter(
+          (event) => event.aggregateId === expired.id,
+        ),
+      ),
+    ).not.toContain("Expire old active memory");
+
+    const bundle = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+      },
+      deps,
+    );
+    expect(bundle.items.map((item) => item.body)).toEqual([
+      "Keep current memory active.",
+    ]);
+  });
+
+  it("expires active memory items across workspaces in bounded batches", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const current = await rememberMemoryDirectly(
+      memoryInput("repository", "Keep active workspace memory."),
+      deps,
+    );
+    const expiredPrimary = await rememberMemoryDirectly(
+      memoryInput("repository", "Expire primary workspace memory."),
+      deps,
+    );
+    const expiredOther = await rememberMemoryDirectly(
+      {
+        ...memoryInput("repository", "Expire other workspace memory."),
+        workspaceId: "workspace_2",
+        repositoryId: "repo_2",
+      },
+      deps,
+    );
+    if (
+      current.status !== "created" ||
+      expiredPrimary.status !== "created" ||
+      expiredOther.status !== "created"
+    ) {
+      throw new Error("expected_created_memory_items");
+    }
+    setMemoryItemExpiresAt(deps, current.id, new Date(now.getTime() + 60_000));
+    setMemoryItemExpiresAt(
+      deps,
+      expiredPrimary.id,
+      new Date(now.getTime() - 1_000),
+    );
+    setMemoryItemExpiresAt(
+      deps,
+      expiredOther.id,
+      new Date(now.getTime() - 1_000),
+    );
+
+    const result = await expireActiveMemoryItemsAcrossWorkspaces(
+      { workspaceLimit: 10, perWorkspaceLimit: 1 },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "expired",
+      workspaceCount: 2,
+      expiredCount: 2,
+    });
+    expect(deps.memoryItems.items.get(current.id)?.status).toBe("active");
+    expect(deps.memoryItems.items.get(expiredPrimary.id)?.status).toBe(
+      "expired",
+    );
+    expect(deps.memoryItems.items.get(expiredOther.id)?.status).toBe("expired");
+    const expiredAuditEvents = deps.memoryAudit.events.filter(
+      (event) => event.action === "memory.item.expired",
+    );
+    expect(expiredAuditEvents.map((event) => event.workspaceId).sort()).toEqual(
+      ["workspace_1", "workspace_2"],
+    );
+    expect(JSON.stringify(expiredAuditEvents)).not.toContain(
+      "Expire primary workspace memory",
+    );
+    expect(JSON.stringify(expiredAuditEvents)).not.toContain(
+      "Expire other workspace memory",
+    );
+  });
+
   it("treats expired pending suggestions as noop on confirm before worker runs", async () => {
     const deps = createHarness({});
     const proposed = await proposeMemoryFromInteraction(
@@ -2484,6 +2694,16 @@ function memoryInput(scope: MemoryScope, body: string) {
     source: createDashboardMemorySource({ actorLogin: "maintainer" }),
     actor: maintainer,
   };
+}
+
+function setMemoryItemExpiresAt(
+  deps: ReturnType<typeof createHarness>,
+  itemId: string,
+  expiresAt: Date,
+): void {
+  const snapshot = deps.memoryItems.items.get(itemId);
+  if (!snapshot) throw new Error("missing_memory_item");
+  deps.memoryItems.items.set(itemId, { ...snapshot, expiresAt });
 }
 
 function memoryUsageEvent(

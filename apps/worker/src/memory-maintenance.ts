@@ -1,5 +1,7 @@
 import {
+  expireActiveMemoryItemsAcrossWorkspaces,
   expirePendingMemorySuggestionsAcrossWorkspaces,
+  type MemoryItemRepositoryPort,
   type MemorySuggestionRepositoryPort,
   type MemoryTransactionPort,
   pruneMemoryUsageEvents,
@@ -13,6 +15,7 @@ import { safeWorkerErrorSummary } from "./outbox-worker-loop";
 export const memoryUsageTelemetryRetentionLockKey =
   "memory:usage-events:retention";
 export const memorySuggestionExpiryLockKey = "memory:suggestions:expire";
+export const memoryItemExpiryLockKey = "memory:items:expire";
 
 export type MemoryUsageTelemetryMaintenanceConfig = {
   readonly intervalMs: number;
@@ -28,6 +31,13 @@ export type MemorySuggestionExpiryMaintenanceConfig = {
   readonly lockTtlMs: number;
 };
 
+export type MemoryItemExpiryMaintenanceConfig = {
+  readonly intervalMs: number;
+  readonly workspaceLimit: number;
+  readonly perWorkspaceLimit: number;
+  readonly lockTtlMs: number;
+};
+
 export function createMemoryUsageTelemetryMaintenance(
   config: MemoryUsageTelemetryMaintenanceConfig,
   dependencies: {
@@ -37,13 +47,19 @@ export function createMemoryUsageTelemetryMaintenance(
     readonly logger: Pick<Logger, "info" | "warn">;
   },
 ): () => Promise<void> {
-  assertPositiveInteger(config.intervalMs, "memory_maintenance_interval_invalid");
+  assertPositiveInteger(
+    config.intervalMs,
+    "memory_maintenance_interval_invalid",
+  );
   assertPositiveInteger(
     config.retentionDays,
     "memory_maintenance_retention_days_invalid",
   );
   assertPositiveInteger(config.limit, "memory_maintenance_limit_invalid");
-  assertPositiveInteger(config.lockTtlMs, "memory_maintenance_lock_ttl_invalid");
+  assertPositiveInteger(
+    config.lockTtlMs,
+    "memory_maintenance_lock_ttl_invalid",
+  );
 
   let lastAttemptAtMs = 0;
 
@@ -188,6 +204,87 @@ export function isMemorySuggestionExpiryLockContention(
     error instanceof Error &&
     error.message ===
       `distributed_lock_not_acquired:${memorySuggestionExpiryLockKey}`
+  );
+}
+
+export function createMemoryItemExpiryMaintenance(
+  config: MemoryItemExpiryMaintenanceConfig,
+  dependencies: {
+    readonly clock: Clock;
+    readonly memoryItems: MemoryItemRepositoryPort;
+    readonly memoryTransaction: MemoryTransactionPort;
+    readonly lock: DistributedLock;
+    readonly logger: Pick<Logger, "info" | "warn">;
+  },
+): () => Promise<void> {
+  assertPositiveInteger(
+    config.intervalMs,
+    "memory_item_expiry_interval_invalid",
+  );
+  assertPositiveInteger(
+    config.workspaceLimit,
+    "memory_item_expiry_workspace_limit_invalid",
+  );
+  assertPositiveInteger(
+    config.perWorkspaceLimit,
+    "memory_item_expiry_per_workspace_limit_invalid",
+  );
+  assertPositiveInteger(
+    config.lockTtlMs,
+    "memory_item_expiry_lock_ttl_invalid",
+  );
+
+  let lastAttemptAtMs = 0;
+
+  return async () => {
+    const now = dependencies.clock.now();
+    if (now.getTime() - lastAttemptAtMs < config.intervalMs) {
+      return;
+    }
+    lastAttemptAtMs = now.getTime();
+
+    try {
+      await dependencies.lock.withLock(
+        memoryItemExpiryLockKey,
+        config.lockTtlMs,
+        async () => {
+          const result = await expireActiveMemoryItemsAcrossWorkspaces(
+            {
+              workspaceLimit: config.workspaceLimit,
+              perWorkspaceLimit: config.perWorkspaceLimit,
+            },
+            {
+              clock: dependencies.clock,
+              memoryItems: dependencies.memoryItems,
+              memoryTransaction: dependencies.memoryTransaction,
+            },
+          );
+          if (result.expiredCount > 0) {
+            dependencies.logger.info(
+              "ReviewRouter expired active memory items",
+              {
+                workspaceCount: result.workspaceCount,
+                expiredCount: result.expiredCount,
+              },
+            );
+          }
+        },
+      );
+    } catch (error: unknown) {
+      if (isMemoryItemExpiryLockContention(error)) {
+        return;
+      }
+      dependencies.logger.warn("ReviewRouter memory item expiry failed", {
+        safeErrorSummary: safeWorkerErrorSummary(error),
+      });
+    }
+  };
+}
+
+export function isMemoryItemExpiryLockContention(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message === `distributed_lock_not_acquired:${memoryItemExpiryLockKey}`
   );
 }
 

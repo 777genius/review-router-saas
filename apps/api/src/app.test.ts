@@ -300,6 +300,39 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
       .slice(0, input.limit);
   }
 
+  async listExpiredActive(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    return this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.expiresAt !== null && item.expiresAt <= input.expiredAtOrBefore,
+      )
+      .slice(0, input.limit);
+  }
+
+  async listWorkspaceIdsWithExpiredActive(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        this.values()
+          .filter((item) => item.status === "active")
+          .filter(
+            (item) =>
+              item.expiresAt !== null &&
+              item.expiresAt <= input.expiredAtOrBefore,
+          )
+          .map((item) => item.workspaceId),
+      ),
+    ].slice(0, input.limit);
+  }
+
   async markActiveItemsUsed(
     input: MarkActiveMemoryItemsUsedInput,
   ): Promise<MarkActiveMemoryItemsUsedResult> {

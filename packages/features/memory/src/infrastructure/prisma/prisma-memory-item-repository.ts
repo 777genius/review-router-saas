@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import type {
+  ListExpiredActiveMemoryItemsInput,
+  ListWorkspaceIdsWithExpiredActiveMemoryInput,
   MarkActiveMemoryItemsUsedInput,
   MarkActiveMemoryItemsUsedResult,
   MarkMemoryItemIndexingDeletedInput,
@@ -197,6 +199,37 @@ export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
       take: input.limit,
     });
     return record.map(toMemoryItemSnapshot);
+  }
+
+  async listExpiredActive(
+    input: ListExpiredActiveMemoryItemsInput,
+  ): Promise<readonly MemoryItemSnapshot[]> {
+    const records = await this.prisma.memoryItem.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        status: "active",
+        expiresAt: { lte: input.expiredAtOrBefore },
+      },
+      orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+      take: input.limit,
+    });
+    return records.map(toMemoryItemSnapshot);
+  }
+
+  async listWorkspaceIdsWithExpiredActive(
+    input: ListWorkspaceIdsWithExpiredActiveMemoryInput,
+  ): Promise<readonly string[]> {
+    const records = await this.prisma.memoryItem.findMany({
+      where: {
+        status: "active",
+        expiresAt: { lte: input.expiredAtOrBefore },
+      },
+      select: { workspaceId: true },
+      distinct: ["workspaceId"],
+      orderBy: [{ workspaceId: "asc" }],
+      take: input.limit,
+    });
+    return records.map((record) => record.workspaceId);
   }
 
   async markActiveItemsUsed(

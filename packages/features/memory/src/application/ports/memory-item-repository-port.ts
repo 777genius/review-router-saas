@@ -36,6 +36,17 @@ export type MarkMemoryItemIndexingResult = {
   readonly updatedCount: number;
 };
 
+export type ListExpiredActiveMemoryItemsInput = {
+  readonly workspaceId: string;
+  readonly expiredAtOrBefore: Date;
+  readonly limit: number;
+};
+
+export type ListWorkspaceIdsWithExpiredActiveMemoryInput = {
+  readonly expiredAtOrBefore: Date;
+  readonly limit: number;
+};
+
 export interface MemoryItemRepositoryPort {
   save(
     item: MemoryItem,
@@ -84,6 +95,14 @@ export interface MemoryItemRepositoryPort {
     readonly limit: number;
     readonly cursor?: MemoryDashboardRepositoryCursor;
   }): Promise<readonly MemoryItemSnapshot[]>;
+
+  listExpiredActive(
+    input: ListExpiredActiveMemoryItemsInput,
+  ): Promise<readonly MemoryItemSnapshot[]>;
+
+  listWorkspaceIdsWithExpiredActive(
+    input: ListWorkspaceIdsWithExpiredActiveMemoryInput,
+  ): Promise<readonly string[]>;
 
   markActiveItemsUsed(
     input: MarkActiveMemoryItemsUsedInput,

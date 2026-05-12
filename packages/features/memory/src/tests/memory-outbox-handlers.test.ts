@@ -203,6 +203,7 @@ describe("memory outbox handlers", () => {
       "memory.item.deleted@1",
       "memory.item.disabled@1",
       "memory.item.edited@1",
+      "memory.item.expired@1",
       "memory.suggestion.created@1",
       "memory.suggestion.confirmed@1",
       "memory.suggestion.rejected@1",

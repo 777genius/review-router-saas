@@ -20,6 +20,7 @@ const memoryLifecycleEventTypes = [
   "memory.item.deleted",
   "memory.item.disabled",
   "memory.item.edited",
+  "memory.item.expired",
   "memory.suggestion.created",
   "memory.suggestion.confirmed",
   "memory.suggestion.rejected",

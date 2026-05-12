@@ -42,6 +42,7 @@ import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import { SystemClock } from "@reviewrouter/shared";
 import {
+  createMemoryItemExpiryMaintenance,
   createMemorySuggestionExpiryMaintenance,
   createMemoryUsageTelemetryMaintenance,
 } from "./memory-maintenance";
@@ -81,6 +82,10 @@ async function main(): Promise<void> {
     );
     const expirePendingMemorySuggestions =
       createMemorySuggestionExpiryMaintenanceRunner(prisma, clock);
+    const expireActiveMemoryItems = createMemoryItemExpiryMaintenanceRunner(
+      prisma,
+      clock,
+    );
     const pruneMemoryUsageTelemetry =
       createMemoryUsageTelemetryMaintenanceRunner(prisma, clock);
     const limit = readPositiveIntegerEnv("REVIEW_ROUTER_OUTBOX_BATCH_SIZE", 25);
@@ -102,6 +107,7 @@ async function main(): Promise<void> {
       await pruneRateLimits();
       await pruneActionOidcReplayNonces();
       await expirePendingMemorySuggestions();
+      await expireActiveMemoryItems();
       await pruneMemoryUsageTelemetry();
       return result;
     };
@@ -348,6 +354,39 @@ function createMemorySuggestionExpiryMaintenanceRunner(
     {
       clock,
       memorySuggestions: new PrismaMemorySuggestionRepository(prisma),
+      memoryTransaction: new PrismaMemoryTransaction(prisma),
+      lock: new PostgresLeaseLock(prisma),
+      logger,
+    },
+  );
+}
+
+function createMemoryItemExpiryMaintenanceRunner(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  return createMemoryItemExpiryMaintenance(
+    {
+      workspaceLimit: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_ITEM_EXPIRE_WORKSPACE_BATCH_SIZE",
+        50,
+      ),
+      perWorkspaceLimit: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_ITEM_EXPIRE_PER_WORKSPACE_BATCH_SIZE",
+        100,
+      ),
+      intervalMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_ITEM_EXPIRE_INTERVAL_MS",
+        15 * 60 * 1000,
+      ),
+      lockTtlMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_ITEM_EXPIRE_LOCK_TTL_MS",
+        5 * 60 * 1000,
+      ),
+    },
+    {
+      clock,
+      memoryItems: new PrismaMemoryItemRepository(prisma),
       memoryTransaction: new PrismaMemoryTransaction(prisma),
       lock: new PostgresLeaseLock(prisma),
       logger,

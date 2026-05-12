@@ -29,7 +29,10 @@ import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
 import { PostgresLeaseLock } from "../../../packages/platform/locks/src/index.ts";
 import { SystemClock } from "../../../packages/shared/src/index.ts";
 import { createApiApp } from "../../../apps/api/src/app.js";
-import { createMemorySuggestionExpiryMaintenance } from "../../../apps/worker/src/memory-maintenance.ts";
+import {
+  createMemoryItemExpiryMaintenance,
+  createMemorySuggestionExpiryMaintenance,
+} from "../../../apps/worker/src/memory-maintenance.ts";
 import { loadEnvFiles } from "./config.js";
 
 loadEnvFiles();
@@ -893,6 +896,96 @@ try {
     primaryUsageCount,
     bundle.items.length + bundleAfterDisable.items.length,
     "usage events after disable fetch",
+  );
+
+  const ttlItem = await postCandidate(baseUrl, adminSession, {
+    sourceId: `memory-e2e-ttl-item-${suffix}`,
+    body: "TTL expired memory item must leave runtime bundles.",
+    intent: "explicit_command",
+    extractionMethod: "explicit_command",
+    requestedScope: "repository",
+  });
+  assertEqual(ttlItem.status, "created", "ttl memory item status");
+  const ttlMemoryItemId = ttlItem.id;
+  assertPresent(ttlMemoryItemId, "ttl memory item id");
+  await prisma.memoryItem.update({
+    where: { id: ttlMemoryItemId },
+    data: { expiresAt: new Date(Date.now() - 60_000) },
+  });
+  const expireActiveMemoryItems = createMemoryItemExpiryMaintenance(
+    {
+      intervalMs: 1,
+      workspaceLimit: 10,
+      perWorkspaceLimit: 10,
+      lockTtlMs: 60_000,
+    },
+    {
+      clock: new SystemClock(),
+      memoryItems: new PrismaMemoryItemRepository(prisma),
+      memoryTransaction: new PrismaMemoryTransaction(prisma),
+      lock: new PostgresLeaseLock(prisma),
+      logger: noopWorkerLogger,
+    },
+  );
+  await expireActiveMemoryItems();
+  const expiredTtlItem = await prisma.memoryItem.findUnique({
+    where: { id: ttlMemoryItemId },
+    select: { status: true, body: true, indexState: true, indexVersion: true },
+  });
+  assertEqual(expiredTtlItem?.status, "expired", "ttl memory item status");
+  assertEqual(
+    expiredTtlItem?.body,
+    "TTL expired memory item must leave runtime bundles.",
+    "ttl memory item keeps body until delete retention",
+  );
+  assertEqual(
+    expiredTtlItem?.indexState,
+    "index_deleted",
+    "ttl memory item index state",
+  );
+  assertEqual(
+    expiredTtlItem?.indexVersion,
+    null,
+    "ttl memory item index version",
+  );
+  const bundleAfterTtlExpiry = await getJson<ActionMemoryBundle>(
+    baseUrl,
+    "/api/action/v1/memory",
+    afterDisableSession.sessionToken,
+  );
+  assertBundleExcludes(bundleAfterTtlExpiry, [
+    "TTL expired memory item must leave runtime bundles.",
+  ]);
+  const ttlExpiryAudit = await prisma.auditEvent.findMany({
+    where: {
+      workspaceId: primary.workspaceId,
+      action: "memory.item.expired",
+      targetId: ttlMemoryItemId,
+    },
+    select: { metadata: true },
+  });
+  assertEqual(ttlExpiryAudit.length, 1, "ttl memory expiry audit count");
+  assertStringDoesNotContain(
+    JSON.stringify(ttlExpiryAudit),
+    "TTL expired memory item must leave runtime bundles.",
+    "ttl expiry audit must not contain body",
+  );
+  const ttlExpiryOutbox = await prisma.outboxEvent.findMany({
+    where: {
+      workspaceId: primary.workspaceId,
+      aggregateId: ttlMemoryItemId,
+      type: {
+        in: ["memory.item.expired", "memory.embedding.delete.requested"],
+      },
+    },
+    select: { type: true, payload: true },
+    orderBy: { type: "asc" },
+  });
+  assertEqual(ttlExpiryOutbox.length, 2, "ttl expiry outbox count");
+  assertStringDoesNotContain(
+    JSON.stringify(ttlExpiryOutbox),
+    "TTL expired memory item must leave runtime bundles.",
+    "ttl expiry outbox must not contain body",
   );
 
   const deleteConfirmed = await postCommands(baseUrl, adminSession, [
