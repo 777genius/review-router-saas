@@ -10,7 +10,7 @@ import type {
 } from "@reviewrouter/features-review-config";
 import { FormSubmitButton } from "../form-submit-button";
 import {
-  checkOpenRouterRepositorySecretClientAction,
+  checkProviderRepositorySecretClientAction,
   clearRepositoryReviewConfigClientAction,
   saveRepositoryReviewConfigClientAction,
 } from "./actions";
@@ -33,6 +33,15 @@ type RepositorySecretCheckTarget = {
   readonly workspaceId: string;
   readonly repositoryId: string;
 };
+
+type ProviderSecretStatus =
+  | "checking"
+  | "available_repository"
+  | "available_organization"
+  | "not_available_to_repository"
+  | "missing"
+  | "permission_required"
+  | "unknown";
 
 type ReviewModelOption = {
   readonly value: string;
@@ -130,27 +139,64 @@ const defaultCodexProvider = {
   fastMode: false,
 } satisfies ReviewProviderConfiguration;
 
-const OPENROUTER_API_KEYS_URL = "https://openrouter.ai/workspaces/default/keys";
+const secretMetadataByAuthMode = {
+  codex_subscription_oauth: {
+    providerKind: "codex",
+    secretName: "CODEX_AUTH_JSON",
+    label: "Codex OAuth",
+    description:
+      "Codex OAuth uses CODEX_AUTH_JSON from GitHub Actions secrets.",
+    commandSuffix: "< ~/.codex/auth.json",
+    recovery:
+      "Run the Codex OAuth setup command from the setup panel, or seed auth.json from a trusted machine.",
+  },
+  codex_openai_api_key: {
+    providerKind: "codex",
+    secretName: "OPENAI_API_KEY",
+    label: "Codex API key",
+    description:
+      "Codex API-key mode uses OPENAI_API_KEY from GitHub Actions secrets.",
+    commandSuffix: "",
+    recovery: "Create an OpenAI API key, then store it as a GitHub secret.",
+  },
+  openrouter_api_key: {
+    providerKind: "openrouter",
+    secretName: "OPENROUTER_API_KEY",
+    label: "OpenRouter API key",
+    description:
+      "OpenRouter providers use OPENROUTER_API_KEY from GitHub Actions secrets.",
+    commandSuffix: "",
+    recovery: "Create an OpenRouter API key, then store it as a GitHub secret.",
+  },
+} as const satisfies Record<
+  ReviewProviderConfiguration["authMode"],
+  {
+    readonly providerKind: ReviewProviderConfiguration["kind"];
+    readonly secretName: string;
+    readonly label: string;
+    readonly description: string;
+    readonly commandSuffix: string;
+    readonly recovery: string;
+  }
+>;
 
-function OpenRouterSecretNotice({
+function ProviderSecretNotice({
+  authMode,
   repositoryFullName,
   secretCheckTarget,
 }: {
+  readonly authMode: ReviewProviderConfiguration["authMode"];
   readonly repositoryFullName?: string | undefined;
   readonly secretCheckTarget?: RepositorySecretCheckTarget | undefined;
 }): React.ReactElement {
-  const [secretStatus, setSecretStatus] = useState<
-    | "checking"
-    | "available_repository"
-    | "available_organization"
-    | "not_available_to_repository"
-    | "missing"
-    | "permission_required"
-    | "unknown"
-  >(secretCheckTarget ? "checking" : "missing");
+  const [secretStatus, setSecretStatus] = useState<ProviderSecretStatus>(
+    secretCheckTarget ? "checking" : "missing",
+  );
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const metadata = secretMetadataByAuthMode[authMode];
   const command = repositoryFullName
-    ? `gh secret set OPENROUTER_API_KEY --repo ${repositoryFullName}`
-    : "gh secret set OPENROUTER_API_KEY --repo <owner>/<repo>";
+    ? `gh secret set ${metadata.secretName} --repo ${repositoryFullName}${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`
+    : `gh secret set ${metadata.secretName} --repo <owner>/<repo>${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`;
   const secretWorkspaceId = secretCheckTarget?.workspaceId;
   const secretRepositoryId = secretCheckTarget?.repositoryId;
 
@@ -164,9 +210,11 @@ function OpenRouterSecretNotice({
     const formData = new FormData();
     formData.set("workspaceId", secretWorkspaceId);
     formData.set("repositoryId", secretRepositoryId);
+    formData.set("providerKind", metadata.providerKind);
+    formData.set("authMode", authMode);
     setSecretStatus("checking");
 
-    void checkOpenRouterRepositorySecretClientAction(formData)
+    void checkProviderRepositorySecretClientAction(formData)
       .then((result) => {
         if (!cancelled) setSecretStatus(result.status);
       })
@@ -177,7 +225,35 @@ function OpenRouterSecretNotice({
     return () => {
       cancelled = true;
     };
-  }, [secretRepositoryId, secretWorkspaceId]);
+  }, [
+    authMode,
+    metadata.providerKind,
+    refreshVersion,
+    secretRepositoryId,
+    secretWorkspaceId,
+  ]);
+
+  if (secretStatus === "checking") {
+    return (
+      <div
+        role="status"
+        className="rounded-xl border border-cyan-300/25 bg-cyan-300/[0.045] p-3 text-xs leading-5 text-cyan-100"
+      >
+        <p className="inline-flex items-center gap-2 font-semibold text-cyan-50">
+          <span
+            aria-hidden="true"
+            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"
+          />
+          Checking GitHub Actions secret metadata...
+        </p>
+        <p className="mt-1 text-cyan-100/80">
+          ReviewRouter is checking whether{" "}
+          <code className="font-mono">{metadata.secretName}</code> is available
+          for the selected {metadata.label} provider.
+        </p>
+      </div>
+    );
+  }
 
   if (
     secretStatus === "available_repository" ||
@@ -189,14 +265,18 @@ function OpenRouterSecretNotice({
         className="rounded-xl border border-emerald-300/30 bg-emerald-300/[0.07] p-3 text-xs leading-5 text-emerald-100"
       >
         <p className="font-semibold text-emerald-50">
-          <code className="font-mono">OPENROUTER_API_KEY</code>{" "}
+          <code className="font-mono">{metadata.secretName}</code>{" "}
           {secretStatus === "available_repository"
             ? "is set in this repository's GitHub Actions secrets."
             : "is available to this repository from organization GitHub Actions secrets."}
         </p>
         <p className="mt-1 text-emerald-100/85">
-          OpenRouter providers can use this secret in CI.
+          {metadata.label} can use this secret in CI.
         </p>
+        <SecretRefreshButton
+          busy={false}
+          onRefresh={() => setRefreshVersion((value) => value + 1)}
+        />
       </div>
     );
   }
@@ -207,23 +287,17 @@ function OpenRouterSecretNotice({
       className="rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-xs leading-5 text-amber-100"
     >
       <p className="font-semibold text-amber-50">
-        {secretStatus === "checking" ? (
-          <>
-            Checking whether{" "}
-            <code className="font-mono">OPENROUTER_API_KEY</code> is available
-            to this repository...
-          </>
-        ) : secretStatus === "not_available_to_repository" ? (
+        {secretStatus === "not_available_to_repository" ? (
           <>
             An organization{" "}
-            <code className="font-mono">OPENROUTER_API_KEY</code> secret exists,
-            but this repository is not selected for access.
+            <code className="font-mono">{metadata.secretName}</code> secret
+            exists, but this repository is not selected for access.
           </>
         ) : (
           <>
-            OpenRouter requires{" "}
-            <code className="font-mono">OPENROUTER_API_KEY</code> as a
-            repository secret or an organization secret selected for this
+            {metadata.description} Add{" "}
+            <code className="font-mono">{metadata.secretName}</code> as a
+            repository secret or an organization secret available to this
             repository.
           </>
         )}
@@ -242,16 +316,7 @@ function OpenRouterSecretNotice({
         {command}
       </pre>
       <p className="mt-1.5 text-amber-100/85">
-        Get a key at{" "}
-        <a
-          href={OPENROUTER_API_KEYS_URL}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="font-semibold text-amber-50 underline-offset-4 hover:underline"
-        >
-          openrouter.ai/workspaces/default/keys
-        </a>
-        . Without this secret, OpenRouter providers will fail in CI.
+        {metadata.recovery} Without this secret, this provider will fail in CI.
       </p>
       {secretStatus === "not_available_to_repository" ? (
         <p className="mt-1.5 text-amber-100/85">
@@ -259,7 +324,30 @@ function OpenRouterSecretNotice({
           Actions secret and add this repository under Repository access.
         </p>
       ) : null}
+      <SecretRefreshButton
+        busy={false}
+        onRefresh={() => setRefreshVersion((value) => value + 1)}
+      />
     </div>
+  );
+}
+
+function SecretRefreshButton({
+  busy,
+  onRefresh,
+}: {
+  readonly busy: boolean;
+  readonly onRefresh: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={onRefresh}
+      className="mt-2 inline-flex min-h-8 items-center rounded-lg border border-current/25 px-2.5 py-1 text-xs font-semibold transition hover:bg-white/[0.06] disabled:cursor-wait disabled:opacity-60"
+    >
+      Refresh secret status
+    </button>
   );
 }
 
@@ -681,8 +769,9 @@ export function ReviewConfigForm({
                       </>
                     )}
                   </div>
-                  {provider.kind === "openrouter" ? (
-                    <OpenRouterSecretNotice
+                  {repositorySecretCheckTarget ? (
+                    <ProviderSecretNotice
+                      authMode={provider.authMode}
                       repositoryFullName={repositoryFullName}
                       secretCheckTarget={repositorySecretCheckTarget}
                     />

@@ -49,8 +49,11 @@ import {
   assertDashboardMutationAllowed,
   assertDashboardRepositoryMutationAllowed,
   createGitHubAppInstallationOctokit,
+  getDashboardSignedInActor,
+  getDashboardWorkspaceScope,
 } from "../../src/server/dashboard-mutations";
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
+import { refreshGitHubUserRepositoryAccess } from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
 import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-readiness";
@@ -136,6 +139,47 @@ export async function requestInstallationSyncAction(
   redirectAfterMutation(formData, params);
 }
 
+export async function refreshRepositoryAccessAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  let params: Record<string, string>;
+
+  try {
+    const actor = await getDashboardSignedInActor();
+    if (!actor) {
+      throw new Error("dashboard_mutation_requires_sign_in");
+    }
+    await createDashboardRateLimitPolicy(
+      prisma,
+    ).assertRepositoryAccessRefreshAllowed({ userId: actor.userId });
+    const workspaceScope = await getDashboardWorkspaceScope();
+    const result = await refreshGitHubUserRepositoryAccess({
+      prisma,
+      actor,
+      excludedWorkspaceIds:
+        workspaceScope.kind === "workspace_ids"
+          ? workspaceScope.workspaceIds
+          : [],
+    });
+    if (result.status !== "ready") {
+      throw new Error(`repository_access_${result.status}`);
+    }
+
+    params = { notice: "repository_access_refreshed" };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  const workspace = readOptionalFormString(formData, "workspace");
+  const section = readOptionalFormString(formData, "section");
+  if (workspace) params.workspace = workspace;
+  if (section) params.section = section;
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
 export async function createSetupPullRequestAction(
   formData: FormData,
 ): Promise<never> {
@@ -175,7 +219,7 @@ export async function confirmProviderSecretSetupClientAction(
   return { params };
 }
 
-export async function checkOpenRouterRepositorySecretClientAction(
+export async function checkProviderRepositorySecretClientAction(
   formData: FormData,
 ): Promise<{
   readonly status:
@@ -189,6 +233,8 @@ export async function checkOpenRouterRepositorySecretClientAction(
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const repositoryId = readFormString(formData, "repositoryId");
+  const providerSetup = readProviderSetupSelection(formData);
+  const secretNames = providerSecretNamesForAuthMode(providerSetup.authMode);
 
   try {
     const repository = await loadRepositoryForWorkspace({
@@ -212,9 +258,10 @@ export async function checkOpenRouterRepositorySecretClientAction(
     );
     await assertRepositoryVisibleToGitHubApp({ octokit, repository });
 
-    return await checkOpenRouterSecretAvailability({
+    return await checkProviderSecretAvailability({
       octokit,
       repository,
+      secretNames,
     });
   } catch (error) {
     const status = providerSecretAvailabilityStatusForError(error);
@@ -1067,11 +1114,12 @@ async function verifyProviderSecrets(input: {
   }
 }
 
-async function checkOpenRouterSecretAvailability(input: {
+async function checkProviderSecretAvailability(input: {
   readonly octokit: Awaited<
     ReturnType<typeof createGitHubAppInstallationOctokit>
   >;
   readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+  readonly secretNames: readonly string[];
 }): Promise<{
   readonly status:
     | "available_repository"
@@ -1081,24 +1129,48 @@ async function checkOpenRouterSecretAvailability(input: {
     | "permission_required"
     | "unknown";
 }> {
-  try {
-    await verifyRepositorySecret({
-      octokit: input.octokit,
-      repository: input.repository,
-      secretName: "OPENROUTER_API_KEY",
+  for (const secretName of input.secretNames) {
+    try {
+      await verifyRepositorySecret({
+        octokit: input.octokit,
+        repository: input.repository,
+        secretName,
+      });
+      continue;
+    } catch (error) {
+      const status = providerSecretAvailabilityStatusForError(error);
+      if (status === "permission_required") return { status };
+      if (status !== "missing") return { status: "unknown" };
+    }
+
+    return await checkOrganizationProviderSecretAvailability({
+      ...input,
+      secretName,
     });
-    return { status: "available_repository" };
-  } catch (error) {
-    const status = providerSecretAvailabilityStatusForError(error);
-    if (status === "permission_required") return { status };
-    if (status !== "missing") return { status: "unknown" };
   }
 
+  return { status: "available_repository" };
+}
+
+async function checkOrganizationProviderSecretAvailability(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+  readonly secretName: string;
+}): Promise<{
+  readonly status:
+    | "available_organization"
+    | "not_available_to_repository"
+    | "missing"
+    | "permission_required"
+    | "unknown";
+}> {
   try {
     await verifyOrganizationSecret({
       octokit: input.octokit,
       repository: input.repository,
-      secretName: "OPENROUTER_API_KEY",
+      secretName: input.secretName,
     });
     return { status: "available_organization" };
   } catch (error) {
@@ -1456,6 +1528,11 @@ function readFormString(formData: FormData, key: string): string {
   return value;
 }
 
+function readOptionalFormString(formData: FormData, key: string): string {
+  const value = formData.get(key);
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function readWorkflowStyle(formData: FormData): "reusable" | "explicit" {
   const value = formData.get("workflowStyle");
   return value === "explicit" ? "explicit" : "reusable";
@@ -1613,6 +1690,13 @@ function safeDashboardErrorCode(error: unknown): string {
   }
   if (
     [
+      "repository_access_token_missing",
+      "repository_access_token_revoked",
+      "repository_access_token_expired",
+      "repository_access_token_refresh_failed",
+      "repository_access_token_decryption_failed",
+      "repository_access_token_encryption_misconfigured",
+      "repository_access_github_error",
       "dashboard_mutations_disabled",
       "dashboard_auth_misconfigured",
       "dashboard_mutation_requires_sign_in",

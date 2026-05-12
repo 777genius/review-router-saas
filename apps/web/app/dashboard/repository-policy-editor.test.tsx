@@ -13,11 +13,11 @@ import {
   type ReviewConfiguration,
   type ReviewProviderConfiguration,
 } from "@reviewrouter/features-review-config";
-import { checkOpenRouterRepositorySecretClientAction } from "./actions";
+import { checkProviderRepositorySecretClientAction } from "./actions";
 import { ReviewConfigForm } from "./repository-policy-editor";
 
 vi.mock("./actions", () => ({
-  checkOpenRouterRepositorySecretClientAction: vi.fn(),
+  checkProviderRepositorySecretClientAction: vi.fn(),
   clearRepositoryReviewConfigClientAction: vi.fn(),
   saveRepositoryReviewConfigClientAction: vi.fn(),
 }));
@@ -164,7 +164,7 @@ describe("ReviewConfigForm", () => {
   });
 
   it("shows a green OpenRouter secret status when the repository secret exists", async () => {
-    vi.mocked(checkOpenRouterRepositorySecretClientAction).mockResolvedValue({
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
       status: "available_repository",
     });
 
@@ -186,8 +186,116 @@ describe("ReviewConfigForm", () => {
     expect(screen.queryByText(/OpenRouter requires/i)).toBeNull();
   });
 
+  it("checks the Codex OAuth secret for the selected auth mode", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "missing",
+    });
+
+    renderReviewConfigForm({
+      config: codexReviewConfiguration("codex_subscription_oauth"),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Codex OAuth uses CODEX_AUTH_JSON/i),
+      ).toBeTruthy();
+    });
+    expect(
+      screen.getByText(
+        "gh secret set CODEX_AUTH_JSON --repo 777genius/agent-teams-ai < ~/.codex/auth.json",
+      ),
+    ).toBeTruthy();
+    const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
+      .calls[0]?.[0] as FormData;
+    expect(formData.get("providerKind")).toBe("codex");
+    expect(formData.get("authMode")).toBe("codex_subscription_oauth");
+  });
+
+  it("checks the Codex API-key secret for the selected auth mode", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "missing",
+    });
+
+    renderReviewConfigForm({
+      config: codexReviewConfiguration("codex_openai_api_key"),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Codex API-key mode uses OPENAI_API_KEY/i),
+      ).toBeTruthy();
+    });
+    expect(
+      screen.getByText(
+        "gh secret set OPENAI_API_KEY --repo 777genius/agent-teams-ai",
+      ),
+    ).toBeTruthy();
+    const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
+      .calls[0]?.[0] as FormData;
+    expect(formData.get("providerKind")).toBe("codex");
+    expect(formData.get("authMode")).toBe("codex_openai_api_key");
+  });
+
+  it("shows a loader instead of a setup warning while secret status is loading", () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockReturnValue(
+      new Promise(() => undefined),
+    );
+
+    renderReviewConfigForm({
+      config: openRouterReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    expect(
+      screen.getByText(/Checking GitHub Actions secret metadata/i),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Set a repository secret/i)).toBeNull();
+  });
+
+  it("refreshes provider secret status on demand", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction)
+      .mockResolvedValueOnce({ status: "missing" })
+      .mockResolvedValueOnce({ status: "available_repository" });
+
+    renderReviewConfigForm({
+      config: openRouterReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await screen.findByText(/OpenRouter providers use OPENROUTER_API_KEY/i);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh secret status" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain(
+        "OPENROUTER_API_KEY is set in this repository's GitHub Actions secrets",
+      );
+    });
+    expect(checkProviderRepositorySecretClientAction).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the setup warning when OpenRouter secret metadata is missing", async () => {
-    vi.mocked(checkOpenRouterRepositorySecretClientAction).mockResolvedValue({
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
       status: "missing",
     });
 
@@ -201,7 +309,9 @@ describe("ReviewConfigForm", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/OpenRouter requires/i)).toBeTruthy();
+      expect(
+        screen.getByText(/OpenRouter providers use OPENROUTER_API_KEY/i),
+      ).toBeTruthy();
     });
     expect(
       screen.getByText(
@@ -211,7 +321,7 @@ describe("ReviewConfigForm", () => {
   });
 
   it("explains when an organization OpenRouter secret is not selected for this repository", async () => {
-    vi.mocked(checkOpenRouterRepositorySecretClientAction).mockResolvedValue({
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
       status: "not_available_to_repository",
     });
 
@@ -272,5 +382,24 @@ function openRouterReviewConfiguration(): ReviewConfiguration {
     ...safeDefaultReviewConfiguration,
     provider: openRouterProvider,
     providers: [openRouterProvider],
+  };
+}
+
+function codexReviewConfiguration(
+  authMode: "codex_subscription_oauth" | "codex_openai_api_key",
+): ReviewConfiguration {
+  const codexProvider: ReviewProviderConfiguration = {
+    kind: "codex",
+    authMode,
+    model: "gpt-5.5",
+    reasoningEffort: "medium",
+    agenticContext: true,
+    fastMode: false,
+  };
+
+  return {
+    ...safeDefaultReviewConfiguration,
+    provider: codexProvider,
+    providers: [codexProvider],
   };
 }

@@ -9,9 +9,11 @@ import {
 import { requireGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { getAuthEnvironmentStatus } from "../auth/auth-env";
 import { authOptions } from "../auth/auth-options";
+import { updateRepositoryPermissionCacheFromLiveCheck } from "./github-user-repository-access";
 import { getPrisma } from "./prisma";
 
 export type DashboardMutationActor = {
+  readonly userId: string;
   readonly githubUserId: string;
   readonly githubLogin: string;
   readonly actor: string;
@@ -85,6 +87,7 @@ export async function assertDashboardMutationAllowed(
 export async function assertDashboardRepositoryMutationAllowed(
   workspaceId: string,
   repository: {
+    readonly id?: string;
     readonly owner: string;
     readonly name: string;
     readonly githubRepositoryId: bigint | string | number;
@@ -124,12 +127,24 @@ export async function getDashboardSignedInActor(): Promise<DashboardMutationActo
     return null;
   }
 
-  return { githubUserId, githubLogin, actor: `user:${githubLogin}` };
+  const user = await getPrisma().user.findUnique({
+    where: { githubUserId: BigInt(githubUserId) },
+    select: { id: true },
+  });
+  if (!user) return null;
+
+  return {
+    userId: user.id,
+    githubUserId,
+    githubLogin,
+    actor: `user:${githubLogin}`,
+  };
 }
 
 export async function canDashboardActorMutateRepository(input: {
   readonly actor: DashboardMutationActor;
   readonly repository: {
+    readonly id?: string;
     readonly owner: string;
     readonly name: string;
     readonly githubRepositoryId: bigint | string | number;
@@ -162,7 +177,20 @@ async function readDashboardMutationActor(): Promise<DashboardMutationActor> {
     throw new Error("dashboard_mutation_requires_sign_in");
   }
 
-  return { githubUserId, githubLogin, actor: `user:${githubLogin}` };
+  const user = await getPrisma().user.findUnique({
+    where: { githubUserId: BigInt(githubUserId) },
+    select: { id: true },
+  });
+  if (!user) {
+    throw new Error("dashboard_mutation_requires_sign_in");
+  }
+
+  return {
+    userId: user.id,
+    githubUserId,
+    githubLogin,
+    actor: `user:${githubLogin}`,
+  };
 }
 
 async function assertWorkspaceMutationAllowedForActor(
@@ -187,6 +215,7 @@ async function assertWorkspaceMutationAllowedForActor(
 async function assertRepositoryWritePermissionForActor(input: {
   readonly actor: DashboardMutationActor;
   readonly repository: {
+    readonly id?: string;
     readonly owner: string;
     readonly name: string;
     readonly githubRepositoryId: bigint | string | number;
@@ -225,12 +254,27 @@ async function assertRepositoryWritePermissionForActor(input: {
       throw new Error("repository_mutation_forbidden");
     }
 
-    if (
-      !repositoryPermissionAllowsMutation({
-        permission: typeof data.permission === "string" ? data.permission : "",
-        roleName: typeof data.role_name === "string" ? data.role_name : "",
-      })
-    ) {
+    const permission =
+      typeof data.permission === "string" ? data.permission : "";
+    const roleName = typeof data.role_name === "string" ? data.role_name : "";
+    const canManage = repositoryPermissionAllowsMutation({
+      permission,
+      roleName,
+    });
+    if (input.repository.id) {
+      await updateRepositoryPermissionCacheFromLiveCheck({
+        prisma: getPrisma(),
+        actor: input.actor,
+        repositoryId: input.repository.id,
+        githubInstallationId:
+          input.repository.installation.githubInstallationId,
+        permission,
+        roleName,
+        canManage,
+      });
+    }
+
+    if (!canManage) {
       throw new Error("repository_mutation_forbidden");
     }
   } catch (error) {

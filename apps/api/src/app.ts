@@ -35,6 +35,7 @@ import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
 import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
+import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
@@ -103,6 +104,9 @@ export async function createApiApp(
           deliveries: new PrismaWebhookDeliveryRepository(prisma),
           syncRequests: new OutboxInstallationSyncRequester(
             new PrismaOutboxEventRepository(prisma),
+          ),
+          appAuthorizations: new PrismaGitHubAppAuthorizationWebhookHandler(
+            prisma,
           ),
           pullRequests: new PrismaSetupPullRequestMergeHandler(prisma),
           repositories: new PrismaRepositoryWebhookHandler(prisma),

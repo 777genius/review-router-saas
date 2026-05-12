@@ -40,9 +40,14 @@ import {
   getDashboardWorkspaceScope,
   type DashboardMutationActor,
 } from "../../src/server/dashboard-mutations";
+import {
+  listGitHubUserRepositoryAccess,
+  type GitHubUserRepositoryAccessStatus,
+} from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
 import {
   clearRepositoryReviewConfigAction,
+  refreshRepositoryAccessAction,
   requestInstallationSyncAction,
   retryOutboxEventAction,
   enableOrgRulesetWorkflowAction,
@@ -68,6 +73,7 @@ import {
 import { FormSubmitButton } from "../form-submit-button";
 import { GitHubAppInstallPermissionDialog } from "../github-app-install-permission-dialog";
 import { GitHubAccountAvatar } from "../github-account-avatar";
+import { GitHubSignInButton } from "../github-sign-in-button";
 import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 import { DashboardSectionTabs } from "./dashboard-section-tabs";
@@ -455,8 +461,11 @@ type DashboardWorkspaceData = Awaited<
 >[number];
 
 type DashboardRepositoryAccessScope = {
+  readonly status: GitHubUserRepositoryAccessStatus;
   readonly workspaceIds: readonly string[];
   readonly repositoryIds: ReadonlySet<string>;
+  readonly checkedAt: Date | null;
+  readonly errorCode?: string;
 };
 
 async function listDashboardRepositoryAccess(input: {
@@ -476,6 +485,15 @@ async function listDashboardRepositoryAccess(input: {
       ? input.workspaceScope.workspaceIds
       : [];
   const prisma = getPrisma();
+  const discovered = await listGitHubUserRepositoryAccess({
+    prisma,
+    actor,
+    excludedWorkspaceIds: fullAccessWorkspaceIds,
+  });
+  if (discovered.status === "ready") {
+    return discovered;
+  }
+
   const candidateWhere = {
     selected: true,
     archived: false,
@@ -484,21 +502,6 @@ async function listDashboardRepositoryAccess(input: {
       ? { workspaceId: { notIn: [...fullAccessWorkspaceIds] } }
       : {}),
   } as const;
-  const recentCandidates = await prisma.repositoryConnection.findMany({
-    where: {
-      ...candidateWhere,
-    },
-    orderBy: { updatedAt: "desc" },
-    take: 120,
-    select: {
-      id: true,
-      workspaceId: true,
-      githubRepositoryId: true,
-      owner: true,
-      name: true,
-      installation: { select: { githubInstallationId: true } },
-    },
-  });
   const requestedRepositoryFullName = normalizeRequestedRepositoryFullName(
     input.requestedRepositoryFullName,
   );
@@ -518,10 +521,7 @@ async function listDashboardRepositoryAccess(input: {
         },
       })
     : [];
-  const candidates = dedupeRepositoryAccessCandidates([
-    ...requestedCandidates,
-    ...recentCandidates,
-  ]);
+  const candidates = dedupeRepositoryAccessCandidates(requestedCandidates);
   const allowed = await Promise.all(
     candidates.map(async (repository) => ({
       repository,
@@ -541,8 +541,11 @@ async function listDashboardRepositoryAccess(input: {
   }
 
   return {
+    status: discovered.status,
     workspaceIds: [...workspaceIds],
     repositoryIds,
+    checkedAt: discovered.checkedAt,
+    ...(discovered.errorCode ? { errorCode: discovered.errorCode } : {}),
   };
 }
 
@@ -556,10 +559,14 @@ function dedupeRepositoryAccessCandidates<T extends { readonly id: string }>(
   ];
 }
 
-function emptyDashboardRepositoryAccess(): DashboardRepositoryAccessScope {
+function emptyDashboardRepositoryAccess(
+  status: GitHubUserRepositoryAccessStatus = "ready",
+): DashboardRepositoryAccessScope {
   return {
+    status,
     workspaceIds: [],
     repositoryIds: new Set<string>(),
+    checkedAt: null,
   };
 }
 
@@ -792,6 +799,17 @@ export default async function DashboardPage({
   const selectedSection = resolveDashboardSection(params);
 
   if (workspaces.length === 0) {
+    if (mutationStatus.signedIn) {
+      return (
+        <DashboardEmptyAccessState
+          repositoryAccess={repositoryAccess}
+          githubLogin={mutationStatus.githubLogin}
+          githubAvatarUrl={mutationStatus.githubAvatarUrl}
+          appInstallUrl={appInstallUrl}
+        />
+      );
+    }
+
     redirect("/");
   }
 
@@ -824,6 +842,7 @@ export default async function DashboardPage({
           mutationsEnabled={mutationStatus.enabled}
           selectedSection={selectedSection}
           params={params}
+          repositoryAccess={repositoryAccess}
           workspaceKey={selectedWorkspaceKey}
           appInstallUrl={appInstallUrl}
           modelOptions={modelOptions}
@@ -835,6 +854,201 @@ export default async function DashboardPage({
       </section>
     </main>
   );
+}
+
+function DashboardEmptyAccessState({
+  repositoryAccess,
+  githubLogin,
+  githubAvatarUrl,
+  appInstallUrl,
+}: {
+  readonly repositoryAccess: DashboardRepositoryAccessScope;
+  readonly githubLogin: string | null;
+  readonly githubAvatarUrl: string | null;
+  readonly appInstallUrl: string | null;
+}): React.ReactElement {
+  const copy = dashboardRepositoryAccessEmptyCopy(repositoryAccess.status);
+
+  return (
+    <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-5 px-4 py-6 sm:px-6 md:py-10">
+      <section className="rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/80 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-8">
+        <div className="flex flex-wrap items-center gap-3">
+          <Badge tone={copy.tone}>{copy.badge}</Badge>
+          {githubLogin ? (
+            <GitHubAccountAvatar
+              login={githubLogin}
+              avatarUrl={githubAvatarUrl}
+              size="sm"
+            />
+          ) : null}
+        </div>
+        <div className="mt-6 max-w-3xl space-y-3">
+          <h1 className="text-3xl font-extrabold leading-tight text-cyan-50 sm:text-5xl">
+            {copy.title}
+          </h1>
+          <p className="text-sm leading-6 text-slate-300 sm:text-base">
+            {copy.body}
+          </p>
+          {repositoryAccess.errorCode ? (
+            <p className="text-xs leading-5 text-slate-500">
+              Status: <code>{repositoryAccess.errorCode}</code>
+            </p>
+          ) : null}
+        </div>
+        <div className="mt-6 flex flex-wrap gap-3">
+          {copy.reconnect ? (
+            <GitHubSignInButton
+              callbackUrl="/dashboard"
+              variant="solid"
+              size="lg"
+              className="rounded-2xl"
+            >
+              Reconnect GitHub
+            </GitHubSignInButton>
+          ) : null}
+          {appInstallUrl ? (
+            <LinkButton
+              href={appInstallUrl}
+              variant={copy.reconnect ? "outline" : "solid"}
+              size="lg"
+              className="rounded-2xl"
+            >
+              Install GitHub App
+            </LinkButton>
+          ) : null}
+          <RepositoryAccessRefreshForm
+            triggerLabel="Refresh GitHub access"
+            size="lg"
+            className="rounded-2xl"
+          />
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function RepositoryAccessRefreshForm({
+  workspaceKey,
+  section,
+  triggerLabel = "Refresh access",
+  size = "sm",
+  className = "",
+}: {
+  readonly workspaceKey?: string;
+  readonly section?: DashboardSection;
+  readonly triggerLabel?: string;
+  readonly size?: "sm" | "md" | "lg";
+  readonly className?: string;
+}): React.ReactElement {
+  return (
+    <form action={refreshRepositoryAccessAction}>
+      {workspaceKey ? (
+        <input type="hidden" name="workspace" value={workspaceKey} />
+      ) : null}
+      {section ? <input type="hidden" name="section" value={section} /> : null}
+      <FormSubmitButton
+        variant="outline"
+        size={size}
+        className={className}
+        idleLabel={triggerLabel}
+        pendingLabel="Refreshing..."
+      />
+    </form>
+  );
+}
+
+function RepositoryAccessRefreshNotice({
+  repositoryAccess,
+  workspaceKey,
+  selectedSection,
+}: {
+  readonly repositoryAccess: DashboardRepositoryAccessScope;
+  readonly workspaceKey: string;
+  readonly selectedSection: DashboardSection;
+}): React.ReactElement {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-200/10 bg-slate-950/60 p-4">
+      <div className="min-w-0">
+        <Badge tone="accent">GitHub access</Badge>
+        <p className="mt-2 text-sm leading-6 text-slate-300">
+          Repository visibility comes from your GitHub App authorization and is
+          limited to repos where your GitHub role has write, maintain, or admin
+          access.
+        </p>
+        <p className="mt-1 text-xs leading-5 text-slate-500">
+          {repositoryAccess.checkedAt
+            ? `Last checked ${repositoryAccess.checkedAt.toISOString()}`
+            : "Access has not been cached yet."}
+        </p>
+      </div>
+      <RepositoryAccessRefreshForm
+        workspaceKey={workspaceKey}
+        section={selectedSection}
+        triggerLabel="Refresh GitHub access"
+        className="w-full sm:w-auto"
+      />
+    </div>
+  );
+}
+
+function dashboardRepositoryAccessEmptyCopy(
+  status: GitHubUserRepositoryAccessStatus,
+): {
+  readonly badge: string;
+  readonly title: string;
+  readonly body: string;
+  readonly reconnect: boolean;
+  readonly tone: "accent" | "warning" | "success";
+} {
+  if (status === "token_missing") {
+    return {
+      badge: "GitHub reconnect required",
+      title: "Reconnect GitHub to show repositories you can manage.",
+      body: "ReviewRouter needs the GitHub App user authorization from your sign-in to discover installed repositories where you have write, maintain, or admin access.",
+      reconnect: true,
+      tone: "warning",
+    };
+  }
+  if (
+    status === "token_revoked" ||
+    status === "token_expired" ||
+    status === "token_refresh_failed" ||
+    status === "token_decryption_failed"
+  ) {
+    return {
+      badge: "GitHub authorization expired",
+      title: "Reconnect GitHub to refresh repository access.",
+      body: "Your GitHub authorization is no longer usable for repository discovery. Reconnecting updates the token without asking for provider secrets.",
+      reconnect: true,
+      tone: "warning",
+    };
+  }
+  if (status === "token_encryption_misconfigured") {
+    return {
+      badge: "Configuration required",
+      title: "Repository discovery is not enabled yet.",
+      body: "Set REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY so ReviewRouter can store GitHub user tokens encrypted at rest. Until then, workspace admins can still use the dashboard, but maintainer repository discovery is disabled.",
+      reconnect: false,
+      tone: "warning",
+    };
+  }
+  if (status === "github_error") {
+    return {
+      badge: "GitHub API unavailable",
+      title: "Repository access could not be refreshed.",
+      body: "GitHub did not return the installation repository list. Retry in a moment; ReviewRouter will not expand access while the check is unavailable.",
+      reconnect: false,
+      tone: "warning",
+    };
+  }
+
+  return {
+    badge: "No repositories found",
+    title: "No installed repositories with write access found.",
+    body: "Install the GitHub App on a repository where your GitHub account has write, maintain, or admin access, then return to the dashboard.",
+    reconnect: false,
+    tone: "accent",
+  };
 }
 
 function WorkspaceSwitcher({
@@ -979,6 +1193,7 @@ function WorkspaceCard({
   mutationsEnabled,
   selectedSection,
   params,
+  repositoryAccess,
   workspaceKey,
   appInstallUrl,
   modelOptions,
@@ -988,6 +1203,7 @@ function WorkspaceCard({
   readonly mutationsEnabled: boolean;
   readonly selectedSection: DashboardSection;
   readonly params: Record<string, string | string[] | undefined>;
+  readonly repositoryAccess: DashboardRepositoryAccessScope;
   readonly workspaceKey: string;
   readonly appInstallUrl: string | null;
   readonly modelOptions: readonly ReviewModelOption[];
@@ -1084,6 +1300,13 @@ function WorkspaceCard({
           workspaceHealth={workspaceHealth}
           activeConfig={activeConfig}
         />
+        {!hasWorkspaceWideAccess ? (
+          <RepositoryAccessRefreshNotice
+            repositoryAccess={repositoryAccess}
+            workspaceKey={workspaceKey}
+            selectedSection={selectedSection}
+          />
+        ) : null}
         <WorkspaceActionNotice params={params} orgRuleset={orgRuleset} />
 
         {selectedSection === "repositories" ? (
@@ -2855,6 +3078,7 @@ function resolveDashboardSection(
       "workflow_already_current",
       "sync_requested",
       "sync_already_requested",
+      "repository_access_refreshed",
     ].includes(notice)
   ) {
     return "repositories";
@@ -2897,6 +3121,8 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return "Repository metadata refresh was queued. Reload in a few seconds if the repository list does not update immediately.";
     case "sync_already_requested":
       return "Repository metadata refresh was already queued for this installation recently.";
+    case "repository_access_refreshed":
+      return "GitHub repository access was refreshed for your account.";
     case "setup_pr_ready":
       return repository
         ? `Setup PR is ready for ${repository}.`
@@ -2943,6 +3169,8 @@ function dashboardNoticeTitle(notice: string): string {
     case "sync_requested":
     case "sync_already_requested":
       return "Refresh queued";
+    case "repository_access_refreshed":
+      return "Access refreshed";
     case "setup_pr_ready":
       return "Setup PR ready";
     case "setup_pr_merged":
@@ -2978,6 +3206,7 @@ function dashboardNoticeTone(
     case "review_config_saved":
     case "repository_review_config_saved":
     case "repository_review_config_cleared":
+    case "repository_access_refreshed":
       return "success";
     case "sync_already_requested":
       return "accent";
@@ -3058,6 +3287,17 @@ function dashboardErrorText(error: string): string {
       return "GitHub OAuth is not configured. Set AUTH_SECRET, GITHUB_APP_CLIENT_ID, and GITHUB_APP_CLIENT_SECRET.";
     case "dashboard_mutation_requires_sign_in":
       return "Sign in with GitHub before changing repository setup.";
+    case "repository_access_token_missing":
+      return "Reconnect GitHub to discover repositories you can manage.";
+    case "repository_access_token_revoked":
+    case "repository_access_token_expired":
+    case "repository_access_token_refresh_failed":
+    case "repository_access_token_decryption_failed":
+      return "GitHub authorization expired. Reconnect GitHub, then refresh repository access.";
+    case "repository_access_token_encryption_misconfigured":
+      return "Server setup is incomplete. Set REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY before maintainer repository discovery can run.";
+    case "repository_access_github_error":
+      return "GitHub repository access could not be refreshed. Try again shortly.";
     case "workspace_mutation_forbidden":
       return "Your GitHub user is not an owner/admin for this workspace.";
     case "repository_mutation_forbidden":

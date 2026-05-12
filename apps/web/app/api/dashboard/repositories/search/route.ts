@@ -4,7 +4,11 @@ import {
   PrismaRepositoryHealthRepository,
 } from "@reviewrouter/features-repo-health";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
-import { getDashboardWorkspaceScope } from "../../../../../src/server/dashboard-mutations";
+import {
+  getDashboardSignedInActor,
+  getDashboardWorkspaceScope,
+} from "../../../../../src/server/dashboard-mutations";
+import { listGitHubUserRepositoryAccess } from "../../../../../src/server/github-user-repository-access";
 import { getPrisma } from "../../../../../src/server/prisma";
 import {
   buildRepositorySearchText,
@@ -37,9 +41,29 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const query = normalizeQuery(request.nextUrl.searchParams.get("q") ?? "");
   const filter = readRepositorySearchFilter(request.nextUrl.searchParams);
   const prisma = getPrisma();
+  const signedInActor = await getDashboardSignedInActor();
+  const fullAccessWorkspaceIds =
+    scope.kind === "workspace_ids" ? scope.workspaceIds : [];
+  const repositoryAccess =
+    signedInActor && scope.kind !== "all"
+      ? await listGitHubUserRepositoryAccess({
+          prisma,
+          actor: signedInActor,
+          excludedWorkspaceIds: fullAccessWorkspaceIds,
+        })
+      : {
+          status: "ready" as const,
+          workspaceIds: [],
+          repositoryIds: new Set<string>(),
+          checkedAt: null,
+        };
+  const visibleWorkspaceIds = mergeWorkspaceIds(
+    fullAccessWorkspaceIds,
+    repositoryAccess.workspaceIds,
+  );
   const workspaceWhere =
     scope.kind === "workspace_ids"
-      ? { id: { in: [...scope.workspaceIds] } }
+      ? { id: { in: visibleWorkspaceIds } }
       : undefined;
   const candidates = await prisma.workspace.findMany({
     ...(workspaceWhere ? { where: workspaceWhere } : {}),
@@ -60,9 +84,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   if (!workspace) {
     return NextResponse.json({ error: "workspace_not_found" }, { status: 404 });
   }
+  const hasWorkspaceWideAccess =
+    scope.kind === "all" ||
+    (scope.kind === "workspace_ids" &&
+      scope.workspaceIds.includes(workspace.id));
 
   const repositories = await prisma.repositoryConnection.findMany({
-    where: { workspaceId: workspace.id },
+    where: {
+      workspaceId: workspace.id,
+      ...(hasWorkspaceWideAccess
+        ? {}
+        : { id: { in: [...repositoryAccess.repositoryIds] } }),
+    },
     orderBy: [{ selected: "desc" }, { fullName: "asc" }],
     select: {
       id: true,
@@ -211,6 +244,13 @@ function workspaceKeys(workspace: WorkspaceCandidate): string[] {
   ]
     .filter(Boolean)
     .map(normalizeKey);
+}
+
+function mergeWorkspaceIds(
+  left: readonly string[],
+  right: readonly string[],
+): string[] {
+  return [...new Set([...left, ...right])];
 }
 
 function normalizeKey(value: string): string {

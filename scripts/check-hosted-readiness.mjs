@@ -26,6 +26,7 @@ requireNumeric("GITHUB_APP_ID");
 requireSecret("GITHUB_APP_CLIENT_ID", 1);
 requireSecret("GITHUB_APP_CLIENT_SECRET", 16);
 requireSecret("GITHUB_APP_SLUG", 1);
+requireSecret("REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY", 32);
 requireSecret("GITHUB_WEBHOOK_SECRET", 16);
 requireSecret("REVIEW_ROUTER_ACTION_SESSION_SECRET", 32);
 requireEqual("REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS", "1");

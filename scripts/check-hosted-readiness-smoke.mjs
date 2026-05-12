@@ -70,6 +70,8 @@ function hostedEnv(overrides = {}) {
     GITHUB_APP_CLIENT_ID: "Iv23liHostedSmokeAppClient",
     GITHUB_APP_CLIENT_SECRET: "github-app-client-secret-0123456789abcdef",
     GITHUB_APP_SLUG: "reviewrouter-hosted-smoke",
+    REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY:
+      "token-encryption-secret-0123456789abcdef0123456789abcdef",
     GITHUB_APP_PRIVATE_KEY:
       "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
     GITHUB_WEBHOOK_SECRET: "webhook-secret-0123456789abcdef",
