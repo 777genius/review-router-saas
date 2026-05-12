@@ -297,6 +297,9 @@ importers:
       '@reviewrouter/features-audit-log':
         specifier: workspace:*
         version: link:../../packages/features/audit-log
+      '@reviewrouter/features-memory':
+        specifier: workspace:*
+        version: link:../../packages/features/memory
       '@reviewrouter/features-org-ruleset-provisioning':
         specifier: workspace:*
         version: link:../../packages/features/org-ruleset-provisioning
@@ -318,6 +321,9 @@ importers:
       '@reviewrouter/platform-db':
         specifier: workspace:*
         version: link:../../packages/platform/db
+      '@reviewrouter/platform-locks':
+        specifier: workspace:*
+        version: link:../../packages/platform/locks
       '@reviewrouter/platform-logger':
         specifier: workspace:*
         version: link:../../packages/platform/logger

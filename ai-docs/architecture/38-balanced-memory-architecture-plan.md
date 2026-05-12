@@ -59,6 +59,7 @@
 - action memory bundle exposure теперь также обновляет `lastUsedAt` через `MemoryItemRepositoryPort.markActiveItemsUsed`, с защитой по `workspaceId` и `active` status, чтобы usage-based ranking не обходил canonical store и tenant boundary.
 - usage events получили privacy-safe `dedupeKey` по workspace/repository/run/attempt/event/item/bundle, Prisma unique guard и `skipDuplicates`, чтобы повторный bundle fetch в одном action run не плодил telemetry duplicates.
 - usage telemetry получил отдельный retention port/use case и Prisma adapter с явным scope `{ workspace | all_workspaces }`, cutoff и batch limit guard, чтобы cleanup не смешивался с runtime-записью usage events и не делал случайный global delete.
+- worker получил lock-protected memory usage telemetry maintenance runner с 180-day default retention, batch limit, interval guard и safe handling lock contention; maintenance продолжает работать даже когда GitHub outbox handlers выключены из-за отсутствия app credentials.
 - добавлен реальный `spike:memory:e2e`: runner сам создаёт временную Postgres DB, применяет fresh migrations, поднимает настоящий Fastify HTTP listener и проверяет OIDC exchange, admin/member permission boundary, forbidden raw payload guard, direct memory save, model suggestion confirmation, runtime bundle, usage dedupe, disable exclusion, cross-workspace object-id denial, review-event mutation denial и tenant isolation.
 - pending suggestions получили retention transition: `expirePendingMemorySuggestions` переводит просроченные pending suggestions в `expired` через domain state machine, repository port и safe audit metadata.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
@@ -68,7 +69,7 @@
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 59 files, 309 tests passed;
+- `pnpm test` - 60 files, 314 tests passed;
 - `pnpm lint` - passed;
 - `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.

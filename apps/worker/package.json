@@ -6,6 +6,7 @@
   "dependencies": {
     "@reviewrouter/features-action-control-plane": "workspace:*",
     "@reviewrouter/features-audit-log": "workspace:*",
+    "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
@@ -13,6 +14,7 @@
     "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",
     "@reviewrouter/platform-db": "workspace:*",
+    "@reviewrouter/platform-locks": "workspace:*",
     "@reviewrouter/platform-logger": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "@octokit/app": "^16.1.2"

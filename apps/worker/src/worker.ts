@@ -13,8 +13,10 @@ import { createOrgRulesetProvisioningRequestedHandler } from "@reviewrouter/feat
 import {
   PrismaOutboxEventRepository,
   processOutboxBatch,
+  type ProcessOutboxBatchResult,
   type OutboxHandler,
 } from "@reviewrouter/features-outbox";
+import { PrismaMemoryUsageEventRepository } from "@reviewrouter/features-memory";
 import {
   PrismaRateLimitStore,
   pruneExpiredRateLimitBuckets,
@@ -30,7 +32,9 @@ import {
   resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
+import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import { SystemClock } from "@reviewrouter/shared";
+import { createMemoryUsageTelemetryMaintenance } from "./memory-maintenance";
 import {
   runOutboxWorkerLoop,
   safeWorkerErrorSummary,
@@ -55,9 +59,8 @@ async function main(): Promise<void> {
     const handlers = createOutboxHandlers(prisma, clock);
     if (handlers.length === 0) {
       logger.warn(
-        "ReviewRouter worker has no outbox handlers; exiting without claiming events",
+        "ReviewRouter worker has no outbox handlers; maintenance tasks still enabled",
       );
-      return;
     }
 
     const outbox = new PrismaOutboxEventRepository(prisma);
@@ -66,21 +69,27 @@ async function main(): Promise<void> {
       prisma,
       clock,
     );
+    const pruneMemoryUsageTelemetry =
+      createMemoryUsageTelemetryMaintenanceRunner(prisma, clock);
     const limit = readPositiveIntegerEnv("REVIEW_ROUTER_OUTBOX_BATCH_SIZE", 25);
     const processingStaleAfterMs = readPositiveIntegerEnv(
       "REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS",
       15 * 60 * 1000,
     );
     const processBatch = async () => {
-      const result = await processOutboxBatch(
-        { limit, handlers, processingStaleAfterMs },
-        {
-          outbox,
-          clock,
-        },
-      );
+      const result =
+        handlers.length > 0
+          ? await processOutboxBatch(
+              { limit, handlers, processingStaleAfterMs },
+              {
+                outbox,
+                clock,
+              },
+            )
+          : emptyOutboxBatchResult();
       await pruneRateLimits();
       await pruneActionOidcReplayNonces();
+      await pruneMemoryUsageTelemetry();
       return result;
     };
 
@@ -260,6 +269,48 @@ function createActionOidcReplayNonceMaintenance(
         safeErrorSummary: safeWorkerErrorSummary(error),
       });
     }
+  };
+}
+
+function createMemoryUsageTelemetryMaintenanceRunner(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  return createMemoryUsageTelemetryMaintenance(
+    {
+      limit: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_USAGE_EVENT_PRUNE_BATCH_SIZE",
+        1000,
+      ),
+      retentionDays: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_USAGE_EVENT_RETENTION_DAYS",
+        180,
+      ),
+      intervalMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_USAGE_EVENT_PRUNE_INTERVAL_MS",
+        60 * 60 * 1000,
+      ),
+      lockTtlMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_USAGE_EVENT_PRUNE_LOCK_TTL_MS",
+        5 * 60 * 1000,
+      ),
+    },
+    {
+      clock,
+      usageEvents: new PrismaMemoryUsageEventRepository(prisma),
+      lock: new PostgresLeaseLock(prisma),
+      logger,
+    },
+  );
+}
+
+function emptyOutboxBatchResult(): ProcessOutboxBatchResult {
+  return {
+    recoveredStale: 0,
+    claimed: 0,
+    processed: 0,
+    retried: 0,
+    deadLettered: 0,
   };
 }
 
