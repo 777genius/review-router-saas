@@ -46,6 +46,7 @@
     "spike:repo-health:e2e": "tsx spikes/github-oidc/src/repo-health-workflow-e2e.ts",
     "spike:rate-limit:e2e": "tsx spikes/github-oidc/src/rate-limit-e2e.ts",
     "spike:distributed-lock:e2e": "tsx spikes/github-oidc/src/distributed-lock-e2e.ts",
+    "spike:github-memory:e2e": "node scripts/run-github-memory-smoke.mjs",
     "api:start": "node --conditions=production apps/api/dist/server.js",
     "worker:start": "node --conditions=production apps/worker/dist/worker.js",
     "runtime:smoke": "node scripts/run-with-env.mjs node scripts/check-production-runtime.mjs",

@@ -60,8 +60,11 @@ case "${REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB:-none}" in
   review)
     run_step "fresh repository GitHub full review E2E" env REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
     ;;
+  memory)
+    run_step "disposable repository GitHub memory E2E" env REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 node scripts/run-with-env.mjs pnpm spike:github-memory:e2e
+    ;;
   *)
-    printf 'REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB must be none, setup, or review\n' >&2
+    printf 'REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB must be none, setup, review, or memory\n' >&2
     exit 2
     ;;
 esac
