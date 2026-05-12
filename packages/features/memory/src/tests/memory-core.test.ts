@@ -38,6 +38,10 @@ import type {
   MemorySuggestionRepositoryPort,
 } from "../application/ports/memory-suggestion-repository-port";
 import type { MemoryTransactionPort } from "../application/ports/memory-transaction-port";
+import type {
+  MemoryUsageEventInput,
+  MemoryUsageEventPort,
+} from "../application/ports/memory-usage-event-port";
 import { buildActionMemoryBundle } from "../application/use-cases/build-action-memory-bundle";
 import { confirmMemorySuggestion } from "../application/use-cases/confirm-memory-suggestion";
 import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
@@ -45,6 +49,7 @@ import { disableMemoryItem } from "../application/use-cases/disable-memory-item"
 import { listMemoryItemsForDashboard } from "../application/use-cases/list-memory-items-for-dashboard";
 import { listMemorySuggestionsForDashboard } from "../application/use-cases/list-memory-suggestions-for-dashboard";
 import { proposeMemoryFromInteraction } from "../application/use-cases/propose-memory-from-interaction";
+import { recordActionMemoryBundleUsage } from "../application/use-cases/record-action-memory-bundle-usage";
 import { rememberMemoryDirectly } from "../application/use-cases/remember-memory-directly";
 import { rejectMemorySuggestion } from "../application/use-cases/reject-memory-suggestion";
 
@@ -54,7 +59,7 @@ const clock: Clock = { now: () => now };
 class IncrementingIds implements MemoryIdGeneratorPort {
   private next = 1;
 
-  newId(prefix: "mem" | "mem_suggestion"): string {
+  newId(prefix: "mem" | "mem_suggestion" | "mem_usage"): string {
     const id = `${prefix}_${this.next}`;
     this.next += 1;
     return id;
@@ -296,6 +301,14 @@ class CapturingOutbox implements MemoryOutboxPort {
   }
 }
 
+class CapturingUsageEvents implements MemoryUsageEventPort {
+  readonly events: MemoryUsageEventInput[] = [];
+
+  async recordMany(events: readonly MemoryUsageEventInput[]): Promise<void> {
+    this.events.push(...events);
+  }
+}
+
 class SameObjectTransaction implements MemoryTransactionPort {
   constructor(
     private readonly ports: {
@@ -316,11 +329,13 @@ function createHarness(decisions: Record<string, MemoryPermissionDecision>) {
   const memorySuggestions = new InMemorySuggestions();
   const memoryAudit = new CapturingAudit();
   const memoryOutbox = new CapturingOutbox();
+  const memoryUsageEvents = new CapturingUsageEvents();
   return {
     memoryItems,
     memorySuggestions,
     memoryAudit,
     memoryOutbox,
+    memoryUsageEvents,
     memoryPermissions: new StaticPermissions(decisions),
     memoryIds: new IncrementingIds(),
     memoryTransaction: new SameObjectTransaction({
@@ -988,6 +1003,59 @@ describe("memory core", () => {
     expect(bundle.items.map((item) => item.body)).toEqual([
       "Workspace memory should rank second.",
     ]);
+  });
+
+  it("records action bundle usage with safe metadata only", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+      "user_maintainer:workspace": { allowed: true },
+    });
+    await rememberMemoryDirectly(
+      memoryInput("repository", "Repository runtime guidance."),
+      deps,
+    );
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "Workspace runtime guidance."),
+      deps,
+    );
+    const bundle = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+      },
+      deps,
+    );
+
+    const result = await recordActionMemoryBundleUsage(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        bundleVersion: bundle.memoryVersion,
+        items: [
+          ...bundle.items.map((item) => ({ id: item.id, scope: item.scope })),
+          { id: bundle.items[0]?.id ?? "missing", scope: "repository" },
+        ],
+      },
+      deps,
+    );
+
+    expect(result).toEqual({ status: "recorded", recordedCount: 2 });
+    expect(deps.memoryUsageEvents.events).toHaveLength(2);
+    expect(deps.memoryUsageEvents.events.map((event) => event.memoryItemId))
+      .toEqual(bundle.items.map((item) => item.id));
+    expect(deps.memoryUsageEvents.events[0]).toMatchObject({
+      id: "mem_usage_3",
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      eventType: "action_bundle_exposed",
+      bundleVersion: 1,
+      metadata: { scope: "repository", bundleItemCount: 2 },
+      occurredAt: now,
+    });
+    expect(JSON.stringify(deps.memoryUsageEvents.events)).not.toContain(
+      "runtime guidance",
+    );
   });
 });
 

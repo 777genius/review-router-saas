@@ -4,6 +4,7 @@ import type { MemoryItemRepositoryPort } from "../ports/memory-item-repository-p
 import type { MemoryPermissionPort } from "../ports/memory-permission-port";
 import type { MemorySuggestionRepositoryPort } from "../ports/memory-suggestion-repository-port";
 import type { MemoryTransactionPort } from "../ports/memory-transaction-port";
+import type { MemoryUsageEventPort } from "../ports/memory-usage-event-port";
 
 export type MemoryMutationResult =
   | {
@@ -31,6 +32,7 @@ export type MemoryUseCaseDependencies = {
   readonly memoryItems: MemoryItemRepositoryPort;
   readonly memorySuggestions: MemorySuggestionRepositoryPort;
   readonly memoryPermissions: MemoryPermissionPort;
+  readonly memoryUsageEvents: MemoryUsageEventPort;
   readonly memoryIds: MemoryIdGeneratorPort;
   readonly memoryTransaction: MemoryTransactionPort;
   readonly clock: Clock;

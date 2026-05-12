@@ -4,6 +4,7 @@ import {
   PrismaMemoryPermission,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
+  PrismaMemoryUsageEventRepository,
   type MemoryActor,
   type MemoryUseCaseDependencies,
 } from "@reviewrouter/features-memory";
@@ -48,6 +49,7 @@ export function createDashboardMemoryDependencies(input: {
         "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
       ),
     }),
+    memoryUsageEvents: new PrismaMemoryUsageEventRepository(input.prisma),
     memoryIds: new CryptoMemoryIdGenerator(),
     memoryTransaction: new PrismaMemoryTransaction(input.prisma),
     clock: { now: () => new Date() },

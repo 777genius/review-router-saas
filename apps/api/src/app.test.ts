@@ -35,6 +35,8 @@ import type {
   MemorySuggestionSnapshot,
   MemoryTransactionPort,
   MemoryTransactionalPorts,
+  MemoryUsageEventInput,
+  MemoryUsageEventPort,
   MemoryUseCaseDependencies,
 } from "@reviewrouter/features-memory";
 import {
@@ -344,7 +346,7 @@ class AllowingMemoryPermissions implements MemoryPermissionPort {
 class IncrementingMemoryIds implements MemoryIdGeneratorPort {
   private next = 1;
 
-  newId(prefix: "mem" | "mem_suggestion"): string {
+  newId(prefix: "mem" | "mem_suggestion" | "mem_usage"): string {
     return `${prefix}_test_${this.next++}`;
   }
 }
@@ -365,6 +367,14 @@ class CapturingMemoryOutbox implements MemoryOutboxPort {
   ): Promise<{ readonly created: boolean }> {
     this.events.push(event);
     return { created: true };
+  }
+}
+
+class CapturingMemoryUsageEvents implements MemoryUsageEventPort {
+  public readonly events: MemoryUsageEventInput[] = [];
+
+  async recordMany(events: readonly MemoryUsageEventInput[]): Promise<void> {
+    this.events.push(...events);
   }
 }
 
@@ -466,6 +476,7 @@ function createActionMemoryDependencies(
   readonly permissions: MemoryPermissionPort;
   readonly audit: CapturingMemoryAudit;
   readonly outbox: CapturingMemoryOutbox;
+  readonly usageEvents: CapturingMemoryUsageEvents;
 } {
   const memoryItems = input.memoryItems ?? new InMemoryActionMemoryItems();
   const memorySuggestions =
@@ -473,11 +484,13 @@ function createActionMemoryDependencies(
   const permissions = input.permissions ?? new AllowingMemoryPermissions();
   const audit = new CapturingMemoryAudit();
   const outbox = new CapturingMemoryOutbox();
+  const usageEvents = new CapturingMemoryUsageEvents();
   return {
     memory: {
       memoryItems,
       memorySuggestions,
       memoryPermissions: permissions,
+      memoryUsageEvents: usageEvents,
       memoryIds: new IncrementingMemoryIds(),
       memoryTransaction: new SameObjectMemoryTransaction({
         memoryItems,
@@ -492,6 +505,7 @@ function createActionMemoryDependencies(
     permissions,
     audit,
     outbox,
+    usageEvents,
   };
 }
 
@@ -1137,6 +1151,30 @@ describe("API app", () => {
         },
       ],
     });
+    expect(actionMemory.usageEvents.events).toHaveLength(2);
+    expect(actionMemory.usageEvents.events).toEqual([
+      expect.objectContaining({
+        id: "mem_usage_test_1",
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        memoryItemId: "mem_repo",
+        eventType: "action_bundle_exposed",
+        bundleVersion: 1,
+        metadata: { scope: "repository", bundleItemCount: 2 },
+      }),
+      expect.objectContaining({
+        id: "mem_usage_test_2",
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        memoryItemId: "mem_workspace",
+        eventType: "action_bundle_exposed",
+        bundleVersion: 1,
+        metadata: { scope: "workspace", bundleItemCount: 2 },
+      }),
+    ]);
+    expect(JSON.stringify(actionMemory.usageEvents.events)).not.toContain(
+      "guard clauses",
+    );
 
     const commentToken = await app.inject({
       method: "POST",

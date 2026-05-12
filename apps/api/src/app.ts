@@ -34,6 +34,7 @@ import {
   PrismaMemoryPermission,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
+  PrismaMemoryUsageEventRepository,
 } from "@reviewrouter/features-memory";
 import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
@@ -190,6 +191,7 @@ export async function createApiApp(
                 process.env.REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS,
               ),
             }),
+            memoryUsageEvents: new PrismaMemoryUsageEventRepository(prisma),
             memoryIds: new CryptoMemoryIdGenerator(),
             memoryTransaction: new PrismaMemoryTransaction(prisma),
             clock: actionControlPlaneDependencies.clock,

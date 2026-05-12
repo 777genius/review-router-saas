@@ -17,6 +17,7 @@ import {
   memoryRedactedExcerptMaxCharacters,
   normalizeMemoryBody,
   proposeMemoryFromInteraction,
+  recordActionMemoryBundleUsage,
   rejectMemorySuggestion,
   type MemoryActor,
   type MemoryMutationResult,
@@ -171,6 +172,22 @@ export async function registerActionMemoryRoutes(
           policy: { includeUserPrefs: false },
         },
         { memoryItems: dependencies.memory.memoryItems },
+      );
+      await recordActionMemoryBundleUsage(
+        {
+          workspaceId: session.workspaceId,
+          repositoryId: session.repositoryId,
+          bundleVersion: bundle.memoryVersion,
+          items: bundle.items.map((item) => ({
+            id: item.id,
+            scope: item.scope,
+          })),
+        },
+        {
+          memoryUsageEvents: dependencies.memory.memoryUsageEvents,
+          memoryIds: dependencies.memory.memoryIds,
+          clock: dependencies.clock,
+        },
       );
       return reply.send(bundle);
     } catch (error) {
