@@ -68,10 +68,12 @@ export async function deleteMemoryItem(
           suggestionId: existing.originSuggestionId,
         });
   const redactedOriginSuggestion = originSuggestion
-    ? MemorySuggestion.fromSnapshot(originSuggestion).redactAfterMemoryDeletion({
-        memoryItemId: existing.id,
-        now,
-      })
+    ? MemorySuggestion.fromSnapshot(originSuggestion).redactAfterMemoryDeletion(
+        {
+          memoryItemId: existing.id,
+          now,
+        },
+      )
     : null;
   const shouldSaveRedactedOriginSuggestion =
     redactedOriginSuggestion !== null &&

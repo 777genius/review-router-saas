@@ -112,10 +112,13 @@ function scoreCandidate(
   candidate: SearchCandidate,
   tokens: readonly string[],
 ): MemorySearchIndexResult {
-  const searchable = `${candidate.body} ${toTagText(candidate.tags)}`.toLowerCase();
+  const searchable =
+    `${candidate.body} ${toTagText(candidate.tags)}`.toLowerCase();
   const matchedTokens = tokens.filter((token) => searchable.includes(token));
   const lexicalScore = matchedTokens.length / tokens.length;
-  const recencyScore = recencyScoreFor(candidate.lastUsedAt ?? candidate.updatedAt);
+  const recencyScore = recencyScoreFor(
+    candidate.lastUsedAt ?? candidate.updatedAt,
+  );
   const scopeScore = scopeScoreFor(candidate.scope);
   const riskPenalty = 0;
   const semanticScore = 0;
@@ -155,7 +158,9 @@ function tokenizeSearchQuery(value: string): readonly string[] {
 
 function toTagText(value: unknown): string {
   if (!Array.isArray(value)) return "";
-  return value.filter((item): item is string => typeof item === "string").join(" ");
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .join(" ");
 }
 
 function recencyScoreFor(value: Date): number {

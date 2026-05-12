@@ -73,7 +73,9 @@ export class PrismaMemorySuggestionRepository implements MemorySuggestionReposit
       where: {
         workspaceId: input.workspaceId,
         status: "pending",
-        ...(input.notExpiredAt ? { expiresAt: { gt: input.notExpiredAt } } : {}),
+        ...(input.notExpiredAt
+          ? { expiresAt: { gt: input.notExpiredAt } }
+          : {}),
       },
     });
   }

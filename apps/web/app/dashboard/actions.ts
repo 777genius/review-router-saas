@@ -215,9 +215,7 @@ export async function rejectMemorySuggestionAction(
   redirectAfterMutation(formData, params);
 }
 
-export async function editMemoryItemAction(
-  formData: FormData,
-): Promise<never> {
+export async function editMemoryItemAction(formData: FormData): Promise<never> {
   const params = await editMemoryItemMutation(formData);
 
   revalidatePath("/dashboard");

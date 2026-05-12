@@ -103,10 +103,7 @@ function DashboardSectionBodySkeleton(): React.ReactElement {
         <SkeletonBlock className="h-12 w-full rounded-2xl" />
         <div className="grid gap-3">
           {Array.from({ length: 5 }, (_, index) => (
-            <SkeletonBlock
-              key={index}
-              className="h-16 w-full rounded-2xl"
-            />
+            <SkeletonBlock key={index} className="h-16 w-full rounded-2xl" />
           ))}
         </div>
       </div>

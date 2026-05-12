@@ -98,11 +98,10 @@ export async function proposeMemoryFromInteraction(
 
   const now = dependencies.clock.now();
   if (safety.severity !== "blocked") {
-    const quotaRejection =
-      await rejectIfPendingMemorySuggestionQuotaExceeded(
-        { workspaceId: envelope.workspaceId, now },
-        dependencies,
-      );
+    const quotaRejection = await rejectIfPendingMemorySuggestionQuotaExceeded(
+      { workspaceId: envelope.workspaceId, now },
+      dependencies,
+    );
     if (quotaRejection) return quotaRejection;
   }
 

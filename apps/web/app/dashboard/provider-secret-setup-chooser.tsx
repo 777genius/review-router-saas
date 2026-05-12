@@ -102,7 +102,10 @@ export function ProviderSecretSetupChooser({
             body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The script validates the active Codex account and writes CODEX_AUTH_JSON directly to GitHub Actions secrets.`,
             footnote:
               "If Codex later says the token is stale, run codex login again and rerun this same command.",
-            apiKey: null as { readonly label: string; readonly url: string } | null,
+            apiKey: null as {
+              readonly label: string;
+              readonly url: string;
+            } | null,
           }
         : providerChoice === "codex_api_key"
           ? {
