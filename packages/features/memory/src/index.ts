@@ -9,6 +9,7 @@ export * from "./domain/memory-safety-policy";
 export * from "./domain/memory-scope-policy";
 export * from "./domain/memory-source";
 export * from "./domain/memory-suggestion";
+export * from "./domain/memory-usage-event";
 export * from "./application/ports/memory-audit-port";
 export * from "./application/ports/memory-id-generator-port";
 export * from "./application/ports/memory-item-repository-port";

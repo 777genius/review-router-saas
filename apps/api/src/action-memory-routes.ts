@@ -177,6 +177,11 @@ export async function registerActionMemoryRoutes(
         {
           workspaceId: session.workspaceId,
           repositoryId: session.repositoryId,
+          runtimeContext: {
+            githubRunId: session.githubRunId,
+            githubRunAttempt: session.githubRunAttempt,
+            eventName: session.eventName,
+          },
           bundleVersion: bundle.memoryVersion,
           items: bundle.items.map((item) => ({
             id: item.id,

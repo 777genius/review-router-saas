@@ -148,6 +148,7 @@ CREATE TABLE "MemoryUsageEvent" (
   "memoryItemId" TEXT NOT NULL,
   "eventType" TEXT NOT NULL,
   "bundleVersion" INTEGER,
+  "dedupeKey" TEXT,
   "metadata" JSONB NOT NULL,
   "occurredAt" TIMESTAMP(3) NOT NULL,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -184,6 +185,7 @@ CREATE UNIQUE INDEX "MemorySuggestion_pending_dedupe_uq"
 CREATE INDEX "MemoryUsageEvent_workspaceId_occurredAt_idx" ON "MemoryUsageEvent"("workspaceId", "occurredAt");
 CREATE INDEX "MemoryUsageEvent_repositoryId_occurredAt_idx" ON "MemoryUsageEvent"("repositoryId", "occurredAt");
 CREATE INDEX "MemoryUsageEvent_memoryItemId_occurredAt_idx" ON "MemoryUsageEvent"("memoryItemId", "occurredAt");
+CREATE UNIQUE INDEX "MemoryUsageEvent_dedupeKey_key" ON "MemoryUsageEvent"("dedupeKey");
 
 ALTER TABLE "MemoryItem"
   ADD CONSTRAINT "MemoryItem_workspaceId_fkey"

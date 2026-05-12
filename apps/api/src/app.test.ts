@@ -411,9 +411,25 @@ class CapturingMemoryOutbox implements MemoryOutboxPort {
 
 class CapturingMemoryUsageEvents implements MemoryUsageEventPort {
   public readonly events: MemoryUsageEventInput[] = [];
+  private readonly dedupeKeys = new Set<string>();
 
-  async recordMany(events: readonly MemoryUsageEventInput[]): Promise<void> {
-    this.events.push(...events);
+  async recordMany(
+    events: readonly MemoryUsageEventInput[],
+  ): ReturnType<MemoryUsageEventPort["recordMany"]> {
+    let recordedCount = 0;
+    let duplicateCount = 0;
+    for (const event of events) {
+      if (event.dedupeKey && this.dedupeKeys.has(event.dedupeKey)) {
+        duplicateCount += 1;
+        continue;
+      }
+      if (event.dedupeKey) {
+        this.dedupeKeys.add(event.dedupeKey);
+      }
+      this.events.push(event);
+      recordedCount += 1;
+    }
+    return { recordedCount, duplicateCount };
   }
 }
 
@@ -1199,7 +1215,13 @@ describe("API app", () => {
         memoryItemId: "mem_repo",
         eventType: "action_bundle_exposed",
         bundleVersion: 1,
-        metadata: { scope: "repository", bundleItemCount: 2 },
+        metadata: {
+          scope: "repository",
+          bundleItemCount: 2,
+          githubRunId: "1001",
+          githubRunAttempt: "1",
+          eventName: "pull_request",
+        },
       }),
       expect.objectContaining({
         id: "mem_usage_test_2",
@@ -1208,8 +1230,20 @@ describe("API app", () => {
         memoryItemId: "mem_workspace",
         eventType: "action_bundle_exposed",
         bundleVersion: 1,
-        metadata: { scope: "workspace", bundleItemCount: 2 },
+        metadata: {
+          scope: "workspace",
+          bundleItemCount: 2,
+          githubRunId: "1001",
+          githubRunAttempt: "1",
+          eventName: "pull_request",
+        },
       }),
+    ]);
+    expect(
+      actionMemory.usageEvents.events.map((event) => event.dedupeKey),
+    ).toEqual([
+      expect.stringMatching(/^mem_usage:[a-f0-9]{64}$/),
+      expect.stringMatching(/^mem_usage:[a-f0-9]{64}$/),
     ]);
     expect(JSON.stringify(actionMemory.usageEvents.events)).not.toContain(
       "guard clauses",
@@ -1221,6 +1255,14 @@ describe("API app", () => {
       fixedClock.now(),
     );
     expect(memoryItems.snapshots.get("mem_other_repo")?.lastUsedAt).toBeNull();
+
+    const repeatedMemory = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+    });
+    expect(repeatedMemory.statusCode).toBe(200);
+    expect(actionMemory.usageEvents.events).toHaveLength(2);
 
     const commentToken = await app.inject({
       method: "POST",

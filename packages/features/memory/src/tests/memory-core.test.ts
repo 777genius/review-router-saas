@@ -344,9 +344,25 @@ class CapturingOutbox implements MemoryOutboxPort {
 
 class CapturingUsageEvents implements MemoryUsageEventPort {
   readonly events: MemoryUsageEventInput[] = [];
+  private readonly dedupeKeys = new Set<string>();
 
-  async recordMany(events: readonly MemoryUsageEventInput[]): Promise<void> {
-    this.events.push(...events);
+  async recordMany(
+    events: readonly MemoryUsageEventInput[],
+  ): ReturnType<MemoryUsageEventPort["recordMany"]> {
+    let recordedCount = 0;
+    let duplicateCount = 0;
+    for (const event of events) {
+      if (event.dedupeKey && this.dedupeKeys.has(event.dedupeKey)) {
+        duplicateCount += 1;
+        continue;
+      }
+      if (event.dedupeKey) {
+        this.dedupeKeys.add(event.dedupeKey);
+      }
+      this.events.push(event);
+      recordedCount += 1;
+    }
+    return { recordedCount, duplicateCount };
   }
 }
 
@@ -1281,6 +1297,11 @@ describe("memory core", () => {
       {
         workspaceId: "workspace_1",
         repositoryId: "repo_1",
+        runtimeContext: {
+          githubRunId: "1001",
+          githubRunAttempt: "1",
+          eventName: "pull_request",
+        },
         bundleVersion: bundle.memoryVersion,
         items: [
           ...bundle.items.map((item) => ({ id: item.id, scope: item.scope })),
@@ -1292,21 +1313,33 @@ describe("memory core", () => {
 
     expect(result).toEqual({
       status: "recorded",
-      recordedCount: 2,
+      exposedItemCount: 2,
+      usageEventRecordedCount: 2,
+      duplicateUsageEventCount: 0,
       markedUsedCount: 2,
     });
     expect(deps.memoryUsageEvents.events).toHaveLength(2);
-    expect(deps.memoryUsageEvents.events.map((event) => event.memoryItemId))
-      .toEqual(bundle.items.map((item) => item.id));
+    expect(
+      deps.memoryUsageEvents.events.map((event) => event.memoryItemId),
+    ).toEqual(bundle.items.map((item) => item.id));
     expect(deps.memoryUsageEvents.events[0]).toMatchObject({
       id: "mem_usage_3",
       workspaceId: "workspace_1",
       repositoryId: "repo_1",
       eventType: "action_bundle_exposed",
       bundleVersion: 1,
-      metadata: { scope: "repository", bundleItemCount: 2 },
+      metadata: {
+        scope: "repository",
+        bundleItemCount: 2,
+        githubRunId: "1001",
+        githubRunAttempt: "1",
+        eventName: "pull_request",
+      },
       occurredAt: now,
     });
+    expect(deps.memoryUsageEvents.events[0]?.dedupeKey).toMatch(
+      /^mem_usage:[a-f0-9]{64}$/,
+    );
     expect(JSON.stringify(deps.memoryUsageEvents.events)).not.toContain(
       "runtime guidance",
     );
@@ -1315,6 +1348,32 @@ describe("memory core", () => {
         (item) => deps.memoryItems.items.get(item.id)?.lastUsedAt,
       ),
     ).toEqual([now, now]);
+
+    const duplicateResult = await recordActionMemoryBundleUsage(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        runtimeContext: {
+          githubRunId: "1001",
+          githubRunAttempt: "1",
+          eventName: "pull_request",
+        },
+        bundleVersion: bundle.memoryVersion,
+        items: bundle.items.map((item) => ({
+          id: item.id,
+          scope: item.scope,
+        })),
+      },
+      deps,
+    );
+    expect(duplicateResult).toEqual({
+      status: "recorded",
+      exposedItemCount: 2,
+      usageEventRecordedCount: 0,
+      duplicateUsageEventCount: 2,
+      markedUsedCount: 2,
+    });
+    expect(deps.memoryUsageEvents.events).toHaveLength(2);
   });
 });
 

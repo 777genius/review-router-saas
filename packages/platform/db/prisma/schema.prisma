@@ -453,6 +453,7 @@ model MemoryUsageEvent {
   memoryItemId  String
   eventType     String
   bundleVersion Int?
+  dedupeKey     String?
   metadata      Json
   occurredAt    DateTime
   createdAt     DateTime @default(now())
@@ -461,6 +462,7 @@ model MemoryUsageEvent {
   repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   memoryItem MemoryItem           @relation(fields: [memoryItemId], references: [id], onDelete: Cascade)
 
+  @@unique([dedupeKey])
   @@index([workspaceId, occurredAt])
   @@index([repositoryId, occurredAt])
   @@index([memoryItemId, occurredAt])
