@@ -8,11 +8,7 @@ import type { MemorySource } from "../../domain/memory-source";
 import type { MemoryScope } from "../../domain/memory-scope-policy";
 import type { MemoryUseCaseDependencies } from "./memory-use-case-types";
 
-const DEFAULT_MEMORY_EXPORT_LIMIT = 5_000;
-const MAX_MEMORY_EXPORT_LIMIT = 10_000;
-const DEFAULT_MEMORY_EXPORT_MAX_BYTES = 10 * 1024 * 1024;
 const MEMORY_EXPORT_SCHEMA_VERSION = 1;
-const MEMORY_EXPORT_POLICY_VERSION = 1;
 
 export type ExportMemoryItemsInput = {
   readonly workspaceId: string;
@@ -63,7 +59,7 @@ export type MemoryExportManifestDto = {
   readonly workspaceId: string;
   readonly createdBy: string;
   readonly createdAt: string;
-  readonly policyVersion: typeof MEMORY_EXPORT_POLICY_VERSION;
+  readonly policyVersion: number;
   readonly itemCount: number;
   readonly excludedDeletedCount: number;
   readonly truncatedCount: number;
@@ -91,12 +87,23 @@ export async function exportMemoryItems(
   input: ExportMemoryItemsInput,
   dependencies: Pick<
     MemoryUseCaseDependencies,
-    "clock" | "memoryItems" | "memoryPermissions" | "memoryTransaction"
+    | "clock"
+    | "memoryItems"
+    | "memoryPermissions"
+    | "memoryPolicyConfig"
+    | "memoryTransaction"
   >,
 ): Promise<ExportMemoryItemsResult> {
   assertValidWorkspaceId(input.workspaceId);
-  const limit = normalizeExportLimit(input.limit);
-  const maxBytes = normalizeExportMaxBytes(input.maxBytes);
+  const policy = await dependencies.memoryPolicyConfig.getPolicy({
+    workspaceId: input.workspaceId,
+    repositoryId: null,
+  });
+  if (!policy.memoryEnabled) {
+    return { status: "rejected", reason: "memory_disabled", retryable: false };
+  }
+  const limit = normalizeExportLimit(input.limit, policy.export);
+  const maxBytes = normalizeExportMaxBytes(input.maxBytes, policy.export);
 
   const permission = await dependencies.memoryPermissions.canConfirmMemory({
     workspaceId: input.workspaceId,
@@ -144,7 +151,7 @@ export async function exportMemoryItems(
       workspaceId: input.workspaceId,
       createdBy: memoryActorRef(input.actor),
       createdAt: createdAt.toISOString(),
-      policyVersion: MEMORY_EXPORT_POLICY_VERSION,
+      policyVersion: policy.policyVersion,
       itemCount: items.length,
       excludedDeletedCount: records.excludedDeletedCount,
       truncatedCount,
@@ -244,18 +251,24 @@ function assertValidWorkspaceId(value: string): void {
   throw memoryError("memory_input_invalid");
 }
 
-function normalizeExportLimit(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_MEMORY_EXPORT_LIMIT;
+function normalizeExportLimit(
+  value: number | undefined,
+  policy: { readonly defaultItemLimit: number; readonly maxItemLimit: number },
+): number {
+  if (value === undefined) return policy.defaultItemLimit;
   if (!Number.isSafeInteger(value) || value < 1) {
     throw memoryError("memory_input_invalid");
   }
-  return Math.min(value, MAX_MEMORY_EXPORT_LIMIT);
+  return Math.min(value, policy.maxItemLimit);
 }
 
-function normalizeExportMaxBytes(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_MEMORY_EXPORT_MAX_BYTES;
+function normalizeExportMaxBytes(
+  value: number | undefined,
+  policy: { readonly defaultMaxBytes: number; readonly maxBytes: number },
+): number {
+  if (value === undefined) return policy.defaultMaxBytes;
   if (!Number.isSafeInteger(value) || value < 1) {
     throw memoryError("memory_input_invalid");
   }
-  return Math.min(value, DEFAULT_MEMORY_EXPORT_MAX_BYTES);
+  return Math.min(value, policy.maxBytes);
 }

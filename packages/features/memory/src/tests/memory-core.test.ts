@@ -36,6 +36,10 @@ import type {
   MemoryPermissionDecision,
   MemoryPermissionPort,
 } from "../application/ports/memory-permission-port";
+import {
+  StaticMemoryPolicyConfig,
+  type MemoryPolicyConfigOverrides,
+} from "../application/ports/memory-policy-config-port";
 import type {
   MemoryQuotaPolicyPort,
   MemoryWorkspaceQuota,
@@ -797,7 +801,10 @@ class SameObjectTransaction implements MemoryTransactionPort {
 
 function createHarness(
   decisions: Record<string, MemoryPermissionDecision>,
-  options: { readonly quota?: MemoryWorkspaceQuota } = {},
+  options: {
+    readonly policy?: MemoryPolicyConfigOverrides;
+    readonly quota?: MemoryWorkspaceQuota;
+  } = {},
 ) {
   const memoryItems = new InMemoryItems();
   const memorySuggestions = new InMemorySuggestions();
@@ -811,6 +818,7 @@ function createHarness(
     memoryOutbox,
     memoryUsageEvents,
     memoryPermissions: new StaticPermissions(decisions),
+    memoryPolicyConfig: new StaticMemoryPolicyConfig(options.policy),
     ...(options.quota
       ? { memoryQuotaPolicy: new StaticMemoryQuotaPolicy(options.quota) }
       : {}),
@@ -945,6 +953,51 @@ describe("memory core", () => {
     ]);
   });
 
+  it("uses policy config versions for direct memory defaults", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:repository": { allowed: true },
+      },
+      {
+        policy: { policyVersion: 7, safetyPolicyVersion: 11 },
+      },
+    );
+
+    const result = await rememberMemoryDirectly(
+      memoryInput("repository", "Policy versions come from config."),
+      deps,
+    );
+
+    expect(result.status).toBe("created");
+    const item = [...deps.memoryItems.items.values()][0];
+    expect(item?.policyVersion).toBe(7);
+    expect(item?.safetyPolicyVersion).toBe(11);
+  });
+
+  it("rejects new memory when policy disables memory", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:repository": { allowed: true },
+      },
+      {
+        policy: { memoryEnabled: false },
+      },
+    );
+
+    const result = await rememberMemoryDirectly(
+      memoryInput("repository", "Disabled memory must not persist."),
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "memory_disabled",
+      retryable: false,
+    });
+    expect(deps.memoryItems.items).toHaveLength(0);
+    expect(deps.memoryAudit.events).toHaveLength(0);
+  });
+
   it("keeps model-suggested memory pending even when actor can confirm", async () => {
     const deps = createHarness({
       "user_maintainer:repository": { allowed: true },
@@ -966,6 +1019,39 @@ describe("memory core", () => {
     expect(deps.memoryItems.items).toHaveLength(0);
     expect([...deps.memorySuggestions.suggestions.values()][0]?.status).toBe(
       "pending",
+    );
+  });
+
+  it("uses policy config versions and ttl for pending suggestions", async () => {
+    const deps = createHarness(
+      {},
+      {
+        policy: {
+          policyVersion: 5,
+          safetyPolicyVersion: 8,
+          suggestionTtlDays: { repository: 3 },
+        },
+      },
+    );
+
+    const result = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Suggestion TTL comes from policy config.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+
+    expect(result.status).toBe("created");
+    const suggestion = [...deps.memorySuggestions.suggestions.values()][0];
+    expect(suggestion?.policyVersion).toBe(5);
+    expect(suggestion?.safetyPolicyVersion).toBe(8);
+    expect(suggestion?.expiresAt.toISOString()).toBe(
+      "2026-05-15T12:00:00.000Z",
     );
   });
 
@@ -2532,6 +2618,43 @@ describe("memory core", () => {
     expect(deps.memoryAudit.events).toHaveLength(auditCountBeforeExport);
   });
 
+  it("applies policy export caps before serializing memory export", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:workspace": { allowed: true },
+      },
+      {
+        policy: {
+          export: {
+            defaultItemLimit: 1,
+            maxItemLimit: 1,
+          },
+        },
+      },
+    );
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "First policy-capped export item."),
+      deps,
+    );
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "Second policy-capped export item."),
+      deps,
+    );
+    const auditCountBeforeExport = deps.memoryAudit.events.length;
+
+    const result = await exportMemoryItems(
+      { workspaceId: "workspace_1", actor: maintainer },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "memory_export_too_large",
+      retryable: false,
+    });
+    expect(deps.memoryAudit.events).toHaveLength(auditCountBeforeExport);
+  });
+
   it("treats expired pending suggestions as noop on confirm before worker runs", async () => {
     const deps = createHarness({});
     const proposed = await proposeMemoryFromInteraction(
@@ -2669,6 +2792,78 @@ describe("memory core", () => {
 
     expect(bundle.items.map((item) => item.body)).toEqual([
       "Workspace memory should rank second.",
+    ]);
+  });
+
+  it("applies policy runtime bundle caps before action retrieval", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:repository": { allowed: true },
+        "user_maintainer:workspace": { allowed: true },
+      },
+      {
+        policy: {
+          runtimeBundle: {
+            maxItems: 1,
+            maxCharacters: 10_000,
+            includeUserPrefs: false,
+          },
+        },
+      },
+    );
+    await rememberMemoryDirectly(
+      memoryInput("repository", "First runtime policy memory."),
+      deps,
+    );
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "Second runtime policy memory."),
+      deps,
+    );
+
+    const bundle = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+      },
+      deps,
+    );
+
+    expect(bundle.items.map((item) => item.body)).toEqual([
+      "First runtime policy memory.",
+    ]);
+  });
+
+  it("filters runtime bundles by policy allowed scopes after canonical retrieval", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+      "user_maintainer:workspace": { allowed: true },
+    });
+    await rememberMemoryDirectly(
+      memoryInput("repository", "Allowed repository runtime memory."),
+      deps,
+    );
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "Disabled workspace runtime memory."),
+      deps,
+    );
+
+    const bundle = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+      },
+      {
+        ...deps,
+        memoryPolicyConfig: new StaticMemoryPolicyConfig({
+          allowedScopes: { workspace: false },
+        }),
+      },
+    );
+
+    expect(bundle.items.map((item) => item.body)).toEqual([
+      "Allowed repository runtime memory.",
     ]);
   });
 

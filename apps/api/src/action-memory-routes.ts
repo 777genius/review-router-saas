@@ -171,7 +171,10 @@ export async function registerActionMemoryRoutes(
           userId: null,
           policy: { includeUserPrefs: false },
         },
-        { memoryItems: dependencies.memory.memoryItems },
+        {
+          memoryItems: dependencies.memory.memoryItems,
+          memoryPolicyConfig: dependencies.memory.memoryPolicyConfig,
+        },
       );
       await recordActionMemoryBundleUsage(
         {

@@ -9,6 +9,7 @@ import type {
   MemorySearchCapability,
   MemorySearchIndexPort,
 } from "../ports/memory-search-index-port";
+import type { MemoryAllowedScopePolicy } from "../ports/memory-policy-config-port";
 import type { MemoryUseCaseDependencies } from "./memory-use-case-types";
 
 export type BuildActionMemoryBundleInput = {
@@ -21,28 +22,58 @@ export type BuildActionMemoryBundleInput = {
 
 export async function buildActionMemoryBundle(
   input: BuildActionMemoryBundleInput,
-  dependencies: Pick<MemoryUseCaseDependencies, "memoryItems"> & {
+  dependencies: Pick<
+    MemoryUseCaseDependencies,
+    "memoryItems" | "memoryPolicyConfig"
+  > & {
     readonly memorySearchIndex?: MemorySearchIndexPort;
   },
 ): Promise<ActionMemoryBundle> {
+  const policyConfig = await dependencies.memoryPolicyConfig.getPolicy({
+    workspaceId: input.workspaceId,
+    repositoryId: input.repositoryId,
+  });
   const policy = {
     ...defaultMemoryBundlePolicy,
+    ...policyConfig.runtimeBundle,
     ...input.policy,
   };
+  if (!policyConfig.memoryEnabled) {
+    return buildMemoryBundle([], policy, {
+      degraded: true,
+      reason: "memory_disabled",
+    });
+  }
   const safeQuery = normalizeSafeRetrievalQuery(input.safeRetrievalQuery);
   if (safeQuery && dependencies.memorySearchIndex) {
     const searched = await searchBundleCandidates(input, dependencies, policy);
     if (searched.status === "found") {
-      return buildMemoryBundle(searched.items, policy, {
-        preserveInputOrder: true,
-      });
+      return buildMemoryBundle(
+        filterItemsByAllowedScopes(searched.items, policyConfig.allowedScopes),
+        policy,
+        {
+          preserveInputOrder: true,
+        },
+      );
     }
     if (searched.status === "degraded") {
-      return buildFallbackBundle(input, dependencies, policy, searched.reason);
+      return buildFallbackBundle(
+        input,
+        dependencies,
+        policy,
+        searched.reason,
+        policyConfig.allowedScopes,
+      );
     }
   }
 
-  return buildFallbackBundle(input, dependencies, policy, null);
+  return buildFallbackBundle(
+    input,
+    dependencies,
+    policy,
+    null,
+    policyConfig.allowedScopes,
+  );
 }
 
 async function searchBundleCandidates(
@@ -102,6 +133,7 @@ async function buildFallbackBundle(
   dependencies: Pick<MemoryUseCaseDependencies, "memoryItems">,
   policy: MemoryBundlePolicy,
   degradedReason: string | null,
+  allowedScopes: MemoryAllowedScopePolicy,
 ): Promise<ActionMemoryBundle> {
   const items = await dependencies.memoryItems.listActiveForBundle({
     workspaceId: input.workspaceId,
@@ -109,10 +141,21 @@ async function buildFallbackBundle(
     userId: input.userId,
     limit: policy.maxItems * 3,
   });
-  return buildMemoryBundle(items, policy, {
-    degraded: degradedReason !== null,
-    reason: degradedReason,
-  });
+  return buildMemoryBundle(
+    filterItemsByAllowedScopes(items, allowedScopes),
+    policy,
+    {
+      degraded: degradedReason !== null,
+      reason: degradedReason,
+    },
+  );
+}
+
+function filterItemsByAllowedScopes(
+  items: readonly MemoryItemSnapshot[],
+  allowedScopes: MemoryAllowedScopePolicy,
+): readonly MemoryItemSnapshot[] {
+  return items.filter((item) => allowedScopes[item.scope]);
 }
 
 function normalizeSafeRetrievalQuery(value: string | null | undefined): string {

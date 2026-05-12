@@ -3,6 +3,7 @@ import {
   EntitlementMemoryQuotaPolicy,
   PrismaMemoryItemRepository,
   PrismaMemoryPermission,
+  StaticMemoryPolicyConfig,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
   PrismaMemoryUsageEventRepository,
@@ -51,6 +52,7 @@ export function createDashboardMemoryDependencies(input: {
         "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
       ),
     }),
+    memoryPolicyConfig: new StaticMemoryPolicyConfig(),
     memoryUsageEvents: new PrismaMemoryUsageEventRepository(input.prisma),
     memoryQuotaPolicy: new EntitlementMemoryQuotaPolicy(
       new PrismaEntitlementRepository(input.prisma),

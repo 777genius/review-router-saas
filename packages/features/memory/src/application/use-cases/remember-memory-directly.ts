@@ -36,6 +36,20 @@ export async function rememberMemoryDirectly(
   dependencies: MemoryUseCaseDependencies,
 ): Promise<MemoryMutationResult> {
   assertValidMemoryScope(input);
+  const policy = await dependencies.memoryPolicyConfig.getPolicy({
+    workspaceId: input.workspaceId,
+    repositoryId: input.repositoryId,
+  });
+  if (!policy.memoryEnabled) {
+    return { status: "rejected", reason: "memory_disabled", retryable: false };
+  }
+  if (!policy.allowedScopes[input.scope]) {
+    return {
+      status: "rejected",
+      reason: "memory_scope_forbidden",
+      retryable: false,
+    };
+  }
   const permission = await dependencies.memoryPermissions.canConfirmMemory({
     workspaceId: input.workspaceId,
     repositoryId: input.repositoryId,
@@ -93,8 +107,9 @@ export async function rememberMemoryDirectly(
     riskLevel: safety.riskLevel,
     confidence: 1,
     source: input.source,
-    policyVersion: input.policyVersion ?? 1,
-    safetyPolicyVersion: input.safetyPolicyVersion ?? 1,
+    policyVersion: input.policyVersion ?? policy.policyVersion,
+    safetyPolicyVersion:
+      input.safetyPolicyVersion ?? policy.safetyPolicyVersion,
     actor: input.actor,
     now,
   });

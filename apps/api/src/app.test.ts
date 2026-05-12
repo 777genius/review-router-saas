@@ -47,6 +47,7 @@ import {
   evaluateMemorySafety,
   memoryActorRef,
   MemorySuggestion,
+  StaticMemoryPolicyConfig,
 } from "@reviewrouter/features-memory";
 import type {
   GitHubInstallationRepositoryPort,
@@ -816,6 +817,7 @@ function createActionMemoryDependencies(
       memoryItems,
       memorySuggestions,
       memoryPermissions: permissions,
+      memoryPolicyConfig: new StaticMemoryPolicyConfig(),
       memoryUsageEvents: usageEvents,
       memoryIds: new IncrementingMemoryIds(),
       memoryTransaction: new SameObjectMemoryTransaction({

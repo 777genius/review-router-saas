@@ -33,6 +33,7 @@ import {
   EntitlementMemoryQuotaPolicy,
   PrismaMemoryItemRepository,
   PrismaMemoryPermission,
+  StaticMemoryPolicyConfig,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
   PrismaMemoryUsageEventRepository,
@@ -193,6 +194,7 @@ export async function createApiApp(
                 process.env.REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS,
               ),
             }),
+            memoryPolicyConfig: new StaticMemoryPolicyConfig(),
             memoryUsageEvents: new PrismaMemoryUsageEventRepository(prisma),
             memoryQuotaPolicy: new EntitlementMemoryQuotaPolicy(
               new PrismaEntitlementRepository(prisma),

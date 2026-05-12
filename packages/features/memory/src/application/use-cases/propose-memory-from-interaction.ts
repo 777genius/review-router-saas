@@ -39,6 +39,21 @@ export async function proposeMemoryFromInteraction(
     return { status: "rejected", reason: "memory_input_invalid" };
   }
 
+  const policy = await dependencies.memoryPolicyConfig.getPolicy({
+    workspaceId: envelope.workspaceId,
+    repositoryId: scope === "repository" ? envelope.repositoryId : null,
+  });
+  if (!policy.memoryEnabled) {
+    return { status: "rejected", reason: "memory_disabled", retryable: false };
+  }
+  if (!policy.allowedScopes[scope]) {
+    return {
+      status: "rejected",
+      reason: "memory_scope_forbidden",
+      retryable: false,
+    };
+  }
+
   if (
     envelope.intent === "explicit_command" &&
     envelope.extractionMethod === "explicit_command"
@@ -52,19 +67,11 @@ export async function proposeMemoryFromInteraction(
       source: envelope.source,
       actor: envelope.actor,
       idempotencyKey: proposalDedupeKey(envelope, scope),
+      policyVersion: input.policyVersion ?? policy.policyVersion,
+      safetyPolicyVersion:
+        input.safetyPolicyVersion ?? policy.safetyPolicyVersion,
     };
-    return rememberMemoryDirectly(
-      {
-        ...directInput,
-        ...(input.policyVersion === undefined
-          ? {}
-          : { policyVersion: input.policyVersion }),
-        ...(input.safetyPolicyVersion === undefined
-          ? {}
-          : { safetyPolicyVersion: input.safetyPolicyVersion }),
-      },
-      dependencies,
-    );
+    return rememberMemoryDirectly(directInput, dependencies);
   }
 
   const safety = evaluateMemorySafety({
@@ -115,10 +122,13 @@ export async function proposeMemoryFromInteraction(
     reason: reasonForIntent(envelope.intent),
     source: envelope.source,
     safetyReport: safety,
-    policyVersion: input.policyVersion ?? 1,
-    safetyPolicyVersion: input.safetyPolicyVersion ?? 1,
+    policyVersion: input.policyVersion ?? policy.policyVersion,
+    safetyPolicyVersion:
+      input.safetyPolicyVersion ?? policy.safetyPolicyVersion,
     actor: envelope.actor,
-    expiresAt: new Date(now.getTime() + suggestionTtlMs(scope)),
+    expiresAt: new Date(
+      now.getTime() + suggestionTtlMs(policy.suggestionTtlDays[scope]),
+    ),
     dedupeKey,
     now,
   };
@@ -240,8 +250,7 @@ function reasonForIntent(intent: MemoryCandidateEnvelope["intent"]): string {
   return "explicit_natural_language";
 }
 
-function suggestionTtlMs(scope: MemoryScope): number {
-  const days = scope === "user_prefs" ? 30 : 14;
+function suggestionTtlMs(days: number): number {
   return days * 24 * 60 * 60 * 1000;
 }
 

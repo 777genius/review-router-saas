@@ -17,6 +17,7 @@ import {
   PrismaMemorySearchIndex,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
+  StaticMemoryPolicyConfig,
 } from "../../../packages/features/memory/src/index.ts";
 import {
   freeBetaEntitlement,
@@ -700,6 +701,7 @@ try {
     },
     {
       memoryItems: new PrismaMemoryItemRepository(prisma),
+      memoryPolicyConfig: new StaticMemoryPolicyConfig(),
       memorySearchIndex: new PrismaMemorySearchIndex(prisma),
     },
   );
@@ -1063,6 +1065,7 @@ try {
       clock: new SystemClock(),
       memoryItems: new PrismaMemoryItemRepository(prisma),
       memoryPermissions: new PrismaMemoryPermission(prisma),
+      memoryPolicyConfig: new StaticMemoryPolicyConfig(),
       memoryTransaction: new PrismaMemoryTransaction(prisma),
     },
   );

@@ -15,6 +15,7 @@ export * from "./application/ports/memory-id-generator-port";
 export * from "./application/ports/memory-item-repository-port";
 export * from "./application/ports/memory-outbox-port";
 export * from "./application/ports/memory-permission-port";
+export * from "./application/ports/memory-policy-config-port";
 export * from "./application/ports/memory-quota-policy-port";
 export * from "./application/ports/memory-search-index-port";
 export * from "./application/ports/memory-suggestion-repository-port";
