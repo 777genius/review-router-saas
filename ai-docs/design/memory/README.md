@@ -58,6 +58,37 @@ Suggested artifact paths:
 - `tmp/design-verification/memory/mobile-list.png`
 - `tmp/design-verification/memory/mobile-detail.png`
 
+## Implementation Notes
+
+2026-05-12 verification pass:
+
+- Preview URL: `/dashboard/memory-preview`.
+- Preview guard: `REVIEW_ROUTER_ENABLE_MEMORY_PREVIEW=1`; without the flag the
+  route returns `notFound()`.
+- Data source: deterministic synthetic fixtures only. No DB, auth cookie, source
+  code, diff, prompt or production memory is read by the preview route.
+- Browser captures were saved to all suggested artifact paths above at
+  `1440x1000`, `900x1100` and `390x844`.
+- Edge-state smoke checks passed for empty, permission denied/read-only, over
+  quota, stale edit and indexing degraded states.
+- Clean-profile browser captures rendered without preview-route failures after
+  fixing a disabled-dialog hydration mismatch. A persistent local dev profile can
+  still emit unrelated stale NextAuth JWT cookie noise before the preview route
+  renders.
+
+Intentional implementation choices:
+
+- The dashboard keeps the reference split layout. Knowledge and suggestion modes
+  use left scope rail, center work area and right policy/detail panel.
+- Table mode uses the reference operational shape with left filters and a wide
+  dense table. The policy/detail panel is hidden in table mode to prevent overlap
+  and keep scan density.
+- Memory badges are compact labels in this feature, not large action-like pills.
+  Real actions continue using shared `@reviewrouter/ui` Button/FormSubmitButton
+  and shared Dialog primitives.
+- Export CSV remains disabled in this slice. Disable/delete/edit flows are live
+  and keep confirmation dialogs with retention impact.
+
 Token notes to capture during implementation:
 
 - background/surface/border/text/muted/accent colors;

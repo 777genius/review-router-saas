@@ -11,7 +11,11 @@ import type {
   MemoryDashboardItemDto,
   MemoryDashboardSuggestionDto,
 } from "@reviewrouter/features-memory";
-import { MemoryManagementPanel } from "./memory-management-panel";
+import {
+  MemoryManagementPanel,
+  type MemoryManagementMode,
+  type MemoryManagementNotice,
+} from "./memory-management-panel";
 
 vi.mock("./actions", () => ({
   confirmMemorySuggestionAction: vi.fn(),
@@ -28,16 +32,26 @@ afterEach(() => {
 });
 
 describe("MemoryManagementPanel", () => {
-  it("keeps the split memory layout with confirmed, pending, and audit modes", () => {
+  it("keeps the split memory layout with knowledge, pending, and table modes", () => {
     renderMemoryManagementPanel();
 
-    expect(screen.getAllByText("Scope").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Confirmed").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("memory-management-panel")).toBeTruthy();
+    expect(screen.getByTestId("memory-scope-rail")).toBeTruthy();
+    expect(screen.getAllByText("Scope filter").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Knowledge").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Pending").length).toBeGreaterThan(0);
-    expect(screen.getByText("Audit")).toBeTruthy();
+    expect(screen.getByText("Table")).toBeTruthy();
     expect(screen.getByText("Policy safeguards")).toBeTruthy();
+    expect(screen.getByTestId("memory-knowledge-list")).toBeTruthy();
+  });
+
+  it("renders the operational table mode without losing action controls", () => {
+    renderMemoryManagementPanel({ mode: "table" });
+
+    expect(screen.getByTestId("memory-confirmed-table")).toBeTruthy();
     expect(screen.getByRole("table")).toBeTruthy();
     expect(screen.getByText("Showing 1-1 of 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
   });
 
   it("shows retention impact before destructive memory actions", () => {
@@ -74,7 +88,7 @@ describe("MemoryManagementPanel", () => {
   });
 
   it("lets pending suggestions be edited before approval", () => {
-    renderMemoryManagementPanel();
+    renderMemoryManagementPanel({ mode: "suggestions" });
 
     fireEvent.click(screen.getByRole("button", { name: "Edit suggestion" }));
 
@@ -82,9 +96,7 @@ describe("MemoryManagementPanel", () => {
       name: "Edit and approve suggestion",
     });
     expect(within(dialog).getByDisplayValue("Prefer small PRs.")).toBeTruthy();
-    expect(
-      within(dialog).getByText(/checks run again/),
-    ).toBeTruthy();
+    expect(within(dialog).getByText(/checks run again/)).toBeTruthy();
     expect(
       within(dialog).getByText(/Pending suggestions are never used by runtime/),
     ).toBeTruthy();
@@ -102,6 +114,22 @@ describe("MemoryManagementPanel", () => {
         .disabled,
     ).toBe(true);
     expect(
+      (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Add memory" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("renders read-only pending suggestions with disabled approval controls", () => {
+    renderMemoryManagementPanel({
+      mode: "suggestions",
+      mutationsEnabled: false,
+    });
+
+    expect(
       (
         screen.getByRole("button", {
           name: "Edit suggestion",
@@ -109,18 +137,44 @@ describe("MemoryManagementPanel", () => {
       ).disabled,
     ).toBe(true);
     expect(
-      (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    expect(
       (screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
   });
+
+  it("surfaces quota, stale edit, and indexing notices in the same layout", () => {
+    renderMemoryManagementPanel({
+      notices: [
+        {
+          id: "quota",
+          title: "Workspace memory quota is almost full",
+          body: "New approvals stay blocked until quota is freed.",
+          tone: "warning",
+        },
+        {
+          id: "stale",
+          title: "Memory changed before this edit was saved",
+          body: "Reload the latest version and retry.",
+          tone: "danger",
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText("Workspace memory quota is almost full"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Memory changed before this edit was saved"),
+    ).toBeTruthy();
+  });
 });
 
 function renderMemoryManagementPanel(
-  options: { readonly mutationsEnabled?: boolean } = {},
+  options: {
+    readonly mutationsEnabled?: boolean;
+    readonly mode?: MemoryManagementMode;
+    readonly notices?: readonly MemoryManagementNotice[];
+  } = {},
 ): void {
   render(
     <MemoryManagementPanel
@@ -137,6 +191,8 @@ function renderMemoryManagementPanel(
       memoryItems={[memoryItem()]}
       memorySuggestions={[memorySuggestion()]}
       mutationsEnabled={options.mutationsEnabled ?? true}
+      {...(options.mode ? { mode: options.mode } : {})}
+      {...(options.notices ? { notices: options.notices } : {})}
     />,
   );
 }

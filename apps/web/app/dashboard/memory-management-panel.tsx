@@ -33,18 +33,37 @@ export type MemoryManagementWorkspace = {
   readonly id: string;
 };
 
+export type MemoryManagementMode = "knowledge" | "suggestions" | "table";
+
+export type MemoryManagementNotice = {
+  readonly id: string;
+  readonly title: string;
+  readonly body: string;
+  readonly tone: "info" | "warning" | "danger";
+};
+
+export type MemoryManagementModeLinks = Partial<
+  Record<MemoryManagementMode, string>
+>;
+
 export function MemoryManagementPanel({
   workspace,
   repositories,
   memoryItems,
   memorySuggestions,
   mutationsEnabled,
+  mode = "knowledge",
+  modeLinks,
+  notices = [],
 }: {
   readonly workspace: MemoryManagementWorkspace;
   readonly repositories: readonly MemoryDashboardRepositoryOption[];
   readonly memoryItems: readonly MemoryDashboardItemDto[];
   readonly memorySuggestions: readonly MemoryDashboardSuggestionDto[];
   readonly mutationsEnabled: boolean;
+  readonly mode?: MemoryManagementMode;
+  readonly modeLinks?: MemoryManagementModeLinks;
+  readonly notices?: readonly MemoryManagementNotice[];
 }): React.ReactElement {
   const viewModel = buildMemoryDashboardViewModel({
     repositories,
@@ -53,38 +72,64 @@ export function MemoryManagementPanel({
   });
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[14rem_minmax(0,1fr)_20rem]">
-      <aside className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+    <section
+      data-testid="memory-management-panel"
+      className={[
+        "grid gap-4",
+        mode === "table"
+          ? "xl:grid-cols-[14rem_minmax(0,1fr)]"
+          : "xl:grid-cols-[14rem_minmax(0,1fr)_20rem]",
+      ].join(" ")}
+    >
+      <aside
+        data-testid="memory-scope-rail"
+        className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+      >
         <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
-          Scope
+          Repositories
         </p>
-        <div className="mt-3 grid gap-2 text-sm">
-          <MemoryScopeFilterRow
-            label="Repository"
-            count={viewModel.scopeCounts.repository}
+        <label className="mt-3 block">
+          <span className="sr-only">Search repositories</span>
+          <input
+            readOnly
+            value=""
+            placeholder="Search repositories..."
+            className="min-h-10 w-full rounded-xl border border-cyan-200/10 bg-slate-950 px-3 text-sm text-cyan-50 outline-none placeholder:text-slate-600"
           />
-          <MemoryScopeFilterRow
-            label="Workspace"
-            count={viewModel.scopeCounts.workspace}
-          />
-          <MemoryScopeFilterRow
-            label="User prefs"
-            count={viewModel.scopeCounts.userPrefs}
-          />
+        </label>
+        <div className="mt-3 grid gap-2">
+          {viewModel.repositoryRows.map((repository) => (
+            <MemoryScopeFilterRow
+              key={repository.id}
+              label={repository.label}
+              count={repository.count}
+              selected={repository.id === "all"}
+            />
+          ))}
         </div>
 
         <div className="mt-5 border-t border-cyan-200/10 pt-4">
           <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
-            Repositories
+            Scope filter
           </p>
-          <div className="mt-3 grid gap-2">
-            {viewModel.repositoryRows.map((repository) => (
-              <MemoryRepositoryRow
-                key={repository.id}
-                label={repository.label}
-                count={repository.count}
-              />
-            ))}
+          <div className="mt-3 grid gap-2 text-sm">
+            <MemoryScopeFilterRow
+              label="All scopes"
+              count={memoryItems.length}
+              selected
+            />
+            <MemoryScopeFilterRow
+              label="Workspace"
+              count={viewModel.scopeCounts.workspace}
+            />
+            <MemoryScopeFilterRow
+              label="Repository"
+              count={viewModel.scopeCounts.repository}
+            />
+            <MemoryScopeFilterRow
+              label="User prefs"
+              count={viewModel.scopeCounts.userPrefs}
+            />
           </div>
         </div>
 
@@ -111,254 +156,562 @@ export function MemoryManagementPanel({
 
       <div className="grid gap-4">
         <MemoryModeTabs
+          mode={mode}
           activeCount={viewModel.activeItems.length}
           pendingCount={viewModel.pendingSuggestionCount}
+          totalCount={memoryItems.length}
+          links={modeLinks}
         />
 
         {!mutationsEnabled ? <MemoryReadOnlyBanner /> : null}
+        {notices.length > 0 ? <MemoryNoticeStack notices={notices} /> : null}
 
-        <div className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <Badge tone="accent">Add memory</Badge>
-              <p className="mt-2 text-sm leading-6 text-slate-400">
-                Maintainer-approved guidance only. Code, diffs, secrets, and
-                prompts are blocked before storage.
-              </p>
-            </div>
-            <Badge tone="neutral">{memoryItems.length} total</Badge>
-          </div>
-          <form action={createMemoryItemAction} className="mt-4 grid gap-3">
-            <input type="hidden" name="workspaceId" value={workspace.id} />
-            <div className="grid gap-3 md:grid-cols-[12rem_minmax(0,1fr)]">
-              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-                Scope
-                <select
-                  name="scope"
-                  defaultValue="workspace"
-                  className="min-h-11 rounded-xl border border-cyan-200/10 bg-slate-950 px-3 text-sm normal-case tracking-normal text-cyan-50 outline-none transition focus:border-cyan-200/45"
-                >
-                  <option value="workspace">Workspace</option>
-                  <option value="repository">Repository</option>
-                  <option value="user_prefs">User prefs</option>
-                </select>
-              </label>
-              <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-                Repository
-                <select
-                  name="repositoryId"
-                  defaultValue={viewModel.defaultRepository?.id ?? ""}
-                  className="min-h-11 rounded-xl border border-cyan-200/10 bg-slate-950 px-3 text-sm normal-case tracking-normal text-cyan-50 outline-none transition focus:border-cyan-200/45"
-                >
-                  {viewModel.defaultRepository ? null : (
-                    <option value="">No active repository</option>
-                  )}
-                  {viewModel.selectedRepositories.map((repository) => (
-                    <option key={repository.id} value={repository.id}>
-                      {repository.fullName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
-              Memory
-              <textarea
-                name="body"
-                minLength={8}
-                maxLength={1200}
-                rows={3}
-                placeholder="Prefer guard clauses in service layer methods."
-                className="min-h-24 resize-y rounded-xl border border-cyan-200/10 bg-slate-950 px-3 py-2 text-sm normal-case leading-6 tracking-normal text-cyan-50 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/45"
-              />
-            </label>
-            <div className="flex justify-end">
-              <FormSubmitButton
-                variant="solid"
-                size="sm"
-                disabled={!mutationsEnabled}
-                idleLabel="Add memory"
-                pendingLabel="Saving..."
-              />
-            </div>
-          </form>
-        </div>
-
-        <div className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <Badge tone="warning">Pending</Badge>
-              <p className="mt-2 text-sm leading-6 text-slate-400">
-                Model suggestions stay out of runtime context until a maintainer
-                confirms them.
-              </p>
-            </div>
-            <Badge tone="neutral">
-              {viewModel.pendingSuggestionCount} pending
-            </Badge>
-          </div>
-          <div className="mt-4 grid gap-3">
-            {memorySuggestions.length === 0 ? (
-              <p className="rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm text-slate-400">
-                No pending suggestions.
-              </p>
-            ) : (
-              memorySuggestions.map((suggestion) => (
-                <MemorySuggestionRow
-                  key={suggestion.id}
-                  workspaceId={workspace.id}
-                  suggestion={suggestion}
-                  mutationsEnabled={mutationsEnabled}
-                />
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <Badge tone="success">Confirmed</Badge>
-              <p className="mt-2 text-sm leading-6 text-slate-400">
-                Approved memory available to retrieval, filtered by scope and
-                repository.
-              </p>
-            </div>
-            <Badge tone="neutral">{viewModel.activeItems.length} active</Badge>
-          </div>
-          <div className="mt-4 overflow-x-auto">
-            <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
-              <thead className="text-xs uppercase tracking-[0.14em] text-slate-500">
-                <tr>
-                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
-                    Memory
-                  </th>
-                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
-                    Scope
-                  </th>
-                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
-                    Status
-                  </th>
-                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
-                    Confidence
-                  </th>
-                  <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {memoryItems.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className="px-3 py-5 text-center text-sm text-slate-400"
-                    >
-                      No confirmed memories yet.
-                    </td>
-                  </tr>
-                ) : (
-                  memoryItems.map((item) => (
-                    <MemoryItemRow
-                      key={item.id}
-                      workspaceId={workspace.id}
-                      item={item}
-                      mutationsEnabled={mutationsEnabled}
-                    />
-                  ))
-                )}
-              </tbody>
-            </table>
-            <MemoryTableFooter
-              shownCount={memoryItems.length}
+        {mode === "knowledge" ? (
+          <>
+            <MemoryKnowledgeToolbar
+              activeCount={viewModel.activeItems.length}
               totalCount={memoryItems.length}
             />
-          </div>
-        </div>
+            <MemoryAddMemoryForm
+              workspaceId={workspace.id}
+              repositories={viewModel.selectedRepositories}
+              defaultRepositoryId={viewModel.defaultRepository?.id ?? ""}
+              mutationsEnabled={mutationsEnabled}
+              totalCount={memoryItems.length}
+            />
+            <MemoryKnowledgeList
+              items={memoryItems}
+              workspaceId={workspace.id}
+              mutationsEnabled={mutationsEnabled}
+            />
+          </>
+        ) : null}
+
+        {mode === "suggestions" ? (
+          <MemorySuggestionInbox
+            workspaceId={workspace.id}
+            suggestions={memorySuggestions}
+            mutationsEnabled={mutationsEnabled}
+            pendingCount={viewModel.pendingSuggestionCount}
+          />
+        ) : null}
+
+        {mode === "table" ? (
+          <MemoryConfirmedTable
+            workspaceId={workspace.id}
+            items={memoryItems}
+            mutationsEnabled={mutationsEnabled}
+            activeCount={viewModel.activeItems.length}
+          />
+        ) : null}
       </div>
 
-      <aside className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
-        <div className="grid gap-4">
-          <div>
-            <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
-              Policy safeguards
-            </p>
-            <div className="mt-3 grid gap-3 text-sm leading-6 text-slate-300">
-              <MemoryPolicyLine
-                title="Maintainer confirmation"
-                body="Project memory requires workspace admin or repository maintainer approval."
-              />
-              <MemoryPolicyLine
-                title="No code or diff stored"
-                body="Secrets, code blocks, diffs, stack traces, and prompt injection text are blocked."
-              />
-              <MemoryPolicyLine
-                title="Scoped retrieval"
-                body="Repository memory is not shared across repositories; user prefs are limited to safe response preferences."
-              />
+      {mode === "table" ? null : (
+        <aside
+          id="memory-policy-panel"
+          data-testid="memory-policy-panel"
+          className="scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+        >
+          <div className="grid gap-4">
+            <div>
+              <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
+                Policy safeguards
+              </p>
+              <div className="mt-3 grid gap-3 text-sm leading-6 text-slate-300">
+                <MemoryPolicyLine
+                  title="Maintainer confirmation"
+                  body="Project memory requires workspace admin or repository maintainer approval."
+                />
+                <MemoryPolicyLine
+                  title="No code or diff stored"
+                  body="Secrets, code blocks, diffs, stack traces, and prompt injection text are blocked."
+                />
+                <MemoryPolicyLine
+                  title="Scoped retrieval"
+                  body="Repository memory is not shared across repositories; user prefs are limited to safe response preferences."
+                />
+              </div>
+            </div>
+
+            <div className="border-t border-cyan-200/10 pt-4">
+              <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                Details
+              </p>
+              {viewModel.firstDetail ? (
+                <div className="mt-3 grid gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <MemoryBadge
+                      tone={memoryStatusTone(viewModel.firstDetail.status)}
+                    >
+                      {viewModel.firstDetail.status}
+                    </MemoryBadge>
+                    <MemoryBadge tone="neutral">
+                      {memoryScopeLabel(viewModel.firstDetail.scope)}
+                    </MemoryBadge>
+                    <MemoryBadge
+                      tone={memoryIndexTone(viewModel.firstDetail.indexState)}
+                    >
+                      {memoryIndexLabel(viewModel.firstDetail.indexState)}
+                    </MemoryBadge>
+                  </div>
+                  <p className="text-sm leading-6 text-cyan-50">
+                    {viewModel.firstDetail.body}
+                  </p>
+                  <dl className="grid gap-2 text-xs text-slate-400">
+                    <MemoryDetailStat
+                      label="Confidence"
+                      value={formatPercent(viewModel.firstDetail.confidence)}
+                    />
+                    <MemoryDetailStat
+                      label="Source"
+                      value={memorySourceLabel(viewModel.firstDetail.source)}
+                    />
+                    <MemoryDetailStat
+                      label="Updated"
+                      value={formatIsoDate(viewModel.firstDetail.updatedAt)}
+                    />
+                  </dl>
+                  <div className="rounded-xl border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+                    Privacy-first: only distilled memory is stored. Raw code,
+                    diffs, prompts, and secrets are not saved.
+                  </div>
+                  <div className="rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-3 text-xs leading-5 text-slate-300">
+                    Retrieval preview: scoped queries can include this memory
+                    only after status, scope, and index checks pass.
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm leading-6 text-slate-400">
+                  Select or create memory to populate retrieval preview.
+                </p>
+              )}
             </div>
           </div>
-
-          <div className="border-t border-cyan-200/10 pt-4">
-            <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
-              Details
-            </p>
-            {viewModel.firstDetail ? (
-              <div className="mt-3 grid gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge tone={memoryStatusTone(viewModel.firstDetail.status)}>
-                    {viewModel.firstDetail.status}
-                  </Badge>
-                  <Badge tone="neutral">
-                    {memoryScopeLabel(viewModel.firstDetail.scope)}
-                  </Badge>
-                </div>
-                <p className="text-sm leading-6 text-cyan-50">
-                  {viewModel.firstDetail.body}
-                </p>
-                <dl className="grid gap-2 text-xs text-slate-400">
-                  <MemoryDetailStat
-                    label="Confidence"
-                    value={formatPercent(viewModel.firstDetail.confidence)}
-                  />
-                  <MemoryDetailStat
-                    label="Source"
-                    value={memorySourceLabel(viewModel.firstDetail.source)}
-                  />
-                  <MemoryDetailStat
-                    label="Updated"
-                    value={formatIsoDate(viewModel.firstDetail.updatedAt)}
-                  />
-                </dl>
-                <div className="rounded-xl border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
-                  Privacy-first: only distilled memory is stored. Raw code,
-                  diffs, prompts, and secrets are not saved.
-                </div>
-              </div>
-            ) : (
-              <p className="mt-3 text-sm leading-6 text-slate-400">
-                Select or create memory to populate retrieval preview.
-              </p>
-            )}
-          </div>
-        </div>
-      </aside>
+        </aside>
+      )}
     </section>
   );
 }
 
-function MemoryModeTabs({
+function MemoryBadge({
+  className = "",
+  ...props
+}: React.ComponentProps<typeof Badge>): React.ReactElement {
+  return (
+    <Badge
+      className={[
+        "cursor-default select-none px-2 py-1 text-[0.58rem] tracking-[0.16em] shadow-none",
+        className,
+      ].join(" ")}
+      {...props}
+    />
+  );
+}
+
+function MemoryAddMemoryForm({
+  workspaceId,
+  repositories,
+  defaultRepositoryId,
+  mutationsEnabled,
+  totalCount,
+}: {
+  readonly workspaceId: string;
+  readonly repositories: readonly MemoryDashboardRepositoryOption[];
+  readonly defaultRepositoryId: string;
+  readonly mutationsEnabled: boolean;
+  readonly totalCount: number;
+}): React.ReactElement {
+  return (
+    <div
+      data-testid="memory-add-memory"
+      className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <MemoryBadge tone="accent">Add memory</MemoryBadge>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            Maintainer-approved guidance only. Code, diffs, secrets, and prompts
+            are blocked before storage.
+          </p>
+        </div>
+        <MemoryBadge tone="neutral">{totalCount} total</MemoryBadge>
+      </div>
+      <form action={createMemoryItemAction} className="mt-4 grid gap-3">
+        <input type="hidden" name="workspaceId" value={workspaceId} />
+        <div className="grid gap-3 md:grid-cols-[12rem_minmax(0,1fr)]">
+          <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+            Scope
+            <select
+              name="scope"
+              defaultValue="workspace"
+              className="min-h-11 rounded-xl border border-cyan-200/10 bg-slate-950 px-3 text-sm normal-case tracking-normal text-cyan-50 outline-none transition focus:border-cyan-200/45"
+            >
+              <option value="workspace">Workspace</option>
+              <option value="repository">Repository</option>
+              <option value="user_prefs">User prefs</option>
+            </select>
+          </label>
+          <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+            Repository
+            <select
+              name="repositoryId"
+              defaultValue={defaultRepositoryId}
+              className="min-h-11 rounded-xl border border-cyan-200/10 bg-slate-950 px-3 text-sm normal-case tracking-normal text-cyan-50 outline-none transition focus:border-cyan-200/45"
+            >
+              {defaultRepositoryId ? null : (
+                <option value="">No active repository</option>
+              )}
+              {repositories.map((repository) => (
+                <option key={repository.id} value={repository.id}>
+                  {repository.fullName}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+          Memory
+          <textarea
+            name="body"
+            minLength={8}
+            maxLength={1200}
+            rows={3}
+            placeholder="Prefer guard clauses in service layer methods."
+            className="min-h-24 resize-y rounded-xl border border-cyan-200/10 bg-slate-950 px-3 py-2 text-sm normal-case leading-6 tracking-normal text-cyan-50 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/45"
+          />
+        </label>
+        <div className="flex justify-end">
+          <FormSubmitButton
+            variant="solid"
+            size="sm"
+            disabled={!mutationsEnabled}
+            idleLabel="Add memory"
+            pendingLabel="Saving..."
+          />
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function MemoryKnowledgeToolbar({
   activeCount,
-  pendingCount,
+  totalCount,
 }: {
   readonly activeCount: number;
+  readonly totalCount: number;
+}): React.ReactElement {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+      <div>
+        <h2 className="text-2xl font-semibold tracking-normal text-cyan-50">
+          All scopes
+        </h2>
+        <p className="mt-1 text-sm text-slate-400">
+          {totalCount} memories, {activeCount} active in retrieval.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <MemoryBadge tone="neutral">List</MemoryBadge>
+        <MemoryBadge tone="success">Detail</MemoryBadge>
+      </div>
+    </div>
+  );
+}
+
+function MemoryKnowledgeList({
+  items,
+  workspaceId,
+  mutationsEnabled,
+}: {
+  readonly items: readonly MemoryDashboardItemDto[];
+  readonly workspaceId: string;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  if (items.length === 0) {
+    return (
+      <div
+        id="memory-knowledge-list"
+        data-testid="memory-knowledge-list"
+        className="scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-5 text-sm leading-6 text-slate-400"
+      >
+        No confirmed memories yet. The same management layout stays available
+        while maintainers approve the first safe memory.
+      </div>
+    );
+  }
+
+  const sections = [
+    {
+      id: "workspace",
+      label: "Workspace",
+      items: items.filter((item) => item.scope === "workspace"),
+    },
+    {
+      id: "repository",
+      label: "Repository",
+      items: items.filter((item) => item.scope === "repository"),
+    },
+    {
+      id: "user_prefs",
+      label: "User prefs",
+      items: items.filter((item) => item.scope === "user_prefs"),
+    },
+  ].filter((section) => section.items.length > 0);
+
+  return (
+    <div
+      id="memory-knowledge-list"
+      data-testid="memory-knowledge-list"
+      className="grid scroll-mt-28 gap-4"
+    >
+      {sections.map((section) => (
+        <section
+          key={section.id}
+          className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+        >
+          <div className="mb-3 flex items-center justify-between gap-3 border-b border-cyan-200/10 pb-3">
+            <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              {section.label}
+            </p>
+            <MemoryBadge tone="neutral">{section.items.length}</MemoryBadge>
+          </div>
+          <div className="grid gap-2">
+            {section.items.map((item) => (
+              <MemoryKnowledgeCard
+                key={item.id}
+                workspaceId={workspaceId}
+                item={item}
+                mutationsEnabled={mutationsEnabled}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function MemoryKnowledgeCard({
+  workspaceId,
+  item,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly item: MemoryDashboardItemDto;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  return (
+    <article className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 md:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <MemoryBadge tone={memoryStatusTone(item.status)}>
+            {item.status}
+          </MemoryBadge>
+          <MemoryBadge tone="neutral">
+            {memoryScopeLabel(item.scope)}
+          </MemoryBadge>
+          <MemoryBadge tone={memoryRiskTone(item.riskLevel)}>
+            {item.riskLevel}
+          </MemoryBadge>
+          <MemoryBadge tone={memoryIndexTone(item.indexState)}>
+            {memoryIndexLabel(item.indexState)}
+          </MemoryBadge>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-cyan-50">{item.body}</p>
+        <p className="mt-2 text-xs leading-5 text-slate-500">
+          {memorySourceLabel(item.source)} / updated{" "}
+          {formatIsoDate(item.updatedAt)} / confidence{" "}
+          {formatPercent(item.confidence)}
+        </p>
+      </div>
+      <MemoryItemActionGroup
+        workspaceId={workspaceId}
+        item={item}
+        mutationsEnabled={mutationsEnabled}
+      />
+    </article>
+  );
+}
+
+function MemorySuggestionInbox({
+  workspaceId,
+  suggestions,
+  mutationsEnabled,
+  pendingCount,
+}: {
+  readonly workspaceId: string;
+  readonly suggestions: readonly MemoryDashboardSuggestionDto[];
+  readonly mutationsEnabled: boolean;
   readonly pendingCount: number;
 }): React.ReactElement {
   return (
-    <div className="grid gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-3 md:grid-cols-3">
-      <MemoryModeTab label="Confirmed" count={activeCount} selected />
-      <MemoryModeTab label="Pending" count={pendingCount} />
-      <MemoryModeTab label="Audit" count={0} />
+    <div
+      id="memory-suggestion-inbox"
+      data-testid="memory-suggestion-inbox"
+      className="scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <MemoryBadge tone="warning">Pending</MemoryBadge>
+          <h2 className="mt-3 text-2xl font-semibold tracking-normal text-cyan-50">
+            {pendingCount} pending suggestions
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-slate-400">
+            Model suggestions stay out of runtime context until a maintainer
+            confirms them.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <MemoryBadge tone="neutral">Filters</MemoryBadge>
+          <MemoryBadge tone="neutral">Sort newest</MemoryBadge>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3">
+        {suggestions.length === 0 ? (
+          <p className="rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm text-slate-400">
+            No pending suggestions.
+          </p>
+        ) : (
+          suggestions.map((suggestion) => (
+            <MemorySuggestionRow
+              key={suggestion.id}
+              workspaceId={workspaceId}
+              suggestion={suggestion}
+              mutationsEnabled={mutationsEnabled}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MemoryConfirmedTable({
+  workspaceId,
+  items,
+  mutationsEnabled,
+  activeCount,
+}: {
+  readonly workspaceId: string;
+  readonly items: readonly MemoryDashboardItemDto[];
+  readonly mutationsEnabled: boolean;
+  readonly activeCount: number;
+}): React.ReactElement {
+  return (
+    <div
+      id="memory-confirmed-table"
+      data-testid="memory-confirmed-table"
+      className="scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <MemoryBadge tone="success">Confirmed</MemoryBadge>
+          <h2 className="mt-3 text-2xl font-semibold tracking-normal text-cyan-50">
+            {items.length} memories
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-slate-400">
+            Dense operational view for approved memory and retention actions.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <MemoryBadge tone="neutral">{activeCount} active</MemoryBadge>
+          <Button type="button" variant="outline" size="sm" disabled>
+            Export CSV
+          </Button>
+        </div>
+      </div>
+      <div className="mt-4 overflow-x-auto">
+        <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+          <thead className="text-xs uppercase tracking-[0.14em] text-slate-500">
+            <tr>
+              <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                Memory
+              </th>
+              <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                Scope
+              </th>
+              <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                Status
+              </th>
+              <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                Index
+              </th>
+              <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                Confidence
+              </th>
+              <th className="border-b border-cyan-200/10 px-3 py-2 font-semibold">
+                Actions
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={6}
+                  className="px-3 py-5 text-center text-sm text-slate-400"
+                >
+                  No confirmed memories yet.
+                </td>
+              </tr>
+            ) : (
+              items.map((item) => (
+                <MemoryItemRow
+                  key={item.id}
+                  workspaceId={workspaceId}
+                  item={item}
+                  mutationsEnabled={mutationsEnabled}
+                />
+              ))
+            )}
+          </tbody>
+        </table>
+        <MemoryTableFooter
+          shownCount={items.length}
+          totalCount={items.length}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MemoryModeTabs({
+  mode,
+  activeCount,
+  pendingCount,
+  totalCount,
+  links,
+}: {
+  readonly mode: MemoryManagementMode;
+  readonly activeCount: number;
+  readonly pendingCount: number;
+  readonly totalCount: number;
+  readonly links?: MemoryManagementModeLinks | undefined;
+}): React.ReactElement {
+  return (
+    <div
+      data-testid="memory-mode-tabs"
+      className="grid gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-3 md:grid-cols-3"
+    >
+      <MemoryModeTab
+        label="Knowledge"
+        count={activeCount}
+        selected={mode === "knowledge"}
+        href={links?.knowledge}
+      />
+      <MemoryModeTab
+        label="Pending"
+        count={pendingCount}
+        selected={mode === "suggestions"}
+        href={links?.suggestions}
+      />
+      <MemoryModeTab
+        label="Table"
+        count={totalCount}
+        selected={mode === "table"}
+        href={links?.table}
+      />
     </div>
   );
 }
@@ -367,25 +720,70 @@ function MemoryModeTab({
   label,
   count,
   selected = false,
+  href,
 }: {
   readonly label: string;
   readonly count: number;
   readonly selected?: boolean;
+  readonly href?: string | undefined;
 }): React.ReactElement {
-  return (
-    <div
-      aria-current={selected ? "page" : undefined}
-      className={[
-        "flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm font-semibold",
-        selected
-          ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100 shadow-[inset_0_-2px_0_rgba(110,231,183,0.75)]"
-          : "border-cyan-200/10 bg-cyan-300/[0.035] text-slate-400",
-      ].join(" ")}
-    >
+  const className = [
+    "flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm font-semibold",
+    selected
+      ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100 shadow-[inset_0_-2px_0_rgba(110,231,183,0.75)]"
+      : "border-cyan-200/10 bg-cyan-300/[0.035] text-slate-400",
+  ].join(" ");
+  const content = (
+    <>
       <span>{label}</span>
       <span className="rounded-full border border-cyan-200/10 bg-slate-950 px-2 py-0.5 font-mono text-xs text-cyan-100">
         {count}
       </span>
+    </>
+  );
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        aria-current={selected ? "page" : undefined}
+        className={className}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <div aria-current={selected ? "page" : undefined} className={className}>
+      {content}
+    </div>
+  );
+}
+
+function MemoryNoticeStack({
+  notices,
+}: {
+  readonly notices: readonly MemoryManagementNotice[];
+}): React.ReactElement {
+  return (
+    <div className="grid gap-3">
+      {notices.map((notice) => (
+        <div
+          key={notice.id}
+          className={[
+            "rounded-[1.25rem] border p-4 text-sm leading-6",
+            notice.tone === "danger"
+              ? "border-rose-300/25 bg-rose-300/10 text-rose-100"
+              : notice.tone === "warning"
+                ? "border-amber-300/25 bg-amber-300/10 text-amber-100"
+                : "border-cyan-200/10 bg-cyan-300/[0.04] text-slate-300",
+          ].join(" ")}
+        >
+          <p className="font-semibold">{notice.title}</p>
+          <p className="mt-1 text-xs leading-5 opacity-90">{notice.body}</p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -403,31 +801,25 @@ function MemoryReadOnlyBanner(): React.ReactElement {
 function MemoryScopeFilterRow({
   label,
   count,
+  selected = false,
 }: {
   readonly label: string;
   readonly count: number;
+  readonly selected?: boolean;
 }): React.ReactElement {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] px-3 py-2">
+    <div
+      className={[
+        "flex items-center justify-between gap-3 rounded-xl border px-3 py-2",
+        selected
+          ? "border-emerald-300/25 bg-emerald-300/10"
+          : "border-cyan-200/10 bg-cyan-300/[0.04]",
+      ].join(" ")}
+    >
       <span className="min-w-0 truncate text-slate-300">{label}</span>
       <span className="font-mono text-xs font-semibold text-cyan-100">
         {count}
       </span>
-    </div>
-  );
-}
-
-function MemoryRepositoryRow({
-  label,
-  count,
-}: {
-  readonly label: string;
-  readonly count: number;
-}): React.ReactElement {
-  return (
-    <div className="flex items-center justify-between gap-3 text-xs">
-      <span className="min-w-0 truncate text-slate-400">{label}</span>
-      <span className="font-mono text-slate-500">{count}</span>
     </div>
   );
 }
@@ -445,13 +837,15 @@ function MemorySuggestionRow({
     <div className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 md:grid-cols-[minmax(0,1fr)_12rem]">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={memoryRiskTone(suggestion.safety.riskLevel)}>
+          <MemoryBadge tone={memoryRiskTone(suggestion.safety.riskLevel)}>
             {suggestion.safety.riskLevel}
-          </Badge>
-          <Badge tone="neutral">
+          </MemoryBadge>
+          <MemoryBadge tone="neutral">
             {memoryScopeLabel(suggestion.suggestedScope)}
-          </Badge>
-          {suggestion.isExpired ? <Badge tone="warning">Expired</Badge> : null}
+          </MemoryBadge>
+          {suggestion.isExpired ? (
+            <MemoryBadge tone="warning">Expired</MemoryBadge>
+          ) : null}
         </div>
         <p className="mt-3 text-sm leading-6 text-cyan-50">
           {suggestion.suggestedBody}
@@ -506,17 +900,25 @@ function MemorySuggestionEditConfirmDialog({
   readonly suggestion: MemoryDashboardSuggestionDto;
   readonly disabled: boolean;
 }): React.ReactElement {
+  if (disabled) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled
+        className="w-full"
+      >
+        Edit suggestion
+      </Button>
+    );
+  }
+
   return (
     <DialogRoot>
       <DialogTrigger
         render={
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={disabled}
-            className="w-full"
-          >
+          <Button type="button" variant="outline" size="sm" className="w-full">
             Edit suggestion
           </Button>
         }
@@ -531,7 +933,10 @@ function MemorySuggestionEditConfirmDialog({
             Confirmation uses the edited text only after permission, safety,
             scope and duplicate checks run again.
           </DialogDescription>
-          <form action={confirmMemorySuggestionAction} className="mt-5 grid gap-4">
+          <form
+            action={confirmMemorySuggestionAction}
+            className="mt-5 grid gap-4"
+          >
             <input type="hidden" name="workspaceId" value={workspaceId} />
             <input type="hidden" name="suggestionId" value={suggestion.id} />
             <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
@@ -594,7 +999,6 @@ function MemoryItemRow({
   readonly item: MemoryDashboardItemDto;
   readonly mutationsEnabled: boolean;
 }): React.ReactElement {
-  const mutable = mutationsEnabled && item.status !== "deleted";
   return (
     <tr className="align-top text-slate-300">
       <td className="border-b border-cyan-200/10 px-3 py-3">
@@ -605,48 +1009,74 @@ function MemoryItemRow({
         </p>
       </td>
       <td className="border-b border-cyan-200/10 px-3 py-3">
-        <Badge tone="neutral">{memoryScopeLabel(item.scope)}</Badge>
+        <MemoryBadge tone="neutral">{memoryScopeLabel(item.scope)}</MemoryBadge>
       </td>
       <td className="border-b border-cyan-200/10 px-3 py-3">
-        <Badge tone={memoryStatusTone(item.status)}>{item.status}</Badge>
+        <MemoryBadge tone={memoryStatusTone(item.status)}>
+          {item.status}
+        </MemoryBadge>
+      </td>
+      <td className="border-b border-cyan-200/10 px-3 py-3">
+        <MemoryBadge tone={memoryIndexTone(item.indexState)}>
+          {memoryIndexLabel(item.indexState)}
+        </MemoryBadge>
       </td>
       <td className="border-b border-cyan-200/10 px-3 py-3 font-mono text-xs text-cyan-100">
         {formatPercent(item.confidence)}
       </td>
       <td className="border-b border-cyan-200/10 px-3 py-3">
-        <div className="flex flex-wrap gap-2">
-          <MemoryEditActionDialog
-            workspaceId={workspaceId}
-            item={item}
-            disabled={!mutable}
-          />
-          <MemoryDangerActionDialog
-            action={disableMemoryItemAction}
-            workspaceId={workspaceId}
-            memoryItemId={item.id}
-            expectedVersion={item.version}
-            triggerLabel="Disable"
-            pendingLabel="Disabling..."
-            disabled={!mutable || item.status === "disabled"}
-            title="Disable memory?"
-            description="Disabled memory is removed from runtime retrieval, but kept in audit history and can be inspected later."
-            confirmLabel="Disable memory"
-          />
-          <MemoryDangerActionDialog
-            action={deleteMemoryItemAction}
-            workspaceId={workspaceId}
-            memoryItemId={item.id}
-            expectedVersion={item.version}
-            triggerLabel="Delete"
-            pendingLabel="Deleting..."
-            disabled={!mutable}
-            title="Delete memory?"
-            description="Deleted memory is removed from active management views and queued for retrieval index deletion. Audit records remain for accountability."
-            confirmLabel="Delete memory"
-          />
-        </div>
+        <MemoryItemActionGroup
+          workspaceId={workspaceId}
+          item={item}
+          mutationsEnabled={mutationsEnabled}
+        />
       </td>
     </tr>
+  );
+}
+
+function MemoryItemActionGroup({
+  workspaceId,
+  item,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly item: MemoryDashboardItemDto;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  const mutable = mutationsEnabled && item.status !== "deleted";
+  return (
+    <div className="flex flex-wrap content-start items-start gap-2">
+      <MemoryEditActionDialog
+        workspaceId={workspaceId}
+        item={item}
+        disabled={!mutable}
+      />
+      <MemoryDangerActionDialog
+        action={disableMemoryItemAction}
+        workspaceId={workspaceId}
+        memoryItemId={item.id}
+        expectedVersion={item.version}
+        triggerLabel="Disable"
+        pendingLabel="Disabling..."
+        disabled={!mutable || item.status === "disabled"}
+        title="Disable memory?"
+        description="Disabled memory is removed from runtime retrieval, but kept in audit history and can be inspected later."
+        confirmLabel="Disable memory"
+      />
+      <MemoryDangerActionDialog
+        action={deleteMemoryItemAction}
+        workspaceId={workspaceId}
+        memoryItemId={item.id}
+        expectedVersion={item.version}
+        triggerLabel="Delete"
+        pendingLabel="Deleting..."
+        disabled={!mutable}
+        title="Delete memory?"
+        description="Deleted memory is removed from active management views and queued for retrieval index deletion. Audit records remain for accountability."
+        confirmLabel="Delete memory"
+      />
+    </div>
   );
 }
 
@@ -659,6 +1089,20 @@ function MemoryEditActionDialog({
   readonly item: MemoryDashboardItemDto;
   readonly disabled: boolean;
 }): React.ReactElement {
+  if (disabled) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled
+        className="min-w-20"
+      >
+        Edit
+      </Button>
+    );
+  }
+
   return (
     <DialogRoot>
       <DialogTrigger
@@ -667,7 +1111,6 @@ function MemoryEditActionDialog({
             type="button"
             variant="outline"
             size="sm"
-            disabled={disabled}
             className="min-w-20"
           >
             Edit
@@ -687,11 +1130,7 @@ function MemoryEditActionDialog({
           <form action={editMemoryItemAction} className="mt-5 grid gap-4">
             <input type="hidden" name="workspaceId" value={workspaceId} />
             <input type="hidden" name="memoryItemId" value={item.id} />
-            <input
-              type="hidden"
-              name="expectedVersion"
-              value={item.version}
-            />
+            <input type="hidden" name="expectedVersion" value={item.version} />
             <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
               Memory
               <textarea
@@ -752,6 +1191,20 @@ function MemoryDangerActionDialog({
   readonly description: string;
   readonly confirmLabel: string;
 }): React.ReactElement {
+  if (disabled) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled
+        className="min-w-20"
+      >
+        {triggerLabel}
+      </Button>
+    );
+  }
+
   return (
     <DialogRoot>
       <DialogTrigger
@@ -760,7 +1213,6 @@ function MemoryDangerActionDialog({
             type="button"
             variant="outline"
             size="sm"
-            disabled={disabled}
             className="min-w-20"
           >
             {triggerLabel}
@@ -900,6 +1352,37 @@ function memoryRiskTone(
     case "high":
     case "critical":
       return "danger";
+  }
+}
+
+function memoryIndexTone(
+  state: MemoryDashboardItemDto["indexState"],
+): "success" | "warning" | "danger" | "neutral" | "accent" {
+  switch (state) {
+    case "indexed":
+      return "success";
+    case "index_pending":
+    case "not_indexed":
+      return "warning";
+    case "index_failed":
+      return "danger";
+    case "index_deleted":
+      return "neutral";
+  }
+}
+
+function memoryIndexLabel(state: MemoryDashboardItemDto["indexState"]): string {
+  switch (state) {
+    case "not_indexed":
+      return "Not indexed";
+    case "index_pending":
+      return "Index pending";
+    case "indexed":
+      return "Indexed";
+    case "index_failed":
+      return "Index failed";
+    case "index_deleted":
+      return "Index deleted";
   }
 }
 

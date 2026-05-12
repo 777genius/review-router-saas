@@ -100,7 +100,11 @@ import {
   ReviewConfigForm,
 } from "./repository-policy-editor";
 import { RepositorySetupStatusRefresher } from "./repository-setup-status-refresher";
-import { MemoryManagementPanel } from "./memory-management-panel";
+import {
+  MemoryManagementPanel,
+  type MemoryManagementMode,
+  type MemoryManagementModeLinks,
+} from "./memory-management-panel";
 import { createNoIndexPageMetadata } from "../seo";
 
 export const dynamic = "force-dynamic";
@@ -819,6 +823,7 @@ function WorkspaceCard({
       : null;
   const repositorySearchQuery = readParam(params.q);
   const repositorySearchFilter = readRepositorySearchFilter(params);
+  const selectedMemoryMode = resolveMemoryManagementMode(params);
   const requestedRepository = requestedRepositoryFullName
     ? repositories.find(
         (repository) => repository.fullName === requestedRepositoryFullName,
@@ -915,6 +920,8 @@ function WorkspaceCard({
             memoryItems={memoryItems}
             memorySuggestions={memorySuggestions}
             mutationsEnabled={mutationsEnabled}
+            mode={selectedMemoryMode}
+            modeLinks={dashboardMemoryModeLinks(workspaceKey)}
           />
         ) : null}
 
@@ -2695,6 +2702,43 @@ function dashboardSectionHref(
   workspaceKey?: string,
 ): string {
   const query = new URLSearchParams({ section });
+  if (workspaceKey) query.set("workspace", workspaceKey);
+  return `/dashboard?${query.toString()}#dashboard-section-content`;
+}
+
+function resolveMemoryManagementMode(
+  params: Record<string, string | string[] | undefined>,
+): MemoryManagementMode {
+  const explicit = readParam(params.memory_mode);
+  if (
+    explicit === "knowledge" ||
+    explicit === "suggestions" ||
+    explicit === "table"
+  ) {
+    return explicit;
+  }
+  if (readParam(params.status) === "pending") return "suggestions";
+  return "knowledge";
+}
+
+function dashboardMemoryModeLinks(
+  workspaceKey?: string,
+): MemoryManagementModeLinks {
+  return {
+    knowledge: dashboardMemoryModeHref("knowledge", workspaceKey),
+    suggestions: dashboardMemoryModeHref("suggestions", workspaceKey),
+    table: dashboardMemoryModeHref("table", workspaceKey),
+  };
+}
+
+function dashboardMemoryModeHref(
+  mode: MemoryManagementMode,
+  workspaceKey?: string,
+): string {
+  const query = new URLSearchParams({
+    section: "memory",
+    memory_mode: mode,
+  });
   if (workspaceKey) query.set("workspace", workspaceKey);
   return `/dashboard?${query.toString()}#dashboard-section-content`;
 }

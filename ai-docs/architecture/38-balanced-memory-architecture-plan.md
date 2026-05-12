@@ -86,8 +86,12 @@
 - `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 - action runtime checks for discussion wiring: `npm run build`, `npm run typecheck`, `npm run lint` - 0 errors, existing warnings only, `npm test -- --runInBand` - 100 suites, 1184 tests passed.
-
-Ограничение визуальной проверки: локальный `/dashboard?section=memory` открылся через Next dev без crash, но защищённый dashboard редиректит на публичную главную из-за отсутствия валидной browser session/auth cookie в текущем окружении. Поэтому сам memory экран пока подтверждён typecheck/SSR compile, но не полноценной screenshot QA.
+- memory UI screenshot QA теперь закрыт через env-gated preview route `/dashboard/memory-preview`, который использует только synthetic fixtures и не ослабляет production dashboard auth/privacy path:
+  - `REVIEW_ROUTER_ENABLE_MEMORY_PREVIEW=1 pnpm web:dev`;
+  - captured desktop/tablet/mobile artifacts in `tmp/design-verification/memory/*`;
+  - checked knowledge, suggestions, table, empty, readonly, over quota, stale edit and indexing degraded states;
+  - clean-profile browser captures rendered without preview-route failures; persistent local dev profiles can still emit unrelated stale NextAuth JWT cookie noise before the preview route renders;
+  - hydration mismatch on disabled dialog triggers was found by browser QA and fixed by rendering disabled actions as plain shared `Button` controls instead of disabled dialog triggers.
 
 ## Quality Bar
 
