@@ -5,6 +5,7 @@ import { RepositorySetupDisclosureToggle } from "./repository-setup-optimistic-s
 import {
   providerSetupConfirmedEvent,
   providerSetupConfirmedEventName,
+  setupPullRequestMergedEvent,
 } from "./repository-setup-optimistic-events";
 
 afterEach(() => {
@@ -45,5 +46,23 @@ describe("RepositorySetupDisclosureToggle", () => {
     window.dispatchEvent(new Event(providerSetupConfirmedEventName));
 
     expect(screen.getByText("3/4")).toBeTruthy();
+  });
+
+  it("updates to provider setup when setup PR merge is confirmed", async () => {
+    render(
+      <RepositorySetupDisclosureToggle
+        repositoryId="repo_1"
+        disclosureId="setup_repo_1"
+        currentStep={2}
+      />,
+    );
+
+    window.dispatchEvent(
+      setupPullRequestMergedEvent({ repositoryId: "repo_1" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("3/4")).toBeTruthy();
+    });
   });
 });

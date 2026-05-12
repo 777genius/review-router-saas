@@ -11,7 +11,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
 import { RepositorySetupProgressPanel } from "./repository-setup-progress-panel";
-import { providerSetupConfirmedEvent } from "./repository-setup-optimistic-events";
+import {
+  providerSetupConfirmedEvent,
+  setupPullRequestMergedEvent,
+} from "./repository-setup-optimistic-events";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
@@ -79,7 +82,7 @@ describe("RepositorySetupProgressPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
 
     expect(
-      await screen.findByText(/Provider setup is marked complete/i),
+      await screen.findByText(/Provider secret metadata was verified/i),
     ).toBeTruthy();
     expect(screen.getByText("4 of 4 - complete")).toBeTruthy();
     expect(
@@ -170,6 +173,33 @@ describe("RepositorySetupProgressPanel", () => {
 
     expect(screen.queryByRole("button", { name: "Enable review" })).toBeNull();
     expect(actionMounts).toBe(0);
+  });
+
+  it("advances to provider setup when merge confirmation is detected in the background", async () => {
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="setup_pr_open"
+        initialSetupPullRequestUrl="https://github.com/777genius/example/pull/1"
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={2}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    window.dispatchEvent(
+      setupPullRequestMergedEvent({ repositoryId: "repo_1" }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("3 of 4 - enable review")).toBeTruthy();
+    });
+    expect(screen.getByRole("button", { name: "Enable review" })).toBeTruthy();
   });
 });
 

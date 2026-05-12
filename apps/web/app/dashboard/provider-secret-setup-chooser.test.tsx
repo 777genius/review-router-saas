@@ -214,7 +214,10 @@ describe("ProviderSecretSetupChooser", () => {
     );
 
     expect(
-      await screen.findByText(/Provider setup is marked complete/i),
+      await screen.findByText(/Provider setup was manually marked complete/i),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/did not verify GitHub secret metadata automatically/i),
     ).toBeTruthy();
     expect(
       (screen.getByRole("button", { name: "Confirmed" }) as HTMLButtonElement)
@@ -248,7 +251,10 @@ describe("ProviderSecretSetupChooser", () => {
       );
 
       expect(
-        await screen.findByText(/Provider setup is marked complete/i),
+        await screen.findByText(/Provider secret metadata was verified/i),
+      ).toBeTruthy();
+      expect(
+        screen.getByText(/verified the GitHub secret metadata it can read/i),
       ).toBeTruthy();
       expect(
         (screen.getByRole("button", { name: "Confirmed" }) as HTMLButtonElement)
@@ -303,7 +309,7 @@ describe("ProviderSecretSetupDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
 
     expect(
-      await screen.findByText(/Provider setup is marked complete/i),
+      await screen.findByText(/Provider secret metadata was verified/i),
     ).toBeTruthy();
     expect(routerMock.refresh).not.toHaveBeenCalled();
 

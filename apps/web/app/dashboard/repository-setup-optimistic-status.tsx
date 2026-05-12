@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import {
   providerSetupConfirmedEventName,
+  setupPullRequestMergedEventName,
   type ProviderSetupConfirmedEventDetail,
+  type SetupPullRequestMergedEventDetail,
 } from "./repository-setup-optimistic-events";
 
 type SetupStep = 1 | 2 | 3 | 4;
@@ -24,6 +26,14 @@ export function RepositorySetupDisclosureToggle({
   }, [currentStep]);
 
   useEffect(() => {
+    function handleSetupPullRequestMerged(event: Event): void {
+      const detail = (event as CustomEvent<SetupPullRequestMergedEventDetail>)
+        .detail;
+      if (detail?.repositoryId === repositoryId) {
+        setOptimisticStep((current) => (current < 3 ? 3 : current));
+      }
+    }
+
     function handleProviderSetupConfirmed(event: Event): void {
       const detail = (event as CustomEvent<ProviderSetupConfirmedEventDetail>)
         .detail;
@@ -33,10 +43,18 @@ export function RepositorySetupDisclosureToggle({
     }
 
     window.addEventListener(
+      setupPullRequestMergedEventName,
+      handleSetupPullRequestMerged,
+    );
+    window.addEventListener(
       providerSetupConfirmedEventName,
       handleProviderSetupConfirmed,
     );
     return () => {
+      window.removeEventListener(
+        setupPullRequestMergedEventName,
+        handleSetupPullRequestMerged,
+      );
       window.removeEventListener(
         providerSetupConfirmedEventName,
         handleProviderSetupConfirmed,

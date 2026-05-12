@@ -87,6 +87,9 @@ export function ProviderSecretSetupChooser({
     useState<VerificationFallbackError | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [confirmedMode, setConfirmedMode] = useState<"verified" | "manual">(
+    "verified",
+  );
   const [isPending, startTransition] = useTransition();
 
   const activeGuidance =
@@ -324,6 +327,7 @@ export function ProviderSecretSetupChooser({
               readSubmittedConfirmationMode(formData);
             setSubmitError(null);
             setConfirmed(false);
+            setConfirmedMode(submittedConfirmationMode);
             startTransition(() => {
               void confirmProviderSecretSetup(formData)
                 .then(({ params }) => {
@@ -341,6 +345,7 @@ export function ProviderSecretSetupChooser({
                   }
                   setVerificationError(null);
                   setSubmitError(null);
+                  setConfirmedMode(submittedConfirmationMode);
                   setConfirmed(true);
                   window.dispatchEvent(
                     providerSetupConfirmedEvent({
@@ -432,11 +437,15 @@ export function ProviderSecretSetupChooser({
               role="status"
             >
               <p className="font-semibold">
-                Provider setup is marked complete for {repositoryFullName}.
+                {confirmedMode === "manual"
+                  ? "Provider setup was manually marked complete"
+                  : "Provider secret metadata was verified and setup was marked complete"}{" "}
+                for {repositoryFullName}.
               </p>
               <p className="mt-1 text-emerald-100/80">
-                The setup progress was updated. Keep this open if you want to
-                copy another provider command, or close it when done.
+                {confirmedMode === "manual"
+                  ? "ReviewRouter did not verify GitHub secret metadata automatically. The setup progress was updated from your manual confirmation."
+                  : "ReviewRouter verified the GitHub secret metadata it can read. Keep this open if you want to copy another provider command, or close it when done."}
               </p>
             </div>
           ) : null}

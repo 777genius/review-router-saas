@@ -2907,8 +2907,8 @@ function dashboardNoticeText(notice: string, repository: string): string {
         : "Setup PR merge was confirmed.";
     case "provider_setup_confirmed":
       return repository
-        ? `Provider setup was marked complete for ${repository}.`
-        : "Provider setup was marked complete.";
+        ? `Provider setup progress was updated for ${repository}.`
+        : "Provider setup progress was updated.";
     case "workflow_already_current":
       return repository
         ? `ReviewRouter workflow is already current for ${repository}.`

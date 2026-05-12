@@ -10,7 +10,10 @@ import {
 } from "./repository-setup-action-button";
 import {
   providerSetupConfirmedEventName,
+  setupPullRequestMergedEvent,
+  setupPullRequestMergedEventName,
   type ProviderSetupConfirmedEventDetail,
+  type SetupPullRequestMergedEventDetail,
 } from "./repository-setup-optimistic-events";
 
 type SetupStep = 1 | 2 | 3 | 4;
@@ -73,6 +76,15 @@ export function RepositorySetupProgressPanel({
   }, [initialSetupPullRequestUrl, initialSetupStatus, initialStep]);
 
   useEffect(() => {
+    function handleSetupPullRequestMerged(event: Event): void {
+      const detail = (event as CustomEvent<SetupPullRequestMergedEventDetail>)
+        .detail;
+      if (detail?.repositoryId !== repositoryId) return;
+
+      setSetupStatus("configured");
+      setCurrentStep((current) => (current < 3 ? 3 : current));
+    }
+
     function handleProviderSetupConfirmed(event: Event): void {
       const detail = (event as CustomEvent<ProviderSetupConfirmedEventDetail>)
         .detail;
@@ -84,10 +96,18 @@ export function RepositorySetupProgressPanel({
     }
 
     window.addEventListener(
+      setupPullRequestMergedEventName,
+      handleSetupPullRequestMerged,
+    );
+    window.addEventListener(
       providerSetupConfirmedEventName,
       handleProviderSetupConfirmed,
     );
     return () => {
+      window.removeEventListener(
+        setupPullRequestMergedEventName,
+        handleSetupPullRequestMerged,
+      );
       window.removeEventListener(
         providerSetupConfirmedEventName,
         handleProviderSetupConfirmed,
@@ -155,6 +175,7 @@ export function RepositorySetupProgressPanel({
     if (params.notice === "setup_pr_merged") {
       setSetupStatus("configured");
       setCurrentStep(3);
+      window.dispatchEvent(setupPullRequestMergedEvent({ repositoryId }));
       router.refresh();
       setToast({
         tone: "success",
@@ -318,8 +339,7 @@ function buildSetupSteps({
   const reviewAction = shouldRenderProviderAction
     ? enableReviewAction
     : lockedReviewAction;
-  const reviewActionHidden =
-    shouldRenderProviderAction && currentStep === 4;
+  const reviewActionHidden = shouldRenderProviderAction && currentStep === 4;
 
   return [
     {
