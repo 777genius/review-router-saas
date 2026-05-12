@@ -299,10 +299,10 @@ function MemoryBadge({
 }: React.ComponentProps<typeof Badge>): React.ReactElement {
   return (
     <Badge
-      className={[
-        "cursor-default select-none px-2 py-1 text-[0.58rem] tracking-[0.16em] shadow-none",
-        className,
-      ].join(" ")}
+      size="xs"
+      className={["self-center cursor-default select-none", className].join(
+        " ",
+      )}
       {...props}
     />
   );
