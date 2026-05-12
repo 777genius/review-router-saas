@@ -1,8 +1,12 @@
+import { Prisma } from "@prisma/client";
 import type { MemoryUsageEventPort } from "../../application/ports/memory-usage-event-port";
+import type { MemoryUsageEventRetentionPort } from "../../application/ports/memory-usage-event-retention-port";
 import type { MemoryPrismaClient } from "./prisma-memory-mappers";
 import { toPrismaJson } from "./prisma-memory-mappers";
 
-export class PrismaMemoryUsageEventRepository implements MemoryUsageEventPort {
+export class PrismaMemoryUsageEventRepository
+  implements MemoryUsageEventPort, MemoryUsageEventRetentionPort
+{
   constructor(private readonly prisma: MemoryPrismaClient) {}
 
   async recordMany(
@@ -29,5 +33,29 @@ export class PrismaMemoryUsageEventRepository implements MemoryUsageEventPort {
       recordedCount: result.count,
       duplicateCount: events.length - result.count,
     };
+  }
+
+  async pruneBefore(
+    input: Parameters<MemoryUsageEventRetentionPort["pruneBefore"]>[0],
+  ): ReturnType<MemoryUsageEventRetentionPort["pruneBefore"]> {
+    const workspaceFilter =
+      input.scope.kind === "workspace"
+        ? Prisma.sql`AND "workspaceId" = ${input.scope.workspaceId}`
+        : Prisma.empty;
+    const deletedRows = await this.prisma.$queryRaw<{ readonly id: string }[]>`
+      WITH expired AS (
+        SELECT "id"
+        FROM "MemoryUsageEvent"
+        WHERE "occurredAt" < ${input.occurredBefore}
+        ${workspaceFilter}
+        ORDER BY "occurredAt" ASC, "id" ASC
+        LIMIT ${input.limit}
+      )
+      DELETE FROM "MemoryUsageEvent"
+      USING expired
+      WHERE "MemoryUsageEvent"."id" = expired."id"
+      RETURNING "MemoryUsageEvent"."id"
+    `;
+    return { deletedCount: deletedRows.length };
   }
 }

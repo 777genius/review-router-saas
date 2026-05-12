@@ -44,6 +44,10 @@ import type {
   MemoryUsageEventInput,
   MemoryUsageEventPort,
 } from "../application/ports/memory-usage-event-port";
+import type {
+  MemoryUsageEventRetentionPruneInput,
+  MemoryUsageEventRetentionPort,
+} from "../application/ports/memory-usage-event-retention-port";
 import { buildActionMemoryBundle } from "../application/use-cases/build-action-memory-bundle";
 import { confirmMemorySuggestion } from "../application/use-cases/confirm-memory-suggestion";
 import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
@@ -53,6 +57,7 @@ import { expirePendingMemorySuggestions } from "../application/use-cases/expire-
 import { listMemoryItemsForDashboard } from "../application/use-cases/list-memory-items-for-dashboard";
 import { listMemorySuggestionsForDashboard } from "../application/use-cases/list-memory-suggestions-for-dashboard";
 import { proposeMemoryFromInteraction } from "../application/use-cases/propose-memory-from-interaction";
+import { pruneMemoryUsageEvents } from "../application/use-cases/prune-memory-usage-events";
 import { recordActionMemoryBundleUsage } from "../application/use-cases/record-action-memory-bundle-usage";
 import { rememberMemoryDirectly } from "../application/use-cases/remember-memory-directly";
 import { rejectMemorySuggestion } from "../application/use-cases/reject-memory-suggestion";
@@ -342,7 +347,9 @@ class CapturingOutbox implements MemoryOutboxPort {
   }
 }
 
-class CapturingUsageEvents implements MemoryUsageEventPort {
+class CapturingUsageEvents
+  implements MemoryUsageEventPort, MemoryUsageEventRetentionPort
+{
   readonly events: MemoryUsageEventInput[] = [];
   private readonly dedupeKeys = new Set<string>();
 
@@ -363,6 +370,41 @@ class CapturingUsageEvents implements MemoryUsageEventPort {
       recordedCount += 1;
     }
     return { recordedCount, duplicateCount };
+  }
+
+  async pruneBefore(
+    input: MemoryUsageEventRetentionPruneInput,
+  ): ReturnType<MemoryUsageEventRetentionPort["pruneBefore"]> {
+    const expiredIds = new Set(
+      this.events
+        .filter((event) => event.occurredAt < input.occurredBefore)
+        .filter((event) =>
+          input.scope.kind === "workspace"
+            ? event.workspaceId === input.scope.workspaceId
+            : true,
+        )
+        .sort((left, right) => {
+          const occurredAtDelta =
+            left.occurredAt.getTime() - right.occurredAt.getTime();
+          if (occurredAtDelta !== 0) return occurredAtDelta;
+          return left.id.localeCompare(right.id);
+        })
+        .slice(0, input.limit)
+        .map((event) => event.id),
+    );
+
+    let deletedCount = 0;
+    for (let index = this.events.length - 1; index >= 0; index -= 1) {
+      const event = this.events[index];
+      if (!event || !expiredIds.has(event.id)) continue;
+      this.events.splice(index, 1);
+      if (event.dedupeKey) {
+        this.dedupeKeys.delete(event.dedupeKey);
+      }
+      deletedCount += 1;
+    }
+
+    return { deletedCount };
   }
 }
 
@@ -1375,6 +1417,110 @@ describe("memory core", () => {
     });
     expect(deps.memoryUsageEvents.events).toHaveLength(2);
   });
+
+  it("prunes usage telemetry by explicit retention scope and cutoff", async () => {
+    const deps = createHarness({});
+    deps.memoryUsageEvents.events.push(
+      memoryUsageEvent({
+        id: "old_workspace_1_a",
+        workspaceId: "workspace_1",
+        occurredAt: new Date("2026-05-01T00:00:00.000Z"),
+      }),
+      memoryUsageEvent({
+        id: "old_workspace_1_b",
+        workspaceId: "workspace_1",
+        occurredAt: new Date("2026-05-02T00:00:00.000Z"),
+      }),
+      memoryUsageEvent({
+        id: "new_workspace_1",
+        workspaceId: "workspace_1",
+        occurredAt: new Date("2026-05-12T13:00:00.000Z"),
+      }),
+      memoryUsageEvent({
+        id: "old_workspace_2",
+        workspaceId: "workspace_2",
+        occurredAt: new Date("2026-05-01T00:00:00.000Z"),
+      }),
+    );
+
+    const firstBatch = await pruneMemoryUsageEvents(
+      {
+        scope: { kind: "workspace", workspaceId: "workspace_1" },
+        occurredBefore: now,
+        limit: 1,
+      },
+      { memoryUsageEventRetention: deps.memoryUsageEvents },
+    );
+
+    expect(firstBatch).toEqual({ status: "pruned", deletedCount: 1 });
+    expect(deps.memoryUsageEvents.events.map((event) => event.id)).toEqual([
+      "old_workspace_1_b",
+      "new_workspace_1",
+      "old_workspace_2",
+    ]);
+
+    const secondBatch = await pruneMemoryUsageEvents(
+      {
+        scope: { kind: "workspace", workspaceId: "workspace_1" },
+        occurredBefore: now,
+      },
+      { memoryUsageEventRetention: deps.memoryUsageEvents },
+    );
+
+    expect(secondBatch).toEqual({ status: "pruned", deletedCount: 1 });
+    expect(deps.memoryUsageEvents.events.map((event) => event.id)).toEqual([
+      "new_workspace_1",
+      "old_workspace_2",
+    ]);
+
+    const globalBatch = await pruneMemoryUsageEvents(
+      {
+        scope: { kind: "all_workspaces" },
+        occurredBefore: now,
+      },
+      { memoryUsageEventRetention: deps.memoryUsageEvents },
+    );
+
+    expect(globalBatch).toEqual({ status: "pruned", deletedCount: 1 });
+    expect(deps.memoryUsageEvents.events.map((event) => event.id)).toEqual([
+      "new_workspace_1",
+    ]);
+  });
+
+  it("rejects unsafe usage telemetry retention inputs", async () => {
+    const deps = createHarness({});
+
+    await expect(
+      pruneMemoryUsageEvents(
+        {
+          scope: { kind: "workspace", workspaceId: " " },
+          occurredBefore: now,
+        },
+        { memoryUsageEventRetention: deps.memoryUsageEvents },
+      ),
+    ).rejects.toMatchObject({ code: "memory_input_invalid" });
+
+    await expect(
+      pruneMemoryUsageEvents(
+        {
+          scope: { kind: "workspace", workspaceId: "workspace_1" },
+          occurredBefore: new Date(Number.NaN),
+        },
+        { memoryUsageEventRetention: deps.memoryUsageEvents },
+      ),
+    ).rejects.toMatchObject({ code: "memory_input_invalid" });
+
+    await expect(
+      pruneMemoryUsageEvents(
+        {
+          scope: { kind: "all_workspaces" },
+          occurredBefore: now,
+          limit: 0,
+        },
+        { memoryUsageEventRetention: deps.memoryUsageEvents },
+      ),
+    ).rejects.toMatchObject({ code: "memory_input_invalid" });
+  });
 });
 
 function candidateEnvelope(input: {
@@ -1412,5 +1558,30 @@ function memoryInput(scope: MemoryScope, body: string) {
     body,
     source: createDashboardMemorySource({ actorLogin: "maintainer" }),
     actor: maintainer,
+  };
+}
+
+function memoryUsageEvent(
+  input: Pick<
+    MemoryUsageEventInput,
+    "id" | "workspaceId" | "occurredAt"
+  >,
+): MemoryUsageEventInput {
+  return {
+    id: input.id,
+    workspaceId: input.workspaceId,
+    repositoryId: `${input.workspaceId}_repo`,
+    memoryItemId: `${input.id}_item`,
+    eventType: "action_bundle_exposed",
+    bundleVersion: 1,
+    dedupeKey: `${input.id}_dedupe`,
+    metadata: {
+      scope: "repository",
+      bundleItemCount: 1,
+      githubRunId: "1001",
+      githubRunAttempt: "1",
+      eventName: "pull_request",
+    },
+    occurredAt: input.occurredAt,
   };
 }

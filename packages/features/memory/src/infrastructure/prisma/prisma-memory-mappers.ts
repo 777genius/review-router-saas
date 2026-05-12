@@ -23,6 +23,7 @@ export type MemoryPrismaClient = Pick<
   | "memoryUsageEvent"
   | "auditEvent"
   | "outboxEvent"
+  | "$queryRaw"
 >;
 
 export function toPrismaJson(value: unknown): Prisma.InputJsonValue {
