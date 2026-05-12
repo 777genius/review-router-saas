@@ -25,6 +25,14 @@ export const reusableReviewWorkflowPath =
 export const reusableInteractionWorkflowPath =
   ".github/workflows/reviewrouter-interaction-reusable.yml";
 
+const reviewMemoryRuntimeEnvBlock = `
+      REVIEW_ROUTER_MEMORY_ENABLED: "true"
+      REVIEW_ROUTER_MEMORY_PROTOCOL_VERSION: "1"
+      REVIEW_ROUTER_MEMORY_BUNDLE_ENDPOINT: "/api/action/v1/memory"`;
+const interactionMemoryRuntimeEnvBlock = `${reviewMemoryRuntimeEnvBlock}
+      REVIEW_ROUTER_MEMORY_CANDIDATE_ENDPOINT: "/api/action/v1/memory-candidates"
+      REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"`;
+
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
@@ -54,7 +62,7 @@ jobs:
       REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${template.staticRuntimeEnvBlock}
-      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}${reviewMemoryRuntimeEnvBlock}
     steps:
       - name: Checkout pull request code
         uses: actions/checkout@v6
@@ -179,7 +187,7 @@ jobs:
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
       REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
-      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"
+      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"${interactionMemoryRuntimeEnvBlock}
     steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
         id: preflight
         uses: ${options.actionRef}
@@ -305,7 +313,7 @@ jobs:
       REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${template.staticRuntimeEnvBlock}
-      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}${reviewMemoryRuntimeEnvBlock}
     steps:
       - name: Pass merge queue check
         if: \${{ github.event_name == 'merge_group' }}

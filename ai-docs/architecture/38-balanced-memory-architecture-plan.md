@@ -52,6 +52,7 @@
 - interaction normalizer теперь отдаёт отдельные `commands[]` для management-команд, чтобы runtime не отправлял raw comment body в SaaS;
 - OpenAPI/demo contract публикует command request/response schemas для подтверждения, отклонения, disable/forget и безопасного `list_memory` noop.
 - action memory endpoints получили явный fail-fast guard против raw conversation/code/diff/prompt/model-response полей, отдельно от strict transport schemas.
+- explicit generated workflows прокидывают стабильные `REVIEW_ROUTER_MEMORY_*` endpoint flags для review и interaction runtime modes.
 
 Текущие проверки:
 

@@ -69,6 +69,11 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain('REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"');
     expect(workflow).toContain('REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"');
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain('REVIEW_ROUTER_MEMORY_ENABLED: "true"');
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_BUNDLE_ENDPOINT: "/api/action/v1/memory"',
+    );
+    expect(workflow).not.toContain("REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT");
     expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');
     expect(workflow).toContain('CODEX_MODEL: "gpt-5.5"');
   });
@@ -103,6 +108,13 @@ describe("renderReviewRouterWorkflow", () => {
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"',
     );
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain('REVIEW_ROUTER_MEMORY_ENABLED: "true"');
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_CANDIDATE_ENDPOINT: "/api/action/v1/memory-candidates"',
+    );
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"',
+    );
   });
 
   it("returns both workflow files for setup PR provisioning", () => {
@@ -223,6 +235,9 @@ describe("renderReviewRouterWorkflow", () => {
       "github.event_name != 'merge_group' && (github.event_name != 'pull_request'",
     );
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_BUNDLE_ENDPOINT: "/api/action/v1/memory"',
+    );
     expect(workflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
     );
