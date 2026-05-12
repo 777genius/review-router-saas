@@ -58,6 +58,7 @@ const manifest = {
     pull_requests: "write",
     secrets: "read",
     organization_secrets: "read",
+    organization_plan: "read",
     statuses: "write",
     workflows: "write",
     ...(permissionProfile === "org-ruleset"

@@ -45,6 +45,7 @@ assertPermission("issues", "write");
 assertPermission("pull_requests", "write");
 assertPermission("secrets", "read");
 assertPermission("organization_secrets", "read");
+assertPermission("organization_plan", "read");
 assertPermission("statuses", "write");
 assertPermission("workflows", "write");
 assertPermissionMissing("organization_administration");

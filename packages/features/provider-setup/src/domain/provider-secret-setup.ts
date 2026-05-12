@@ -11,11 +11,14 @@ export type ProviderSecretKind = z.infer<typeof providerSecretKindSchema>;
 export const providerSecretScopeSchema = z.enum([
   "repository",
   "organization_selected_repositories",
+  "organization_private_repositories",
+  "organization_all_repositories",
 ]);
 
 export type ProviderSecretScope = z.infer<typeof providerSecretScopeSchema>;
 
 export type ProviderSecretSetupCommand = {
+  readonly scope: ProviderSecretScope;
   readonly title: string;
   readonly description: string;
   readonly command: string;
@@ -60,10 +63,11 @@ export function buildProviderSecretSetupGuidance(input: {
         ...(organizationLogin
           ? [
               {
+                scope: "organization_selected_repositories" as const,
                 title: "Recommended: org secret scoped to this repository",
                 description:
                   "Stores CODEX_AUTH_JSON as an organization secret available only to this repository.",
-                command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=${shellQuote(owner)} REVIEW_ROUTER_ORG_SECRET_REPOS=${shellQuote(repo)} bash`,
+                command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=${shellQuote(owner)} REVIEW_ROUTER_ORG_SECRET_VISIBILITY=selected REVIEW_ROUTER_ORG_SECRET_REPOS=${shellQuote(repo)} bash`,
                 storesSecretIn: "github_org_secret" as const,
                 targetLabel: `${owner} organization secret, selected repo ${repo}`,
                 secretNames: ["CODEX_AUTH_JSON"],
@@ -73,9 +77,40 @@ export function buildProviderSecretSetupGuidance(input: {
                   "If validation says reseed auth.json, run codex login on this trusted machine and rerun this exact command.",
                 sendsSecretToReviewRouter: false as const,
               },
+              {
+                scope: "organization_private_repositories" as const,
+                title: "Organization secret for private repositories",
+                description:
+                  "Stores CODEX_AUTH_JSON as an organization secret available to private repositories in this organization.",
+                command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=${shellQuote(owner)} REVIEW_ROUTER_ORG_SECRET_VISIBILITY=private bash`,
+                storesSecretIn: "github_org_secret" as const,
+                targetLabel: `${owner} organization secret, private repositories`,
+                secretNames: ["CODEX_AUTH_JSON"],
+                selectedRepositories: [],
+                validatesBeforeWrite: true,
+                failureRecovery:
+                  "If validation says reseed auth.json, run codex login on this trusted machine and rerun this exact command.",
+                sendsSecretToReviewRouter: false as const,
+              },
+              {
+                scope: "organization_all_repositories" as const,
+                title: "Organization secret for all repositories",
+                description:
+                  "Stores CODEX_AUTH_JSON as an organization secret available to all repositories in this organization.",
+                command: `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=${shellQuote(owner)} REVIEW_ROUTER_ORG_SECRET_VISIBILITY=all bash`,
+                storesSecretIn: "github_org_secret" as const,
+                targetLabel: `${owner} organization secret, all repositories`,
+                secretNames: ["CODEX_AUTH_JSON"],
+                selectedRepositories: [],
+                validatesBeforeWrite: true,
+                failureRecovery:
+                  "If validation says reseed auth.json, run codex login on this trusted machine and rerun this exact command.",
+                sendsSecretToReviewRouter: false as const,
+              },
             ]
           : []),
         {
+          scope: "repository",
           title: "Repository secret",
           description:
             "Stores CODEX_AUTH_JSON directly in this repository's Actions secrets.",
@@ -112,6 +147,7 @@ export function buildProviderSecretSetupGuidance(input: {
       ...(organizationLogin
         ? [
             {
+              scope: "organization_selected_repositories" as const,
               title: "Recommended: org secret scoped to this repository",
               description: `Stores ${secretName} as an organization secret available only to this repository.`,
               command: `gh secret set ${secretName} --org ${shellQuote(owner)} --repos ${shellQuote(repo)} --app actions`,
@@ -124,9 +160,38 @@ export function buildProviderSecretSetupGuidance(input: {
                 "If GitHub rejects the command, verify gh auth, organization ownership, and selected repository access.",
               sendsSecretToReviewRouter: false as const,
             },
+            {
+              scope: "organization_private_repositories" as const,
+              title: "Organization secret for private repositories",
+              description: `Stores ${secretName} as an organization secret available to private repositories in this organization.`,
+              command: `gh secret set ${secretName} --org ${shellQuote(owner)} --visibility private --app actions`,
+              storesSecretIn: "github_org_secret" as const,
+              targetLabel: `${owner} organization secret, private repositories`,
+              secretNames: [secretName],
+              selectedRepositories: [],
+              validatesBeforeWrite: false,
+              failureRecovery:
+                "If GitHub rejects the command, verify gh auth, organization ownership, and GitHub plan support for org secrets.",
+              sendsSecretToReviewRouter: false as const,
+            },
+            {
+              scope: "organization_all_repositories" as const,
+              title: "Organization secret for all repositories",
+              description: `Stores ${secretName} as an organization secret available to all repositories in this organization.`,
+              command: `gh secret set ${secretName} --org ${shellQuote(owner)} --visibility all --app actions`,
+              storesSecretIn: "github_org_secret" as const,
+              targetLabel: `${owner} organization secret, all repositories`,
+              secretNames: [secretName],
+              selectedRepositories: [],
+              validatesBeforeWrite: false,
+              failureRecovery:
+                "If GitHub rejects the command, verify gh auth, organization ownership, and GitHub plan support for org secrets.",
+              sendsSecretToReviewRouter: false as const,
+            },
           ]
         : []),
       {
+        scope: "repository",
         title: "Repository secret",
         description: `Stores ${secretName} directly in this repository's Actions secrets.`,
         command: `gh secret set ${secretName} --repo ${shellQuote(input.repoFullName)}`,

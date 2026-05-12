@@ -33,8 +33,12 @@ import {
   PrismaSupportDiagnosticsRepository,
 } from "@reviewrouter/features-support-diagnostics";
 import {
+  canDashboardActorMutateRepository,
+  createGitHubAppInstallationOctokit,
   getDashboardMutationStatus,
+  getDashboardSignedInActor,
   getDashboardWorkspaceScope,
+  type DashboardMutationActor,
 } from "../../src/server/dashboard-mutations";
 import { getPrisma } from "../../src/server/prisma";
 import {
@@ -102,6 +106,7 @@ type DashboardWorkspace = {
     readonly githubInstallationId: string;
     readonly status: string;
     readonly repositorySelection: string;
+    readonly organizationSecretPolicy: DashboardOrganizationSecretPolicy | null;
   }[];
   readonly auditEvents: readonly {
     readonly action: string;
@@ -111,25 +116,38 @@ type DashboardWorkspace = {
   }[];
 };
 
+type DashboardOrganizationSecretPolicy = {
+  readonly planName: string | null;
+  readonly privateRepositoriesAvailable: boolean | null;
+  readonly status: "available" | "permission_required" | "unknown";
+};
+
 async function loadDashboardData(
   scope: Awaited<ReturnType<typeof getDashboardWorkspaceScope>>,
+  repositoryAccess: DashboardRepositoryAccessScope,
   supportAudit?: {
     readonly actor: string;
     readonly reason: "local_admin_override" | "workspace_admin";
   },
 ) {
-  if (scope.kind === "none") {
+  if (scope.kind === "none" && repositoryAccess.workspaceIds.length === 0) {
     return [];
   }
-  if (scope.kind === "workspace_ids" && scope.workspaceIds.length === 0) {
+  if (
+    scope.kind === "workspace_ids" &&
+    scope.workspaceIds.length === 0 &&
+    repositoryAccess.workspaceIds.length === 0
+  ) {
     return [];
   }
 
   const prisma = getPrisma();
+  const workspaceIds = mergeWorkspaceIds(
+    scope.kind === "workspace_ids" ? scope.workspaceIds : [],
+    repositoryAccess.workspaceIds,
+  );
   const workspaceWhere =
-    scope.kind === "workspace_ids"
-      ? { id: { in: [...scope.workspaceIds] } }
-      : undefined;
+    scope.kind === "all" ? undefined : { id: { in: workspaceIds } };
   const workspaces = await prisma.workspace.findMany({
     ...(workspaceWhere ? { where: workspaceWhere } : {}),
     orderBy: { createdAt: "desc" },
@@ -172,6 +190,7 @@ async function loadDashboardData(
       async (
         workspace,
       ): Promise<{
+        hasWorkspaceWideAccess: boolean;
         workspace: DashboardWorkspace;
         repositoryCount: number;
         repositories: readonly Awaited<
@@ -197,31 +216,45 @@ async function loadDashboardData(
         outboxFailures: Awaited<ReturnType<typeof listWorkspaceOutboxFailures>>;
         supportDiagnostics: Awaited<
           ReturnType<typeof getWorkspaceSupportDiagnostics>
-        >;
+        > | null;
         orgRuleset: Awaited<
           ReturnType<typeof orgRulesetStore.findByWorkspaceId>
-        >;
+        > | null;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
         );
+        const hasWorkspaceWideAccess =
+          scope.kind === "all" ||
+          (scope.kind === "workspace_ids" &&
+            scope.workspaceIds.includes(workspace.id));
+        const visibleRepositories = hasWorkspaceWideAccess
+          ? repositories
+          : repositories.filter((repository) =>
+              repositoryAccess.repositoryIds.has(repository.id),
+            );
+        const visibleRepositoryIds = new Set(
+          visibleRepositories.map((repository) => repository.id),
+        );
         const entitlement =
           (await entitlementStore.findWorkspaceEntitlement(workspace.id)) ??
           freeBetaEntitlement(workspace.id);
-        const health = await listWorkspaceRepositoryHealth(
-          {
-            workspaceId: workspace.id,
-            expectedActionRef: resolveReviewRouterActionRef(),
-            workflowProbeMaxRepositories: 0,
-          },
-          { repositories: healthStore },
-        );
+        const health = (
+          await listWorkspaceRepositoryHealth(
+            {
+              workspaceId: workspace.id,
+              expectedActionRef: resolveReviewRouterActionRef(),
+              workflowProbeMaxRepositories: 0,
+            },
+            { repositories: healthStore },
+          )
+        ).filter((item) => visibleRepositoryIds.has(item.repositoryId));
         const reviewConfig = await findReviewConfiguration(
           { scope: "workspace", workspaceId: workspace.id },
           { configurations: reviewConfigStore },
         );
         const repositoryConfigs = await Promise.all(
-          repositories.map(async (repository) => ({
+          visibleRepositories.map(async (repository) => ({
             repositoryId: repository.id,
             config: await findReviewConfiguration(
               {
@@ -233,14 +266,18 @@ async function loadDashboardData(
             ),
           })),
         );
-        const outboxFailures = await listWorkspaceOutboxFailures(
-          { workspaceId: workspace.id, limit: 5 },
-          { outbox: outboxStore },
-        );
+        const outboxFailures = hasWorkspaceWideAccess
+          ? await listWorkspaceOutboxFailures(
+              { workspaceId: workspace.id, limit: 5 },
+              { outbox: outboxStore },
+            )
+          : [];
         const provisioning = await listRepositoryWorkflowProvisioning(
           {
             workspaceId: workspace.id,
-            repositoryIds: repositories.map((repository) => repository.id),
+            repositoryIds: visibleRepositories.map(
+              (repository) => repository.id,
+            ),
           },
           { provisioning: new PrismaWorkflowProvisioningQuery(prisma) },
         );
@@ -248,7 +285,7 @@ async function loadDashboardData(
           where: {
             workspaceId: workspace.id,
             repositoryId: {
-              in: repositories.map((repository) => repository.id),
+              in: visibleRepositories.map((repository) => repository.id),
             },
           },
           select: {
@@ -257,37 +294,58 @@ async function loadDashboardData(
             updatedAt: true,
           },
         });
-        const supportDiagnostics = await getWorkspaceSupportDiagnostics(
-          {
-            workspaceId: workspace.id,
-            checkedAt: new Date(),
-            ...(supportAudit ? { audit: supportAudit } : {}),
-          },
-          {
-            diagnostics: diagnosticsStore,
-            ...(supportAudit
-              ? { auditLog: new PrismaAuditLogRepository(prisma) }
-              : {}),
-          },
+        const supportDiagnostics = hasWorkspaceWideAccess
+          ? await getWorkspaceSupportDiagnostics(
+              {
+                workspaceId: workspace.id,
+                checkedAt: new Date(),
+                ...(supportAudit ? { audit: supportAudit } : {}),
+              },
+              {
+                diagnostics: diagnosticsStore,
+                ...(supportAudit
+                  ? { auditLog: new PrismaAuditLogRepository(prisma) }
+                  : {}),
+              },
+            )
+          : null;
+        const orgRuleset = hasWorkspaceWideAccess
+          ? await orgRulesetStore.findByWorkspaceId(workspace.id)
+          : null;
+        const visibleRepositoryOwners = new Set(
+          visibleRepositories.map((repository) =>
+            repository.owner.toLowerCase(),
+          ),
         );
-        const orgRuleset = await orgRulesetStore.findByWorkspaceId(
-          workspace.id,
+        const visibleInstallations = hasWorkspaceWideAccess
+          ? workspace.installations
+          : workspace.installations.filter((installation) =>
+              visibleRepositoryOwners.has(
+                installation.accountLogin.toLowerCase(),
+              ),
+            );
+        const dashboardInstallations = await Promise.all(
+          visibleInstallations.map(async (installation) => ({
+            ...installation,
+            githubInstallationId: installation.githubInstallationId.toString(),
+            organizationSecretPolicy:
+              await loadOrganizationSecretPolicy(installation),
+          })),
         );
 
         return {
+          hasWorkspaceWideAccess,
           workspace: {
             id: workspace.id,
             name: workspace.name,
             slug: workspace.slug,
-            installations: workspace.installations.map((installation) => ({
-              ...installation,
-              githubInstallationId:
-                installation.githubInstallationId.toString(),
-            })),
-            auditEvents: workspace.auditEvents,
+            installations: dashboardInstallations,
+            auditEvents: hasWorkspaceWideAccess ? workspace.auditEvents : [],
           },
-          repositoryCount: repositories.length,
-          repositories,
+          repositoryCount: hasWorkspaceWideAccess
+            ? repositories.length
+            : visibleRepositories.length,
+          repositories: visibleRepositories,
           provisioning,
           providerSetup,
           entitlement,
@@ -303,6 +361,68 @@ async function loadDashboardData(
   );
 
   return dashboardData.sort(compareDashboardWorkspaces);
+}
+
+async function loadOrganizationSecretPolicy(input: {
+  readonly accountLogin: string;
+  readonly accountType: string;
+  readonly githubInstallationId: bigint;
+}): Promise<DashboardOrganizationSecretPolicy | null> {
+  if (input.accountType !== "Organization") {
+    return null;
+  }
+
+  try {
+    const octokit = await createGitHubAppInstallationOctokit(
+      input.githubInstallationId.toString(),
+    );
+    const response = await octokit.request("GET /orgs/{org}", {
+      org: input.accountLogin,
+    });
+    const plan = (response.data as { readonly plan?: unknown }).plan;
+    const planName = readGitHubOrganizationPlanName(plan);
+
+    return {
+      planName,
+      privateRepositoriesAvailable: planName ? planName !== "free" : null,
+      status: planName ? "available" : "unknown",
+    };
+  } catch (error) {
+    const status = githubApiStatus(error);
+    return {
+      planName: null,
+      privateRepositoriesAvailable: null,
+      status:
+        status === 401 || status === 403 ? "permission_required" : "unknown",
+    };
+  }
+}
+
+function readGitHubOrganizationPlanName(value: unknown): string | null {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "name" in value &&
+    typeof value.name === "string" &&
+    value.name.trim().length > 0
+  ) {
+    return value.name.trim().toLowerCase();
+  }
+
+  return null;
+}
+
+function githubApiStatus(error: unknown): number | null {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number"
+  ) {
+    return error.status;
+  }
+
+  return null;
 }
 
 type SortableDashboardWorkspace = {
@@ -333,6 +453,131 @@ function workspaceSortScore(data: SortableDashboardWorkspace): number {
 type DashboardWorkspaceData = Awaited<
   ReturnType<typeof loadDashboardData>
 >[number];
+
+type DashboardRepositoryAccessScope = {
+  readonly workspaceIds: readonly string[];
+  readonly repositoryIds: ReadonlySet<string>;
+};
+
+async function listDashboardRepositoryAccess(input: {
+  readonly actor: DashboardMutationActor | null;
+  readonly workspaceScope: Awaited<
+    ReturnType<typeof getDashboardWorkspaceScope>
+  >;
+  readonly requestedRepositoryFullName: string;
+}): Promise<DashboardRepositoryAccessScope> {
+  const actor = input.actor;
+  if (!actor || input.workspaceScope.kind === "all") {
+    return emptyDashboardRepositoryAccess();
+  }
+
+  const fullAccessWorkspaceIds =
+    input.workspaceScope.kind === "workspace_ids"
+      ? input.workspaceScope.workspaceIds
+      : [];
+  const prisma = getPrisma();
+  const candidateWhere = {
+    selected: true,
+    archived: false,
+    installation: { status: "active" },
+    ...(fullAccessWorkspaceIds.length > 0
+      ? { workspaceId: { notIn: [...fullAccessWorkspaceIds] } }
+      : {}),
+  } as const;
+  const recentCandidates = await prisma.repositoryConnection.findMany({
+    where: {
+      ...candidateWhere,
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 120,
+    select: {
+      id: true,
+      workspaceId: true,
+      githubRepositoryId: true,
+      owner: true,
+      name: true,
+      installation: { select: { githubInstallationId: true } },
+    },
+  });
+  const requestedRepositoryFullName = normalizeRequestedRepositoryFullName(
+    input.requestedRepositoryFullName,
+  );
+  const requestedCandidates = requestedRepositoryFullName
+    ? await prisma.repositoryConnection.findMany({
+        where: {
+          ...candidateWhere,
+          fullName: requestedRepositoryFullName,
+        },
+        select: {
+          id: true,
+          workspaceId: true,
+          githubRepositoryId: true,
+          owner: true,
+          name: true,
+          installation: { select: { githubInstallationId: true } },
+        },
+      })
+    : [];
+  const candidates = dedupeRepositoryAccessCandidates([
+    ...requestedCandidates,
+    ...recentCandidates,
+  ]);
+  const allowed = await Promise.all(
+    candidates.map(async (repository) => ({
+      repository,
+      allowed: await canDashboardActorMutateRepository({
+        actor,
+        repository,
+      }),
+    })),
+  );
+  const repositoryIds = new Set<string>();
+  const workspaceIds = new Set<string>();
+
+  for (const item of allowed) {
+    if (!item.allowed) continue;
+    repositoryIds.add(item.repository.id);
+    workspaceIds.add(item.repository.workspaceId);
+  }
+
+  return {
+    workspaceIds: [...workspaceIds],
+    repositoryIds,
+  };
+}
+
+function dedupeRepositoryAccessCandidates<T extends { readonly id: string }>(
+  repositories: readonly T[],
+): T[] {
+  return [
+    ...new Map(
+      repositories.map((repository) => [repository.id, repository]),
+    ).values(),
+  ];
+}
+
+function emptyDashboardRepositoryAccess(): DashboardRepositoryAccessScope {
+  return {
+    workspaceIds: [],
+    repositoryIds: new Set<string>(),
+  };
+}
+
+function mergeWorkspaceIds(
+  left: readonly string[],
+  right: readonly string[],
+): string[] {
+  return [...new Set([...left, ...right])];
+}
+
+function normalizeRequestedRepositoryFullName(value: string): string | null {
+  const trimmed = value.trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
 
 function filterVisibleDashboardWorkspaces(
   workspaces: readonly DashboardWorkspaceData[],
@@ -516,11 +761,18 @@ export default async function DashboardPage({
   if (appInstallCallbackRedirect) {
     redirect(appInstallCallbackRedirect);
   }
+  const requestedRepositoryFullName = readParam(params.repository);
 
   const [mutationStatus, workspaceScope] = await Promise.all([
     getDashboardMutationStatus(),
     getDashboardWorkspaceScope(),
   ]);
+  const signedInActor = await getDashboardSignedInActor();
+  const repositoryAccess = await listDashboardRepositoryAccess({
+    actor: signedInActor,
+    workspaceScope,
+    requestedRepositoryFullName,
+  });
 
   const supportAudit =
     workspaceScope.kind === "all" &&
@@ -532,7 +784,7 @@ export default async function DashboardPage({
         }
       : undefined;
   const [dashboardData, modelOptions] = await Promise.all([
-    loadDashboardData(workspaceScope, supportAudit),
+    loadDashboardData(workspaceScope, repositoryAccess, supportAudit),
     getReviewModelOptions(),
   ]);
   const workspaces = filterVisibleDashboardWorkspaces(dashboardData);
@@ -745,6 +997,7 @@ function WorkspaceCard({
   };
 }): React.ReactElement {
   const {
+    hasWorkspaceWideAccess,
     workspace,
     repositoryCount,
     repositories,
@@ -800,6 +1053,7 @@ function WorkspaceCard({
         workspaceId={workspace.id}
         repositoryId={selectedRepository.id}
         repositoryFullName={selectedRepository.fullName}
+        repositoryVisibility={selectedRepository.visibility}
         installation={selectedInstallation}
         guidanceSet={providerGuidanceSet}
         triggerLabel="Enable review"
@@ -973,46 +1227,57 @@ function WorkspaceCard({
                           </p>
                         </div>
                       )}
-                      <form action={requestInstallationSyncAction}>
-                        <input
-                          type="hidden"
-                          name="workspaceId"
-                          value={workspace.id}
-                        />
-                        <input
-                          type="hidden"
-                          name="githubInstallationId"
-                          value={installation.githubInstallationId}
-                        />
-                        <FormSubmitButton
-                          variant="outline"
-                          size="sm"
-                          className="w-full sm:w-auto"
-                          disabled={
-                            !mutationsEnabled ||
-                            installation.status !== "active"
-                          }
-                          idleLabel="Refresh repos"
-                          pendingLabel="Refreshing..."
-                        />
-                      </form>
+                      {hasWorkspaceWideAccess ? (
+                        <form action={requestInstallationSyncAction}>
+                          <input
+                            type="hidden"
+                            name="workspaceId"
+                            value={workspace.id}
+                          />
+                          <input
+                            type="hidden"
+                            name="githubInstallationId"
+                            value={installation.githubInstallationId}
+                          />
+                          <FormSubmitButton
+                            variant="outline"
+                            size="sm"
+                            className="w-full sm:w-auto"
+                            disabled={
+                              !mutationsEnabled ||
+                              installation.status !== "active"
+                            }
+                            idleLabel="Refresh repos"
+                            pendingLabel="Refreshing..."
+                          />
+                        </form>
+                      ) : (
+                        <p className="rounded-xl border border-cyan-200/10 bg-slate-950/55 p-3 text-xs leading-5 text-slate-400">
+                          You can manage repositories where your GitHub role has
+                          write, maintain, or admin access. Workspace sync and
+                          organization-wide controls are available to workspace
+                          owners and admins.
+                        </p>
+                      )}
                     </div>
                   );
                 })}
               </div>
             </details>
 
-            <OrgRulesetAdvancedCard
-              workspace={workspace}
-              orgRuleset={orgRuleset}
-              mutationsEnabled={mutationsEnabled}
-              appInstallUrl={appInstallUrl}
-              permissionUpgradeNeeded={
-                readParam(params.error) === "org_admin_permission_required" ||
-                readParam(params.error) ===
-                  "org_ruleset_permission_update_pending"
-              }
-            />
+            {hasWorkspaceWideAccess ? (
+              <OrgRulesetAdvancedCard
+                workspace={workspace}
+                orgRuleset={orgRuleset}
+                mutationsEnabled={mutationsEnabled}
+                appInstallUrl={appInstallUrl}
+                permissionUpgradeNeeded={
+                  readParam(params.error) === "org_admin_permission_required" ||
+                  readParam(params.error) ===
+                    "org_ruleset_permission_update_pending"
+                }
+              />
+            ) : null}
           </>
         ) : null}
 
@@ -1022,64 +1287,84 @@ function WorkspaceCard({
               <div>
                 <Badge tone="accent">Review model</Badge>
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-                  Workspace defaults apply to every repository unless a
-                  repository override is saved.
+                  {hasWorkspaceWideAccess
+                    ? "Workspace defaults apply to every repository unless a repository override is saved."
+                    : "You can edit provider, model, reasoning, and gate settings for repositories where your GitHub role has write, maintain, or admin access."}
                 </p>
               </div>
               <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
-                Workspace default
+                {hasWorkspaceWideAccess
+                  ? "Workspace default"
+                  : "Repository access"}
               </span>
             </div>
 
-            <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <Badge tone="accent">Workspace default</Badge>
+            {hasWorkspaceWideAccess ? (
+              <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
+                <div className="mb-4 flex flex-wrap items-center gap-2">
+                  <Badge tone="accent">Workspace default</Badge>
+                </div>
+                <ReviewConfigForm
+                  action={saveWorkspaceReviewConfigAction}
+                  config={activeConfig}
+                  modelOptions={modelOptions}
+                  hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
+                  mutationsEnabled={mutationsEnabled}
+                  submitLabel="Save workspace default"
+                />
               </div>
-              <ReviewConfigForm
-                action={saveWorkspaceReviewConfigAction}
-                config={activeConfig}
-                modelOptions={modelOptions}
-                hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
-                mutationsEnabled={mutationsEnabled}
-                submitLabel="Save workspace default"
-              />
-            </div>
+            ) : null}
 
             {repositories.length > 0 ? (
-              <details className="group mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4">
+              <details
+                className="group mt-4 rounded-2xl border border-cyan-200/10 bg-slate-950/65 p-4"
+                open={!hasWorkspaceWideAccess || undefined}
+              >
                 <summary className="cursor-pointer list-none rounded-xl outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300/40">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone="accent">Repository overrides</Badge>
+                      <Badge tone="accent">
+                        {hasWorkspaceWideAccess
+                          ? "Repository overrides"
+                          : "Repository settings"}
+                      </Badge>
                       <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
                         optional per-repository provider/model/effort
                       </span>
                     </div>
                     <span className="inline-flex items-center gap-2 rounded-full border border-cyan-200/30 bg-cyan-300/[0.08] px-3 py-2 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100 transition group-hover:border-cyan-200/50 group-hover:bg-cyan-300/[0.12]">
-                      <span className="group-open:hidden">Open overrides</span>
-                      <span className="hidden group-open:inline">
-                        Hide overrides
-                      </span>
-                      <svg
-                        aria-hidden="true"
-                        viewBox="0 0 16 16"
-                        className="h-3.5 w-3.5 shrink-0 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none"
-                        fill="none"
-                      >
-                        <path
-                          d="M4 6l4 4 4-4"
-                          stroke="currentColor"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth="1.8"
-                        />
-                      </svg>
+                      {hasWorkspaceWideAccess ? (
+                        <>
+                          <span className="group-open:hidden">
+                            Open overrides
+                          </span>
+                          <span className="hidden group-open:inline">
+                            Hide overrides
+                          </span>
+                          <svg
+                            aria-hidden="true"
+                            viewBox="0 0 16 16"
+                            className="h-3.5 w-3.5 shrink-0 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none"
+                            fill="none"
+                          >
+                            <path
+                              d="M4 6l4 4 4-4"
+                              stroke="currentColor"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="1.8"
+                            />
+                          </svg>
+                        </>
+                      ) : (
+                        "Ready to edit"
+                      )}
                     </span>
                   </div>
                   <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
-                    Most repositories should inherit the workspace default. Open
-                    this only when one repository needs a different provider,
-                    model, effort, or gate.
+                    {hasWorkspaceWideAccess
+                      ? "Most repositories should inherit the workspace default. Open this only when one repository needs a different provider, model, effort, or gate."
+                      : "Changes here affect only the repository you edit. They do not change workspace defaults or other repositories."}
                   </p>
                   <p className="mt-2 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200/80 group-open:hidden">
                     Click to expand repository-specific settings
@@ -1254,95 +1539,108 @@ function WorkspaceCard({
               </div>
             ) : null}
 
-            <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <Badge tone={outboxFailures.length > 0 ? "warning" : "success"}>
-                  Operational queue
-                </Badge>
-                <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                  dead letters / retries
-                </span>
-              </div>
-              {outboxFailures.length === 0 ? (
-                <p className="text-sm leading-6 text-slate-400">
-                  No stuck or failed background events for this workspace.
-                </p>
-              ) : (
-                <div className="grid gap-3">
-                  {outboxFailures.map((event) => (
-                    <div
-                      key={event.id}
-                      className="grid gap-3 rounded-lg border border-amber-200/10 bg-amber-300/10 p-3 md:grid-cols-[1fr_auto]"
+            {hasWorkspaceWideAccess ? (
+              <>
+                <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <Badge
+                      tone={outboxFailures.length > 0 ? "warning" : "success"}
                     >
-                      <div>
-                        <p className="text-sm font-semibold text-amber-50">
-                          {event.type}@v{event.version} / {event.status}
-                        </p>
-                        <p className="mt-1 text-xs leading-5 text-slate-300">
-                          Attempts {event.attempts}/{event.maxAttempts}
-                          {event.lastErrorCode
-                            ? ` - ${event.lastErrorCode}`
-                            : ""}
-                        </p>
-                        {event.safeLastErrorSummary ? (
-                          <p className="mt-1 text-xs leading-5 text-slate-400">
-                            {event.safeLastErrorSummary}
-                          </p>
-                        ) : null}
-                        <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
-                          Updated {event.updatedAt.toISOString()}
-                        </p>
-                      </div>
-                      <form
-                        action={retryOutboxEventAction}
-                        className="self-center"
-                      >
-                        <input
-                          type="hidden"
-                          name="workspaceId"
-                          value={workspace.id}
-                        />
-                        <input type="hidden" name="eventId" value={event.id} />
-                        <FormSubmitButton
-                          variant="outline"
-                          size="sm"
-                          disabled={
-                            !mutationsEnabled || event.status !== "dead_letter"
-                          }
-                          idleLabel="Retry"
-                          pendingLabel="Retrying..."
-                        />
-                      </form>
+                      Operational queue
+                    </Badge>
+                    <span className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                      dead letters / retries
+                    </span>
+                  </div>
+                  {outboxFailures.length === 0 ? (
+                    <p className="text-sm leading-6 text-slate-400">
+                      No stuck or failed background events for this workspace.
+                    </p>
+                  ) : (
+                    <div className="grid gap-3">
+                      {outboxFailures.map((event) => (
+                        <div
+                          key={event.id}
+                          className="grid gap-3 rounded-lg border border-amber-200/10 bg-amber-300/10 p-3 md:grid-cols-[1fr_auto]"
+                        >
+                          <div>
+                            <p className="text-sm font-semibold text-amber-50">
+                              {event.type}@v{event.version} / {event.status}
+                            </p>
+                            <p className="mt-1 text-xs leading-5 text-slate-300">
+                              Attempts {event.attempts}/{event.maxAttempts}
+                              {event.lastErrorCode
+                                ? ` - ${event.lastErrorCode}`
+                                : ""}
+                            </p>
+                            {event.safeLastErrorSummary ? (
+                              <p className="mt-1 text-xs leading-5 text-slate-400">
+                                {event.safeLastErrorSummary}
+                              </p>
+                            ) : null}
+                            <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                              Updated {event.updatedAt.toISOString()}
+                            </p>
+                          </div>
+                          <form
+                            action={retryOutboxEventAction}
+                            className="self-center"
+                          >
+                            <input
+                              type="hidden"
+                              name="workspaceId"
+                              value={workspace.id}
+                            />
+                            <input
+                              type="hidden"
+                              name="eventId"
+                              value={event.id}
+                            />
+                            <FormSubmitButton
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                !mutationsEnabled ||
+                                event.status !== "dead_letter"
+                              }
+                              idleLabel="Retry"
+                              pendingLabel="Retrying..."
+                            />
+                          </form>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
-              )}
-            </div>
 
-            <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
-              <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
-                Recent audit
-              </p>
-              {workspace.auditEvents.length === 0 ? (
-                <p className="text-sm text-slate-400">No audit events yet.</p>
-              ) : (
-                <ul className="space-y-2 text-sm text-slate-300">
-                  {workspace.auditEvents.map((event) => (
-                    <li
-                      key={`${event.action}-${event.targetType}-${event.createdAt.toISOString()}`}
-                      className="flex flex-wrap items-center justify-between gap-2"
-                    >
-                      <span>
-                        {event.action} by {event.actor}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {event.createdAt.toISOString()}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+                <div className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+                  <p className="mb-3 text-xs uppercase tracking-[0.16em] text-cyan-100">
+                    Recent audit
+                  </p>
+                  {workspace.auditEvents.length === 0 ? (
+                    <p className="text-sm text-slate-400">
+                      No audit events yet.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2 text-sm text-slate-300">
+                      {workspace.auditEvents.map((event) => (
+                        <li
+                          key={`${event.action}-${event.targetType}-${event.createdAt.toISOString()}`}
+                          className="flex flex-wrap items-center justify-between gap-2"
+                        >
+                          <span>
+                            {event.action} by {event.actor}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {event.createdAt.toISOString()}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            ) : null}
           </>
         ) : null}
       </div>
@@ -2053,6 +2351,7 @@ function RepositoryProviderSecretsAction({
       workspaceId={workspace.id}
       repositoryId={repository.id}
       repositoryFullName={repository.fullName}
+      repositoryVisibility={repository.visibility}
       installation={installation}
       guidanceSet={buildProviderSecretGuidanceSet({
         repositoryFullName: repository.fullName,
@@ -2077,6 +2376,7 @@ function RepositoryProviderSecretsDialog({
   workspaceId,
   repositoryId,
   repositoryFullName,
+  repositoryVisibility,
   installation,
   guidanceSet,
   triggerLabel,
@@ -2088,6 +2388,7 @@ function RepositoryProviderSecretsDialog({
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly repositoryFullName: string;
+  readonly repositoryVisibility: string;
   readonly installation: DashboardInstallation;
   readonly guidanceSet: ProviderSecretGuidanceSet;
   readonly triggerLabel: string;
@@ -2106,7 +2407,9 @@ function RepositoryProviderSecretsDialog({
       workspaceId={workspaceId}
       repositoryId={repositoryId}
       repositoryFullName={repositoryFullName}
+      repositoryVisibility={repositoryVisibility}
       organizationLogin={organizationLogin}
+      organizationSecretPolicy={installation.organizationSecretPolicy}
       guidanceSet={guidanceSet}
       triggerLabel={triggerLabel}
       triggerVariant={triggerVariant}
@@ -2757,6 +3060,8 @@ function dashboardErrorText(error: string): string {
       return "Sign in with GitHub before changing repository setup.";
     case "workspace_mutation_forbidden":
       return "Your GitHub user is not an owner/admin for this workspace.";
+    case "repository_mutation_forbidden":
+      return "Your GitHub user needs write, maintain, or admin access on this repository to change repository-level ReviewRouter settings.";
     case "operation_already_running":
       return "Another setup or sync operation is already running. Try again shortly.";
     case "rate_limited":

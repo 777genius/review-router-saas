@@ -96,6 +96,11 @@ const permissionRows: readonly {
     ],
   },
   {
+    permission: "organization_plan: read",
+    reason:
+      "Detect whether organization-level Actions secrets can be used for private repositories, so the setup UI can recommend repository secrets when the GitHub plan does not support org secrets for private repos.",
+  },
+  {
     permission: "statuses: write",
     reason:
       "Publish ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.",

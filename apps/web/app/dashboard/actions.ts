@@ -43,9 +43,11 @@ import {
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
+import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import {
   assertDashboardMutationAllowed,
+  assertDashboardRepositoryMutationAllowed,
   createGitHubAppInstallationOctokit,
 } from "../../src/server/dashboard-mutations";
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
@@ -179,6 +181,7 @@ export async function checkOpenRouterRepositorySecretClientAction(
   readonly status:
     | "available_repository"
     | "available_organization"
+    | "not_available_to_repository"
     | "missing"
     | "permission_required"
     | "unknown";
@@ -193,7 +196,10 @@ export async function checkOpenRouterRepositorySecretClientAction(
       workspaceId,
       repositoryId,
     });
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -211,13 +217,8 @@ export async function checkOpenRouterRepositorySecretClientAction(
       repository,
     });
   } catch (error) {
-    const failedState = providerSetupStateForSecretCheckError(error);
-    if (failedState === "missing" || failedState === "stale_or_invalid") {
-      return { status: "missing" };
-    }
-    if (failedState === "unknown") {
-      return { status: "permission_required" };
-    }
+    const status = providerSecretAvailabilityStatusForError(error);
+    if (status) return { status };
 
     return { status: "unknown" };
   }
@@ -237,6 +238,7 @@ async function createSetupPullRequestMutation(
       where: { id: repositoryId },
       select: {
         workspaceId: true,
+        githubRepositoryId: true,
         owner: true,
         name: true,
         fullName: true,
@@ -250,7 +252,10 @@ async function createSetupPullRequestMutation(
       throw new Error("repository_not_found");
     }
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -367,6 +372,7 @@ async function confirmSetupPullRequestMergedMutation(
       select: {
         id: true,
         workspaceId: true,
+        githubRepositoryId: true,
         owner: true,
         name: true,
         fullName: true,
@@ -392,7 +398,10 @@ async function confirmSetupPullRequestMergedMutation(
     }
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -499,7 +508,10 @@ async function confirmProviderSecretSetupMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -774,7 +786,10 @@ async function saveRepositoryReviewConfigMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -862,7 +877,10 @@ async function clearRepositoryReviewConfigMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -1030,7 +1048,7 @@ async function verifyProviderSecrets(input: {
   >;
   readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
   readonly secretNames: readonly string[];
-  readonly secretScope: "repository" | "organization_selected_repositories";
+  readonly secretScope: ProviderSecretScope;
 }): Promise<void> {
   for (const secretName of input.secretNames) {
     if (input.secretScope === "repository") {
@@ -1058,6 +1076,7 @@ async function checkOpenRouterSecretAvailability(input: {
   readonly status:
     | "available_repository"
     | "available_organization"
+    | "not_available_to_repository"
     | "missing"
     | "permission_required"
     | "unknown";
@@ -1070,9 +1089,9 @@ async function checkOpenRouterSecretAvailability(input: {
     });
     return { status: "available_repository" };
   } catch (error) {
-    const state = providerSetupStateForSecretCheckError(error);
-    if (state === "unknown") return { status: "permission_required" };
-    if (state !== "missing") return { status: "unknown" };
+    const status = providerSecretAvailabilityStatusForError(error);
+    if (status === "permission_required") return { status };
+    if (status !== "missing") return { status: "unknown" };
   }
 
   try {
@@ -1083,11 +1102,8 @@ async function checkOpenRouterSecretAvailability(input: {
     });
     return { status: "available_organization" };
   } catch (error) {
-    const state = providerSetupStateForSecretCheckError(error);
-    if (state === "unknown") return { status: "permission_required" };
-    if (state === "missing" || state === "stale_or_invalid") {
-      return { status: "missing" };
-    }
+    const status = providerSecretAvailabilityStatusForError(error);
+    if (status) return { status };
 
     return { status: "unknown" };
   }
@@ -1469,13 +1485,13 @@ function readProviderSetupSelection(formData: FormData): {
   throw new Error("invalid_form_value:providerSetup");
 }
 
-function readProviderSecretScope(
-  formData: FormData,
-): "repository" | "organization_selected_repositories" {
+function readProviderSecretScope(formData: FormData): ProviderSecretScope {
   const value = readFormString(formData, "secretScope");
   if (
     value === "repository" ||
-    value === "organization_selected_repositories"
+    value === "organization_selected_repositories" ||
+    value === "organization_private_repositories" ||
+    value === "organization_all_repositories"
   ) {
     return value;
   }
@@ -1523,6 +1539,24 @@ function providerSetupStateForSecretCheckError(
       return "unknown";
     case "repository_not_visible_to_github_app":
       return "unknown";
+    default:
+      return null;
+  }
+}
+
+function providerSecretAvailabilityStatusForError(
+  error: unknown,
+): "not_available_to_repository" | "missing" | "permission_required" | null {
+  if (!(error instanceof Error)) return null;
+
+  switch (error.message) {
+    case "provider_secret_not_found":
+      return "missing";
+    case "provider_secret_not_available_to_repository":
+      return "not_available_to_repository";
+    case "provider_secret_check_permission_required":
+    case "repository_not_visible_to_github_app":
+      return "permission_required";
     default:
       return null;
   }
@@ -1584,6 +1618,7 @@ function safeDashboardErrorCode(error: unknown): string {
       "dashboard_mutation_requires_sign_in",
       "installation_not_found",
       "repository_not_found",
+      "repository_mutation_forbidden",
       "repository_not_selected",
       "repository_archived",
       "installation_not_active",

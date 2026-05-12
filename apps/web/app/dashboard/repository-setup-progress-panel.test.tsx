@@ -61,7 +61,9 @@ describe("RepositorySetupProgressPanel", () => {
             workspaceId="workspace_1"
             repositoryId="repo_1"
             repositoryFullName="777genius/example"
+            repositoryVisibility="public"
             organizationLogin={null}
+            organizationSecretPolicy={null}
             guidanceSet={{
               codexOAuth: guidance("CODEX_AUTH_JSON"),
               codexApiKey: guidance("OPENAI_API_KEY"),
@@ -182,6 +184,7 @@ function guidance(secretName: string): ProviderSecretSetupGuidance {
     recommendedScope: "repository",
     commands: [
       {
+        scope: "repository",
         title: "Repository secret",
         description: `Stores ${secretName} directly in this repository.`,
         command: `gh secret set ${secretName} --repo 777genius/example`,

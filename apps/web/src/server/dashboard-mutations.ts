@@ -11,7 +11,7 @@ import { getAuthEnvironmentStatus } from "../auth/auth-env";
 import { authOptions } from "../auth/auth-options";
 import { getPrisma } from "./prisma";
 
-type DashboardMutationActor = {
+export type DashboardMutationActor = {
   readonly githubUserId: string;
   readonly githubLogin: string;
   readonly actor: string;
@@ -75,6 +75,78 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
 export async function assertDashboardMutationAllowed(
   workspaceId: string,
 ): Promise<DashboardMutationActor> {
+  const actor = await readDashboardMutationActor();
+
+  await assertWorkspaceMutationAllowedForActor(workspaceId, actor);
+
+  return actor;
+}
+
+export async function assertDashboardRepositoryMutationAllowed(
+  workspaceId: string,
+  repository: {
+    readonly owner: string;
+    readonly name: string;
+    readonly githubRepositoryId: bigint | string | number;
+    readonly installation: {
+      readonly githubInstallationId: bigint | string | number;
+    };
+  },
+): Promise<DashboardMutationActor> {
+  const actor = await readDashboardMutationActor();
+
+  try {
+    await assertWorkspaceMutationAllowedForActor(workspaceId, actor);
+    return actor;
+  } catch (error) {
+    if (!isWorkspaceMutationForbidden(error)) {
+      throw error;
+    }
+  }
+
+  await assertRepositoryWritePermissionForActor({
+    actor,
+    repository,
+  });
+
+  return actor;
+}
+
+export async function getDashboardSignedInActor(): Promise<DashboardMutationActor | null> {
+  if (!getAuthEnvironmentStatus().configured || !dashboardMutationsEnabled()) {
+    return null;
+  }
+
+  const session = await getServerSession(authOptions);
+  const githubUserId = session?.user?.githubUserId;
+  const githubLogin = session?.user?.githubLogin;
+  if (!githubUserId || !githubLogin) {
+    return null;
+  }
+
+  return { githubUserId, githubLogin, actor: `user:${githubLogin}` };
+}
+
+export async function canDashboardActorMutateRepository(input: {
+  readonly actor: DashboardMutationActor;
+  readonly repository: {
+    readonly owner: string;
+    readonly name: string;
+    readonly githubRepositoryId: bigint | string | number;
+    readonly installation: {
+      readonly githubInstallationId: bigint | string | number;
+    };
+  };
+}): Promise<boolean> {
+  try {
+    await assertRepositoryWritePermissionForActor(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readDashboardMutationActor(): Promise<DashboardMutationActor> {
   if (!getAuthEnvironmentStatus().configured) {
     throw new Error("dashboard_auth_misconfigured");
   }
@@ -90,11 +162,18 @@ export async function assertDashboardMutationAllowed(
     throw new Error("dashboard_mutation_requires_sign_in");
   }
 
+  return { githubUserId, githubLogin, actor: `user:${githubLogin}` };
+}
+
+async function assertWorkspaceMutationAllowedForActor(
+  workspaceId: string,
+  actor: DashboardMutationActor,
+): Promise<void> {
   await assertWorkspaceMutationAllowed(
     {
       workspaceId,
-      githubUserId,
-      githubLogin,
+      githubUserId: actor.githubUserId,
+      githubLogin: actor.githubLogin,
       localAdminGithubLogins: readCsvEnv(
         "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
       ),
@@ -103,8 +182,108 @@ export async function assertDashboardMutationAllowed(
       workspaceAccess: new PrismaWorkspaceAccessRepository(getPrisma()),
     },
   );
+}
 
-  return { githubUserId, githubLogin, actor: `user:${githubLogin}` };
+async function assertRepositoryWritePermissionForActor(input: {
+  readonly actor: DashboardMutationActor;
+  readonly repository: {
+    readonly owner: string;
+    readonly name: string;
+    readonly githubRepositoryId: bigint | string | number;
+    readonly installation: {
+      readonly githubInstallationId: bigint | string | number;
+    };
+  };
+}): Promise<void> {
+  const octokit = await createGitHubAppInstallationOctokit(
+    input.repository.installation.githubInstallationId.toString(),
+  );
+
+  try {
+    const response = await octokit.request(
+      "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
+      {
+        owner: input.repository.owner,
+        repo: input.repository.name,
+        username: input.actor.githubLogin,
+      },
+    );
+    const data = response.data as {
+      readonly permission?: unknown;
+      readonly role_name?: unknown;
+      readonly user?: {
+        readonly id?: unknown;
+        readonly login?: unknown;
+      };
+    };
+
+    const responseUserId =
+      typeof data.user?.id === "number" || typeof data.user?.id === "string"
+        ? String(data.user.id)
+        : null;
+    if (responseUserId && responseUserId !== input.actor.githubUserId) {
+      throw new Error("repository_mutation_forbidden");
+    }
+
+    if (
+      !repositoryPermissionAllowsMutation({
+        permission: typeof data.permission === "string" ? data.permission : "",
+        roleName: typeof data.role_name === "string" ? data.role_name : "",
+      })
+    ) {
+      throw new Error("repository_mutation_forbidden");
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "repository_mutation_forbidden"
+    ) {
+      throw error;
+    }
+
+    const status = githubApiStatus(error);
+    if (status === 401 || status === 403 || status === 404) {
+      throw new Error("repository_mutation_forbidden", { cause: error });
+    }
+
+    throw error;
+  }
+}
+
+function repositoryPermissionAllowsMutation(input: {
+  readonly permission: string;
+  readonly roleName: string;
+}): boolean {
+  const permission = input.permission.toLowerCase();
+  const roleName = input.roleName.toLowerCase();
+
+  return (
+    permission === "admin" ||
+    permission === "write" ||
+    roleName === "admin" ||
+    roleName === "maintain" ||
+    roleName === "write"
+  );
+}
+
+function isWorkspaceMutationForbidden(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith("workspace_mutation_forbidden:")
+  );
+}
+
+function githubApiStatus(error: unknown): number | null {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof error.status === "number"
+  ) {
+    return error.status;
+  }
+
+  return null;
 }
 
 export async function getDashboardWorkspaceScope(): Promise<DashboardWorkspaceScope> {

@@ -209,6 +209,31 @@ describe("ReviewConfigForm", () => {
       ),
     ).toBeTruthy();
   });
+
+  it("explains when an organization OpenRouter secret is not selected for this repository", async () => {
+    vi.mocked(checkOpenRouterRepositorySecretClientAction).mockResolvedValue({
+      status: "not_available_to_repository",
+    });
+
+    renderReviewConfigForm({
+      config: openRouterReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/not selected for access/i)).toBeTruthy();
+    });
+    expect(screen.getByText(/Repository access/i)).toBeTruthy();
+    expect(
+      screen.getByText(
+        "gh secret set OPENROUTER_API_KEY --repo 777genius/agent-teams-ai",
+      ),
+    ).toBeTruthy();
+  });
 });
 
 function renderReviewConfigForm(input?: {

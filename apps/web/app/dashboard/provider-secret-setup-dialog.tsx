@@ -16,6 +16,7 @@ import {
   DialogTrigger,
 } from "@reviewrouter/ui";
 import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
+import type { OrganizationSecretPolicy } from "./provider-secret-setup-chooser";
 import {
   providerSetupConfirmedEventName,
   type ProviderSetupConfirmedEventDetail,
@@ -31,7 +32,9 @@ export function ProviderSecretSetupDialog({
   workspaceId,
   repositoryId,
   repositoryFullName,
+  repositoryVisibility,
   organizationLogin,
+  organizationSecretPolicy,
   guidanceSet,
   triggerLabel,
   triggerVariant = "outline",
@@ -42,7 +45,9 @@ export function ProviderSecretSetupDialog({
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly repositoryFullName: string;
+  readonly repositoryVisibility: string;
   readonly organizationLogin: string | null;
+  readonly organizationSecretPolicy: OrganizationSecretPolicy | null;
   readonly guidanceSet: ProviderSecretGuidanceSet;
   readonly triggerLabel: string;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
@@ -135,7 +140,7 @@ export function ProviderSecretSetupDialog({
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone={organizationLogin ? "accent" : "neutral"}>
                   {organizationLogin
-                    ? `${organizationLogin} selected repo secret`
+                    ? "repository or org secret"
                     : "repository secret"}
                 </Badge>
               </div>
@@ -146,7 +151,9 @@ export function ProviderSecretSetupDialog({
               workspaceId={workspaceId}
               repositoryId={repositoryId}
               repositoryFullName={repositoryFullName}
+              repositoryVisibility={repositoryVisibility}
               organizationLogin={organizationLogin}
+              organizationSecretPolicy={organizationSecretPolicy}
               codexOAuthGuidance={guidanceSet.codexOAuth}
               codexApiKeyGuidance={guidanceSet.codexApiKey}
               openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}

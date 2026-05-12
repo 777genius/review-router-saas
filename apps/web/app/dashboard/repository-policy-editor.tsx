@@ -143,6 +143,7 @@ function OpenRouterSecretNotice({
     | "checking"
     | "available_repository"
     | "available_organization"
+    | "not_available_to_repository"
     | "missing"
     | "permission_required"
     | "unknown"
@@ -212,12 +213,18 @@ function OpenRouterSecretNotice({
             <code className="font-mono">OPENROUTER_API_KEY</code> is available
             to this repository...
           </>
+        ) : secretStatus === "not_available_to_repository" ? (
+          <>
+            An organization{" "}
+            <code className="font-mono">OPENROUTER_API_KEY</code> secret exists,
+            but this repository is not selected for access.
+          </>
         ) : (
           <>
             OpenRouter requires{" "}
-            <code className="font-mono">OPENROUTER_API_KEY</code> in{" "}
-            {repositoryFullName ? "this repository's" : "the repository"} GitHub
-            Actions secrets.
+            <code className="font-mono">OPENROUTER_API_KEY</code> as a
+            repository secret or an organization secret selected for this
+            repository.
           </>
         )}
       </p>
@@ -228,7 +235,8 @@ function OpenRouterSecretNotice({
         </p>
       ) : null}
       <p className="mt-1 text-amber-100/85">
-        Set it from a terminal opened in the repository directory:
+        Set a repository secret from a terminal opened in the repository
+        directory:
       </p>
       <pre className="mt-1.5 overflow-x-auto rounded-md bg-slate-950/80 px-2.5 py-1.5 font-mono text-[11px] leading-5 text-amber-50">
         {command}
@@ -245,6 +253,12 @@ function OpenRouterSecretNotice({
         </a>
         . Without this secret, OpenRouter providers will fail in CI.
       </p>
+      {secretStatus === "not_available_to_repository" ? (
+        <p className="mt-1.5 text-amber-100/85">
+          Alternatively, ask an organization owner to open the organization
+          Actions secret and add this repository under Repository access.
+        </p>
+      ) : null}
     </div>
   );
 }

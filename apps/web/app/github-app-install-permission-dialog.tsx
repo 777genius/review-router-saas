@@ -74,6 +74,12 @@ const sensitivePermissionRows: readonly PermissionRow[] = [
     ],
     icon: <Building2 aria-hidden="true" className="h-7 w-7" />,
   },
+  {
+    title: "Organization plan: read",
+    badge: "Plan name only",
+    body: "Used to choose the right secret setup path for private organization repositories. ReviewRouter checks whether org-level Actions secrets are supported for the selected repository.",
+    icon: <Building2 aria-hidden="true" className="h-7 w-7" />,
+  },
 ] as const;
 
 const setupPermissionRows: readonly PermissionRow[] = [

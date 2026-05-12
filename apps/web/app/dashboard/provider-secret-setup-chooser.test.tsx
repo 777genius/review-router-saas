@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
 import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
+import type { OrganizationSecretPolicy } from "./provider-secret-setup-chooser";
 import {
   providerSetupConfirmedEventName,
   type ProviderSetupConfirmedEventDetail,
@@ -29,6 +30,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
   cleanup();
 });
+
+function pageText(): string {
+  return document.body.textContent?.replace(/\s+/g, " ") ?? "";
+}
 
 describe("ProviderSecretSetupChooser", () => {
   it("keeps provider setup errors inside the dialog when the action rejects", async () => {
@@ -70,8 +75,113 @@ describe("ProviderSecretSetupChooser", () => {
         screen.getByRole("button", { name: "Confirm manually" }),
       ).toBeTruthy();
     });
-    expect(screen.getByText(/Could not verify automatically/i)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /could not verify GitHub secret metadata automatically/i,
+      ),
+    ).toBeTruthy();
     expect(routerMock.replace).not.toHaveBeenCalled();
+  });
+
+  it("keeps verification mode when the repository secret is missing", async () => {
+    mockProviderSetupFetch().mockResolvedValueOnce(
+      providerSetupResponse({
+        params: {
+          error: "provider_secret_not_found",
+          workspace: "workspace_1",
+          section: "repositories",
+        },
+      }),
+    );
+
+    renderProviderSecretSetupChooser();
+
+    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Check secrets again" }),
+      ).toBeTruthy();
+    });
+    expect(
+      screen.getByText(
+        /was not found in 777genius\/plugin-kit-ai-starter-claude-python repository Actions secrets/i,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Confirm manually" }),
+    ).toBeNull();
+  });
+
+  it("explains when an organization secret is not selected for this repository", async () => {
+    mockProviderSetupFetch().mockResolvedValueOnce(
+      providerSetupResponse({
+        params: {
+          error: "provider_secret_not_available_to_repository",
+          workspace: "workspace_1",
+          section: "repositories",
+        },
+      }),
+    );
+
+    renderProviderSecretSetupChooser({ organizationLogin: "agent-teams-ai" });
+
+    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Check secrets again" }),
+      ).toBeTruthy();
+    });
+    expect(screen.getByText(/not selected for access/i)).toBeTruthy();
+    expect(screen.getByText(/Repository access settings/i)).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Confirm manually" }),
+    ).toBeNull();
+  });
+
+  it("lets users choose private or all organization secret commands", () => {
+    renderProviderSecretSetupChooser({ organizationLogin: "agent-teams-ai" });
+
+    fireEvent.click(
+      screen.getByTestId("provider-scope-organization_private_repositories"),
+    );
+    expect(pageText()).toContain(
+      "gh secret set CODEX_AUTH_JSON --org agent-teams-ai --visibility private --app actions",
+    );
+
+    fireEvent.click(
+      screen.getByTestId("provider-scope-organization_all_repositories"),
+    );
+    expect(pageText()).toContain(
+      "gh secret set CODEX_AUTH_JSON --org agent-teams-ai --visibility all --app actions",
+    );
+  });
+
+  it("disables organization secret scopes for private repositories on a free organization plan", () => {
+    renderProviderSecretSetupChooser({
+      organizationLogin: "agent-teams-ai",
+      repositoryVisibility: "private",
+      organizationSecretPolicy: {
+        planName: "free",
+        privateRepositoriesAvailable: false,
+        status: "available",
+      },
+    });
+
+    expect(
+      (
+        screen.getByTestId(
+          "provider-scope-organization_selected_repositories",
+        ) as HTMLInputElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      screen.getByText(/do not make organization secrets available/i),
+    ).toBeTruthy();
+    expect(pageText()).toContain(
+      "gh secret set CODEX_AUTH_JSON --repo 777genius/plugin-kit-ai-starter-claude-python",
+    );
   });
 
   it("shows a final confirmed state after manual confirmation succeeds", async () => {
@@ -207,16 +317,26 @@ describe("ProviderSecretSetupDialog", () => {
   });
 });
 
-function renderProviderSecretSetupChooser(): void {
+function renderProviderSecretSetupChooser(input?: {
+  readonly organizationLogin?: string | null;
+  readonly repositoryVisibility?: string;
+  readonly organizationSecretPolicy?: OrganizationSecretPolicy | null;
+}): void {
+  const organizationLogin = input?.organizationLogin ?? null;
   render(
     <ProviderSecretSetupChooser
       workspaceId="workspace_1"
       repositoryId="repo_1"
       repositoryFullName="777genius/plugin-kit-ai-starter-claude-python"
-      organizationLogin={null}
-      codexOAuthGuidance={guidance("CODEX_AUTH_JSON")}
-      codexApiKeyGuidance={guidance("OPENAI_API_KEY")}
-      openRouterApiKeyGuidance={guidance("OPENROUTER_API_KEY")}
+      repositoryVisibility={input?.repositoryVisibility ?? "public"}
+      organizationLogin={organizationLogin}
+      organizationSecretPolicy={input?.organizationSecretPolicy ?? null}
+      codexOAuthGuidance={guidance("CODEX_AUTH_JSON", organizationLogin)}
+      codexApiKeyGuidance={guidance("OPENAI_API_KEY", organizationLogin)}
+      openRouterApiKeyGuidance={guidance(
+        "OPENROUTER_API_KEY",
+        organizationLogin,
+      )}
     />,
   );
 }
@@ -227,7 +347,9 @@ function renderProviderSecretSetupDialog(): void {
       workspaceId="workspace_1"
       repositoryId="repo_1"
       repositoryFullName="777genius/plugin-kit-ai-starter-claude-python"
+      repositoryVisibility="public"
       organizationLogin={null}
+      organizationSecretPolicy={null}
       guidanceSet={{
         codexOAuth: guidance("CODEX_AUTH_JSON"),
         codexApiKey: guidance("OPENAI_API_KEY"),
@@ -253,7 +375,25 @@ function providerSetupResponse(body: {
   } as Response;
 }
 
-function guidance(secretName: string): ProviderSecretSetupGuidance {
+function guidance(
+  secretName: string,
+  organizationLogin: string | null = null,
+): ProviderSecretSetupGuidance {
+  const repositoryCommand = {
+    scope: "repository" as const,
+    title: "Repository secret",
+    description: `Stores ${secretName} directly in this repository.`,
+    command: `gh secret set ${secretName} --repo 777genius/plugin-kit-ai-starter-claude-python`,
+    storesSecretIn: "github_repository_secret" as const,
+    targetLabel:
+      "777genius/plugin-kit-ai-starter-claude-python repository secret",
+    secretNames: [secretName],
+    selectedRepositories: ["777genius/plugin-kit-ai-starter-claude-python"],
+    validatesBeforeWrite: false,
+    failureRecovery: "Retry the command.",
+    sendsSecretToReviewRouter: false as const,
+  };
+
   return {
     provider:
       secretName === "CODEX_AUTH_JSON"
@@ -261,22 +401,55 @@ function guidance(secretName: string): ProviderSecretSetupGuidance {
         : secretName === "OPENAI_API_KEY"
           ? "openai_api_key"
           : "openrouter_api_key",
-    recommendedScope: "repository",
-    commands: [
-      {
-        title: "Repository secret",
-        description: `Stores ${secretName} directly in this repository.`,
-        command: `gh secret set ${secretName} --repo 777genius/plugin-kit-ai-starter-claude-python`,
-        storesSecretIn: "github_repository_secret",
-        targetLabel:
-          "777genius/plugin-kit-ai-starter-claude-python repository secret",
-        secretNames: [secretName],
-        selectedRepositories: ["777genius/plugin-kit-ai-starter-claude-python"],
-        validatesBeforeWrite: false,
-        failureRecovery: "Retry the command.",
-        sendsSecretToReviewRouter: false,
-      },
-    ],
+    recommendedScope: organizationLogin
+      ? "organization_selected_repositories"
+      : "repository",
+    commands: organizationLogin
+      ? [
+          {
+            scope: "organization_selected_repositories" as const,
+            title: "Organization selected-repository secret",
+            description: `Stores ${secretName} in ${organizationLogin}.`,
+            command: `gh secret set ${secretName} --org ${organizationLogin} --repos plugin-kit-ai-starter-claude-python --app actions`,
+            storesSecretIn: "github_org_secret" as const,
+            targetLabel: `${organizationLogin} organization secret, selected repo plugin-kit-ai-starter-claude-python`,
+            secretNames: [secretName],
+            selectedRepositories: [
+              "777genius/plugin-kit-ai-starter-claude-python",
+            ],
+            validatesBeforeWrite: false,
+            failureRecovery: "Add this repository to Repository access.",
+            sendsSecretToReviewRouter: false as const,
+          },
+          {
+            scope: "organization_private_repositories" as const,
+            title: "Organization private-repositories secret",
+            description: `Stores ${secretName} in ${organizationLogin}.`,
+            command: `gh secret set ${secretName} --org ${organizationLogin} --visibility private --app actions`,
+            storesSecretIn: "github_org_secret" as const,
+            targetLabel: `${organizationLogin} organization secret, private repositories`,
+            secretNames: [secretName],
+            selectedRepositories: [],
+            validatesBeforeWrite: false,
+            failureRecovery: "Use a paid organization plan.",
+            sendsSecretToReviewRouter: false as const,
+          },
+          {
+            scope: "organization_all_repositories" as const,
+            title: "Organization all-repositories secret",
+            description: `Stores ${secretName} in ${organizationLogin}.`,
+            command: `gh secret set ${secretName} --org ${organizationLogin} --visibility all --app actions`,
+            storesSecretIn: "github_org_secret" as const,
+            targetLabel: `${organizationLogin} organization secret, all repositories`,
+            secretNames: [secretName],
+            selectedRepositories: [],
+            validatesBeforeWrite: false,
+            failureRecovery: "Use a paid organization plan.",
+            sendsSecretToReviewRouter: false as const,
+          },
+          repositoryCommand,
+        ]
+      : [repositoryCommand],
     warnings: [],
   };
 }

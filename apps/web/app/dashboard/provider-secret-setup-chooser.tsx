@@ -2,7 +2,10 @@
 
 import { useMemo, useState, useTransition, type FormEvent } from "react";
 import { Tabs } from "@base-ui/react/tabs";
-import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
+import type {
+  ProviderSecretScope,
+  ProviderSecretSetupGuidance,
+} from "@reviewrouter/features-provider-setup";
 import { Badge, Button, CodeBlock } from "@reviewrouter/ui";
 import { providerSetupConfirmedEvent } from "./repository-setup-optimistic-events";
 
@@ -43,26 +46,43 @@ export type ProviderSecretSetupChooserProps = {
   readonly workspaceId: string;
   readonly repositoryId: string;
   readonly repositoryFullName: string;
+  readonly repositoryVisibility: string;
   readonly organizationLogin: string | null;
+  readonly organizationSecretPolicy: OrganizationSecretPolicy | null;
   readonly codexOAuthGuidance: ProviderSecretSetupGuidance;
   readonly codexApiKeyGuidance: ProviderSecretSetupGuidance;
   readonly openRouterApiKeyGuidance: ProviderSecretSetupGuidance;
+};
+
+export type OrganizationSecretPolicy = {
+  readonly planName: string | null;
+  readonly privateRepositoriesAvailable: boolean | null;
+  readonly status: "available" | "permission_required" | "unknown";
 };
 
 export function ProviderSecretSetupChooser({
   workspaceId,
   repositoryId,
   repositoryFullName,
+  repositoryVisibility,
   organizationLogin,
+  organizationSecretPolicy,
   codexOAuthGuidance,
   codexApiKeyGuidance,
   openRouterApiKeyGuidance,
 }: ProviderSecretSetupChooserProps): React.ReactElement {
   const [providerChoice, setProviderChoice] =
     useState<ProviderChoice>("codex_oauth");
-  const [useOrganizationSecret, setUseOrganizationSecret] = useState(
-    Boolean(organizationLogin),
-  );
+  const organizationSecretUnavailableForRepository =
+    Boolean(organizationLogin) &&
+    repositoryVisibility === "private" &&
+    organizationSecretPolicy?.privateRepositoriesAvailable === false;
+  const [selectedSecretScope, setSelectedSecretScope] =
+    useState<ProviderSecretScope>(
+      organizationLogin && !organizationSecretUnavailableForRepository
+        ? "organization_selected_repositories"
+        : "repository",
+    );
   const [verificationError, setVerificationError] =
     useState<VerificationFallbackError | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -76,21 +96,21 @@ export function ProviderSecretSetupChooser({
         ? codexApiKeyGuidance
         : openRouterApiKeyGuidance;
   const repositoryCommand = activeGuidance.commands.find(
-    (command) => command.storesSecretIn === "github_repository_secret",
-  );
-  const organizationCommand = activeGuidance.commands.find(
-    (command) => command.storesSecretIn === "github_org_secret",
+    (command) => command.scope === "repository",
   );
   const activeCommand =
-    useOrganizationSecret && organizationCommand
-      ? organizationCommand
-      : repositoryCommand;
+    activeGuidance.commands.find(
+      (command) => command.scope === selectedSecretScope,
+    ) ?? repositoryCommand;
   const secretNames = activeCommand?.secretNames.join(", ") ?? "GitHub secret";
   const providerSetupSelection = providerChoiceToSetupSelection(providerChoice);
-  const secretScope =
-    activeCommand?.storesSecretIn === "github_org_secret"
-      ? "organization_selected_repositories"
-      : "repository";
+  const secretScope = activeCommand?.scope ?? "repository";
+  const scopeOptions = providerSecretScopeOptions({
+    organizationLogin,
+    organizationSecretPolicy,
+    repositoryFullName,
+    repositoryVisibility,
+  });
 
   const providerDetails = useMemo(
     () =>
@@ -175,30 +195,77 @@ export function ProviderSecretSetupChooser({
         </Tabs.List>
       </Tabs.Root>
 
-      {organizationLogin ? (
-        <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-cyan-200/10 bg-slate-950/70 p-4 text-sm leading-6 text-slate-300 transition hover:border-cyan-200/25 hover:bg-cyan-300/[0.04]">
-          <input
-            data-testid="provider-scope-organization"
-            type="checkbox"
-            checked={useOrganizationSecret}
-            onChange={(event) => {
-              setUseOrganizationSecret(event.currentTarget.checked);
-              setVerificationError(null);
-              setSubmitError(null);
-              setConfirmed(false);
-            }}
-            className="mt-1 h-4 w-4 accent-cyan-300"
-          />
-          <span>
-            <span className="block font-semibold text-cyan-50">
-              Organization selected-repository secret
-            </span>
-            <span className="block text-slate-400">
-              Recommended for organization repos. The secret is stored once in{" "}
-              {organizationLogin} and granted only to {repositoryFullName}.
-            </span>
-          </span>
-        </label>
+      {scopeOptions.length > 1 ? (
+        <fieldset className="grid gap-3">
+          <legend className="text-sm font-semibold text-cyan-50">
+            Secret storage
+          </legend>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {scopeOptions.map((option) => {
+              const checked = selectedSecretScope === option.scope;
+              return (
+                <label
+                  key={option.scope}
+                  className={[
+                    "flex min-h-28 items-start gap-3 rounded-2xl border p-4 text-sm leading-6 transition",
+                    option.disabled
+                      ? "cursor-not-allowed border-slate-700/70 bg-slate-950/45 text-slate-500"
+                      : checked
+                        ? "cursor-pointer border-cyan-200/40 bg-cyan-300/[0.08] text-cyan-50 shadow-[0_16px_44px_-36px_rgba(0,240,255,0.9)]"
+                        : "cursor-pointer border-cyan-200/10 bg-slate-950/70 text-slate-300 hover:border-cyan-200/25 hover:bg-cyan-300/[0.04]",
+                  ].join(" ")}
+                >
+                  <input
+                    data-testid={`provider-scope-${option.scope}`}
+                    type="radio"
+                    name="providerSecretScopeChoice"
+                    checked={checked}
+                    disabled={option.disabled}
+                    onChange={() => {
+                      if (option.disabled) return;
+                      setSelectedSecretScope(option.scope);
+                      setVerificationError(null);
+                      setSubmitError(null);
+                      setConfirmed(false);
+                    }}
+                    className="mt-1 h-4 w-4 accent-cyan-300"
+                  />
+                  <span>
+                    <span className="flex flex-wrap items-center gap-2 font-semibold text-cyan-50">
+                      {option.title}
+                      {option.badge ? (
+                        <Badge tone={option.badgeTone}>{option.badge}</Badge>
+                      ) : null}
+                    </span>
+                    <span
+                      className={
+                        option.disabled
+                          ? "mt-1 block text-slate-500"
+                          : "mt-1 block text-slate-400"
+                      }
+                    >
+                      {option.body}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {organizationSecretPolicy?.status === "permission_required" ? (
+            <p className="text-xs leading-5 text-amber-100/85">
+              ReviewRouter cannot read this organization plan yet. Approve the
+              GitHub App Organization plan permission, or use a repository
+              secret for private repositories.
+            </p>
+          ) : null}
+          {organizationSecretUnavailableForRepository ? (
+            <p className="text-xs leading-5 text-amber-100/85">
+              GitHub Free organizations do not make organization secrets
+              available to private repositories. Use a repository secret for{" "}
+              {repositoryFullName}.
+            </p>
+          ) : null}
+        </fieldset>
       ) : null}
 
       <div className="rounded-2xl border border-emerald-200/10 bg-slate-950/80 p-4">
@@ -305,7 +372,12 @@ export function ProviderSecretSetupChooser({
           <input
             type="hidden"
             name="confirmationMode"
-            value={verificationError ? "manual" : "verified"}
+            value={
+              verificationError &&
+              verificationErrorAllowsManual(verificationError)
+                ? "manual"
+                : "verified"
+            }
           />
           <div className="flex flex-wrap items-center gap-3">
             <Button
@@ -322,10 +394,14 @@ export function ProviderSecretSetupChooser({
                     aria-hidden="true"
                     className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"
                   />
-                  {verificationError ? "Saving..." : "Checking secrets..."}
+                  {verificationErrorAllowsManual(verificationError)
+                    ? "Saving..."
+                    : "Checking secrets..."}
                 </span>
-              ) : verificationError ? (
+              ) : verificationErrorAllowsManual(verificationError) ? (
                 "Confirm manually"
+              ) : verificationError ? (
+                "Check secrets again"
               ) : confirmed ? (
                 "Confirmed"
               ) : (
@@ -335,8 +411,13 @@ export function ProviderSecretSetupChooser({
             {confirmed ? <Badge tone="success">Setup confirmed</Badge> : null}
             {verificationError ? (
               <p className="max-w-xl text-xs leading-5 text-amber-100/85">
-                Could not verify automatically. Confirm manually if GitHub shows
-                the secret.
+                {verificationErrorText({
+                  error: verificationError,
+                  secretScope,
+                  secretNames,
+                  repositoryFullName,
+                  organizationLogin,
+                })}
               </p>
             ) : null}
           </div>
@@ -419,6 +500,8 @@ function providerSetupSubmitErrorText(error: string): string {
       return "Too many dashboard requests for this repository. Wait a bit before retrying.";
     case "workspace_mutation_forbidden":
       return "Your GitHub user is not allowed to change this workspace.";
+    case "repository_mutation_forbidden":
+      return "Your GitHub user needs write, maintain, or admin access on this repository to confirm provider setup.";
     case "entitlement_denied":
       return "This workspace plan does not allow provider setup confirmation.";
     default:
@@ -465,6 +548,109 @@ function isVerificationFallbackError(
     value === "provider_secret_not_available_to_repository" ||
     value === "provider_secret_check_permission_required"
   );
+}
+
+function verificationErrorAllowsManual(
+  error: VerificationFallbackError | null,
+): boolean {
+  return (
+    error === "provider_secret_check_permission_required" ||
+    error === "repository_not_visible_to_github_app"
+  );
+}
+
+function verificationErrorText(input: {
+  readonly error: VerificationFallbackError;
+  readonly secretScope: ProviderSecretScope;
+  readonly secretNames: string;
+  readonly repositoryFullName: string;
+  readonly organizationLogin: string | null;
+}): string {
+  if (input.error === "provider_secret_not_found") {
+    if (input.secretScope !== "repository") {
+      return `${input.secretNames} was not found as an organization Actions secret in ${input.organizationLogin ?? "this organization"}. Ask an organization owner to create it, or switch to a repository secret and run the repository command.`;
+    }
+
+    return `${input.secretNames} was not found in ${input.repositoryFullName} repository Actions secrets. Run the command below, then check again.`;
+  }
+
+  if (input.error === "provider_secret_not_available_to_repository") {
+    return `${input.secretNames} exists as an organization Actions secret, but ${input.repositoryFullName} is not selected for access. In GitHub, open the organization secret's Repository access settings and add this repository, or switch to a repository secret.`;
+  }
+
+  if (input.error === "repository_not_visible_to_github_app") {
+    return "ReviewRouter could not read this repository through the GitHub App installation. Confirm manually only if the App is installed on this repository and GitHub shows the secret.";
+  }
+
+  return "ReviewRouter could not verify GitHub secret metadata automatically. Confirm manually only if GitHub shows the secret and the repository has access to it.";
+}
+
+function providerSecretScopeOptions(input: {
+  readonly organizationLogin: string | null;
+  readonly organizationSecretPolicy: OrganizationSecretPolicy | null;
+  readonly repositoryFullName: string;
+  readonly repositoryVisibility: string;
+}): readonly {
+  readonly scope: ProviderSecretScope;
+  readonly title: string;
+  readonly body: string;
+  readonly badge?: string;
+  readonly badgeTone?: "neutral" | "accent" | "success" | "warning";
+  readonly disabled: boolean;
+}[] {
+  const repositoryOption = {
+    scope: "repository" as const,
+    title: "Repository secret",
+    body: `Store the secret directly in ${input.repositoryFullName}. GitHub requires repo write access for this command.`,
+    badge: "Maintainer friendly",
+    badgeTone: "success" as const,
+    disabled: false,
+  };
+  if (!input.organizationLogin) {
+    return [repositoryOption];
+  }
+
+  const privateRepoOrgSecretDisabled =
+    input.repositoryVisibility === "private" &&
+    input.organizationSecretPolicy?.privateRepositoriesAvailable === false;
+  const disabledReason =
+    "Unavailable for private repositories on this organization plan.";
+  const planName = input.organizationSecretPolicy?.planName;
+  const planSuffix = planName ? ` Plan: ${planName}.` : "";
+
+  return [
+    repositoryOption,
+    {
+      scope: "organization_selected_repositories" as const,
+      title: "Org selected repositories",
+      body: privateRepoOrgSecretDisabled
+        ? disabledReason
+        : `Store one ${input.organizationLogin} secret and grant this repository access. Add future repositories in GitHub organization settings.${planSuffix}`,
+      badge: "Recommended",
+      badgeTone: "accent" as const,
+      disabled: privateRepoOrgSecretDisabled,
+    },
+    {
+      scope: "organization_private_repositories" as const,
+      title: "Org private repositories",
+      body: privateRepoOrgSecretDisabled
+        ? disabledReason
+        : `Make the organization secret available to private repositories in ${input.organizationLogin}.${planSuffix}`,
+      badge: "Broad",
+      badgeTone: "warning" as const,
+      disabled: privateRepoOrgSecretDisabled,
+    },
+    {
+      scope: "organization_all_repositories" as const,
+      title: "Org all repositories",
+      body: privateRepoOrgSecretDisabled
+        ? disabledReason
+        : `Make the organization secret available to every repository in ${input.organizationLogin}.${planSuffix}`,
+      badge: "Broadest",
+      badgeTone: "warning" as const,
+      disabled: privateRepoOrgSecretDisabled,
+    },
+  ];
 }
 
 function readSubmittedConfirmationMode(
