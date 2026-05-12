@@ -48,14 +48,17 @@
   - возвращает AST без side effects;
   - эмитит action candidate payload только для repository/workspace scopes, а `user_prefs` оставляет как instruction для будущего linked-user flow;
   - хэширует source text и отправляет только redacted excerpt/candidate body, не raw thread.
+- action API получил `POST /api/action/v1/memory-commands`, который принимает только нормализованные ids/commands из interaction workflows и делегирует в use cases `confirm/reject/disable/delete`;
+- interaction normalizer теперь отдаёт отдельные `commands[]` для management-команд, чтобы runtime не отправлял raw comment body в SaaS;
+- OpenAPI/demo contract публикует command request/response schemas для подтверждения, отклонения, disable/forget и безопасного `list_memory` noop.
 
 Текущие проверки:
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 58 files, 296 tests passed;
+- `pnpm test` - 58 files, 298 tests passed;
 - `pnpm lint` - passed;
-- targeted builds: `@reviewrouter/features-memory`, `@reviewrouter/api` - passed.
+- targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 
 Ограничение визуальной проверки: локальный `/dashboard?section=memory` открылся через Next dev без crash, но защищённый dashboard редиректит на публичную главную из-за отсутствия валидной browser session/auth cookie в текущем окружении. Поэтому сам memory экран пока подтверждён typecheck/SSR compile, но не полноценной screenshot QA.
 
@@ -3373,8 +3376,7 @@ Interaction-facing HTTP procedures:
 
 ```text
 POST /api/action/v1/memory-candidates
-POST /api/action/v1/memory-confirmations
-POST /api/action/v1/memory-rejections
+POST /api/action/v1/memory-commands
 ```
 
 `memory-candidates` accepts only `MemoryCandidateEnvelope`. It must reject

@@ -9,11 +9,15 @@ import {
 } from "@reviewrouter/features-action-control-plane";
 import {
   buildActionMemoryBundle,
+  confirmMemorySuggestion,
   createMemoryBodyHash,
+  deleteMemoryItem,
+  disableMemoryItem,
   memoryBodyMaxCharacters,
   memoryRedactedExcerptMaxCharacters,
   normalizeMemoryBody,
   proposeMemoryFromInteraction,
+  rejectMemorySuggestion,
   type MemoryActor,
   type MemoryMutationResult,
   type MemorySource,
@@ -31,6 +35,7 @@ export type RegisterActionMemoryRoutesDependencies = {
 };
 
 const actionMemoryCandidateMaxBytes = 32 * 1024;
+const actionMemoryCommandMaxBytes = 16 * 1024;
 const memoryCandidateScopeSchema = z.enum(["repository", "workspace"]);
 const memoryCandidateBodySchema = z
   .object({
@@ -79,6 +84,51 @@ const memoryCandidateBodySchema = z
 
 type MemoryCandidateBody = z.infer<typeof memoryCandidateBodySchema>;
 
+const memoryCommandIdSchema = z.string().min(1).max(120);
+const memoryActionCommandSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("confirm_suggestion"),
+      suggestionId: memoryCommandIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("reject_suggestion"),
+      suggestionId: memoryCommandIdSchema,
+      reason: z.string().max(500).nullable().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("disable_memory"),
+      memoryItemId: memoryCommandIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("forget_memory"),
+      memoryItemId: memoryCommandIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("list_memory"),
+      view: z.enum(["active", "pending"]).default("active"),
+    })
+    .strict(),
+]);
+const memoryCommandsBodySchema = z
+  .object({
+    protocolVersion: z.literal(1).default(1),
+    commands: z.array(memoryActionCommandSchema).min(1).max(5),
+  })
+  .strict();
+
+type MemoryActionCommandBody = z.infer<
+  typeof memoryCommandsBodySchema
+>["commands"][number];
+
 export async function registerActionMemoryRoutes(
   app: FastifyInstance,
   dependencies: RegisterActionMemoryRoutesDependencies,
@@ -119,7 +169,7 @@ export async function registerActionMemoryRoutes(
 
     try {
       const session = await resolveActionMemorySession(request, dependencies);
-      assertMemoryCandidateEvent(session.eventName);
+      assertMemoryInteractionEvent(session.eventName);
       const body = memoryCandidateBodySchema.parse(request.body);
       const result = await proposeMemoryFromInteraction(
         {
@@ -148,11 +198,50 @@ export async function registerActionMemoryRoutes(
     }
   };
 
+  const submitCommandHandler = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return sendMemoryError(reply, "action_control_plane_disabled", 503);
+    }
+
+    try {
+      const session = await resolveActionMemorySession(request, dependencies);
+      assertMemoryInteractionEvent(session.eventName);
+      const body = memoryCommandsBodySchema.parse(request.body);
+      const actor = memoryActorFromSession(session);
+      const results = [];
+      for (const command of body.commands) {
+        results.push(
+          await executeMemoryActionCommand(
+            command,
+            session,
+            actor,
+            dependencies,
+          ),
+        );
+      }
+      return reply.send({ protocolVersion: 1, results });
+    } catch (error) {
+      return sendCaughtMemoryError(
+        reply,
+        error,
+        "invalid_action_memory_command",
+      );
+    }
+  };
+
   app.get("/api/action/v1/memory", getMemoryHandler);
   app.post(
     "/api/action/v1/memory-candidates",
     { bodyLimit: actionMemoryCandidateMaxBytes },
     submitCandidateHandler,
+  );
+  app.post(
+    "/api/action/v1/memory-commands",
+    { bodyLimit: actionMemoryCommandMaxBytes },
+    submitCommandHandler,
   );
 }
 
@@ -192,7 +281,7 @@ function readBearerToken(request: FastifyRequest): string {
   return match[1];
 }
 
-function assertMemoryCandidateEvent(
+function assertMemoryInteractionEvent(
   eventName: ActionSessionClaims["eventName"],
 ): void {
   if (
@@ -201,6 +290,88 @@ function assertMemoryCandidateEvent(
   ) {
     throw new Error("memory_interaction_event_required");
   }
+}
+
+async function executeMemoryActionCommand(
+  command: MemoryActionCommandBody,
+  session: ActionSessionClaims,
+  actor: MemoryActor,
+  dependencies: RegisterActionMemoryRoutesDependencies,
+): Promise<Record<string, unknown>> {
+  if (command.kind === "confirm_suggestion") {
+    return memoryCommandResponse(
+      command.kind,
+      await confirmMemorySuggestion(
+        {
+          workspaceId: session.workspaceId,
+          suggestionId: command.suggestionId,
+          actor,
+        },
+        dependencies.memory,
+      ),
+    );
+  }
+
+  if (command.kind === "reject_suggestion") {
+    return memoryCommandResponse(
+      command.kind,
+      await rejectMemorySuggestion(
+        {
+          workspaceId: session.workspaceId,
+          suggestionId: command.suggestionId,
+          actor,
+          ...(command.reason ? { reason: command.reason } : {}),
+        },
+        dependencies.memory,
+      ),
+    );
+  }
+
+  if (command.kind === "disable_memory") {
+    return memoryCommandResponse(
+      command.kind,
+      await disableMemoryItem(
+        {
+          workspaceId: session.workspaceId,
+          itemId: command.memoryItemId,
+          actor,
+        },
+        dependencies.memory,
+      ),
+    );
+  }
+
+  if (command.kind === "forget_memory") {
+    return memoryCommandResponse(
+      command.kind,
+      await deleteMemoryItem(
+        {
+          workspaceId: session.workspaceId,
+          itemId: command.memoryItemId,
+          actor,
+        },
+        dependencies.memory,
+      ),
+    );
+  }
+
+  return {
+    kind: command.kind,
+    status: "noop",
+    reason: "list_memory_not_available_in_action_api",
+  };
+}
+
+function memoryCommandResponse(
+  kind: MemoryActionCommandBody["kind"],
+  result: MemoryMutationResult,
+): Record<string, unknown> {
+  const mutation = { ...memoryMutationResponse(result) };
+  delete mutation.protocolVersion;
+  return {
+    ...mutation,
+    kind,
+  };
 }
 
 function memoryActorFromSession(session: ActionSessionClaims): MemoryActor {
@@ -267,12 +438,13 @@ function memoryMutationResponse(
 function sendCaughtMemoryError(
   reply: { code(statusCode: number): { send(payload: unknown): unknown } },
   error: unknown,
+  invalidPayloadCode = "invalid_action_memory_candidate",
 ): unknown {
   const message = error instanceof Error ? error.message : "unknown_error";
   return sendMemoryError(
     reply,
     error instanceof z.ZodError
-      ? "invalid_action_memory_candidate"
+      ? invalidPayloadCode
       : safeActionMemoryErrorCode(message),
     statusCodeForActionMemoryError(message),
   );
@@ -372,11 +544,13 @@ function safeActionMemoryErrorMessage(code: string): string {
     case "action_control_plane_entitlement_denied":
       return "Action control plane is not enabled for this workspace.";
     case "memory_interaction_event_required":
-      return "Memory candidates can only be submitted from interaction workflows.";
+      return "Memory updates can only be submitted from interaction workflows.";
     case "memory_actor_unavailable":
       return "GitHub actor identity is unavailable for this action session.";
     case "invalid_action_memory_candidate":
       return "Action memory candidate payload is invalid.";
+    case "invalid_action_memory_command":
+      return "Action memory command payload is invalid.";
     case "missing_action_session_token":
       return "Action session token is missing.";
     case "invalid_action_session_token":

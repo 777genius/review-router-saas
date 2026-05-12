@@ -231,6 +231,27 @@ export function buildApiDemoDocument(input: {
         auth: "github_actions_oidc_session",
       },
       {
+        method: "GET",
+        path: "/api/action/v1/memory",
+        purpose:
+          "Scoped repository and workspace memory bundle fetched by the GitHub Action.",
+        auth: "github_actions_oidc_session",
+      },
+      {
+        method: "POST",
+        path: "/api/action/v1/memory-candidates",
+        purpose:
+          "Bounded distilled memory candidate submission from interaction workflows.",
+        auth: "github_actions_oidc_session",
+      },
+      {
+        method: "POST",
+        path: "/api/action/v1/memory-commands",
+        purpose:
+          "Normalized memory confirmation, rejection, disable, and forget commands from interaction workflows.",
+        auth: "github_actions_oidc_session",
+      },
+      {
         method: "POST",
         path: "/api/action/v1/health-report",
         purpose: "Safe metadata-only action health telemetry.",
@@ -589,6 +610,39 @@ export function buildApiDemoOpenApiDocument(input: {
           },
         },
       },
+      "/api/action/v1/memory-commands": {
+        post: {
+          summary: "Execute normalized memory commands",
+          description:
+            "Accepts only normalized memory command ids from interaction workflows. The control plane rechecks repository/workspace permissions before confirming, rejecting, disabling, or forgetting memory.",
+          security: [{ reviewRouterActionSession: [] }],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ActionMemoryCommandRequest",
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Commands processed independently in order.",
+              content: {
+                "application/json": {
+                  schema: {
+                    $ref: "#/components/schemas/ActionMemoryCommandResponse",
+                  },
+                },
+              },
+            },
+            "400": { description: "Invalid memory command payload." },
+            "401": { description: "Invalid action session." },
+            "403": { description: "Not an interaction workflow session." },
+          },
+        },
+      },
       "/api/action/v1/health-report": {
         post: {
           summary: "Metadata-only action health report",
@@ -774,6 +828,109 @@ export function buildApiDemoOpenApiDocument(input: {
                   type: "string",
                   enum: ["private", "internal", "public"],
                   default: "internal",
+                },
+              },
+            },
+          },
+        },
+        ActionMemoryCommandRequest: {
+          type: "object",
+          required: ["commands"],
+          additionalProperties: false,
+          properties: {
+            protocolVersion: { type: "number", const: 1, default: 1 },
+            commands: {
+              type: "array",
+              minItems: 1,
+              maxItems: 5,
+              items: {
+                oneOf: [
+                  {
+                    type: "object",
+                    required: ["kind", "suggestionId"],
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: "string",
+                        const: "confirm_suggestion",
+                      },
+                      suggestionId: { type: "string", minLength: 1 },
+                    },
+                  },
+                  {
+                    type: "object",
+                    required: ["kind", "suggestionId"],
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: "string",
+                        const: "reject_suggestion",
+                      },
+                      suggestionId: { type: "string", minLength: 1 },
+                      reason: { type: ["string", "null"], maxLength: 500 },
+                    },
+                  },
+                  {
+                    type: "object",
+                    required: ["kind", "memoryItemId"],
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: "string",
+                        enum: ["disable_memory", "forget_memory"],
+                      },
+                      memoryItemId: { type: "string", minLength: 1 },
+                    },
+                  },
+                  {
+                    type: "object",
+                    required: ["kind"],
+                    additionalProperties: false,
+                    properties: {
+                      kind: { type: "string", const: "list_memory" },
+                      view: {
+                        type: "string",
+                        enum: ["active", "pending"],
+                        default: "active",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        ActionMemoryCommandResponse: {
+          type: "object",
+          required: ["protocolVersion", "results"],
+          additionalProperties: false,
+          properties: {
+            protocolVersion: { type: "number", const: 1 },
+            results: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["kind", "status"],
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: "string",
+                    enum: [
+                      "confirm_suggestion",
+                      "reject_suggestion",
+                      "disable_memory",
+                      "forget_memory",
+                      "list_memory",
+                    ],
+                  },
+                  status: {
+                    type: "string",
+                    enum: ["created", "updated", "noop", "rejected"],
+                  },
+                  id: { type: "string" },
+                  version: { type: "number" },
+                  reason: { type: "string" },
+                  retryable: { type: "boolean" },
                 },
               },
             },

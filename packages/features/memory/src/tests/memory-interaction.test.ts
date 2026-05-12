@@ -201,6 +201,7 @@ describe("memory interaction event normalizer", () => {
           }),
         }),
       ],
+      commands: [],
     });
     if (result.kind === "processed") {
       expect(result.candidates[0]?.sourceTextHash).toMatch(/^[a-f0-9]{64}$/);
@@ -208,6 +209,45 @@ describe("memory interaction event normalizer", () => {
         result.candidates[0]?.sourceTextHash,
       );
     }
+  });
+
+  it("normalizes management commands into command submission payloads", () => {
+    const result = normalizeMemoryInteractionEvent({
+      eventName: "pull_request_review_comment",
+      action: "created",
+      repository: { githubRepositoryId: "123456" },
+      pullRequest: { number: 21 },
+      comment: {
+        id: 55,
+        body: [
+          "/rr remember mem_suggestion_123",
+          "/rr reject-memory mem_suggestion_456 duplicate",
+          "/rr disable-memory mem_789",
+          "/rr forget mem_987",
+        ].join("\n"),
+      },
+    });
+
+    expect(result).toEqual({
+      kind: "processed",
+      instructions: [
+        expect.objectContaining({ kind: "confirm_suggestion" }),
+        expect.objectContaining({ kind: "reject_suggestion" }),
+        expect.objectContaining({ kind: "disable_memory" }),
+        expect.objectContaining({ kind: "forget_memory" }),
+      ],
+      candidates: [],
+      commands: [
+        { kind: "confirm_suggestion", suggestionId: "mem_suggestion_123" },
+        {
+          kind: "reject_suggestion",
+          suggestionId: "mem_suggestion_456",
+          reason: "duplicate",
+        },
+        { kind: "disable_memory", memoryItemId: "mem_789" },
+        { kind: "forget_memory", memoryItemId: "mem_987" },
+      ],
+    });
   });
 
   it("fails closed for unsupported or unsafe interaction events", () => {
@@ -266,6 +306,7 @@ describe("memory interaction event normalizer", () => {
         }),
       ],
       candidates: [],
+      commands: [],
     });
   });
 });

@@ -51,11 +51,35 @@ export type MemoryCandidateSubmissionPayload = {
   };
 };
 
+export type MemoryCommandSubmissionPayload =
+  | {
+      readonly kind: "confirm_suggestion";
+      readonly suggestionId: string;
+    }
+  | {
+      readonly kind: "reject_suggestion";
+      readonly suggestionId: string;
+      readonly reason: string | null;
+    }
+  | {
+      readonly kind: "disable_memory";
+      readonly memoryItemId: string;
+    }
+  | {
+      readonly kind: "forget_memory";
+      readonly memoryItemId: string;
+    }
+  | {
+      readonly kind: "list_memory";
+      readonly view: "active" | "pending";
+    };
+
 export type MemoryInteractionEventNormalizationResult =
   | {
       readonly kind: "processed";
       readonly instructions: readonly MemoryInteractionInstruction[];
       readonly candidates: readonly MemoryCandidateSubmissionPayload[];
+      readonly commands: readonly MemoryCommandSubmissionPayload[];
     }
   | {
       readonly kind: "ignored";
@@ -97,6 +121,7 @@ export function normalizeMemoryInteractionEvent(
         ? candidatePayloadFromInstruction(input, instruction)
         : [],
     ),
+    commands: instructions.flatMap(commandPayloadFromInstruction),
   };
 }
 
@@ -136,6 +161,48 @@ function candidatePayloadFromInstruction(
       },
     },
   ];
+}
+
+function commandPayloadFromInstruction(
+  instruction: MemoryInteractionInstruction,
+): readonly MemoryCommandSubmissionPayload[] {
+  if (instruction.kind === "confirm_suggestion") {
+    return [
+      {
+        kind: instruction.kind,
+        suggestionId: instruction.suggestionId,
+      },
+    ];
+  }
+  if (instruction.kind === "reject_suggestion") {
+    return [
+      {
+        kind: instruction.kind,
+        suggestionId: instruction.suggestionId,
+        reason: instruction.reason,
+      },
+    ];
+  }
+  if (
+    instruction.kind === "disable_memory" ||
+    instruction.kind === "forget_memory"
+  ) {
+    return [
+      {
+        kind: instruction.kind,
+        memoryItemId: instruction.memoryItemId,
+      },
+    ];
+  }
+  if (instruction.kind === "list_memory") {
+    return [
+      {
+        kind: instruction.kind,
+        view: instruction.view,
+      },
+    ];
+  }
+  return [];
 }
 
 function pullRequestNumberForEvent(

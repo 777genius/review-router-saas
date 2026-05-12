@@ -40,6 +40,7 @@ import type {
 import {
   createDashboardMemorySource,
   createMemoryBodyHash,
+  evaluateMemorySafety,
 } from "@reviewrouter/features-memory";
 import type {
   GitHubInstallationRepositoryPort,
@@ -532,6 +533,59 @@ function actionMemorySnapshot(
   };
 }
 
+function actionMemorySuggestionSnapshot(
+  overrides: Partial<MemorySuggestionSnapshot>,
+): MemorySuggestionSnapshot {
+  const suggestedBody =
+    overrides.suggestedBody ?? "Prefer small cohesive pull requests.";
+  const suggestedScope = overrides.suggestedScope ?? "repository";
+  const now = fixedClock.now();
+  const suggestedBodyHash =
+    overrides.suggestedBodyHash ?? createMemoryBodyHash(suggestedBody);
+  return {
+    id: overrides.id ?? "mem_suggestion_1",
+    schemaVersion: 1,
+    workspaceId: overrides.workspaceId ?? "workspace_1",
+    repositoryId:
+      overrides.repositoryId ??
+      (suggestedScope === "repository" ? "repo_1" : null),
+    userId: overrides.userId ?? null,
+    suggestedScope,
+    suggestedBody,
+    suggestedBodyVersion: overrides.suggestedBodyVersion ?? 1,
+    suggestedBodyHash,
+    reason: overrides.reason ?? "explicit_natural_language",
+    source:
+      overrides.source ??
+      createDashboardMemorySource({ actorLogin: "777genius" }),
+    safetyReport:
+      overrides.safetyReport ??
+      evaluateMemorySafety({
+        body: suggestedBody,
+        scope: suggestedScope,
+        redactedSourceExcerpt: null,
+      }),
+    policyVersion: overrides.policyVersion ?? 1,
+    safetyPolicyVersion: overrides.safetyPolicyVersion ?? 1,
+    status: overrides.status ?? "pending",
+    createdByActor:
+      overrides.createdByActor ?? "github_user:github-login:777genius",
+    expiresAt:
+      overrides.expiresAt ?? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+    dedupeKey:
+      overrides.dedupeKey ??
+      `memory:${overrides.workspaceId ?? "workspace_1"}:${suggestedScope}:${suggestedBodyHash}`,
+    relatedMemoryItemId: overrides.relatedMemoryItemId ?? null,
+    relatedSuggestionId: overrides.relatedSuggestionId ?? null,
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now,
+    resolvedAt: overrides.resolvedAt ?? null,
+    resolvedBy: overrides.resolvedBy ?? null,
+    resolutionReason: overrides.resolutionReason ?? null,
+    version: overrides.version ?? 1,
+  };
+}
+
 const expectedApiUrl = (
   process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
   process.env.REVIEW_ROUTER_API_URL ??
@@ -670,6 +724,8 @@ describe("API app", () => {
           ReadyResponse: {},
           ActionMemoryBundle: {},
           ActionMemoryCandidateRequest: {},
+          ActionMemoryCommandRequest: {},
+          ActionMemoryCommandResponse: {},
           ActionMemoryMutationResponse: {},
         },
       },
@@ -680,6 +736,7 @@ describe("API app", () => {
         "/api/action/v1/session/exchange": {},
         "/api/action/v1/memory": {},
         "/api/action/v1/memory-candidates": {},
+        "/api/action/v1/memory-commands": {},
       },
     });
   });
@@ -1303,6 +1360,151 @@ describe("API app", () => {
     ]);
   });
 
+  it("executes normalized memory management commands from interaction workflows", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_disable",
+        body: "Disable this temporary review convention.",
+      }),
+      actionMemorySnapshot({
+        id: "mem_forget",
+        body: "Forget this stale review convention.",
+      }),
+    ]);
+    const memorySuggestions = new InMemoryMemorySuggestions();
+    memorySuggestions.snapshots.set(
+      "mem_suggestion_confirm",
+      actionMemorySuggestionSnapshot({
+        id: "mem_suggestion_confirm",
+        suggestedBody: "Prefer adapters over direct SDK imports in use cases.",
+      }),
+    );
+    memorySuggestions.snapshots.set(
+      "mem_suggestion_reject",
+      actionMemorySuggestionSnapshot({
+        id: "mem_suggestion_reject",
+        suggestedBody: "Always use one huge service class.",
+      }),
+    );
+    const actionMemory = createActionMemoryDependencies({
+      memoryItems,
+      memorySuggestions,
+    });
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:issue_comment",
+          event_name: "issue_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-commands",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+      payload: {
+        protocolVersion: 1,
+        commands: [
+          {
+            kind: "confirm_suggestion",
+            suggestionId: "mem_suggestion_confirm",
+          },
+          {
+            kind: "reject_suggestion",
+            suggestionId: "mem_suggestion_reject",
+            reason: "bad_architecture",
+          },
+          { kind: "disable_memory", memoryItemId: "mem_disable" },
+          { kind: "forget_memory", memoryItemId: "mem_forget" },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      results: [
+        {
+          kind: "confirm_suggestion",
+          status: "created",
+          id: "mem_test_1",
+          version: 1,
+        },
+        {
+          kind: "reject_suggestion",
+          status: "updated",
+          id: "mem_suggestion_reject",
+          version: 2,
+        },
+        {
+          kind: "disable_memory",
+          status: "updated",
+          id: "mem_disable",
+          version: 2,
+        },
+        {
+          kind: "forget_memory",
+          status: "updated",
+          id: "mem_forget",
+          version: 2,
+        },
+      ],
+    });
+    expect(actionMemory.memoryItems.snapshots.get("mem_test_1")).toMatchObject({
+      scope: "repository",
+      body: "Prefer adapters over direct SDK imports in use cases.",
+      originSuggestionId: "mem_suggestion_confirm",
+    });
+    expect(
+      actionMemory.memorySuggestions.snapshots.get("mem_suggestion_confirm"),
+    ).toMatchObject({ status: "confirmed", relatedMemoryItemId: "mem_test_1" });
+    expect(
+      actionMemory.memorySuggestions.snapshots.get("mem_suggestion_reject"),
+    ).toMatchObject({
+      status: "rejected",
+      resolutionReason: "bad_architecture",
+    });
+    expect(actionMemory.memoryItems.snapshots.get("mem_disable")).toMatchObject(
+      {
+        status: "disabled",
+      },
+    );
+    expect(actionMemory.memoryItems.snapshots.get("mem_forget")).toMatchObject({
+      status: "deleted",
+    });
+    expect(actionMemory.audit.events.map((event) => event.action)).toEqual([
+      "memory.suggestion.confirmed",
+      "memory.suggestion.rejected",
+      "memory.item.disabled",
+      "memory.item.deleted",
+    ]);
+  });
+
   it("rejects memory candidate submission outside interaction workflows", async () => {
     const repositories = new InMemoryActionRepositories();
     const sessions = new JoseActionSessionTokenService(
@@ -1356,7 +1558,32 @@ describe("API app", () => {
       error: {
         code: "memory_interaction_event_required",
         message:
-          "Memory candidates can only be submitted from interaction workflows.",
+          "Memory updates can only be submitted from interaction workflows.",
+        retryable: false,
+      },
+    });
+    const commandResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-commands",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+      payload: {
+        protocolVersion: 1,
+        commands: [
+          {
+            kind: "confirm_suggestion",
+            suggestionId: "mem_suggestion_1",
+          },
+        ],
+      },
+    });
+    expect(commandResponse.statusCode).toBe(403);
+    expect(commandResponse.json()).toEqual({
+      error: {
+        code: "memory_interaction_event_required",
+        message:
+          "Memory updates can only be submitted from interaction workflows.",
         retryable: false,
       },
     });
