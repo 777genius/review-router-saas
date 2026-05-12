@@ -36,6 +36,25 @@ export type RegisterActionMemoryRoutesDependencies = {
 
 const actionMemoryCandidateMaxBytes = 32 * 1024;
 const actionMemoryCommandMaxBytes = 16 * 1024;
+const forbiddenRawActionMemoryPayloadKeys = new Set([
+  "code",
+  "conversation",
+  "diff",
+  "messages",
+  "modelresponse",
+  "patch",
+  "prompt",
+  "rawcommand",
+  "rawcomment",
+  "rawcommentbody",
+  "rawconversation",
+  "rawdiff",
+  "rawpatch",
+  "rawprompt",
+  "rawtext",
+  "reviewthread",
+  "sourcecode",
+]);
 const memoryCandidateScopeSchema = z.enum(["repository", "workspace"]);
 const memoryCandidateBodySchema = z
   .object({
@@ -170,6 +189,7 @@ export async function registerActionMemoryRoutes(
     try {
       const session = await resolveActionMemorySession(request, dependencies);
       assertMemoryInteractionEvent(session.eventName);
+      assertNoForbiddenRawActionMemoryPayloadFields(request.body);
       const body = memoryCandidateBodySchema.parse(request.body);
       const result = await proposeMemoryFromInteraction(
         {
@@ -209,6 +229,7 @@ export async function registerActionMemoryRoutes(
     try {
       const session = await resolveActionMemorySession(request, dependencies);
       assertMemoryInteractionEvent(session.eventName);
+      assertNoForbiddenRawActionMemoryPayloadFields(request.body);
       const body = memoryCommandsBodySchema.parse(request.body);
       const actor = memoryActorFromSession(session);
       const results = [];
@@ -290,6 +311,32 @@ function assertMemoryInteractionEvent(
   ) {
     throw new Error("memory_interaction_event_required");
   }
+}
+
+function assertNoForbiddenRawActionMemoryPayloadFields(payload: unknown): void {
+  for (const key of collectPayloadObjectKeys(payload)) {
+    if (forbiddenRawActionMemoryPayloadKeys.has(normalizePayloadKey(key))) {
+      throw new Error("forbidden_action_memory_raw_field");
+    }
+  }
+}
+
+function collectPayloadObjectKeys(payload: unknown): readonly string[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  if (Array.isArray(payload)) {
+    return payload.flatMap(collectPayloadObjectKeys);
+  }
+
+  return Object.entries(payload).flatMap(([key, value]) => [
+    key,
+    ...collectPayloadObjectKeys(value),
+  ]);
+}
+
+function normalizePayloadKey(key: string): string {
+  return key.replace(/[^a-z0-9]/gi, "").toLowerCase();
 }
 
 async function executeMemoryActionCommand(
@@ -496,6 +543,9 @@ function safeActionMemoryErrorCode(message: string): string {
   if (message.includes("memory_actor_unavailable")) {
     return "memory_actor_unavailable";
   }
+  if (message.includes("forbidden_action_memory_raw_field")) {
+    return "forbidden_action_memory_raw_field";
+  }
   if (message.includes("ZodError") || message.includes("invalid_type")) {
     return "invalid_action_memory_candidate";
   }
@@ -551,6 +601,8 @@ function safeActionMemoryErrorMessage(code: string): string {
       return "Action memory candidate payload is invalid.";
     case "invalid_action_memory_command":
       return "Action memory command payload is invalid.";
+    case "forbidden_action_memory_raw_field":
+      return "Action memory payload must not include raw conversation, code, diff, prompt, or model response fields.";
     case "missing_action_session_token":
       return "Action session token is missing.";
     case "invalid_action_session_token":

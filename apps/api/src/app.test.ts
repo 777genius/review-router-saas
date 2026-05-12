@@ -1360,6 +1360,90 @@ describe("API app", () => {
     ]);
   });
 
+  it("rejects raw memory payload fields before persistence", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:issue_comment",
+          event_name: "issue_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const session = exchange.json<{ sessionToken: string }>();
+    const candidateResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_natural_language",
+        requestedScope: "repository",
+        candidateBody: "Prefer small cohesive pull requests.",
+        extractionMethod: "explicit_natural_language",
+        extractionVersion: 1,
+        rawCommentBody:
+          "/rr remember repo Prefer small cohesive pull requests.",
+        source: {
+          sourceId: "issue_comment:12345",
+          sourceVisibility: "private",
+        },
+      },
+    });
+    const commandResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-commands",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        commands: [
+          {
+            kind: "confirm_suggestion",
+            suggestionId: "mem_suggestion_1",
+            rawCommand: "/rr remember mem_suggestion_1",
+          },
+        ],
+      },
+    });
+
+    for (const response of [candidateResponse, commandResponse]) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: {
+          code: "forbidden_action_memory_raw_field",
+          message:
+            "Action memory payload must not include raw conversation, code, diff, prompt, or model response fields.",
+          retryable: false,
+        },
+      });
+    }
+    expect(actionMemory.memorySuggestions.values()).toEqual([]);
+    expect(actionMemory.memoryItems.values()).toEqual([]);
+  });
+
   it("executes normalized memory management commands from interaction workflows", async () => {
     const repositories = new InMemoryActionRepositories();
     const sessions = new JoseActionSessionTokenService(
