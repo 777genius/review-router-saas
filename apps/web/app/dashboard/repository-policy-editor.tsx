@@ -208,15 +208,16 @@ function OpenRouterSecretNotice({
       <p className="font-semibold text-amber-50">
         {secretStatus === "checking" ? (
           <>
-            Checking whether <code className="font-mono">OPENROUTER_API_KEY</code>{" "}
-            is available to this repository...
+            Checking whether{" "}
+            <code className="font-mono">OPENROUTER_API_KEY</code> is available
+            to this repository...
           </>
         ) : (
           <>
             OpenRouter requires{" "}
             <code className="font-mono">OPENROUTER_API_KEY</code> in{" "}
-            {repositoryFullName ? "this repository's" : "the repository"}{" "}
-            GitHub Actions secrets.
+            {repositoryFullName ? "this repository's" : "the repository"} GitHub
+            Actions secrets.
           </>
         )}
       </p>

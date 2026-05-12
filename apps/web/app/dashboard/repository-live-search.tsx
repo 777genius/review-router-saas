@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   Check,
   CheckCircle2,
+  CircleAlert,
   Globe2,
   ListFilter,
   LockKeyhole,
@@ -17,13 +18,14 @@ export type RepositorySearchFilter =
   | "private"
   | "public"
   | "needs_setup"
+  | "needs_attention"
   | "ready";
 
 export type RepositorySearchIndexItem = {
   readonly id: string;
   readonly searchText: string;
   readonly visibility: string;
-  readonly needsSetup: boolean;
+  readonly readiness: "ready" | "needs_setup" | "needs_attention";
 };
 
 const repositoryFilterOptions = [
@@ -31,6 +33,7 @@ const repositoryFilterOptions = [
   { value: "private", label: "Private", icon: LockKeyhole },
   { value: "public", label: "Public", icon: Globe2 },
   { value: "needs_setup", label: "Needs setup", icon: Wrench },
+  { value: "needs_attention", label: "Needs attention", icon: CircleAlert },
   { value: "ready", label: "Ready", icon: CheckCircle2 },
 ] as const;
 
@@ -166,7 +169,7 @@ export function RepositoryLiveSearch({
         </label>
 
         <div
-          className="grid items-stretch gap-1 rounded-xl border border-slate-700/70 bg-slate-950/55 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:h-11 sm:grid-cols-5"
+          className="grid items-stretch gap-1 rounded-xl border border-slate-700/70 bg-slate-950/55 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-3 2xl:h-11 2xl:grid-cols-6"
           role="group"
           aria-label="Repository filters"
         >
@@ -184,7 +187,7 @@ export function RepositoryLiveSearch({
                   updateLocalMatches(normalizedQuery, option.value);
                 }}
                 className={[
-                  "relative flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-cyan-200 sm:min-h-0 sm:h-full",
+                  "relative flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-cyan-200 2xl:min-h-0 2xl:h-full",
                   selected
                     ? "bg-cyan-300/[0.08] text-cyan-100 ring-1 ring-inset ring-cyan-300/70 shadow-[0_0_45px_-32px_rgba(103,232,249,0.95)]"
                     : "text-slate-500 hover:bg-cyan-300/[0.035] hover:text-slate-300",
@@ -323,6 +326,8 @@ function repositoryFilterResultLabel(filter: RepositorySearchFilter): string {
       return "public repositories";
     case "needs_setup":
       return "repositories need setup";
+    case "needs_attention":
+      return "repositories need attention";
     case "ready":
       return "ready repositories";
     case "all":
@@ -355,9 +360,11 @@ function repositoryMatchesFilter(
     case "public":
       return item.visibility === "public";
     case "needs_setup":
-      return item.needsSetup;
+      return item.readiness === "needs_setup";
+    case "needs_attention":
+      return item.readiness === "needs_attention";
     case "ready":
-      return !item.needsSetup;
+      return item.readiness === "ready";
     case "all":
       return true;
   }
@@ -436,6 +443,9 @@ function appendFilterParams(
   }
   if (filter === "needs_setup") {
     params.set("setup", "needed");
+  }
+  if (filter === "needs_attention") {
+    params.set("setup", "attention");
   }
   if (filter === "ready") {
     params.set("setup", "ready");

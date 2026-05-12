@@ -8,6 +8,10 @@ import {
   RepositorySetupActionButton,
   RepositorySetupMergedButton,
 } from "./repository-setup-action-button";
+import {
+  providerSetupConfirmedEventName,
+  type ProviderSetupConfirmedEventDetail,
+} from "./repository-setup-optimistic-events";
 
 type SetupStep = 1 | 2 | 3 | 4;
 
@@ -51,6 +55,8 @@ export function RepositorySetupProgressPanel({
     initialSetupPullRequestUrl,
   );
   const [currentStep, setCurrentStep] = useState(initialStep);
+  const [keepProviderActionMounted, setKeepProviderActionMounted] =
+    useState(false);
   const [toast, setToast] = useState<SetupToast | null>(null);
   const canManage = mutationsEnabled && selected && !archived;
 
@@ -58,12 +64,36 @@ export function RepositorySetupProgressPanel({
     setSetupStatus(initialSetupStatus);
     setSetupPullRequestUrl(initialSetupPullRequestUrl);
     setCurrentStep(initialStep);
+    setKeepProviderActionMounted(false);
     if (initialStep > 2) {
       setToast((current) =>
         current?.errorCode === "setup_pr_not_merged" ? null : current,
       );
     }
   }, [initialSetupPullRequestUrl, initialSetupStatus, initialStep]);
+
+  useEffect(() => {
+    function handleProviderSetupConfirmed(event: Event): void {
+      const detail = (event as CustomEvent<ProviderSetupConfirmedEventDetail>)
+        .detail;
+      if (detail?.repositoryId !== repositoryId) return;
+
+      setSetupStatus("configured");
+      setCurrentStep(4);
+      setKeepProviderActionMounted(true);
+    }
+
+    window.addEventListener(
+      providerSetupConfirmedEventName,
+      handleProviderSetupConfirmed,
+    );
+    return () => {
+      window.removeEventListener(
+        providerSetupConfirmedEventName,
+        handleProviderSetupConfirmed,
+      );
+    };
+  }, [repositoryId]);
 
   const handleSetupMutation = (params: Record<string, string>) => {
     updateBrowserUrl(params);
@@ -147,6 +177,7 @@ export function RepositorySetupProgressPanel({
     mutationsEnabled,
     currentStep,
     enableReviewAction: canManage ? enableReviewAction : null,
+    keepProviderActionMounted,
     onSetupComplete: handleSetupMutation,
     onMergeComplete: handleMergeMutation,
   });
@@ -212,6 +243,7 @@ function buildSetupSteps({
   mutationsEnabled,
   currentStep,
   enableReviewAction,
+  keepProviderActionMounted,
   onSetupComplete,
   onMergeComplete,
 }: {
@@ -225,6 +257,7 @@ function buildSetupSteps({
   readonly mutationsEnabled: boolean;
   readonly currentStep: SetupStep;
   readonly enableReviewAction?: ReactNode;
+  readonly keepProviderActionMounted: boolean;
   readonly onSetupComplete: (params: Record<string, string>) => void;
   readonly onMergeComplete: (params: Record<string, string>) => void;
 }): readonly RepositorySetupProgressStep[] {
@@ -266,10 +299,11 @@ function buildSetupSteps({
         onComplete={onMergeComplete}
       />
     ) : null;
-  const reviewAction =
-    currentStep === 3 && enableReviewAction ? (
-      enableReviewAction
-    ) : currentStep < 4 ? (
+  const shouldRenderProviderAction =
+    Boolean(enableReviewAction) &&
+    (currentStep === 3 || keepProviderActionMounted);
+  const lockedReviewAction =
+    currentStep < 4 ? (
       <Button
         type="button"
         variant="outline"
@@ -281,6 +315,9 @@ function buildSetupSteps({
         <SetupProgressLockIcon />
       </Button>
     ) : null;
+  const reviewAction = shouldRenderProviderAction
+    ? enableReviewAction
+    : lockedReviewAction;
 
   return [
     {

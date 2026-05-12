@@ -9,6 +9,7 @@ import { getPrisma } from "../../../../../src/server/prisma";
 import {
   buildRepositorySearchText,
   repositoryMatchesSearchFilter,
+  repositorySearchReadiness,
   repositorySetupProgressStep,
   tokenizeRepositorySearch,
   type RepositorySearchFilter,
@@ -139,12 +140,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         workflowCurrent,
         providerSetupConfirmed,
       });
-      if (
-        !repositoryMatchesSearchFilter(
-          { repository, setupProgressStep },
-          filter,
-        )
-      ) {
+      const readiness = repositorySearchReadiness({
+        setupProgressStep,
+        healthStatus: repositoryHealth?.status,
+      });
+      if (!repositoryMatchesSearchFilter({ repository, readiness }, filter)) {
         return false;
       }
       if (tokens.length === 0) return true;
@@ -178,6 +178,7 @@ function readRepositorySearchFilter(
 ): RepositorySearchFilter {
   const setup = params.get("setup");
   if (setup === "needed") return "needs_setup";
+  if (setup === "attention") return "needs_attention";
   if (setup === "ready") return "ready";
 
   const visibility = params.get("visibility");

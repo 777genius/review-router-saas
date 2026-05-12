@@ -1,18 +1,5 @@
 import type { Metadata } from "next";
-import {
-  Badge,
-  Button,
-  DialogBackdrop,
-  DialogClose,
-  DialogDescription,
-  DialogPopup,
-  DialogPortal,
-  DialogRoot,
-  DialogTitle,
-  DialogTrigger,
-  LinkButton,
-  SelectField,
-} from "@reviewrouter/ui";
+import { Badge, LinkButton, SelectField } from "@reviewrouter/ui";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
@@ -60,10 +47,11 @@ import {
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
-import { summarizeWorkspaceHealth } from "../../src/server/repository-health-view";
+import type { WorkspaceHealthSummary } from "../../src/server/repository-health-view";
 import {
   buildRepositorySearchText,
   repositoryMatchesSearchFilter,
+  repositorySearchReadiness,
   repositorySetupProgressStep,
   tokenizeRepositorySearch,
   workflowSetupAlreadyCurrent,
@@ -80,12 +68,13 @@ import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 import { DashboardSectionTabs } from "./dashboard-section-tabs";
 import { DashboardWorkspaceTabs } from "./dashboard-workspace-tabs";
-import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
+import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
 import {
   RepositoryLiveSearch,
   type RepositorySearchFilter,
   type RepositorySearchIndexItem,
 } from "./repository-live-search";
+import { RepositorySetupDisclosureToggle } from "./repository-setup-optimistic-status";
 import { RepositorySetupProgressPanel as RepositorySetupProgressPanelClient } from "./repository-setup-progress-panel";
 import {
   RepositoryPolicyEditor,
@@ -679,7 +668,7 @@ function DashboardSectionNav({
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repositoryCount: number;
-  readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
+  readonly workspaceHealth: WorkspaceHealthSummary;
   readonly selectedSection: DashboardSection;
   readonly workspaceKey: string;
   readonly fallbackUser: {
@@ -793,12 +782,12 @@ function WorkspaceCard({
           installation: selectedInstallation,
         })
       : null;
-  const workspaceHealth = summarizeWorkspaceHealth(
-    repositories.map(
-      (repository) =>
-        health.find((item) => item.repositoryId === repository.id)?.status,
-    ),
-  );
+  const workspaceHealth = summarizeWorkspaceSetupReadiness({
+    repositories,
+    health,
+    providerSetup,
+    providerSecretCheckFailedRepositoryFullName,
+  });
   const activeInstallations = workspace.installations.filter(
     (installation) => installation.status === "active",
   );
@@ -1369,7 +1358,7 @@ function DashboardSectionHeader({
 }: {
   readonly selectedSection: DashboardSection;
   readonly repositoryCount: number;
-  readonly workspaceHealth: ReturnType<typeof summarizeWorkspaceHealth>;
+  readonly workspaceHealth: WorkspaceHealthSummary;
   readonly activeConfig: ReviewConfiguration;
 }): React.ReactElement {
   const meta = dashboardSectionMeta[selectedSection];
@@ -1461,6 +1450,133 @@ function ReadinessInlineStat({
   );
 }
 
+function summarizeWorkspaceSetupReadiness({
+  repositories,
+  health,
+  providerSetup,
+  providerSecretCheckFailedRepositoryFullName,
+}: {
+  readonly repositories: DashboardWorkspaceData["repositories"];
+  readonly health: DashboardWorkspaceData["health"];
+  readonly providerSetup: DashboardWorkspaceData["providerSetup"];
+  readonly providerSecretCheckFailedRepositoryFullName: string | null;
+}): WorkspaceHealthSummary {
+  const repositoryHealthById = new Map(
+    health.map((item) => [item.repositoryId, item] as const),
+  );
+  const configuredProviderSetupByRepositoryId =
+    buildConfiguredProviderSetupByRepositoryId(providerSetup);
+  const counts = repositories.reduce(
+    (accumulator, repository) => {
+      const repositoryHealth = repositoryHealthById.get(repository.id);
+      const workflowCurrent = workflowSetupAlreadyCurrent(
+        repositoryHealth?.status,
+      );
+      const setupProgressStep = repositorySetupProgressStep({
+        setupStatus: repository.setupStatus,
+        healthStatus: repositoryHealth?.status,
+        workflowCurrent,
+        providerSetupConfirmed: isRepositoryProviderSetupConfirmed({
+          repository,
+          repositoryHealth,
+          configuredProviderSetupByRepositoryId,
+          providerSecretCheckFailedRepositoryFullName,
+        }),
+      });
+      const readiness = repositorySearchReadiness({
+        setupProgressStep,
+        healthStatus: repositoryHealth?.status,
+      });
+
+      if (readiness === "ready") accumulator.ready += 1;
+      else if (readiness === "needs_attention") accumulator.needsAttention += 1;
+      else accumulator.needsSetup += 1;
+      return accumulator;
+    },
+    { ready: 0, needsSetup: 0, needsAttention: 0, unknown: 0 },
+  );
+
+  if (repositories.length === 0) {
+    return {
+      ...counts,
+      label: "No repositories synced",
+      tone: "neutral",
+    };
+  }
+  if (counts.needsAttention > 0) {
+    return {
+      ...counts,
+      label: `${counts.needsAttention} need attention`,
+      tone: "danger",
+    };
+  }
+  if (counts.needsSetup > 0) {
+    return {
+      ...counts,
+      label: `${counts.needsSetup} need setup`,
+      tone: "warning",
+    };
+  }
+  return {
+    ...counts,
+    label: "All synced repos ready",
+    tone: "success",
+  };
+}
+
+function buildConfiguredProviderSetupByRepositoryId(
+  providerSetup: DashboardWorkspaceData["providerSetup"],
+): ReadonlyMap<string, { readonly updatedAt: Date }> {
+  const configuredProviderSetupByRepositoryId = new Map<
+    string,
+    { readonly updatedAt: Date }
+  >();
+  for (const item of providerSetup) {
+    if (!item.repositoryId || item.state !== "configured") continue;
+
+    const existing = configuredProviderSetupByRepositoryId.get(
+      item.repositoryId,
+    );
+    if (!existing || existing.updatedAt < item.updatedAt) {
+      configuredProviderSetupByRepositoryId.set(item.repositoryId, {
+        updatedAt: item.updatedAt,
+      });
+    }
+  }
+
+  return configuredProviderSetupByRepositoryId;
+}
+
+function isRepositoryProviderSetupConfirmed({
+  repository,
+  repositoryHealth,
+  configuredProviderSetupByRepositoryId,
+  providerSecretCheckFailedRepositoryFullName,
+}: {
+  readonly repository: DashboardWorkspaceData["repositories"][number];
+  readonly repositoryHealth:
+    | DashboardWorkspaceData["health"][number]
+    | undefined;
+  readonly configuredProviderSetupByRepositoryId: ReadonlyMap<
+    string,
+    { readonly updatedAt: Date }
+  >;
+  readonly providerSecretCheckFailedRepositoryFullName: string | null;
+}): boolean {
+  const providerSetupConfirmedAt = configuredProviderSetupByRepositoryId.get(
+    repository.id,
+  )?.updatedAt;
+  const providerSecretCheckFailed =
+    repository.fullName === providerSecretCheckFailedRepositoryFullName;
+
+  return (
+    !providerSecretCheckFailed &&
+    providerSetupConfirmedAt !== undefined &&
+    (!repositoryHealth?.latestActionHealthReceivedAt ||
+      providerSetupConfirmedAt >= repositoryHealth.latestActionHealthReceivedAt)
+  );
+}
+
 function RepositoryTable({
   workspace,
   repositories,
@@ -1514,22 +1630,8 @@ function RepositoryTable({
   const repositoryProvisioningById = new Map(
     provisioning.map((item) => [item.repositoryId, item] as const),
   );
-  const configuredProviderSetupByRepositoryId = new Map<
-    string,
-    { readonly updatedAt: Date }
-  >();
-  for (const item of providerSetup) {
-    if (!item.repositoryId || item.state !== "configured") continue;
-
-    const existing = configuredProviderSetupByRepositoryId.get(
-      item.repositoryId,
-    );
-    if (!existing || existing.updatedAt < item.updatedAt) {
-      configuredProviderSetupByRepositoryId.set(item.repositoryId, {
-        updatedAt: item.updatedAt,
-      });
-    }
-  }
+  const configuredProviderSetupByRepositoryId =
+    buildConfiguredProviderSetupByRepositoryId(providerSetup);
 
   const rows = repositories.map((repository) => {
     const repositoryHealth = repositoryHealthById.get(repository.id);
@@ -1542,22 +1644,20 @@ function RepositoryTable({
     const workflowCurrent = workflowSetupAlreadyCurrent(
       repositoryHealth?.status,
     );
-    const providerSetupConfirmedAt = configuredProviderSetupByRepositoryId.get(
-      repository.id,
-    )?.updatedAt;
-    const providerSecretCheckFailed =
-      repository.fullName === providerSecretCheckFailedRepositoryFullName;
-    const providerSetupConfirmed =
-      !providerSecretCheckFailed &&
-      providerSetupConfirmedAt !== undefined &&
-      (!repositoryHealth?.latestActionHealthReceivedAt ||
-        providerSetupConfirmedAt >=
-          repositoryHealth.latestActionHealthReceivedAt);
     const setupProgressStep = repositorySetupProgressStep({
       setupStatus: repository.setupStatus,
       healthStatus: repositoryHealth?.status,
       workflowCurrent,
-      providerSetupConfirmed,
+      providerSetupConfirmed: isRepositoryProviderSetupConfirmed({
+        repository,
+        repositoryHealth,
+        configuredProviderSetupByRepositoryId,
+        providerSecretCheckFailedRepositoryFullName,
+      }),
+    });
+    const readiness = repositorySearchReadiness({
+      setupProgressStep,
+      healthStatus: repositoryHealth?.status,
     });
     const searchableText = buildRepositorySearchText({
       fullName: repository.fullName,
@@ -1579,6 +1679,7 @@ function RepositoryTable({
       setupPullRequestUrl,
       workflowCurrent,
       setupProgressStep,
+      readiness,
       searchableText,
     };
   });
@@ -1588,7 +1689,7 @@ function RepositoryTable({
       id: row.repository.id,
       searchText: row.searchableText,
       visibility: row.repository.visibility,
-      needsSetup: row.setupProgressStep < 4,
+      readiness: row.readiness,
     }),
   );
   const initialSearchTokens = tokenizeRepositorySearch(searchQuery);
@@ -1739,6 +1840,7 @@ function RepositoryTable({
                       <Badge tone="warning">Archived</Badge>
                     ) : null}
                     <RepositorySetupDisclosureToggle
+                      repositoryId={repository.id}
                       disclosureId={setupDisclosureId}
                       currentStep={setupProgressStep}
                     />
@@ -1864,39 +1966,6 @@ function formatRepositoryStars(count: number): string {
   }).format(count);
 }
 
-function RepositorySetupDisclosureToggle({
-  disclosureId,
-  currentStep,
-}: {
-  readonly disclosureId: string;
-  readonly currentStep: 1 | 2 | 3 | 4;
-}): React.ReactElement {
-  const isComplete = currentStep === 4;
-  return (
-    <label
-      htmlFor={disclosureId}
-      title={repositorySetupProgressSummary(currentStep)}
-      className={[
-        "setup-toggle inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 font-mono text-xs font-semibold uppercase tracking-[0.12em] transition duration-200 ease-out hover:saturate-125",
-        isComplete
-          ? "border-emerald-300/40 bg-emerald-400/[0.09] text-emerald-100 hover:border-emerald-300/60 hover:bg-emerald-400/[0.14]"
-          : "border-cyan-300/25 bg-cyan-300/[0.035] text-cyan-100 hover:border-cyan-300/50 hover:bg-cyan-300/[0.075]",
-      ].join(" ")}
-    >
-      <span>Setup</span>
-      <span
-        className={[
-          "text-[0.65rem] tracking-normal",
-          isComplete ? "text-emerald-200/80" : "text-slate-400",
-        ].join(" ")}
-      >
-        {currentStep}/4
-      </span>
-      {isComplete ? <SetupCompleteCheckIcon /> : <SetupDisclosureChevron />}
-    </label>
-  );
-}
-
 function RepositorySetupProgressPanel({
   workspace,
   repository,
@@ -1918,17 +1987,16 @@ function RepositorySetupProgressPanel({
     workspace,
     repository.fullName,
   );
-  const enableReviewAction =
-    installation ? (
-      <RepositoryProviderSecretsAction
-        workspace={workspace}
-        repository={repository}
-        setupStatus={repository.setupStatus}
-        disabled={!canManage}
-        triggerVariant="outline"
-        triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
-      />
-    ) : null;
+  const enableReviewAction = installation ? (
+    <RepositoryProviderSecretsAction
+      workspace={workspace}
+      repository={repository}
+      setupStatus={repository.setupStatus}
+      disabled={!canManage}
+      triggerVariant="outline"
+      triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
+    />
+  ) : null;
 
   return (
     <RepositorySetupProgressPanelClient
@@ -1945,58 +2013,6 @@ function RepositorySetupProgressPanel({
       enableReviewAction={canManage ? enableReviewAction : null}
     />
   );
-}
-
-function SetupDisclosureChevron(): React.ReactElement {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 16 16"
-      className="setup-chevron h-3.5 w-3.5 shrink-0 text-cyan-100 transition-transform duration-200 ease-out motion-reduce:transition-none"
-      fill="none"
-    >
-      <path
-        d="M4 6l4 4 4-4"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-
-function SetupCompleteCheckIcon(): React.ReactElement {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 16 16"
-      className="h-3.5 w-3.5 shrink-0 text-emerald-200"
-      fill="none"
-    >
-      <path
-        d="M3.5 8.5l3 3 6-6"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function repositorySetupProgressSummary(step: 1 | 2 | 3 | 4): string {
-  switch (step) {
-    case 1:
-      return "1 of 4 - setup PR needed";
-    case 2:
-      return "2 of 4 - merge setup PR";
-    case 3:
-      return "3 of 4 - enable review";
-    case 4:
-      return "4 of 4 - complete";
-  }
 }
 
 type DashboardInstallation = DashboardWorkspace["installations"][number];
@@ -2086,76 +2102,18 @@ function RepositoryProviderSecretsDialog({
       : null;
 
   return (
-    <DialogRoot>
-      <DialogTrigger
-        render={
-          <Button
-            variant={triggerVariant}
-            size={triggerSize}
-            className={triggerClassName}
-            disabled={disabled}
-          />
-        }
-      >
-        {triggerLabel}
-      </DialogTrigger>
-      <DialogPortal>
-        <DialogBackdrop className="z-50" />
-        <DialogPopup className="z-[60] max-h-[86vh] w-[min(96vw,58rem)] overflow-y-auto border-emerald-300/20 bg-[#061015] p-0 shadow-[0_30px_120px_rgba(0,0,0,0.62),0_0_90px_-48px_rgba(190,255,61,0.7)]">
-          <DialogClose
-            render={
-              <button
-                type="button"
-                className="absolute right-4 top-4 z-10 inline-grid h-10 w-10 place-items-center rounded-full border border-cyan-200/15 bg-slate-950/75 text-cyan-100 shadow-[0_12px_40px_-30px_rgba(0,240,255,0.95)] transition hover:-translate-y-0.5 hover:border-cyan-200/35 hover:bg-cyan-300/[0.08] hover:text-cyan-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 active:translate-y-0"
-              />
-            }
-            aria-label="Close provider secrets dialog"
-          >
-            <span className="sr-only">Close</span>
-            <span aria-hidden="true" className="relative h-4 w-4">
-              <span className="absolute left-1/2 top-1/2 h-0.5 w-4 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
-              <span className="absolute left-1/2 top-1/2 h-0.5 w-4 -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded-full bg-current" />
-            </span>
-          </DialogClose>
-          <div className="border-b border-emerald-300/15 p-5 sm:p-6">
-            <div className="flex flex-wrap items-start justify-between gap-4 pr-12">
-              <div className="min-w-0">
-                <Badge tone="success">Provider secrets</Badge>
-                <DialogTitle className="mt-3 text-xl font-semibold text-emerald-50">
-                  Connect model credentials for {repositoryFullName}
-                </DialogTitle>
-                <DialogDescription className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-                  Merge the setup PR first, then run one command from your own
-                  computer. The command connects your AI provider to{" "}
-                  {repositoryFullName}; secrets are written directly to GitHub
-                  Actions, while ReviewRouter SaaS stores only metadata and
-                  model settings. Run it in a terminal from the{" "}
-                  {repositoryFullName} repository directory.
-                </DialogDescription>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge tone={organizationLogin ? "accent" : "neutral"}>
-                  {organizationLogin
-                    ? `${organizationLogin} selected repo secret`
-                    : "repository secret"}
-                </Badge>
-              </div>
-            </div>
-          </div>
-          <div className="p-5 sm:p-6">
-            <ProviderSecretSetupChooser
-              workspaceId={workspaceId}
-              repositoryId={repositoryId}
-              repositoryFullName={repositoryFullName}
-              organizationLogin={organizationLogin}
-              codexOAuthGuidance={guidanceSet.codexOAuth}
-              codexApiKeyGuidance={guidanceSet.codexApiKey}
-              openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}
-            />
-          </div>
-        </DialogPopup>
-      </DialogPortal>
-    </DialogRoot>
+    <ProviderSecretSetupDialog
+      workspaceId={workspaceId}
+      repositoryId={repositoryId}
+      repositoryFullName={repositoryFullName}
+      organizationLogin={organizationLogin}
+      guidanceSet={guidanceSet}
+      triggerLabel={triggerLabel}
+      triggerVariant={triggerVariant}
+      triggerSize={triggerSize}
+      triggerClassName={triggerClassName}
+      disabled={disabled}
+    />
   );
 }
 
@@ -2486,6 +2444,7 @@ function readRepositorySearchFilter(
 ): RepositorySearchFilter {
   const setup = readParam(params.setup);
   if (setup === "needed") return "needs_setup";
+  if (setup === "attention") return "needs_attention";
   if (setup === "ready") return "ready";
 
   const visibility = readParam(params.visibility);

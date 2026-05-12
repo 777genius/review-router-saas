@@ -12,7 +12,12 @@ export type RepositorySearchFilter =
   | "private"
   | "public"
   | "needs_setup"
+  | "needs_attention"
   | "ready";
+export type RepositorySearchReadiness =
+  | "ready"
+  | "needs_setup"
+  | "needs_attention";
 
 export type RepositorySetupStep = 1 | 2 | 3 | 4;
 
@@ -67,7 +72,7 @@ export function buildRepositorySearchText({
 export function repositoryMatchesSearchFilter(
   row: {
     readonly repository: { readonly visibility: string };
-    readonly setupProgressStep: RepositorySetupStep;
+    readonly readiness: RepositorySearchReadiness;
   },
   filter: RepositorySearchFilter,
 ): boolean {
@@ -77,9 +82,11 @@ export function repositoryMatchesSearchFilter(
     case "public":
       return row.repository.visibility === "public";
     case "needs_setup":
-      return row.setupProgressStep < 4;
+      return row.readiness === "needs_setup";
+    case "needs_attention":
+      return row.readiness === "needs_attention";
     case "ready":
-      return row.setupProgressStep === 4;
+      return row.readiness === "ready";
     case "all":
       return true;
   }
@@ -108,6 +115,18 @@ export function repositorySetupProgressStep({
   }
 
   return 1;
+}
+
+export function repositorySearchReadiness({
+  setupProgressStep,
+  healthStatus,
+}: {
+  readonly setupProgressStep: RepositorySetupStep;
+  readonly healthStatus: RepositoryHealthStatus | undefined;
+}): RepositorySearchReadiness {
+  const healthView = describeRepositoryHealth(healthStatus);
+  if (healthView.tone === "danger") return "needs_attention";
+  return setupProgressStep === 4 ? "ready" : "needs_setup";
 }
 
 export function workflowSetupAlreadyCurrent(

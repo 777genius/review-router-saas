@@ -91,17 +91,9 @@ export function ActionToast({
           ) : null}
         </div>
       ),
-      { id: toastId },
+      secondaryAction ? { id: toastId, duration: Infinity } : { id: toastId },
     );
-  }, [
-    toastId,
-    tone,
-    title,
-    body,
-    actionUrl,
-    actionLabel,
-    secondaryAction,
-  ]);
+  }, [toastId, tone, title, body, actionUrl, actionLabel, secondaryAction]);
 
   useEffect(() => {
     if (!autoOpenUrl) return;

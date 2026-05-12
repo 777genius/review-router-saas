@@ -1,11 +1,10 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, type FormEvent } from "react";
 import { Tabs } from "@base-ui/react/tabs";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { Badge, Button, CodeBlock } from "@reviewrouter/ui";
-import { confirmProviderSecretSetupClientAction } from "./actions";
+import { providerSetupConfirmedEvent } from "./repository-setup-optimistic-events";
 
 type ProviderChoice = "codex_oauth" | "codex_api_key" | "openrouter_api_key";
 type VerificationFallbackError =
@@ -59,7 +58,6 @@ export function ProviderSecretSetupChooser({
   codexApiKeyGuidance,
   openRouterApiKeyGuidance,
 }: ProviderSecretSetupChooserProps): React.ReactElement {
-  const router = useRouter();
   const [providerChoice, setProviderChoice] =
     useState<ProviderChoice>("codex_oauth");
   const [useOrganizationSecret, setUseOrganizationSecret] = useState(
@@ -68,6 +66,7 @@ export function ProviderSecretSetupChooser({
   const [verificationError, setVerificationError] =
     useState<VerificationFallbackError | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   const activeGuidance =
@@ -102,7 +101,10 @@ export function ProviderSecretSetupChooser({
             body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The script validates the active Codex account and writes CODEX_AUTH_JSON directly to GitHub Actions secrets.`,
             footnote:
               "If Codex later says the token is stale, run codex login again and rerun this same command.",
-            apiKey: null as { readonly label: string; readonly url: string } | null,
+            apiKey: null as {
+              readonly label: string;
+              readonly url: string;
+            } | null,
           }
         : providerChoice === "codex_api_key"
           ? {
@@ -139,6 +141,7 @@ export function ProviderSecretSetupChooser({
             setProviderChoice(value);
             setVerificationError(null);
             setSubmitError(null);
+            setConfirmed(false);
           }
         }}
       >
@@ -182,6 +185,7 @@ export function ProviderSecretSetupChooser({
               setUseOrganizationSecret(event.currentTarget.checked);
               setVerificationError(null);
               setSubmitError(null);
+              setConfirmed(false);
             }}
             className="mt-1 h-4 w-4 accent-cyan-300"
           />
@@ -246,12 +250,15 @@ export function ProviderSecretSetupChooser({
           </p>
         )}
         <form
-          action={(formData) => {
+          onSubmit={(event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+            const formData = new FormData(event.currentTarget);
             const submittedConfirmationMode =
               readSubmittedConfirmationMode(formData);
             setSubmitError(null);
+            setConfirmed(false);
             startTransition(() => {
-              void confirmProviderSecretSetupClientAction(formData)
+              void confirmProviderSecretSetup(formData)
                 .then(({ params }) => {
                   if (
                     submittedConfirmationMode === "verified" &&
@@ -265,13 +272,15 @@ export function ProviderSecretSetupChooser({
                     setSubmitError(params.error);
                     return;
                   }
-                  closeProviderSecretsDialog();
-                  router.replace(buildDashboardMutationUrl(params), {
-                    scroll: false,
-                  });
-                  if (params.notice === "provider_setup_confirmed") {
-                    router.refresh();
-                  }
+                  setVerificationError(null);
+                  setSubmitError(null);
+                  setConfirmed(true);
+                  window.dispatchEvent(
+                    providerSetupConfirmedEvent({
+                      repositoryId,
+                      repositoryFullName,
+                    }),
+                  );
                 })
                 .catch(() => {
                   setSubmitError("dashboard_action_failed");
@@ -304,7 +313,7 @@ export function ProviderSecretSetupChooser({
               variant="solid"
               size="sm"
               className="min-h-11 rounded-xl px-5"
-              disabled={isPending || !activeCommand}
+              disabled={isPending || confirmed || !activeCommand}
               aria-busy={isPending}
             >
               {isPending ? (
@@ -317,10 +326,13 @@ export function ProviderSecretSetupChooser({
                 </span>
               ) : verificationError ? (
                 "Confirm manually"
+              ) : confirmed ? (
+                "Confirmed"
               ) : (
                 "I ran this script"
               )}
             </Button>
+            {confirmed ? <Badge tone="success">Setup confirmed</Badge> : null}
             {verificationError ? (
               <p className="max-w-xl text-xs leading-5 text-amber-100/85">
                 Could not verify automatically. Confirm manually if GitHub shows
@@ -333,6 +345,20 @@ export function ProviderSecretSetupChooser({
               {providerSetupSubmitErrorText(submitError)}
             </p>
           ) : null}
+          {confirmed ? (
+            <div
+              className="mt-3 rounded-xl border border-emerald-300/25 bg-emerald-300/[0.08] p-3 text-sm leading-6 text-emerald-50"
+              role="status"
+            >
+              <p className="font-semibold">
+                Provider setup is marked complete for {repositoryFullName}.
+              </p>
+              <p className="mt-1 text-emerald-100/80">
+                The setup progress was updated. Keep this open if you want to
+                copy another provider command, or close it when done.
+              </p>
+            </div>
+          ) : null}
         </form>
         <p className="mt-3 text-xs leading-5 text-emerald-100/80">
           {providerDetails.footnote} ReviewRouter SaaS never receives provider
@@ -341,6 +367,44 @@ export function ProviderSecretSetupChooser({
       </div>
     </div>
   );
+}
+
+type DashboardActionResult = {
+  readonly params: Record<string, string>;
+};
+
+async function confirmProviderSecretSetup(
+  formData: FormData,
+): Promise<DashboardActionResult> {
+  const response = await fetch("/api/dashboard/provider-secret-setup/confirm", {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    throw new Error("provider_setup_confirm_failed");
+  }
+
+  const result: unknown = await response.json();
+  if (!isDashboardActionResult(result)) {
+    throw new Error("provider_setup_confirm_invalid_response");
+  }
+
+  return result;
+}
+
+function isDashboardActionResult(
+  input: unknown,
+): input is DashboardActionResult {
+  if (!input || typeof input !== "object" || !("params" in input)) {
+    return false;
+  }
+
+  const params = (input as { readonly params: unknown }).params;
+  if (!params || typeof params !== "object") {
+    return false;
+  }
+
+  return Object.values(params).every((value) => typeof value === "string");
 }
 
 function providerSetupSubmitErrorText(error: string): string {
@@ -407,28 +471,4 @@ function readSubmittedConfirmationMode(
   formData: FormData,
 ): "verified" | "manual" {
   return formData.get("confirmationMode") === "manual" ? "manual" : "verified";
-}
-
-function buildDashboardMutationUrl(params: Record<string, string>): string {
-  const search = new URLSearchParams(window.location.search);
-
-  search.delete("notice");
-  search.delete("error");
-  search.delete("pr");
-
-  for (const [key, value] of Object.entries(params)) {
-    if (value) {
-      search.set(key, value);
-    }
-  }
-
-  return `/dashboard?${search.toString()}${window.location.hash}`;
-}
-
-function closeProviderSecretsDialog(): void {
-  document
-    .querySelector<HTMLButtonElement>(
-      '[aria-label="Close provider secrets dialog"]',
-    )
-    ?.click();
 }
