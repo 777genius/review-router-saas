@@ -39,6 +39,10 @@ describe("entitlements", () => {
     expect(freeBetaEntitlement("workspace_1").limits).toEqual({
       maxRepositories: freeBetaLimits.maxRepositories,
       maxWorkspacesPerUser: freeBetaLimits.maxWorkspacesPerUser,
+      maxActiveMemoryItemsPerWorkspace:
+        freeBetaLimits.maxActiveMemoryItemsPerWorkspace,
+      maxPendingMemorySuggestionsPerWorkspace:
+        freeBetaLimits.maxPendingMemorySuggestionsPerWorkspace,
     });
     expect(freeBetaLimits.setupPrAttemptsPerRepositoryPerHour).toBeGreaterThan(
       0,

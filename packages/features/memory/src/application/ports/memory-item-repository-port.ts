@@ -41,6 +41,10 @@ export interface MemoryItemRepositoryPort {
     readonly bodyHash: string;
   }): Promise<MemoryItemSnapshot | null>;
 
+  countActiveForWorkspace(input: {
+    readonly workspaceId: string;
+  }): Promise<number>;
+
   listActiveForBundle(input: {
     readonly workspaceId: string;
     readonly repositoryId: string;

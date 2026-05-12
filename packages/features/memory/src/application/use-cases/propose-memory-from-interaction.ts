@@ -13,6 +13,7 @@ import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
 } from "./memory-use-case-types";
+import { rejectIfPendingMemorySuggestionQuotaExceeded } from "./enforce-memory-quota";
 
 export type ProposeMemoryFromInteractionInput = {
   readonly envelope: MemoryCandidateEnvelope;
@@ -96,6 +97,15 @@ export async function proposeMemoryFromInteraction(
   }
 
   const now = dependencies.clock.now();
+  if (safety.severity !== "blocked") {
+    const quotaRejection =
+      await rejectIfPendingMemorySuggestionQuotaExceeded(
+        { workspaceId: envelope.workspaceId, now },
+        dependencies,
+      );
+    if (quotaRejection) return quotaRejection;
+  }
+
   const suggestionInput = {
     id: dependencies.memoryIds.newId("mem_suggestion"),
     workspaceId: envelope.workspaceId,
@@ -121,6 +131,18 @@ export async function proposeMemoryFromInteraction(
 
   try {
     return await dependencies.memoryTransaction.run(async (tx) => {
+      if (snapshot.status === "pending") {
+        const transactionalQuotaRejection =
+          await rejectIfPendingMemorySuggestionQuotaExceeded(
+            { workspaceId: envelope.workspaceId, now },
+            {
+              memorySuggestions: tx.memorySuggestions,
+              memoryQuotaPolicy: dependencies.memoryQuotaPolicy,
+            },
+          );
+        if (transactionalQuotaRejection) return transactionalQuotaRejection;
+      }
+
       await tx.memorySuggestions.save(suggestion);
       const supersededSuggestions = shouldSupersedeBySourceEdit(envelope)
         ? await tx.memorySuggestions.supersedePendingBySource({

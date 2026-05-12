@@ -16,6 +16,10 @@ import {
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
 } from "../../../packages/features/memory/src/index.ts";
+import {
+  freeBetaEntitlement,
+  PrismaEntitlementRepository,
+} from "../../../packages/features/entitlements/src/index.ts";
 import { createMemoryOutboxHandlers } from "../../../packages/features/memory/src/infrastructure/outbox/memory-index-outbox-handlers.ts";
 import {
   PrismaOutboxEventRepository,
@@ -95,6 +99,7 @@ const suffix = marker.slice(-10);
 const adminLogin = `rr-memory-admin-${suffix}`;
 const memberLogin = `rr-memory-member-${suffix}`;
 const otherAdminLogin = `rr-memory-other-admin-${suffix}`;
+const quotaAdminLogin = `rr-memory-quota-admin-${suffix}`;
 const actionSessionSecret =
   process.env.REVIEW_ROUTER_ACTION_SESSION_SECRET ??
   process.env.AUTH_SECRET ??
@@ -136,6 +141,27 @@ try {
   });
   workspaceSlugs.push(other.workspaceSlug);
 
+  const quota = await createRepositoryFixture({
+    workspaceSlug: `rr-memory-e2e-quota-${suffix}`,
+    workspaceName: `Memory E2E Quota ${suffix}`,
+    installationGithubId: BigInt(`97${suffix}`),
+    repositoryGithubId: BigInt(`98${suffix}`),
+    owner: "review-router-memory-e2e-quota",
+    name: `repo-${suffix}`,
+    adminLogin: quotaAdminLogin,
+  });
+  workspaceSlugs.push(quota.workspaceSlug);
+
+  const quotaEntitlement = freeBetaEntitlement(quota.workspaceId);
+  await new PrismaEntitlementRepository(prisma).upsertWorkspaceEntitlement({
+    ...quotaEntitlement,
+    limits: {
+      ...quotaEntitlement.limits,
+      maxActiveMemoryItemsPerWorkspace: 1,
+      maxPendingMemorySuggestionsPerWorkspace: 1,
+    },
+  });
+
   const tokenClaims = new Map<string, GitHubActionsOidcClaims>([
     [
       "admin-interaction",
@@ -167,6 +193,17 @@ try {
         actor: otherAdminLogin,
         eventName: "issue_comment",
         runSuffix: "other-admin-interaction",
+        workflowPath: ".github/workflows/reviewrouter-interaction.yml",
+      }),
+    ],
+    [
+      "quota-admin-interaction",
+      claims({
+        token: "quota-admin-interaction",
+        repository: quota,
+        actor: quotaAdminLogin,
+        eventName: "issue_comment",
+        runSuffix: "quota-admin-interaction",
         workflowPath: ".github/workflows/reviewrouter-interaction.yml",
       }),
     ],
@@ -210,6 +247,91 @@ try {
   const adminSession = await exchange(baseUrl, "admin-interaction");
   const memberSession = await exchange(baseUrl, "member-interaction");
   const otherAdminSession = await exchange(baseUrl, "other-admin-interaction");
+  const quotaAdminSession = await exchange(baseUrl, "quota-admin-interaction");
+
+  const quotaFirstItem = await postCandidate(baseUrl, quotaAdminSession, {
+    sourceId: `memory-e2e-quota-first-${suffix}`,
+    body: "Quota workspace keeps exactly one active memory item.",
+    intent: "explicit_command",
+    extractionMethod: "explicit_command",
+    requestedScope: "repository",
+  });
+  assertEqual(quotaFirstItem.status, "created", "quota first memory status");
+  assertPresent(quotaFirstItem.id, "quota first memory id");
+
+  const quotaRejectedItem = await postCandidate(baseUrl, quotaAdminSession, {
+    sourceId: `memory-e2e-quota-second-${suffix}`,
+    body: "Quota workspace must reject the second active memory item.",
+    intent: "explicit_command",
+    extractionMethod: "explicit_command",
+    requestedScope: "repository",
+  });
+  assertEqual(
+    quotaRejectedItem.status,
+    "rejected",
+    "quota active item status",
+  );
+  assertEqual(
+    quotaRejectedItem.reason,
+    "memory_active_item_quota_exceeded",
+    "quota active item reason",
+  );
+
+  const quotaSuggestion = await postCandidate(baseUrl, quotaAdminSession, {
+    sourceId: `memory-e2e-quota-suggestion-${suffix}`,
+    body: "Quota workspace keeps exactly one pending memory suggestion.",
+    intent: "model_suggested_candidate",
+    extractionMethod: "model_suggested_candidate",
+    requestedScope: "repository",
+  });
+  assertEqual(quotaSuggestion.status, "created", "quota first suggestion");
+  assertPresent(quotaSuggestion.id, "quota suggestion id");
+
+  const quotaRejectedSuggestion = await postCandidate(
+    baseUrl,
+    quotaAdminSession,
+    {
+      sourceId: `memory-e2e-quota-suggestion-overflow-${suffix}`,
+      body: "Quota workspace must reject the second pending suggestion.",
+      intent: "model_suggested_candidate",
+      extractionMethod: "model_suggested_candidate",
+      requestedScope: "repository",
+    },
+  );
+  assertEqual(
+    quotaRejectedSuggestion.status,
+    "rejected",
+    "quota pending suggestion status",
+  );
+  assertEqual(
+    quotaRejectedSuggestion.reason,
+    "memory_pending_suggestion_quota_exceeded",
+    "quota pending suggestion reason",
+  );
+
+  const quotaConfirm = await postCommands(baseUrl, quotaAdminSession, [
+    { kind: "confirm_suggestion", suggestionId: quotaSuggestion.id },
+  ]);
+  assertEqual(
+    quotaConfirm.results[0]?.status,
+    "rejected",
+    "quota confirm status",
+  );
+  assertEqual(
+    quotaConfirm.results[0]?.reason,
+    "memory_active_item_quota_exceeded",
+    "quota confirm reason",
+  );
+  const quotaCounts = await Promise.all([
+    prisma.memoryItem.count({
+      where: { workspaceId: quota.workspaceId, status: "active" },
+    }),
+    prisma.memorySuggestion.count({
+      where: { workspaceId: quota.workspaceId, status: "pending" },
+    }),
+  ]);
+  assertEqual(quotaCounts[0], 1, "quota active item count");
+  assertEqual(quotaCounts[1], 1, "quota pending suggestion count");
 
   const memberDenied = await postCandidate(baseUrl, memberSession, {
     sourceId: `memory-e2e-member-denied-${suffix}`,

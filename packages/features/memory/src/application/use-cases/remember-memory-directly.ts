@@ -16,6 +16,7 @@ import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
 } from "./memory-use-case-types";
+import { rejectIfActiveMemoryItemQuotaExceeded } from "./enforce-memory-quota";
 
 export type RememberMemoryDirectlyInput = {
   readonly workspaceId: string;
@@ -75,6 +76,12 @@ export async function rememberMemoryDirectly(
     return { status: "noop", reason: "memory_duplicate", id: duplicate.id };
   }
 
+  const quotaRejection = await rejectIfActiveMemoryItemQuotaExceeded(
+    { workspaceId: input.workspaceId },
+    dependencies,
+  );
+  if (quotaRejection) return quotaRejection;
+
   const now = dependencies.clock.now();
   const item = MemoryItem.create({
     id: dependencies.memoryIds.newId("mem"),
@@ -95,6 +102,16 @@ export async function rememberMemoryDirectly(
 
   try {
     return await dependencies.memoryTransaction.run(async (tx) => {
+      const transactionalQuotaRejection =
+        await rejectIfActiveMemoryItemQuotaExceeded(
+          { workspaceId: input.workspaceId },
+          {
+            memoryItems: tx.memoryItems,
+            memoryQuotaPolicy: dependencies.memoryQuotaPolicy,
+          },
+        );
+      if (transactionalQuotaRejection) return transactionalQuotaRejection;
+
       await tx.memoryItems.save(item);
       await tx.memoryAudit.record({
         workspaceId: input.workspaceId,

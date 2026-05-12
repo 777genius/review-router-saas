@@ -65,6 +65,19 @@ export class PrismaMemorySuggestionRepository implements MemorySuggestionReposit
     return record ? toMemorySuggestionSnapshot(record) : null;
   }
 
+  async countPendingForWorkspace(input: {
+    readonly workspaceId: string;
+    readonly notExpiredAt?: Date;
+  }): Promise<number> {
+    return this.prisma.memorySuggestion.count({
+      where: {
+        workspaceId: input.workspaceId,
+        status: "pending",
+        ...(input.notExpiredAt ? { expiresAt: { gt: input.notExpiredAt } } : {}),
+      },
+    });
+  }
+
   async supersedePendingBySource(input: {
     readonly workspaceId: string;
     readonly repositoryId: string | null;

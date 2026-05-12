@@ -1,5 +1,6 @@
 import {
   CryptoMemoryIdGenerator,
+  EntitlementMemoryQuotaPolicy,
   PrismaMemoryItemRepository,
   PrismaMemoryPermission,
   PrismaMemorySuggestionRepository,
@@ -8,6 +9,7 @@ import {
   type MemoryActor,
   type MemoryUseCaseDependencies,
 } from "@reviewrouter/features-memory";
+import { PrismaEntitlementRepository } from "@reviewrouter/features-entitlements";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 
 export type DashboardMemoryActorInput = {
@@ -50,6 +52,9 @@ export function createDashboardMemoryDependencies(input: {
       ),
     }),
     memoryUsageEvents: new PrismaMemoryUsageEventRepository(input.prisma),
+    memoryQuotaPolicy: new EntitlementMemoryQuotaPolicy(
+      new PrismaEntitlementRepository(input.prisma),
+    ),
     memoryIds: new CryptoMemoryIdGenerator(),
     memoryTransaction: new PrismaMemoryTransaction(input.prisma),
     clock: { now: () => new Date() },

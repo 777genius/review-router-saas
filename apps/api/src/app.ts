@@ -30,12 +30,14 @@ import {
 } from "@reviewrouter/platform-db";
 import {
   CryptoMemoryIdGenerator,
+  EntitlementMemoryQuotaPolicy,
   PrismaMemoryItemRepository,
   PrismaMemoryPermission,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
   PrismaMemoryUsageEventRepository,
 } from "@reviewrouter/features-memory";
+import { PrismaEntitlementRepository } from "@reviewrouter/features-entitlements";
 import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
@@ -192,6 +194,9 @@ export async function createApiApp(
               ),
             }),
             memoryUsageEvents: new PrismaMemoryUsageEventRepository(prisma),
+            memoryQuotaPolicy: new EntitlementMemoryQuotaPolicy(
+              new PrismaEntitlementRepository(prisma),
+            ),
             memoryIds: new CryptoMemoryIdGenerator(),
             memoryTransaction: new PrismaMemoryTransaction(prisma),
             clock: actionControlPlaneDependencies.clock,

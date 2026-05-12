@@ -92,6 +92,17 @@ export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
     return record ? toMemoryItemSnapshot(record) : null;
   }
 
+  async countActiveForWorkspace(input: {
+    readonly workspaceId: string;
+  }): Promise<number> {
+    return this.prisma.memoryItem.count({
+      where: {
+        workspaceId: input.workspaceId,
+        status: "active",
+      },
+    });
+  }
+
   async listActiveForBundle(input: {
     readonly workspaceId: string;
     readonly repositoryId: string;

@@ -25,6 +25,11 @@ export interface MemorySuggestionRepositoryPort {
     readonly dedupeKey: string;
   }): Promise<MemorySuggestionSnapshot | null>;
 
+  countPendingForWorkspace(input: {
+    readonly workspaceId: string;
+    readonly notExpiredAt?: Date;
+  }): Promise<number>;
+
   supersedePendingBySource(input: {
     readonly workspaceId: string;
     readonly repositoryId: string | null;

@@ -37,6 +37,10 @@ import type {
   MemoryPermissionPort,
 } from "../application/ports/memory-permission-port";
 import type {
+  MemoryQuotaPolicyPort,
+  MemoryWorkspaceQuota,
+} from "../application/ports/memory-quota-policy-port";
+import type {
   MemoryIndexDocument,
   MemorySearchIndexInput,
   MemorySearchIndexPort,
@@ -133,6 +137,15 @@ class InMemoryItems implements MemoryItemRepositoryPort {
           (item.status === "active" || item.status === "disabled"),
       ) ?? null
     );
+  }
+
+  async countActiveForWorkspace(input: {
+    readonly workspaceId: string;
+  }): Promise<number> {
+    return [...this.items.values()].filter(
+      (item) =>
+        item.workspaceId === input.workspaceId && item.status === "active",
+    ).length;
   }
 
   async listActiveForBundle(input: {
@@ -254,6 +267,18 @@ class InMemorySuggestions implements MemorySuggestionRepositoryPort {
           suggestion.status === "pending",
       ) ?? null
     );
+  }
+
+  async countPendingForWorkspace(input: {
+    readonly workspaceId: string;
+    readonly notExpiredAt?: Date;
+  }): Promise<number> {
+    return [...this.suggestions.values()].filter(
+      (suggestion) =>
+        suggestion.workspaceId === input.workspaceId &&
+        suggestion.status === "pending" &&
+        (!input.notExpiredAt || suggestion.expiresAt > input.notExpiredAt),
+    ).length;
   }
 
   async supersedePendingBySource(input: {
@@ -420,6 +445,14 @@ class StaticPermissions implements MemoryPermissionPort {
   }
 }
 
+class StaticMemoryQuotaPolicy implements MemoryQuotaPolicyPort {
+  constructor(private readonly quota: MemoryWorkspaceQuota) {}
+
+  async getWorkspaceQuota(): Promise<MemoryWorkspaceQuota> {
+    return this.quota;
+  }
+}
+
 class CapturingAudit implements MemoryAuditPort {
   readonly events: MemoryAuditEvent[] = [];
 
@@ -559,7 +592,10 @@ class SameObjectTransaction implements MemoryTransactionPort {
   }
 }
 
-function createHarness(decisions: Record<string, MemoryPermissionDecision>) {
+function createHarness(
+  decisions: Record<string, MemoryPermissionDecision>,
+  options: { readonly quota?: MemoryWorkspaceQuota } = {},
+) {
   const memoryItems = new InMemoryItems();
   const memorySuggestions = new InMemorySuggestions();
   const memoryAudit = new CapturingAudit();
@@ -572,6 +608,9 @@ function createHarness(decisions: Record<string, MemoryPermissionDecision>) {
     memoryOutbox,
     memoryUsageEvents,
     memoryPermissions: new StaticPermissions(decisions),
+    ...(options.quota
+      ? { memoryQuotaPolicy: new StaticMemoryQuotaPolicy(options.quota) }
+      : {}),
     memoryIds: new IncrementingIds(),
     memoryTransaction: new SameObjectTransaction({
       memoryItems,
@@ -651,6 +690,58 @@ describe("memory core", () => {
     });
   });
 
+  it("rejects new direct memory when active item quota is reached", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:repository": { allowed: true },
+      },
+      {
+        quota: {
+          activeItems: { limit: 1 },
+          pendingSuggestions: { limit: null },
+        },
+      },
+    );
+    const source = createDashboardMemorySource({ actorLogin: "maintainer" });
+
+    const created = await rememberMemoryDirectly(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        scope: "repository",
+        body: "Prefer one service per domain workflow.",
+        source,
+        actor: maintainer,
+      },
+      deps,
+    );
+    const rejected = await rememberMemoryDirectly(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        scope: "repository",
+        body: "Prefer explicit transaction boundaries.",
+        source,
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(created.status).toBe("created");
+    expect(rejected).toEqual({
+      status: "rejected",
+      reason: "memory_active_item_quota_exceeded",
+      retryable: false,
+    });
+    expect(deps.memoryItems.items).toHaveLength(1);
+    expect(deps.memoryOutbox.events.map((event) => event.type)).toEqual([
+      "memory.item.created",
+      "memory.embedding.reindex.requested",
+    ]);
+  });
+
   it("keeps model-suggested memory pending even when actor can confirm", async () => {
     const deps = createHarness({
       "user_maintainer:repository": { allowed: true },
@@ -673,6 +764,101 @@ describe("memory core", () => {
     expect([...deps.memorySuggestions.suggestions.values()][0]?.status).toBe(
       "pending",
     );
+  });
+
+  it("rejects new suggestions when pending suggestion quota is reached", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:repository": { allowed: true },
+      },
+      {
+        quota: {
+          activeItems: { limit: null },
+          pendingSuggestions: { limit: 1 },
+        },
+      },
+    );
+
+    const first = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "model_suggested_candidate",
+          extractionMethod: "model_suggested_candidate",
+          body: "Prefer small cohesive pull requests.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    const second = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "model_suggested_candidate",
+          extractionMethod: "model_suggested_candidate",
+          body: "Prefer migration notes in pull request descriptions.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+
+    expect(first.status).toBe("created");
+    expect(second).toEqual({
+      status: "rejected",
+      reason: "memory_pending_suggestion_quota_exceeded",
+      retryable: false,
+    });
+    expect(deps.memorySuggestions.suggestions).toHaveLength(1);
+    expect(deps.memoryAudit.events).toHaveLength(1);
+    expect(deps.memoryOutbox.events).toHaveLength(1);
+  });
+
+  it("does not count expired pending suggestions against suggestion quota", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:repository": { allowed: true },
+      },
+      {
+        quota: {
+          activeItems: { limit: null },
+          pendingSuggestions: { limit: 1 },
+        },
+      },
+    );
+
+    const expired = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "model_suggested_candidate",
+          extractionMethod: "model_suggested_candidate",
+          body: "Expired pending quota slot should be ignored.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    if (expired.status !== "created") throw new Error("missing_suggestion");
+    const expiredSnapshot = deps.memorySuggestions.suggestions.get(expired.id);
+    if (!expiredSnapshot) throw new Error("missing_suggestion");
+    deps.memorySuggestions.suggestions.set(expired.id, {
+      ...expiredSnapshot,
+      expiresAt: new Date(now.getTime() - 1),
+    });
+
+    const replacement = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "model_suggested_candidate",
+          extractionMethod: "model_suggested_candidate",
+          body: "Fresh suggestion can use the freed quota slot.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+
+    expect(replacement.status).toBe("created");
+    expect(deps.memorySuggestions.suggestions).toHaveLength(2);
   });
 
   it("supersedes stale pending suggestions from the same edited source", async () => {
@@ -833,6 +1019,51 @@ describe("memory core", () => {
       deps,
     );
     expect(repeated).toEqual({ status: "noop", reason: "confirmed" });
+  });
+
+  it("keeps pending suggestion unchanged when confirmation would exceed active quota", async () => {
+    const deps = createHarness(
+      {
+        "user_maintainer:repository": { allowed: true },
+      },
+      {
+        quota: {
+          activeItems: { limit: 0 },
+          pendingSuggestions: { limit: null },
+        },
+      },
+    );
+    const proposed = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Prefer Prisma migrations over manual schema edits.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    if (proposed.status !== "created") throw new Error("missing_suggestion");
+
+    const confirmed = await confirmMemorySuggestion(
+      {
+        workspaceId: "workspace_1",
+        suggestionId: proposed.id,
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(confirmed).toEqual({
+      status: "rejected",
+      reason: "memory_active_item_quota_exceeded",
+      retryable: false,
+    });
+    expect(deps.memoryItems.items).toHaveLength(0);
+    expect(deps.memorySuggestions.suggestions.get(proposed.id)?.status).toBe(
+      "pending",
+    );
   });
 
   it("rejects pending suggestions only for maintainers", async () => {

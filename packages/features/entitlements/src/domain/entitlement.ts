@@ -22,6 +22,8 @@ export type WorkspaceEntitlement = {
   readonly limits: {
     readonly maxRepositories: number;
     readonly maxWorkspacesPerUser: number;
+    readonly maxActiveMemoryItemsPerWorkspace: number;
+    readonly maxPendingMemorySuggestionsPerWorkspace: number;
   };
   readonly flags: Readonly<Record<EntitlementFeature, boolean>>;
 };
@@ -29,6 +31,8 @@ export type WorkspaceEntitlement = {
 export const freeBetaLimits = {
   maxRepositories: 250,
   maxWorkspacesPerUser: 3,
+  maxActiveMemoryItemsPerWorkspace: 100,
+  maxPendingMemorySuggestionsPerWorkspace: 50,
   setupPrAttemptsPerRepositoryPerHour: 5,
   installationSyncsPerInstallationPer15Minutes: 10,
   reviewConfigSavesPerWorkspacePerHour: 60,
@@ -44,6 +48,10 @@ export const freeBetaEntitlement = (
   limits: {
     maxRepositories: freeBetaLimits.maxRepositories,
     maxWorkspacesPerUser: freeBetaLimits.maxWorkspacesPerUser,
+    maxActiveMemoryItemsPerWorkspace:
+      freeBetaLimits.maxActiveMemoryItemsPerWorkspace,
+    maxPendingMemorySuggestionsPerWorkspace:
+      freeBetaLimits.maxPendingMemorySuggestionsPerWorkspace,
   },
   flags: {
     workflow_provisioning: true,

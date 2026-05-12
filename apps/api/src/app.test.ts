@@ -227,6 +227,15 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
     );
   }
 
+  async countActiveForWorkspace(input: {
+    readonly workspaceId: string;
+  }): Promise<number> {
+    return this.values().filter(
+      (item) =>
+        item.workspaceId === input.workspaceId && item.status === "active",
+    ).length;
+  }
+
   async listActiveForBundle(input: {
     readonly workspaceId: string;
     readonly repositoryId: string;
@@ -343,6 +352,18 @@ class InMemoryMemorySuggestions implements MemorySuggestionRepositoryPort {
           suggestion.dedupeKey === input.dedupeKey,
       ) ?? null
     );
+  }
+
+  async countPendingForWorkspace(input: {
+    readonly workspaceId: string;
+    readonly notExpiredAt?: Date;
+  }): Promise<number> {
+    return this.values().filter(
+      (suggestion) =>
+        suggestion.workspaceId === input.workspaceId &&
+        suggestion.status === "pending" &&
+        (!input.notExpiredAt || suggestion.expiresAt > input.notExpiredAt),
+    ).length;
   }
 
   async supersedePendingBySource(input: {

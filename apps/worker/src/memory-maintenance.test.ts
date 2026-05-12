@@ -102,6 +102,10 @@ class CapturingSuggestionRepository implements MemorySuggestionRepositoryPort {
     throw new Error("not_implemented");
   }
 
+  async countPendingForWorkspace(): Promise<number> {
+    throw new Error("not_implemented");
+  }
+
   async supersedePendingBySource(): Promise<
     readonly MemorySuggestionSnapshot[]
   > {
