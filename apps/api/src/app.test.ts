@@ -319,6 +319,50 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
     return { updatedCount };
   }
 
+  async markIndexingSucceeded(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+    readonly bodyHash: string;
+    readonly bodyVersion: number;
+  }): Promise<{ readonly updatedCount: number }> {
+    const item = this.snapshots.get(input.itemId);
+    if (
+      !item ||
+      item.workspaceId !== input.workspaceId ||
+      item.status !== "active" ||
+      item.bodyHash !== input.bodyHash ||
+      item.bodyVersion !== input.bodyVersion
+    ) {
+      return { updatedCount: 0 };
+    }
+    this.snapshots.set(input.itemId, {
+      ...item,
+      indexState: "indexed",
+      indexVersion: input.bodyVersion,
+    });
+    return { updatedCount: 1 };
+  }
+
+  async markIndexingDeleted(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+  }): Promise<{ readonly updatedCount: number }> {
+    const item = this.snapshots.get(input.itemId);
+    if (
+      !item ||
+      item.workspaceId !== input.workspaceId ||
+      item.status === "active"
+    ) {
+      return { updatedCount: 0 };
+    }
+    this.snapshots.set(input.itemId, {
+      ...item,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+    return { updatedCount: 1 };
+  }
+
   values(): MemoryItemSnapshot[] {
     return Array.from(this.snapshots.values());
   }

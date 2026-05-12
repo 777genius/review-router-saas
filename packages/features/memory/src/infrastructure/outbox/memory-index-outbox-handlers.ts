@@ -8,7 +8,10 @@ import type { MemoryItemRepositoryPort } from "../../application/ports/memory-it
 import type { MemorySearchIndexPort } from "../../application/ports/memory-search-index-port";
 
 export type MemoryIndexOutboxHandlerDependencies = {
-  readonly memoryItems: Pick<MemoryItemRepositoryPort, "findById">;
+  readonly memoryItems: Pick<
+    MemoryItemRepositoryPort,
+    "findById" | "markIndexingDeleted" | "markIndexingSucceeded"
+  >;
   readonly searchIndex: MemorySearchIndexPort;
 };
 
@@ -47,6 +50,10 @@ export function createMemoryEmbeddingReindexRequestedHandler(
       });
       if (!item || item.status !== "active") {
         await dependencies.searchIndex.deleteDocument(ids);
+        await dependencies.memoryItems.markIndexingDeleted({
+          workspaceId: ids.workspaceId,
+          itemId: ids.memoryItemId,
+        });
         return;
       }
       if (!matchesIndexPayload(item, payload)) {
@@ -64,18 +71,29 @@ export function createMemoryEmbeddingReindexRequestedHandler(
         tags: item.tags,
         updatedAt: item.updatedAt,
       });
+      await dependencies.memoryItems.markIndexingSucceeded({
+        workspaceId: item.workspaceId,
+        itemId: item.id,
+        bodyHash: item.bodyHash,
+        bodyVersion: item.bodyVersion,
+      });
     },
   };
 }
 
 export function createMemoryEmbeddingDeleteRequestedHandler(
-  dependencies: Pick<MemoryIndexOutboxHandlerDependencies, "searchIndex">,
+  dependencies: MemoryIndexOutboxHandlerDependencies,
 ): OutboxHandler {
   return {
     type: "memory.embedding.delete.requested",
     version: 1,
     async handle(event) {
-      await dependencies.searchIndex.deleteDocument(requireMemoryEventIds(event));
+      const ids = requireMemoryEventIds(event);
+      await dependencies.searchIndex.deleteDocument(ids);
+      await dependencies.memoryItems.markIndexingDeleted({
+        workspaceId: ids.workspaceId,
+        itemId: ids.memoryItemId,
+      });
     },
   };
 }
@@ -137,6 +155,7 @@ function matchesIndexPayload(
   payload: { readonly bodyHash: string; readonly bodyVersion: number },
 ): boolean {
   return (
-    item.bodyHash === payload.bodyHash && item.bodyVersion === payload.bodyVersion
+    item.bodyHash === payload.bodyHash &&
+    item.bodyVersion === payload.bodyVersion
   );
 }

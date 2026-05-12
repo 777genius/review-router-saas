@@ -20,6 +20,22 @@ export type MarkActiveMemoryItemsUsedResult = {
   readonly updatedCount: number;
 };
 
+export type MarkMemoryItemIndexingSucceededInput = {
+  readonly workspaceId: string;
+  readonly itemId: string;
+  readonly bodyHash: string;
+  readonly bodyVersion: number;
+};
+
+export type MarkMemoryItemIndexingDeletedInput = {
+  readonly workspaceId: string;
+  readonly itemId: string;
+};
+
+export type MarkMemoryItemIndexingResult = {
+  readonly updatedCount: number;
+};
+
 export interface MemoryItemRepositoryPort {
   save(
     item: MemoryItem,
@@ -72,4 +88,12 @@ export interface MemoryItemRepositoryPort {
   markActiveItemsUsed(
     input: MarkActiveMemoryItemsUsedInput,
   ): Promise<MarkActiveMemoryItemsUsedResult>;
+
+  markIndexingSucceeded(
+    input: MarkMemoryItemIndexingSucceededInput,
+  ): Promise<MarkMemoryItemIndexingResult>;
+
+  markIndexingDeleted(
+    input: MarkMemoryItemIndexingDeletedInput,
+  ): Promise<MarkMemoryItemIndexingResult>;
 }

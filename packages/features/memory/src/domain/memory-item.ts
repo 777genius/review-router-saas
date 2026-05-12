@@ -138,6 +138,7 @@ export class MemoryItem {
       updatedAt: input.now,
       version: this.value.version + 1,
       indexState: "index_deleted",
+      indexVersion: null,
     });
   }
 
@@ -160,6 +161,7 @@ export class MemoryItem {
       updatedAt: input.now,
       version: this.value.version + 1,
       indexState: "index_deleted",
+      indexVersion: null,
     });
   }
 

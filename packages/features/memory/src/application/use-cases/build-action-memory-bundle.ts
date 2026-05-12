@@ -5,7 +5,10 @@ import {
   type MemoryBundlePolicy,
 } from "../../domain/memory-bundle-policy";
 import type { MemoryItemSnapshot } from "../../domain/memory-item";
-import type { MemorySearchIndexPort } from "../ports/memory-search-index-port";
+import type {
+  MemorySearchCapability,
+  MemorySearchIndexPort,
+} from "../ports/memory-search-index-port";
 import type { MemoryUseCaseDependencies } from "./memory-use-case-types";
 
 export type BuildActionMemoryBundleInput = {
@@ -59,7 +62,7 @@ async function searchBundleCandidates(
 
   try {
     const capabilities = await searchIndex.supports();
-    if (!capabilities.capabilities.includes("lexical")) {
+    if (!supportsRuntimeRetrieval(capabilities.capabilities)) {
       return { status: "degraded", reason: "memory_search_index_unavailable" };
     }
     const hits = await searchIndex.search({
@@ -116,4 +119,15 @@ function normalizeSafeRetrievalQuery(value: string | null | undefined): string {
   if (!value) return "";
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length <= 500 ? normalized : "";
+}
+
+const runtimeRetrievalCapabilities: ReadonlySet<MemorySearchCapability> =
+  new Set(["lexical", "full_text", "semantic_vector", "hybrid"]);
+
+function supportsRuntimeRetrieval(
+  capabilities: readonly MemorySearchCapability[],
+): boolean {
+  return capabilities.some((capability) =>
+    runtimeRetrievalCapabilities.has(capability),
+  );
 }

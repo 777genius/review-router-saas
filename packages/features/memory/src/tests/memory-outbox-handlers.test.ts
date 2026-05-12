@@ -13,7 +13,12 @@ import type { OutboxEvent } from "@reviewrouter/features-outbox";
 const now = new Date("2026-05-12T12:00:00.000Z");
 
 class StaticMemoryItems {
-  constructor(private readonly items: ReadonlyMap<string, MemoryItemSnapshot>) {}
+  readonly indexingSucceeded: unknown[] = [];
+  readonly indexingDeleted: unknown[] = [];
+
+  constructor(
+    private readonly items: ReadonlyMap<string, MemoryItemSnapshot>,
+  ) {}
 
   async findById(input: {
     readonly workspaceId: string;
@@ -21,6 +26,24 @@ class StaticMemoryItems {
   }): Promise<MemoryItemSnapshot | null> {
     const item = this.items.get(input.itemId);
     return item?.workspaceId === input.workspaceId ? item : null;
+  }
+
+  async markIndexingSucceeded(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+    readonly bodyHash: string;
+    readonly bodyVersion: number;
+  }): Promise<{ readonly updatedCount: number }> {
+    this.indexingSucceeded.push(input);
+    return { updatedCount: 1 };
+  }
+
+  async markIndexingDeleted(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+  }): Promise<{ readonly updatedCount: number }> {
+    this.indexingDeleted.push(input);
+    return { updatedCount: 1 };
   }
 }
 
@@ -53,8 +76,9 @@ describe("memory outbox handlers", () => {
   it("reindexes from canonical active memory instead of outbox payload body", async () => {
     const item = memoryItem("mem_1", "Prefer ports and adapters.");
     const searchIndex = new CapturingSearchIndex();
+    const memoryItems = new StaticMemoryItems(new Map([[item.id, item]]));
     const handler = createMemoryEmbeddingReindexRequestedHandler({
-      memoryItems: new StaticMemoryItems(new Map([[item.id, item]])),
+      memoryItems,
       searchIndex,
     });
 
@@ -78,6 +102,15 @@ describe("memory outbox handlers", () => {
       }),
     ]);
     expect(searchIndex.deletes).toEqual([]);
+    expect(memoryItems.indexingSucceeded).toEqual([
+      {
+        workspaceId: "workspace_1",
+        itemId: item.id,
+        bodyHash: item.bodyHash,
+        bodyVersion: item.bodyVersion,
+      },
+    ]);
+    expect(memoryItems.indexingDeleted).toEqual([]);
   });
 
   it("drops stale or inactive index documents without leaking memory body", async () => {
@@ -95,8 +128,9 @@ describe("memory outbox handlers", () => {
       })
       .snapshot();
     const searchIndex = new CapturingSearchIndex();
+    const memoryItems = new StaticMemoryItems(new Map([[item.id, item]]));
     const handler = createMemoryEmbeddingReindexRequestedHandler({
-      memoryItems: new StaticMemoryItems(new Map([[item.id, item]])),
+      memoryItems,
       searchIndex,
     });
 
@@ -115,13 +149,18 @@ describe("memory outbox handlers", () => {
     expect(searchIndex.deletes).toEqual([
       { workspaceId: "workspace_1", memoryItemId: item.id },
     ]);
+    expect(memoryItems.indexingSucceeded).toEqual([]);
+    expect(memoryItems.indexingDeleted).toEqual([
+      { workspaceId: "workspace_1", itemId: item.id },
+    ]);
   });
 
   it("ignores stale reindex payloads and handles delete requests", async () => {
     const item = memoryItem("mem_1", "Fresh body wins over stale event.");
     const searchIndex = new CapturingSearchIndex();
+    const memoryItems = new StaticMemoryItems(new Map([[item.id, item]]));
     const dependencies = {
-      memoryItems: new StaticMemoryItems(new Map([[item.id, item]])),
+      memoryItems,
       searchIndex,
     };
 
@@ -147,13 +186,19 @@ describe("memory outbox handlers", () => {
     expect(searchIndex.deletes).toEqual([
       { workspaceId: "workspace_1", memoryItemId: item.id },
     ]);
+    expect(memoryItems.indexingSucceeded).toEqual([]);
+    expect(memoryItems.indexingDeleted).toEqual([
+      { workspaceId: "workspace_1", itemId: item.id },
+    ]);
   });
 
   it("registers handlers for lifecycle events so worker does not dead-letter them", () => {
-    expect(createMemoryOutboxHandlers({
-      memoryItems: new StaticMemoryItems(new Map()),
-      searchIndex: new CapturingSearchIndex(),
-    }).map((handler) => `${handler.type}@${handler.version}`)).toEqual([
+    expect(
+      createMemoryOutboxHandlers({
+        memoryItems: new StaticMemoryItems(new Map()),
+        searchIndex: new CapturingSearchIndex(),
+      }).map((handler) => `${handler.type}@${handler.version}`),
+    ).toEqual([
       "memory.item.created@1",
       "memory.item.deleted@1",
       "memory.item.disabled@1",

@@ -2,6 +2,9 @@ import type { Prisma } from "@prisma/client";
 import type {
   MarkActiveMemoryItemsUsedInput,
   MarkActiveMemoryItemsUsedResult,
+  MarkMemoryItemIndexingDeletedInput,
+  MarkMemoryItemIndexingResult,
+  MarkMemoryItemIndexingSucceededInput,
   MemoryDashboardRepositoryCursor,
   MemoryItemRepositoryPort,
 } from "../../application/ports/memory-item-repository-port";
@@ -215,6 +218,44 @@ export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
       },
     });
     return { updatedCount: result.count };
+  }
+
+  async markIndexingSucceeded(
+    input: MarkMemoryItemIndexingSucceededInput,
+  ): Promise<MarkMemoryItemIndexingResult> {
+    const updated = await this.prisma.$queryRaw<{ readonly id: string }[]>`
+      UPDATE "MemoryItem"
+      SET
+        "indexState" = 'indexed'::"MemoryIndexState",
+        "indexVersion" = ${input.bodyVersion}
+      WHERE "workspaceId" = ${input.workspaceId}
+        AND "id" = ${input.itemId}
+        AND "status" = 'active'::"MemoryItemStatus"
+        AND "bodyHash" = ${input.bodyHash}
+        AND "bodyVersion" = ${input.bodyVersion}
+      RETURNING "id"
+    `;
+    return { updatedCount: updated.length };
+  }
+
+  async markIndexingDeleted(
+    input: MarkMemoryItemIndexingDeletedInput,
+  ): Promise<MarkMemoryItemIndexingResult> {
+    const updated = await this.prisma.$queryRaw<{ readonly id: string }[]>`
+      UPDATE "MemoryItem"
+      SET
+        "indexState" = 'index_deleted'::"MemoryIndexState",
+        "indexVersion" = NULL
+      WHERE "workspaceId" = ${input.workspaceId}
+        AND "id" = ${input.itemId}
+        AND "status" IN (
+          'disabled'::"MemoryItemStatus",
+          'deleted'::"MemoryItemStatus",
+          'expired'::"MemoryItemStatus"
+        )
+      RETURNING "id"
+    `;
+    return { updatedCount: updated.length };
   }
 }
 

@@ -266,11 +266,7 @@ try {
     extractionMethod: "explicit_command",
     requestedScope: "repository",
   });
-  assertEqual(
-    quotaRejectedItem.status,
-    "rejected",
-    "quota active item status",
-  );
+  assertEqual(quotaRejectedItem.status, "rejected", "quota active item status");
   assertEqual(
     quotaRejectedItem.reason,
     "memory_active_item_quota_exceeded",
@@ -382,7 +378,8 @@ try {
     requestedScope: "repository",
   });
   assertEqual(repoItem.status, "created", "repository direct memory status");
-  assertPresent(repoItem.id, "repository memory id");
+  const repoMemoryItemId = repoItem.id;
+  assertPresent(repoMemoryItemId, "repository memory id");
 
   const workspaceItem = await postCandidate(baseUrl, adminSession, {
     sourceId: `memory-e2e-workspace-${suffix}`,
@@ -396,6 +393,8 @@ try {
     "created",
     "workspace direct memory status",
   );
+  const workspaceMemoryItemId = workspaceItem.id;
+  assertPresent(workspaceMemoryItemId, "workspace memory id");
 
   const suggestion = await postCandidate(baseUrl, adminSession, {
     sourceId: `memory-e2e-suggestion-${suffix}`,
@@ -490,7 +489,8 @@ try {
     { kind: "confirm_suggestion", suggestionId: suggestion.id },
   ]);
   assertEqual(confirm.results[0]?.status, "created", "confirm suggestion");
-  assertPresent(confirm.results[0]?.id, "confirmed memory item id");
+  const confirmedMemoryItemId = confirm.results[0]?.id;
+  assertPresent(confirmedMemoryItemId, "confirmed memory item id");
 
   const otherRepoItem = await postCandidate(baseUrl, otherAdminSession, {
     sourceId: `memory-e2e-other-repo-${suffix}`,
@@ -749,6 +749,20 @@ try {
     "memory outbox processed count",
   );
   assertEqual(outboxResult.deadLettered, 0, "memory outbox dead letters");
+  const indexedPrimaryItems = await prisma.memoryItem.findMany({
+    where: {
+      workspaceId: primary.workspaceId,
+      id: {
+        in: [repoMemoryItemId, workspaceMemoryItemId, confirmedMemoryItemId],
+      },
+    },
+    select: { id: true, indexState: true, indexVersion: true },
+  });
+  assertEqual(indexedPrimaryItems.length, 3, "indexed primary item count");
+  for (const item of indexedPrimaryItems) {
+    assertEqual(item.indexState, "indexed", `indexed state for ${item.id}`);
+    assertEqual(item.indexVersion, 1, `indexed version for ${item.id}`);
+  }
 
   const bundle = await getJson<ActionMemoryBundle>(
     baseUrl,
@@ -802,13 +816,13 @@ try {
   );
 
   const disable = await postCommands(baseUrl, adminSession, [
-    { kind: "disable_memory", memoryItemId: repoItem.id },
+    { kind: "disable_memory", memoryItemId: repoMemoryItemId },
   ]);
   assertEqual(disable.results[0]?.status, "updated", "disable memory status");
   const indexDeleteOutboxAfterDisable = await prisma.outboxEvent.count({
     where: {
       workspaceId: primary.workspaceId,
-      aggregateId: repoItem.id,
+      aggregateId: repoMemoryItemId,
       type: "memory.embedding.delete.requested",
     },
   });
@@ -816,6 +830,20 @@ try {
     indexDeleteOutboxAfterDisable,
     1,
     "index delete outbox after disable",
+  );
+  const disabledIndexState = await prisma.memoryItem.findUnique({
+    where: { id: repoMemoryItemId },
+    select: { indexState: true, indexVersion: true },
+  });
+  assertEqual(
+    disabledIndexState?.indexState,
+    "index_deleted",
+    "disabled item index state",
+  );
+  assertEqual(
+    disabledIndexState?.indexVersion,
+    null,
+    "disabled item index version",
   );
 
   const afterDisableSession = await exchange(
@@ -867,8 +895,6 @@ try {
     "usage events after disable fetch",
   );
 
-  const confirmedMemoryItemId = confirm.results[0]?.id;
-  assertPresent(confirmedMemoryItemId, "confirmed suggestion memory item id");
   const deleteConfirmed = await postCommands(baseUrl, adminSession, [
     { kind: "forget_memory", memoryItemId: confirmedMemoryItemId },
   ]);
@@ -879,7 +905,13 @@ try {
   );
   const redactedDeletedItem = await prisma.memoryItem.findUnique({
     where: { id: confirmedMemoryItemId },
-    select: { body: true, status: true, source: true },
+    select: {
+      body: true,
+      status: true,
+      source: true,
+      indexState: true,
+      indexVersion: true,
+    },
   });
   assertEqual(
     redactedDeletedItem?.status,
@@ -890,6 +922,16 @@ try {
     redactedDeletedItem?.body,
     deletedMemoryBodyPlaceholder,
     "redacted deleted memory body",
+  );
+  assertEqual(
+    redactedDeletedItem?.indexState,
+    "index_deleted",
+    "redacted deleted memory index state",
+  );
+  assertEqual(
+    redactedDeletedItem?.indexVersion,
+    null,
+    "redacted deleted memory index version",
   );
   assertStringDoesNotContain(
     JSON.stringify(redactedDeletedItem),

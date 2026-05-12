@@ -42,6 +42,7 @@ import type {
 } from "../application/ports/memory-quota-policy-port";
 import type {
   MemoryIndexDocument,
+  MemorySearchCapability,
   MemorySearchIndexInput,
   MemorySearchIndexPort,
   MemorySearchIndexResult,
@@ -234,6 +235,50 @@ class InMemoryItems implements MemoryItemRepositoryPort {
       updatedCount += 1;
     }
     return { updatedCount };
+  }
+
+  async markIndexingSucceeded(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+    readonly bodyHash: string;
+    readonly bodyVersion: number;
+  }): Promise<{ readonly updatedCount: number }> {
+    const item = this.items.get(input.itemId);
+    if (
+      !item ||
+      item.workspaceId !== input.workspaceId ||
+      item.status !== "active" ||
+      item.bodyHash !== input.bodyHash ||
+      item.bodyVersion !== input.bodyVersion
+    ) {
+      return { updatedCount: 0 };
+    }
+    this.items.set(input.itemId, {
+      ...item,
+      indexState: "indexed",
+      indexVersion: input.bodyVersion,
+    });
+    return { updatedCount: 1 };
+  }
+
+  async markIndexingDeleted(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+  }): Promise<{ readonly updatedCount: number }> {
+    const item = this.items.get(input.itemId);
+    if (
+      !item ||
+      item.workspaceId !== input.workspaceId ||
+      item.status === "active"
+    ) {
+      return { updatedCount: 0 };
+    }
+    this.items.set(input.itemId, {
+      ...item,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+    return { updatedCount: 1 };
   }
 }
 
@@ -544,7 +589,7 @@ class StubSearchIndex implements MemorySearchIndexPort {
   constructor(
     private readonly hits: readonly MemorySearchIndexResult[],
     private readonly options: {
-      readonly capabilities?: readonly ("lexical" | "semantic_vector")[];
+      readonly capabilities?: readonly MemorySearchCapability[];
       readonly fail?: boolean;
     } = {},
   ) {}
@@ -1226,6 +1271,7 @@ describe("memory core", () => {
     expect(deps.memoryItems.items.get(created.id)?.indexState).toBe(
       "index_deleted",
     );
+    expect(deps.memoryItems.items.get(created.id)?.indexVersion).toBeNull();
 
     const deleted = await deleteMemoryItem(
       { workspaceId: "workspace_1", itemId: created.id, actor: maintainer },
@@ -1236,6 +1282,10 @@ describe("memory core", () => {
     expect(deps.memoryItems.items.get(created.id)?.body).toBe(
       deletedMemoryBodyPlaceholder,
     );
+    expect(deps.memoryItems.items.get(created.id)?.indexState).toBe(
+      "index_deleted",
+    );
+    expect(deps.memoryItems.items.get(created.id)?.indexVersion).toBeNull();
     expect(deps.memoryItems.items.get(created.id)?.source).toMatchObject({
       type: "system_migration",
       sourceId: "deleted",
@@ -1837,9 +1887,9 @@ describe("memory core", () => {
     expect(
       deps.memorySuggestions.suggestions.get(expiredPrimary.id)?.status,
     ).toBe("expired");
-    expect(deps.memorySuggestions.suggestions.get(expiredOther.id)?.status).toBe(
-      "expired",
-    );
+    expect(
+      deps.memorySuggestions.suggestions.get(expiredOther.id)?.status,
+    ).toBe("expired");
     const expiredAuditEvents = deps.memoryAudit.events.filter(
       (event) => event.action === "memory.suggestion.expired",
     );
@@ -1997,15 +2047,42 @@ describe("memory core", () => {
   it("uses search index hits only after canonical scope recheck", async () => {
     const deps = createHarness({
       "user_maintainer:repository": { allowed: true },
+      "user_maintainer:user_prefs": { allowed: true },
     });
     const active = await rememberMemoryDirectly(
-      memoryInput("repository", "Run dashboard memory changes through browser layout checks."),
+      memoryInput(
+        "repository",
+        "Run dashboard memory changes through browser layout checks.",
+      ),
+      deps,
+    );
+    const wrongRepository = await rememberMemoryDirectly(
+      {
+        ...memoryInput(
+          "repository",
+          "Other repository layout memory must not leak.",
+        ),
+        repositoryId: "repo_2",
+      },
       deps,
     );
     const wrongWorkspace = await rememberMemoryDirectly(
       {
-        ...memoryInput("repository", "Other workspace layout memory must not leak."),
+        ...memoryInput(
+          "repository",
+          "Other workspace layout memory must not leak.",
+        ),
         workspaceId: "workspace_2",
+      },
+      deps,
+    );
+    const wrongUserPrefs = await rememberMemoryDirectly(
+      {
+        ...memoryInput(
+          "user_prefs",
+          "Other user layout preference must not leak.",
+        ),
+        userId: "user_other",
       },
       deps,
     );
@@ -2013,10 +2090,17 @@ describe("memory core", () => {
       memoryInput("repository", "Disabled layout memory must not return."),
       deps,
     );
+    const deleted = await rememberMemoryDirectly(
+      memoryInput("repository", "Deleted layout memory must not return."),
+      deps,
+    );
     if (
       active.status !== "created" ||
+      wrongRepository.status !== "created" ||
       wrongWorkspace.status !== "created" ||
-      disabled.status !== "created"
+      wrongUserPrefs.status !== "created" ||
+      disabled.status !== "created" ||
+      deleted.status !== "created"
     ) {
       throw new Error("missing_memory_items");
     }
@@ -2028,18 +2112,34 @@ describe("memory core", () => {
         now,
       }),
     );
+    const deletedSnapshot = deps.memoryItems.items.get(deleted.id);
+    if (!deletedSnapshot) throw new Error("missing_deleted_item");
+    await deps.memoryItems.save(
+      MemoryItem.fromSnapshot(deletedSnapshot).delete({
+        actor: maintainer,
+        now,
+      }),
+    );
 
-    const searchIndex = new StubSearchIndex([
-      searchHit(wrongWorkspace.id, "repository", 30),
-      searchHit(disabled.id, "repository", 20),
-      searchHit(active.id, "repository", 10),
-    ]);
+    const searchIndex = new StubSearchIndex(
+      [
+        searchHit(wrongWorkspace.id, "repository", 30),
+        searchHit(wrongRepository.id, "repository", 25),
+        searchHit(wrongUserPrefs.id, "user_prefs", 22),
+        searchHit(disabled.id, "repository", 20),
+        searchHit(deleted.id, "repository", 15),
+        searchHit(active.id, "repository", 10),
+        searchHit("missing_from_canonical_store", "repository", 5),
+      ],
+      { capabilities: ["semantic_vector"] },
+    );
     const bundle = await buildActionMemoryBundle(
       {
         workspaceId: "workspace_1",
         repositoryId: "repo_1",
-        userId: null,
+        userId: "user_maintainer",
         safeRetrievalQuery: "layout checks",
+        policy: { includeUserPrefs: true },
       },
       { ...deps, memorySearchIndex: searchIndex },
     );
@@ -2047,7 +2147,9 @@ describe("memory core", () => {
     expect(searchIndex.inputs[0]).toMatchObject({
       workspaceId: "workspace_1",
       repositoryId: "repo_1",
+      userId: "user_maintainer",
       safeQuery: "layout checks",
+      includeUserPrefs: true,
     });
     expect(bundle.degraded).toBe(false);
     expect(bundle.items.map((item) => item.body)).toEqual([
@@ -2105,6 +2207,24 @@ describe("memory core", () => {
     expect(stale.degraded).toBe(true);
     expect(stale.reason).toBe("memory_search_index_stale");
     expect(stale.items).toHaveLength(2);
+
+    const unsupportedIndex = new StubSearchIndex([], { capabilities: [] });
+    const unsupported = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        safeRetrievalQuery: "fallback",
+      },
+      {
+        ...deps,
+        memorySearchIndex: unsupportedIndex,
+      },
+    );
+    expect(unsupported.degraded).toBe(true);
+    expect(unsupported.reason).toBe("memory_search_index_unavailable");
+    expect(unsupportedIndex.inputs).toHaveLength(0);
+    expect(unsupported.items).toHaveLength(2);
   });
 
   it("records action bundle usage with safe metadata only", async () => {
@@ -2367,10 +2487,7 @@ function memoryInput(scope: MemoryScope, body: string) {
 }
 
 function memoryUsageEvent(
-  input: Pick<
-    MemoryUsageEventInput,
-    "id" | "workspaceId" | "occurredAt"
-  >,
+  input: Pick<MemoryUsageEventInput, "id" | "workspaceId" | "occurredAt">,
 ): MemoryUsageEventInput {
   return {
     id: input.id,
