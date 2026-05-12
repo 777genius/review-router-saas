@@ -58,7 +58,7 @@
 - action memory bundle exposure теперь пишет `MemoryUsageEvent` через отдельный application port и Prisma adapter; usage metadata содержит только ids, scope/count/version, без body/source/prompt/model output.
 - action memory bundle exposure теперь также обновляет `lastUsedAt` через `MemoryItemRepositoryPort.markActiveItemsUsed`, с защитой по `workspaceId` и `active` status, чтобы usage-based ranking не обходил canonical store и tenant boundary.
 - usage events получили privacy-safe `dedupeKey` по workspace/repository/run/attempt/event/item/bundle, Prisma unique guard и `skipDuplicates`, чтобы повторный bundle fetch в одном action run не плодил telemetry duplicates.
-- добавлен реальный `spike:memory:e2e`: временная Postgres DB + fresh migrations + настоящий Fastify HTTP listener проверяют OIDC exchange, admin/member permission boundary, forbidden raw payload guard, direct memory save, model suggestion confirmation, runtime bundle, usage dedupe, disable exclusion и tenant isolation.
+- добавлен реальный `spike:memory:e2e`: runner сам создаёт временную Postgres DB, применяет fresh migrations, поднимает настоящий Fastify HTTP listener и проверяет OIDC exchange, admin/member permission boundary, forbidden raw payload guard, direct memory save, model suggestion confirmation, runtime bundle, usage dedupe, disable exclusion и tenant isolation.
 - pending suggestions получили retention transition: `expirePendingMemorySuggestions` переводит просроченные pending suggestions в `expired` через domain state machine, repository port и safe audit metadata.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
 - suggestion inbox получил edit-before-approve dialog по design reference: edited approval переиспользует confirm use case с повторными permission/safety/scope/dedupe checks.
@@ -69,7 +69,7 @@
 - `pnpm typecheck` - passed;
 - `pnpm test` - 59 files, 309 tests passed;
 - `pnpm lint` - passed;
-- `pnpm spike:memory:e2e` на временной Postgres DB после `prisma migrate deploy` - passed;
+- `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 
 Ограничение визуальной проверки: локальный `/dashboard?section=memory` открылся через Next dev без crash, но защищённый dashboard редиректит на публичную главную из-за отсутствия валидной browser session/auth cookie в текущем окружении. Поэтому сам memory экран пока подтверждён typecheck/SSR compile, но не полноценной screenshot QA.
