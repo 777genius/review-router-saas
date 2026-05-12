@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-const routes = [
+const defaultRoutes = [
   "/",
   "/auth/signin",
   "/auth/signin?error=OAuthCallback",
@@ -23,12 +23,19 @@ const routes = [
   "/disconnect",
 ];
 
-const viewports = [
+const defaultViewports = [
   { name: "mobile", width: 390, height: 1200, mobile: true },
   { name: "desktop", width: 1440, height: 1100, mobile: false },
 ];
 
 const cli = parseCliArgs(process.argv.slice(2));
+const routes =
+  parseRoutes(cli.routes || process.env.REVIEW_ROUTER_UI_AUDIT_ROUTES) ??
+  defaultRoutes;
+const viewports =
+  parseViewports(
+    cli.viewports || process.env.REVIEW_ROUTER_UI_AUDIT_VIEWPORTS,
+  ) ?? defaultViewports;
 const baseUrl = normalizeUrl(
   cli.baseUrl ||
     process.env.REVIEW_ROUTER_UI_AUDIT_BASE_URL ||
@@ -364,9 +371,11 @@ function parseCliArgs(args) {
     const arg = args[index];
     if (arg === "--base-url") parsed.baseUrl = args[++index];
     else if (arg === "--out-dir") parsed.outDir = args[++index];
+    else if (arg === "--routes") parsed.routes = args[++index];
+    else if (arg === "--viewports") parsed.viewports = args[++index];
     else if (arg === "--help") {
       console.log(
-        "Usage: node scripts/check-ui-layout.mjs [--base-url URL] [--out-dir DIR]",
+        "Usage: node scripts/check-ui-layout.mjs [--base-url URL] [--out-dir DIR] [--routes ROUTES] [--viewports VIEWPORTS]",
       );
       process.exit(0);
     } else {
@@ -409,6 +418,44 @@ function findChromePath() {
 
 function normalizeUrl(url) {
   return String(url).replace(/\/+$/, "");
+}
+
+function parseRoutes(value) {
+  if (!value) return null;
+  const routes = String(value)
+    .split(",")
+    .map((route) => route.trim())
+    .filter(Boolean);
+  if (routes.length === 0) return null;
+  for (const route of routes) {
+    if (!route.startsWith("/")) {
+      throw new Error(`UI audit route must start with "/": ${route}`);
+    }
+  }
+  return routes;
+}
+
+function parseViewports(value) {
+  if (!value) return null;
+  const viewports = String(value)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const match = /^([a-z0-9_-]+):(\d+)x(\d+)(?::mobile)?$/i.exec(entry);
+      if (!match) {
+        throw new Error(
+          `UI audit viewport must look like name:390x844 or name:390x844:mobile: ${entry}`,
+        );
+      }
+      return {
+        name: match[1],
+        width: Number.parseInt(match[2], 10),
+        height: Number.parseInt(match[3], 10),
+        mobile: entry.endsWith(":mobile"),
+      };
+    });
+  return viewports.length > 0 ? viewports : null;
 }
 
 function slugRoute(route) {

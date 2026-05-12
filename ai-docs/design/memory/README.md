@@ -67,8 +67,12 @@ Suggested artifact paths:
   route returns `notFound()`.
 - Data source: deterministic synthetic fixtures only. No DB, auth cookie, source
   code, diff, prompt or production memory is read by the preview route.
-- Browser captures were saved to all suggested artifact paths above at
+- Browser captures were refreshed to all suggested artifact paths above at
   `1440x1000`, `900x1100` and `390x844`.
+- Memory preview layout audit passed across knowledge, suggestions, table,
+  empty, read-only, over-quota, stale-edit and indexing-degraded states at
+  mobile/tablet/desktop sizes:
+  `REVIEW_ROUTER_UI_AUDIT_ROUTES=... REVIEW_ROUTER_UI_AUDIT_VIEWPORTS='mobile:390x844:mobile,tablet:900x1100,desktop:1440x1000' pnpm web:ui-audit`.
 - Edge-state smoke checks passed for empty, permission denied/read-only, over
   quota, stale edit and indexing degraded states.
 - Clean-profile browser captures rendered without preview-route failures after
@@ -82,7 +86,8 @@ Intentional implementation choices:
   use left scope rail, center work area and right policy/detail panel.
 - Table mode uses the reference operational shape with left filters and a wide
   dense table. The policy/detail panel is hidden in table mode to prevent overlap
-  and keep scan density.
+  and keep scan density. The main grid and table shell use explicit `min-w-0`
+  containment so table overflow stays inside the table scroller on mobile.
 - Memory badges are compact labels in this feature, not large action-like pills.
   Real actions continue using shared `@reviewrouter/ui` Button/FormSubmitButton
   and shared Dialog primitives.

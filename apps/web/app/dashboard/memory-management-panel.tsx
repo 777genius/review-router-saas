@@ -90,7 +90,7 @@ export function MemoryManagementPanel({
     >
       <aside
         data-testid="memory-scope-rail"
-        className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+        className="min-w-0 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
       >
         <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
           Repositories
@@ -161,7 +161,7 @@ export function MemoryManagementPanel({
         </div>
       </aside>
 
-      <div className="grid gap-4">
+      <div className="grid min-w-0 gap-4">
         <MemoryModeTabs
           mode={mode}
           activeCount={viewModel.activeItems.length}
@@ -630,7 +630,7 @@ function MemoryConfirmedTable({
     <div
       id="memory-confirmed-table"
       data-testid="memory-confirmed-table"
-      className="scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+      className="min-w-0 scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
