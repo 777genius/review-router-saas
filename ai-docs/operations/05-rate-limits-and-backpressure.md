@@ -25,10 +25,17 @@ Implemented baseline:
 
 - fixed-window buckets live in Postgres so limits work across multiple API/web instances
 - action OIDC exchange and health-report routes use DB-backed limits
+- interaction OIDC exchanges also have per-repository and per-actor buckets so comment storms are throttled before SaaS issues action sessions
 - dashboard mutations use DB-backed limits
 - expired buckets are removed by the worker in bounded periodic batches through `REVIEW_ROUTER_RATE_LIMIT_PRUNE_BATCH_SIZE` and `REVIEW_ROUTER_RATE_LIMIT_PRUNE_INTERVAL_MS`
 - action OIDC replay nonces live in Postgres so duplicate `jti` claims are rejected across multiple API instances
 - expired OIDC replay nonces are removed by the worker in bounded periodic batches through `REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_BATCH_SIZE` and `REVIEW_ROUTER_ACTION_OIDC_REPLAY_NONCE_PRUNE_INTERVAL_MS`
+
+Current action OIDC buckets:
+
+- per run attempt: 20 exchanges per 10 minutes;
+- interaction per actor and repository: 30 exchanges per 10 minutes;
+- interaction per repository: 120 exchanges per 10 minutes.
 
 ## Job Backpressure
 

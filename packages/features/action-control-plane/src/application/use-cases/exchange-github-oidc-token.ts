@@ -63,6 +63,8 @@ export async function exchangeGitHubOidcToken(
     workspaceId: repository.workspaceId,
     repositoryId: repository.repositoryId,
     repositoryFullName: repository.fullName,
+    eventName: claims.event_name,
+    githubActorLogin: claims.actor,
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
   });

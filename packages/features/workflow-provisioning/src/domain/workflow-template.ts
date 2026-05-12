@@ -32,6 +32,8 @@ const reviewMemoryRuntimeEnvBlock = `
 const interactionMemoryRuntimeEnvBlock = `${reviewMemoryRuntimeEnvBlock}
       REVIEW_ROUTER_MEMORY_CANDIDATE_ENDPOINT: "/api/action/v1/memory-candidates"
       REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"`;
+const interactionJobGuardExpression =
+  "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')";
 
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
@@ -179,7 +181,7 @@ jobs:
   interaction:
     name: interaction
     runs-on: ubuntu-latest
-    if: \${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
+    if: \${{ ${interactionJobGuardExpression} }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
       REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
@@ -272,7 +274,7 @@ permissions:
 jobs:
   interaction:
     name: interaction
-    if: \${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
+    if: \${{ ${interactionJobGuardExpression} }}
     uses: ${reusableWorkflowRuntimeRepository}/${reusableInteractionWorkflowPath}@${template.runtimeRef}
     with:
       runtime_ref: ${template.runtimeRef}

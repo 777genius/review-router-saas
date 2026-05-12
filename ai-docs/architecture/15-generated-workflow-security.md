@@ -22,6 +22,30 @@ workflow_dispatch:
 
 Manual dispatch can support trusted maintainer reruns.
 
+## Interaction Workflow Guard
+
+Interaction workflows for `/rr` commands, discussion replies, and memory
+commands must fail closed before allocating a runner for comments that cannot
+produce useful work.
+
+Required generated job guard:
+
+```yaml
+if: ${{ github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot') }}
+```
+
+Reason:
+
+- issue comments outside pull requests do not have review context;
+- bot comments must not recursively trigger ReviewRouter replies;
+- `workflow_dispatch` remains available for trusted manual debugging.
+
+Do not use a broad GitHub Actions `concurrency` group for all interaction
+events. GitHub only keeps one running and one pending job per group, so a burst
+can cancel older pending jobs and drop legitimate `/rr skip`, `/rr remember`, or
+maintenance commands. Prefer runtime-level idempotency, per-thread reply
+markers, per-PR/thread caps, and SaaS OIDC rate limits.
+
 ## Default Permissions
 
 ```yaml

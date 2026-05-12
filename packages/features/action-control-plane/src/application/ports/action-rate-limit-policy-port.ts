@@ -3,6 +3,8 @@ export interface ActionRateLimitPolicyPort {
     readonly workspaceId: string;
     readonly repositoryId: string;
     readonly repositoryFullName: string;
+    readonly eventName: string;
+    readonly githubActorLogin: string | null;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
   }): Promise<void>;
