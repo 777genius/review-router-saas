@@ -2907,7 +2907,9 @@ function isMemoryError(error: string): boolean {
     "contains_large_stacktrace",
     "contains_prompt_injection",
     "contains_secret_like_text",
+    "memory_active_item_quota_exceeded",
     "memory_not_found",
+    "memory_pending_suggestion_quota_exceeded",
     "memory_safety_blocked",
     "not_repository_maintainer",
     "not_user_owner",
@@ -3033,6 +3035,10 @@ function dashboardErrorText(error: string): string {
       return "User preference memory can only be changed by that user.";
     case "repository_unavailable":
       return "This repository is not available for memory changes. It may be archived, unselected, or outside the workspace.";
+    case "memory_active_item_quota_exceeded":
+      return "Workspace memory quota is full. Disable or delete older memory before saving or confirming new memory.";
+    case "memory_pending_suggestion_quota_exceeded":
+      return "Workspace pending memory suggestion quota is full. Confirm, reject, or let expired suggestions clear before saving more suggestions.";
     case "memory_not_found":
       return "Memory was not found in this workspace.";
     case "contains_secret_like_text":
