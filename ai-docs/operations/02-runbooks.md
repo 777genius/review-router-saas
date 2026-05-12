@@ -218,6 +218,30 @@ Expected result:
 10. audit, outbox, usage telemetry, and diagnostics contain ids, hashes, counts, status, and versions only
 11. workspace flag `balanced_memory=false` returns an empty degraded runtime bundle and `memory_disabled` for new writes
 
+Real GitHub memory smoke:
+
+```bash
+REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 \
+  REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=<open-disposable-pr-number> \
+  pnpm spike:github-memory:e2e
+```
+
+Expected target state:
+
+1. use existing disposable repository `777genius/review-router-saas-e2e`
+2. do not create a new GitHub repository unless isolation is explicitly required
+3. the disposable repository default branch contains `.github/workflows/reviewrouter-interaction.yml`
+4. `/rr remember repo <marker>` creates a confirmed repository memory item
+5. natural-language remember creates a pending suggestion, and `/rr remember mem_suggestion_*` confirms it
+6. the confirmed item appears in a later scoped action memory bundle
+7. `/rr forget mem_*` removes it from future bundles
+8. bot comments do not trigger a new interaction run
+9. PR author/member denial is either verified with a second non-maintainer actor or covered by `pnpm spike:memory:e2e`
+
+The smoke runner is intentionally opt-in because it posts PR comments and
+triggers GitHub Actions. Use `REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1`
+to validate repository/workflow readiness without posting comments.
+
 Emergency disable:
 
 1. set `REVIEW_ROUTER_MEMORY_ENABLED=0|false|off` or `REVIEW_ROUTER_DISABLE_MEMORY=1|true|on` on API and web services

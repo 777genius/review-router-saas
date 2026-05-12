@@ -1,0 +1,56 @@
+# Balanced Memory Beta Security Matrix
+
+Date: 2026-05-12
+
+Status: beta release evidence, with one real GitHub memory smoke blocker called
+out explicitly.
+
+## Scope
+
+This matrix covers the beta-ready Balanced Memory release gate. It does not make
+pgvector, semantic embeddings or import workflows blocking for v1 beta.
+
+## Risk Matrix
+
+| Risk                                       | Required control                                                                                                                                                                                              | Proof                                                                                                                                                                                                                                                               | Status                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Prompt injection in memory body            | Deterministic safety policy blocks override language, code/diff-like payloads and unsafe source excerpts before persistence. Runtime treats confirmed memory as low-priority guidance only.                   | `packages/features/memory/src/tests/memory-core.test.ts`; `pnpm spike:memory:e2e`; public privacy copy.                                                                                                                                                             | Passed locally             |
+| Excessive model agency                     | Model-suggested candidates stay pending. Direct save only happens for explicit `/rr remember <scope> <text>` command by an authorized actor. Model cannot confirm, delete, change scope or grant permissions. | `proposeMemoryFromInteraction` tests; `memory-interaction.test.ts`; `memory-flow-e2e.ts`.                                                                                                                                                                           | Passed locally             |
+| Memory poisoning by PR author              | repository/workspace confirmation requires maintainer/admin semantics at mutation time. PR author/member path fails closed.                                                                                   | `pnpm spike:memory:e2e` admin/member boundary; memory permission adapter tests.                                                                                                                                                                                     | Passed locally             |
+| Permission bypass                          | Dashboard, action candidates and action commands reuse memory permission ports, not UI-only checks. Mutations reload by `workspaceId` and fail safe on missing repository/session claims.                     | `apps/api/src/app.test.ts`; `packages/features/memory/src/tests/memory-core.test.ts`; `pnpm architecture:check`.                                                                                                                                                    | Passed locally             |
+| Cross-tenant leakage                       | Canonical store and search adapter require workspace scope. Runtime bundle rehydrates index hits from canonical active scoped storage. Export and diagnostics are workspace-scoped.                           | `pnpm spike:memory:e2e`; support diagnostics E2E; repository/search adapter tests.                                                                                                                                                                                  | Passed locally             |
+| Raw code/diff/prompt/model-response upload | Action memory endpoints reject forbidden raw payload keys before application use cases run. Preview route uses synthetic fixtures only.                                                                       | `apps/api/src/action-memory-routes.ts`; `apps/api/src/app.test.ts`; `pnpm spike:memory:e2e`.                                                                                                                                                                        | Passed locally             |
+| Vector leakage                             | v1 beta does not use vector DB as authority. `MemorySearchIndexPort` is cache-like, and bundle correctness depends on canonical ACL recheck.                                                                  | `buildActionMemoryBundle` tests with stale/cross-workspace candidates; ADR 020 and ADR 024.                                                                                                                                                                         | Passed locally             |
+| Kill switch failure                        | Service env and workspace entitlement disable new writes, confirms, edits and runtime bundle exposure while keeping cleanup/export available.                                                                 | `memory-policy-config.test.ts`; web memory panel tests; `pnpm spike:memory:e2e`.                                                                                                                                                                                    | Passed locally             |
+| Export privacy                             | Sync export excludes deleted rows, embeddings, raw source excerpts and source hashes. Oversized export fails closed with no partial JSON.                                                                     | `exportMemoryItems` tests; `pnpm spike:memory:e2e`; privacy page test.                                                                                                                                                                                              | Passed locally             |
+| Audit/diagnostics body leak                | Audit, usage telemetry and support diagnostics store ids, hashes, counts, statuses and versions only.                                                                                                         | `support-diagnostics-e2e.ts`; `memory-flow-e2e.ts`; audit assertions.                                                                                                                                                                                               | Passed locally             |
+| UI misoperation                            | Dashboard follows saved design references, compact badges are non-button labels, destructive actions use dialogs, mobile table overflow is contained.                                                         | Updated screenshots in `tmp/design-verification/memory/*`; `pnpm web:ui-audit` with memory routes; panel tests.                                                                                                                                                     | Passed locally             |
+| Bot loop and thread storms                 | Interaction workflow ignores bot comments and SaaS/action-side throttling protects discussion path.                                                                                                           | Real GitHub discussion E2E on PR #5; run `25716486487`; rate-limit tests.                                                                                                                                                                                           | Passed for discussion path |
+| Real GitHub memory path                    | Disposable repo should prove human `/rr remember` comment, memory candidate/command submission, confirmation, bundle visibility and deletion through GitHub Actions.                                          | New `pnpm spike:github-memory:e2e` runner. Preflight currently fails because `777genius/review-router-saas-e2e` default branch lacks `.github/workflows/reviewrouter-interaction.yml`; external action repo also needs memory endpoint wiring before this can pass. | Release blocker            |
+
+## Current Evidence Commands
+
+```bash
+pnpm format:check
+pnpm typecheck
+pnpm test
+pnpm lint
+pnpm architecture:check
+pnpm spike:memory:e2e
+REVIEW_ROUTER_ENABLE_MEMORY_PREVIEW=1 pnpm web:dev
+REVIEW_ROUTER_UI_AUDIT_BASE_URL=http://localhost:3000 \
+  REVIEW_ROUTER_UI_AUDIT_ROUTES='/dashboard/memory-preview?mode=knowledge,/dashboard/memory-preview?mode=suggestions,/dashboard/memory-preview?mode=table,/dashboard/memory-preview?mode=knowledge&state=empty,/dashboard/memory-preview?mode=knowledge&state=readonly,/dashboard/memory-preview?mode=knowledge&state=over_quota,/dashboard/memory-preview?mode=knowledge&state=stale_edit,/dashboard/memory-preview?mode=knowledge&state=indexing_degraded' \
+  REVIEW_ROUTER_UI_AUDIT_VIEWPORTS='mobile:390x844:mobile,tablet:900x1100,desktop:1440x1000' \
+  pnpm web:ui-audit
+REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 \
+  REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1 \
+  REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=4 \
+  pnpm spike:github-memory:e2e
+```
+
+## Release Decision
+
+Balanced Memory is locally hardened enough for a beta candidate, but the beta
+release gate is not fully closed until the real GitHub memory smoke passes
+against a disposable PR with the interaction workflow on the default branch and
+an action runtime that submits normalized memory candidates/commands.
