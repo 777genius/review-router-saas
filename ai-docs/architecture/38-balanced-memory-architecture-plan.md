@@ -77,6 +77,7 @@
 - workspace memory export закрыт application use case `exportMemoryItems`: workspace-admin authority через permission port, canonical repository export port, JSON manifest с checksum/counts, active/disabled/expired items only, no deleted rows, no embeddings, no raw source excerpts/source hashes.
 - dashboard operational table получил `Export JSON` link по существующему table layout; web route отдаёт private no-store attachment и повторно проверяет dashboard auth, entitlement и memory workspace-admin permission before export.
 - sync workspace export теперь fail-closed при row/byte budget overflow: частичный JSON не отдаётся, route возвращает safe `413 memory_export_too_large`, а future async export остаётся отдельным admin workflow.
+- public privacy page, customer-facing security copy and operations runbook now document Balanced Memory boundaries: confirmed distilled snippets only, admin export, immediate runtime removal on delete, redaction and retention prune.
 - confirm/reject suggestion теперь fail-closed для TTL-expired pending rows даже до worker maintenance: use case атомарно переводит stale pending suggestion в `expired`, возвращает `noop: expired`, не зовёт permission adapter и не создаёт memory item.
 - `forget/delete` memory теперь privacy-first: domain ставит tombstone body/source на deleted item, а delete use case в той же транзакции redacts body/source у confirmed origin suggestion; fresh DB E2E проверяет, что удалённая memory и linked suggestion больше не содержат исходный текст.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
@@ -106,6 +107,7 @@
 - `pnpm vitest run packages/features/memory/src/tests/memory-core.test.ts apps/web/app/dashboard/memory-management-panel.test.tsx` - 44 tests passed;
 - `pnpm spike:memory:e2e` with workspace export, deleted-row exclusion, source excerpt exclusion and export audit assertions - passed;
 - targeted export budget tests cover row-limit and byte-limit rejection without audit body leakage;
+- `pnpm vitest run apps/web/app/privacy/page.test.tsx` verifies public Balanced Memory privacy and retention copy;
 - `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index`, включая edited-source supersede assertion - passed;
 - `pnpm spike:memory:e2e` с fresh `prisma migrate deploy` включая `000015_memory_terminal_prune_index`, terminal prune assertion и runtime bundle после prune - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.

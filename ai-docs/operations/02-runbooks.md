@@ -188,3 +188,55 @@ Recovery:
 
 Do not manually edit payload JSON in production. If payload migration is needed,
 ship an explicit versioned migration or a new handler version.
+
+## Balanced Memory Operational Checks
+
+Use this after changing memory storage, dashboard memory actions, interaction
+commands, export, retention, diagnostics, or workflow memory wiring.
+
+Local verification:
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm lint
+pnpm architecture:check
+pnpm spike:memory:e2e
+```
+
+Expected result:
+
+1. migrations apply to a fresh temporary Postgres database
+2. action session OIDC exchange succeeds
+3. maintainer/admin memory writes succeed and member/author writes fail closed
+4. raw code, diffs, prompts, model output, and raw conversations are rejected
+5. confirmed repository/workspace memory appears in the scoped action bundle
+6. disabled, expired, deleted, cross-repository, and cross-workspace memory does not appear in the bundle
+7. delete redacts memory body/source and confirmed origin suggestion body/source
+8. export includes active, disabled, and expired memory only
+9. export excludes deleted rows, embeddings, raw source excerpts, and source hashes
+10. audit, outbox, usage telemetry, and diagnostics contain ids, hashes, counts, status, and versions only
+
+If memory bundle requests fail:
+
+1. review continues without memory because memory bundle fetch is non-blocking
+2. check action session validity, workspace id, repository id, and memory feature entitlement
+3. inspect support diagnostics counts, not memory bodies
+4. confirm search index degradation falls back to canonical storage
+5. check worker logs for safe memory outbox handler summaries
+
+If export returns `memory_export_too_large`:
+
+1. do not increase sync response size in the dashboard route
+2. use the JSON manifest counts to estimate scope only when available
+3. build or enable an async admin export workflow with expiring storage before supporting larger exports
+4. keep deleted rows, embeddings, raw source excerpts, and source hashes excluded
+5. audit only export id, counts, checksum, format, and safe status metadata
+
+If a user requests deletion:
+
+1. disable runtime exposure immediately through dashboard delete or the normalized interaction command
+2. verify deleted memory no longer appears in action bundles
+3. verify source/body redaction on the canonical memory item and linked confirmed suggestion
+4. let terminal retention prune hard-delete old deleted/expired rows
+5. do not paste memory body, source comments, code, diffs, prompts, or model output into support tickets
