@@ -48,6 +48,14 @@ export interface MemoryItemRepositoryPort {
     readonly limit: number;
   }): Promise<readonly MemoryItemSnapshot[]>;
 
+  listActiveByIdsForBundle(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly userId: string | null;
+    readonly itemIds: readonly string[];
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]>;
+
   listForDashboard(input: {
     readonly workspaceId: string;
     readonly repositoryId?: string | null;

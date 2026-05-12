@@ -126,6 +126,49 @@ export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
     return record.map(toMemoryItemSnapshot);
   }
 
+  async listActiveByIdsForBundle(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly userId: string | null;
+    readonly itemIds: readonly string[];
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    const itemIds = [...new Set(input.itemIds)].slice(0, input.limit);
+    if (itemIds.length === 0) return [];
+
+    const records = await this.prisma.memoryItem.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        status: "active",
+        id: { in: itemIds },
+        OR: [
+          { scope: "workspace", repositoryId: null, userId: null },
+          {
+            scope: "repository",
+            repositoryId: input.repositoryId,
+            userId: null,
+          },
+          ...(input.userId
+            ? [
+                {
+                  scope: "user_prefs" as const,
+                  repositoryId: null,
+                  userId: input.userId,
+                },
+              ]
+            : []),
+        ],
+      },
+      take: input.limit,
+    });
+    const byId = new Map(
+      records.map((record) => [record.id, toMemoryItemSnapshot(record)]),
+    );
+    return itemIds
+      .map((id) => byId.get(id))
+      .filter((item): item is MemoryItemSnapshot => item !== undefined);
+  }
+
   async listForDashboard(input: {
     readonly workspaceId: string;
     readonly repositoryId?: string | null;

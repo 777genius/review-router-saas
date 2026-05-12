@@ -7,7 +7,12 @@ import {
   type GitHubActionsOidcClaims,
   type GitHubActionsOidcTokenVerifierPort,
 } from "../../../packages/features/action-control-plane/src/index.ts";
-import { createMemoryBodyHash } from "../../../packages/features/memory/src/index.ts";
+import {
+  buildActionMemoryBundle,
+  createMemoryBodyHash,
+  PrismaMemoryItemRepository,
+  PrismaMemorySearchIndex,
+} from "../../../packages/features/memory/src/index.ts";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
 import { SystemClock } from "../../../packages/shared/src/index.ts";
 import { createApiApp } from "../../../apps/api/src/app.js";
@@ -270,7 +275,7 @@ try {
 
   const otherRepoItem = await postCandidate(baseUrl, otherAdminSession, {
     sourceId: `memory-e2e-other-repo-${suffix}`,
-    body: "Other workspace memory must never leak.",
+    body: "Other workspace browser layout memory must never leak.",
     intent: "explicit_command",
     extractionMethod: "explicit_command",
     requestedScope: "repository",
@@ -358,6 +363,26 @@ try {
     "review event memory mutation code",
   );
 
+  const searchedBundle = await buildActionMemoryBundle(
+    {
+      workspaceId: primary.workspaceId,
+      repositoryId: primary.repositoryId,
+      userId: null,
+      safeRetrievalQuery: "browser layout",
+      policy: { includeUserPrefs: false },
+    },
+    {
+      memoryItems: new PrismaMemoryItemRepository(prisma),
+      memorySearchIndex: new PrismaMemorySearchIndex(prisma),
+    },
+  );
+  assertBundleContains(searchedBundle, [
+    "Run dashboard memory changes through browser layout checks.",
+  ]);
+  assertBundleExcludes(searchedBundle, [
+    "Other workspace browser layout memory must never leak.",
+  ]);
+
   const bundle = await getJson<ActionMemoryBundle>(
     baseUrl,
     "/api/action/v1/memory",
@@ -370,7 +395,7 @@ try {
   ]);
   assertBundleExcludes(bundle, [
     "Member role must not be able to save repository memory.",
-    "Other workspace memory must never leak.",
+    "Other workspace browser layout memory must never leak.",
     "Other workspace suggestion must never be confirmable.",
     "Review event must not save memory.",
   ]);
@@ -425,7 +450,7 @@ try {
   );
   assertBundleExcludes(bundleAfterDisable, [
     "Prefer guard clauses in service methods.",
-    "Other workspace memory must never leak.",
+    "Other workspace browser layout memory must never leak.",
   ]);
   assertBundleContains(bundleAfterDisable, [
     "Use Prisma migrations for schema changes.",
@@ -472,6 +497,7 @@ try {
         primaryRepository: primary.fullName,
         memory: {
           initialBundleItems: bundle.items.length,
+          searchedBundleItems: searchedBundle.items.length,
           afterDisableBundleItems: bundleAfterDisable.items.length,
           usageEvents: primaryUsageCount,
         },

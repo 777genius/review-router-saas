@@ -36,6 +36,12 @@ import type {
   MemoryPermissionPort,
 } from "../application/ports/memory-permission-port";
 import type {
+  MemoryIndexDocument,
+  MemorySearchIndexInput,
+  MemorySearchIndexPort,
+  MemorySearchIndexResult,
+} from "../application/ports/memory-search-index-port";
+import type {
   MemorySuggestionDashboardRepositoryCursor,
   MemorySuggestionRepositoryPort,
 } from "../application/ports/memory-suggestion-repository-port";
@@ -140,6 +146,32 @@ class InMemoryItems implements MemoryItemRepositoryPort {
           (item.scope === "repository" &&
             item.repositoryId === input.repositoryId) ||
           (item.scope === "user_prefs" && item.userId === input.userId),
+      )
+      .slice(0, input.limit);
+  }
+
+  async listActiveByIdsForBundle(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly userId: string | null;
+    readonly itemIds: readonly string[];
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    const itemIds = new Set(input.itemIds);
+    return [...this.items.values()]
+      .filter((item) => itemIds.has(item.id))
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.scope === "workspace" ||
+          (item.scope === "repository" &&
+            item.repositoryId === input.repositoryId) ||
+          (item.scope === "user_prefs" && item.userId === input.userId),
+      )
+      .sort(
+        (left, right) =>
+          input.itemIds.indexOf(left.id) - input.itemIds.indexOf(right.id),
       )
       .slice(0, input.limit);
   }
@@ -405,6 +437,45 @@ class CapturingUsageEvents
     }
 
     return { deletedCount };
+  }
+}
+
+class StubSearchIndex implements MemorySearchIndexPort {
+  readonly inputs: MemorySearchIndexInput[] = [];
+
+  constructor(
+    private readonly hits: readonly MemorySearchIndexResult[],
+    private readonly options: {
+      readonly capabilities?: readonly ("lexical" | "semantic_vector")[];
+      readonly fail?: boolean;
+    } = {},
+  ) {}
+
+  async supports(): ReturnType<MemorySearchIndexPort["supports"]> {
+    return { capabilities: this.options.capabilities ?? ["lexical"] };
+  }
+
+  async search(
+    input: MemorySearchIndexInput,
+  ): ReturnType<MemorySearchIndexPort["search"]> {
+    this.inputs.push(input);
+    if (this.options.fail) {
+      throw new Error("search_index_unavailable");
+    }
+    return this.hits;
+  }
+
+  async upsertDocument(input: MemoryIndexDocument): Promise<void> {
+    void input;
+    return undefined;
+  }
+
+  async deleteDocument(input: {
+    readonly workspaceId: string;
+    readonly memoryItemId: string;
+  }): Promise<void> {
+    void input;
+    return undefined;
   }
 }
 
@@ -1313,6 +1384,119 @@ describe("memory core", () => {
     ]);
   });
 
+  it("uses search index hits only after canonical scope recheck", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const active = await rememberMemoryDirectly(
+      memoryInput("repository", "Run dashboard memory changes through browser layout checks."),
+      deps,
+    );
+    const wrongWorkspace = await rememberMemoryDirectly(
+      {
+        ...memoryInput("repository", "Other workspace layout memory must not leak."),
+        workspaceId: "workspace_2",
+      },
+      deps,
+    );
+    const disabled = await rememberMemoryDirectly(
+      memoryInput("repository", "Disabled layout memory must not return."),
+      deps,
+    );
+    if (
+      active.status !== "created" ||
+      wrongWorkspace.status !== "created" ||
+      disabled.status !== "created"
+    ) {
+      throw new Error("missing_memory_items");
+    }
+    const disabledSnapshot = deps.memoryItems.items.get(disabled.id);
+    if (!disabledSnapshot) throw new Error("missing_disabled_item");
+    await deps.memoryItems.save(
+      MemoryItem.fromSnapshot(disabledSnapshot).disable({
+        actor: maintainer,
+        now,
+      }),
+    );
+
+    const searchIndex = new StubSearchIndex([
+      searchHit(wrongWorkspace.id, "repository", 30),
+      searchHit(disabled.id, "repository", 20),
+      searchHit(active.id, "repository", 10),
+    ]);
+    const bundle = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        safeRetrievalQuery: "layout checks",
+      },
+      { ...deps, memorySearchIndex: searchIndex },
+    );
+
+    expect(searchIndex.inputs[0]).toMatchObject({
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      safeQuery: "layout checks",
+    });
+    expect(bundle.degraded).toBe(false);
+    expect(bundle.items.map((item) => item.body)).toEqual([
+      "Run dashboard memory changes through browser layout checks.",
+    ]);
+  });
+
+  it("falls back to canonical bundle when search index is unavailable or stale", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+      "user_maintainer:workspace": { allowed: true },
+    });
+    await rememberMemoryDirectly(
+      memoryInput("repository", "Repository runtime fallback guidance."),
+      deps,
+    );
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "Workspace runtime fallback guidance."),
+      deps,
+    );
+
+    const unavailable = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        safeRetrievalQuery: "fallback",
+      },
+      {
+        ...deps,
+        memorySearchIndex: new StubSearchIndex([], { fail: true }),
+      },
+    );
+    expect(unavailable.degraded).toBe(true);
+    expect(unavailable.reason).toBe("memory_search_index_unavailable");
+    expect(unavailable.items.map((item) => item.body)).toEqual([
+      "Repository runtime fallback guidance.",
+      "Workspace runtime fallback guidance.",
+    ]);
+
+    const stale = await buildActionMemoryBundle(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        safeRetrievalQuery: "fallback",
+      },
+      {
+        ...deps,
+        memorySearchIndex: new StubSearchIndex([
+          searchHit("missing_from_canonical_store", "repository", 99),
+        ]),
+      },
+    );
+    expect(stale.degraded).toBe(true);
+    expect(stale.reason).toBe("memory_search_index_stale");
+    expect(stale.items).toHaveLength(2);
+  });
+
   it("records action bundle usage with safe metadata only", async () => {
     const deps = createHarness({
       "user_maintainer:repository": { allowed: true },
@@ -1583,5 +1767,25 @@ function memoryUsageEvent(
       eventName: "pull_request",
     },
     occurredAt: input.occurredAt,
+  };
+}
+
+function searchHit(
+  memoryItemId: string,
+  scope: MemoryScope,
+  score: number,
+): MemorySearchIndexResult {
+  return {
+    memoryItemId,
+    scope,
+    score,
+    scoreParts: {
+      lexicalScore: score,
+      semanticScore: 0,
+      recencyScore: 0,
+      scopeScore: 0,
+      riskPenalty: 0,
+    },
+    explanationCode: "lexical_match",
   };
 }

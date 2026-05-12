@@ -244,6 +244,32 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
       .slice(0, input.limit);
   }
 
+  async listActiveByIdsForBundle(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly userId: string | null;
+    readonly itemIds: readonly string[];
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    const itemIds = new Set(input.itemIds);
+    return this.values()
+      .filter((item) => itemIds.has(item.id))
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.scope === "workspace" ||
+          (item.scope === "repository" &&
+            item.repositoryId === input.repositoryId) ||
+          (item.scope === "user_prefs" && item.userId === input.userId),
+      )
+      .sort(
+        (left, right) =>
+          input.itemIds.indexOf(left.id) - input.itemIds.indexOf(right.id),
+      )
+      .slice(0, input.limit);
+  }
+
   async listForDashboard(input: {
     readonly workspaceId: string;
     readonly repositoryId?: string | null;

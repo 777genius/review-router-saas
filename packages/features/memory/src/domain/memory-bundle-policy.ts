@@ -28,6 +28,12 @@ export const defaultMemoryBundlePolicy: MemoryBundlePolicy = {
   includeUserPrefs: true,
 };
 
+export type BuildMemoryBundleOptions = {
+  readonly preserveInputOrder?: boolean;
+  readonly degraded?: boolean;
+  readonly reason?: string | null;
+};
+
 const scopePriority: Record<MemoryItemSnapshot["scope"], number> = {
   repository: 0,
   workspace: 1,
@@ -37,14 +43,18 @@ const scopePriority: Record<MemoryItemSnapshot["scope"], number> = {
 export function buildMemoryBundle(
   items: readonly MemoryItemSnapshot[],
   policy: MemoryBundlePolicy = defaultMemoryBundlePolicy,
+  options: BuildMemoryBundleOptions = {},
 ): ActionMemoryBundle {
   const selected: ActionMemoryBundleItem[] = [];
   let characterCount = 0;
 
   const candidates = [...items]
     .filter((item) => item.status === "active")
-    .filter((item) => policy.includeUserPrefs || item.scope !== "user_prefs")
-    .sort(compareBundleItems);
+    .filter((item) => policy.includeUserPrefs || item.scope !== "user_prefs");
+
+  if (!options.preserveInputOrder) {
+    candidates.sort(compareBundleItems);
+  }
 
   for (const item of candidates) {
     if (selected.length >= policy.maxItems) break;
@@ -64,8 +74,8 @@ export function buildMemoryBundle(
     protocolVersion: 1,
     memoryVersion: 1,
     items: selected,
-    degraded: false,
-    reason: null,
+    degraded: options.degraded ?? false,
+    reason: options.reason ?? null,
   };
 }
 
