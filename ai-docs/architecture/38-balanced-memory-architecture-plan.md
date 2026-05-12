@@ -2,7 +2,7 @@
 
 Дата: 2026-05-12
 
-Статус: implementation in progress
+Статус: beta candidate hardening, external GitHub memory smoke pending
 
 Ветка: `feat/balanced-memory`
 
@@ -82,6 +82,9 @@
 - rollout kill switch подключён через `EntitlementMemoryPolicyConfig`: service env `REVIEW_ROUTER_MEMORY_ENABLED=0|false|off` или `REVIEW_ROUTER_DISABLE_MEMORY=1|true|on` и workspace entitlement flag `balanced_memory=false` выключают new writes/confirm/edit/runtime bundle через `MemoryPolicyConfigPort`; delete/disable/export остаются доступны для authorized cleanup.
 - admin-only policy simulator добавлен как application use case: он принимает только scope/action/actor и fixed synthetic safety fixture, переиспользует `MemoryPolicyConfigPort`, `MemoryPermissionPort`, safety policy и quota gates, показывает safe reason/policy hash/affected surfaces и не принимает raw memory body/comment/diff/prompt.
 - ADR release gate подготовлен для memory foundation: добавлены ADR 018-026 про privacy boundary, bounded context, storage/search strategy, authority, tenant isolation, rollback/disable, search capability contract, dashboard design source и transaction/outbox strategy.
+- opt-in real GitHub memory smoke gate добавлен как `pnpm spike:github-memory:e2e`; `REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=memory pnpm beta:check` теперь запускает его только с явным side-effect opt-in.
+- beta security matrix добавлена в `ai-docs/security/balanced-memory-beta-security-matrix.md`: prompt injection, excessive agency, data poisoning, vector leakage, permission bypass, tenant isolation, raw payload rejection, kill switch and export privacy mapped to automated or manual proof.
+- memory dashboard visual QA refreshed after policy simulator: screenshots regenerated at `1440x1000`, `900x1100` and `390x844`; shared UI badges stay compact labels, not action-like buttons; table mode mobile overflow fixed by `min-w-0` containment.
 - confirm/reject suggestion теперь fail-closed для TTL-expired pending rows даже до worker maintenance: use case атомарно переводит stale pending suggestion в `expired`, возвращает `noop: expired`, не зовёт permission adapter и не создаёт memory item.
 - `forget/delete` memory теперь privacy-first: domain ставит tombstone body/source на deleted item, а delete use case в той же транзакции redacts body/source у confirmed origin suggestion; fresh DB E2E проверяет, что удалённая memory и linked suggestion больше не содержат исходный текст.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
@@ -122,6 +125,24 @@
   - checked knowledge, suggestions, table, empty, readonly, over quota, stale edit and indexing degraded states;
   - clean-profile browser captures rendered without preview-route failures; persistent local dev profiles can still emit unrelated stale NextAuth JWT cookie noise before the preview route renders;
   - hydration mismatch on disabled dialog triggers was found by browser QA and fixed by rendering disabled actions as plain shared `Button` controls instead of disabled dialog triggers.
+- refreshed visual QA after policy simulator:
+  - `REVIEW_ROUTER_UI_AUDIT_BASE_URL=http://localhost:3000 REVIEW_ROUTER_UI_AUDIT_ROUTES='...' REVIEW_ROUTER_UI_AUDIT_VIEWPORTS='mobile:390x844:mobile,tablet:900x1100,desktop:1440x1000' pnpm web:ui-audit` - 24 memory preview pages passed;
+  - `pnpm --filter @reviewrouter/web typecheck` - passed;
+  - `pnpm vitest run apps/web/app/dashboard/memory-management-panel.test.tsx` - 11 tests passed.
+- GitHub memory smoke gate checks:
+  - `node --check scripts/run-github-memory-smoke.mjs` - passed;
+  - `bash -n scripts/check-beta-readiness.sh` - passed;
+  - guard check without `REVIEW_ROUTER_GITHUB_MEMORY_E2E=1` stops before GitHub side effects - passed;
+  - preflight on `777genius/review-router-saas-e2e` PR #4 currently fails with `github_memory_e2e_interaction_workflow_missing_on_default_branch`, because the disposable repo default branch does not contain `.github/workflows/reviewrouter-interaction.yml`.
+
+Current beta blocker:
+
+- Real GitHub memory smoke is not passed yet. The disposable repo must have the
+  interaction workflow on its default branch, and the external action runtime
+  must submit normalized memory candidates/commands to
+  `/api/action/v1/memory-candidates` and `/api/action/v1/memory-commands`.
+  Local fresh-DB E2E already proves the SaaS memory control plane and privacy
+  boundaries, but the GitHub Actions integration gate remains open.
 
 ## Quality Bar
 
