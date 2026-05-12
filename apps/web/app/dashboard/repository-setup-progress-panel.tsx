@@ -318,6 +318,8 @@ function buildSetupSteps({
   const reviewAction = shouldRenderProviderAction
     ? enableReviewAction
     : lockedReviewAction;
+  const reviewActionHidden =
+    shouldRenderProviderAction && currentStep === 4;
 
   return [
     {
@@ -345,6 +347,7 @@ function buildSetupSteps({
             ? "Seed provider access."
             : "Available after merge.",
       action: reviewAction,
+      actionHidden: reviewActionHidden,
     },
     {
       number: 4,
@@ -359,6 +362,7 @@ type RepositorySetupProgressStep = {
   readonly title: string;
   readonly helper: string | null;
   readonly action?: ReactNode;
+  readonly actionHidden?: boolean;
 };
 
 function RepositorySetupProgressStepItem({
@@ -416,14 +420,19 @@ function RepositorySetupProgressStepItem({
           ) : null}
           {step.action ? (
             <div
-              className={[
-                "mt-3",
-                step.number === 4
-                  ? "md:flex md:justify-end"
-                  : step.number === 1
-                    ? "md:flex md:justify-start"
-                    : "md:flex md:justify-center",
-              ].join(" ")}
+              aria-hidden={step.actionHidden ? "true" : undefined}
+              className={
+                step.actionHidden
+                  ? "hidden"
+                  : [
+                      "mt-3",
+                      step.number === 4
+                        ? "md:flex md:justify-end"
+                        : step.number === 1
+                          ? "md:flex md:justify-start"
+                          : "md:flex md:justify-center",
+                    ].join(" ")
+              }
             >
               {step.action}
             </div>
