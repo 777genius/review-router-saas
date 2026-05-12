@@ -15,6 +15,7 @@ import {
 import type {
   MemoryDashboardItemDto,
   MemoryDashboardSuggestionDto,
+  MemoryPolicySimulationDecision,
 } from "@reviewrouter/features-memory";
 import { FormSubmitButton } from "../form-submit-button";
 import {
@@ -54,6 +55,7 @@ export function MemoryManagementPanel({
   memorySuggestions,
   mutationsEnabled,
   memoryWritesEnabled,
+  policySimulation,
   mode = "knowledge",
   modeLinks,
   notices = [],
@@ -64,6 +66,7 @@ export function MemoryManagementPanel({
   readonly memorySuggestions: readonly MemoryDashboardSuggestionDto[];
   readonly mutationsEnabled: boolean;
   readonly memoryWritesEnabled: boolean;
+  readonly policySimulation?: readonly MemoryPolicySimulationDecision[] | null;
   readonly mode?: MemoryManagementMode;
   readonly modeLinks?: MemoryManagementModeLinks;
   readonly notices?: readonly MemoryManagementNotice[];
@@ -242,6 +245,10 @@ export function MemoryManagementPanel({
                 />
               </div>
             </div>
+
+            {policySimulation && policySimulation.length > 0 ? (
+              <MemoryPolicySimulator decisions={policySimulation} />
+            ) : null}
 
             <div className="border-t border-cyan-200/10 pt-4">
               <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -1344,6 +1351,73 @@ function MemoryPolicyLine({
   );
 }
 
+function MemoryPolicySimulator({
+  decisions,
+}: {
+  readonly decisions: readonly MemoryPolicySimulationDecision[];
+}): React.ReactElement {
+  return (
+    <div className="border-t border-cyan-200/10 pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
+          Policy simulator
+        </p>
+        <MemoryBadge tone="neutral">Synthetic only</MemoryBadge>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-slate-400">
+        Admin-only dry run using the same policy, permission, safety and quota
+        gates as real memory writes.
+      </p>
+      <div className="mt-3 grid gap-2">
+        {decisions.map((decision) => (
+          <div
+            key={`${decision.action}:${decision.scope}:${decision.reason}`}
+            className="rounded-xl border border-cyan-200/10 bg-cyan-300/[0.035] p-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-cyan-50">
+                {memoryPolicySimulationTitle(decision)}
+              </p>
+              <MemoryBadge
+                tone={decision.allowed ? "success" : "danger"}
+                className="tracking-[0.08em]"
+              >
+                {decision.allowed ? "Allow" : "Deny"}
+              </MemoryBadge>
+            </div>
+            <dl className="mt-2 grid gap-1.5 text-xs leading-5 text-slate-400">
+              <MemoryDetailStat
+                label="Reason"
+                value={memoryPolicyReasonLabel(decision.reason)}
+              />
+              <MemoryDetailStat
+                label="Authority"
+                value={memoryPolicyAuthorityLabel(decision.requiredAuthority)}
+              />
+              <MemoryDetailStat
+                label="Safety"
+                value={memoryPolicySafetyLabel(decision)}
+              />
+              <MemoryDetailStat
+                label="Policy"
+                value={`v${decision.policyVersion} ${decision.policyHash}`}
+              />
+              {decision.invalidates.length > 0 ? (
+                <MemoryDetailStat
+                  label="Affects"
+                  value={decision.invalidates
+                    .map(memoryPolicySurfaceLabel)
+                    .join(", ")}
+                />
+              ) : null}
+            </dl>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MemoryDetailStat({
   label,
   value,
@@ -1367,6 +1441,92 @@ function memoryScopeLabel(scope: MemoryDashboardItemDto["scope"]): string {
       return "Workspace";
     case "user_prefs":
       return "User prefs";
+  }
+}
+
+function memoryPolicySimulationTitle(
+  decision: MemoryPolicySimulationDecision,
+): string {
+  const scope = memoryScopeLabel(decision.scope);
+  switch (decision.action) {
+    case "direct_save":
+      return `${scope} write`;
+    case "propose_suggestion":
+      return `${scope} suggestion`;
+    case "confirm_suggestion":
+      return `${scope} approval`;
+    case "edit_memory":
+      return `${scope} edit`;
+  }
+}
+
+function memoryPolicyReasonLabel(reason: string): string {
+  switch (reason) {
+    case "allowed":
+      return "Allowed";
+    case "memory_disabled":
+      return "Memory disabled";
+    case "memory_scope_forbidden":
+      return "Scope forbidden";
+    case "not_repository_maintainer":
+      return "Maintainer required";
+    case "not_workspace_admin":
+      return "Workspace admin required";
+    case "not_user_owner":
+      return "User owner required";
+    case "repository_unavailable":
+      return "Repository unavailable";
+    case "memory_active_item_quota_exceeded":
+      return "Active quota exceeded";
+    case "memory_pending_suggestion_quota_exceeded":
+      return "Pending quota exceeded";
+    case "contains_prompt_injection":
+      return "Prompt injection blocked";
+    case "contains_secret_like_text":
+      return "Secret-like text blocked";
+    case "contains_code_block":
+      return "Code blocked";
+    case "unsafe_for_user_prefs":
+      return "Unsafe user preference";
+    default:
+      return reason.replaceAll("_", " ");
+  }
+}
+
+function memoryPolicyAuthorityLabel(authority: string): string {
+  switch (authority) {
+    case "workspace_admin":
+      return "Workspace admin";
+    case "repository_maintainer_or_workspace_admin":
+      return "Repo maintainer/admin";
+    case "user_owner":
+      return "User owner";
+    case "safe_candidate_source":
+      return "Safe candidate source";
+    default:
+      return authority.replaceAll("_", " ");
+  }
+}
+
+function memoryPolicySafetyLabel(
+  decision: MemoryPolicySimulationDecision,
+): string {
+  if (decision.safety.flags.length === 0) return decision.safety.severity;
+  return `${decision.safety.severity}: ${decision.safety.flags
+    .map((flag) => flag.replaceAll("_", " "))
+    .join(", ")}`;
+}
+
+function memoryPolicySurfaceLabel(
+  surface: MemoryPolicySimulationDecision["invalidates"][number],
+): string {
+  switch (surface) {
+    case "runtime_bundle":
+      return "runtime";
+    case "pending_suggestions":
+      return "pending";
+    case "confirmed_memory":
+      return "confirmed";
   }
 }
 

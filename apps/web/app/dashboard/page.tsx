@@ -45,11 +45,16 @@ import {
   listMemoryItemsForDashboard,
   listMemorySuggestionsForDashboard,
   EntitlementMemoryPolicyConfig,
+  EntitlementMemoryQuotaPolicy,
+  PrismaMemoryPermission,
   PrismaMemoryItemRepository,
   PrismaMemorySuggestionRepository,
   readMemoryServiceEnabled,
+  simulateMemoryPolicyDecision,
+  type MemoryActor,
   type MemoryDashboardItemDto,
   type MemoryDashboardSuggestionDto,
+  type MemoryPolicySimulationDecision,
 } from "@reviewrouter/features-memory";
 import {
   getWorkspaceSupportDiagnostics,
@@ -143,6 +148,10 @@ async function loadDashboardData(
     readonly actor: string;
     readonly reason: "local_admin_override" | "workspace_admin";
   },
+  currentActor?: {
+    readonly githubUserId: string;
+    readonly githubLogin: string;
+  } | null,
 ) {
   if (scope.kind === "none") {
     return [];
@@ -194,6 +203,12 @@ async function loadDashboardData(
   const orgRulesetStore = new PrismaOrgRulesetProvisioningRepository(prisma);
   const memoryItemStore = new PrismaMemoryItemRepository(prisma);
   const memorySuggestionStore = new PrismaMemorySuggestionRepository(prisma);
+  const memoryPermission = new PrismaMemoryPermission(prisma, {
+    localAdminGithubLogins: readCsvEnv(
+      "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
+    ),
+  });
+  const memoryQuotaPolicy = new EntitlementMemoryQuotaPolicy(entitlementStore);
   const memoryPolicyConfig = new EntitlementMemoryPolicyConfig(
     entitlementStore,
     { serviceEnabled: readMemoryServiceEnabled(process.env) },
@@ -236,6 +251,9 @@ async function loadDashboardData(
         memoryItems: readonly MemoryDashboardItemDto[];
         memorySuggestions: readonly MemoryDashboardSuggestionDto[];
         memoryWritesEnabled: boolean;
+        memoryPolicySimulation:
+          | readonly MemoryPolicySimulationDecision[]
+          | null;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -323,6 +341,16 @@ async function loadDashboardData(
             ),
             memoryPolicyConfig.getPolicy({ workspaceId: workspace.id }),
           ]);
+        const memoryPolicySimulation = await buildMemoryPolicySimulation({
+          workspaceId: workspace.id,
+          repositories,
+          actor: currentActor ?? null,
+          memoryPolicyConfig,
+          memoryPermission,
+          memoryItemStore,
+          memorySuggestionStore,
+          memoryQuotaPolicy,
+        });
 
         return {
           workspace: {
@@ -350,12 +378,118 @@ async function loadDashboardData(
           memoryItems: memoryItems.items,
           memorySuggestions: memorySuggestions.suggestions,
           memoryWritesEnabled: memoryPolicy.memoryEnabled,
+          memoryPolicySimulation,
         };
       },
     ),
   );
 
   return dashboardData.sort(compareDashboardWorkspaces);
+}
+
+async function buildMemoryPolicySimulation(input: {
+  readonly workspaceId: string;
+  readonly repositories: readonly {
+    readonly id: string;
+    readonly selected: boolean;
+    readonly archived: boolean;
+  }[];
+  readonly actor: {
+    readonly githubUserId: string;
+    readonly githubLogin: string;
+  } | null;
+  readonly memoryPolicyConfig: EntitlementMemoryPolicyConfig;
+  readonly memoryPermission: PrismaMemoryPermission;
+  readonly memoryItemStore: PrismaMemoryItemRepository;
+  readonly memorySuggestionStore: PrismaMemorySuggestionRepository;
+  readonly memoryQuotaPolicy: EntitlementMemoryQuotaPolicy;
+}): Promise<readonly MemoryPolicySimulationDecision[] | null> {
+  if (!input.actor) return null;
+
+  const actor: MemoryActor = {
+    kind: "github_user",
+    id: `github:${input.actor.githubUserId}`,
+    githubUserId: input.actor.githubUserId,
+    login: input.actor.githubLogin,
+  };
+  const adminDecision = await input.memoryPermission.canConfirmMemory({
+    workspaceId: input.workspaceId,
+    repositoryId: null,
+    userId: null,
+    scope: "workspace",
+    actor,
+  });
+  if (!adminDecision.allowed) return null;
+
+  const repository =
+    input.repositories.find(
+      (candidate) => candidate.selected && !candidate.archived,
+    ) ??
+    input.repositories.find((candidate) => !candidate.archived) ??
+    null;
+  const now = new Date();
+  const dependencies = {
+    memoryPolicyConfig: input.memoryPolicyConfig,
+    memoryPermissions: input.memoryPermission,
+    memoryItems: input.memoryItemStore,
+    memorySuggestions: input.memorySuggestionStore,
+    memoryQuotaPolicy: input.memoryQuotaPolicy,
+  };
+
+  return Promise.all([
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: null,
+        userId: null,
+        scope: "workspace",
+        actor,
+        action: "direct_save",
+        safetyFixture: "safe_project_rule",
+        now,
+      },
+      dependencies,
+    ),
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: repository?.id ?? null,
+        userId: null,
+        scope: "repository",
+        actor,
+        action: "direct_save",
+        safetyFixture: "safe_project_rule",
+        now,
+      },
+      dependencies,
+    ),
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: repository?.id ?? null,
+        userId: null,
+        scope: "repository",
+        actor,
+        action: "propose_suggestion",
+        safetyFixture: "prompt_injection",
+        now,
+      },
+      dependencies,
+    ),
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: null,
+        userId: actor.id,
+        scope: "user_prefs",
+        actor,
+        action: "direct_save",
+        safetyFixture: "safe_user_preference",
+        now,
+      },
+      dependencies,
+    ),
+  ]);
 }
 
 type SortableDashboardWorkspace = {
@@ -597,7 +731,16 @@ export default async function DashboardPage({
         }
       : undefined;
   const [dashboardData, modelOptions] = await Promise.all([
-    loadDashboardData(workspaceScope, supportAudit),
+    loadDashboardData(
+      workspaceScope,
+      supportAudit,
+      mutationStatus.githubUserId && mutationStatus.githubLogin
+        ? {
+            githubUserId: mutationStatus.githubUserId,
+            githubLogin: mutationStatus.githubLogin,
+          }
+        : null,
+    ),
     getReviewModelOptions(),
   ]);
   const workspaces = filterVisibleDashboardWorkspaces(dashboardData);
@@ -823,6 +966,7 @@ function WorkspaceCard({
     memoryItems,
     memorySuggestions,
     memoryWritesEnabled,
+    memoryPolicySimulation,
   } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
@@ -932,6 +1076,7 @@ function WorkspaceCard({
             memorySuggestions={memorySuggestions}
             mutationsEnabled={mutationsEnabled}
             memoryWritesEnabled={memoryWritesEnabled}
+            policySimulation={memoryPolicySimulation}
             mode={selectedMemoryMode}
             modeLinks={dashboardMemoryModeLinks(workspaceKey)}
           />
@@ -3080,6 +3225,13 @@ function dashboardErrorText(error: string): string {
     default:
       return "GitHub operation failed. Check audit events or server logs for the safe error code.";
   }
+}
+
+function readCsvEnv(name: string): readonly string[] {
+  return (process.env[name] ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function buildInstallationSettingsUrl(

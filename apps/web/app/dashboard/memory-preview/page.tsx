@@ -68,6 +68,7 @@ export default async function MemoryPreviewPage({
         memorySuggestions={data.memorySuggestions}
         mutationsEnabled={data.mutationsEnabled}
         memoryWritesEnabled={data.memoryWritesEnabled}
+        policySimulation={data.policySimulation}
         mode={mode}
         modeLinks={buildPreviewModeLinks(scenario)}
         notices={buildPreviewNotices(scenario)}

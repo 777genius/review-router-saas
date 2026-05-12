@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   MemoryDashboardItemDto,
   MemoryDashboardSuggestionDto,
+  MemoryPolicySimulationDecision,
 } from "@reviewrouter/features-memory";
 import {
   MemoryManagementPanel,
@@ -217,12 +218,24 @@ describe("MemoryManagementPanel", () => {
       screen.getByText("Memory changed before this edit was saved"),
     ).toBeTruthy();
   });
+
+  it("renders admin policy simulation without adding mutation controls", () => {
+    renderMemoryManagementPanel({
+      policySimulation: [policySimulationDecision()],
+    });
+
+    expect(screen.getByText("Policy simulator")).toBeTruthy();
+    expect(screen.getByText("Synthetic only")).toBeTruthy();
+    expect(screen.getByText("Workspace write")).toBeTruthy();
+    expect(screen.getByText("Workspace admin")).toBeTruthy();
+  });
 });
 
 function renderMemoryManagementPanel(
   options: {
     readonly mutationsEnabled?: boolean;
     readonly memoryWritesEnabled?: boolean;
+    readonly policySimulation?: readonly MemoryPolicySimulationDecision[];
     readonly mode?: MemoryManagementMode;
     readonly notices?: readonly MemoryManagementNotice[];
   } = {},
@@ -243,6 +256,9 @@ function renderMemoryManagementPanel(
       memorySuggestions={[memorySuggestion()]}
       mutationsEnabled={options.mutationsEnabled ?? true}
       memoryWritesEnabled={options.memoryWritesEnabled ?? true}
+      {...(options.policySimulation
+        ? { policySimulation: options.policySimulation }
+        : {})}
       {...(options.mode ? { mode: options.mode } : {})}
       {...(options.notices ? { notices: options.notices } : {})}
     />,
@@ -283,6 +299,41 @@ function memoryItem(
     originSuggestionId: overrides.originSuggestionId ?? null,
     indexState: overrides.indexState ?? "indexed",
     indexVersion: overrides.indexVersion ?? 1,
+  };
+}
+
+function policySimulationDecision(
+  overrides: Partial<MemoryPolicySimulationDecision> = {},
+): MemoryPolicySimulationDecision {
+  return {
+    allowed: overrides.allowed ?? true,
+    reason: overrides.reason ?? "allowed",
+    retryable: overrides.retryable ?? false,
+    action: overrides.action ?? "direct_save",
+    scope: overrides.scope ?? "workspace",
+    repositoryId:
+      overrides.repositoryId === undefined ? null : overrides.repositoryId,
+    requiredAuthority: overrides.requiredAuthority ?? "workspace_admin",
+    blockedBy: overrides.blockedBy ?? null,
+    policyVersion: overrides.policyVersion ?? 1,
+    policyHash: overrides.policyHash ?? "fnv1a:test",
+    matchedPolicies: overrides.matchedPolicies ?? ["memory_policy_config"],
+    precedence: overrides.precedence ?? [
+      "scope",
+      "policy",
+      "permission",
+      "safety",
+      "active_quota",
+    ],
+    invalidates: overrides.invalidates ?? [],
+    safety: overrides.safety ?? {
+      fixture: "safe_project_rule",
+      severity: "safe",
+      riskLevel: "low",
+      flags: [],
+      mayEmbed: true,
+      mayUseInRuntimeBundle: true,
+    },
   };
 }
 

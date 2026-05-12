@@ -42,6 +42,7 @@ export * from "./application/use-cases/prune-terminal-memory-items";
 export * from "./application/use-cases/record-action-memory-bundle-usage";
 export * from "./application/use-cases/remember-memory-directly";
 export * from "./application/use-cases/reject-memory-suggestion";
+export * from "./application/use-cases/simulate-memory-policy";
 export * from "./interface/interaction/memory-command-parser";
 export * from "./interface/interaction/memory-interaction-event-normalizer";
 export * from "./infrastructure/crypto-memory-id-generator";

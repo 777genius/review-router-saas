@@ -4,12 +4,18 @@ import type { MemorySuggestionRepositoryPort } from "../ports/memory-suggestion-
 import type { MemoryMutationResult } from "./memory-use-case-types";
 
 type ActiveMemoryQuotaDependencies = {
-  readonly memoryItems: MemoryItemRepositoryPort;
+  readonly memoryItems: Pick<
+    MemoryItemRepositoryPort,
+    "countActiveForWorkspace"
+  >;
   readonly memoryQuotaPolicy?: MemoryQuotaPolicyPort | undefined;
 };
 
 type PendingSuggestionQuotaDependencies = {
-  readonly memorySuggestions: MemorySuggestionRepositoryPort;
+  readonly memorySuggestions: Pick<
+    MemorySuggestionRepositoryPort,
+    "countPendingForWorkspace"
+  >;
   readonly memoryQuotaPolicy?: MemoryQuotaPolicyPort | undefined;
 };
 

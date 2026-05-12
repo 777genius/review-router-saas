@@ -86,6 +86,9 @@ Intentional implementation choices:
 - Memory badges are compact labels in this feature, not large action-like pills.
   Real actions continue using shared `@reviewrouter/ui` Button/FormSubmitButton
   and shared Dialog primitives.
+- The right policy panel includes an admin-only policy simulator. It keeps the
+  reference structure, uses synthetic fixed fixtures only and does not collect
+  real memory body, source comment, diff, prompt or model output.
 - Export CSV remains disabled in this slice. Disable/delete/edit flows are live
   and keep confirmation dialogs with retention impact.
 

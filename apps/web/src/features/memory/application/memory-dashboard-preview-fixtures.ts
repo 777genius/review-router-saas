@@ -1,6 +1,7 @@
 import type {
   MemoryDashboardItemDto,
   MemoryDashboardSuggestionDto,
+  MemoryPolicySimulationDecision,
 } from "@reviewrouter/features-memory";
 import type { MemoryDashboardRepositoryOption } from "./memory-dashboard-view-model";
 
@@ -22,6 +23,7 @@ export type MemoryDashboardPreviewData = {
   readonly memorySuggestions: readonly MemoryDashboardSuggestionDto[];
   readonly mutationsEnabled: boolean;
   readonly memoryWritesEnabled: boolean;
+  readonly policySimulation: readonly MemoryPolicySimulationDecision[];
 };
 
 export function buildMemoryDashboardPreviewData(input: {
@@ -38,6 +40,7 @@ export function buildMemoryDashboardPreviewData(input: {
       memorySuggestions: [],
       mutationsEnabled: true,
       memoryWritesEnabled: true,
+      policySimulation: buildPreviewPolicySimulation(),
     };
   }
 
@@ -50,7 +53,39 @@ export function buildMemoryDashboardPreviewData(input: {
     memorySuggestions: buildPreviewMemorySuggestions(),
     mutationsEnabled: input.scenario !== "readonly",
     memoryWritesEnabled: input.scenario !== "writes_disabled",
+    policySimulation: buildPreviewPolicySimulation({
+      memoryEnabled: input.scenario !== "writes_disabled",
+    }),
   };
+}
+
+function buildPreviewPolicySimulation(
+  input: { readonly memoryEnabled?: boolean } = {},
+): readonly MemoryPolicySimulationDecision[] {
+  const memoryEnabled = input.memoryEnabled ?? true;
+  return [
+    policyDecision({
+      action: "direct_save",
+      scope: "workspace",
+      allowed: memoryEnabled,
+      reason: memoryEnabled ? "allowed" : "memory_disabled",
+    }),
+    policyDecision({
+      action: "direct_save",
+      scope: "repository",
+      repositoryId: "repo_api_gateway",
+      allowed: memoryEnabled,
+      reason: memoryEnabled ? "allowed" : "memory_disabled",
+    }),
+    policyDecision({
+      action: "propose_suggestion",
+      scope: "repository",
+      repositoryId: "repo_api_gateway",
+      allowed: false,
+      reason: memoryEnabled ? "contains_prompt_injection" : "memory_disabled",
+      safetyFlags: memoryEnabled ? ["contains_prompt_injection"] : [],
+    }),
+  ];
 }
 
 function buildPreviewRepositories(): readonly MemoryDashboardRepositoryOption[] {
@@ -64,6 +99,62 @@ function buildPreviewRepositories(): readonly MemoryDashboardRepositoryOption[] 
     repository({ id: "repo_infra", name: "infra" }),
     repository({ id: "repo_mobile", name: "mobile-app" }),
   ];
+}
+
+function policyDecision(input: {
+  readonly action: MemoryPolicySimulationDecision["action"];
+  readonly scope: MemoryPolicySimulationDecision["scope"];
+  readonly repositoryId?: string | null;
+  readonly allowed: boolean;
+  readonly reason: string;
+  readonly safetyFlags?: MemoryPolicySimulationDecision["safety"]["flags"];
+}): MemoryPolicySimulationDecision {
+  return {
+    allowed: input.allowed,
+    reason: input.reason,
+    retryable: false,
+    action: input.action,
+    scope: input.scope,
+    repositoryId: input.repositoryId ?? null,
+    requiredAuthority:
+      input.action === "propose_suggestion"
+        ? "safe_candidate_source"
+        : input.scope === "workspace"
+          ? "workspace_admin"
+          : "repository_maintainer_or_workspace_admin",
+    blockedBy: input.allowed
+      ? null
+      : input.reason === "memory_disabled"
+        ? "policy"
+        : "safety",
+    policyVersion: 1,
+    policyHash: "fnv1a:preview",
+    matchedPolicies: [
+      "service_memory_flag",
+      "workspace_entitlement",
+      "memory_policy_config",
+    ],
+    precedence:
+      input.action === "propose_suggestion"
+        ? ["scope", "policy", "safety", "pending_quota"]
+        : ["scope", "policy", "permission", "safety", "active_quota"],
+    invalidates: input.allowed
+      ? []
+      : input.reason === "memory_disabled"
+        ? ["runtime_bundle", "pending_suggestions", "confirmed_memory"]
+        : ["pending_suggestions"],
+    safety: {
+      fixture:
+        input.reason === "contains_prompt_injection"
+          ? "prompt_injection"
+          : "safe_project_rule",
+      severity: input.safetyFlags?.length ? "blocked" : "safe",
+      riskLevel: input.safetyFlags?.length ? "critical" : "low",
+      flags: input.safetyFlags ?? [],
+      mayEmbed: !input.safetyFlags?.length,
+      mayUseInRuntimeBundle: !input.safetyFlags?.length,
+    },
+  };
 }
 
 function buildPreviewMemoryItems(input: {
