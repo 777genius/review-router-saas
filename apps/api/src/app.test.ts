@@ -321,6 +321,24 @@ class InMemoryMemorySuggestions implements MemorySuggestionRepositoryPort {
       .slice(0, input.limit);
   }
 
+  async listExpiredPending(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    return this.values()
+      .filter((suggestion) => suggestion.workspaceId === input.workspaceId)
+      .filter((suggestion) => suggestion.status === "pending")
+      .filter((suggestion) => suggestion.expiresAt <= input.expiredAtOrBefore)
+      .sort((left, right) => {
+        const expiresAtDelta =
+          left.expiresAt.getTime() - right.expiresAt.getTime();
+        if (expiresAtDelta !== 0) return expiresAtDelta;
+        return left.id.localeCompare(right.id);
+      })
+      .slice(0, input.limit);
+  }
+
   values(): MemorySuggestionSnapshot[] {
     return Array.from(this.snapshots.values());
   }

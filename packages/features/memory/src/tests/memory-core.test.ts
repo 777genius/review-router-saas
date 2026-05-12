@@ -46,6 +46,7 @@ import { buildActionMemoryBundle } from "../application/use-cases/build-action-m
 import { confirmMemorySuggestion } from "../application/use-cases/confirm-memory-suggestion";
 import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
 import { disableMemoryItem } from "../application/use-cases/disable-memory-item";
+import { expirePendingMemorySuggestions } from "../application/use-cases/expire-pending-memory-suggestions";
 import { listMemoryItemsForDashboard } from "../application/use-cases/list-memory-items-for-dashboard";
 import { listMemorySuggestionsForDashboard } from "../application/use-cases/list-memory-suggestions-for-dashboard";
 import { proposeMemoryFromInteraction } from "../application/use-cases/propose-memory-from-interaction";
@@ -158,6 +159,7 @@ class InMemoryItems implements MemoryItemRepositoryPort {
       )
       .slice(0, input.limit);
   }
+
 }
 
 class InMemorySuggestions implements MemorySuggestionRepositoryPort {
@@ -219,6 +221,24 @@ class InMemorySuggestions implements MemorySuggestionRepositoryPort {
       .filter((suggestion) =>
         input.cursor ? isAfterDashboardCursor(suggestion, input.cursor) : true,
       )
+      .slice(0, input.limit);
+  }
+
+  async listExpiredPending(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    return [...this.suggestions.values()]
+      .filter((suggestion) => suggestion.workspaceId === input.workspaceId)
+      .filter((suggestion) => suggestion.status === "pending")
+      .filter((suggestion) => suggestion.expiresAt <= input.expiredAtOrBefore)
+      .sort((left, right) => {
+        const expiresAtDelta =
+          left.expiresAt.getTime() - right.expiresAt.getTime();
+        if (expiresAtDelta !== 0) return expiresAtDelta;
+        return left.id.localeCompare(right.id);
+      })
       .slice(0, input.limit);
   }
 }
@@ -963,6 +983,74 @@ describe("memory core", () => {
       "Keep dashboard queries paginated.",
     ]);
     expect(withExpired.suggestions[1]?.isExpired).toBe(true);
+  });
+
+  it("expires pending memory suggestions through retention use case", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const current = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Keep current suggestion pending.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    const expired = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Expire old suggestion.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    if (current.status !== "created" || expired.status !== "created") {
+      throw new Error("expected_created_suggestions");
+    }
+    const expiredSnapshot = deps.memorySuggestions.suggestions.get(expired.id);
+    if (!expiredSnapshot) throw new Error("missing_suggestion");
+    deps.memorySuggestions.suggestions.set(expired.id, {
+      ...expiredSnapshot,
+      expiresAt: new Date(now.getTime() - 1_000),
+    });
+
+    const result = await expirePendingMemorySuggestions(
+      { workspaceId: "workspace_1", limit: 10 },
+      deps,
+    );
+
+    expect(result).toEqual({ status: "expired", expiredCount: 1 });
+    expect(deps.memorySuggestions.suggestions.get(current.id)?.status).toBe(
+      "pending",
+    );
+    expect(deps.memorySuggestions.suggestions.get(expired.id)).toMatchObject({
+      status: "expired",
+      resolvedBy: "system:memory-retention",
+      resolutionReason: "expired",
+      version: 2,
+    });
+    expect(deps.memoryAudit.events.at(-1)).toMatchObject({
+      actor: "system:memory-retention",
+      action: "memory.suggestion.expired",
+      targetType: "memory_suggestion",
+      targetId: expired.id,
+      metadata: {
+        scope: "repository",
+        suggestedBodyHash: expiredSnapshot.suggestedBodyHash,
+        previousVersion: 1,
+        version: 2,
+      },
+    });
+    expect(JSON.stringify(deps.memoryAudit.events.at(-1))).not.toContain(
+      "Expire old suggestion",
+    );
   });
 
   it("builds bundles from canonical active items and respects runtime policy", async () => {

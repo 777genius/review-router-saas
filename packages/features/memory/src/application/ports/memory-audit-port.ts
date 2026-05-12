@@ -8,6 +8,7 @@ export type MemoryAuditEvent = {
     | "memory.suggestion.created"
     | "memory.suggestion.blocked"
     | "memory.suggestion.confirmed"
+    | "memory.suggestion.expired"
     | "memory.suggestion.rejected"
     | "memory.bundle.served";
   readonly targetType: "memory_item" | "memory_suggestion" | "memory_bundle";

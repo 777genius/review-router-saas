@@ -145,6 +145,24 @@ export class MemorySuggestion {
     });
   }
 
+  expire(input: { readonly now: Date }): MemorySuggestion {
+    if (this.value.status !== "pending") {
+      throw memoryError("memory_version_conflict");
+    }
+    if (this.value.expiresAt > input.now) {
+      throw memoryError("memory_version_conflict");
+    }
+    return new MemorySuggestion({
+      ...this.value,
+      status: "expired",
+      resolvedAt: input.now,
+      resolvedBy: "system:memory-retention",
+      resolutionReason: "expired",
+      updatedAt: input.now,
+      version: this.value.version + 1,
+    });
+  }
+
   private assertPending(now: Date): void {
     if (this.value.status !== "pending") {
       throw memoryError("memory_version_conflict");

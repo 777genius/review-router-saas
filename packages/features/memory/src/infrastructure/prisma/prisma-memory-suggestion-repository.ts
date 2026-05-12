@@ -80,6 +80,23 @@ export class PrismaMemorySuggestionRepository implements MemorySuggestionReposit
     });
     return record.map(toMemorySuggestionSnapshot);
   }
+
+  async listExpiredPending(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const record = await this.prisma.memorySuggestion.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        status: "pending",
+        expiresAt: { lte: input.expiredAtOrBefore },
+      },
+      orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+      take: input.limit,
+    });
+    return record.map(toMemorySuggestionSnapshot);
+  }
 }
 
 function toDashboardWhere(input: {

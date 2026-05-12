@@ -56,12 +56,13 @@
 - dashboard memory UI ближе приведён к сохранённым PNG references: top mode tabs, read-only state, operational table footer и confirmation dialogs для disable/delete с retention impact.
 - disable/delete lifecycle mutations получили optimistic concurrency через `expectedVersion`, conditional Prisma update и hidden UI version token, чтобы stale вкладка не перетирала более свежую memory state.
 - action memory bundle exposure теперь пишет `MemoryUsageEvent` через отдельный application port и Prisma adapter; usage metadata содержит только ids, scope/count/version, без body/source/prompt/model output.
+- pending suggestions получили retention transition: `expirePendingMemorySuggestions` переводит просроченные pending suggestions в `expired` через domain state machine, repository port и safe audit metadata.
 
 Текущие проверки:
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 59 files, 304 tests passed;
+- `pnpm test` - 59 files, 305 tests passed;
 - `pnpm lint` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 
