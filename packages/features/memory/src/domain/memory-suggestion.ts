@@ -149,6 +149,26 @@ export class MemorySuggestion {
     });
   }
 
+  supersede(input: {
+    readonly actor: MemoryActor;
+    readonly replacementSuggestionId: string;
+    readonly now: Date;
+  }): MemorySuggestion {
+    if (this.value.status !== "pending") {
+      throw memoryError("memory_version_conflict");
+    }
+    return new MemorySuggestion({
+      ...this.value,
+      status: "superseded",
+      relatedSuggestionId: input.replacementSuggestionId,
+      resolvedAt: input.now,
+      resolvedBy: memoryActorRef(input.actor),
+      resolutionReason: "superseded",
+      updatedAt: input.now,
+      version: this.value.version + 1,
+    });
+  }
+
   expire(input: { readonly now: Date }): MemorySuggestion {
     if (this.value.status !== "pending") {
       throw memoryError("memory_version_conflict");

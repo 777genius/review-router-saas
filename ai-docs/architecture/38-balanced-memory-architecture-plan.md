@@ -70,6 +70,7 @@
 - `forget/delete` memory теперь privacy-first: domain ставит tombstone body/source на deleted item, а delete use case в той же транзакции redacts body/source у confirmed origin suggestion; fresh DB E2E проверяет, что удалённая memory и linked suggestion больше не содержат исходный текст.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
 - suggestion inbox получил edit-before-approve dialog по design reference: edited approval переиспользует confirm use case с повторными permission/safety/scope/dedupe checks.
+- edited GitHub comment candidates теперь supersede старые pending suggestions из того же source id, actor, scope и repository: stale suggestion больше нельзя подтвердить, audit пишет только ids/hash metadata без body, а generic dashboard source не триггерит supersede.
 - generated reusable interaction workflow теперь прокидывает AI discussion настройки и provider credentials как явный workflow contract: `discussion_mode`, model, reasoning effort, per-PR/thread caps, timeout, `CODEX_AUTH_JSON`, `CODEX_CONFIG_TOML`, `OPENAI_API_KEY`; runtime устанавливает Codex CLI только когда preflight реально требует discussion response.
 - реальный GitHub E2E подтвердил путь `human inline reply -> ReviewRouter Interaction workflow -> Codex discussion reply` на disposable repo `777genius/review-router-saas-e2e` PR #5:
   - ReviewRouter reusable review workflow: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25716446935>;
@@ -81,9 +82,9 @@
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 62 files, 329 tests passed;
+- `pnpm test` - 62 files, 333 tests passed;
 - `pnpm lint` - passed;
-- `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index` - passed;
+- `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index`, включая edited-source supersede assertion - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 - action runtime checks for discussion wiring: `npm run build`, `npm run typecheck`, `npm run lint` - 0 errors, existing warnings only, `npm test -- --runInBand` - 100 suites, 1184 tests passed.
 - memory UI screenshot QA теперь закрыт через env-gated preview route `/dashboard/memory-preview`, который использует только synthetic fixtures и не ослабляет production dashboard auth/privacy path:

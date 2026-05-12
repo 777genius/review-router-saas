@@ -32,7 +32,6 @@ import type {
   MemoryOutboxPort,
   MemoryPermissionDecision,
   MemoryPermissionPort,
-  MemorySuggestion,
   MemorySuggestionRepositoryPort,
   MemorySuggestionSnapshot,
   MemoryTransactionPort,
@@ -46,6 +45,8 @@ import {
   createMemoryBodyHash,
   deletedMemoryBodyPlaceholder,
   evaluateMemorySafety,
+  memoryActorRef,
+  MemorySuggestion,
 } from "@reviewrouter/features-memory";
 import type {
   GitHubInstallationRepositoryPort,
@@ -342,6 +343,47 @@ class InMemoryMemorySuggestions implements MemorySuggestionRepositoryPort {
           suggestion.dedupeKey === input.dedupeKey,
       ) ?? null
     );
+  }
+
+  async supersedePendingBySource(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemorySuggestionSnapshot["suggestedScope"];
+    readonly sourceType: MemorySuggestionSnapshot["source"]["type"];
+    readonly sourceId: string;
+    readonly createdByActor: MemoryActor;
+    readonly replacementSuggestionId: string;
+    readonly excludeSuggestionId: string;
+    readonly supersededAt: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const superseded: MemorySuggestionSnapshot[] = [];
+    for (const suggestion of this.values()
+      .filter(
+        (candidate) =>
+          candidate.workspaceId === input.workspaceId &&
+          candidate.repositoryId === input.repositoryId &&
+          candidate.userId === input.userId &&
+          candidate.suggestedScope === input.scope &&
+          candidate.source.type === input.sourceType &&
+          candidate.source.sourceId === input.sourceId &&
+          candidate.createdByActor === memoryActorRef(input.createdByActor) &&
+          candidate.status === "pending" &&
+          candidate.id !== input.excludeSuggestionId,
+      )
+      .slice(0, input.limit)) {
+      const next = MemorySuggestion.fromSnapshot(suggestion)
+        .supersede({
+          actor: input.createdByActor,
+          replacementSuggestionId: input.replacementSuggestionId,
+          now: input.supersededAt,
+        })
+        .snapshot();
+      this.snapshots.set(next.id, next);
+      superseded.push(next);
+    }
+    return superseded;
   }
 
   async listForDashboard(input: {

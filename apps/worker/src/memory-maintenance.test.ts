@@ -102,6 +102,12 @@ class CapturingSuggestionRepository implements MemorySuggestionRepositoryPort {
     throw new Error("not_implemented");
   }
 
+  async supersedePendingBySource(): Promise<
+    readonly MemorySuggestionSnapshot[]
+  > {
+    throw new Error("not_implemented");
+  }
+
   async listForDashboard(): Promise<readonly MemorySuggestionSnapshot[]> {
     throw new Error("not_implemented");
   }

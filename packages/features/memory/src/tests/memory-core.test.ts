@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Clock } from "@reviewrouter/shared";
-import type { MemoryActor } from "../domain/memory-actor";
+import { memoryActorRef, type MemoryActor } from "../domain/memory-actor";
 import {
   createMemoryBodyHash,
   deletedMemoryBodyPlaceholder,
@@ -12,10 +12,10 @@ import { parseMemoryIntent } from "../domain/memory-intent-policy";
 import { MemoryItem, type MemoryItemSnapshot } from "../domain/memory-item";
 import type { MemoryScope } from "../domain/memory-scope-policy";
 import { createDashboardMemorySource } from "../domain/memory-source";
-import type {
+import {
   MemorySuggestion,
-  MemorySuggestionSnapshot,
-  MemorySuggestionStatus,
+  type MemorySuggestionSnapshot,
+  type MemorySuggestionStatus,
 } from "../domain/memory-suggestion";
 import type {
   MemoryAuditEvent,
@@ -254,6 +254,48 @@ class InMemorySuggestions implements MemorySuggestionRepositoryPort {
           suggestion.status === "pending",
       ) ?? null
     );
+  }
+
+  async supersedePendingBySource(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemoryScope;
+    readonly sourceType: MemorySuggestionSnapshot["source"]["type"];
+    readonly sourceId: string;
+    readonly createdByActor: MemoryActor;
+    readonly replacementSuggestionId: string;
+    readonly excludeSuggestionId: string;
+    readonly supersededAt: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const superseded: MemorySuggestionSnapshot[] = [];
+    for (const suggestion of [...this.suggestions.values()]
+      .filter(
+        (candidate) =>
+          candidate.workspaceId === input.workspaceId &&
+          candidate.repositoryId === input.repositoryId &&
+          candidate.userId === input.userId &&
+          candidate.suggestedScope === input.scope &&
+          candidate.source.type === input.sourceType &&
+          candidate.source.sourceId === input.sourceId &&
+          candidate.createdByActor === memoryActorRef(input.createdByActor) &&
+          candidate.status === "pending" &&
+          candidate.id !== input.excludeSuggestionId,
+      )
+      .sort(compareDashboardRecords)
+      .slice(0, input.limit)) {
+      const next = MemorySuggestion.fromSnapshot(suggestion)
+        .supersede({
+          actor: input.createdByActor,
+          replacementSuggestionId: input.replacementSuggestionId,
+          now: input.supersededAt,
+        })
+        .snapshot();
+      this.suggestions.set(next.id, next);
+      superseded.push(next);
+    }
+    return superseded;
   }
 
   async listForDashboard(input: {
@@ -630,6 +672,60 @@ describe("memory core", () => {
     expect(deps.memoryItems.items).toHaveLength(0);
     expect([...deps.memorySuggestions.suggestions.values()][0]?.status).toBe(
       "pending",
+    );
+  });
+
+  it("supersedes stale pending suggestions from the same edited source", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+
+    const first = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Prefer old migration notes.",
+          actor: maintainer,
+          sourceId: "github-comment-42",
+        }),
+      },
+      deps,
+    );
+    if (first.status !== "created") throw new Error("missing_first");
+
+    const second = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Prefer reviewed Prisma migrations for schema changes.",
+          actor: maintainer,
+          sourceId: "github-comment-42",
+        }),
+      },
+      deps,
+    );
+    if (second.status !== "created") throw new Error("missing_second");
+
+    expect(deps.memorySuggestions.suggestions.get(first.id)).toMatchObject({
+      status: "superseded",
+      relatedSuggestionId: second.id,
+      resolvedBy: memoryActorRef(maintainer),
+      resolutionReason: "superseded",
+    });
+    expect(deps.memorySuggestions.suggestions.get(second.id)).toMatchObject({
+      status: "pending",
+    });
+    expect(deps.memoryAudit.events.at(-1)).toMatchObject({
+      action: "memory.suggestion.superseded",
+      targetId: first.id,
+      metadata: {
+        replacementSuggestionId: second.id,
+      },
+    });
+    expect(JSON.stringify(deps.memoryAudit.events.at(-1))).not.toContain(
+      "Prefer old migration notes.",
     );
   });
 
@@ -1997,13 +2093,24 @@ function candidateEnvelope(input: {
   readonly actor: MemoryActor;
   readonly workspaceId?: string;
   readonly repositoryId?: string;
+  readonly sourceId?: string;
 }): MemoryCandidateEnvelope {
   const body = normalizeMemoryBody(input.body);
   return {
     workspaceId: input.workspaceId ?? "workspace_1",
     repositoryId: input.repositoryId ?? "repo_1",
     userId: input.actor.id,
-    source: createDashboardMemorySource({ actorLogin: input.actor.login }),
+    source: input.sourceId
+      ? {
+          ...createDashboardMemorySource({
+            actorLogin: input.actor.login,
+            sourceId: input.sourceId,
+          }),
+          type: "pr_comment",
+          githubCommentId: input.sourceId,
+          sourceVisibility: "private",
+        }
+      : createDashboardMemorySource({ actorLogin: input.actor.login }),
     actor: input.actor,
     intent: input.intent,
     requestedScope: "repository",

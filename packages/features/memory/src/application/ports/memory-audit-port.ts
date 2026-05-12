@@ -11,6 +11,7 @@ export type MemoryAuditEvent = {
     | "memory.suggestion.confirmed"
     | "memory.suggestion.expired"
     | "memory.suggestion.rejected"
+    | "memory.suggestion.superseded"
     | "memory.bundle.served";
   readonly targetType: "memory_item" | "memory_suggestion" | "memory_bundle";
   readonly targetId: string;

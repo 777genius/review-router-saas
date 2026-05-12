@@ -122,6 +122,21 @@ export async function proposeMemoryFromInteraction(
   try {
     return await dependencies.memoryTransaction.run(async (tx) => {
       await tx.memorySuggestions.save(suggestion);
+      const supersededSuggestions = shouldSupersedeBySourceEdit(envelope)
+        ? await tx.memorySuggestions.supersedePendingBySource({
+            workspaceId: envelope.workspaceId,
+            repositoryId: scope === "repository" ? envelope.repositoryId : null,
+            userId: scope === "user_prefs" ? envelope.userId : null,
+            scope,
+            sourceType: envelope.source.type,
+            sourceId: envelope.source.sourceId,
+            createdByActor: envelope.actor,
+            replacementSuggestionId: snapshot.id,
+            excludeSuggestionId: snapshot.id,
+            supersededAt: now,
+            limit: 20,
+          })
+        : [];
       await tx.memoryAudit.record({
         workspaceId: envelope.workspaceId,
         actor: memoryActorRef(envelope.actor),
@@ -138,6 +153,21 @@ export async function proposeMemoryFromInteraction(
           safetySeverity: snapshot.safetyReport.severity,
         },
       });
+      for (const superseded of supersededSuggestions) {
+        await tx.memoryAudit.record({
+          workspaceId: envelope.workspaceId,
+          actor: memoryActorRef(envelope.actor),
+          action: "memory.suggestion.superseded",
+          targetType: "memory_suggestion",
+          targetId: superseded.id,
+          metadata: {
+            scope: superseded.suggestedScope,
+            bodyHash: superseded.suggestedBodyHash,
+            sourceType: superseded.source.type,
+            replacementSuggestionId: snapshot.id,
+          },
+        });
+      }
       await tx.memoryOutbox.enqueue({
         type: "memory.suggestion.created",
         version: 1,
@@ -162,6 +192,15 @@ export async function proposeMemoryFromInteraction(
     }
     throw error;
   }
+}
+
+function shouldSupersedeBySourceEdit(
+  envelope: MemoryCandidateEnvelope,
+): boolean {
+  return (
+    envelope.source.type === "pr_comment" ||
+    envelope.source.type === "review_comment"
+  );
 }
 
 function defaultScopeForEnvelope(

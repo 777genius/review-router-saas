@@ -4,11 +4,12 @@ import type {
   MemorySuggestionRepositoryPort,
 } from "../../application/ports/memory-suggestion-repository-port";
 import type { MemoryScope } from "../../domain/memory-scope-policy";
-import type {
+import {
   MemorySuggestion,
-  MemorySuggestionSnapshot,
-  MemorySuggestionStatus,
+  type MemorySuggestionSnapshot,
+  type MemorySuggestionStatus,
 } from "../../domain/memory-suggestion";
+import { memoryActorRef, type MemoryActor } from "../../domain/memory-actor";
 import { memoryError } from "../../domain/memory-errors";
 import {
   isPrismaUniqueConstraintError,
@@ -62,6 +63,72 @@ export class PrismaMemorySuggestionRepository implements MemorySuggestionReposit
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     });
     return record ? toMemorySuggestionSnapshot(record) : null;
+  }
+
+  async supersedePendingBySource(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemoryScope;
+    readonly sourceType: MemorySuggestionSnapshot["source"]["type"];
+    readonly sourceId: string;
+    readonly createdByActor: MemoryActor;
+    readonly replacementSuggestionId: string;
+    readonly excludeSuggestionId: string;
+    readonly supersededAt: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const records = await this.prisma.memorySuggestion.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        repositoryId: input.repositoryId,
+        userId: input.userId,
+        suggestedScope: input.scope,
+        status: "pending",
+        createdByActor: memoryActorRef(input.createdByActor),
+        id: { not: input.excludeSuggestionId },
+        AND: [
+          { source: { path: ["type"], equals: input.sourceType } },
+          { source: { path: ["sourceId"], equals: input.sourceId } },
+        ],
+      },
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      take: input.limit,
+    });
+
+    const superseded: MemorySuggestionSnapshot[] = [];
+    for (const record of records) {
+      const previous = toMemorySuggestionSnapshot(record);
+      const next = MemorySuggestion.fromSnapshot(previous)
+        .supersede({
+          actor: input.createdByActor,
+          replacementSuggestionId: input.replacementSuggestionId,
+          now: input.supersededAt,
+        })
+        .snapshot();
+      const result = await this.prisma.memorySuggestion.updateMany({
+        where: {
+          id: previous.id,
+          workspaceId: input.workspaceId,
+          status: "pending",
+          version: previous.version,
+        },
+        data: {
+          status: next.status,
+          relatedSuggestionId: next.relatedSuggestionId,
+          resolvedAt: next.resolvedAt,
+          resolvedBy: next.resolvedBy,
+          resolutionReason: next.resolutionReason,
+          updatedAt: next.updatedAt,
+          version: next.version,
+        },
+      });
+      if (result.count === 1) {
+        superseded.push(next);
+      }
+    }
+
+    return superseded;
   }
 
   async listForDashboard(input: {

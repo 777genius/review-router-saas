@@ -4,6 +4,8 @@ import type {
   MemorySuggestionStatus,
 } from "../../domain/memory-suggestion";
 import type { MemoryScope } from "../../domain/memory-scope-policy";
+import type { MemoryActor } from "../../domain/memory-actor";
+import type { MemorySourceType } from "../../domain/memory-source";
 
 export type MemorySuggestionDashboardRepositoryCursor = {
   readonly updatedAt: Date;
@@ -22,6 +24,20 @@ export interface MemorySuggestionRepositoryPort {
     readonly workspaceId: string;
     readonly dedupeKey: string;
   }): Promise<MemorySuggestionSnapshot | null>;
+
+  supersedePendingBySource(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemoryScope;
+    readonly sourceType: MemorySourceType;
+    readonly sourceId: string;
+    readonly createdByActor: MemoryActor;
+    readonly replacementSuggestionId: string;
+    readonly excludeSuggestionId: string;
+    readonly supersededAt: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]>;
 
   listForDashboard(input: {
     readonly workspaceId: string;

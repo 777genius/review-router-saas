@@ -285,6 +285,85 @@ try {
   assertEqual(suggestion.status, "created", "suggestion status");
   assertPresent(suggestion.id, "suggestion id");
 
+  const editedSourceId = `memory-e2e-edited-suggestion-${suffix}`;
+  const staleEditedSuggestion = await postCandidate(baseUrl, adminSession, {
+    sourceId: editedSourceId,
+    body: "Stale edited comment memory should be superseded.",
+    intent: "model_suggested_candidate",
+    extractionMethod: "model_suggested_candidate",
+    requestedScope: "repository",
+  });
+  assertEqual(
+    staleEditedSuggestion.status,
+    "created",
+    "stale edited suggestion status",
+  );
+  assertPresent(staleEditedSuggestion.id, "stale edited suggestion id");
+  const currentEditedSuggestion = await postCandidate(baseUrl, adminSession, {
+    sourceId: editedSourceId,
+    body: "Current edited comment memory stays pending.",
+    intent: "model_suggested_candidate",
+    extractionMethod: "model_suggested_candidate",
+    requestedScope: "repository",
+  });
+  assertEqual(
+    currentEditedSuggestion.status,
+    "created",
+    "current edited suggestion status",
+  );
+  assertPresent(currentEditedSuggestion.id, "current edited suggestion id");
+  const staleEditedRecord = await prisma.memorySuggestion.findUnique({
+    where: { id: staleEditedSuggestion.id },
+    select: {
+      status: true,
+      relatedSuggestionId: true,
+      resolvedBy: true,
+      resolutionReason: true,
+    },
+  });
+  assertEqual(
+    staleEditedRecord?.status,
+    "superseded",
+    "edited source stale suggestion status",
+  );
+  assertEqual(
+    staleEditedRecord?.relatedSuggestionId,
+    currentEditedSuggestion.id,
+    "edited source replacement suggestion id",
+  );
+  assertEqual(
+    staleEditedRecord?.resolutionReason,
+    "superseded",
+    "edited source stale suggestion reason",
+  );
+  const staleEditedConfirm = await postCommands(baseUrl, adminSession, [
+    { kind: "confirm_suggestion", suggestionId: staleEditedSuggestion.id },
+  ]);
+  assertEqual(
+    staleEditedConfirm.results[0]?.status,
+    "noop",
+    "superseded suggestion confirm status",
+  );
+  assertEqual(
+    staleEditedConfirm.results[0]?.reason,
+    "superseded",
+    "superseded suggestion confirm reason",
+  );
+  const supersededAudit = await prisma.auditEvent.findMany({
+    where: {
+      workspaceId: primary.workspaceId,
+      action: "memory.suggestion.superseded",
+      targetId: staleEditedSuggestion.id,
+    },
+    select: { metadata: true },
+  });
+  assertEqual(supersededAudit.length, 1, "superseded suggestion audit count");
+  assertStringDoesNotContain(
+    JSON.stringify(supersededAudit),
+    "Stale edited comment memory should be superseded.",
+    "superseded audit must not contain stale suggestion body",
+  );
+
   const confirm = await postCommands(baseUrl, adminSession, [
     { kind: "confirm_suggestion", suggestionId: suggestion.id },
   ]);
