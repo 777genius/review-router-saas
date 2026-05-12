@@ -22,6 +22,8 @@ import type {
 } from "../application/ports/memory-audit-port";
 import type { MemoryIdGeneratorPort } from "../application/ports/memory-id-generator-port";
 import type {
+  MarkActiveMemoryItemsUsedInput,
+  MarkActiveMemoryItemsUsedResult,
   MemoryDashboardRepositoryCursor,
   MemoryItemRepositoryPort,
 } from "../application/ports/memory-item-repository-port";
@@ -161,6 +163,24 @@ class InMemoryItems implements MemoryItemRepositoryPort {
       .slice(0, input.limit);
   }
 
+  async markActiveItemsUsed(
+    input: MarkActiveMemoryItemsUsedInput,
+  ): Promise<MarkActiveMemoryItemsUsedResult> {
+    const itemIds = new Set(input.itemIds);
+    let updatedCount = 0;
+    for (const [id, item] of this.items.entries()) {
+      if (
+        item.workspaceId !== input.workspaceId ||
+        item.status !== "active" ||
+        !itemIds.has(id)
+      ) {
+        continue;
+      }
+      this.items.set(id, { ...item, lastUsedAt: input.usedAt });
+      updatedCount += 1;
+    }
+    return { updatedCount };
+  }
 }
 
 class InMemorySuggestions implements MemorySuggestionRepositoryPort {
@@ -1270,7 +1290,11 @@ describe("memory core", () => {
       deps,
     );
 
-    expect(result).toEqual({ status: "recorded", recordedCount: 2 });
+    expect(result).toEqual({
+      status: "recorded",
+      recordedCount: 2,
+      markedUsedCount: 2,
+    });
     expect(deps.memoryUsageEvents.events).toHaveLength(2);
     expect(deps.memoryUsageEvents.events.map((event) => event.memoryItemId))
       .toEqual(bundle.items.map((item) => item.id));
@@ -1286,6 +1310,11 @@ describe("memory core", () => {
     expect(JSON.stringify(deps.memoryUsageEvents.events)).not.toContain(
       "runtime guidance",
     );
+    expect(
+      bundle.items.map(
+        (item) => deps.memoryItems.items.get(item.id)?.lastUsedAt,
+      ),
+    ).toEqual([now, now]);
   });
 });
 

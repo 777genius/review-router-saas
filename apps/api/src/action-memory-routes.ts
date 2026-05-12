@@ -185,6 +185,7 @@ export async function registerActionMemoryRoutes(
         },
         {
           memoryUsageEvents: dependencies.memory.memoryUsageEvents,
+          memoryItems: dependencies.memory.memoryItems,
           memoryIds: dependencies.memory.memoryIds,
           clock: dependencies.clock,
         },

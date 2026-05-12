@@ -19,6 +19,8 @@ import {
   StaticActionRuntimeCompatibilityPolicy,
 } from "@reviewrouter/features-action-control-plane";
 import type {
+  MarkActiveMemoryItemsUsedInput,
+  MarkActiveMemoryItemsUsedResult,
   MemoryActor,
   MemoryAuditEvent,
   MemoryAuditPort,
@@ -259,6 +261,25 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
       )
       .filter((item) => (input.scope ? item.scope === input.scope : true))
       .slice(0, input.limit);
+  }
+
+  async markActiveItemsUsed(
+    input: MarkActiveMemoryItemsUsedInput,
+  ): Promise<MarkActiveMemoryItemsUsedResult> {
+    const itemIds = new Set(input.itemIds);
+    let updatedCount = 0;
+    for (const [id, item] of this.snapshots.entries()) {
+      if (
+        item.workspaceId !== input.workspaceId ||
+        item.status !== "active" ||
+        !itemIds.has(id)
+      ) {
+        continue;
+      }
+      this.snapshots.set(id, { ...item, lastUsedAt: input.usedAt });
+      updatedCount += 1;
+    }
+    return { updatedCount };
   }
 
   values(): MemoryItemSnapshot[] {
@@ -1193,6 +1214,13 @@ describe("API app", () => {
     expect(JSON.stringify(actionMemory.usageEvents.events)).not.toContain(
       "guard clauses",
     );
+    expect(memoryItems.snapshots.get("mem_repo")?.lastUsedAt).toEqual(
+      fixedClock.now(),
+    );
+    expect(memoryItems.snapshots.get("mem_workspace")?.lastUsedAt).toEqual(
+      fixedClock.now(),
+    );
+    expect(memoryItems.snapshots.get("mem_other_repo")?.lastUsedAt).toBeNull();
 
     const commentToken = await app.inject({
       method: "POST",

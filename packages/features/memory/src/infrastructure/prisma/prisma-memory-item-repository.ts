@@ -1,5 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import type {
+  MarkActiveMemoryItemsUsedInput,
+  MarkActiveMemoryItemsUsedResult,
   MemoryDashboardRepositoryCursor,
   MemoryItemRepositoryPort,
 } from "../../application/ports/memory-item-repository-port";
@@ -138,6 +140,27 @@ export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
       take: input.limit,
     });
     return record.map(toMemoryItemSnapshot);
+  }
+
+  async markActiveItemsUsed(
+    input: MarkActiveMemoryItemsUsedInput,
+  ): Promise<MarkActiveMemoryItemsUsedResult> {
+    const itemIds = [...new Set(input.itemIds)];
+    if (itemIds.length === 0) {
+      return { updatedCount: 0 };
+    }
+
+    const result = await this.prisma.memoryItem.updateMany({
+      where: {
+        workspaceId: input.workspaceId,
+        id: { in: itemIds },
+        status: "active",
+      },
+      data: {
+        lastUsedAt: input.usedAt,
+      },
+    });
+    return { updatedCount: result.count };
   }
 }
 

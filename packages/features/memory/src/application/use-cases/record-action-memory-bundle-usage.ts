@@ -2,6 +2,7 @@ import type { MemoryUsageEventPort } from "../ports/memory-usage-event-port";
 import type { MemoryIdGeneratorPort } from "../ports/memory-id-generator-port";
 import type { MemoryScope } from "../../domain/memory-scope-policy";
 import type { Clock } from "@reviewrouter/shared";
+import type { MemoryItemRepositoryPort } from "../ports/memory-item-repository-port";
 
 export type RecordActionMemoryBundleUsageInput = {
   readonly workspaceId: string;
@@ -16,19 +17,21 @@ export type RecordActionMemoryBundleUsageInput = {
 export type RecordActionMemoryBundleUsageResult = {
   readonly status: "recorded" | "noop";
   readonly recordedCount: number;
+  readonly markedUsedCount: number;
 };
 
 export async function recordActionMemoryBundleUsage(
   input: RecordActionMemoryBundleUsageInput,
   dependencies: {
     readonly memoryUsageEvents: MemoryUsageEventPort;
+    readonly memoryItems: Pick<MemoryItemRepositoryPort, "markActiveItemsUsed">;
     readonly memoryIds: MemoryIdGeneratorPort;
     readonly clock: Clock;
   },
 ): Promise<RecordActionMemoryBundleUsageResult> {
   const uniqueItems = dedupeBundleItems(input.items);
   if (uniqueItems.length === 0) {
-    return { status: "noop", recordedCount: 0 };
+    return { status: "noop", recordedCount: 0, markedUsedCount: 0 };
   }
 
   const occurredAt = dependencies.clock.now();
@@ -47,8 +50,17 @@ export async function recordActionMemoryBundleUsage(
       occurredAt,
     })),
   );
+  const markResult = await dependencies.memoryItems.markActiveItemsUsed({
+    workspaceId: input.workspaceId,
+    itemIds: uniqueItems.map((item) => item.id),
+    usedAt: occurredAt,
+  });
 
-  return { status: "recorded", recordedCount: uniqueItems.length };
+  return {
+    status: "recorded",
+    recordedCount: uniqueItems.length,
+    markedUsedCount: markResult.updatedCount,
+  };
 }
 
 function dedupeBundleItems(

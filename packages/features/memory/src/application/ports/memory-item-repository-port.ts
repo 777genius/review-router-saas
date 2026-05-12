@@ -10,6 +10,16 @@ export type MemoryDashboardRepositoryCursor = {
   readonly id: string;
 };
 
+export type MarkActiveMemoryItemsUsedInput = {
+  readonly workspaceId: string;
+  readonly itemIds: readonly string[];
+  readonly usedAt: Date;
+};
+
+export type MarkActiveMemoryItemsUsedResult = {
+  readonly updatedCount: number;
+};
+
 export interface MemoryItemRepositoryPort {
   save(
     item: MemoryItem,
@@ -46,4 +56,8 @@ export interface MemoryItemRepositoryPort {
     readonly limit: number;
     readonly cursor?: MemoryDashboardRepositoryCursor;
   }): Promise<readonly MemoryItemSnapshot[]>;
+
+  markActiveItemsUsed(
+    input: MarkActiveMemoryItemsUsedInput,
+  ): Promise<MarkActiveMemoryItemsUsedResult>;
 }
