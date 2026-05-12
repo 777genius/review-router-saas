@@ -1286,7 +1286,7 @@ function WorkspaceCard({
                     metadata only / no code, diffs, prompts, or secrets
                   </span>
                 </div>
-                <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-6">
                   <SupportMetric
                     label="Repositories"
                     value={`${supportDiagnostics.repositoryCounts.selected}/${supportDiagnostics.repositoryCounts.total}`}
@@ -1311,6 +1311,11 @@ function WorkspaceCard({
                     label="Action runs"
                     value={`${supportDiagnostics.actionRunCounts.repositoriesWithReports} reports`}
                     hint={`${supportDiagnostics.actionRunCounts.criticalFindings} critical / ${supportDiagnostics.actionRunCounts.inlineComments} inline`}
+                  />
+                  <SupportMetric
+                    label="Memory"
+                    value={`${supportDiagnostics.memoryCounts.items.active}/${supportDiagnostics.memoryCounts.items.total} active`}
+                    hint={`${supportDiagnostics.memoryCounts.suggestions.pending} pending / ${supportDiagnostics.memoryCounts.index.pending} indexing`}
                   />
                 </div>
                 {supportDiagnostics.recentAuditActions.length > 0 ? (

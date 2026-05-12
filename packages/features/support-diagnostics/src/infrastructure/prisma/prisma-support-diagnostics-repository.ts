@@ -56,15 +56,45 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
       return null;
     }
 
-    const outbox = await this.prisma.outboxEvent.findMany({
-      where: { workspaceId },
-      orderBy: { occurredAt: "desc" },
-      take: 50,
-      select: {
-        status: true,
-        type: true,
-      },
-    });
+    const [
+      outbox,
+      memoryItemStatusCounts,
+      memoryItemScopeCounts,
+      memoryItemIndexStateCounts,
+      memorySuggestionStatusCounts,
+      memoryUsageEventCount,
+    ] = await Promise.all([
+      this.prisma.outboxEvent.findMany({
+        where: { workspaceId },
+        orderBy: { occurredAt: "desc" },
+        take: 50,
+        select: {
+          status: true,
+          type: true,
+        },
+      }),
+      this.prisma.memoryItem.groupBy({
+        by: ["status"],
+        where: { workspaceId },
+        _count: { _all: true },
+      }),
+      this.prisma.memoryItem.groupBy({
+        by: ["scope"],
+        where: { workspaceId },
+        _count: { _all: true },
+      }),
+      this.prisma.memoryItem.groupBy({
+        by: ["indexState"],
+        where: { workspaceId },
+        _count: { _all: true },
+      }),
+      this.prisma.memorySuggestion.groupBy({
+        by: ["status"],
+        where: { workspaceId },
+        _count: { _all: true },
+      }),
+      this.prisma.memoryUsageEvent.count({ where: { workspaceId } }),
+    ]);
 
     return {
       workspace: {
@@ -108,7 +138,29 @@ export class PrismaSupportDiagnosticsRepository implements SupportDiagnosticsRep
         status: event.status,
         type: event.type,
       })),
+      memory: {
+        itemStatusCounts: toCountMap(memoryItemStatusCounts, "status"),
+        itemScopeCounts: toCountMap(memoryItemScopeCounts, "scope"),
+        itemIndexStateCounts: toCountMap(
+          memoryItemIndexStateCounts,
+          "indexState",
+        ),
+        suggestionStatusCounts: toCountMap(
+          memorySuggestionStatusCounts,
+          "status",
+        ),
+        usageEventCount: memoryUsageEventCount,
+      },
       recentAuditActions: workspace.auditEvents.map((event) => event.action),
     };
   }
+}
+
+function toCountMap<T extends Record<K, string>, K extends string>(
+  rows: readonly (T & { readonly _count: { readonly _all: number } })[],
+  key: K,
+): Record<string, number> {
+  return Object.fromEntries(
+    rows.map((row) => [row[key], row._count._all] as const),
+  );
 }

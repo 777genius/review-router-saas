@@ -72,6 +72,8 @@
 - Prisma получил dedicated expiry index `000014_memory_item_expiry_index`; fresh DB E2E проверяет, что TTL-expired confirmed memory больше не попадает в runtime bundle, но body сохраняется до отдельной delete-retention фазы.
 - terminal memory retention теперь закрыт отдельным `pruneTerminalMemoryItems`: application use case удаляет только `expired/deleted` rows старше cutoff через repository port, audit пишет только counts/ids/cutoff, Prisma adapter делает guarded `DELETE` по `workspaceId + ids + terminal status + updatedAt < cutoff`.
 - worker получил lock-protected terminal memory prune maintenance с 30-day default retention, bounded workspace/per-workspace batches, interval guard, lock-contention handling и dedicated index `000015_memory_terminal_prune_index`; fresh DB E2E проверяет hard-delete для TTL-expired и soft-deleted items без body leak в audit.
+- support diagnostics теперь включает memory health counts по workspace: item statuses/scopes/index states, suggestion statuses и usage event count; Prisma adapter выбирает только enum/count metadata без body/source, audit access metadata пишет только safe counts.
+- dashboard diagnostics panel показывает compact Memory metric рядом с repository/provider/outbox/action metrics, не раскрывая memory body или source excerpts.
 - confirm/reject suggestion теперь fail-closed для TTL-expired pending rows даже до worker maintenance: use case атомарно переводит stale pending suggestion в `expired`, возвращает `noop: expired`, не зовёт permission adapter и не создаёт memory item.
 - `forget/delete` memory теперь privacy-first: domain ставит tombstone body/source на deleted item, а delete use case в той же транзакции redacts body/source у confirmed origin suggestion; fresh DB E2E проверяет, что удалённая memory и linked suggestion больше не содержат исходный текст.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
@@ -94,6 +96,9 @@
 - `pnpm vitest run packages/features/memory/src/tests/memory-core.test.ts packages/features/memory/src/tests/memory-outbox-handlers.test.ts packages/features/memory/src/tests/memory-interaction.test.ts` - 47 tests passed;
 - `pnpm vitest run apps/worker/src/memory-maintenance.test.ts apps/api/src/app.test.ts` - 40 tests passed;
 - `pnpm architecture:check` - passed for 129 domain/application files;
+- `pnpm --filter @reviewrouter/features-support-diagnostics typecheck`, `pnpm --filter @reviewrouter/web typecheck`, `pnpm exec tsc --noEmit -p tsconfig.spikes.json` - passed for memory diagnostics slice;
+- `pnpm vitest run packages/features/support-diagnostics/src/tests/support-diagnostics.test.ts` - passed;
+- fresh DB support diagnostics E2E with memory item/suggestion/usage fixture and body-leak assertions - passed;
 - `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index`, включая edited-source supersede assertion - passed;
 - `pnpm spike:memory:e2e` с fresh `prisma migrate deploy` включая `000015_memory_terminal_prune_index`, terminal prune assertion и runtime bundle после prune - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.

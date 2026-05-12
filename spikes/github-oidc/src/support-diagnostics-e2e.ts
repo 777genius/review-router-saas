@@ -3,6 +3,7 @@ import {
   getWorkspaceSupportDiagnostics,
   PrismaSupportDiagnosticsRepository,
 } from "../../../packages/features/support-diagnostics/src/index.ts";
+import { createMemoryBodyHash } from "../../../packages/features/memory/src/index.ts";
 import { PrismaAuditLogRepository } from "../../../packages/features/audit-log/src/index.ts";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
 import { loadEnvFiles } from "./config.js";
@@ -95,6 +96,91 @@ try {
     },
   });
 
+  const memoryBody =
+    "Support diagnostics memory body must never leave the memory table.";
+  const memoryItem = await prisma.memoryItem.create({
+    data: {
+      workspaceId: workspace.id,
+      repositoryId: repository.id,
+      userId: null,
+      scope: "repository",
+      status: "active",
+      body: memoryBody,
+      bodyVersion: 1,
+      bodyHash: createMemoryBodyHash(memoryBody),
+      tags: [],
+      riskLevel: "low",
+      confidence: 1,
+      source: {
+        type: "dashboard",
+        url: "https://example.test/private-memory-source",
+        actorLogin: "support-e2e",
+        redactedExcerpt: memoryBody,
+        githubPullRequestNumber: null,
+        sourceVisibility: "private",
+      },
+      policyVersion: 1,
+      safetyPolicyVersion: 1,
+      createdBy: "user:support-e2e",
+      confirmedBy: "user:support-e2e",
+      visibility: "repository_runtime",
+      indexState: "indexed",
+      indexVersion: 1,
+    },
+    select: { id: true },
+  });
+  const suggestionBody =
+    "Support diagnostics suggestion body must never appear in diagnostics.";
+  await prisma.memorySuggestion.create({
+    data: {
+      workspaceId: workspace.id,
+      repositoryId: repository.id,
+      userId: null,
+      suggestedScope: "repository",
+      suggestedBody: suggestionBody,
+      suggestedBodyVersion: 1,
+      suggestedBodyHash: createMemoryBodyHash(suggestionBody),
+      reason: "model_suggested_candidate",
+      source: {
+        type: "pr_comment",
+        url: "https://example.test/private-suggestion-source",
+        actorLogin: "support-e2e",
+        redactedExcerpt: suggestionBody,
+        githubPullRequestNumber: 1,
+        sourceVisibility: "private",
+      },
+      safetyReport: {
+        severity: "low",
+        riskLevel: "low",
+        flags: [],
+        blockedReason: null,
+        mayEmbed: true,
+        mayUseInRuntimeBundle: true,
+      },
+      policyVersion: 1,
+      safetyPolicyVersion: 1,
+      status: "pending",
+      createdByActor: "github:support-e2e",
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      dedupeKey: `support-e2e-suggestion-${marker}`,
+    },
+  });
+  await prisma.memoryUsageEvent.create({
+    data: {
+      workspaceId: workspace.id,
+      repositoryId: repository.id,
+      memoryItemId: memoryItem.id,
+      eventType: "action_bundle_exposed",
+      bundleVersion: 1,
+      dedupeKey: `support-e2e-memory-usage-${marker}`,
+      metadata: {
+        scope: "repository",
+        bundleItemCount: 1,
+      },
+      occurredAt: new Date(),
+    },
+  });
+
   await recordAuditEvent(
     {
       workspaceId: workspace.id,
@@ -136,6 +222,22 @@ try {
   if (snapshot.outboxCounts.deadLetter !== 1) {
     throw new Error("dead-letter outbox state was not summarized");
   }
+  if (snapshot.memoryCounts.items.active !== 1) {
+    throw new Error("active memory count was not summarized");
+  }
+  if (snapshot.memoryCounts.suggestions.pending !== 1) {
+    throw new Error("pending memory suggestion count was not summarized");
+  }
+  if (snapshot.memoryCounts.usageEvents !== 1) {
+    throw new Error("memory usage event count was not summarized");
+  }
+  const snapshotJson = JSON.stringify(snapshot);
+  if (
+    snapshotJson.includes(memoryBody) ||
+    snapshotJson.includes(suggestionBody)
+  ) {
+    throw new Error("support diagnostics snapshot leaked memory body");
+  }
 
   const supportAudit = await prisma.auditEvent.findFirst({
     where: {
@@ -150,6 +252,13 @@ try {
   if (JSON.stringify(supportAudit.metadata).includes("auth")) {
     throw new Error("support audit metadata contains unsafe auth-looking text");
   }
+  const supportAuditJson = JSON.stringify(supportAudit.metadata);
+  if (
+    supportAuditJson.includes(memoryBody) ||
+    supportAuditJson.includes(suggestionBody)
+  ) {
+    throw new Error("support audit metadata leaked memory body");
+  }
 
   console.log(
     JSON.stringify(
@@ -159,6 +268,7 @@ try {
         repositories: snapshot.repositoryCounts,
         provider: snapshot.providerCounts,
         outbox: snapshot.outboxCounts,
+        memory: snapshot.memoryCounts,
         supportAudit: supportAudit.metadata,
       },
       null,
