@@ -73,6 +73,23 @@ describe("MemoryManagementPanel", () => {
     ).toBeTruthy();
   });
 
+  it("lets pending suggestions be edited before approval", () => {
+    renderMemoryManagementPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit suggestion" }));
+
+    const dialog = screen.getByRole("dialog", {
+      name: "Edit and approve suggestion",
+    });
+    expect(within(dialog).getByDisplayValue("Prefer small PRs.")).toBeTruthy();
+    expect(
+      within(dialog).getByText(/checks run again/),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByText(/Pending suggestions are never used by runtime/),
+    ).toBeTruthy();
+  });
+
   it("renders read-only state without hiding memory data", () => {
     renderMemoryManagementPanel({ mutationsEnabled: false });
 
@@ -83,6 +100,13 @@ describe("MemoryManagementPanel", () => {
     expect(
       (screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement)
         .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Edit suggestion",
+        }) as HTMLButtonElement
+      ).disabled,
     ).toBe(true);
     expect(
       (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
