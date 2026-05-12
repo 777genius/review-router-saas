@@ -101,8 +101,27 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(workflow).toContain("Preflight ReviewRouter interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_DISCUSSION_MODE: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
+    );
+    expect(workflow).toContain(
+      "steps.preflight.outputs.needs_discussion == 'true'",
+    );
+    expect(workflow).toContain("Install Codex CLI for discussion replies");
+    expect(workflow).toContain(
+      "Restore Codex subscription auth for discussion replies",
+    );
+    expect(workflow).toContain("CODEX_AUTH_JSON_PRESENT");
+    expect(workflow).toContain("OPENAI_API_KEY_PRESENT");
     expect(workflow).toContain("steps.preflight.outputs.should_run == 'true'");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
+    expect(workflow).toContain(
+      "CODEX_MODEL: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
+    );
+    expect(workflow).toContain(
+      "CODEX_REASONING_EFFORT: ${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}",
+    );
     expect(workflow).not.toContain("REVIEW_ROUTER_THREAD_RESOLVE_TOKEN");
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"',
@@ -140,6 +159,18 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(interactionWorkflow?.content).toContain(
       "review_workflow_file: reviewrouter.yml",
+    );
+    expect(interactionWorkflow?.content).toContain(
+      "discussion_mode: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
+    );
+    expect(interactionWorkflow?.content).toContain(
+      "discussion_model: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
+    );
+    expect(interactionWorkflow?.content).toContain(
+      "discussion_reasoning_effort: ${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}",
+    );
+    expect(interactionWorkflow?.content).toContain(
+      "discussion_max_per_pr: ${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}",
     );
     expect(interactionWorkflow?.content).toContain(
       "pull_request_review_comment:",
@@ -195,6 +226,15 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(interactionWorkflow).toContain(
       "REVIEW_ROUTER_LEDGER_KEY: ${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}",
+    );
+    expect(interactionWorkflow).toContain(
+      "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
+    );
+    expect(interactionWorkflow).toContain(
+      "CODEX_CONFIG_TOML: ${{ secrets.CODEX_CONFIG_TOML }}",
+    );
+    expect(interactionWorkflow).toContain(
+      "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
     );
     expect(interactionWorkflow).not.toContain("pull_request_target");
   });

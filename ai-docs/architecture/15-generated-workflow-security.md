@@ -46,6 +46,15 @@ can cancel older pending jobs and drop legitimate `/rr skip`, `/rr remember`, or
 maintenance commands. Prefer runtime-level idempotency, per-thread reply
 markers, per-PR/thread caps, and SaaS OIDC rate limits.
 
+AI discussion replies use the same privacy boundary as review execution. The
+generated caller workflow passes `CODEX_AUTH_JSON`, `CODEX_CONFIG_TOML`, or
+`OPENAI_API_KEY` directly from the customer's GitHub Actions secrets to the
+ReviewRouter runtime workflow. Model and reasoning selection are passed as
+non-secret workflow variables, so the runtime contract stays explicit without
+moving prompts or credentials into SaaS. ReviewRouter SaaS stores only
+configuration intent and safe metadata; it must not receive provider
+credentials, prompts, raw thread text, model responses, code, or diffs.
+
 ## Default Permissions
 
 ```yaml
