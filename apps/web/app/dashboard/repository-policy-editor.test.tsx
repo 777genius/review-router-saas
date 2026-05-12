@@ -14,7 +14,11 @@ import {
   type ReviewProviderConfiguration,
 } from "@reviewrouter/features-review-config";
 import { checkProviderRepositorySecretClientAction } from "./actions";
-import { ReviewConfigForm } from "./repository-policy-editor";
+import {
+  clearProviderSecretStatusCacheForTest,
+  ReviewConfigForm,
+  RepositoryPolicyOverrideDetails,
+} from "./repository-policy-editor";
 
 vi.mock("./actions", () => ({
   checkProviderRepositorySecretClientAction: vi.fn(),
@@ -48,6 +52,7 @@ const modelOptions = [
 
 afterEach(() => {
   vi.clearAllMocks();
+  clearProviderSecretStatusCacheForTest();
   cleanup();
 });
 
@@ -320,6 +325,75 @@ describe("ReviewConfigForm", () => {
     ).toBeTruthy();
   });
 
+  it("checks a shared provider secret only once for duplicate auth modes", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "available_repository",
+    });
+
+    renderReviewConfigForm({
+      config: duplicateOpenRouterReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain(
+        "OPENROUTER_API_KEY is set in this repository's GitHub Actions secrets",
+      );
+    });
+    expect(
+      screen.getByText(
+        "Checked once for 2 providers using OpenRouter API key.",
+      ),
+    ).toBeTruthy();
+    expect(checkProviderRepositorySecretClientAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mount repository override secret checks until the row is opened", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "available_repository",
+    });
+
+    renderRepositoryPolicyOverrideDetails({
+      repositoryConfig: {
+        version: 6,
+        config: duplicateOpenRouterReviewConfiguration(),
+      },
+    });
+
+    expect(screen.getByText("777genius/agent-teams-ai")).toBeTruthy();
+    expect(screen.queryByText("Provider 1")).toBeNull();
+    expect(checkProviderRepositorySecretClientAction).not.toHaveBeenCalled();
+
+    const rowButton = screen.getByText("777genius/agent-teams-ai").closest(
+      "button",
+    );
+    expect(rowButton).not.toBeNull();
+    fireEvent.click(rowButton!);
+
+    expect(screen.getByText("Provider 1")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain(
+        "OPENROUTER_API_KEY is set in this repository's GitHub Actions secrets",
+      );
+    });
+    expect(checkProviderRepositorySecretClientAction).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(rowButton!);
+    expect(screen.queryByText("Provider 1")).toBeNull();
+    fireEvent.click(rowButton!);
+
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain(
+        "OPENROUTER_API_KEY is set in this repository's GitHub Actions secrets",
+      );
+    });
+    expect(checkProviderRepositorySecretClientAction).toHaveBeenCalledTimes(1);
+  });
+
   it("explains when an organization OpenRouter secret is not selected for this repository", async () => {
     vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
       status: "not_available_to_repository",
@@ -368,6 +442,35 @@ function renderReviewConfigForm(input?: {
   );
 }
 
+function renderRepositoryPolicyOverrideDetails(input?: {
+  readonly repositoryConfig?: {
+    readonly version: number;
+    readonly config: ReviewConfiguration;
+  } | null;
+}): void {
+  const repositoryConfig = input?.repositoryConfig ?? null;
+  render(
+    <RepositoryPolicyOverrideDetails
+      workspaceId="workspace_1"
+      repository={{
+        id: "repo_1",
+        fullName: "777genius/agent-teams-ai",
+        selected: true,
+        archived: false,
+      }}
+      repositoryConfig={repositoryConfig}
+      effectiveConfig={
+        repositoryConfig?.config ?? duplicateOpenRouterReviewConfiguration()
+      }
+      configVersion={repositoryConfig?.version ?? 6}
+      modelOptions={modelOptions}
+      mutationsEnabled={true}
+      saveAction={() => undefined}
+      clearAction={() => undefined}
+    />,
+  );
+}
+
 function openRouterReviewConfiguration(): ReviewConfiguration {
   const openRouterProvider: ReviewProviderConfiguration = {
     kind: "openrouter",
@@ -382,6 +485,27 @@ function openRouterReviewConfiguration(): ReviewConfiguration {
     ...safeDefaultReviewConfiguration,
     provider: openRouterProvider,
     providers: [openRouterProvider],
+  };
+}
+
+function duplicateOpenRouterReviewConfiguration(): ReviewConfiguration {
+  const firstOpenRouterProvider: ReviewProviderConfiguration = {
+    kind: "openrouter",
+    authMode: "openrouter_api_key",
+    model: "poolside/laguna-m.1:free",
+    reasoningEffort: "medium",
+    agenticContext: true,
+    fastMode: false,
+  };
+  const secondOpenRouterProvider: ReviewProviderConfiguration = {
+    ...firstOpenRouterProvider,
+    model: "anthropic/claude-sonnet-4.5",
+  };
+
+  return {
+    ...safeDefaultReviewConfiguration,
+    provider: firstOpenRouterProvider,
+    providers: [firstOpenRouterProvider, secondOpenRouterProvider],
   };
 }
 

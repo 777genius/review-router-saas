@@ -88,6 +88,7 @@ import { RepositorySetupDisclosureToggle } from "./repository-setup-optimistic-s
 import { RepositorySetupProgressPanel as RepositorySetupProgressPanelClient } from "./repository-setup-progress-panel";
 import {
   RepositoryPolicyEditor,
+  RepositoryPolicyOverrideDetails,
   ReviewConfigForm,
 } from "./repository-policy-editor";
 import { RepositorySetupStatusRefresher } from "./repository-setup-status-refresher";
@@ -1597,88 +1598,25 @@ function WorkspaceCard({
                   {repositories.map((repository) => {
                     const repositoryConfig = repositoryConfigs.find(
                       (item) => item.repositoryId === repository.id,
-                    )?.config;
+                    )?.config ?? null;
                     const effectiveConfig =
                       repositoryConfig?.config ?? activeConfig;
                     const configVersion =
                       repositoryConfig?.version ?? activeConfigVersion;
 
                     return (
-                      <details
+                      <RepositoryPolicyOverrideDetails
                         key={`${repository.id}-review-config`}
-                        className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4"
-                      >
-                        <summary className="cursor-pointer list-none">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <p className="text-sm font-semibold text-cyan-50">
-                                {repository.fullName}
-                              </p>
-                              <p className="text-xs text-slate-400">
-                                {repositoryConfig
-                                  ? `Repository override / v${configVersion}`
-                                  : `Inherits workspace default / v${configVersion}`}
-                              </p>
-                            </div>
-                            <Badge
-                              tone={repositoryConfig ? "warning" : "success"}
-                            >
-                              {repositoryConfig ? "override" : "inherits"}
-                            </Badge>
-                          </div>
-                        </summary>
-                        <div className="mt-4 space-y-3">
-                          <ReviewConfigForm
-                            action={saveRepositoryReviewConfigAction}
-                            config={effectiveConfig}
-                            modelOptions={modelOptions}
-                            hiddenFields={[
-                              { name: "workspaceId", value: workspace.id },
-                              { name: "repositoryId", value: repository.id },
-                            ]}
-                            mutationsEnabled={
-                              mutationsEnabled &&
-                              repository.selected &&
-                              !repository.archived
-                            }
-                            repositoryFullName={repository.fullName}
-                            repositorySecretCheckTarget={{
-                              workspaceId: workspace.id,
-                              repositoryId: repository.id,
-                            }}
-                            submitLabel={
-                              repositoryConfig
-                                ? "Update override"
-                                : "Save override"
-                            }
-                          />
-                          {repositoryConfig ? (
-                            <form action={clearRepositoryReviewConfigAction}>
-                              <input
-                                type="hidden"
-                                name="workspaceId"
-                                value={workspace.id}
-                              />
-                              <input
-                                type="hidden"
-                                name="repositoryId"
-                                value={repository.id}
-                              />
-                              <FormSubmitButton
-                                variant="outline"
-                                size="sm"
-                                disabled={
-                                  !mutationsEnabled ||
-                                  !repository.selected ||
-                                  repository.archived
-                                }
-                                idleLabel="Inherit workspace default"
-                                pendingLabel="Saving..."
-                              />
-                            </form>
-                          ) : null}
-                        </div>
-                      </details>
+                        workspaceId={workspace.id}
+                        repository={repository}
+                        repositoryConfig={repositoryConfig}
+                        effectiveConfig={effectiveConfig}
+                        configVersion={configVersion}
+                        modelOptions={modelOptions}
+                        mutationsEnabled={mutationsEnabled}
+                        saveAction={saveRepositoryReviewConfigAction}
+                        clearAction={clearRepositoryReviewConfigAction}
+                      />
                     );
                   })}
                 </div>

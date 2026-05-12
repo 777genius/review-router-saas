@@ -1,7 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useMemo, useState, type FocusEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type FocusEvent,
+} from "react";
 import * as RadixSelect from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
@@ -42,6 +48,39 @@ type ProviderSecretStatus =
   | "missing"
   | "permission_required"
   | "unknown";
+
+type ProviderSecretAvailabilityStatus = Exclude<
+  ProviderSecretStatus,
+  "checking"
+>;
+
+type ProviderSecretCheckResult = {
+  readonly status: ProviderSecretAvailabilityStatus;
+};
+
+type ProviderSecretStatusCacheEntry =
+  | {
+      readonly expiresAt: number;
+      readonly promise: Promise<ProviderSecretCheckResult>;
+      readonly result?: never;
+    }
+  | {
+      readonly expiresAt: number;
+      readonly promise?: never;
+      readonly result: ProviderSecretCheckResult;
+    };
+
+const providerSecretStatusCacheTtlMs = 60_000;
+const providerSecretStatusUnknownCacheTtlMs = 15_000;
+const providerSecretStatusPendingTtlMs = 15_000;
+const providerSecretStatusCache = new Map<
+  string,
+  ProviderSecretStatusCacheEntry
+>();
+
+export function clearProviderSecretStatusCacheForTest(): void {
+  providerSecretStatusCache.clear();
+}
 
 type ReviewModelOption = {
   readonly value: string;
@@ -184,10 +223,12 @@ function ProviderSecretNotice({
   authMode,
   repositoryFullName,
   secretCheckTarget,
+  sharedProviderCount = 1,
 }: {
   readonly authMode: ReviewProviderConfiguration["authMode"];
   readonly repositoryFullName?: string | undefined;
   readonly secretCheckTarget?: RepositorySecretCheckTarget | undefined;
+  readonly sharedProviderCount?: number;
 }): React.ReactElement {
   const [secretStatus, setSecretStatus] = useState<ProviderSecretStatus>(
     secretCheckTarget ? "checking" : "missing",
@@ -199,6 +240,10 @@ function ProviderSecretNotice({
     : `gh secret set ${metadata.secretName} --repo <owner>/<repo>${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`;
   const secretWorkspaceId = secretCheckTarget?.workspaceId;
   const secretRepositoryId = secretCheckTarget?.repositoryId;
+  const sharedProviderCopy =
+    sharedProviderCount > 1
+      ? `Checked once for ${sharedProviderCount} providers using ${metadata.label}.`
+      : null;
 
   useEffect(() => {
     if (!secretWorkspaceId || !secretRepositoryId) {
@@ -214,7 +259,13 @@ function ProviderSecretNotice({
     formData.set("authMode", authMode);
     setSecretStatus("checking");
 
-    void checkProviderRepositorySecretClientAction(formData)
+    void checkProviderSecretStatusWithCache({
+      authMode,
+      formData,
+      forceRefresh: refreshVersion > 0,
+      repositoryId: secretRepositoryId,
+      workspaceId: secretWorkspaceId,
+    })
       .then((result) => {
         if (!cancelled) setSecretStatus(result.status);
       })
@@ -251,6 +302,9 @@ function ProviderSecretNotice({
           <code className="font-mono">{metadata.secretName}</code> is available
           for the selected {metadata.label} provider.
         </p>
+        {sharedProviderCopy ? (
+          <p className="mt-1 text-cyan-100/70">{sharedProviderCopy}</p>
+        ) : null}
       </div>
     );
   }
@@ -273,6 +327,9 @@ function ProviderSecretNotice({
         <p className="mt-1 text-emerald-100/85">
           {metadata.label} can use this secret in CI.
         </p>
+        {sharedProviderCopy ? (
+          <p className="mt-1 text-emerald-100/75">{sharedProviderCopy}</p>
+        ) : null}
         <SecretRefreshButton
           busy={false}
           onRefresh={() => setRefreshVersion((value) => value + 1)}
@@ -312,6 +369,9 @@ function ProviderSecretNotice({
         Set a repository secret from a terminal opened in the repository
         directory:
       </p>
+      {sharedProviderCopy ? (
+        <p className="mt-1 text-amber-100/80">{sharedProviderCopy}</p>
+      ) : null}
       <pre className="mt-1.5 overflow-x-auto rounded-md bg-slate-950/80 px-2.5 py-1.5 font-mono text-[11px] leading-5 text-amber-50">
         {command}
       </pre>
@@ -332,6 +392,55 @@ function ProviderSecretNotice({
   );
 }
 
+function checkProviderSecretStatusWithCache(input: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly authMode: ReviewProviderConfiguration["authMode"];
+  readonly formData: FormData;
+  readonly forceRefresh: boolean;
+}): Promise<ProviderSecretCheckResult> {
+  const cacheKey = providerSecretStatusCacheKey(input);
+  const now = Date.now();
+  const cached = providerSecretStatusCache.get(cacheKey);
+
+  if (!input.forceRefresh && cached && cached.expiresAt > now) {
+    if (cached.result) return Promise.resolve(cached.result);
+    return cached.promise;
+  }
+
+  const promise = checkProviderRepositorySecretClientAction(input.formData)
+    .then((result) => {
+      providerSecretStatusCache.set(cacheKey, {
+        expiresAt:
+          Date.now() +
+          (result.status === "unknown"
+            ? providerSecretStatusUnknownCacheTtlMs
+            : providerSecretStatusCacheTtlMs),
+        result,
+      });
+      return result;
+    })
+    .catch((error: unknown) => {
+      providerSecretStatusCache.delete(cacheKey);
+      throw error;
+    });
+
+  providerSecretStatusCache.set(cacheKey, {
+    expiresAt: now + providerSecretStatusPendingTtlMs,
+    promise,
+  });
+
+  return promise;
+}
+
+function providerSecretStatusCacheKey(input: {
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly authMode: ReviewProviderConfiguration["authMode"];
+}): string {
+  return `${input.workspaceId}:${input.repositoryId}:${input.authMode}`;
+}
+
 function SecretRefreshButton({
   busy,
   onRefresh,
@@ -348,6 +457,102 @@ function SecretRefreshButton({
     >
       Refresh secret status
     </button>
+  );
+}
+
+export function RepositoryPolicyOverrideDetails({
+  workspaceId,
+  repository,
+  repositoryConfig,
+  effectiveConfig,
+  configVersion,
+  modelOptions,
+  mutationsEnabled,
+  saveAction,
+  clearAction,
+}: {
+  readonly workspaceId: string;
+  readonly repository: RepositoryPolicyEditorRepository;
+  readonly repositoryConfig: RepositoryPolicyEditorConfig;
+  readonly effectiveConfig: ReviewConfiguration;
+  readonly configVersion: number;
+  readonly modelOptions: readonly ReviewModelOption[];
+  readonly mutationsEnabled: boolean;
+  readonly saveAction: DashboardFormAction;
+  readonly clearAction: DashboardFormAction;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const panelId = `repo-review-config-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const canEdit =
+    mutationsEnabled && repository.selected && !repository.archived;
+
+  return (
+    <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((value) => !value)}
+        className="w-full cursor-pointer rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300/40"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-cyan-50">
+              {repository.fullName}
+            </p>
+            <p className="text-xs text-slate-400">
+              {repositoryConfig
+                ? `Repository override / v${configVersion}`
+                : `Inherits workspace default / v${configVersion}`}
+            </p>
+          </div>
+          <span
+            className={[
+              "rounded-full border px-3 py-1 font-mono text-xs font-semibold uppercase tracking-[0.16em]",
+              repositoryConfig
+                ? "border-amber-300/40 bg-amber-300/[0.08] text-amber-100"
+                : "border-emerald-300/30 bg-emerald-300/[0.07] text-emerald-100",
+            ].join(" ")}
+          >
+            {repositoryConfig ? "override" : "inherits"}
+          </span>
+        </div>
+      </button>
+
+      {open ? (
+        <div id={panelId} className="mt-4 space-y-3">
+          <ReviewConfigForm
+            action={saveAction}
+            config={effectiveConfig}
+            modelOptions={modelOptions}
+            hiddenFields={[
+              { name: "workspaceId", value: workspaceId },
+              { name: "repositoryId", value: repository.id },
+            ]}
+            mutationsEnabled={canEdit}
+            repositoryFullName={repository.fullName}
+            repositorySecretCheckTarget={{
+              workspaceId,
+              repositoryId: repository.id,
+            }}
+            submitLabel={repositoryConfig ? "Update override" : "Save override"}
+          />
+          {repositoryConfig ? (
+            <form action={clearAction}>
+              <input type="hidden" name="workspaceId" value={workspaceId} />
+              <input type="hidden" name="repositoryId" value={repository.id} />
+              <FormSubmitButton
+                variant="outline"
+                size="sm"
+                disabled={!canEdit}
+                idleLabel="Inherit workspace default"
+                pendingLabel="Saving..."
+              />
+            </form>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -542,6 +747,15 @@ export function ReviewConfigForm({
     }),
     [modelOptions],
   );
+  const providerSecretUsageCounts = useMemo(() => {
+    const counts = new Map<ReviewProviderConfiguration["authMode"], number>();
+
+    for (const provider of providers) {
+      counts.set(provider.authMode, (counts.get(provider.authMode) ?? 0) + 1);
+    }
+
+    return counts;
+  }, [providers]);
 
   function updateProvider(
     index: number,
@@ -649,6 +863,13 @@ export function ReviewConfigForm({
           <div className="grid gap-4">
             {providers.map((provider, index) => {
               const providerOptions = modelOptionsByProvider[provider.kind];
+              const firstProviderWithAuthModeIndex = providers.findIndex(
+                (candidate) => candidate.authMode === provider.authMode,
+              );
+              const showProviderSecretNotice =
+                repositorySecretCheckTarget &&
+                firstProviderWithAuthModeIndex === index;
+
               return (
                 <div
                   key={`${index}:${provider.authMode}`}
@@ -769,11 +990,14 @@ export function ReviewConfigForm({
                       </>
                     )}
                   </div>
-                  {repositorySecretCheckTarget ? (
+                  {showProviderSecretNotice ? (
                     <ProviderSecretNotice
                       authMode={provider.authMode}
                       repositoryFullName={repositoryFullName}
                       secretCheckTarget={repositorySecretCheckTarget}
+                      sharedProviderCount={
+                        providerSecretUsageCounts.get(provider.authMode) ?? 1
+                      }
                     />
                   ) : null}
                 </div>
