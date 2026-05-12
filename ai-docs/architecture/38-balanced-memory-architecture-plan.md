@@ -70,15 +70,22 @@
 - `forget/delete` memory теперь privacy-first: domain ставит tombstone body/source на deleted item, а delete use case в той же транзакции redacts body/source у confirmed origin suggestion; fresh DB E2E проверяет, что удалённая memory и linked suggestion больше не содержат исходный текст.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
 - suggestion inbox получил edit-before-approve dialog по design reference: edited approval переиспользует confirm use case с повторными permission/safety/scope/dedupe checks.
+- generated reusable interaction workflow теперь прокидывает AI discussion настройки и provider credentials как явный workflow contract: `discussion_mode`, model, reasoning effort, per-PR/thread caps, timeout, `CODEX_AUTH_JSON`, `CODEX_CONFIG_TOML`, `OPENAI_API_KEY`; runtime устанавливает Codex CLI только когда preflight реально требует discussion response.
+- реальный GitHub E2E подтвердил путь `human inline reply -> ReviewRouter Interaction workflow -> Codex discussion reply` на disposable repo `777genius/review-router-saas-e2e` PR #5:
+  - ReviewRouter reusable review workflow: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25716446935>;
+  - ReviewRouter reusable interaction workflow: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25716486487>;
+  - inline thread получил human reply и ответ `github-actions[bot]` с marker `reviewrouter-discussion:v1`;
+  - после bot reply не появился новый interaction run, то есть bot-loop guard сработал.
 
 Текущие проверки:
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 61 files, 326 tests passed;
+- `pnpm test` - 62 files, 329 tests passed;
 - `pnpm lint` - passed;
 - `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
+- action runtime checks for discussion wiring: `npm run build`, `npm run typecheck`, `npm run lint` - 0 errors, existing warnings only, `npm test -- --runInBand` - 100 suites, 1184 tests passed.
 
 Ограничение визуальной проверки: локальный `/dashboard?section=memory` открылся через Next dev без crash, но защищённый dashboard редиректит на публичную главную из-за отсутствия валидной browser session/auth cookie в текущем окружении. Поэтому сам memory экран пока подтверждён typecheck/SSR compile, но не полноценной screenshot QA.
 
