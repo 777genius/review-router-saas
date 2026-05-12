@@ -193,13 +193,14 @@ function assertInteractionWorkflowReady({ owner, name, defaultBranch }) {
     );
   }
 
+  let workflowContent;
   try {
-    gh([
-      "api",
-      `repos/${owner}/${name}/contents/.github/workflows/reviewrouter-interaction.yml?ref=${defaultBranch}`,
-      "--jq",
-      ".name",
-    ]);
+    workflowContent = fetchGithubFile({
+      owner,
+      name,
+      path: ".github/workflows/reviewrouter-interaction.yml",
+      ref: defaultBranch,
+    });
   } catch {
     fail(
       "github_memory_e2e_interaction_workflow_missing_on_default_branch",
@@ -211,6 +212,116 @@ function assertInteractionWorkflowReady({ owner, name, defaultBranch }) {
       },
     );
   }
+  assertMemoryWorkflowContract(workflowContent);
+}
+
+function assertMemoryWorkflowContract(workflowContent) {
+  if (!workflowContent.includes("issue_comment:")) {
+    fail(
+      "github_memory_e2e_workflow_missing_issue_comment_trigger",
+      "ReviewRouter Interaction workflow must subscribe to issue_comment events for PR discussion commands.",
+      { repo },
+    );
+  }
+  if (!workflowContent.includes("github.event.comment.user.type != 'Bot'")) {
+    fail(
+      "github_memory_e2e_workflow_missing_bot_guard",
+      "ReviewRouter Interaction workflow must ignore bot comments before the smoke test can safely post comments.",
+      { repo },
+    );
+  }
+
+  if (hasMemoryEndpointContract(workflowContent)) {
+    const actionRef = extractActionRuntimeRef(workflowContent);
+    if (actionRef) {
+      assertRuntimeDistSupportsMemory(actionRef);
+    }
+    return;
+  }
+
+  const reusableRef = extractReusableRuntimeRef(workflowContent);
+  if (!reusableRef) {
+    fail(
+      "github_memory_e2e_workflow_missing_memory_contract",
+      "ReviewRouter Interaction workflow must expose memory candidate and command endpoints, or call the memory-capable reusable interaction workflow.",
+      { repo },
+    );
+  }
+
+  const reusableContent = fetchGithubFile({
+    owner: "777genius",
+    name: "review-router",
+    path: ".github/workflows/reviewrouter-interaction-reusable.yml",
+    ref: reusableRef,
+  });
+  if (!hasMemoryEndpointContract(reusableContent)) {
+    fail(
+      "github_memory_e2e_reusable_workflow_missing_memory_contract",
+      "The referenced reusable interaction workflow does not expose memory candidate and command endpoints.",
+      {
+        repo,
+        runtimeRef: reusableRef,
+        runtimePath:
+          "777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml",
+      },
+    );
+  }
+  assertRuntimeDistSupportsMemory(reusableRef);
+}
+
+function assertRuntimeDistSupportsMemory(ref) {
+  const runtime = fetchGithubFile({
+    owner: "777genius",
+    name: "review-router",
+    path: "dist/index.js",
+    ref,
+  });
+  if (!hasMemoryEndpointContract(runtime)) {
+    fail(
+      "github_memory_e2e_runtime_missing_memory_contract",
+      "The referenced ReviewRouter runtime does not contain memory candidate and command endpoint support.",
+      {
+        repo,
+        runtimeRef: ref,
+        runtimePath: "777genius/review-router/dist/index.js",
+      },
+    );
+  }
+}
+
+function hasMemoryEndpointContract(content) {
+  return (
+    content.includes("REVIEW_ROUTER_MEMORY_CANDIDATE_ENDPOINT") &&
+    content.includes("REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT")
+  );
+}
+
+function extractReusableRuntimeRef(content) {
+  return (
+    /uses:\s*777genius\/review-router\/\.github\/workflows\/reviewrouter-interaction-reusable\.ya?ml@([^\s]+)/.exec(
+      content,
+    )?.[1] ?? null
+  );
+}
+
+function extractActionRuntimeRef(content) {
+  return /uses:\s*777genius\/review-router@([^\s]+)/.exec(content)?.[1] ?? null;
+}
+
+function fetchGithubFile({ owner, name, path, ref }) {
+  const encodedPath = path
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  const response = ghJson([
+    "api",
+    `repos/${owner}/${name}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
+  ]);
+  const content = response?.content;
+  if (typeof content !== "string" || content.length === 0) {
+    throw new Error("github_file_content_missing");
+  }
+  return Buffer.from(content, "base64").toString("utf8");
 }
 
 async function postPrComment(body) {

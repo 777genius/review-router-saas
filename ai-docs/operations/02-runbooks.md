@@ -240,7 +240,10 @@ Expected target state:
 
 The smoke runner is intentionally opt-in because it posts PR comments and
 triggers GitHub Actions. Use `REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1`
-to validate repository/workflow readiness without posting comments.
+to validate repository/workflow readiness without posting comments. The
+preflight also rejects stale workflows/runtimes that do not expose the memory
+candidate and command endpoints, so it fails before side effects if the action
+runtime has not been updated.
 
 Emergency disable:
 
