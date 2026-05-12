@@ -33,6 +33,7 @@
     "spike:action:e2e": "tsx spikes/github-oidc/src/action-control-plane-e2e.ts",
     "spike:review-config:e2e": "tsx spikes/github-oidc/src/review-config-override-e2e.ts",
     "spike:support-diagnostics:e2e": "tsx spikes/github-oidc/src/support-diagnostics-e2e.ts",
+    "spike:memory:e2e": "tsx spikes/github-oidc/src/memory-flow-e2e.ts",
     "spike:auth-workspace:e2e": "tsx spikes/github-oidc/src/auth-workspace-access-e2e.ts",
     "spike:webhook-lifecycle:e2e": "tsx spikes/github-oidc/src/webhook-lifecycle-e2e.ts",
     "spike:server": "tsx spikes/github-oidc/src/server.ts",
