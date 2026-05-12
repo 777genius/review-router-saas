@@ -67,6 +67,7 @@
 - pending suggestions получили retention transition: `expirePendingMemorySuggestions` переводит просроченные pending suggestions в `expired` через domain state machine, repository port и safe audit metadata.
 - worker получил lock-protected pending suggestion expiry maintenance: отдельный across-workspaces use case, bounded workspace/per-workspace batches, Prisma adapter method, global expiry index `000013_memory_suggestion_expiry_index` и fresh DB E2E, который доказывает, что expired suggestion больше нельзя подтвердить и audit не содержит body.
 - confirm/reject suggestion теперь fail-closed для TTL-expired pending rows даже до worker maintenance: use case атомарно переводит stale pending suggestion в `expired`, возвращает `noop: expired`, не зовёт permission adapter и не создаёт memory item.
+- `forget/delete` memory теперь privacy-first: domain ставит tombstone body/source на deleted item, а delete use case в той же транзакции redacts body/source у confirmed origin suggestion; fresh DB E2E проверяет, что удалённая memory и linked suggestion больше не содержат исходный текст.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
 - suggestion inbox получил edit-before-approve dialog по design reference: edited approval переиспользует confirm use case с повторными permission/safety/scope/dedupe checks.
 
@@ -74,7 +75,7 @@
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 61 files, 325 tests passed;
+- `pnpm test` - 61 files, 326 tests passed;
 - `pnpm lint` - passed;
 - `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.

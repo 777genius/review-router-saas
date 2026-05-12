@@ -2,6 +2,7 @@ import type { MemoryActor } from "../../domain/memory-actor";
 import { memoryActorRef } from "../../domain/memory-actor";
 import { MemoryError } from "../../domain/memory-errors";
 import { MemoryItem } from "../../domain/memory-item";
+import { MemorySuggestion } from "../../domain/memory-suggestion";
 import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
@@ -59,10 +60,29 @@ export async function deleteMemoryItem(
     now,
   });
   const snapshot = item.snapshot();
+  const originSuggestion =
+    existing.originSuggestionId === null
+      ? null
+      : await dependencies.memorySuggestions.findById({
+          workspaceId: input.workspaceId,
+          suggestionId: existing.originSuggestionId,
+        });
+  const redactedOriginSuggestion = originSuggestion
+    ? MemorySuggestion.fromSnapshot(originSuggestion).redactAfterMemoryDeletion({
+        memoryItemId: existing.id,
+        now,
+      })
+    : null;
+  const shouldSaveRedactedOriginSuggestion =
+    redactedOriginSuggestion !== null &&
+    redactedOriginSuggestion.snapshot().version !== originSuggestion?.version;
 
   try {
     return await dependencies.memoryTransaction.run(async (tx) => {
       await tx.memoryItems.save(item, { expectedVersion: existing.version });
+      if (shouldSaveRedactedOriginSuggestion && redactedOriginSuggestion) {
+        await tx.memorySuggestions.save(redactedOriginSuggestion);
+      }
       await tx.memoryAudit.record({
         workspaceId: input.workspaceId,
         actor: memoryActorRef(input.actor),
@@ -71,9 +91,11 @@ export async function deleteMemoryItem(
         targetId: snapshot.id,
         metadata: {
           scope: snapshot.scope,
-          bodyHash: snapshot.bodyHash,
+          bodyHash: existing.bodyHash,
           previousStatus: existing.status,
           previousVersion: existing.version,
+          bodyRedacted: true,
+          originSuggestionRedacted: shouldSaveRedactedOriginSuggestion,
         },
       });
       await tx.memoryOutbox.enqueue({
@@ -84,9 +106,10 @@ export async function deleteMemoryItem(
         repositoryId: snapshot.repositoryId,
         aggregateId: snapshot.id,
         payload: {
-          bodyHash: snapshot.bodyHash,
-          bodyVersion: snapshot.bodyVersion,
+          bodyHash: existing.bodyHash,
+          bodyVersion: existing.bodyVersion,
           scope: snapshot.scope,
+          bodyRedacted: true,
         },
         occurredAt: now,
       });

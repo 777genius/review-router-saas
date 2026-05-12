@@ -1,4 +1,8 @@
-import { createMemoryBodyHash, normalizeMemoryBody } from "./memory-body";
+import {
+  createMemoryBodyHash,
+  deletedMemoryBodyPlaceholder,
+  normalizeMemoryBody,
+} from "./memory-body";
 import type { MemoryActor } from "./memory-actor";
 import { memoryActorRef } from "./memory-actor";
 import { memoryError } from "./memory-errors";
@@ -7,7 +11,7 @@ import {
   type MemoryScope,
 } from "./memory-scope-policy";
 import type { MemorySafetyReport } from "./memory-safety-policy";
-import type { MemorySource } from "./memory-source";
+import { createDeletedMemorySource, type MemorySource } from "./memory-source";
 
 export type MemorySuggestionStatus =
   | "pending"
@@ -158,6 +162,34 @@ export class MemorySuggestion {
       resolvedAt: input.now,
       resolvedBy: "system:memory-retention",
       resolutionReason: "expired",
+      updatedAt: input.now,
+      version: this.value.version + 1,
+    });
+  }
+
+  redactAfterMemoryDeletion(input: {
+    readonly memoryItemId: string;
+    readonly now: Date;
+  }): MemorySuggestion {
+    if (
+      this.value.status !== "confirmed" ||
+      this.value.relatedMemoryItemId !== input.memoryItemId
+    ) {
+      return this;
+    }
+    return new MemorySuggestion({
+      ...this.value,
+      suggestedBody: deletedMemoryBodyPlaceholder,
+      suggestedBodyVersion: this.value.suggestedBodyVersion + 1,
+      suggestedBodyHash: createMemoryBodyHash(deletedMemoryBodyPlaceholder),
+      source: createDeletedMemorySource(),
+      safetyReport: {
+        ...this.value.safetyReport,
+        redactedBody: deletedMemoryBodyPlaceholder,
+        redactedSourceExcerpt: null,
+        mayEmbed: false,
+        mayUseInRuntimeBundle: false,
+      },
       updatedAt: input.now,
       version: this.value.version + 1,
     });

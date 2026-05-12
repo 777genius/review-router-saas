@@ -35,3 +35,18 @@ export function createDashboardMemorySource(input: {
     sourceVisibility: "internal",
   };
 }
+
+export function createDeletedMemorySource(): MemorySource {
+  return {
+    type: "system_migration",
+    sourceId: "deleted",
+    githubCommentId: null,
+    githubPullRequestNumber: null,
+    githubRepositoryId: null,
+    url: null,
+    actorLogin: null,
+    redactedExcerpt: null,
+    sourceHash: null,
+    sourceVisibility: "internal",
+  };
+}

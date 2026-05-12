@@ -44,6 +44,7 @@ import type {
 import {
   createDashboardMemorySource,
   createMemoryBodyHash,
+  deletedMemoryBodyPlaceholder,
   evaluateMemorySafety,
 } from "@reviewrouter/features-memory";
 import type {
@@ -1751,6 +1752,8 @@ describe("API app", () => {
     );
     expect(actionMemory.memoryItems.snapshots.get("mem_forget")).toMatchObject({
       status: "deleted",
+      body: deletedMemoryBodyPlaceholder,
+      source: { type: "system_migration", sourceId: "deleted" },
     });
     expect(actionMemory.audit.events.map((event) => event.action)).toEqual([
       "memory.suggestion.confirmed",

@@ -1,4 +1,8 @@
-import { createMemoryBodyHash, normalizeMemoryBody } from "./memory-body";
+import {
+  createMemoryBodyHash,
+  deletedMemoryBodyPlaceholder,
+  normalizeMemoryBody,
+} from "./memory-body";
 import type { MemoryActor } from "./memory-actor";
 import { memoryActorRef } from "./memory-actor";
 import { memoryError } from "./memory-errors";
@@ -7,7 +11,7 @@ import {
   defaultMemoryVisibility,
   type MemoryScope,
 } from "./memory-scope-policy";
-import type { MemorySource } from "./memory-source";
+import { createDeletedMemorySource, type MemorySource } from "./memory-source";
 import type { MemoryRiskLevel } from "./memory-safety-policy";
 
 export type MemoryItemStatus = "active" | "disabled" | "expired" | "deleted";
@@ -148,6 +152,11 @@ export class MemoryItem {
     return new MemoryItem({
       ...this.value,
       status: "deleted",
+      body: deletedMemoryBodyPlaceholder,
+      bodyVersion: this.value.bodyVersion + 1,
+      bodyHash: createMemoryBodyHash(deletedMemoryBodyPlaceholder),
+      tags: [],
+      source: createDeletedMemorySource(),
       updatedAt: input.now,
       version: this.value.version + 1,
       indexState: "index_deleted",

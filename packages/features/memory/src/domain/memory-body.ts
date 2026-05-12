@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const memoryBodyMaxCharacters = 1_000;
 export const memoryRedactedExcerptMaxCharacters = 500;
+export const deletedMemoryBodyPlaceholder = "[deleted]";
 
 export function normalizeMemoryBody(value: string): string {
   return value

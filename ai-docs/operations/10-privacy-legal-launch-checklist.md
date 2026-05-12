@@ -29,6 +29,9 @@ Then implementation must enforce:
 - logs do not store code/diff
 - support tools do not show code/diff
 - telemetry schema is metadata-only
+- Balanced Memory candidates reject raw code/diff/prompt/model-response fields and store only distilled memory text that the user asked ReviewRouter to remember or review for confirmation
+- memory audit, outbox, and usage telemetry store ids/hashes/status metadata, not memory body or source text
+- memory delete/forget removes runtime exposure immediately and redacts the canonical item body/source plus confirmed origin suggestion body/source
 
 If marketing says:
 

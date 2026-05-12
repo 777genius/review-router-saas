@@ -10,6 +10,7 @@ import {
 import {
   buildActionMemoryBundle,
   createMemoryBodyHash,
+  deletedMemoryBodyPlaceholder,
   PrismaMemoryItemRepository,
   PrismaMemorySearchIndex,
   PrismaMemorySuggestionRepository,
@@ -663,6 +664,50 @@ try {
     primaryUsageCount,
     bundle.items.length + bundleAfterDisable.items.length,
     "usage events after disable fetch",
+  );
+
+  const confirmedMemoryItemId = confirm.results[0]?.id;
+  assertPresent(confirmedMemoryItemId, "confirmed suggestion memory item id");
+  const deleteConfirmed = await postCommands(baseUrl, adminSession, [
+    { kind: "forget_memory", memoryItemId: confirmedMemoryItemId },
+  ]);
+  assertEqual(
+    deleteConfirmed.results[0]?.status,
+    "updated",
+    "delete confirmed suggestion memory status",
+  );
+  const redactedDeletedItem = await prisma.memoryItem.findUnique({
+    where: { id: confirmedMemoryItemId },
+    select: { body: true, status: true, source: true },
+  });
+  assertEqual(
+    redactedDeletedItem?.status,
+    "deleted",
+    "redacted deleted memory status",
+  );
+  assertEqual(
+    redactedDeletedItem?.body,
+    deletedMemoryBodyPlaceholder,
+    "redacted deleted memory body",
+  );
+  assertStringDoesNotContain(
+    JSON.stringify(redactedDeletedItem),
+    "Run dashboard memory changes through browser layout checks.",
+    "deleted memory item must not retain body/source",
+  );
+  const redactedOriginSuggestion = await prisma.memorySuggestion.findUnique({
+    where: { id: suggestion.id },
+    select: { suggestedBody: true, source: true, safetyReport: true },
+  });
+  assertEqual(
+    redactedOriginSuggestion?.suggestedBody,
+    deletedMemoryBodyPlaceholder,
+    "redacted origin suggestion body",
+  );
+  assertStringDoesNotContain(
+    JSON.stringify(redactedOriginSuggestion),
+    "Run dashboard memory changes through browser layout checks.",
+    "deleted origin suggestion must not retain body/source",
   );
 
   console.log(

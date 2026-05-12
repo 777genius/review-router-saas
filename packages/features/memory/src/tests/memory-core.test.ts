@@ -3,6 +3,7 @@ import type { Clock } from "@reviewrouter/shared";
 import type { MemoryActor } from "../domain/memory-actor";
 import {
   createMemoryBodyHash,
+  deletedMemoryBodyPlaceholder,
   normalizeMemoryBody,
 } from "../domain/memory-body";
 import type { MemoryCandidateEnvelope } from "../domain/memory-candidate";
@@ -905,6 +906,15 @@ describe("memory core", () => {
     );
     expect(deleted).toMatchObject({ status: "updated", id: created.id });
     expect(deps.memoryItems.items.get(created.id)?.status).toBe("deleted");
+    expect(deps.memoryItems.items.get(created.id)?.body).toBe(
+      deletedMemoryBodyPlaceholder,
+    );
+    expect(deps.memoryItems.items.get(created.id)?.source).toMatchObject({
+      type: "system_migration",
+      sourceId: "deleted",
+      redactedExcerpt: null,
+      sourceHash: null,
+    });
 
     const repeatedDelete = await deleteMemoryItem(
       { workspaceId: "workspace_1", itemId: created.id, actor: maintainer },
@@ -914,6 +924,61 @@ describe("memory core", () => {
       status: "noop",
       reason: "deleted",
       id: created.id,
+    });
+  });
+
+  it("redacts confirmed suggestion body when deleting its memory item", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const proposed = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Delete should redact confirmed suggestion source.",
+          actor: prAuthor,
+        }),
+      },
+      deps,
+    );
+    if (proposed.status !== "created") throw new Error("missing_suggestion");
+    const confirmed = await confirmMemorySuggestion(
+      {
+        workspaceId: "workspace_1",
+        suggestionId: proposed.id,
+        actor: maintainer,
+      },
+      deps,
+    );
+    if (confirmed.status !== "created") throw new Error("missing_memory_item");
+
+    const deleted = await deleteMemoryItem(
+      { workspaceId: "workspace_1", itemId: confirmed.id, actor: maintainer },
+      deps,
+    );
+
+    expect(deleted).toMatchObject({ status: "updated", id: confirmed.id });
+    expect(deps.memoryItems.items.get(confirmed.id)).toMatchObject({
+      body: deletedMemoryBodyPlaceholder,
+      source: { type: "system_migration", sourceId: "deleted" },
+    });
+    expect(deps.memorySuggestions.suggestions.get(proposed.id)).toMatchObject({
+      suggestedBody: deletedMemoryBodyPlaceholder,
+      source: { type: "system_migration", sourceId: "deleted" },
+      safetyReport: {
+        redactedBody: deletedMemoryBodyPlaceholder,
+        redactedSourceExcerpt: null,
+        mayEmbed: false,
+        mayUseInRuntimeBundle: false,
+      },
+    });
+    expect(JSON.stringify(deps.memorySuggestions.suggestions)).not.toContain(
+      "Delete should redact confirmed suggestion source.",
+    );
+    expect(deps.memoryAudit.events.at(-1)?.metadata).toMatchObject({
+      bodyRedacted: true,
+      originSuggestionRedacted: true,
     });
   });
 
@@ -1226,7 +1291,7 @@ describe("memory core", () => {
       deps,
     );
     expect(deletedItems.items.map((item) => item.body)).toEqual([
-      "Keep service methods small.",
+      deletedMemoryBodyPlaceholder,
     ]);
   });
 
