@@ -10,13 +10,18 @@ import {
   PrismaOrgRulesetProvisioningRepository,
 } from "@reviewrouter/features-org-ruleset-provisioning";
 import { createOrgRulesetProvisioningRequestedHandler } from "@reviewrouter/features-org-ruleset-provisioning/outbox";
+import { createMemoryOutboxHandlers } from "@reviewrouter/features-memory/outbox";
 import {
   PrismaOutboxEventRepository,
   processOutboxBatch,
   type ProcessOutboxBatchResult,
   type OutboxHandler,
 } from "@reviewrouter/features-outbox";
-import { PrismaMemoryUsageEventRepository } from "@reviewrouter/features-memory";
+import {
+  PrismaMemoryItemRepository,
+  PrismaMemoryUsageEventRepository,
+  PrismaMemorySearchIndex,
+} from "@reviewrouter/features-memory";
 import {
   PrismaRateLimitStore,
   pruneExpiredRateLimitBuckets,
@@ -131,14 +136,19 @@ function createOutboxHandlers(
   prisma: ReturnType<typeof createPrismaClient>,
   clock: SystemClock,
 ): readonly OutboxHandler[] {
+  const memoryHandlers = createMemoryOutboxHandlers({
+    memoryItems: new PrismaMemoryItemRepository(prisma),
+    searchIndex: new PrismaMemorySearchIndex(prisma),
+  });
   const appId = process.env.GITHUB_APP_ID;
   const privateKey = readGitHubAppPrivateKey();
   if (!appId || !privateKey) {
     logger.warn("GitHub App credentials missing; installation sync disabled");
-    return [];
+    return memoryHandlers;
   }
 
   return [
+    ...memoryHandlers,
     createInstallationSyncRequestedHandler({
       github: new OctokitGitHubRepositorySource({
         appId,

@@ -13,6 +13,11 @@ import {
   PrismaMemoryItemRepository,
   PrismaMemorySearchIndex,
 } from "../../../packages/features/memory/src/index.ts";
+import { createMemoryOutboxHandlers } from "../../../packages/features/memory/src/infrastructure/outbox/memory-index-outbox-handlers.ts";
+import {
+  PrismaOutboxEventRepository,
+  processOutboxBatch,
+} from "../../../packages/features/outbox/src/index.ts";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
 import { SystemClock } from "../../../packages/shared/src/index.ts";
 import { createApiApp } from "../../../apps/api/src/app.js";
@@ -406,6 +411,28 @@ try {
     "browser layout checks",
     "indexing outbox must not contain confirmed suggestion body",
   );
+  const pendingMemoryOutboxBeforeProcess = await prisma.outboxEvent.count({
+    where: { type: { startsWith: "memory." }, status: "pending" },
+  });
+  const outboxResult = await processOutboxBatch(
+    {
+      limit: 100,
+      handlers: createMemoryOutboxHandlers({
+        memoryItems: new PrismaMemoryItemRepository(prisma),
+        searchIndex: new PrismaMemorySearchIndex(prisma),
+      }),
+    },
+    {
+      outbox: new PrismaOutboxEventRepository(prisma),
+      clock: new SystemClock(),
+    },
+  );
+  assertEqual(
+    outboxResult.processed,
+    pendingMemoryOutboxBeforeProcess,
+    "memory outbox processed count",
+  );
+  assertEqual(outboxResult.deadLettered, 0, "memory outbox dead letters");
 
   const bundle = await getJson<ActionMemoryBundle>(
     baseUrl,
