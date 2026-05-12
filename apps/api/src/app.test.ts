@@ -333,6 +333,66 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
     ].slice(0, input.limit);
   }
 
+  async listPrunableTerminal(input: {
+    readonly workspaceId: string;
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }) {
+    return this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "expired" || item.status === "deleted")
+      .filter((item) => item.updatedAt < input.updatedBefore)
+      .slice(0, input.limit)
+      .map((item) => ({
+        id: item.id,
+        workspaceId: item.workspaceId,
+        repositoryId: item.repositoryId,
+        status: item.status as "expired" | "deleted",
+        updatedAt: item.updatedAt,
+      }));
+  }
+
+  async listWorkspaceIdsWithPrunableTerminal(input: {
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        this.values()
+          .filter(
+            (item) => item.status === "expired" || item.status === "deleted",
+          )
+          .filter((item) => item.updatedAt < input.updatedBefore)
+          .map((item) => item.workspaceId),
+      ),
+    ].slice(0, input.limit);
+  }
+
+  async pruneTerminal(input: {
+    readonly workspaceId: string;
+    readonly itemIds: readonly string[];
+    readonly updatedBefore: Date;
+  }): Promise<{
+    readonly deletedCount: number;
+    readonly deletedIds: string[];
+  }> {
+    const itemIds = new Set(input.itemIds);
+    const deletedIds: string[] = [];
+    for (const [id, item] of this.snapshots.entries()) {
+      if (
+        item.workspaceId !== input.workspaceId ||
+        !itemIds.has(id) ||
+        (item.status !== "expired" && item.status !== "deleted") ||
+        item.updatedAt >= input.updatedBefore
+      ) {
+        continue;
+      }
+      this.snapshots.delete(id);
+      deletedIds.push(id);
+    }
+    return { deletedCount: deletedIds.length, deletedIds };
+  }
+
   async markActiveItemsUsed(
     input: MarkActiveMemoryItemsUsedInput,
   ): Promise<MarkActiveMemoryItemsUsedResult> {

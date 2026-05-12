@@ -401,6 +401,7 @@ model MemoryItem {
   @@index([workspaceId, repositoryId, status, updatedAt])
   @@index([workspaceId, userId, status])
   @@index([status, expiresAt, workspaceId])
+  @@index([status, updatedAt, workspaceId])
   @@index([workspaceId, bodyHash])
   @@index([originSuggestionId])
 }

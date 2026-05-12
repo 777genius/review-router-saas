@@ -47,6 +47,36 @@ export type ListWorkspaceIdsWithExpiredActiveMemoryInput = {
   readonly limit: number;
 };
 
+export type TerminalMemoryItemPruneCandidate = {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly repositoryId: string | null;
+  readonly status: Extract<MemoryItemStatus, "expired" | "deleted">;
+  readonly updatedAt: Date;
+};
+
+export type ListPrunableTerminalMemoryItemsInput = {
+  readonly workspaceId: string;
+  readonly updatedBefore: Date;
+  readonly limit: number;
+};
+
+export type ListWorkspaceIdsWithPrunableTerminalMemoryInput = {
+  readonly updatedBefore: Date;
+  readonly limit: number;
+};
+
+export type PruneTerminalMemoryItemsRepositoryInput = {
+  readonly workspaceId: string;
+  readonly itemIds: readonly string[];
+  readonly updatedBefore: Date;
+};
+
+export type PruneTerminalMemoryItemsRepositoryResult = {
+  readonly deletedCount: number;
+  readonly deletedIds: readonly string[];
+};
+
 export interface MemoryItemRepositoryPort {
   save(
     item: MemoryItem,
@@ -103,6 +133,18 @@ export interface MemoryItemRepositoryPort {
   listWorkspaceIdsWithExpiredActive(
     input: ListWorkspaceIdsWithExpiredActiveMemoryInput,
   ): Promise<readonly string[]>;
+
+  listPrunableTerminal(
+    input: ListPrunableTerminalMemoryItemsInput,
+  ): Promise<readonly TerminalMemoryItemPruneCandidate[]>;
+
+  listWorkspaceIdsWithPrunableTerminal(
+    input: ListWorkspaceIdsWithPrunableTerminalMemoryInput,
+  ): Promise<readonly string[]>;
+
+  pruneTerminal(
+    input: PruneTerminalMemoryItemsRepositoryInput,
+  ): Promise<PruneTerminalMemoryItemsRepositoryResult>;
 
   markActiveItemsUsed(
     input: MarkActiveMemoryItemsUsedInput,

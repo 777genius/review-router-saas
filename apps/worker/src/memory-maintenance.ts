@@ -5,6 +5,7 @@ import {
   type MemorySuggestionRepositoryPort,
   type MemoryTransactionPort,
   pruneMemoryUsageEvents,
+  pruneTerminalMemoryItemsAcrossWorkspaces,
   type MemoryUsageEventRetentionPort,
 } from "@reviewrouter/features-memory";
 import type { DistributedLock } from "@reviewrouter/platform-locks";
@@ -16,6 +17,7 @@ export const memoryUsageTelemetryRetentionLockKey =
   "memory:usage-events:retention";
 export const memorySuggestionExpiryLockKey = "memory:suggestions:expire";
 export const memoryItemExpiryLockKey = "memory:items:expire";
+export const memoryTerminalItemPruneLockKey = "memory:items:terminal-prune";
 
 export type MemoryUsageTelemetryMaintenanceConfig = {
   readonly intervalMs: number;
@@ -33,6 +35,14 @@ export type MemorySuggestionExpiryMaintenanceConfig = {
 
 export type MemoryItemExpiryMaintenanceConfig = {
   readonly intervalMs: number;
+  readonly workspaceLimit: number;
+  readonly perWorkspaceLimit: number;
+  readonly lockTtlMs: number;
+};
+
+export type MemoryTerminalItemPruneMaintenanceConfig = {
+  readonly intervalMs: number;
+  readonly retentionDays: number;
   readonly workspaceLimit: number;
   readonly perWorkspaceLimit: number;
   readonly lockTtlMs: number;
@@ -285,6 +295,97 @@ export function isMemoryItemExpiryLockContention(error: unknown): boolean {
   return (
     error instanceof Error &&
     error.message === `distributed_lock_not_acquired:${memoryItemExpiryLockKey}`
+  );
+}
+
+export function createMemoryTerminalItemPruneMaintenance(
+  config: MemoryTerminalItemPruneMaintenanceConfig,
+  dependencies: {
+    readonly clock: Clock;
+    readonly memoryItems: MemoryItemRepositoryPort;
+    readonly memoryTransaction: MemoryTransactionPort;
+    readonly lock: DistributedLock;
+    readonly logger: Pick<Logger, "info" | "warn">;
+  },
+): () => Promise<void> {
+  assertPositiveInteger(
+    config.intervalMs,
+    "memory_terminal_item_prune_interval_invalid",
+  );
+  assertPositiveInteger(
+    config.retentionDays,
+    "memory_terminal_item_prune_retention_days_invalid",
+  );
+  assertPositiveInteger(
+    config.workspaceLimit,
+    "memory_terminal_item_prune_workspace_limit_invalid",
+  );
+  assertPositiveInteger(
+    config.perWorkspaceLimit,
+    "memory_terminal_item_prune_per_workspace_limit_invalid",
+  );
+  assertPositiveInteger(
+    config.lockTtlMs,
+    "memory_terminal_item_prune_lock_ttl_invalid",
+  );
+
+  let lastAttemptAtMs = 0;
+
+  return async () => {
+    const now = dependencies.clock.now();
+    if (now.getTime() - lastAttemptAtMs < config.intervalMs) {
+      return;
+    }
+    lastAttemptAtMs = now.getTime();
+
+    try {
+      await dependencies.lock.withLock(
+        memoryTerminalItemPruneLockKey,
+        config.lockTtlMs,
+        async () => {
+          const result = await pruneTerminalMemoryItemsAcrossWorkspaces(
+            {
+              updatedBefore: new Date(
+                now.getTime() - config.retentionDays * 24 * 60 * 60 * 1000,
+              ),
+              workspaceLimit: config.workspaceLimit,
+              perWorkspaceLimit: config.perWorkspaceLimit,
+            },
+            {
+              memoryItems: dependencies.memoryItems,
+              memoryTransaction: dependencies.memoryTransaction,
+            },
+          );
+          if (result.deletedCount > 0) {
+            dependencies.logger.info(
+              "ReviewRouter pruned terminal memory items",
+              {
+                workspaceCount: result.workspaceCount,
+                deletedCount: result.deletedCount,
+                retentionDays: config.retentionDays,
+              },
+            );
+          }
+        },
+      );
+    } catch (error: unknown) {
+      if (isMemoryTerminalItemPruneLockContention(error)) {
+        return;
+      }
+      dependencies.logger.warn("ReviewRouter terminal memory prune failed", {
+        safeErrorSummary: safeWorkerErrorSummary(error),
+      });
+    }
+  };
+}
+
+export function isMemoryTerminalItemPruneLockContention(
+  error: unknown,
+): boolean {
+  return (
+    error instanceof Error &&
+    error.message ===
+      `distributed_lock_not_acquired:${memoryTerminalItemPruneLockKey}`
   );
 }
 

@@ -32,6 +32,7 @@ import { createApiApp } from "../../../apps/api/src/app.js";
 import {
   createMemoryItemExpiryMaintenance,
   createMemorySuggestionExpiryMaintenance,
+  createMemoryTerminalItemPruneMaintenance,
 } from "../../../apps/worker/src/memory-maintenance.ts";
 import { loadEnvFiles } from "./config.js";
 
@@ -1046,6 +1047,66 @@ try {
     "deleted origin suggestion must not retain body/source",
   );
 
+  const oldTerminalUpdatedAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+  await prisma.memoryItem.updateMany({
+    where: { id: { in: [ttlMemoryItemId, confirmedMemoryItemId] } },
+    data: { updatedAt: oldTerminalUpdatedAt },
+  });
+  const pruneTerminalMemoryItems = createMemoryTerminalItemPruneMaintenance(
+    {
+      intervalMs: 1,
+      retentionDays: 30,
+      workspaceLimit: 10,
+      perWorkspaceLimit: 10,
+      lockTtlMs: 60_000,
+    },
+    {
+      clock: new SystemClock(),
+      memoryItems: new PrismaMemoryItemRepository(prisma),
+      memoryTransaction: new PrismaMemoryTransaction(prisma),
+      lock: new PostgresLeaseLock(prisma),
+      logger: noopWorkerLogger,
+    },
+  );
+  await pruneTerminalMemoryItems();
+  const prunedTerminalItems = await prisma.memoryItem.findMany({
+    where: { id: { in: [ttlMemoryItemId, confirmedMemoryItemId] } },
+    select: { id: true },
+  });
+  assertEqual(prunedTerminalItems.length, 0, "terminal memory prune count");
+  const pruneAudit = await prisma.auditEvent.findMany({
+    where: {
+      workspaceId: primary.workspaceId,
+      action: "memory.item.pruned",
+      targetType: "memory_retention",
+    },
+    select: { metadata: true },
+  });
+  assertEqual(pruneAudit.length, 1, "terminal memory prune audit count");
+  const pruneAuditJson = JSON.stringify(pruneAudit);
+  assertStringDoesNotContain(
+    pruneAuditJson,
+    "TTL expired memory item must leave runtime bundles.",
+    "terminal prune audit must not contain ttl body",
+  );
+  assertStringDoesNotContain(
+    pruneAuditJson,
+    "Run dashboard memory changes through browser layout checks.",
+    "terminal prune audit must not contain deleted body",
+  );
+  const bundleAfterTerminalPrune = await getJson<ActionMemoryBundle>(
+    baseUrl,
+    "/api/action/v1/memory",
+    afterDisableSession.sessionToken,
+  );
+  assertBundleExcludes(bundleAfterTerminalPrune, [
+    "TTL expired memory item must leave runtime bundles.",
+    "Run dashboard memory changes through browser layout checks.",
+  ]);
+  assertBundleContains(bundleAfterTerminalPrune, [
+    "Use Prisma migrations for schema changes.",
+  ]);
+
   console.log(
     JSON.stringify(
       {
@@ -1057,6 +1118,7 @@ try {
           initialBundleItems: bundle.items.length,
           searchedBundleItems: searchedBundle.items.length,
           afterDisableBundleItems: bundleAfterDisable.items.length,
+          afterTerminalPruneBundleItems: bundleAfterTerminalPrune.items.length,
           usageEvents: primaryUsageCount,
         },
       },

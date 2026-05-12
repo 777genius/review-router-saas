@@ -77,6 +77,10 @@ import { listMemoryItemsForDashboard } from "../application/use-cases/list-memor
 import { listMemorySuggestionsForDashboard } from "../application/use-cases/list-memory-suggestions-for-dashboard";
 import { proposeMemoryFromInteraction } from "../application/use-cases/propose-memory-from-interaction";
 import { pruneMemoryUsageEvents } from "../application/use-cases/prune-memory-usage-events";
+import {
+  pruneTerminalMemoryItems,
+  pruneTerminalMemoryItemsAcrossWorkspaces,
+} from "../application/use-cases/prune-terminal-memory-items";
 import { recordActionMemoryBundleUsage } from "../application/use-cases/record-action-memory-bundle-usage";
 import { rememberMemoryDirectly } from "../application/use-cases/remember-memory-directly";
 import { rejectMemorySuggestion } from "../application/use-cases/reject-memory-suggestion";
@@ -266,6 +270,75 @@ class InMemoryItems implements MemoryItemRepositoryPort {
           .map((item) => item.workspaceId),
       ),
     ].slice(0, input.limit);
+  }
+
+  async listPrunableTerminal(input: {
+    readonly workspaceId: string;
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }) {
+    return [...this.items.values()]
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "expired" || item.status === "deleted")
+      .filter((item) => item.updatedAt < input.updatedBefore)
+      .sort((left, right) => {
+        const updatedAtDelta =
+          left.updatedAt.getTime() - right.updatedAt.getTime();
+        if (updatedAtDelta !== 0) return updatedAtDelta;
+        return left.id.localeCompare(right.id);
+      })
+      .slice(0, input.limit)
+      .map((item) => ({
+        id: item.id,
+        workspaceId: item.workspaceId,
+        repositoryId: item.repositoryId,
+        status: item.status as "expired" | "deleted",
+        updatedAt: item.updatedAt,
+      }));
+  }
+
+  async listWorkspaceIdsWithPrunableTerminal(input: {
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        [...this.items.values()]
+          .filter(
+            (item) => item.status === "expired" || item.status === "deleted",
+          )
+          .filter((item) => item.updatedAt < input.updatedBefore)
+          .sort((left, right) =>
+            left.workspaceId.localeCompare(right.workspaceId),
+          )
+          .map((item) => item.workspaceId),
+      ),
+    ].slice(0, input.limit);
+  }
+
+  async pruneTerminal(input: {
+    readonly workspaceId: string;
+    readonly itemIds: readonly string[];
+    readonly updatedBefore: Date;
+  }): Promise<{
+    readonly deletedCount: number;
+    readonly deletedIds: string[];
+  }> {
+    const itemIds = new Set(input.itemIds);
+    const deletedIds: string[] = [];
+    for (const [id, item] of this.items.entries()) {
+      if (
+        item.workspaceId !== input.workspaceId ||
+        !itemIds.has(id) ||
+        (item.status !== "expired" && item.status !== "deleted") ||
+        item.updatedAt >= input.updatedBefore
+      ) {
+        continue;
+      }
+      this.items.delete(id);
+      deletedIds.push(id);
+    }
+    return { deletedCount: deletedIds.length, deletedIds };
   }
 
   async markActiveItemsUsed(
@@ -2114,6 +2187,159 @@ describe("memory core", () => {
     );
   });
 
+  it("prunes only terminal memory items past retention cutoff", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const active = await rememberMemoryDirectly(
+      memoryInput("repository", "Active old memory must survive prune."),
+      deps,
+    );
+    const disabled = await rememberMemoryDirectly(
+      memoryInput("repository", "Disabled old memory must survive prune."),
+      deps,
+    );
+    const expired = await rememberMemoryDirectly(
+      memoryInput("repository", "Expired terminal memory should be pruned."),
+      deps,
+    );
+    const deleted = await rememberMemoryDirectly(
+      memoryInput("repository", "Deleted terminal memory should be pruned."),
+      deps,
+    );
+    const boundary = await rememberMemoryDirectly(
+      memoryInput("repository", "Boundary terminal memory must survive."),
+      deps,
+    );
+    if (
+      active.status !== "created" ||
+      disabled.status !== "created" ||
+      expired.status !== "created" ||
+      deleted.status !== "created" ||
+      boundary.status !== "created"
+    ) {
+      throw new Error("expected_created_memory_items");
+    }
+
+    const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const oldUpdatedAt = new Date(cutoff.getTime() - 1_000);
+    setMemoryItemSnapshot(deps, active.id, { updatedAt: oldUpdatedAt });
+    await disableMemoryItem(
+      { workspaceId: "workspace_1", itemId: disabled.id, actor: maintainer },
+      deps,
+    );
+    setMemoryItemSnapshot(deps, disabled.id, { updatedAt: oldUpdatedAt });
+    setMemoryItemSnapshot(deps, expired.id, {
+      status: "expired",
+      updatedAt: oldUpdatedAt,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+    await deleteMemoryItem(
+      { workspaceId: "workspace_1", itemId: deleted.id, actor: maintainer },
+      deps,
+    );
+    setMemoryItemSnapshot(deps, deleted.id, { updatedAt: oldUpdatedAt });
+    setMemoryItemSnapshot(deps, boundary.id, {
+      status: "expired",
+      updatedAt: cutoff,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+
+    const result = await pruneTerminalMemoryItems(
+      { workspaceId: "workspace_1", updatedBefore: cutoff, limit: 10 },
+      deps,
+    );
+
+    expect(result).toEqual({ status: "pruned", deletedCount: 2 });
+    expect(deps.memoryItems.items.has(active.id)).toBe(true);
+    expect(deps.memoryItems.items.has(disabled.id)).toBe(true);
+    expect(deps.memoryItems.items.has(boundary.id)).toBe(true);
+    expect(deps.memoryItems.items.has(expired.id)).toBe(false);
+    expect(deps.memoryItems.items.has(deleted.id)).toBe(false);
+    const pruneAudit = deps.memoryAudit.events.at(-1);
+    expect(pruneAudit).toMatchObject({
+      actor: "system:memory-retention",
+      action: "memory.item.pruned",
+      targetType: "memory_retention",
+      targetId: "terminal-memory:workspace_1",
+      metadata: {
+        candidateCount: 2,
+        deletedCount: 2,
+        deletedIds: expect.arrayContaining([expired.id, deleted.id]),
+        updatedBefore: cutoff.toISOString(),
+      },
+    });
+    expect(JSON.stringify(pruneAudit)).not.toContain(
+      "Expired terminal memory should be pruned",
+    );
+    expect(JSON.stringify(pruneAudit)).not.toContain(
+      "Deleted terminal memory should be pruned",
+    );
+  });
+
+  it("prunes terminal memory items across workspaces in bounded batches", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const primary = await rememberMemoryDirectly(
+      memoryInput("repository", "Primary workspace terminal memory."),
+      deps,
+    );
+    const other = await rememberMemoryDirectly(
+      {
+        ...memoryInput("repository", "Other workspace terminal memory."),
+        workspaceId: "workspace_2",
+        repositoryId: "repo_2",
+      },
+      deps,
+    );
+    if (primary.status !== "created" || other.status !== "created") {
+      throw new Error("expected_created_memory_items");
+    }
+    const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const oldUpdatedAt = new Date(cutoff.getTime() - 1_000);
+    setMemoryItemSnapshot(deps, primary.id, {
+      status: "expired",
+      updatedAt: oldUpdatedAt,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+    setMemoryItemSnapshot(deps, other.id, {
+      status: "deleted",
+      updatedAt: oldUpdatedAt,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+
+    const result = await pruneTerminalMemoryItemsAcrossWorkspaces(
+      { updatedBefore: cutoff, workspaceLimit: 10, perWorkspaceLimit: 1 },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "pruned",
+      workspaceCount: 2,
+      deletedCount: 2,
+    });
+    expect(deps.memoryItems.items.has(primary.id)).toBe(false);
+    expect(deps.memoryItems.items.has(other.id)).toBe(false);
+    const pruneAuditEvents = deps.memoryAudit.events.filter(
+      (event) => event.action === "memory.item.pruned",
+    );
+    expect(pruneAuditEvents.map((event) => event.workspaceId).sort()).toEqual([
+      "workspace_1",
+      "workspace_2",
+    ]);
+    expect(JSON.stringify(pruneAuditEvents)).not.toContain(
+      "Primary workspace terminal memory",
+    );
+    expect(JSON.stringify(pruneAuditEvents)).not.toContain(
+      "Other workspace terminal memory",
+    );
+  });
+
   it("treats expired pending suggestions as noop on confirm before worker runs", async () => {
     const deps = createHarness({});
     const proposed = await proposeMemoryFromInteraction(
@@ -2704,6 +2930,16 @@ function setMemoryItemExpiresAt(
   const snapshot = deps.memoryItems.items.get(itemId);
   if (!snapshot) throw new Error("missing_memory_item");
   deps.memoryItems.items.set(itemId, { ...snapshot, expiresAt });
+}
+
+function setMemoryItemSnapshot(
+  deps: ReturnType<typeof createHarness>,
+  itemId: string,
+  patch: Partial<MemoryItemSnapshot>,
+): void {
+  const snapshot = deps.memoryItems.items.get(itemId);
+  if (!snapshot) throw new Error("missing_memory_item");
+  deps.memoryItems.items.set(itemId, { ...snapshot, ...patch });
 }
 
 function memoryUsageEvent(

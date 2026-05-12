@@ -7,6 +7,7 @@ export type MemoryAuditEvent = {
     | "memory.item.disabled"
     | "memory.item.edited"
     | "memory.item.expired"
+    | "memory.item.pruned"
     | "memory.suggestion.created"
     | "memory.suggestion.blocked"
     | "memory.suggestion.confirmed"
@@ -14,7 +15,11 @@ export type MemoryAuditEvent = {
     | "memory.suggestion.rejected"
     | "memory.suggestion.superseded"
     | "memory.bundle.served";
-  readonly targetType: "memory_item" | "memory_suggestion" | "memory_bundle";
+  readonly targetType:
+    | "memory_item"
+    | "memory_suggestion"
+    | "memory_bundle"
+    | "memory_retention";
   readonly targetId: string;
   readonly metadata: Record<string, unknown>;
 };

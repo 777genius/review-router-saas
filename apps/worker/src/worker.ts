@@ -44,6 +44,7 @@ import { SystemClock } from "@reviewrouter/shared";
 import {
   createMemoryItemExpiryMaintenance,
   createMemorySuggestionExpiryMaintenance,
+  createMemoryTerminalItemPruneMaintenance,
   createMemoryUsageTelemetryMaintenance,
 } from "./memory-maintenance";
 import {
@@ -86,6 +87,8 @@ async function main(): Promise<void> {
       prisma,
       clock,
     );
+    const pruneTerminalMemoryItems =
+      createMemoryTerminalItemPruneMaintenanceRunner(prisma, clock);
     const pruneMemoryUsageTelemetry =
       createMemoryUsageTelemetryMaintenanceRunner(prisma, clock);
     const limit = readPositiveIntegerEnv("REVIEW_ROUTER_OUTBOX_BATCH_SIZE", 25);
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
       await pruneActionOidcReplayNonces();
       await expirePendingMemorySuggestions();
       await expireActiveMemoryItems();
+      await pruneTerminalMemoryItems();
       await pruneMemoryUsageTelemetry();
       return result;
     };
@@ -381,6 +385,43 @@ function createMemoryItemExpiryMaintenanceRunner(
       ),
       lockTtlMs: readPositiveIntegerEnv(
         "REVIEW_ROUTER_MEMORY_ITEM_EXPIRE_LOCK_TTL_MS",
+        5 * 60 * 1000,
+      ),
+    },
+    {
+      clock,
+      memoryItems: new PrismaMemoryItemRepository(prisma),
+      memoryTransaction: new PrismaMemoryTransaction(prisma),
+      lock: new PostgresLeaseLock(prisma),
+      logger,
+    },
+  );
+}
+
+function createMemoryTerminalItemPruneMaintenanceRunner(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  return createMemoryTerminalItemPruneMaintenance(
+    {
+      retentionDays: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_TERMINAL_ITEM_PRUNE_RETENTION_DAYS",
+        30,
+      ),
+      workspaceLimit: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_TERMINAL_ITEM_PRUNE_WORKSPACE_BATCH_SIZE",
+        50,
+      ),
+      perWorkspaceLimit: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_TERMINAL_ITEM_PRUNE_PER_WORKSPACE_BATCH_SIZE",
+        100,
+      ),
+      intervalMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_TERMINAL_ITEM_PRUNE_INTERVAL_MS",
+        60 * 60 * 1000,
+      ),
+      lockTtlMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_TERMINAL_ITEM_PRUNE_LOCK_TTL_MS",
         5 * 60 * 1000,
       ),
     },

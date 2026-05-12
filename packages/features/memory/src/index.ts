@@ -35,6 +35,7 @@ export * from "./application/use-cases/memory-dashboard-pagination";
 export * from "./application/use-cases/memory-use-case-types";
 export * from "./application/use-cases/propose-memory-from-interaction";
 export * from "./application/use-cases/prune-memory-usage-events";
+export * from "./application/use-cases/prune-terminal-memory-items";
 export * from "./application/use-cases/record-action-memory-bundle-usage";
 export * from "./application/use-cases/remember-memory-directly";
 export * from "./application/use-cases/reject-memory-suggestion";

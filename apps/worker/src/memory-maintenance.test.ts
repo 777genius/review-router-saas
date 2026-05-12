@@ -20,9 +20,11 @@ import type { Clock } from "@reviewrouter/shared";
 import {
   createMemoryItemExpiryMaintenance,
   createMemorySuggestionExpiryMaintenance,
+  createMemoryTerminalItemPruneMaintenance,
   createMemoryUsageTelemetryMaintenance,
   memoryItemExpiryLockKey,
   memorySuggestionExpiryLockKey,
+  memoryTerminalItemPruneLockKey,
   memoryUsageTelemetryRetentionLockKey,
 } from "./memory-maintenance";
 
@@ -151,8 +153,20 @@ class CapturingItemRepository implements MemoryItemRepositoryPort {
     readonly expiredAtOrBefore: Date;
     readonly limit: number;
   }[] = [];
+  readonly prunableListInputs: {
+    readonly workspaceId: string;
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }[] = [];
+  readonly pruneInputs: {
+    readonly workspaceId: string;
+    readonly itemIds: readonly string[];
+    readonly updatedBefore: Date;
+  }[] = [];
   workspaceIds: readonly string[] = [];
+  prunableWorkspaceIds: readonly string[] = [];
   expiredByWorkspace = new Map<string, readonly MemoryItemSnapshot[]>();
+  prunableByWorkspace = new Map<string, readonly MemoryItemSnapshot[]>();
 
   async save(item: MemoryItem): Promise<void> {
     this.saved.push(item.snapshot());
@@ -197,6 +211,48 @@ class CapturingItemRepository implements MemoryItemRepositoryPort {
   }): Promise<readonly string[]> {
     this.workspaceListInputs.push(input);
     return this.workspaceIds.slice(0, input.limit);
+  }
+
+  async listPrunableTerminal(input: {
+    readonly workspaceId: string;
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }) {
+    this.prunableListInputs.push(input);
+    return (this.prunableByWorkspace.get(input.workspaceId) ?? [])
+      .slice(0, input.limit)
+      .map((item) => ({
+        id: item.id,
+        workspaceId: item.workspaceId,
+        repositoryId: item.repositoryId,
+        status: item.status as "expired" | "deleted",
+        updatedAt: item.updatedAt,
+      }));
+  }
+
+  async listWorkspaceIdsWithPrunableTerminal(input: {
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    this.prunableListInputs.push({ workspaceId: "*", ...input });
+    return this.prunableWorkspaceIds.slice(0, input.limit);
+  }
+
+  async pruneTerminal(input: {
+    readonly workspaceId: string;
+    readonly itemIds: readonly string[];
+    readonly updatedBefore: Date;
+  }): Promise<{
+    readonly deletedCount: number;
+    readonly deletedIds: string[];
+  }> {
+    this.pruneInputs.push(input);
+    const deletedIds = input.itemIds.filter((id) =>
+      (this.prunableByWorkspace.get(input.workspaceId) ?? []).some(
+        (item) => item.id === id,
+      ),
+    );
+    return { deletedCount: deletedIds.length, deletedIds };
   }
 
   async markActiveItemsUsed(): Promise<{ readonly updatedCount: number }> {
@@ -485,6 +541,116 @@ describe("memory maintenance", () => {
     const runMaintenance = createMemoryItemExpiryMaintenance(
       {
         intervalMs: 60_000,
+        workspaceLimit: 25,
+        perWorkspaceLimit: 10,
+        lockTtlMs: 120_000,
+      },
+      {
+        clock: new MutableClock(new Date("2026-05-12T12:00:00.000Z")),
+        memoryItems,
+        memoryTransaction: new CapturingMemoryTransaction({
+          items: memoryItems,
+        }),
+        lock,
+        logger,
+      },
+    );
+
+    await runMaintenance();
+
+    expect(logger.infoEvents).toHaveLength(0);
+    expect(logger.warnEvents).toHaveLength(0);
+  });
+
+  it("prunes terminal memory items under a distributed lock", async () => {
+    const clock = new MutableClock(new Date("2026-05-12T12:00:00.000Z"));
+    const memoryItems = new CapturingItemRepository();
+    memoryItems.prunableWorkspaceIds = ["workspace_1"];
+    memoryItems.prunableByWorkspace.set("workspace_1", [
+      {
+        ...activeMemoryItem({
+          id: "mem_1",
+          workspaceId: "workspace_1",
+          body: "Prune worker terminal memory item.",
+          expiresAt: new Date("2026-04-01T12:00:00.000Z"),
+        }),
+        status: "expired",
+        updatedAt: new Date("2026-04-11T11:59:59.000Z"),
+        indexState: "index_deleted",
+        indexVersion: null,
+      },
+    ]);
+    const memoryTransaction = new CapturingMemoryTransaction({
+      items: memoryItems,
+    });
+    const lock = new CapturingLock();
+    const logger = new CapturingLogger();
+    const runMaintenance = createMemoryTerminalItemPruneMaintenance(
+      {
+        intervalMs: 60_000,
+        retentionDays: 30,
+        workspaceLimit: 25,
+        perWorkspaceLimit: 10,
+        lockTtlMs: 120_000,
+      },
+      { clock, memoryItems, memoryTransaction, lock, logger },
+    );
+
+    await runMaintenance();
+
+    expect(lock.attempts).toEqual([
+      { key: memoryTerminalItemPruneLockKey, ttlMs: 120_000 },
+    ]);
+    expect(memoryItems.prunableListInputs).toEqual([
+      {
+        workspaceId: "*",
+        updatedBefore: new Date("2026-04-12T12:00:00.000Z"),
+        limit: 25,
+      },
+      {
+        workspaceId: "workspace_1",
+        updatedBefore: new Date("2026-04-12T12:00:00.000Z"),
+        limit: 10,
+      },
+    ]);
+    expect(memoryItems.pruneInputs).toEqual([
+      {
+        workspaceId: "workspace_1",
+        itemIds: ["mem_1"],
+        updatedBefore: new Date("2026-04-12T12:00:00.000Z"),
+      },
+    ]);
+    expect(memoryTransaction.audit.records).toMatchObject([
+      {
+        actor: "system:memory-retention",
+        action: "memory.item.pruned",
+        targetType: "memory_retention",
+        targetId: "terminal-memory:workspace_1",
+        metadata: {
+          candidateCount: 1,
+          deletedCount: 1,
+          deletedIds: ["mem_1"],
+        },
+      },
+    ]);
+    expect(JSON.stringify(memoryTransaction.audit.records)).not.toContain(
+      "Prune worker terminal memory item.",
+    );
+    expect(logger.infoEvents).toHaveLength(1);
+    expect(logger.warnEvents).toHaveLength(0);
+  });
+
+  it("treats terminal memory prune lock contention as expected", async () => {
+    const lock = new CapturingLock();
+    lock.error = new Error(
+      `distributed_lock_not_acquired:${memoryTerminalItemPruneLockKey}`,
+    );
+    const logger = new CapturingLogger();
+    const memoryItems = new CapturingItemRepository();
+    const runMaintenance = createMemoryTerminalItemPruneMaintenance(
+      {
+        intervalMs: 60_000,
+        retentionDays: 30,
         workspaceLimit: 25,
         perWorkspaceLimit: 10,
         lockTtlMs: 120_000,

@@ -1,7 +1,9 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type {
   ListExpiredActiveMemoryItemsInput,
+  ListPrunableTerminalMemoryItemsInput,
   ListWorkspaceIdsWithExpiredActiveMemoryInput,
+  ListWorkspaceIdsWithPrunableTerminalMemoryInput,
   MarkActiveMemoryItemsUsedInput,
   MarkActiveMemoryItemsUsedResult,
   MarkMemoryItemIndexingDeletedInput,
@@ -9,6 +11,9 @@ import type {
   MarkMemoryItemIndexingSucceededInput,
   MemoryDashboardRepositoryCursor,
   MemoryItemRepositoryPort,
+  PruneTerminalMemoryItemsRepositoryInput,
+  PruneTerminalMemoryItemsRepositoryResult,
+  TerminalMemoryItemPruneCandidate,
 } from "../../application/ports/memory-item-repository-port";
 import type {
   MemoryItem,
@@ -232,6 +237,68 @@ export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
     return records.map((record) => record.workspaceId);
   }
 
+  async listPrunableTerminal(
+    input: ListPrunableTerminalMemoryItemsInput,
+  ): Promise<readonly TerminalMemoryItemPruneCandidate[]> {
+    const records = await this.prisma.memoryItem.findMany({
+      where: toPrunableTerminalWhere(input),
+      select: {
+        id: true,
+        workspaceId: true,
+        repositoryId: true,
+        status: true,
+        updatedAt: true,
+      },
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      take: input.limit,
+    });
+    return records.map((record) => ({
+      ...record,
+      status: record.status as TerminalMemoryItemPruneCandidate["status"],
+    }));
+  }
+
+  async listWorkspaceIdsWithPrunableTerminal(
+    input: ListWorkspaceIdsWithPrunableTerminalMemoryInput,
+  ): Promise<readonly string[]> {
+    const records = await this.prisma.memoryItem.findMany({
+      where: {
+        status: { in: ["expired", "deleted"] },
+        updatedAt: { lt: input.updatedBefore },
+      },
+      select: { workspaceId: true },
+      distinct: ["workspaceId"],
+      orderBy: [{ workspaceId: "asc" }],
+      take: input.limit,
+    });
+    return records.map((record) => record.workspaceId);
+  }
+
+  async pruneTerminal(
+    input: PruneTerminalMemoryItemsRepositoryInput,
+  ): Promise<PruneTerminalMemoryItemsRepositoryResult> {
+    const itemIds = [...new Set(input.itemIds)];
+    if (itemIds.length === 0) {
+      return { deletedCount: 0, deletedIds: [] };
+    }
+
+    const deleted = await this.prisma.$queryRaw<{ readonly id: string }[]>`
+      DELETE FROM "MemoryItem"
+      WHERE "workspaceId" = ${input.workspaceId}
+        AND "id" IN (${Prisma.join(itemIds)})
+        AND "status" IN (
+          'expired'::"MemoryItemStatus",
+          'deleted'::"MemoryItemStatus"
+        )
+        AND "updatedAt" < ${input.updatedBefore}
+      RETURNING "id"
+    `;
+    return {
+      deletedCount: deleted.length,
+      deletedIds: deleted.map((record) => record.id),
+    };
+  }
+
   async markActiveItemsUsed(
     input: MarkActiveMemoryItemsUsedInput,
   ): Promise<MarkActiveMemoryItemsUsedResult> {
@@ -317,6 +384,16 @@ function toDashboardWhere(input: {
           ],
         }
       : {}),
+  };
+}
+
+function toPrunableTerminalWhere(
+  input: ListPrunableTerminalMemoryItemsInput,
+): Prisma.MemoryItemWhereInput {
+  return {
+    workspaceId: input.workspaceId,
+    status: { in: ["expired", "deleted"] },
+    updatedAt: { lt: input.updatedBefore },
   };
 }
 
