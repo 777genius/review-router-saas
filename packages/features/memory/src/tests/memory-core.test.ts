@@ -65,7 +65,10 @@ import { confirmMemorySuggestion } from "../application/use-cases/confirm-memory
 import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
 import { disableMemoryItem } from "../application/use-cases/disable-memory-item";
 import { editMemoryItem } from "../application/use-cases/edit-memory-item";
-import { exportMemoryItems } from "../application/use-cases/export-memory-items";
+import {
+  exportMemoryItems,
+  stringifyMemoryExport,
+} from "../application/use-cases/export-memory-items";
 import {
   expireActiveMemoryItems,
   expireActiveMemoryItemsAcrossWorkspaces,
@@ -2471,6 +2474,7 @@ describe("memory core", () => {
     expect(JSON.stringify(exportAudit)).not.toContain(
       "Export active memory body",
     );
+    expect(stringifyMemoryExport(result.export)).toContain('"format": "json"');
   });
 
   it("requires workspace admin authority for memory export", async () => {
@@ -2489,6 +2493,43 @@ describe("memory core", () => {
       retryable: false,
     });
     expect(deps.memoryAudit.events).toHaveLength(0);
+  });
+
+  it("fails closed instead of returning partial oversized memory exports", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+      "user_maintainer:workspace": { allowed: true },
+    });
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "First memory export budget item."),
+      deps,
+    );
+    await rememberMemoryDirectly(
+      memoryInput("workspace", "Second memory export budget item."),
+      deps,
+    );
+    const auditCountBeforeExport = deps.memoryAudit.events.length;
+
+    const rowLimited = await exportMemoryItems(
+      { workspaceId: "workspace_1", actor: maintainer, limit: 1 },
+      deps,
+    );
+    const byteLimited = await exportMemoryItems(
+      { workspaceId: "workspace_1", actor: maintainer, maxBytes: 128 },
+      deps,
+    );
+
+    expect(rowLimited).toEqual({
+      status: "rejected",
+      reason: "memory_export_too_large",
+      retryable: false,
+    });
+    expect(byteLimited).toEqual({
+      status: "rejected",
+      reason: "memory_export_too_large",
+      retryable: false,
+    });
+    expect(deps.memoryAudit.events).toHaveLength(auditCountBeforeExport);
   });
 
   it("treats expired pending suggestions as noop on confirm before worker runs", async () => {

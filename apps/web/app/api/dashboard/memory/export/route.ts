@@ -4,7 +4,10 @@ import {
   assertWorkspaceFeatureEntitlement,
   PrismaEntitlementRepository,
 } from "@reviewrouter/features-entitlements";
-import { exportMemoryItems } from "@reviewrouter/features-memory";
+import {
+  exportMemoryItems,
+  stringifyMemoryExport,
+} from "@reviewrouter/features-memory";
 import { assertDashboardWorkspaceAdminAllowed } from "../../../../../src/server/dashboard-mutations";
 import {
   createDashboardMemoryDependencies,
@@ -55,11 +58,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     if (result.status === "rejected") {
       return NextResponse.json(
         { error: result.reason, retryable: result.retryable },
-        { status: result.retryable ? 503 : 403 },
+        {
+          status: memoryExportRejectionStatus(result.reason, result.retryable),
+        },
       );
     }
 
-    return new NextResponse(JSON.stringify(result.export, null, 2), {
+    return new NextResponse(stringifyMemoryExport(result.export), {
       status: 200,
       headers: {
         "content-type": "application/json; charset=utf-8",
@@ -76,6 +81,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       { status: 403 },
     );
   }
+}
+
+function memoryExportRejectionStatus(
+  reason: string,
+  retryable: boolean,
+): number {
+  if (reason === "memory_export_too_large") return 413;
+  return retryable ? 503 : 403;
 }
 
 function memoryExportFileName(workspaceId: string, createdAt: string): string {

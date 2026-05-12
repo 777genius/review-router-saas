@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import type { MemoryActor } from "../../domain/memory-actor";
 import { memoryActorRef } from "../../domain/memory-actor";
 import { memoryError } from "../../domain/memory-errors";
@@ -9,6 +10,7 @@ import type { MemoryUseCaseDependencies } from "./memory-use-case-types";
 
 const DEFAULT_MEMORY_EXPORT_LIMIT = 5_000;
 const MAX_MEMORY_EXPORT_LIMIT = 10_000;
+const DEFAULT_MEMORY_EXPORT_MAX_BYTES = 10 * 1024 * 1024;
 const MEMORY_EXPORT_SCHEMA_VERSION = 1;
 const MEMORY_EXPORT_POLICY_VERSION = 1;
 
@@ -16,6 +18,7 @@ export type ExportMemoryItemsInput = {
   readonly workspaceId: string;
   readonly actor: MemoryActor;
   readonly limit?: number;
+  readonly maxBytes?: number;
 };
 
 export type MemoryExportSourceDto = {
@@ -93,6 +96,7 @@ export async function exportMemoryItems(
 ): Promise<ExportMemoryItemsResult> {
   assertValidWorkspaceId(input.workspaceId);
   const limit = normalizeExportLimit(input.limit);
+  const maxBytes = normalizeExportMaxBytes(input.maxBytes);
 
   const permission = await dependencies.memoryPermissions.canConfirmMemory({
     workspaceId: input.workspaceId,
@@ -114,6 +118,17 @@ export async function exportMemoryItems(
     statuses: ["active", "disabled", "expired"],
     limit,
   });
+  const truncatedCount = Math.max(
+    0,
+    records.totalMatchingCount - records.items.length,
+  );
+  if (truncatedCount > 0) {
+    return {
+      status: "rejected",
+      reason: "memory_export_too_large",
+      retryable: false,
+    };
+  }
   const items = records.items.map(toMemoryExportItem);
   const createdAt = dependencies.clock.now();
   const checksumSha256 = checksumExportItems(items);
@@ -132,12 +147,19 @@ export async function exportMemoryItems(
       policyVersion: MEMORY_EXPORT_POLICY_VERSION,
       itemCount: items.length,
       excludedDeletedCount: records.excludedDeletedCount,
-      truncatedCount: Math.max(0, records.totalMatchingCount - items.length),
+      truncatedCount,
       checksumSha256,
       format: "json",
     },
     items,
   };
+  if (memoryExportByteLength(exportDto) > maxBytes) {
+    return {
+      status: "rejected",
+      reason: "memory_export_too_large",
+      retryable: false,
+    };
+  }
 
   await dependencies.memoryTransaction.run(async (tx) => {
     await tx.memoryAudit.record({
@@ -157,6 +179,10 @@ export async function exportMemoryItems(
   });
 
   return { status: "exported", export: exportDto };
+}
+
+export function stringifyMemoryExport(exportDto: MemoryExportDto): string {
+  return JSON.stringify(exportDto, null, 2);
 }
 
 function toMemoryExportItem(snapshot: MemoryItemSnapshot): MemoryExportItemDto {
@@ -209,6 +235,10 @@ function checksumExportItems(items: readonly MemoryExportItemDto[]): string {
     .digest("hex");
 }
 
+function memoryExportByteLength(exportDto: MemoryExportDto): number {
+  return Buffer.byteLength(stringifyMemoryExport(exportDto), "utf8");
+}
+
 function assertValidWorkspaceId(value: string): void {
   if (value.trim().length > 0) return;
   throw memoryError("memory_input_invalid");
@@ -220,4 +250,12 @@ function normalizeExportLimit(value: number | undefined): number {
     throw memoryError("memory_input_invalid");
   }
   return Math.min(value, MAX_MEMORY_EXPORT_LIMIT);
+}
+
+function normalizeExportMaxBytes(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MEMORY_EXPORT_MAX_BYTES;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw memoryError("memory_input_invalid");
+  }
+  return Math.min(value, DEFAULT_MEMORY_EXPORT_MAX_BYTES);
 }
