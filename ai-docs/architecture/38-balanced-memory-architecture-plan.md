@@ -53,12 +53,13 @@
 - OpenAPI/demo contract публикует command request/response schemas для подтверждения, отклонения, disable/forget и безопасного `list_memory` noop.
 - action memory endpoints получили явный fail-fast guard против raw conversation/code/diff/prompt/model-response полей, отдельно от strict transport schemas.
 - explicit generated workflows прокидывают стабильные `REVIEW_ROUTER_MEMORY_*` endpoint flags для review и interaction runtime modes.
+- dashboard memory UI ближе приведён к сохранённым PNG references: top mode tabs, read-only state, operational table footer и confirmation dialogs для disable/delete с retention impact.
 
 Текущие проверки:
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 58 files, 299 tests passed;
+- `pnpm test` - 59 files, 302 tests passed;
 - `pnpm lint` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 

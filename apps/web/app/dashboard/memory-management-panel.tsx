@@ -1,5 +1,16 @@
 import type React from "react";
-import { Badge } from "@reviewrouter/ui";
+import {
+  Badge,
+  Button,
+  DialogBackdrop,
+  DialogClose,
+  DialogDescription,
+  DialogPopup,
+  DialogPortal,
+  DialogRoot,
+  DialogTitle,
+  DialogTrigger,
+} from "@reviewrouter/ui";
 import type {
   MemoryDashboardItemDto,
   MemoryDashboardSuggestionDto,
@@ -98,6 +109,13 @@ export function MemoryManagementPanel({
       </aside>
 
       <div className="grid gap-4">
+        <MemoryModeTabs
+          activeCount={viewModel.activeItems.length}
+          pendingCount={viewModel.pendingSuggestionCount}
+        />
+
+        {!mutationsEnabled ? <MemoryReadOnlyBanner /> : null}
+
         <div className="rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -250,6 +268,10 @@ export function MemoryManagementPanel({
                 )}
               </tbody>
             </table>
+            <MemoryTableFooter
+              shownCount={memoryItems.length}
+              totalCount={memoryItems.length}
+            />
           </div>
         </div>
       </div>
@@ -321,6 +343,59 @@ export function MemoryManagementPanel({
         </div>
       </aside>
     </section>
+  );
+}
+
+function MemoryModeTabs({
+  activeCount,
+  pendingCount,
+}: {
+  readonly activeCount: number;
+  readonly pendingCount: number;
+}): React.ReactElement {
+  return (
+    <div className="grid gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-3 md:grid-cols-3">
+      <MemoryModeTab label="Confirmed" count={activeCount} selected />
+      <MemoryModeTab label="Pending" count={pendingCount} />
+      <MemoryModeTab label="Audit" count={0} />
+    </div>
+  );
+}
+
+function MemoryModeTab({
+  label,
+  count,
+  selected = false,
+}: {
+  readonly label: string;
+  readonly count: number;
+  readonly selected?: boolean;
+}): React.ReactElement {
+  return (
+    <div
+      aria-current={selected ? "page" : undefined}
+      className={[
+        "flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm font-semibold",
+        selected
+          ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100 shadow-[inset_0_-2px_0_rgba(110,231,183,0.75)]"
+          : "border-cyan-200/10 bg-cyan-300/[0.035] text-slate-400",
+      ].join(" ")}
+    >
+      <span>{label}</span>
+      <span className="rounded-full border border-cyan-200/10 bg-slate-950 px-2 py-0.5 font-mono text-xs text-cyan-100">
+        {count}
+      </span>
+    </div>
+  );
+}
+
+function MemoryReadOnlyBanner(): React.ReactElement {
+  return (
+    <div className="rounded-[1.25rem] border border-amber-300/25 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+      Memory is in read-only mode for this workspace. You can review saved
+      knowledge, but approve, reject, disable and delete actions require
+      workspace admin or repository maintainer authority.
+    </div>
   );
 }
 
@@ -446,31 +521,128 @@ function MemoryItemRow({
       </td>
       <td className="border-b border-cyan-200/10 px-3 py-3">
         <div className="flex flex-wrap gap-2">
-          <form action={disableMemoryItemAction}>
-            <input type="hidden" name="workspaceId" value={workspaceId} />
-            <input type="hidden" name="memoryItemId" value={item.id} />
-            <FormSubmitButton
-              variant="outline"
-              size="sm"
-              disabled={!mutable || item.status === "disabled"}
-              idleLabel="Disable"
-              pendingLabel="Saving..."
-            />
-          </form>
-          <form action={deleteMemoryItemAction}>
-            <input type="hidden" name="workspaceId" value={workspaceId} />
-            <input type="hidden" name="memoryItemId" value={item.id} />
-            <FormSubmitButton
-              variant="outline"
-              size="sm"
-              disabled={!mutable}
-              idleLabel="Delete"
-              pendingLabel="Deleting..."
-            />
-          </form>
+          <MemoryDangerActionDialog
+            action={disableMemoryItemAction}
+            workspaceId={workspaceId}
+            memoryItemId={item.id}
+            triggerLabel="Disable"
+            pendingLabel="Disabling..."
+            disabled={!mutable || item.status === "disabled"}
+            title="Disable memory?"
+            description="Disabled memory is removed from runtime retrieval, but kept in audit history and can be inspected later."
+            confirmLabel="Disable memory"
+          />
+          <MemoryDangerActionDialog
+            action={deleteMemoryItemAction}
+            workspaceId={workspaceId}
+            memoryItemId={item.id}
+            triggerLabel="Delete"
+            pendingLabel="Deleting..."
+            disabled={!mutable}
+            title="Delete memory?"
+            description="Deleted memory is removed from active management views and queued for retrieval index deletion. Audit records remain for accountability."
+            confirmLabel="Delete memory"
+          />
         </div>
       </td>
     </tr>
+  );
+}
+
+function MemoryDangerActionDialog({
+  action,
+  workspaceId,
+  memoryItemId,
+  triggerLabel,
+  pendingLabel,
+  disabled,
+  title,
+  description,
+  confirmLabel,
+}: {
+  readonly action: (formData: FormData) => Promise<never>;
+  readonly workspaceId: string;
+  readonly memoryItemId: string;
+  readonly triggerLabel: string;
+  readonly pendingLabel: string;
+  readonly disabled: boolean;
+  readonly title: string;
+  readonly description: string;
+  readonly confirmLabel: string;
+}): React.ReactElement {
+  return (
+    <DialogRoot>
+      <DialogTrigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            className="min-w-20"
+          >
+            {triggerLabel}
+          </Button>
+        }
+      />
+      <DialogPortal>
+        <DialogBackdrop className="z-50" />
+        <DialogPopup className="z-[60] border-rose-300/25 bg-[#061015]">
+          <DialogTitle className="text-lg font-semibold text-cyan-50">
+            {title}
+          </DialogTitle>
+          <DialogDescription className="mt-2 text-sm leading-6 text-slate-300">
+            {description}
+          </DialogDescription>
+          <form action={action} className="mt-5 grid gap-4">
+            <input type="hidden" name="workspaceId" value={workspaceId} />
+            <input type="hidden" name="memoryItemId" value={memoryItemId} />
+            <div className="rounded-xl border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+              This does not expose raw source comments, code, diffs, prompts or
+              model output. Only the distilled memory record is changed.
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <DialogClose
+                render={
+                  <Button type="button" variant="outline" size="sm">
+                    Cancel
+                  </Button>
+                }
+              />
+              <FormSubmitButton
+                variant="solid"
+                tone="danger"
+                size="sm"
+                idleLabel={confirmLabel}
+                pendingLabel={pendingLabel}
+              />
+            </div>
+          </form>
+        </DialogPopup>
+      </DialogPortal>
+    </DialogRoot>
+  );
+}
+
+function MemoryTableFooter({
+  shownCount,
+  totalCount,
+}: {
+  readonly shownCount: number;
+  readonly totalCount: number;
+}): React.ReactElement {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-cyan-200/10 px-3 py-3 text-xs text-slate-400">
+      <span>
+        Showing {shownCount === 0 ? 0 : 1}-{shownCount} of {totalCount}
+      </span>
+      <div className="flex items-center gap-2">
+        <span>Rows per page</span>
+        <span className="rounded-lg border border-cyan-200/10 bg-slate-950 px-2 py-1 font-mono text-cyan-100">
+          10
+        </span>
+      </div>
+    </div>
   );
 }
 
