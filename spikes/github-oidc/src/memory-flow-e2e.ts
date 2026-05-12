@@ -383,6 +383,30 @@ try {
     "Other workspace browser layout memory must never leak.",
   ]);
 
+  const indexingOutboxBeforeDisable = await prisma.outboxEvent.findMany({
+    where: {
+      workspaceId: primary.workspaceId,
+      type: "memory.embedding.reindex.requested",
+    },
+    select: { aggregateId: true, payload: true, type: true },
+    orderBy: { aggregateId: "asc" },
+  });
+  assertEqual(
+    indexingOutboxBeforeDisable.length,
+    3,
+    "reindex outbox events before disable",
+  );
+  assertStringDoesNotContain(
+    JSON.stringify(indexingOutboxBeforeDisable),
+    "guard clauses",
+    "indexing outbox must not contain direct memory body",
+  );
+  assertStringDoesNotContain(
+    JSON.stringify(indexingOutboxBeforeDisable),
+    "browser layout checks",
+    "indexing outbox must not contain confirmed suggestion body",
+  );
+
   const bundle = await getJson<ActionMemoryBundle>(
     baseUrl,
     "/api/action/v1/memory",
@@ -438,6 +462,18 @@ try {
     { kind: "disable_memory", memoryItemId: repoItem.id },
   ]);
   assertEqual(disable.results[0]?.status, "updated", "disable memory status");
+  const indexDeleteOutboxAfterDisable = await prisma.outboxEvent.count({
+    where: {
+      workspaceId: primary.workspaceId,
+      aggregateId: repoItem.id,
+      type: "memory.embedding.delete.requested",
+    },
+  });
+  assertEqual(
+    indexDeleteOutboxAfterDisable,
+    1,
+    "index delete outbox after disable",
+  );
 
   const afterDisableSession = await exchange(
     baseUrl,

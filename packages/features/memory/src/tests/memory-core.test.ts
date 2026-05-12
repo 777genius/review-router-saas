@@ -558,6 +558,13 @@ describe("memory core", () => {
       scope: "repository",
       sourceType: "dashboard",
     });
+    expect(deps.memoryOutbox.events.map((event) => event.type)).toEqual([
+      "memory.item.created",
+      "memory.embedding.reindex.requested",
+    ]);
+    expect(JSON.stringify(deps.memoryOutbox.events)).not.toContain(
+      "guard clauses",
+    );
 
     const denied = await rememberMemoryDirectly(
       {
@@ -939,7 +946,7 @@ describe("memory core", () => {
     });
     expect(deps.memoryItems.items.get(created.id)?.status).toBe("active");
     expect(deps.memoryAudit.events).toHaveLength(1);
-    expect(deps.memoryOutbox.events).toHaveLength(1);
+    expect(deps.memoryOutbox.events).toHaveLength(2);
 
     const disabled = await disableMemoryItem(
       {
@@ -1068,6 +1075,7 @@ describe("memory core", () => {
     );
     expect(deps.memoryOutbox.events.map((event) => event.type)).toEqual([
       "memory.item.created",
+      "memory.embedding.reindex.requested",
       "memory.item.edited",
       "memory.embedding.reindex.requested",
     ]);

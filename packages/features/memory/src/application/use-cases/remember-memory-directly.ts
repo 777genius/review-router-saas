@@ -124,6 +124,19 @@ export async function rememberMemoryDirectly(
         },
         occurredAt: now,
       });
+      await tx.memoryOutbox.enqueue({
+        type: "memory.embedding.reindex.requested",
+        version: 1,
+        idempotencyKey: `memory.embedding.reindex:${snapshot.workspaceId}:${snapshot.id}:${snapshot.bodyVersion}:${snapshot.bodyHash}`,
+        workspaceId: input.workspaceId,
+        repositoryId: input.repositoryId,
+        aggregateId: snapshot.id,
+        payload: {
+          bodyHash: snapshot.bodyHash,
+          bodyVersion: snapshot.bodyVersion,
+        },
+        occurredAt: now,
+      });
       return {
         status: "created",
         id: snapshot.id,
