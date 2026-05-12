@@ -216,6 +216,15 @@ Expected result:
 8. export includes active, disabled, and expired memory only
 9. export excludes deleted rows, embeddings, raw source excerpts, and source hashes
 10. audit, outbox, usage telemetry, and diagnostics contain ids, hashes, counts, status, and versions only
+11. workspace flag `balanced_memory=false` returns an empty degraded runtime bundle and `memory_disabled` for new writes
+
+Emergency disable:
+
+1. set `REVIEW_ROUTER_MEMORY_ENABLED=0|false|off` or `REVIEW_ROUTER_DISABLE_MEMORY=1|true|on` on API and web services
+2. restart services so `MemoryPolicyConfigPort` composition picks up the flag
+3. verify action memory bundle responses are empty/degraded and new writes return `memory_disabled`
+4. keep dashboard delete/disable/export available for authorized cleanup of existing memory
+5. unset the flag only after `pnpm spike:memory:e2e` and production smoke checks pass
 
 If memory bundle requests fail:
 

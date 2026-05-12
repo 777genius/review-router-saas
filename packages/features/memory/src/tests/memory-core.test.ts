@@ -1310,6 +1310,48 @@ describe("memory core", () => {
     expect(repeated).toEqual({ status: "noop", reason: "confirmed" });
   });
 
+  it("rejects pending suggestion confirmation when memory policy is disabled", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const proposed = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Do not confirm when memory is disabled.",
+          actor: prAuthor,
+        }),
+      },
+      deps,
+    );
+    if (proposed.status !== "created") throw new Error("missing_suggestion");
+
+    const result = await confirmMemorySuggestion(
+      {
+        workspaceId: "workspace_1",
+        suggestionId: proposed.id,
+        actor: maintainer,
+      },
+      {
+        ...deps,
+        memoryPolicyConfig: new StaticMemoryPolicyConfig({
+          memoryEnabled: false,
+        }),
+      },
+    );
+
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "memory_disabled",
+      retryable: false,
+    });
+    expect(deps.memoryItems.items).toHaveLength(0);
+    expect(deps.memorySuggestions.suggestions.get(proposed.id)?.status).toBe(
+      "pending",
+    );
+  });
+
   it("keeps pending suggestion unchanged when confirmation would exceed active quota", async () => {
     const deps = createHarness(
       {
@@ -1787,6 +1829,42 @@ describe("memory core", () => {
       "memory.item.edited",
       "memory.embedding.reindex.requested",
     ]);
+  });
+
+  it("rejects memory edits when memory policy is disabled", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const created = await rememberMemoryDirectly(
+      memoryInput("repository", "Do not edit when memory is disabled."),
+      deps,
+    );
+    if (created.status !== "created") throw new Error("missing_memory_item");
+
+    const result = await editMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version,
+        body: "Attempted disabled edit.",
+        actor: maintainer,
+      },
+      {
+        ...deps,
+        memoryPolicyConfig: new StaticMemoryPolicyConfig({
+          memoryEnabled: false,
+        }),
+      },
+    );
+
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "memory_disabled",
+      retryable: false,
+    });
+    expect(deps.memoryItems.items.get(created.id)?.body).toBe(
+      "Do not edit when memory is disabled.",
+    );
   });
 
   it("rejects memory edits that would duplicate another active item", async () => {
@@ -2653,6 +2731,35 @@ describe("memory core", () => {
       retryable: false,
     });
     expect(deps.memoryAudit.events).toHaveLength(auditCountBeforeExport);
+  });
+
+  it("allows admin export when workspace memory writes are disabled", async () => {
+    const deps = createHarness({
+      "user_maintainer:workspace": { allowed: true },
+    });
+    await rememberMemoryDirectly(
+      memoryInput(
+        "workspace",
+        "Export remains available while writes are off.",
+      ),
+      deps,
+    );
+
+    const result = await exportMemoryItems(
+      { workspaceId: "workspace_1", actor: maintainer },
+      {
+        ...deps,
+        memoryPolicyConfig: new StaticMemoryPolicyConfig({
+          memoryEnabled: false,
+        }),
+      },
+    );
+
+    expect(result.status).toBe("exported");
+    if (result.status !== "exported") throw new Error("expected_export");
+    expect(result.export.items.map((item) => item.body)).toEqual([
+      "Export remains available while writes are off.",
+    ]);
   });
 
   it("treats expired pending suggestions as noop on confirm before worker runs", async () => {

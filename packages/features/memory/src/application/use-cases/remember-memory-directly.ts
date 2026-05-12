@@ -16,6 +16,7 @@ import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
 } from "./memory-use-case-types";
+import { evaluateMemoryWritePolicy } from "./enforce-memory-policy";
 import { rejectIfActiveMemoryItemQuotaExceeded } from "./enforce-memory-quota";
 
 export type RememberMemoryDirectlyInput = {
@@ -36,20 +37,18 @@ export async function rememberMemoryDirectly(
   dependencies: MemoryUseCaseDependencies,
 ): Promise<MemoryMutationResult> {
   assertValidMemoryScope(input);
-  const policy = await dependencies.memoryPolicyConfig.getPolicy({
-    workspaceId: input.workspaceId,
-    repositoryId: input.repositoryId,
-  });
-  if (!policy.memoryEnabled) {
-    return { status: "rejected", reason: "memory_disabled", retryable: false };
+  const policyResult = await evaluateMemoryWritePolicy(
+    {
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+      scope: input.scope,
+    },
+    dependencies,
+  );
+  if (!policyResult.allowed) {
+    return policyResult.rejection;
   }
-  if (!policy.allowedScopes[input.scope]) {
-    return {
-      status: "rejected",
-      reason: "memory_scope_forbidden",
-      retryable: false,
-    };
-  }
+  const policy = policyResult.policy;
   const permission = await dependencies.memoryPermissions.canConfirmMemory({
     workspaceId: input.workspaceId,
     repositoryId: input.repositoryId,

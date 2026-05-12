@@ -79,6 +79,7 @@
 - sync workspace export теперь fail-closed при row/byte budget overflow: частичный JSON не отдаётся, route возвращает safe `413 memory_export_too_large`, а future async export остаётся отдельным admin workflow.
 - public privacy page, customer-facing security copy and operations runbook now document Balanced Memory boundaries: confirmed distilled snippets only, admin export, immediate runtime removal on delete, redaction and retention prune.
 - `MemoryPolicyConfigPort` подключён как обязательная application dependency: direct remember, pending suggestions, runtime bundle и workspace export больше не держат policy/safety versions, TTL и export/retrieval caps локальными литералами; default adapter сохраняет прежнее поведение и готовит future workspace/repository policy overrides без смены use cases.
+- rollout kill switch подключён через `EntitlementMemoryPolicyConfig`: service env `REVIEW_ROUTER_MEMORY_ENABLED=0|false|off` или `REVIEW_ROUTER_DISABLE_MEMORY=1|true|on` и workspace entitlement flag `balanced_memory=false` выключают new writes/confirm/edit/runtime bundle через `MemoryPolicyConfigPort`; delete/disable/export остаются доступны для authorized cleanup.
 - confirm/reject suggestion теперь fail-closed для TTL-expired pending rows даже до worker maintenance: use case атомарно переводит stale pending suggestion в `expired`, возвращает `noop: expired`, не зовёт permission adapter и не создаёт memory item.
 - `forget/delete` memory теперь privacy-first: domain ставит tombstone body/source на deleted item, а delete use case в той же транзакции redacts body/source у confirmed origin suggestion; fresh DB E2E проверяет, что удалённая memory и linked suggestion больше не содержат исходный текст.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
@@ -3626,6 +3627,7 @@ Flags:
 
 ```text
 REVIEW_ROUTER_MEMORY_ENABLED
+REVIEW_ROUTER_DISABLE_MEMORY
 REVIEW_ROUTER_MEMORY_SUGGESTIONS_ENABLED
 REVIEW_ROUTER_MEMORY_DIRECT_COMMANDS_ENABLED
 REVIEW_ROUTER_MEMORY_EMBEDDINGS_ENABLED

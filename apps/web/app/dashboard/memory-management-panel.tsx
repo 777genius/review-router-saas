@@ -53,6 +53,7 @@ export function MemoryManagementPanel({
   memoryItems,
   memorySuggestions,
   mutationsEnabled,
+  memoryWritesEnabled,
   mode = "knowledge",
   modeLinks,
   notices = [],
@@ -62,10 +63,12 @@ export function MemoryManagementPanel({
   readonly memoryItems: readonly MemoryDashboardItemDto[];
   readonly memorySuggestions: readonly MemoryDashboardSuggestionDto[];
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
   readonly mode?: MemoryManagementMode;
   readonly modeLinks?: MemoryManagementModeLinks;
   readonly notices?: readonly MemoryManagementNotice[];
 }): React.ReactElement {
+  const writesEnabled = mutationsEnabled && memoryWritesEnabled;
   const viewModel = buildMemoryDashboardViewModel({
     repositories,
     memoryItems,
@@ -165,6 +168,9 @@ export function MemoryManagementPanel({
         />
 
         {!mutationsEnabled ? <MemoryReadOnlyBanner /> : null}
+        {mutationsEnabled && !memoryWritesEnabled ? (
+          <MemoryWritesDisabledBanner />
+        ) : null}
         {notices.length > 0 ? <MemoryNoticeStack notices={notices} /> : null}
 
         {mode === "knowledge" ? (
@@ -177,13 +183,14 @@ export function MemoryManagementPanel({
               workspaceId={workspace.id}
               repositories={viewModel.selectedRepositories}
               defaultRepositoryId={viewModel.defaultRepository?.id ?? ""}
-              mutationsEnabled={mutationsEnabled}
+              writesEnabled={writesEnabled}
               totalCount={memoryItems.length}
             />
             <MemoryKnowledgeList
               items={memoryItems}
               workspaceId={workspace.id}
               mutationsEnabled={mutationsEnabled}
+              memoryWritesEnabled={memoryWritesEnabled}
             />
           </>
         ) : null}
@@ -193,6 +200,7 @@ export function MemoryManagementPanel({
             workspaceId={workspace.id}
             suggestions={memorySuggestions}
             mutationsEnabled={mutationsEnabled}
+            memoryWritesEnabled={memoryWritesEnabled}
             pendingCount={viewModel.pendingSuggestionCount}
           />
         ) : null}
@@ -202,6 +210,7 @@ export function MemoryManagementPanel({
             workspaceId={workspace.id}
             items={memoryItems}
             mutationsEnabled={mutationsEnabled}
+            memoryWritesEnabled={memoryWritesEnabled}
             activeCount={viewModel.activeItems.length}
           />
         ) : null}
@@ -313,13 +322,13 @@ function MemoryAddMemoryForm({
   workspaceId,
   repositories,
   defaultRepositoryId,
-  mutationsEnabled,
+  writesEnabled,
   totalCount,
 }: {
   readonly workspaceId: string;
   readonly repositories: readonly MemoryDashboardRepositoryOption[];
   readonly defaultRepositoryId: string;
-  readonly mutationsEnabled: boolean;
+  readonly writesEnabled: boolean;
   readonly totalCount: number;
 }): React.ReactElement {
   return (
@@ -385,7 +394,7 @@ function MemoryAddMemoryForm({
           <FormSubmitButton
             variant="solid"
             size="sm"
-            disabled={!mutationsEnabled}
+            disabled={!writesEnabled}
             idleLabel="Add memory"
             pendingLabel="Saving..."
           />
@@ -424,10 +433,12 @@ function MemoryKnowledgeList({
   items,
   workspaceId,
   mutationsEnabled,
+  memoryWritesEnabled,
 }: {
   readonly items: readonly MemoryDashboardItemDto[];
   readonly workspaceId: string;
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
 }): React.ReactElement {
   if (items.length === 0) {
     return (
@@ -484,6 +495,7 @@ function MemoryKnowledgeList({
                 workspaceId={workspaceId}
                 item={item}
                 mutationsEnabled={mutationsEnabled}
+                memoryWritesEnabled={memoryWritesEnabled}
               />
             ))}
           </div>
@@ -497,10 +509,12 @@ function MemoryKnowledgeCard({
   workspaceId,
   item,
   mutationsEnabled,
+  memoryWritesEnabled,
 }: {
   readonly workspaceId: string;
   readonly item: MemoryDashboardItemDto;
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
 }): React.ReactElement {
   return (
     <article className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 md:grid-cols-[minmax(0,1fr)_auto]">
@@ -530,6 +544,7 @@ function MemoryKnowledgeCard({
         workspaceId={workspaceId}
         item={item}
         mutationsEnabled={mutationsEnabled}
+        memoryWritesEnabled={memoryWritesEnabled}
       />
     </article>
   );
@@ -539,11 +554,13 @@ function MemorySuggestionInbox({
   workspaceId,
   suggestions,
   mutationsEnabled,
+  memoryWritesEnabled,
   pendingCount,
 }: {
   readonly workspaceId: string;
   readonly suggestions: readonly MemoryDashboardSuggestionDto[];
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
   readonly pendingCount: number;
 }): React.ReactElement {
   return (
@@ -580,6 +597,7 @@ function MemorySuggestionInbox({
               workspaceId={workspaceId}
               suggestion={suggestion}
               mutationsEnabled={mutationsEnabled}
+              memoryWritesEnabled={memoryWritesEnabled}
             />
           ))
         )}
@@ -592,11 +610,13 @@ function MemoryConfirmedTable({
   workspaceId,
   items,
   mutationsEnabled,
+  memoryWritesEnabled,
   activeCount,
 }: {
   readonly workspaceId: string;
   readonly items: readonly MemoryDashboardItemDto[];
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
   readonly activeCount: number;
 }): React.ReactElement {
   return (
@@ -667,6 +687,7 @@ function MemoryConfirmedTable({
                   workspaceId={workspaceId}
                   item={item}
                   mutationsEnabled={mutationsEnabled}
+                  memoryWritesEnabled={memoryWritesEnabled}
                 />
               ))
             )}
@@ -803,6 +824,15 @@ function MemoryReadOnlyBanner(): React.ReactElement {
   );
 }
 
+function MemoryWritesDisabledBanner(): React.ReactElement {
+  return (
+    <div className="rounded-[1.25rem] border border-amber-300/25 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
+      Balanced Memory writes are disabled for this workspace. Existing memory
+      can still be exported, disabled, deleted, or rejected by authorized users.
+    </div>
+  );
+}
+
 function MemoryScopeFilterRow({
   label,
   count,
@@ -833,11 +863,14 @@ function MemorySuggestionRow({
   workspaceId,
   suggestion,
   mutationsEnabled,
+  memoryWritesEnabled,
 }: {
   readonly workspaceId: string;
   readonly suggestion: MemoryDashboardSuggestionDto;
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
 }): React.ReactElement {
+  const confirmationEnabled = mutationsEnabled && memoryWritesEnabled;
   return (
     <div className="grid gap-3 rounded-xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 md:grid-cols-[minmax(0,1fr)_12rem]">
       <div className="min-w-0">
@@ -868,7 +901,7 @@ function MemorySuggestionRow({
             variant="solid"
             size="sm"
             className="w-full"
-            disabled={!mutationsEnabled || suggestion.isExpired}
+            disabled={!confirmationEnabled || suggestion.isExpired}
             idleLabel="Approve"
             pendingLabel="Approving..."
           />
@@ -876,7 +909,7 @@ function MemorySuggestionRow({
         <MemorySuggestionEditConfirmDialog
           workspaceId={workspaceId}
           suggestion={suggestion}
-          disabled={!mutationsEnabled || suggestion.isExpired}
+          disabled={!confirmationEnabled || suggestion.isExpired}
         />
         <form action={rejectMemorySuggestionAction}>
           <input type="hidden" name="workspaceId" value={workspaceId} />
@@ -999,10 +1032,12 @@ function MemoryItemRow({
   workspaceId,
   item,
   mutationsEnabled,
+  memoryWritesEnabled,
 }: {
   readonly workspaceId: string;
   readonly item: MemoryDashboardItemDto;
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
 }): React.ReactElement {
   return (
     <tr className="align-top text-slate-300">
@@ -1034,6 +1069,7 @@ function MemoryItemRow({
           workspaceId={workspaceId}
           item={item}
           mutationsEnabled={mutationsEnabled}
+          memoryWritesEnabled={memoryWritesEnabled}
         />
       </td>
     </tr>
@@ -1044,18 +1080,21 @@ function MemoryItemActionGroup({
   workspaceId,
   item,
   mutationsEnabled,
+  memoryWritesEnabled,
 }: {
   readonly workspaceId: string;
   readonly item: MemoryDashboardItemDto;
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
 }): React.ReactElement {
-  const mutable = mutationsEnabled && item.status !== "deleted";
+  const manageable = mutationsEnabled && item.status !== "deleted";
+  const editable = manageable && memoryWritesEnabled;
   return (
     <div className="flex flex-wrap content-start items-start gap-2">
       <MemoryEditActionDialog
         workspaceId={workspaceId}
         item={item}
-        disabled={!mutable}
+        disabled={!editable}
       />
       <MemoryDangerActionDialog
         action={disableMemoryItemAction}
@@ -1064,7 +1103,7 @@ function MemoryItemActionGroup({
         expectedVersion={item.version}
         triggerLabel="Disable"
         pendingLabel="Disabling..."
-        disabled={!mutable || item.status === "disabled"}
+        disabled={!manageable || item.status === "disabled"}
         title="Disable memory?"
         description="Disabled memory is removed from runtime retrieval, but kept in audit history and can be inspected later."
         confirmLabel="Disable memory"
@@ -1076,7 +1115,7 @@ function MemoryItemActionGroup({
         expectedVersion={item.version}
         triggerLabel="Delete"
         pendingLabel="Deleting..."
-        disabled={!mutable}
+        disabled={!manageable}
         title="Delete memory?"
         description="Deleted memory is removed from active management views and queued for retrieval index deletion. Audit records remain for accountability."
         confirmLabel="Delete memory"

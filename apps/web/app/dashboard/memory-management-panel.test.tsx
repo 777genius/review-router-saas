@@ -145,6 +145,53 @@ describe("MemoryManagementPanel", () => {
     ).toBe(true);
   });
 
+  it("disables memory writes while keeping confirmed cleanup actions available", () => {
+    renderMemoryManagementPanel({ memoryWritesEnabled: false });
+
+    expect(
+      screen.getByText(/Balanced Memory writes are disabled/),
+    ).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Add memory" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Disable" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
+  it("disables suggestion approval while keeping rejection available when writes are off", () => {
+    renderMemoryManagementPanel({
+      mode: "suggestions",
+      memoryWritesEnabled: false,
+    });
+
+    expect(
+      (screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Edit suggestion",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Reject" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
   it("surfaces quota, stale edit, and indexing notices in the same layout", () => {
     renderMemoryManagementPanel({
       notices: [
@@ -175,6 +222,7 @@ describe("MemoryManagementPanel", () => {
 function renderMemoryManagementPanel(
   options: {
     readonly mutationsEnabled?: boolean;
+    readonly memoryWritesEnabled?: boolean;
     readonly mode?: MemoryManagementMode;
     readonly notices?: readonly MemoryManagementNotice[];
   } = {},
@@ -194,6 +242,7 @@ function renderMemoryManagementPanel(
       memoryItems={[memoryItem()]}
       memorySuggestions={[memorySuggestion()]}
       mutationsEnabled={options.mutationsEnabled ?? true}
+      memoryWritesEnabled={options.memoryWritesEnabled ?? true}
       {...(options.mode ? { mode: options.mode } : {})}
       {...(options.notices ? { notices: options.notices } : {})}
     />,

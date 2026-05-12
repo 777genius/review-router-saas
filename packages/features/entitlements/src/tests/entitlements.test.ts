@@ -68,6 +68,16 @@ describe("entitlements", () => {
         { entitlements },
       ),
     ).resolves.toBeUndefined();
+    await expect(
+      assertWorkspaceFeatureEntitlement(
+        {
+          workspaceId: "workspace_1",
+          feature: "balanced_memory",
+          actor: "system:test",
+        },
+        { entitlements },
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it("denies future paid features with a clear error and audit", async () => {

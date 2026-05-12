@@ -30,13 +30,14 @@ import {
 } from "@reviewrouter/platform-db";
 import {
   CryptoMemoryIdGenerator,
+  EntitlementMemoryPolicyConfig,
   EntitlementMemoryQuotaPolicy,
   PrismaMemoryItemRepository,
   PrismaMemoryPermission,
-  StaticMemoryPolicyConfig,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
   PrismaMemoryUsageEventRepository,
+  readMemoryServiceEnabled,
 } from "@reviewrouter/features-memory";
 import { PrismaEntitlementRepository } from "@reviewrouter/features-entitlements";
 import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
@@ -63,6 +64,7 @@ export type CreateApiAppOptions = {
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
   readonly actionControlPlaneEnabled?: boolean;
+  readonly memoryServiceEnabled?: boolean;
   readonly healthDependencies?: readonly HealthDependencyPort[];
   readonly prisma?: PrismaClient;
 };
@@ -194,7 +196,14 @@ export async function createApiApp(
                 process.env.REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS,
               ),
             }),
-            memoryPolicyConfig: new StaticMemoryPolicyConfig(),
+            memoryPolicyConfig: new EntitlementMemoryPolicyConfig(
+              new PrismaEntitlementRepository(prisma),
+              {
+                serviceEnabled:
+                  options.memoryServiceEnabled ??
+                  readMemoryServiceEnabled(process.env),
+              },
+            ),
             memoryUsageEvents: new PrismaMemoryUsageEventRepository(prisma),
             memoryQuotaPolicy: new EntitlementMemoryQuotaPolicy(
               new PrismaEntitlementRepository(prisma),

@@ -8,6 +8,7 @@ import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
 } from "./memory-use-case-types";
+import { evaluateMemoryWritePolicy } from "./enforce-memory-policy";
 
 export type EditMemoryItemInput = {
   readonly workspaceId: string;
@@ -31,6 +32,18 @@ export async function editMemoryItem(
   }
   if (existing.status === "deleted" || existing.status === "expired") {
     return { status: "noop", reason: existing.status, id: existing.id };
+  }
+
+  const policyResult = await evaluateMemoryWritePolicy(
+    {
+      workspaceId: input.workspaceId,
+      repositoryId: existing.repositoryId,
+      scope: existing.scope,
+    },
+    dependencies,
+  );
+  if (!policyResult.allowed) {
+    return policyResult.rejection;
   }
 
   const permission = await dependencies.memoryPermissions.canConfirmMemory({
@@ -87,7 +100,7 @@ export async function editMemoryItem(
     body: safety.redactedBody,
     riskLevel: safety.riskLevel,
     safetyPolicyVersion:
-      input.safetyPolicyVersion ?? existing.safetyPolicyVersion,
+      input.safetyPolicyVersion ?? policyResult.policy.safetyPolicyVersion,
     now,
   });
   const snapshot = item.snapshot();

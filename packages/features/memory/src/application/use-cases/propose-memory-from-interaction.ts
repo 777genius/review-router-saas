@@ -13,6 +13,7 @@ import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
 } from "./memory-use-case-types";
+import { evaluateMemoryWritePolicy } from "./enforce-memory-policy";
 import { rejectIfPendingMemorySuggestionQuotaExceeded } from "./enforce-memory-quota";
 
 export type ProposeMemoryFromInteractionInput = {
@@ -39,20 +40,18 @@ export async function proposeMemoryFromInteraction(
     return { status: "rejected", reason: "memory_input_invalid" };
   }
 
-  const policy = await dependencies.memoryPolicyConfig.getPolicy({
-    workspaceId: envelope.workspaceId,
-    repositoryId: scope === "repository" ? envelope.repositoryId : null,
-  });
-  if (!policy.memoryEnabled) {
-    return { status: "rejected", reason: "memory_disabled", retryable: false };
+  const policyResult = await evaluateMemoryWritePolicy(
+    {
+      workspaceId: envelope.workspaceId,
+      repositoryId: scope === "repository" ? envelope.repositoryId : null,
+      scope,
+    },
+    dependencies,
+  );
+  if (!policyResult.allowed) {
+    return policyResult.rejection;
   }
-  if (!policy.allowedScopes[scope]) {
-    return {
-      status: "rejected",
-      reason: "memory_scope_forbidden",
-      retryable: false,
-    };
-  }
+  const policy = policyResult.policy;
 
   if (
     envelope.intent === "explicit_command" &&

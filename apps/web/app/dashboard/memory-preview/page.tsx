@@ -67,6 +67,7 @@ export default async function MemoryPreviewPage({
         memoryItems={data.memoryItems}
         memorySuggestions={data.memorySuggestions}
         mutationsEnabled={data.mutationsEnabled}
+        memoryWritesEnabled={data.memoryWritesEnabled}
         mode={mode}
         modeLinks={buildPreviewModeLinks(scenario)}
         notices={buildPreviewNotices(scenario)}
@@ -86,6 +87,7 @@ function resolvePreviewScenario(value: string): MemoryDashboardPreviewScenario {
   if (
     value === "empty" ||
     value === "readonly" ||
+    value === "writes_disabled" ||
     value === "over_quota" ||
     value === "stale_edit" ||
     value === "indexing_degraded"
@@ -148,6 +150,7 @@ function buildPreviewNotices(
     case "empty":
     case "normal":
     case "readonly":
+    case "writes_disabled":
       return [];
   }
 }

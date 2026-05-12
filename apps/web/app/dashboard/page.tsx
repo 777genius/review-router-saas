@@ -44,8 +44,10 @@ import {
 import {
   listMemoryItemsForDashboard,
   listMemorySuggestionsForDashboard,
+  EntitlementMemoryPolicyConfig,
   PrismaMemoryItemRepository,
   PrismaMemorySuggestionRepository,
+  readMemoryServiceEnabled,
   type MemoryDashboardItemDto,
   type MemoryDashboardSuggestionDto,
 } from "@reviewrouter/features-memory";
@@ -192,6 +194,10 @@ async function loadDashboardData(
   const orgRulesetStore = new PrismaOrgRulesetProvisioningRepository(prisma);
   const memoryItemStore = new PrismaMemoryItemRepository(prisma);
   const memorySuggestionStore = new PrismaMemorySuggestionRepository(prisma);
+  const memoryPolicyConfig = new EntitlementMemoryPolicyConfig(
+    entitlementStore,
+    { serviceEnabled: readMemoryServiceEnabled(process.env) },
+  );
 
   const dashboardData = await Promise.all(
     workspaces.map(
@@ -229,6 +235,7 @@ async function loadDashboardData(
         >;
         memoryItems: readonly MemoryDashboardItemDto[];
         memorySuggestions: readonly MemoryDashboardSuggestionDto[];
+        memoryWritesEnabled: boolean;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -301,19 +308,21 @@ async function loadDashboardData(
         const orgRuleset = await orgRulesetStore.findByWorkspaceId(
           workspace.id,
         );
-        const [memoryItems, memorySuggestions] = await Promise.all([
-          listMemoryItemsForDashboard(
-            { workspaceId: workspace.id, limit: 25 },
-            { memoryItems: memoryItemStore },
-          ),
-          listMemorySuggestionsForDashboard(
-            { workspaceId: workspace.id, limit: 25 },
-            {
-              memorySuggestions: memorySuggestionStore,
-              clock: { now: () => new Date() },
-            },
-          ),
-        ]);
+        const [memoryItems, memorySuggestions, memoryPolicy] =
+          await Promise.all([
+            listMemoryItemsForDashboard(
+              { workspaceId: workspace.id, limit: 25 },
+              { memoryItems: memoryItemStore },
+            ),
+            listMemorySuggestionsForDashboard(
+              { workspaceId: workspace.id, limit: 25 },
+              {
+                memorySuggestions: memorySuggestionStore,
+                clock: { now: () => new Date() },
+              },
+            ),
+            memoryPolicyConfig.getPolicy({ workspaceId: workspace.id }),
+          ]);
 
         return {
           workspace: {
@@ -340,6 +349,7 @@ async function loadDashboardData(
           orgRuleset,
           memoryItems: memoryItems.items,
           memorySuggestions: memorySuggestions.suggestions,
+          memoryWritesEnabled: memoryPolicy.memoryEnabled,
         };
       },
     ),
@@ -812,6 +822,7 @@ function WorkspaceCard({
     orgRuleset,
     memoryItems,
     memorySuggestions,
+    memoryWritesEnabled,
   } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
@@ -920,6 +931,7 @@ function WorkspaceCard({
             memoryItems={memoryItems}
             memorySuggestions={memorySuggestions}
             mutationsEnabled={mutationsEnabled}
+            memoryWritesEnabled={memoryWritesEnabled}
             mode={selectedMemoryMode}
             modeLinks={dashboardMemoryModeLinks(workspaceKey)}
           />
@@ -2913,6 +2925,7 @@ function isMemoryError(error: string): boolean {
     "contains_prompt_injection",
     "contains_secret_like_text",
     "memory_active_item_quota_exceeded",
+    "memory_disabled",
     "memory_not_found",
     "memory_pending_suggestion_quota_exceeded",
     "memory_safety_blocked",
@@ -3042,6 +3055,8 @@ function dashboardErrorText(error: string): string {
       return "This repository is not available for memory changes. It may be archived, unselected, or outside the workspace.";
     case "memory_active_item_quota_exceeded":
       return "Workspace memory quota is full. Disable or delete older memory before saving or confirming new memory.";
+    case "memory_disabled":
+      return "Balanced Memory is disabled for this workspace or environment. Existing memory can still be reviewed and removed by authorized admins.";
     case "memory_pending_suggestion_quota_exceeded":
       return "Workspace pending memory suggestion quota is full. Confirm, reject, or let expired suggestions clear before saving more suggestions.";
     case "memory_not_found":

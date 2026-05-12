@@ -99,9 +99,6 @@ export async function exportMemoryItems(
     workspaceId: input.workspaceId,
     repositoryId: null,
   });
-  if (!policy.memoryEnabled) {
-    return { status: "rejected", reason: "memory_disabled", retryable: false };
-  }
   const limit = normalizeExportLimit(input.limit, policy.export);
   const maxBytes = normalizeExportMaxBytes(input.maxBytes, policy.export);
 

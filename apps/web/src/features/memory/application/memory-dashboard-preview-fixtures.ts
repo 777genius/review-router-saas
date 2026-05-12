@@ -8,6 +8,7 @@ export type MemoryDashboardPreviewScenario =
   | "normal"
   | "empty"
   | "readonly"
+  | "writes_disabled"
   | "over_quota"
   | "stale_edit"
   | "indexing_degraded";
@@ -20,6 +21,7 @@ export type MemoryDashboardPreviewData = {
   readonly memoryItems: readonly MemoryDashboardItemDto[];
   readonly memorySuggestions: readonly MemoryDashboardSuggestionDto[];
   readonly mutationsEnabled: boolean;
+  readonly memoryWritesEnabled: boolean;
 };
 
 export function buildMemoryDashboardPreviewData(input: {
@@ -35,6 +37,7 @@ export function buildMemoryDashboardPreviewData(input: {
       memoryItems: [],
       memorySuggestions: [],
       mutationsEnabled: true,
+      memoryWritesEnabled: true,
     };
   }
 
@@ -46,6 +49,7 @@ export function buildMemoryDashboardPreviewData(input: {
     memoryItems: buildPreviewMemoryItems({ degradedIndex }),
     memorySuggestions: buildPreviewMemorySuggestions(),
     mutationsEnabled: input.scenario !== "readonly",
+    memoryWritesEnabled: input.scenario !== "writes_disabled",
   };
 }
 

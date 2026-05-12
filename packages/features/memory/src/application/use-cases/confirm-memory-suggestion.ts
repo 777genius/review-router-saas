@@ -14,6 +14,7 @@ import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
 } from "./memory-use-case-types";
+import { evaluateMemoryWritePolicy } from "./enforce-memory-policy";
 import { rejectIfActiveMemoryItemQuotaExceeded } from "./enforce-memory-quota";
 
 export type ConfirmMemorySuggestionInput = {
@@ -51,6 +52,17 @@ export async function confirmMemorySuggestion(
   const scope = input.optionalScope ?? existing.suggestedScope;
   const repositoryId = scope === "repository" ? existing.repositoryId : null;
   const userId = scope === "user_prefs" ? existing.userId : null;
+  const policyResult = await evaluateMemoryWritePolicy(
+    {
+      workspaceId: input.workspaceId,
+      repositoryId,
+      scope,
+    },
+    dependencies,
+  );
+  if (!policyResult.allowed) {
+    return policyResult.rejection;
+  }
   const permission = await dependencies.memoryPermissions.canConfirmMemory({
     workspaceId: input.workspaceId,
     repositoryId,

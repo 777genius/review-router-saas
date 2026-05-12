@@ -1,12 +1,13 @@
 import {
   CryptoMemoryIdGenerator,
+  EntitlementMemoryPolicyConfig,
   EntitlementMemoryQuotaPolicy,
   PrismaMemoryItemRepository,
   PrismaMemoryPermission,
-  StaticMemoryPolicyConfig,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
   PrismaMemoryUsageEventRepository,
+  readMemoryServiceEnabled,
   type MemoryActor,
   type MemoryUseCaseDependencies,
 } from "@reviewrouter/features-memory";
@@ -52,7 +53,10 @@ export function createDashboardMemoryDependencies(input: {
         "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
       ),
     }),
-    memoryPolicyConfig: new StaticMemoryPolicyConfig(),
+    memoryPolicyConfig: new EntitlementMemoryPolicyConfig(
+      new PrismaEntitlementRepository(input.prisma),
+      { serviceEnabled: readMemoryServiceEnabled(process.env) },
+    ),
     memoryUsageEvents: new PrismaMemoryUsageEventRepository(input.prisma),
     memoryQuotaPolicy: new EntitlementMemoryQuotaPolicy(
       new PrismaEntitlementRepository(input.prisma),

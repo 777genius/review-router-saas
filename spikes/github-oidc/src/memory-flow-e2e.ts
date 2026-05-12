@@ -74,6 +74,8 @@ type MemoryCommandResponse = {
 type ActionMemoryBundle = {
   readonly protocolVersion: 1;
   readonly memoryVersion: number;
+  readonly degraded: boolean;
+  readonly reason: string | null;
   readonly items: readonly {
     readonly id: string;
     readonly scope: string;
@@ -107,6 +109,7 @@ const adminLogin = `rr-memory-admin-${suffix}`;
 const memberLogin = `rr-memory-member-${suffix}`;
 const otherAdminLogin = `rr-memory-other-admin-${suffix}`;
 const quotaAdminLogin = `rr-memory-quota-admin-${suffix}`;
+const disabledAdminLogin = `rr-memory-disabled-admin-${suffix}`;
 const actionSessionSecret =
   process.env.REVIEW_ROUTER_ACTION_SESSION_SECRET ??
   process.env.AUTH_SECRET ??
@@ -158,6 +161,23 @@ try {
     adminLogin: quotaAdminLogin,
   });
   workspaceSlugs.push(quota.workspaceSlug);
+
+  const disabled = await createRepositoryFixture({
+    workspaceSlug: `rr-memory-e2e-disabled-${suffix}`,
+    workspaceName: `Memory E2E Disabled ${suffix}`,
+    installationGithubId: BigInt(`99${suffix}`),
+    repositoryGithubId: BigInt(`90${suffix}`),
+    owner: "review-router-memory-e2e-disabled",
+    name: `repo-${suffix}`,
+    adminLogin: disabledAdminLogin,
+  });
+  workspaceSlugs.push(disabled.workspaceSlug);
+
+  const disabledEntitlement = freeBetaEntitlement(disabled.workspaceId);
+  await new PrismaEntitlementRepository(prisma).upsertWorkspaceEntitlement({
+    ...disabledEntitlement,
+    flags: { ...disabledEntitlement.flags, balanced_memory: false },
+  });
 
   const quotaEntitlement = freeBetaEntitlement(quota.workspaceId);
   await new PrismaEntitlementRepository(prisma).upsertWorkspaceEntitlement({
@@ -215,6 +235,28 @@ try {
       }),
     ],
     [
+      "disabled-admin-interaction",
+      claims({
+        token: "disabled-admin-interaction",
+        repository: disabled,
+        actor: disabledAdminLogin,
+        eventName: "issue_comment",
+        runSuffix: "disabled-admin-interaction",
+        workflowPath: ".github/workflows/reviewrouter-interaction.yml",
+      }),
+    ],
+    [
+      "disabled-review",
+      claims({
+        token: "disabled-review",
+        repository: disabled,
+        actor: disabledAdminLogin,
+        eventName: "pull_request",
+        runSuffix: "disabled-review",
+        workflowPath: ".github/workflows/reviewrouter.yml",
+      }),
+    ],
+    [
       "primary-review-before-disable",
       claims({
         token: "primary-review-before-disable",
@@ -255,6 +297,49 @@ try {
   const memberSession = await exchange(baseUrl, "member-interaction");
   const otherAdminSession = await exchange(baseUrl, "other-admin-interaction");
   const quotaAdminSession = await exchange(baseUrl, "quota-admin-interaction");
+  const disabledAdminSession = await exchange(
+    baseUrl,
+    "disabled-admin-interaction",
+  );
+  const disabledReviewSession = await exchange(baseUrl, "disabled-review");
+
+  const disabledBundle = await getJson<ActionMemoryBundle>(
+    baseUrl,
+    "/api/action/v1/memory",
+    disabledReviewSession.sessionToken,
+  );
+  assertEqual(
+    disabledBundle.degraded,
+    true,
+    "disabled workspace bundle degraded",
+  );
+  assertEqual(
+    disabledBundle.reason,
+    "memory_disabled",
+    "disabled workspace bundle reason",
+  );
+  assertEqual(
+    disabledBundle.items.length,
+    0,
+    "disabled workspace bundle items",
+  );
+  const disabledCandidate = await postCandidate(baseUrl, disabledAdminSession, {
+    sourceId: `memory-e2e-disabled-candidate-${suffix}`,
+    body: "Disabled workspace must not save memory.",
+    intent: "explicit_command",
+    extractionMethod: "explicit_command",
+    requestedScope: "repository",
+  });
+  assertEqual(
+    disabledCandidate.status,
+    "rejected",
+    "disabled workspace candidate status",
+  );
+  assertEqual(
+    disabledCandidate.reason,
+    "memory_disabled",
+    "disabled workspace candidate reason",
+  );
 
   const quotaFirstItem = await postCandidate(baseUrl, quotaAdminSession, {
     sourceId: `memory-e2e-quota-first-${suffix}`,
@@ -1077,6 +1162,8 @@ try {
     {
       protocolVersion: 1,
       memoryVersion: 1,
+      degraded: false,
+      reason: null,
       items: exportedMemory.export.items.map((item) => ({
         id: item.id,
         scope: item.scope,
