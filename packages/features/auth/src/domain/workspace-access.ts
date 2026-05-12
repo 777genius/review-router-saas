@@ -14,6 +14,14 @@ export function canMutateWorkspace(input: {
   readonly githubLogin: string;
   readonly localAdminGithubLogins?: readonly string[];
 }): WorkspaceAccessDecision {
+  return canAdminWorkspace(input);
+}
+
+export function canAdminWorkspace(input: {
+  readonly role: WorkspaceAccessRole | null;
+  readonly githubLogin: string;
+  readonly localAdminGithubLogins?: readonly string[];
+}): WorkspaceAccessDecision {
   if (
     input.localAdminGithubLogins?.some(
       (login) => login.toLowerCase() === input.githubLogin.toLowerCase(),

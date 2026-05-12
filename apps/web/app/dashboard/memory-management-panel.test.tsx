@@ -52,6 +52,9 @@ describe("MemoryManagementPanel", () => {
     expect(screen.getByRole("table")).toBeTruthy();
     expect(screen.getByText("Showing 1-1 of 1")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Export JSON" }).getAttribute("href"),
+    ).toBe("/api/dashboard/memory/export?workspace=workspace_1");
   });
 
   it("shows retention impact before destructive memory actions", () => {

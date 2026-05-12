@@ -8,6 +8,7 @@ export type MemoryAuditEvent = {
     | "memory.item.edited"
     | "memory.item.expired"
     | "memory.item.pruned"
+    | "memory.export.created"
     | "memory.suggestion.created"
     | "memory.suggestion.blocked"
     | "memory.suggestion.confirmed"
@@ -19,7 +20,8 @@ export type MemoryAuditEvent = {
     | "memory_item"
     | "memory_suggestion"
     | "memory_bundle"
-    | "memory_retention";
+    | "memory_retention"
+    | "memory_export";
   readonly targetId: string;
   readonly metadata: Record<string, unknown>;
 };

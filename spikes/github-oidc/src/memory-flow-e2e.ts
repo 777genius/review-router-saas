@@ -11,7 +11,9 @@ import {
   buildActionMemoryBundle,
   createMemoryBodyHash,
   deletedMemoryBodyPlaceholder,
+  exportMemoryItems,
   PrismaMemoryItemRepository,
+  PrismaMemoryPermission,
   PrismaMemorySearchIndex,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
@@ -1045,6 +1047,70 @@ try {
     JSON.stringify(redactedOriginSuggestion),
     "Run dashboard memory changes through browser layout checks.",
     "deleted origin suggestion must not retain body/source",
+  );
+
+  const exportedMemory = await exportMemoryItems(
+    {
+      workspaceId: primary.workspaceId,
+      actor: {
+        kind: "github_user",
+        id: `memory-e2e-admin-${suffix}`,
+        githubUserId: null,
+        login: adminLogin,
+      },
+    },
+    {
+      clock: new SystemClock(),
+      memoryItems: new PrismaMemoryItemRepository(prisma),
+      memoryPermissions: new PrismaMemoryPermission(prisma),
+      memoryTransaction: new PrismaMemoryTransaction(prisma),
+    },
+  );
+  assertEqual(exportedMemory.status, "exported", "memory export status");
+  if (exportedMemory.status !== "exported") {
+    throw new Error("memory export was not created");
+  }
+  assertBundleContains(
+    {
+      protocolVersion: 1,
+      memoryVersion: 1,
+      items: exportedMemory.export.items.map((item) => ({
+        id: item.id,
+        scope: item.scope,
+        body: item.body,
+      })),
+    },
+    [
+      "Use Prisma migrations for schema changes.",
+      "Prefer guard clauses in service methods.",
+      "TTL expired memory item must leave runtime bundles.",
+    ],
+  );
+  assertStringDoesNotContain(
+    JSON.stringify(exportedMemory.export),
+    "Run dashboard memory changes through browser layout checks.",
+    "memory export must not include deleted memory body",
+  );
+  assertStringDoesNotContain(
+    JSON.stringify(exportedMemory.export),
+    "redactedExcerpt",
+    "memory export must not include source excerpt field",
+  );
+  const exportAudit = await prisma.auditEvent.findFirst({
+    where: {
+      workspaceId: primary.workspaceId,
+      action: "memory.export.created",
+      targetId: exportedMemory.export.manifest.exportId,
+    },
+    select: { metadata: true },
+  });
+  if (!exportAudit) {
+    throw new Error("memory export access was not audited");
+  }
+  assertStringDoesNotContain(
+    JSON.stringify(exportAudit),
+    "Use Prisma migrations for schema changes.",
+    "memory export audit must not contain body",
   );
 
   const oldTerminalUpdatedAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);

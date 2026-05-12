@@ -1,6 +1,7 @@
 import { App } from "@octokit/app";
 import { getServerSession } from "next-auth";
 import {
+  assertWorkspaceAdminAllowed,
   assertWorkspaceMutationAllowed,
   listVisibleWorkspaceScope,
   PrismaWorkspaceAccessRepository,
@@ -16,6 +17,8 @@ type DashboardMutationActor = {
   readonly githubLogin: string;
   readonly actor: string;
 };
+
+export type DashboardWorkspaceAdminActor = DashboardMutationActor;
 
 export type DashboardMutationStatus = {
   readonly enabled: boolean;
@@ -91,6 +94,37 @@ export async function assertDashboardMutationAllowed(
   }
 
   await assertWorkspaceMutationAllowed(
+    {
+      workspaceId,
+      githubUserId,
+      githubLogin,
+      localAdminGithubLogins: readCsvEnv(
+        "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
+      ),
+    },
+    {
+      workspaceAccess: new PrismaWorkspaceAccessRepository(getPrisma()),
+    },
+  );
+
+  return { githubUserId, githubLogin, actor: `user:${githubLogin}` };
+}
+
+export async function assertDashboardWorkspaceAdminAllowed(
+  workspaceId: string,
+): Promise<DashboardWorkspaceAdminActor> {
+  if (!getAuthEnvironmentStatus().configured) {
+    throw new Error("dashboard_auth_misconfigured");
+  }
+
+  const session = await getServerSession(authOptions);
+  const githubUserId = session?.user?.githubUserId;
+  const githubLogin = session?.user?.githubLogin;
+  if (!githubUserId || !githubLogin) {
+    throw new Error("dashboard_admin_requires_sign_in");
+  }
+
+  await assertWorkspaceAdminAllowed(
     {
       workspaceId,
       githubUserId,

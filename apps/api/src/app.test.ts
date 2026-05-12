@@ -300,6 +300,31 @@ class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
       .slice(0, input.limit);
   }
 
+  async listForExport(input: {
+    readonly workspaceId: string;
+    readonly statuses: readonly Exclude<
+      MemoryItemSnapshot["status"],
+      "deleted"
+    >[];
+    readonly limit: number;
+  }) {
+    const exportable = this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) =>
+        (input.statuses as readonly MemoryItemSnapshot["status"][]).includes(
+          item.status,
+        ),
+      );
+    return {
+      items: exportable.slice(0, input.limit),
+      totalMatchingCount: exportable.length,
+      excludedDeletedCount: this.values().filter(
+        (item) =>
+          item.workspaceId === input.workspaceId && item.status === "deleted",
+      ).length,
+    };
+  }
+
   async listExpiredActive(input: {
     readonly workspaceId: string;
     readonly expiredAtOrBefore: Date;

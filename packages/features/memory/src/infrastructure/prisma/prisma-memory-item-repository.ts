@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/client";
 import type {
   ListExpiredActiveMemoryItemsInput,
+  ListMemoryItemsForExportInput,
+  ListMemoryItemsForExportResult,
   ListPrunableTerminalMemoryItemsInput,
   ListWorkspaceIdsWithExpiredActiveMemoryInput,
   ListWorkspaceIdsWithPrunableTerminalMemoryInput,
@@ -204,6 +206,33 @@ export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
       take: input.limit,
     });
     return record.map(toMemoryItemSnapshot);
+  }
+
+  async listForExport(
+    input: ListMemoryItemsForExportInput,
+  ): Promise<ListMemoryItemsForExportResult> {
+    const where = {
+      workspaceId: input.workspaceId,
+      status: { in: [...input.statuses] },
+    } satisfies Prisma.MemoryItemWhereInput;
+    const [records, totalMatchingCount, excludedDeletedCount] =
+      await Promise.all([
+        this.prisma.memoryItem.findMany({
+          where,
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          take: input.limit,
+        }),
+        this.prisma.memoryItem.count({ where }),
+        this.prisma.memoryItem.count({
+          where: { workspaceId: input.workspaceId, status: "deleted" },
+        }),
+      ]);
+
+    return {
+      items: records.map(toMemoryItemSnapshot),
+      totalMatchingCount,
+      excludedDeletedCount,
+    };
   }
 
   async listExpiredActive(

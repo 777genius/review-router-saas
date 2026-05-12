@@ -77,6 +77,18 @@ export type PruneTerminalMemoryItemsRepositoryResult = {
   readonly deletedIds: readonly string[];
 };
 
+export type ListMemoryItemsForExportInput = {
+  readonly workspaceId: string;
+  readonly statuses: readonly Exclude<MemoryItemStatus, "deleted">[];
+  readonly limit: number;
+};
+
+export type ListMemoryItemsForExportResult = {
+  readonly items: readonly MemoryItemSnapshot[];
+  readonly totalMatchingCount: number;
+  readonly excludedDeletedCount: number;
+};
+
 export interface MemoryItemRepositoryPort {
   save(
     item: MemoryItem,
@@ -125,6 +137,10 @@ export interface MemoryItemRepositoryPort {
     readonly limit: number;
     readonly cursor?: MemoryDashboardRepositoryCursor;
   }): Promise<readonly MemoryItemSnapshot[]>;
+
+  listForExport(
+    input: ListMemoryItemsForExportInput,
+  ): Promise<ListMemoryItemsForExportResult>;
 
   listExpiredActive(
     input: ListExpiredActiveMemoryItemsInput,

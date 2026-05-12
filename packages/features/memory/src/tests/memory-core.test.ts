@@ -65,6 +65,7 @@ import { confirmMemorySuggestion } from "../application/use-cases/confirm-memory
 import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
 import { disableMemoryItem } from "../application/use-cases/disable-memory-item";
 import { editMemoryItem } from "../application/use-cases/edit-memory-item";
+import { exportMemoryItems } from "../application/use-cases/export-memory-items";
 import {
   expireActiveMemoryItems,
   expireActiveMemoryItemsAcrossWorkspaces,
@@ -224,6 +225,37 @@ class InMemoryItems implements MemoryItemRepositoryPort {
         input.cursor ? isAfterDashboardCursor(item, input.cursor) : true,
       )
       .slice(0, input.limit);
+  }
+
+  async listForExport(input: {
+    readonly workspaceId: string;
+    readonly statuses: readonly Exclude<
+      MemoryItemSnapshot["status"],
+      "deleted"
+    >[];
+    readonly limit: number;
+  }) {
+    const exportable = [...this.items.values()]
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) =>
+        (input.statuses as readonly MemoryItemSnapshot["status"][]).includes(
+          item.status,
+        ),
+      )
+      .sort((left, right) => {
+        const createdAtDelta =
+          left.createdAt.getTime() - right.createdAt.getTime();
+        if (createdAtDelta !== 0) return createdAtDelta;
+        return left.id.localeCompare(right.id);
+      });
+    return {
+      items: exportable.slice(0, input.limit),
+      totalMatchingCount: exportable.length,
+      excludedDeletedCount: [...this.items.values()].filter(
+        (item) =>
+          item.workspaceId === input.workspaceId && item.status === "deleted",
+      ).length,
+    };
   }
 
   async listExpiredActive(input: {
@@ -2340,6 +2372,125 @@ describe("memory core", () => {
     );
   });
 
+  it("exports workspace memory without deleted rows or raw source excerpts", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+      "user_maintainer:workspace": { allowed: true },
+    });
+    const privateSourceBody = "Private source excerpt must not be exported.";
+    const active = await rememberMemoryDirectly(
+      {
+        ...memoryInput("repository", "Export active memory body."),
+        source: privatePrCommentSource({
+          sourceId: "private-comment-1",
+          body: privateSourceBody,
+        }),
+      },
+      deps,
+    );
+    const disabled = await rememberMemoryDirectly(
+      memoryInput("repository", "Export disabled memory body."),
+      deps,
+    );
+    const expired = await rememberMemoryDirectly(
+      memoryInput("repository", "Export expired memory body."),
+      deps,
+    );
+    const deleted = await rememberMemoryDirectly(
+      memoryInput("repository", "Deleted export body must not appear."),
+      deps,
+    );
+    if (
+      active.status !== "created" ||
+      disabled.status !== "created" ||
+      expired.status !== "created" ||
+      deleted.status !== "created"
+    ) {
+      throw new Error("expected_created_memory_items");
+    }
+    await disableMemoryItem(
+      { workspaceId: "workspace_1", itemId: disabled.id, actor: maintainer },
+      deps,
+    );
+    setMemoryItemSnapshot(deps, expired.id, {
+      status: "expired",
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+    await deleteMemoryItem(
+      { workspaceId: "workspace_1", itemId: deleted.id, actor: maintainer },
+      deps,
+    );
+
+    const result = await exportMemoryItems(
+      { workspaceId: "workspace_1", actor: maintainer },
+      deps,
+    );
+
+    expect(result.status).toBe("exported");
+    if (result.status !== "exported") throw new Error("expected_export");
+    expect(result.export.manifest).toMatchObject({
+      schemaVersion: 1,
+      workspaceId: "workspace_1",
+      createdBy: "github_user:user_maintainer",
+      itemCount: 3,
+      excludedDeletedCount: 1,
+      truncatedCount: 0,
+      format: "json",
+    });
+    expect(result.export.items.map((item) => item.body)).toEqual([
+      "Export active memory body.",
+      "Export disabled memory body.",
+      "Export expired memory body.",
+    ]);
+    expect(result.export.items[0]?.source).toMatchObject({
+      sourceId: "private-comment-1",
+      url: null,
+      sourceVisibility: "private",
+    });
+    const serializedExport = JSON.stringify(result.export);
+    expect(serializedExport).not.toContain(privateSourceBody);
+    expect(serializedExport).not.toContain(
+      "Deleted export body must not appear",
+    );
+    expect(serializedExport).not.toContain("redactedExcerpt");
+    expect(serializedExport).not.toContain("sourceHash");
+    const exportAudit = deps.memoryAudit.events.at(-1);
+    expect(exportAudit).toMatchObject({
+      actor: "github_user:user_maintainer",
+      action: "memory.export.created",
+      targetType: "memory_export",
+      metadata: {
+        itemCount: 3,
+        excludedDeletedCount: 1,
+        truncatedCount: 0,
+        checksumSha256: result.export.manifest.checksumSha256,
+        format: "json",
+      },
+    });
+    expect(JSON.stringify(exportAudit)).not.toContain(
+      "Export active memory body",
+    );
+  });
+
+  it("requires workspace admin authority for memory export", async () => {
+    const deps = createHarness({
+      "user_author:repository": { allowed: true },
+    });
+
+    const result = await exportMemoryItems(
+      { workspaceId: "workspace_1", actor: prAuthor },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "not_workspace_admin",
+      retryable: false,
+    });
+    expect(deps.memoryAudit.events).toHaveLength(0);
+  });
+
   it("treats expired pending suggestions as noop on confirm before worker runs", async () => {
     const deps = createHarness({});
     const proposed = await proposeMemoryFromInteraction(
@@ -2919,6 +3070,24 @@ function memoryInput(scope: MemoryScope, body: string) {
     body,
     source: createDashboardMemorySource({ actorLogin: "maintainer" }),
     actor: maintainer,
+  };
+}
+
+function privatePrCommentSource(input: {
+  readonly sourceId: string;
+  readonly body: string;
+}) {
+  return {
+    type: "pr_comment" as const,
+    sourceId: input.sourceId,
+    githubCommentId: "10000001",
+    githubPullRequestNumber: 1,
+    githubRepositoryId: "123456",
+    url: "https://github.com/example/private/pull/1#issuecomment-10000001",
+    actorLogin: "maintainer",
+    redactedExcerpt: input.body,
+    sourceHash: createMemoryBodyHash(input.body),
+    sourceVisibility: "private" as const,
   };
 }
 

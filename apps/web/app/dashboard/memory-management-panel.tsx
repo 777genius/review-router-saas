@@ -10,6 +10,7 @@ import {
   DialogRoot,
   DialogTitle,
   DialogTrigger,
+  LinkButton,
 } from "@reviewrouter/ui";
 import type {
   MemoryDashboardItemDto,
@@ -616,9 +617,13 @@ function MemoryConfirmedTable({
         </div>
         <div className="flex flex-wrap gap-2">
           <MemoryBadge tone="neutral">{activeCount} active</MemoryBadge>
-          <Button type="button" variant="outline" size="sm" disabled>
-            Export CSV
-          </Button>
+          <LinkButton
+            href={`/api/dashboard/memory/export?workspace=${encodeURIComponent(workspaceId)}`}
+            variant="outline"
+            size="sm"
+          >
+            Export JSON
+          </LinkButton>
         </div>
       </div>
       <div className="mt-4 overflow-x-auto">

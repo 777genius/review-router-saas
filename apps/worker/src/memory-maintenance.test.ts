@@ -196,6 +196,14 @@ class CapturingItemRepository implements MemoryItemRepositoryPort {
     throw new Error("not_implemented");
   }
 
+  async listForExport(): Promise<{
+    readonly items: readonly MemoryItemSnapshot[];
+    readonly totalMatchingCount: number;
+    readonly excludedDeletedCount: number;
+  }> {
+    throw new Error("not_implemented");
+  }
+
   async listExpiredActive(input: {
     readonly workspaceId: string;
     readonly expiredAtOrBefore: Date;
