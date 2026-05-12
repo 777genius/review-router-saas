@@ -1,5 +1,9 @@
 import { MemoryError } from "../../domain/memory-errors";
-import { MemorySuggestion } from "../../domain/memory-suggestion";
+import {
+  MemorySuggestion,
+  type MemorySuggestionSnapshot,
+} from "../../domain/memory-suggestion";
+import type { MemoryTransactionalPorts } from "../ports/memory-transaction-port";
 import type { MemoryUseCaseDependencies } from "./memory-use-case-types";
 
 export type ExpirePendingMemorySuggestionsInput = {
@@ -23,6 +27,12 @@ export type ExpirePendingMemorySuggestionsAcrossWorkspacesResult = {
   readonly expiredCount: number;
 };
 
+export type ExpirePendingMemorySuggestionIfExpiredInput = {
+  readonly workspaceId: string;
+  readonly suggestion: MemorySuggestionSnapshot;
+  readonly now: Date;
+};
+
 export async function expirePendingMemorySuggestions(
   input: ExpirePendingMemorySuggestionsInput,
   dependencies: Pick<
@@ -44,24 +54,14 @@ export async function expirePendingMemorySuggestions(
   await dependencies.memoryTransaction.run(async (tx) => {
     for (const snapshot of expired) {
       try {
-        const suggestion = MemorySuggestion.fromSnapshot(snapshot).expire({
-          now,
-        });
-        const next = suggestion.snapshot();
-        await tx.memorySuggestions.save(suggestion);
-        await tx.memoryAudit.record({
-          workspaceId: input.workspaceId,
-          actor: "system:memory-retention",
-          action: "memory.suggestion.expired",
-          targetType: "memory_suggestion",
-          targetId: snapshot.id,
-          metadata: {
-            scope: snapshot.suggestedScope,
-            suggestedBodyHash: snapshot.suggestedBodyHash,
-            previousVersion: snapshot.version,
-            version: next.version,
+        await saveExpiredSuggestion(
+          {
+            workspaceId: input.workspaceId,
+            previous: snapshot,
+            suggestion: expireSuggestionSnapshot({ snapshot, now }),
           },
-        });
+          tx,
+        );
         expiredCount += 1;
       } catch (error) {
         if (
@@ -120,6 +120,77 @@ export async function expirePendingMemorySuggestionsAcrossWorkspaces(
         workspaceCount: workspaceIds.length,
         expiredCount,
       };
+}
+
+export async function expirePendingMemorySuggestionIfExpired(
+  input: ExpirePendingMemorySuggestionIfExpiredInput,
+  dependencies: Pick<MemoryUseCaseDependencies, "memoryTransaction">,
+): Promise<boolean> {
+  if (
+    input.suggestion.status !== "pending" ||
+    input.suggestion.expiresAt > input.now
+  ) {
+    return false;
+  }
+
+  try {
+    await dependencies.memoryTransaction.run(async (tx) => {
+      await saveExpiredSuggestion(
+        {
+          workspaceId: input.workspaceId,
+          previous: input.suggestion,
+          suggestion: expireSuggestionSnapshot({
+            snapshot: input.suggestion,
+            now: input.now,
+          }),
+        },
+        tx,
+      );
+    });
+    return true;
+  } catch (error) {
+    if (
+      error instanceof MemoryError &&
+      error.code === "memory_version_conflict"
+    ) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+function expireSuggestionSnapshot(input: {
+  readonly snapshot: MemorySuggestionSnapshot;
+  readonly now: Date;
+}): MemorySuggestion {
+  return MemorySuggestion.fromSnapshot(input.snapshot).expire({
+    now: input.now,
+  });
+}
+
+async function saveExpiredSuggestion(
+  input: {
+    readonly workspaceId: string;
+    readonly previous: MemorySuggestionSnapshot;
+    readonly suggestion: MemorySuggestion;
+  },
+  tx: MemoryTransactionalPorts,
+): Promise<void> {
+  const next = input.suggestion.snapshot();
+  await tx.memorySuggestions.save(input.suggestion);
+  await tx.memoryAudit.record({
+    workspaceId: input.workspaceId,
+    actor: "system:memory-retention",
+    action: "memory.suggestion.expired",
+    targetType: "memory_suggestion",
+    targetId: input.previous.id,
+    metadata: {
+      scope: input.previous.suggestedScope,
+      suggestedBodyHash: input.previous.suggestedBodyHash,
+      previousVersion: input.previous.version,
+      version: next.version,
+    },
+  });
 }
 
 function normalizeRetentionBatchLimit(value: number | undefined): number {

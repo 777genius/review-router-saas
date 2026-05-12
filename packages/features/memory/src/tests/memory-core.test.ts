@@ -1462,6 +1462,106 @@ describe("memory core", () => {
     );
   });
 
+  it("treats expired pending suggestions as noop on confirm before worker runs", async () => {
+    const deps = createHarness({});
+    const proposed = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Expired confirm must not create memory.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    if (proposed.status !== "created") throw new Error("missing_suggestion");
+    const snapshot = deps.memorySuggestions.suggestions.get(proposed.id);
+    if (!snapshot) throw new Error("missing_suggestion");
+    deps.memorySuggestions.suggestions.set(proposed.id, {
+      ...snapshot,
+      expiresAt: new Date(now.getTime() - 1_000),
+    });
+
+    const result = await confirmMemorySuggestion(
+      {
+        workspaceId: "workspace_1",
+        suggestionId: proposed.id,
+        actor: prAuthor,
+      },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "noop",
+      reason: "expired",
+      id: proposed.id,
+    });
+    expect(deps.memorySuggestions.suggestions.get(proposed.id)).toMatchObject({
+      status: "expired",
+      resolvedBy: "system:memory-retention",
+      resolutionReason: "expired",
+    });
+    expect(deps.memoryItems.items).toHaveLength(0);
+    expect(deps.memoryAudit.events.at(-1)).toMatchObject({
+      action: "memory.suggestion.expired",
+      targetId: proposed.id,
+    });
+    expect(JSON.stringify(deps.memoryAudit.events.at(-1))).not.toContain(
+      "Expired confirm must not create memory",
+    );
+  });
+
+  it("treats expired pending suggestions as noop on reject before worker runs", async () => {
+    const deps = createHarness({});
+    const proposed = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Expired reject must not require permission.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    if (proposed.status !== "created") throw new Error("missing_suggestion");
+    const snapshot = deps.memorySuggestions.suggestions.get(proposed.id);
+    if (!snapshot) throw new Error("missing_suggestion");
+    deps.memorySuggestions.suggestions.set(proposed.id, {
+      ...snapshot,
+      expiresAt: new Date(now.getTime() - 1_000),
+    });
+
+    const result = await rejectMemorySuggestion(
+      {
+        workspaceId: "workspace_1",
+        suggestionId: proposed.id,
+        actor: prAuthor,
+        reason: "manual_reject",
+      },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "noop",
+      reason: "expired",
+      id: proposed.id,
+    });
+    expect(deps.memorySuggestions.suggestions.get(proposed.id)).toMatchObject({
+      status: "expired",
+      resolvedBy: "system:memory-retention",
+      resolutionReason: "expired",
+    });
+    expect(deps.memoryAudit.events.at(-1)).toMatchObject({
+      action: "memory.suggestion.expired",
+      targetId: proposed.id,
+    });
+    expect(JSON.stringify(deps.memoryAudit.events.at(-1))).not.toContain(
+      "Expired reject must not require permission",
+    );
+  });
+
   it("builds bundles from canonical active items and respects runtime policy", async () => {
     const deps = createHarness({
       "user_maintainer:repository": { allowed: true },

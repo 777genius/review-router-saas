@@ -308,6 +308,51 @@ try {
   });
   assertPresent(otherSuggestion.id, "other workspace suggestion id");
 
+  const staleConfirmSuggestion = await postCandidate(baseUrl, adminSession, {
+    sourceId: `memory-e2e-stale-confirm-suggestion-${suffix}`,
+    body: "TTL expired suggestion must not confirm before maintenance.",
+    intent: "model_suggested_candidate",
+    extractionMethod: "model_suggested_candidate",
+    requestedScope: "repository",
+  });
+  assertEqual(
+    staleConfirmSuggestion.status,
+    "created",
+    "stale confirm suggestion",
+  );
+  assertPresent(staleConfirmSuggestion.id, "stale confirm suggestion id");
+  await prisma.memorySuggestion.update({
+    where: { id: staleConfirmSuggestion.id },
+    data: { expiresAt: new Date(Date.now() - 60_000) },
+  });
+  const staleConfirm = await postCommands(baseUrl, adminSession, [
+    { kind: "confirm_suggestion", suggestionId: staleConfirmSuggestion.id },
+  ]);
+  assertEqual(
+    staleConfirm.results[0]?.status,
+    "noop",
+    "stale expired suggestion confirm status",
+  );
+  assertEqual(
+    staleConfirm.results[0]?.reason,
+    "expired",
+    "stale expired suggestion confirm reason",
+  );
+  assertStringDoesNotContain(
+    JSON.stringify(
+      await prisma.auditEvent.findMany({
+        where: {
+          workspaceId: primary.workspaceId,
+          targetId: staleConfirmSuggestion.id,
+          action: "memory.suggestion.expired",
+        },
+        select: { metadata: true },
+      }),
+    ),
+    "TTL expired suggestion must not confirm before maintenance.",
+    "stale expiry audit must not contain suggestion body",
+  );
+
   const expiringSuggestion = await postCandidate(baseUrl, adminSession, {
     sourceId: `memory-e2e-expiring-suggestion-${suffix}`,
     body: "Expired suggestion must not become project memory.",

@@ -1,6 +1,7 @@
 import type { MemoryActor } from "../../domain/memory-actor";
 import { memoryActorRef } from "../../domain/memory-actor";
 import { MemorySuggestion } from "../../domain/memory-suggestion";
+import { expirePendingMemorySuggestionIfExpired } from "./expire-pending-memory-suggestions";
 import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
@@ -27,6 +28,15 @@ export async function rejectMemorySuggestion(
   if (existing.status !== "pending") {
     return { status: "noop", reason: existing.status, id: existing.id };
   }
+  const now = dependencies.clock.now();
+  if (
+    await expirePendingMemorySuggestionIfExpired(
+      { workspaceId: input.workspaceId, suggestion: existing, now },
+      dependencies,
+    )
+  ) {
+    return { status: "noop", reason: "expired", id: existing.id };
+  }
 
   const permission = await dependencies.memoryPermissions.canConfirmMemory({
     workspaceId: input.workspaceId,
@@ -43,7 +53,6 @@ export async function rejectMemorySuggestion(
     };
   }
 
-  const now = dependencies.clock.now();
   const suggestion = MemorySuggestion.fromSnapshot(existing).reject({
     actor: input.actor,
     reason: input.reason ?? "rejected",

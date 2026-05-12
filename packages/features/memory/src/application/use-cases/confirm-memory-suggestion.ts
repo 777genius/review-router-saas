@@ -9,6 +9,7 @@ import { MemoryItem } from "../../domain/memory-item";
 import { evaluateMemorySafety } from "../../domain/memory-safety-policy";
 import type { MemoryScope } from "../../domain/memory-scope-policy";
 import { MemorySuggestion } from "../../domain/memory-suggestion";
+import { expirePendingMemorySuggestionIfExpired } from "./expire-pending-memory-suggestions";
 import type {
   MemoryMutationResult,
   MemoryUseCaseDependencies,
@@ -35,6 +36,15 @@ export async function confirmMemorySuggestion(
   }
   if (existing.status !== "pending") {
     return { status: "noop", reason: existing.status };
+  }
+  const now = dependencies.clock.now();
+  if (
+    await expirePendingMemorySuggestionIfExpired(
+      { workspaceId: input.workspaceId, suggestion: existing, now },
+      dependencies,
+    )
+  ) {
+    return { status: "noop", reason: "expired", id: existing.id };
   }
 
   const scope = input.optionalScope ?? existing.suggestedScope;
@@ -81,7 +91,6 @@ export async function confirmMemorySuggestion(
     return { status: "noop", reason: "memory_duplicate", id: duplicate.id };
   }
 
-  const now = dependencies.clock.now();
   const item = MemoryItem.create({
     id: dependencies.memoryIds.newId("mem"),
     workspaceId: input.workspaceId,
