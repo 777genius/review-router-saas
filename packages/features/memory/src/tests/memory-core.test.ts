@@ -59,7 +59,10 @@ import { confirmMemorySuggestion } from "../application/use-cases/confirm-memory
 import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
 import { disableMemoryItem } from "../application/use-cases/disable-memory-item";
 import { editMemoryItem } from "../application/use-cases/edit-memory-item";
-import { expirePendingMemorySuggestions } from "../application/use-cases/expire-pending-memory-suggestions";
+import {
+  expirePendingMemorySuggestions,
+  expirePendingMemorySuggestionsAcrossWorkspaces,
+} from "../application/use-cases/expire-pending-memory-suggestions";
 import { listMemoryItemsForDashboard } from "../application/use-cases/list-memory-items-for-dashboard";
 import { listMemorySuggestionsForDashboard } from "../application/use-cases/list-memory-suggestions-for-dashboard";
 import { proposeMemoryFromInteraction } from "../application/use-cases/propose-memory-from-interaction";
@@ -298,6 +301,25 @@ class InMemorySuggestions implements MemorySuggestionRepositoryPort {
         return left.id.localeCompare(right.id);
       })
       .slice(0, input.limit);
+  }
+
+  async listWorkspaceIdsWithExpiredPending(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    const workspaceIds = new Set<string>();
+    for (const suggestion of [...this.suggestions.values()].sort(
+      (left, right) => left.workspaceId.localeCompare(right.workspaceId),
+    )) {
+      if (
+        suggestion.status === "pending" &&
+        suggestion.expiresAt <= input.expiredAtOrBefore
+      ) {
+        workspaceIds.add(suggestion.workspaceId);
+      }
+      if (workspaceIds.size >= input.limit) break;
+    }
+    return [...workspaceIds];
   }
 }
 
@@ -1349,6 +1371,94 @@ describe("memory core", () => {
     });
     expect(JSON.stringify(deps.memoryAudit.events.at(-1))).not.toContain(
       "Expire old suggestion",
+    );
+  });
+
+  it("expires pending memory suggestions across workspaces in bounded batches", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const current = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Keep active suggestion pending.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    const expiredPrimary = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Expire primary workspace suggestion.",
+          actor: maintainer,
+        }),
+      },
+      deps,
+    );
+    const expiredOther = await proposeMemoryFromInteraction(
+      {
+        envelope: candidateEnvelope({
+          intent: "explicit_natural_language",
+          extractionMethod: "explicit_natural_language",
+          body: "Expire other workspace suggestion.",
+          actor: maintainer,
+          workspaceId: "workspace_2",
+          repositoryId: "repo_2",
+        }),
+      },
+      deps,
+    );
+    if (
+      current.status !== "created" ||
+      expiredPrimary.status !== "created" ||
+      expiredOther.status !== "created"
+    ) {
+      throw new Error("expected_created_suggestions");
+    }
+    for (const id of [expiredPrimary.id, expiredOther.id]) {
+      const snapshot = deps.memorySuggestions.suggestions.get(id);
+      if (!snapshot) throw new Error("missing_suggestion");
+      deps.memorySuggestions.suggestions.set(id, {
+        ...snapshot,
+        expiresAt: new Date(now.getTime() - 1_000),
+      });
+    }
+
+    const result = await expirePendingMemorySuggestionsAcrossWorkspaces(
+      { workspaceLimit: 10, perWorkspaceLimit: 1 },
+      deps,
+    );
+
+    expect(result).toEqual({
+      status: "expired",
+      workspaceCount: 2,
+      expiredCount: 2,
+    });
+    expect(deps.memorySuggestions.suggestions.get(current.id)?.status).toBe(
+      "pending",
+    );
+    expect(
+      deps.memorySuggestions.suggestions.get(expiredPrimary.id)?.status,
+    ).toBe("expired");
+    expect(deps.memorySuggestions.suggestions.get(expiredOther.id)?.status).toBe(
+      "expired",
+    );
+    const expiredAuditEvents = deps.memoryAudit.events.filter(
+      (event) => event.action === "memory.suggestion.expired",
+    );
+    expect(expiredAuditEvents.map((event) => event.workspaceId).sort()).toEqual(
+      ["workspace_1", "workspace_2"],
+    );
+    expect(JSON.stringify(expiredAuditEvents)).not.toContain(
+      "Expire primary workspace suggestion",
+    );
+    expect(JSON.stringify(expiredAuditEvents)).not.toContain(
+      "Expire other workspace suggestion",
     );
   });
 

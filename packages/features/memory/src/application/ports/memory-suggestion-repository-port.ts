@@ -38,4 +38,9 @@ export interface MemorySuggestionRepositoryPort {
     readonly expiredAtOrBefore: Date;
     readonly limit: number;
   }): Promise<readonly MemorySuggestionSnapshot[]>;
+
+  listWorkspaceIdsWithExpiredPending(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]>;
 }

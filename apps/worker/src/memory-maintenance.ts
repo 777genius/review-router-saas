@@ -1,4 +1,7 @@
 import {
+  expirePendingMemorySuggestionsAcrossWorkspaces,
+  type MemorySuggestionRepositoryPort,
+  type MemoryTransactionPort,
   pruneMemoryUsageEvents,
   type MemoryUsageEventRetentionPort,
 } from "@reviewrouter/features-memory";
@@ -9,11 +12,19 @@ import { safeWorkerErrorSummary } from "./outbox-worker-loop";
 
 export const memoryUsageTelemetryRetentionLockKey =
   "memory:usage-events:retention";
+export const memorySuggestionExpiryLockKey = "memory:suggestions:expire";
 
 export type MemoryUsageTelemetryMaintenanceConfig = {
   readonly intervalMs: number;
   readonly retentionDays: number;
   readonly limit: number;
+  readonly lockTtlMs: number;
+};
+
+export type MemorySuggestionExpiryMaintenanceConfig = {
+  readonly intervalMs: number;
+  readonly workspaceLimit: number;
+  readonly perWorkspaceLimit: number;
   readonly lockTtlMs: number;
 };
 
@@ -90,6 +101,93 @@ export function isMemoryUsageTelemetryRetentionLockContention(
     error instanceof Error &&
     error.message ===
       `distributed_lock_not_acquired:${memoryUsageTelemetryRetentionLockKey}`
+  );
+}
+
+export function createMemorySuggestionExpiryMaintenance(
+  config: MemorySuggestionExpiryMaintenanceConfig,
+  dependencies: {
+    readonly clock: Clock;
+    readonly memorySuggestions: MemorySuggestionRepositoryPort;
+    readonly memoryTransaction: MemoryTransactionPort;
+    readonly lock: DistributedLock;
+    readonly logger: Pick<Logger, "info" | "warn">;
+  },
+): () => Promise<void> {
+  assertPositiveInteger(
+    config.intervalMs,
+    "memory_suggestion_expiry_interval_invalid",
+  );
+  assertPositiveInteger(
+    config.workspaceLimit,
+    "memory_suggestion_expiry_workspace_limit_invalid",
+  );
+  assertPositiveInteger(
+    config.perWorkspaceLimit,
+    "memory_suggestion_expiry_per_workspace_limit_invalid",
+  );
+  assertPositiveInteger(
+    config.lockTtlMs,
+    "memory_suggestion_expiry_lock_ttl_invalid",
+  );
+
+  let lastAttemptAtMs = 0;
+
+  return async () => {
+    const now = dependencies.clock.now();
+    if (now.getTime() - lastAttemptAtMs < config.intervalMs) {
+      return;
+    }
+    lastAttemptAtMs = now.getTime();
+
+    try {
+      await dependencies.lock.withLock(
+        memorySuggestionExpiryLockKey,
+        config.lockTtlMs,
+        async () => {
+          const result = await expirePendingMemorySuggestionsAcrossWorkspaces(
+            {
+              workspaceLimit: config.workspaceLimit,
+              perWorkspaceLimit: config.perWorkspaceLimit,
+            },
+            {
+              clock: dependencies.clock,
+              memorySuggestions: dependencies.memorySuggestions,
+              memoryTransaction: dependencies.memoryTransaction,
+            },
+          );
+          if (result.expiredCount > 0) {
+            dependencies.logger.info(
+              "ReviewRouter expired pending memory suggestions",
+              {
+                workspaceCount: result.workspaceCount,
+                expiredCount: result.expiredCount,
+              },
+            );
+          }
+        },
+      );
+    } catch (error: unknown) {
+      if (isMemorySuggestionExpiryLockContention(error)) {
+        return;
+      }
+      dependencies.logger.warn(
+        "ReviewRouter memory suggestion expiry maintenance failed",
+        {
+          safeErrorSummary: safeWorkerErrorSummary(error),
+        },
+      );
+    }
+  };
+}
+
+export function isMemorySuggestionExpiryLockContention(
+  error: unknown,
+): boolean {
+  return (
+    error instanceof Error &&
+    error.message ===
+      `distributed_lock_not_acquired:${memorySuggestionExpiryLockKey}`
   );
 }
 

@@ -19,8 +19,10 @@ import {
 } from "@reviewrouter/features-outbox";
 import {
   PrismaMemoryItemRepository,
+  PrismaMemorySuggestionRepository,
   PrismaMemoryUsageEventRepository,
   PrismaMemorySearchIndex,
+  PrismaMemoryTransaction,
 } from "@reviewrouter/features-memory";
 import {
   PrismaRateLimitStore,
@@ -39,7 +41,10 @@ import {
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import { SystemClock } from "@reviewrouter/shared";
-import { createMemoryUsageTelemetryMaintenance } from "./memory-maintenance";
+import {
+  createMemorySuggestionExpiryMaintenance,
+  createMemoryUsageTelemetryMaintenance,
+} from "./memory-maintenance";
 import {
   runOutboxWorkerLoop,
   safeWorkerErrorSummary,
@@ -74,6 +79,8 @@ async function main(): Promise<void> {
       prisma,
       clock,
     );
+    const expirePendingMemorySuggestions =
+      createMemorySuggestionExpiryMaintenanceRunner(prisma, clock);
     const pruneMemoryUsageTelemetry =
       createMemoryUsageTelemetryMaintenanceRunner(prisma, clock);
     const limit = readPositiveIntegerEnv("REVIEW_ROUTER_OUTBOX_BATCH_SIZE", 25);
@@ -94,6 +101,7 @@ async function main(): Promise<void> {
           : emptyOutboxBatchResult();
       await pruneRateLimits();
       await pruneActionOidcReplayNonces();
+      await expirePendingMemorySuggestions();
       await pruneMemoryUsageTelemetry();
       return result;
     };
@@ -308,6 +316,39 @@ function createMemoryUsageTelemetryMaintenanceRunner(
     {
       clock,
       usageEvents: new PrismaMemoryUsageEventRepository(prisma),
+      lock: new PostgresLeaseLock(prisma),
+      logger,
+    },
+  );
+}
+
+function createMemorySuggestionExpiryMaintenanceRunner(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  return createMemorySuggestionExpiryMaintenance(
+    {
+      workspaceLimit: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_SUGGESTION_EXPIRE_WORKSPACE_BATCH_SIZE",
+        50,
+      ),
+      perWorkspaceLimit: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_SUGGESTION_EXPIRE_PER_WORKSPACE_BATCH_SIZE",
+        100,
+      ),
+      intervalMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_SUGGESTION_EXPIRE_INTERVAL_MS",
+        15 * 60 * 1000,
+      ),
+      lockTtlMs: readPositiveIntegerEnv(
+        "REVIEW_ROUTER_MEMORY_SUGGESTION_EXPIRE_LOCK_TTL_MS",
+        5 * 60 * 1000,
+      ),
+    },
+    {
+      clock,
+      memorySuggestions: new PrismaMemorySuggestionRepository(prisma),
+      memoryTransaction: new PrismaMemoryTransaction(prisma),
       lock: new PostgresLeaseLock(prisma),
       logger,
     },

@@ -439,6 +439,7 @@ model MemorySuggestion {
   user       User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, status, expiresAt])
+  @@index([status, expiresAt, workspaceId])
   @@index([workspaceId, repositoryId, status, updatedAt])
   @@index([workspaceId, userId, status])
   @@index([workspaceId, dedupeKey])

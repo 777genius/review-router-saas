@@ -12,6 +12,8 @@ import {
   createMemoryBodyHash,
   PrismaMemoryItemRepository,
   PrismaMemorySearchIndex,
+  PrismaMemorySuggestionRepository,
+  PrismaMemoryTransaction,
 } from "../../../packages/features/memory/src/index.ts";
 import { createMemoryOutboxHandlers } from "../../../packages/features/memory/src/infrastructure/outbox/memory-index-outbox-handlers.ts";
 import {
@@ -19,8 +21,10 @@ import {
   processOutboxBatch,
 } from "../../../packages/features/outbox/src/index.ts";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
+import { PostgresLeaseLock } from "../../../packages/platform/locks/src/index.ts";
 import { SystemClock } from "../../../packages/shared/src/index.ts";
 import { createApiApp } from "../../../apps/api/src/app.js";
+import { createMemorySuggestionExpiryMaintenance } from "../../../apps/worker/src/memory-maintenance.ts";
 import { loadEnvFiles } from "./config.js";
 
 loadEnvFiles();
@@ -94,6 +98,14 @@ const actionSessionSecret =
   process.env.REVIEW_ROUTER_ACTION_SESSION_SECRET ??
   process.env.AUTH_SECRET ??
   "0123456789abcdef0123456789abcdef";
+const noopWorkerLogger = {
+  info(): void {
+    return undefined;
+  },
+  warn(): void {
+    return undefined;
+  },
+};
 
 const prisma = createPrismaClient();
 let app: Awaited<ReturnType<typeof createApiApp>> | null = null;
@@ -295,6 +307,63 @@ try {
     requestedScope: "repository",
   });
   assertPresent(otherSuggestion.id, "other workspace suggestion id");
+
+  const expiringSuggestion = await postCandidate(baseUrl, adminSession, {
+    sourceId: `memory-e2e-expiring-suggestion-${suffix}`,
+    body: "Expired suggestion must not become project memory.",
+    intent: "model_suggested_candidate",
+    extractionMethod: "model_suggested_candidate",
+    requestedScope: "repository",
+  });
+  assertEqual(expiringSuggestion.status, "created", "expiring suggestion");
+  assertPresent(expiringSuggestion.id, "expiring suggestion id");
+  await prisma.memorySuggestion.update({
+    where: { id: expiringSuggestion.id },
+    data: { expiresAt: new Date(Date.now() - 60_000) },
+  });
+  const expirePendingSuggestions = createMemorySuggestionExpiryMaintenance(
+    {
+      intervalMs: 1,
+      workspaceLimit: 10,
+      perWorkspaceLimit: 10,
+      lockTtlMs: 60_000,
+    },
+    {
+      clock: new SystemClock(),
+      memorySuggestions: new PrismaMemorySuggestionRepository(prisma),
+      memoryTransaction: new PrismaMemoryTransaction(prisma),
+      lock: new PostgresLeaseLock(prisma),
+      logger: noopWorkerLogger,
+    },
+  );
+  await expirePendingSuggestions();
+  const expiredConfirm = await postCommands(baseUrl, adminSession, [
+    { kind: "confirm_suggestion", suggestionId: expiringSuggestion.id },
+  ]);
+  assertEqual(
+    expiredConfirm.results[0]?.status,
+    "noop",
+    "expired suggestion confirm status",
+  );
+  assertEqual(
+    expiredConfirm.results[0]?.reason,
+    "expired",
+    "expired suggestion confirm reason",
+  );
+  const expiryAudit = await prisma.auditEvent.findMany({
+    where: {
+      workspaceId: primary.workspaceId,
+      action: "memory.suggestion.expired",
+      targetId: expiringSuggestion.id,
+    },
+    select: { metadata: true },
+  });
+  assertEqual(expiryAudit.length, 1, "expired suggestion audit count");
+  assertStringDoesNotContain(
+    JSON.stringify(expiryAudit),
+    "Expired suggestion must not become project memory.",
+    "expiry audit must not contain suggestion body",
+  );
 
   const crossTenantDisable = await postCommands(baseUrl, adminSession, [
     { kind: "disable_memory", memoryItemId: otherRepoItem.id },

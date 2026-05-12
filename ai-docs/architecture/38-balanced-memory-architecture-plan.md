@@ -65,6 +65,7 @@
 - worker получил memory outbox handlers для lifecycle no-op ack, reindex и delete; real E2E прогоняет `processOutboxBatch` на fresh DB и проверяет, что memory outbox не уходит в dead-letter.
 - добавлен реальный `spike:memory:e2e`: runner сам создаёт временную Postgres DB, применяет fresh migrations, поднимает настоящий Fastify HTTP listener и проверяет OIDC exchange, admin/member permission boundary, forbidden raw payload guard, direct memory save, model suggestion confirmation, runtime bundle, usage dedupe, disable exclusion, cross-workspace object-id denial, review-event mutation denial и tenant isolation.
 - pending suggestions получили retention transition: `expirePendingMemorySuggestions` переводит просроченные pending suggestions в `expired` через domain state machine, repository port и safe audit metadata.
+- worker получил lock-protected pending suggestion expiry maintenance: отдельный across-workspaces use case, bounded workspace/per-workspace batches, Prisma adapter method, global expiry index `000013_memory_suggestion_expiry_index` и fresh DB E2E, который доказывает, что expired suggestion больше нельзя подтвердить и audit не содержит body.
 - confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
 - suggestion inbox получил edit-before-approve dialog по design reference: edited approval переиспользует confirm use case с повторными permission/safety/scope/dedupe checks.
 
@@ -72,9 +73,9 @@
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 60 files, 314 tests passed;
+- `pnpm test` - 61 files, 323 tests passed;
 - `pnpm lint` - passed;
-- `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` - passed;
+- `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 
 Ограничение визуальной проверки: локальный `/dashboard?section=memory` открылся через Next dev без crash, но защищённый dashboard редиректит на публичную главную из-за отсутствия валидной browser session/auth cookie в текущем окружении. Поэтому сам memory экран пока подтверждён typecheck/SSR compile, но не полноценной screenshot QA.
