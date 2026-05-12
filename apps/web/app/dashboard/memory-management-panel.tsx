@@ -525,6 +525,7 @@ function MemoryItemRow({
             action={disableMemoryItemAction}
             workspaceId={workspaceId}
             memoryItemId={item.id}
+            expectedVersion={item.version}
             triggerLabel="Disable"
             pendingLabel="Disabling..."
             disabled={!mutable || item.status === "disabled"}
@@ -536,6 +537,7 @@ function MemoryItemRow({
             action={deleteMemoryItemAction}
             workspaceId={workspaceId}
             memoryItemId={item.id}
+            expectedVersion={item.version}
             triggerLabel="Delete"
             pendingLabel="Deleting..."
             disabled={!mutable}
@@ -553,6 +555,7 @@ function MemoryDangerActionDialog({
   action,
   workspaceId,
   memoryItemId,
+  expectedVersion,
   triggerLabel,
   pendingLabel,
   disabled,
@@ -563,6 +566,7 @@ function MemoryDangerActionDialog({
   readonly action: (formData: FormData) => Promise<never>;
   readonly workspaceId: string;
   readonly memoryItemId: string;
+  readonly expectedVersion: number;
   readonly triggerLabel: string;
   readonly pendingLabel: string;
   readonly disabled: boolean;
@@ -597,6 +601,11 @@ function MemoryDangerActionDialog({
           <form action={action} className="mt-5 grid gap-4">
             <input type="hidden" name="workspaceId" value={workspaceId} />
             <input type="hidden" name="memoryItemId" value={memoryItemId} />
+            <input
+              type="hidden"
+              name="expectedVersion"
+              value={expectedVersion}
+            />
             <div className="rounded-xl border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
               This does not expose raw source comments, code, diffs, prompts or
               model output. Only the distilled memory record is changed.

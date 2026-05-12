@@ -11,7 +11,12 @@ export type MemoryDashboardRepositoryCursor = {
 };
 
 export interface MemoryItemRepositoryPort {
-  save(item: MemoryItem): Promise<void>;
+  save(
+    item: MemoryItem,
+    options?: {
+      readonly expectedVersion?: number;
+    },
+  ): Promise<void>;
 
   findById(input: {
     readonly workspaceId: string;

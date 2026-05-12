@@ -54,12 +54,13 @@
 - action memory endpoints получили явный fail-fast guard против raw conversation/code/diff/prompt/model-response полей, отдельно от strict transport schemas.
 - explicit generated workflows прокидывают стабильные `REVIEW_ROUTER_MEMORY_*` endpoint flags для review и interaction runtime modes.
 - dashboard memory UI ближе приведён к сохранённым PNG references: top mode tabs, read-only state, operational table footer и confirmation dialogs для disable/delete с retention impact.
+- disable/delete lifecycle mutations получили optimistic concurrency через `expectedVersion`, conditional Prisma update и hidden UI version token, чтобы stale вкладка не перетирала более свежую memory state.
 
 Текущие проверки:
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 59 files, 302 tests passed;
+- `pnpm test` - 59 files, 303 tests passed;
 - `pnpm lint` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 

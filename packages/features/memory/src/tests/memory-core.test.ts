@@ -6,7 +6,7 @@ import {
   normalizeMemoryBody,
 } from "../domain/memory-body";
 import type { MemoryCandidateEnvelope } from "../domain/memory-candidate";
-import { MemoryError } from "../domain/memory-errors";
+import { MemoryError, memoryError } from "../domain/memory-errors";
 import { parseMemoryIntent } from "../domain/memory-intent-policy";
 import { MemoryItem, type MemoryItemSnapshot } from "../domain/memory-item";
 import type { MemoryScope } from "../domain/memory-scope-policy";
@@ -64,8 +64,20 @@ class IncrementingIds implements MemoryIdGeneratorPort {
 class InMemoryItems implements MemoryItemRepositoryPort {
   readonly items = new Map<string, MemoryItemSnapshot>();
 
-  async save(item: MemoryItem): Promise<void> {
-    this.items.set(item.snapshot().id, item.snapshot());
+  async save(
+    item: MemoryItem,
+    options?: {
+      readonly expectedVersion?: number;
+    },
+  ): Promise<void> {
+    const snapshot = item.snapshot();
+    if (options?.expectedVersion !== undefined) {
+      const existing = this.items.get(snapshot.id);
+      if (!existing || existing.version !== options.expectedVersion) {
+        throw memoryError("memory_version_conflict", true);
+      }
+    }
+    this.items.set(snapshot.id, snapshot);
   }
 
   async findById(input: {
@@ -689,6 +701,93 @@ describe("memory core", () => {
       reason: "deleted",
       id: created.id,
     });
+  });
+
+  it("rejects stale memory lifecycle mutations with optimistic concurrency", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const created = await rememberMemoryDirectly(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        scope: "repository",
+        body: "Prefer explicit policy ownership.",
+        source: createDashboardMemorySource({ actorLogin: "maintainer" }),
+        actor: maintainer,
+      },
+      deps,
+    );
+    if (created.status !== "created") throw new Error("missing_memory_item");
+
+    const deniedStaleDisable = await disableMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version + 1,
+        actor: prAuthor,
+      },
+      deps,
+    );
+
+    expect(deniedStaleDisable).toEqual({
+      status: "rejected",
+      reason: "not_repository_maintainer",
+      retryable: false,
+    });
+
+    const staleDisable = await disableMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version + 1,
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(staleDisable).toEqual({
+      status: "rejected",
+      reason: "memory_version_conflict",
+      retryable: true,
+    });
+    expect(deps.memoryItems.items.get(created.id)?.status).toBe("active");
+    expect(deps.memoryAudit.events).toHaveLength(1);
+    expect(deps.memoryOutbox.events).toHaveLength(1);
+
+    const disabled = await disableMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version,
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(disabled).toMatchObject({
+      status: "updated",
+      id: created.id,
+      version: 2,
+    });
+
+    const staleDelete = await deleteMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version,
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(staleDelete).toEqual({
+      status: "rejected",
+      reason: "memory_version_conflict",
+      retryable: true,
+    });
+    expect(deps.memoryItems.items.get(created.id)?.status).toBe("disabled");
   });
 
   it("lists dashboard memory with tenant-safe filters and stable cursors", async () => {

@@ -786,6 +786,10 @@ async function disableMemoryItemMutation(
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const itemId = readFormString(formData, "memoryItemId");
+  const expectedVersion = readOptionalPositiveInteger(
+    formData,
+    "expectedVersion",
+  );
   let params: Record<string, string>;
 
   try {
@@ -795,7 +799,12 @@ async function disableMemoryItemMutation(
       rateLimitResourceId: `memory-item:${itemId}`,
     });
     const result = await disableMemoryItem(
-      { workspaceId, itemId, actor: context.memoryActor },
+      {
+        workspaceId,
+        itemId,
+        ...(expectedVersion === undefined ? {} : { expectedVersion }),
+        actor: context.memoryActor,
+      },
       context.dependencies,
     );
     params = memoryMutationParams({
@@ -820,6 +829,10 @@ async function deleteMemoryItemMutation(
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const itemId = readFormString(formData, "memoryItemId");
+  const expectedVersion = readOptionalPositiveInteger(
+    formData,
+    "expectedVersion",
+  );
   let params: Record<string, string>;
 
   try {
@@ -829,7 +842,12 @@ async function deleteMemoryItemMutation(
       rateLimitResourceId: `memory-item:${itemId}`,
     });
     const result = await deleteMemoryItem(
-      { workspaceId, itemId, actor: context.memoryActor },
+      {
+        workspaceId,
+        itemId,
+        ...(expectedVersion === undefined ? {} : { expectedVersion }),
+        actor: context.memoryActor,
+      },
       context.dependencies,
     );
     params = memoryMutationParams({
@@ -1771,6 +1789,19 @@ function readOptionalFormString(
   return normalized.length > 0 ? normalized : null;
 }
 
+function readOptionalPositiveInteger(
+  formData: FormData,
+  key: string,
+): number | undefined {
+  const value = readOptionalFormString(formData, key);
+  if (value === null) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`invalid_form_value:${key}`);
+  }
+  return parsed;
+}
+
 function readMemoryScope(formData: FormData): MemoryScope {
   const value = readFormString(formData, "scope");
   if (
@@ -1975,6 +2006,7 @@ function safeDashboardErrorCode(error: unknown): string {
       "contains_secret_like_text",
       "memory_not_found",
       "memory_safety_blocked",
+      "memory_version_conflict",
       "not_repository_maintainer",
       "not_user_owner",
       "not_workspace_admin",

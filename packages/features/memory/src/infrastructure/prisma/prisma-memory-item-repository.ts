@@ -20,8 +20,28 @@ import {
 export class PrismaMemoryItemRepository implements MemoryItemRepositoryPort {
   constructor(private readonly prisma: MemoryPrismaClient) {}
 
-  async save(item: MemoryItem): Promise<void> {
+  async save(
+    item: MemoryItem,
+    options?: {
+      readonly expectedVersion?: number;
+    },
+  ): Promise<void> {
     const snapshot = item.snapshot();
+    if (options?.expectedVersion !== undefined) {
+      const result = await this.prisma.memoryItem.updateMany({
+        where: {
+          id: snapshot.id,
+          workspaceId: snapshot.workspaceId,
+          version: options.expectedVersion,
+        },
+        data: toMemoryItemUpdateInput(snapshot),
+      });
+      if (result.count !== 1) {
+        throw memoryError("memory_version_conflict", true);
+      }
+      return;
+    }
+
     try {
       await this.prisma.memoryItem.upsert({
         where: { id: snapshot.id },
