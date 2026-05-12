@@ -35,6 +35,7 @@ import {
   createDashboardMemorySource,
   deleteMemoryItem,
   disableMemoryItem,
+  editMemoryItem,
   rejectMemorySuggestion,
   rememberMemoryDirectly,
   type MemoryMutationResult,
@@ -209,6 +210,15 @@ export async function rejectMemorySuggestionAction(
   formData: FormData,
 ): Promise<never> {
   const params = await rejectMemorySuggestionMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectAfterMutation(formData, params);
+}
+
+export async function editMemoryItemAction(
+  formData: FormData,
+): Promise<never> {
+  const params = await editMemoryItemMutation(formData);
 
   revalidatePath("/dashboard");
   redirectAfterMutation(formData, params);
@@ -767,6 +777,50 @@ async function rejectMemorySuggestionMutation(
     params = memoryMutationParams({
       workspaceId,
       successNotice: "memory_suggestion_rejected",
+      result,
+    });
+  } catch (error) {
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "memory",
+    };
+  }
+
+  return params;
+}
+
+async function editMemoryItemMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
+  const prisma = getPrisma();
+  const workspaceId = readFormString(formData, "workspaceId");
+  const itemId = readFormString(formData, "memoryItemId");
+  const expectedVersion = readOptionalPositiveInteger(
+    formData,
+    "expectedVersion",
+  );
+  let params: Record<string, string>;
+
+  try {
+    const context = await createMemoryActionContext({
+      prisma,
+      workspaceId,
+      rateLimitResourceId: `memory-item:${itemId}:edit`,
+    });
+    const result = await editMemoryItem(
+      {
+        workspaceId,
+        itemId,
+        body: readFormString(formData, "body"),
+        ...(expectedVersion === undefined ? {} : { expectedVersion }),
+        actor: context.memoryActor,
+      },
+      context.dependencies,
+    );
+    params = memoryMutationParams({
+      workspaceId,
+      successNotice: "memory_edited",
       result,
     });
   } catch (error) {

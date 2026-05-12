@@ -21,6 +21,7 @@ export * from "./application/use-cases/build-action-memory-bundle";
 export * from "./application/use-cases/confirm-memory-suggestion";
 export * from "./application/use-cases/delete-memory-item";
 export * from "./application/use-cases/disable-memory-item";
+export * from "./application/use-cases/edit-memory-item";
 export * from "./application/use-cases/expire-pending-memory-suggestions";
 export * from "./application/use-cases/list-memory-items-for-dashboard";
 export * from "./application/use-cases/list-memory-suggestions-for-dashboard";

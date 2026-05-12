@@ -46,6 +46,7 @@ import { buildActionMemoryBundle } from "../application/use-cases/build-action-m
 import { confirmMemorySuggestion } from "../application/use-cases/confirm-memory-suggestion";
 import { deleteMemoryItem } from "../application/use-cases/delete-memory-item";
 import { disableMemoryItem } from "../application/use-cases/disable-memory-item";
+import { editMemoryItem } from "../application/use-cases/edit-memory-item";
 import { expirePendingMemorySuggestions } from "../application/use-cases/expire-pending-memory-suggestions";
 import { listMemoryItemsForDashboard } from "../application/use-cases/list-memory-items-for-dashboard";
 import { listMemorySuggestionsForDashboard } from "../application/use-cases/list-memory-suggestions-for-dashboard";
@@ -823,6 +824,147 @@ describe("memory core", () => {
       retryable: true,
     });
     expect(deps.memoryItems.items.get(created.id)?.status).toBe("disabled");
+  });
+
+  it("edits memory items with safety, dedupe, audit-safe metadata and reindex outbox", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const created = await rememberMemoryDirectly(
+      {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        scope: "repository",
+        body: "Prefer small domain methods.",
+        source: createDashboardMemorySource({ actorLogin: "maintainer" }),
+        actor: maintainer,
+      },
+      deps,
+    );
+    if (created.status !== "created") throw new Error("missing_memory_item");
+
+    const denied = await editMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version + 1,
+        body: "Prefer small service methods.",
+        actor: prAuthor,
+      },
+      deps,
+    );
+
+    expect(denied).toEqual({
+      status: "rejected",
+      reason: "not_repository_maintainer",
+      retryable: false,
+    });
+
+    const stale = await editMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version + 1,
+        body: "Prefer small service methods.",
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(stale).toEqual({
+      status: "rejected",
+      reason: "memory_version_conflict",
+      retryable: true,
+    });
+
+    const edited = await editMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: created.id,
+        expectedVersion: created.version,
+        body: "Prefer small service methods.",
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(edited).toMatchObject({
+      status: "updated",
+      id: created.id,
+      version: 2,
+    });
+    expect(deps.memoryItems.items.get(created.id)).toMatchObject({
+      body: "Prefer small service methods.",
+      bodyVersion: 2,
+      version: 2,
+      indexState: "index_pending",
+      indexVersion: null,
+    });
+    expect(deps.memoryAudit.events.at(-1)).toMatchObject({
+      action: "memory.item.edited",
+      targetType: "memory_item",
+      targetId: created.id,
+      metadata: {
+        scope: "repository",
+        previousBodyVersion: 1,
+        bodyVersion: 2,
+        previousVersion: 1,
+        version: 2,
+        bodyChanged: true,
+      },
+    });
+    expect(JSON.stringify(deps.memoryAudit.events.at(-1))).not.toContain(
+      "small service methods",
+    );
+    expect(deps.memoryOutbox.events.map((event) => event.type)).toEqual([
+      "memory.item.created",
+      "memory.item.edited",
+      "memory.embedding.reindex.requested",
+    ]);
+  });
+
+  it("rejects memory edits that would duplicate another active item", async () => {
+    const deps = createHarness({
+      "user_maintainer:repository": { allowed: true },
+    });
+    const first = await rememberMemoryDirectly(
+      {
+        ...memoryInput("repository", "Prefer small domain methods."),
+        actor: maintainer,
+      },
+      deps,
+    );
+    const second = await rememberMemoryDirectly(
+      {
+        ...memoryInput("repository", "Prefer explicit policy ownership."),
+        actor: maintainer,
+      },
+      deps,
+    );
+    if (first.status !== "created" || second.status !== "created") {
+      throw new Error("missing_memory_items");
+    }
+
+    const duplicate = await editMemoryItem(
+      {
+        workspaceId: "workspace_1",
+        itemId: second.id,
+        expectedVersion: second.version,
+        body: "  Prefer small   domain methods. ",
+        actor: maintainer,
+      },
+      deps,
+    );
+
+    expect(duplicate).toEqual({
+      status: "noop",
+      reason: "memory_duplicate",
+      id: first.id,
+    });
+    expect(deps.memoryItems.items.get(second.id)?.body).toBe(
+      "Prefer explicit policy ownership.",
+    );
   });
 
   it("lists dashboard memory with tenant-safe filters and stable cursors", async () => {

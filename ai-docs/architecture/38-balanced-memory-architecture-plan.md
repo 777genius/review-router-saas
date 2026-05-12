@@ -57,12 +57,13 @@
 - disable/delete lifecycle mutations получили optimistic concurrency через `expectedVersion`, conditional Prisma update и hidden UI version token, чтобы stale вкладка не перетирала более свежую memory state.
 - action memory bundle exposure теперь пишет `MemoryUsageEvent` через отдельный application port и Prisma adapter; usage metadata содержит только ids, scope/count/version, без body/source/prompt/model output.
 - pending suggestions получили retention transition: `expirePendingMemorySuggestions` переводит просроченные pending suggestions в `expired` через domain state machine, repository port и safe audit metadata.
+- confirmed memory получил edit lifecycle: domain transition обновляет body/bodyVersion/index state, application use case делает permission/safety/dedupe/version checks, dashboard показывает edit dialog без audit body leakage.
 
 Текущие проверки:
 
 - `pnpm architecture:check` - passed;
 - `pnpm typecheck` - passed;
-- `pnpm test` - 59 files, 305 tests passed;
+- `pnpm test` - 59 files, 308 tests passed;
 - `pnpm lint` - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 

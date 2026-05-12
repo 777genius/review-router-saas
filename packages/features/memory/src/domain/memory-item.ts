@@ -153,6 +153,45 @@ export class MemoryItem {
       indexState: "index_deleted",
     });
   }
+
+  editBody(input: {
+    readonly actor: MemoryActor;
+    readonly body: string;
+    readonly riskLevel: MemoryRiskLevel;
+    readonly safetyPolicyVersion: number;
+    readonly now: Date;
+  }): MemoryItem {
+    if (this.value.status !== "active" && this.value.status !== "disabled") {
+      throw memoryError("memory_version_conflict");
+    }
+    void input.actor;
+    const body = normalizeMemoryBody(input.body);
+    if (body.length === 0) {
+      throw memoryError("memory_input_invalid");
+    }
+    const bodyHash = createMemoryBodyHash(body);
+    if (bodyHash === this.value.bodyHash) {
+      return new MemoryItem({
+        ...this.value,
+        riskLevel: input.riskLevel,
+        safetyPolicyVersion: input.safetyPolicyVersion,
+        updatedAt: input.now,
+        version: this.value.version + 1,
+      });
+    }
+    return new MemoryItem({
+      ...this.value,
+      body,
+      bodyVersion: this.value.bodyVersion + 1,
+      bodyHash,
+      riskLevel: input.riskLevel,
+      safetyPolicyVersion: input.safetyPolicyVersion,
+      updatedAt: input.now,
+      version: this.value.version + 1,
+      indexState: "index_pending",
+      indexVersion: null,
+    });
+  }
 }
 
 function clampConfidence(value: number): number {

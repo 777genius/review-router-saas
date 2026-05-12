@@ -18,6 +18,7 @@ vi.mock("./actions", () => ({
   createMemoryItemAction: vi.fn(),
   deleteMemoryItemAction: vi.fn(),
   disableMemoryItemAction: vi.fn(),
+  editMemoryItemAction: vi.fn(),
   rejectMemorySuggestionAction: vi.fn(),
 }));
 
@@ -55,6 +56,23 @@ describe("MemoryManagementPanel", () => {
     ).toBeTruthy();
   });
 
+  it("shows edit impact without exposing previous body in audit", () => {
+    renderMemoryManagementPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Edit memory" });
+    expect(
+      within(dialog).getByText(/Previous full body text is not stored/),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByDisplayValue("Prefer guard clauses."),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByText(/safe hashes, versions and scope only/),
+    ).toBeTruthy();
+  });
+
   it("renders read-only state without hiding memory data", () => {
     renderMemoryManagementPanel({ mutationsEnabled: false });
 
@@ -62,6 +80,10 @@ describe("MemoryManagementPanel", () => {
     expect(screen.getAllByText("Prefer guard clauses.").length).toBeGreaterThan(
       0,
     );
+    expect(
+      (screen.getByRole("button", { name: "Edit" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
     expect(
       (screen.getByRole("button", { name: "Delete" }) as HTMLButtonElement)
         .disabled,

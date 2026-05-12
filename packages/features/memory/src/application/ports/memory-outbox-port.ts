@@ -3,6 +3,7 @@ export type MemoryOutboxEvent = {
     | "memory.item.created"
     | "memory.item.deleted"
     | "memory.item.disabled"
+    | "memory.item.edited"
     | "memory.suggestion.created"
     | "memory.suggestion.confirmed"
     | "memory.suggestion.rejected"

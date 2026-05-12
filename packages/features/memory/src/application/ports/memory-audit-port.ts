@@ -5,6 +5,7 @@ export type MemoryAuditEvent = {
     | "memory.item.created"
     | "memory.item.deleted"
     | "memory.item.disabled"
+    | "memory.item.edited"
     | "memory.suggestion.created"
     | "memory.suggestion.blocked"
     | "memory.suggestion.confirmed"

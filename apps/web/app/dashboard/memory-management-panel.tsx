@@ -25,6 +25,7 @@ import {
   createMemoryItemAction,
   deleteMemoryItemAction,
   disableMemoryItemAction,
+  editMemoryItemAction,
   rejectMemorySuggestionAction,
 } from "./actions";
 
@@ -521,6 +522,11 @@ function MemoryItemRow({
       </td>
       <td className="border-b border-cyan-200/10 px-3 py-3">
         <div className="flex flex-wrap gap-2">
+          <MemoryEditActionDialog
+            workspaceId={workspaceId}
+            item={item}
+            disabled={!mutable}
+          />
           <MemoryDangerActionDialog
             action={disableMemoryItemAction}
             workspaceId={workspaceId}
@@ -548,6 +554,85 @@ function MemoryItemRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+function MemoryEditActionDialog({
+  workspaceId,
+  item,
+  disabled,
+}: {
+  readonly workspaceId: string;
+  readonly item: MemoryDashboardItemDto;
+  readonly disabled: boolean;
+}): React.ReactElement {
+  return (
+    <DialogRoot>
+      <DialogTrigger
+        render={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            className="min-w-20"
+          >
+            Edit
+          </Button>
+        }
+      />
+      <DialogPortal>
+        <DialogBackdrop className="z-50" />
+        <DialogPopup className="z-[60] border-cyan-300/25 bg-[#061015]">
+          <DialogTitle className="text-lg font-semibold text-cyan-50">
+            Edit memory
+          </DialogTitle>
+          <DialogDescription className="mt-2 text-sm leading-6 text-slate-300">
+            Updates re-run safety checks and replace the current distilled
+            memory text. Previous full body text is not stored in audit.
+          </DialogDescription>
+          <form action={editMemoryItemAction} className="mt-5 grid gap-4">
+            <input type="hidden" name="workspaceId" value={workspaceId} />
+            <input type="hidden" name="memoryItemId" value={item.id} />
+            <input
+              type="hidden"
+              name="expectedVersion"
+              value={item.version}
+            />
+            <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+              Memory
+              <textarea
+                name="body"
+                minLength={8}
+                maxLength={1200}
+                rows={5}
+                defaultValue={item.body}
+                className="min-h-32 resize-y rounded-xl border border-cyan-200/10 bg-slate-950 px-3 py-2 text-sm normal-case leading-6 tracking-normal text-cyan-50 outline-none transition placeholder:text-slate-600 focus:border-cyan-200/45"
+              />
+            </label>
+            <div className="rounded-xl border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+              Audit stores safe hashes, versions and scope only. It does not
+              store old or new full memory body text.
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <DialogClose
+                render={
+                  <Button type="button" variant="outline" size="sm">
+                    Cancel
+                  </Button>
+                }
+              />
+              <FormSubmitButton
+                variant="solid"
+                size="sm"
+                idleLabel="Save changes"
+                pendingLabel="Saving..."
+              />
+            </div>
+          </form>
+        </DialogPopup>
+      </DialogPortal>
+    </DialogRoot>
   );
 }
 
