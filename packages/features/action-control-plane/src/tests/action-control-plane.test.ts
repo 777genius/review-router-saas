@@ -395,6 +395,52 @@ describe("action control plane", () => {
     });
   });
 
+  it("accepts official ReviewRouter reusable workflow refs without provisioning state", async () => {
+    const sessions = new StaticSessionTokenService();
+
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            workflow_ref:
+              "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
+            job_workflow_ref:
+              "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+          }),
+        ),
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      repository: "777genius/example",
+    });
+  });
+
+  it("rejects official reusable jobs when the caller workflow path is legacy", async () => {
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              workflow_ref:
+                "777genius/example/.github/workflows/review-router.yml@refs/pull/1/merge",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+            }),
+          ),
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
   it("accepts live main reusable workflow refs through job_workflow_ref", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     repository.repository = {

@@ -20,6 +20,8 @@ export const allowedWorkflowPaths = [
   ".github/workflows/reviewrouter.yml",
   ".github/workflows/reviewrouter-interaction.yml",
 ] as const;
+export const trustedReviewRouterReusableWorkflowRefPattern =
+  /^777genius\/review-router\/\.github\/workflows\/reviewrouter(?:-interaction)?-reusable\.ya?ml@(refs\/tags\/v1(?:\.[0-9]+\.[0-9]+)?|refs\/heads\/main|[a-fA-F0-9]{40})$/i;
 
 export const allowedActionEvents = [
   "pull_request",
@@ -397,6 +399,10 @@ function isTrustedWorkflowRef(
   workflowRef: string,
   trustedWorkflowRefs: readonly string[] | undefined,
 ): boolean {
+  if (trustedReviewRouterReusableWorkflowRefPattern.test(workflowRef)) {
+    return true;
+  }
+
   return (
     trustedWorkflowRefs?.some(
       (trustedRef) => trustedRef.toLowerCase() === workflowRef.toLowerCase(),
