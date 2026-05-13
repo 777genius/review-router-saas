@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzeWorkflowProviderCompatibility,
   defaultInteractionWorkflowPath,
   defaultRequiredWorkflowPath,
   defaultWorkflowPath,
+  getWorkflowProviderContentMarkerGroups,
   renderReviewRouterInteractionWorkflow,
   renderReviewRouterReusableInteractionWorkflow,
   renderReviewRouterReusableWorkflow,
@@ -54,6 +56,14 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
     expect(workflow).toContain(
       "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}",
+    );
+    expect(workflow).toContain(
+      "CLAUDE_CODE_OAUTH_TOKEN_PRESENT: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}",
+    );
+    expect(workflow).toContain("Install Claude Code CLI");
+    expect(workflow).toContain("bash -s stable");
+    expect(workflow).toContain(
+      "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
     );
     expect(workflow).toContain(
       "CODEX_AUTH_JSON secret is missing. reseed auth.json",
@@ -166,6 +176,9 @@ describe("renderReviewRouterWorkflow", () => {
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
     );
     expect(reviewWorkflow).toContain(
+      "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    );
+    expect(reviewWorkflow).toContain(
       "REVIEW_ROUTER_LEDGER_KEY: ${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}",
     );
     expect(reviewWorkflow).not.toContain("pull_request_target");
@@ -226,7 +239,85 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
     );
+    expect(workflow).toContain(
+      "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    );
+    expect(workflow).toContain("Install Claude Code CLI");
     expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
+  });
+
+  it("detects Claude workflow compatibility for generated and old workflows", () => {
+    const reusableWorkflow =
+      renderReviewRouterReusableWorkflow(workflowOptions);
+    const explicitWorkflow = renderReviewRouterWorkflow({
+      ...workflowOptions,
+      workflowStyle: "explicit",
+    });
+
+    expect(
+      analyzeWorkflowProviderCompatibility({
+        workflowYaml: reusableWorkflow,
+        providerKind: "claude",
+        workflowStyle: "reusable",
+      }),
+    ).toEqual({
+      providerKind: "claude",
+      supported: true,
+      missingRequirements: [],
+    });
+    expect(
+      analyzeWorkflowProviderCompatibility({
+        workflowYaml: explicitWorkflow,
+        providerKind: "claude",
+        workflowStyle: "explicit",
+      }),
+    ).toEqual({
+      providerKind: "claude",
+      supported: true,
+      missingRequirements: [],
+    });
+    expect(
+      analyzeWorkflowProviderCompatibility({
+        workflowYaml: reusableWorkflow.replaceAll(
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          "OLD_SECRET",
+        ),
+        providerKind: "claude",
+        workflowStyle: "reusable",
+      }),
+    ).toMatchObject({
+      supported: false,
+      missingRequirements: ["secret_pass_through"],
+    });
+    expect(
+      analyzeWorkflowProviderCompatibility({
+        workflowYaml: explicitWorkflow.replace("Install Claude Code CLI", ""),
+        providerKind: "claude",
+        workflowStyle: "explicit",
+      }),
+    ).toMatchObject({
+      supported: false,
+      missingRequirements: ["cli_install_step"],
+    });
+  });
+
+  it("exports Claude workflow marker groups for readiness probes", () => {
+    expect(
+      getWorkflowProviderContentMarkerGroups({ providerKind: "claude" }),
+    ).toEqual([
+      [
+        ".github/workflows/reviewrouter-reusable.yml",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+      ],
+      [
+        "Install Claude Code CLI",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "Skip fork pull requests",
+      ],
+    ]);
+    expect(
+      getWorkflowProviderContentMarkerGroups({ providerKind: "codex" }),
+    ).toEqual([]);
   });
 
   it("uses github-actions comment identity when runtime config is static", () => {

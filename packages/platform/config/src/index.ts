@@ -32,6 +32,7 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS: z.string().default(""),
   REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high", "xhigh"])
@@ -73,6 +74,12 @@ export function isWorkflowProvisioningEnabled(
     return false;
   }
   return input.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING === "1";
+}
+
+export function isClaudeCodeProviderEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER !== "0";
 }
 
 export type GitHubAppPrivateKeyEnv = {

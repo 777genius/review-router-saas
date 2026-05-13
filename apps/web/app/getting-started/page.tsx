@@ -6,7 +6,7 @@ import { createPublicPageMetadata } from "../seo";
 export const metadata: Metadata = createPublicPageMetadata({
   title: "Set up AI code review in GitHub Actions",
   description:
-    "Install ReviewRouter on GitHub, merge a setup PR, and run Codex, OpenAI, or OpenRouter code review inside your own GitHub Actions environment.",
+    "Install ReviewRouter on GitHub, merge a setup PR, and run Codex, Claude Code, OpenAI, or OpenRouter code review inside your own GitHub Actions environment.",
   path: "/getting-started",
 });
 
@@ -15,6 +15,8 @@ const repoCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WR
 const orgCodexCommand = `curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash`;
 const openAiKeyCommand =
   "gh secret set OPENAI_API_KEY --repo owner/repo --app actions";
+const claudeCodeOAuthCommand =
+  "gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo owner/repo --app actions";
 const openRouterKeyCommand =
   "gh secret set OPENROUTER_API_KEY --repo owner/repo --app actions";
 
@@ -32,7 +34,7 @@ const installSteps = [
   {
     label: "3",
     title: "Connect provider credentials from your machine",
-    body: "After the setup PR is merged, open the repository in the dashboard and use Enable review. The command writes Codex OAuth, OpenAI, or OpenRouter credentials directly to GitHub Actions secrets.",
+    body: "After the setup PR is merged, open the repository in the dashboard and use Enable review. The command writes Codex OAuth, Claude Code OAuth, OpenAI, or OpenRouter credentials directly to GitHub Actions secrets.",
   },
   {
     label: "4",
@@ -79,7 +81,7 @@ export default function GettingStartedPage(): React.ReactElement {
             Provider credentials are written from the user&apos;s machine to
             GitHub Actions secrets with <code>gh</code>. For organization usage,
             prefer selected repositories so only approved repos can access Codex
-            OAuth.
+            OAuth or Claude Code OAuth.
           </p>
         </Card>
       </section>
@@ -127,6 +129,19 @@ export default function GettingStartedPage(): React.ReactElement {
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">
+        <Card className="space-y-4">
+          <Badge tone="success">Claude Code subscription</Badge>
+          <h2 className="text-2xl font-semibold text-cyan-50">
+            Claude Code OAuth
+          </h2>
+          <p className="text-sm leading-6 text-slate-300">
+            Run <code>claude setup-token</code> on a trusted machine, then store
+            only the printed token as a GitHub Actions secret. Do not store{" "}
+            <code>ANTHROPIC_API_KEY</code> for subscription OAuth.
+          </p>
+          <CodeBlock code={claudeCodeOAuthCommand} />
+        </Card>
+
         <Card className="space-y-4">
           <Badge tone="neutral">API key mode</Badge>
           <h2 className="text-2xl font-semibold text-cyan-50">OpenAI API</h2>

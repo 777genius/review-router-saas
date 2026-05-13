@@ -6,10 +6,18 @@ import type {
   ProviderSecretScope,
   ProviderSecretSetupGuidance,
 } from "@reviewrouter/features-provider-setup";
+import type {
+  ProviderAuthMode,
+  ProviderKind,
+} from "@reviewrouter/features-review-providers";
 import { Badge, Button, CodeBlock } from "@reviewrouter/ui";
 import { providerSetupConfirmedEvent } from "./repository-setup-optimistic-events";
 
-type ProviderChoice = "codex_oauth" | "codex_api_key" | "openrouter_api_key";
+type ProviderChoice =
+  | "codex_oauth"
+  | "codex_api_key"
+  | "claude_code_oauth"
+  | "openrouter_api_key";
 type VerificationFallbackError =
   | "repository_not_visible_to_github_app"
   | "provider_secret_not_found"
@@ -35,6 +43,12 @@ const providerChoices: readonly {
     body: "Use OPENAI_API_KEY and API billing.",
   },
   {
+    value: "claude_code_oauth",
+    testId: "provider-choice-claude-code-oauth",
+    title: "Claude Code subscription",
+    body: "Use CLAUDE_CODE_OAUTH_TOKEN from Claude Code.",
+  },
+  {
     value: "openrouter_api_key",
     testId: "provider-choice-openrouter-api-key",
     title: "OpenRouter API key",
@@ -51,7 +65,9 @@ export type ProviderSecretSetupChooserProps = {
   readonly organizationSecretPolicy: OrganizationSecretPolicy | null;
   readonly codexOAuthGuidance: ProviderSecretSetupGuidance;
   readonly codexApiKeyGuidance: ProviderSecretSetupGuidance;
+  readonly claudeCodeOAuthGuidance: ProviderSecretSetupGuidance;
   readonly openRouterApiKeyGuidance: ProviderSecretSetupGuidance;
+  readonly claudeCodeProviderEnabled?: boolean;
 };
 
 export type OrganizationSecretPolicy = {
@@ -69,7 +85,9 @@ export function ProviderSecretSetupChooser({
   organizationSecretPolicy,
   codexOAuthGuidance,
   codexApiKeyGuidance,
+  claudeCodeOAuthGuidance,
   openRouterApiKeyGuidance,
+  claudeCodeProviderEnabled = true,
 }: ProviderSecretSetupChooserProps): React.ReactElement {
   const [providerChoice, setProviderChoice] =
     useState<ProviderChoice>("codex_oauth");
@@ -97,7 +115,9 @@ export function ProviderSecretSetupChooser({
       ? codexOAuthGuidance
       : providerChoice === "codex_api_key"
         ? codexApiKeyGuidance
-        : openRouterApiKeyGuidance;
+        : providerChoice === "claude_code_oauth"
+          ? claudeCodeOAuthGuidance
+          : openRouterApiKeyGuidance;
   const repositoryCommand = activeGuidance.commands.find(
     (command) => command.scope === "repository",
   );
@@ -114,6 +134,14 @@ export function ProviderSecretSetupChooser({
     repositoryFullName,
     repositoryVisibility,
   });
+  const visibleProviderChoices = useMemo(
+    () =>
+      providerChoices.filter(
+        (choice) =>
+          choice.value !== "claude_code_oauth" || claudeCodeProviderEnabled,
+      ),
+    [claudeCodeProviderEnabled],
+  );
 
   const providerDetails = useMemo(
     () =>
@@ -141,17 +169,29 @@ export function ProviderSecretSetupChooser({
                 url: "https://platform.openai.com/api-keys",
               },
             }
-          : {
-              badge: "OpenRouter API key",
-              title: "Use OpenRouter billing",
-              body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The command will prompt you to paste your OpenRouter API key, then store it as the OPENROUTER_API_KEY secret in GitHub Actions for this repository.`,
-              footnote:
-                "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
-              apiKey: {
-                label: "Get an OpenRouter API key",
-                url: "https://openrouter.ai/workspaces/default/keys",
+          : providerChoice === "claude_code_oauth"
+            ? {
+                badge: "Claude Code subscription",
+                title: "Use your Claude Code subscription",
+                body: `Run claude setup-token on a trusted machine, then run this GitHub CLI command from your own computer. Store only the printed token value as CLAUDE_CODE_OAUTH_TOKEN for ${repositoryFullName}.`,
+                footnote:
+                  "Do not paste the shell command, ANTHROPIC_API_KEY, Claude keychain files, or local Claude config files.",
+                apiKey: null as {
+                  readonly label: string;
+                  readonly url: string;
+                } | null,
+              }
+            : {
+                badge: "OpenRouter API key",
+                title: "Use OpenRouter billing",
+                body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The command will prompt you to paste your OpenRouter API key, then store it as the OPENROUTER_API_KEY secret in GitHub Actions for this repository.`,
+                footnote:
+                  "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
+                apiKey: {
+                  label: "Get an OpenRouter API key",
+                  url: "https://openrouter.ai/workspaces/default/keys",
+                },
               },
-            },
     [providerChoice, repositoryFullName],
   );
 
@@ -171,9 +211,12 @@ export function ProviderSecretSetupChooser({
         <Tabs.List
           aria-label="Provider credential type"
           activateOnFocus
-          className="grid overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/70 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:grid-cols-3"
+          className={[
+            "grid overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/70 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+            claudeCodeProviderEnabled ? "sm:grid-cols-4" : "sm:grid-cols-3",
+          ].join(" ")}
         >
-          {providerChoices.map((choice) => (
+          {visibleProviderChoices.map((choice) => (
             <Tabs.Tab
               key={choice.value}
               value={choice.value}
@@ -519,11 +562,8 @@ function providerSetupSubmitErrorText(error: string): string {
 }
 
 function providerChoiceToSetupSelection(value: ProviderChoice): {
-  readonly providerKind: "codex" | "openrouter";
-  readonly authMode:
-    | "codex_subscription_oauth"
-    | "codex_openai_api_key"
-    | "openrouter_api_key";
+  readonly providerKind: ProviderKind;
+  readonly authMode: ProviderAuthMode;
 } {
   switch (value) {
     case "codex_oauth":
@@ -535,6 +575,11 @@ function providerChoiceToSetupSelection(value: ProviderChoice): {
       return {
         providerKind: "codex",
         authMode: "codex_openai_api_key",
+      };
+    case "claude_code_oauth":
+      return {
+        providerKind: "claude",
+        authMode: "claude_code_oauth",
       };
     case "openrouter_api_key":
       return {

@@ -1,3 +1,5 @@
+import type { ProviderKind } from "@reviewrouter/features-review-providers";
+
 export type ReviewRouterWorkflowOptions = {
   readonly actionRef: string;
   readonly apiUrl: string;
@@ -11,6 +13,19 @@ export type ReviewRouterWorkflowStyle = "reusable" | "explicit";
 export type ReviewRouterWorkflowFile = {
   readonly path: string;
   readonly content: string;
+};
+
+export type WorkflowProviderRequirement =
+  | "action_ref_supports_provider"
+  | "secret_pass_through"
+  | "cli_install_step"
+  | "trusted_reusable_workflow_ref"
+  | "fork_pr_secret_skip";
+
+export type WorkflowProviderCompatibility = {
+  readonly providerKind: ProviderKind;
+  readonly supported: boolean;
+  readonly missingRequirements: readonly WorkflowProviderRequirement[];
 };
 
 export const defaultWorkflowPath = ".github/workflows/reviewrouter.yml";
@@ -55,6 +70,10 @@ jobs:
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${template.staticRuntimeEnvBlock}
       REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
+      CODEX_AUTH_JSON_PRESENT: \${{ secrets.CODEX_AUTH_JSON != '' && '1' || '0' }}
+      OPENAI_API_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' && '1' || '0' }}
+      OPENROUTER_API_KEY_PRESENT: \${{ secrets.OPENROUTER_API_KEY != '' && '1' || '0' }}
+      CLAUDE_CODE_OAUTH_TOKEN_PRESENT: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}
     steps:
       - name: Checkout pull request code
         uses: actions/checkout@v6
@@ -68,18 +87,26 @@ jobs:
           echo "ReviewRouter skipped this fork pull request because secret-backed provider execution is disabled by default."
 
       - name: Setup Node.js for Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         uses: actions/setup-node@v6
         with:
           node-version: "24"
 
       - name: Install Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         shell: bash
         run: npm install -g @openai/codex@0.125.0
 
+      - name: Install Claude Code CLI
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
+        shell: bash
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s stable
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/claude" --version
+
       - name: Restore Codex subscription auth
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.REVIEW_AUTH_MODE == 'codex-oauth' }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.CODEX_AUTH_JSON_PRESENT == '1' }}
         shell: bash
         env:
           CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
@@ -142,6 +169,7 @@ ${template.oidcStep}      - name: Run ReviewRouter
           CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
           CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
 `;
 }
@@ -235,6 +263,7 @@ ${template.staticRuntimeEnvJsonBlock}
       REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
       CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
       CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+      CLAUDE_CODE_OAUTH_TOKEN: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
 `;
@@ -306,6 +335,10 @@ jobs:
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"${template.staticRuntimeEnvBlock}
       REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
+      CODEX_AUTH_JSON_PRESENT: \${{ secrets.CODEX_AUTH_JSON != '' && '1' || '0' }}
+      OPENAI_API_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' && '1' || '0' }}
+      OPENROUTER_API_KEY_PRESENT: \${{ secrets.OPENROUTER_API_KEY != '' && '1' || '0' }}
+      CLAUDE_CODE_OAUTH_TOKEN_PRESENT: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}
     steps:
       - name: Pass merge queue check
         if: \${{ github.event_name == 'merge_group' }}
@@ -326,18 +359,26 @@ jobs:
           echo "ReviewRouter skipped this fork pull request because secret-backed provider execution is disabled by default."
 
       - name: Setup Node.js for Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         uses: actions/setup-node@v6
         with:
           node-version: "24"
 
       - name: Install Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.REVIEW_AUTH_MODE == 'codex-oauth' || env.REVIEW_AUTH_MODE == 'openai-api') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         shell: bash
         run: npm install -g @openai/codex@0.125.0
 
+      - name: Install Claude Code CLI
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
+        shell: bash
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s stable
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/claude" --version
+
       - name: Restore Codex subscription auth
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.REVIEW_AUTH_MODE == 'codex-oauth' }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
         shell: bash
         env:
           CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
@@ -386,8 +427,85 @@ ${template.oidcStep}      - name: Run ReviewRouter
           CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
           CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
 `;
+}
+
+export function analyzeWorkflowProviderCompatibility(input: {
+  readonly workflowYaml: string;
+  readonly providerKind: ProviderKind;
+  readonly workflowStyle?: ReviewRouterWorkflowStyle;
+  readonly expectedActionRef?: string;
+}): WorkflowProviderCompatibility {
+  const missingRequirements: WorkflowProviderRequirement[] = [];
+  const workflowStyle =
+    input.workflowStyle ?? inferWorkflowStyle(input.workflowYaml);
+
+  if (
+    input.expectedActionRef &&
+    !input.workflowYaml.includes(input.expectedActionRef)
+  ) {
+    missingRequirements.push("action_ref_supports_provider");
+  }
+
+  if (input.providerKind === "claude") {
+    if (!input.workflowYaml.includes("CLAUDE_CODE_OAUTH_TOKEN")) {
+      missingRequirements.push("secret_pass_through");
+    }
+    if (
+      workflowStyle === "explicit" &&
+      !input.workflowYaml.includes("Install Claude Code CLI")
+    ) {
+      missingRequirements.push("cli_install_step");
+    }
+  }
+
+  if (
+    input.providerKind !== "openrouter" &&
+    workflowStyle === "explicit" &&
+    !input.workflowYaml.includes("Skip fork pull requests")
+  ) {
+    missingRequirements.push("fork_pr_secret_skip");
+  }
+
+  if (
+    workflowStyle === "reusable" &&
+    !input.workflowYaml.includes(reusableReviewWorkflowPath)
+  ) {
+    missingRequirements.push("trusted_reusable_workflow_ref");
+  }
+
+  return {
+    providerKind: input.providerKind,
+    supported: missingRequirements.length === 0,
+    missingRequirements,
+  };
+}
+
+export function getWorkflowProviderContentMarkerGroups(input: {
+  readonly providerKind: ProviderKind;
+}): readonly (readonly string[])[] {
+  switch (input.providerKind) {
+    case "claude":
+      return [
+        [reusableReviewWorkflowPath, "CLAUDE_CODE_OAUTH_TOKEN"],
+        [
+          "Install Claude Code CLI",
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          "Skip fork pull requests",
+        ],
+      ];
+    case "codex":
+    case "openrouter":
+      return [];
+  }
+}
+
+function inferWorkflowStyle(workflowYaml: string): ReviewRouterWorkflowStyle {
+  return workflowYaml.includes(`${reusableWorkflowRuntimeRepository}/`)
+    ? "reusable"
+    : "explicit";
 }
 
 export function renderReviewRouterWorkflowFiles(

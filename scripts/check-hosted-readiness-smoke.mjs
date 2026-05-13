@@ -21,6 +21,31 @@ try {
     "provider API key in SaaS env should fail",
   );
 
+  const forbiddenClaudeOAuthEnv = join(tempDir, "forbidden-claude-oauth.env");
+  writeFileSync(
+    forbiddenClaudeOAuthEnv,
+    `${hostedEnv()}\nCLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-example"\n`,
+  );
+  expectStatus(
+    forbiddenClaudeOAuthEnv,
+    1,
+    "Claude Code OAuth token in SaaS env should fail",
+  );
+
+  const forbiddenClaudeAuthTokenEnv = join(
+    tempDir,
+    "forbidden-claude-auth-token.env",
+  );
+  writeFileSync(
+    forbiddenClaudeAuthTokenEnv,
+    `${hostedEnv()}\nANTHROPIC_AUTH_TOKEN="sk-ant-oat01-example"\n`,
+  );
+  expectStatus(
+    forbiddenClaudeAuthTokenEnv,
+    1,
+    "Anthropic auth token in SaaS env should fail",
+  );
+
   const localhostEnv = join(tempDir, "localhost.env");
   writeFileSync(
     localhostEnv,

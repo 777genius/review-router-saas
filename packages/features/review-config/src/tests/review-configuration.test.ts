@@ -83,12 +83,58 @@ describe("review configuration", () => {
       REVIEW_AUTH_MODE: "openrouter-api",
       REVIEW_PROVIDERS: "openrouter/poolside/laguna-m.1:free",
       SYNTHESIS_MODEL: "openrouter/poolside/laguna-m.1:free",
-      CODEX_MODEL: "poolside/laguna-m.1:free",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
     });
+    expect(env).not.toHaveProperty("CODEX_MODEL");
     expect(Object.keys(env).join("\n")).not.toContain("SECRET");
     expect(Object.keys(env).join("\n")).not.toContain("KEY");
+  });
+
+  it("maps Claude Code OAuth config without leaking secret names or Codex env", () => {
+    const provider = {
+      ...safeDefaultReviewConfiguration.provider,
+      kind: "claude" as const,
+      authMode: "claude_code_oauth" as const,
+      model: "sonnet",
+    };
+    const env = mapConfigToRuntimeEnv({
+      ...safeDefaultReviewConfiguration,
+      provider,
+      providers: [provider],
+    });
+
+    expect(env).toMatchObject({
+      REVIEW_AUTH_MODE: "claude-oauth",
+      REVIEW_PROVIDERS: "claude/sonnet",
+      SYNTHESIS_MODEL: "claude/sonnet",
+      CLAUDE_MODEL: "sonnet",
+      PROVIDER_LIMIT: "1",
+      PROVIDER_MAX_PARALLEL: "1",
+    });
+    expect(env).not.toHaveProperty("CODEX_MODEL");
+    expect(Object.keys(env).join("\n")).not.toContain("SECRET");
+    expect(Object.keys(env).join("\n")).not.toContain("KEY");
+  });
+
+  it("rejects provider auth mode pairs that do not match catalog ownership", () => {
+    expect(() =>
+      parseReviewConfiguration({
+        schemaVersion: 2,
+        providers: [
+          {
+            kind: "codex",
+            authMode: "claude_code_oauth",
+            model: "sonnet",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+        ],
+        blockingPolicy: { failOnSeverity: "critical" },
+        limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+      }),
+    ).toThrow();
   });
 
   it("normalizes legacy v1 config into v2 provider list", () => {
@@ -188,14 +234,18 @@ describe("review configuration", () => {
     const updated = await saveReviewConfiguration(
       {
         target,
-        config: {
-          ...safeDefaultReviewConfiguration,
-          provider: {
+        config: (() => {
+          const provider = {
             ...safeDefaultReviewConfiguration.provider,
-            reasoningEffort: "high",
+            reasoningEffort: "high" as const,
             fastMode: true,
-          },
-        },
+          };
+          return {
+            ...safeDefaultReviewConfiguration,
+            provider,
+            providers: [provider],
+          };
+        })(),
       },
       { configurations },
     );
@@ -369,13 +419,17 @@ describe("review configuration", () => {
     await saveReviewConfiguration(
       {
         target: workspaceTarget,
-        config: {
-          ...safeDefaultReviewConfiguration,
-          provider: {
+        config: (() => {
+          const provider = {
             ...safeDefaultReviewConfiguration.provider,
             model: "gpt-5.4",
-          },
-        },
+          };
+          return {
+            ...safeDefaultReviewConfiguration,
+            provider,
+            providers: [provider],
+          };
+        })(),
       },
       { configurations },
     );
@@ -389,14 +443,18 @@ describe("review configuration", () => {
     await saveReviewConfiguration(
       {
         target: repositoryTarget,
-        config: {
-          ...safeDefaultReviewConfiguration,
-          provider: {
+        config: (() => {
+          const provider = {
             ...safeDefaultReviewConfiguration.provider,
             model: "gpt-5.4-mini",
-          },
-          blockingPolicy: { failOnSeverity: "major" },
-        },
+          };
+          return {
+            ...safeDefaultReviewConfiguration,
+            provider,
+            providers: [provider],
+            blockingPolicy: { failOnSeverity: "major" as const },
+          };
+        })(),
       },
       { configurations },
     );
@@ -428,26 +486,34 @@ describe("review configuration", () => {
     await saveReviewConfiguration(
       {
         target: workspaceTarget,
-        config: {
-          ...safeDefaultReviewConfiguration,
-          provider: {
+        config: (() => {
+          const provider = {
             ...safeDefaultReviewConfiguration.provider,
             model: "gpt-5.4",
-          },
-        },
+          };
+          return {
+            ...safeDefaultReviewConfiguration,
+            provider,
+            providers: [provider],
+          };
+        })(),
       },
       { configurations },
     );
     await saveReviewConfiguration(
       {
         target: repositoryTarget,
-        config: {
-          ...safeDefaultReviewConfiguration,
-          provider: {
+        config: (() => {
+          const provider = {
             ...safeDefaultReviewConfiguration.provider,
             model: "gpt-5.4-mini",
-          },
-        },
+          };
+          return {
+            ...safeDefaultReviewConfiguration,
+            provider,
+            providers: [provider],
+          };
+        })(),
       },
       { configurations },
     );

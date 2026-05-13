@@ -1,10 +1,18 @@
+import {
+  fromProviderSetupKind,
+  getProviderSecretNames,
+  type ProviderSetupKind,
+} from "@reviewrouter/features-review-providers";
 import { z } from "zod";
 
-export const providerSecretKindSchema = z.enum([
+const providerSecretKinds = [
   "codex_oauth",
   "openai_api_key",
+  "claude_code_oauth",
   "openrouter_api_key",
-]);
+] as const satisfies readonly ProviderSetupKind[];
+
+export const providerSecretKindSchema = z.enum(providerSecretKinds);
 
 export type ProviderSecretKind = z.infer<typeof providerSecretKindSchema>;
 
@@ -134,10 +142,12 @@ export function buildProviderSecretSetupGuidance(input: {
     };
   }
 
-  const secretName =
-    input.provider === "openai_api_key"
-      ? "OPENAI_API_KEY"
-      : "OPENROUTER_API_KEY";
+  const secretName = secretNameForProviderSetup(input.provider);
+  const isClaudeCodeOAuth = input.provider === "claude_code_oauth";
+  const failureRecovery = isClaudeCodeOAuth
+    ? "If CI reports Claude auth errors, generate a fresh token with claude setup-token and rerun this command. Do not paste a shell command as the secret value."
+    : "If GitHub rejects the command, verify gh auth and repository admin access.";
+
   return {
     provider: input.provider,
     recommendedScope: organizationLogin
@@ -156,8 +166,9 @@ export function buildProviderSecretSetupGuidance(input: {
               secretNames: [secretName],
               selectedRepositories: [`${owner}/${repo}`],
               validatesBeforeWrite: false,
-              failureRecovery:
-                "If GitHub rejects the command, verify gh auth, organization ownership, and selected repository access.",
+              failureRecovery: isClaudeCodeOAuth
+                ? failureRecovery
+                : "If GitHub rejects the command, verify gh auth, organization ownership, and selected repository access.",
               sendsSecretToReviewRouter: false as const,
             },
             {
@@ -170,8 +181,9 @@ export function buildProviderSecretSetupGuidance(input: {
               secretNames: [secretName],
               selectedRepositories: [],
               validatesBeforeWrite: false,
-              failureRecovery:
-                "If GitHub rejects the command, verify gh auth, organization ownership, and GitHub plan support for org secrets.",
+              failureRecovery: isClaudeCodeOAuth
+                ? failureRecovery
+                : "If GitHub rejects the command, verify gh auth, organization ownership, and GitHub plan support for org secrets.",
               sendsSecretToReviewRouter: false as const,
             },
             {
@@ -184,8 +196,9 @@ export function buildProviderSecretSetupGuidance(input: {
               secretNames: [secretName],
               selectedRepositories: [],
               validatesBeforeWrite: false,
-              failureRecovery:
-                "If GitHub rejects the command, verify gh auth, organization ownership, and GitHub plan support for org secrets.",
+              failureRecovery: isClaudeCodeOAuth
+                ? failureRecovery
+                : "If GitHub rejects the command, verify gh auth, organization ownership, and GitHub plan support for org secrets.",
               sendsSecretToReviewRouter: false as const,
             },
           ]
@@ -194,22 +207,38 @@ export function buildProviderSecretSetupGuidance(input: {
         scope: "repository",
         title: "Repository secret",
         description: `Stores ${secretName} directly in this repository's Actions secrets.`,
-        command: `gh secret set ${secretName} --repo ${shellQuote(input.repoFullName)}`,
+        command: `gh secret set ${secretName} --repo ${shellQuote(input.repoFullName)}${isClaudeCodeOAuth ? " --app actions" : ""}`,
         storesSecretIn: "github_repository_secret",
         targetLabel: `${input.repoFullName} repository secret`,
         secretNames: [secretName],
         selectedRepositories: [input.repoFullName],
         validatesBeforeWrite: false,
-        failureRecovery:
-          "If GitHub rejects the command, verify gh auth and repository admin access.",
+        failureRecovery,
         sendsSecretToReviewRouter: false,
       },
     ],
-    warnings: [
-      "ReviewRouter SaaS does not need to see this key; set it directly in GitHub Actions secrets.",
-      "Prefer organization selected-repository secrets for team-owned repositories.",
-    ],
+    warnings: isClaudeCodeOAuth
+      ? [
+          "Run claude setup-token on a trusted machine and store only the printed token value.",
+          "Do not store the shell command itself, Claude keychain files, or Claude local config files.",
+          "Do not store ANTHROPIC_API_KEY for Claude Code subscription OAuth; ReviewRouter uses CLAUDE_CODE_OAUTH_TOKEN for this provider.",
+          "Regenerate the token before its roughly one-year expiration or when CI reports Claude auth errors.",
+          "ReviewRouter SaaS never receives CLAUDE_CODE_OAUTH_TOKEN; set it directly in GitHub Actions secrets.",
+          "For public repositories, fork pull requests are skipped for secret-backed provider execution by default.",
+        ]
+      : [
+          "ReviewRouter SaaS does not need to see this key; set it directly in GitHub Actions secrets.",
+          "Prefer organization selected-repository secrets for team-owned repositories.",
+        ],
   };
+}
+
+function secretNameForProviderSetup(provider: ProviderSecretKind): string {
+  const [secretName] = getProviderSecretNames(fromProviderSetupKind(provider));
+  if (!secretName) {
+    throw new Error(`missing_provider_secret_name:${provider}`);
+  }
+  return secretName;
 }
 
 function parseRepoFullName(repoFullName: string): readonly [string, string] {

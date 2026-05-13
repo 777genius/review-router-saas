@@ -44,10 +44,6 @@ export async function getActionRuntimeConfig(
     repositoryId: session.repositoryId,
     repositoryFullName: session.repository,
   });
-  await dependencies.compatibility?.assertRuntimeConfigAllowed({
-    protocolVersion: 1,
-    ...(input.actionVersion ? { actionVersion: input.actionVersion } : {}),
-  });
 
   const record = await dependencies.repositories.findRuntimeReviewConfiguration(
     {
@@ -58,6 +54,16 @@ export async function getActionRuntimeConfig(
   const config = record?.config ?? safeDefaultReviewConfiguration;
   const version = record?.version ?? 1;
   const runtimeEnv = mapConfigToRuntimeEnv(config);
+  await dependencies.compatibility?.assertRuntimeConfigAllowed({
+    protocolVersion: 1,
+    ...(input.actionVersion ? { actionVersion: input.actionVersion } : {}),
+    providerKinds: [
+      ...new Set(config.providers.map((provider) => provider.kind)),
+    ],
+    providerAuthModes: [
+      ...new Set(config.providers.map((provider) => provider.authMode)),
+    ],
+  });
   const ledgerKey = dependencies.ledgerKeys?.deriveLedgerKey({
     workspaceId: repository.workspaceId,
     repositoryId: repository.repositoryId,

@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Badge, LinkButton, SelectField } from "@reviewrouter/ui";
-import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
+import {
+  isClaudeCodeProviderEnabled,
+  resolveReviewRouterActionRef,
+} from "@reviewrouter/platform-config";
 import { PrismaRepositoryConnectionRepository } from "@reviewrouter/features-repositories";
 import {
   listWorkspaceRepositoryHealth,
@@ -823,6 +826,7 @@ export default async function DashboardPage({
     selectedWorkspace.workspace,
     workspaces,
   );
+  const claudeCodeProviderEnabled = isClaudeCodeProviderEnabled();
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 md:py-10">
@@ -847,6 +851,7 @@ export default async function DashboardPage({
           workspaceKey={selectedWorkspaceKey}
           appInstallUrl={appInstallUrl}
           modelOptions={modelOptions}
+          claudeCodeProviderEnabled={claudeCodeProviderEnabled}
           fallbackUser={{
             githubLogin: mutationStatus.githubLogin,
             githubAvatarUrl: mutationStatus.githubAvatarUrl,
@@ -1198,6 +1203,7 @@ function WorkspaceCard({
   workspaceKey,
   appInstallUrl,
   modelOptions,
+  claudeCodeProviderEnabled,
   fallbackUser,
 }: {
   readonly data: DashboardWorkspaceData;
@@ -1208,6 +1214,7 @@ function WorkspaceCard({
   readonly workspaceKey: string;
   readonly appInstallUrl: string | null;
   readonly modelOptions: readonly ReviewModelOption[];
+  readonly claudeCodeProviderEnabled: boolean;
   readonly fallbackUser: {
     readonly githubLogin: string | null;
     readonly githubAvatarUrl: string | null;
@@ -1273,6 +1280,7 @@ function WorkspaceCard({
         repositoryVisibility={selectedRepository.visibility}
         installation={selectedInstallation}
         guidanceSet={providerGuidanceSet}
+        claudeCodeProviderEnabled={claudeCodeProviderEnabled}
         triggerLabel="Enable review"
         triggerVariant="solid"
         triggerSize="sm"
@@ -1321,6 +1329,7 @@ function WorkspaceCard({
               repositoryConfigs={repositoryConfigs}
               activeConfig={activeConfig}
               modelOptions={modelOptions}
+              claudeCodeProviderEnabled={claudeCodeProviderEnabled}
               mutationsEnabled={mutationsEnabled}
               workspaceKey={workspaceKey}
               searchQuery={repositorySearchQuery}
@@ -1532,6 +1541,7 @@ function WorkspaceCard({
                   action={saveWorkspaceReviewConfigAction}
                   config={activeConfig}
                   modelOptions={modelOptions}
+                  claudeCodeProviderEnabled={claudeCodeProviderEnabled}
                   hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
                   mutationsEnabled={mutationsEnabled}
                   submitLabel="Save workspace default"
@@ -1596,9 +1606,10 @@ function WorkspaceCard({
                 </summary>
                 <div className="mt-4 grid gap-3">
                   {repositories.map((repository) => {
-                    const repositoryConfig = repositoryConfigs.find(
-                      (item) => item.repositoryId === repository.id,
-                    )?.config ?? null;
+                    const repositoryConfig =
+                      repositoryConfigs.find(
+                        (item) => item.repositoryId === repository.id,
+                      )?.config ?? null;
                     const effectiveConfig =
                       repositoryConfig?.config ?? activeConfig;
                     const configVersion =
@@ -1613,6 +1624,7 @@ function WorkspaceCard({
                         effectiveConfig={effectiveConfig}
                         configVersion={configVersion}
                         modelOptions={modelOptions}
+                        claudeCodeProviderEnabled={claudeCodeProviderEnabled}
                         mutationsEnabled={mutationsEnabled}
                         saveAction={saveRepositoryReviewConfigAction}
                         clearAction={clearRepositoryReviewConfigAction}
@@ -2045,6 +2057,7 @@ function RepositoryTable({
   repositoryConfigs,
   activeConfig,
   modelOptions,
+  claudeCodeProviderEnabled,
   mutationsEnabled,
   workspaceKey,
   searchQuery,
@@ -2060,6 +2073,7 @@ function RepositoryTable({
   readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
   readonly activeConfig: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
+  readonly claudeCodeProviderEnabled: boolean;
   readonly mutationsEnabled: boolean;
   readonly workspaceKey: string;
   readonly searchQuery: string;
@@ -2314,6 +2328,7 @@ function RepositoryTable({
                       setupPullRequestUrl={setupPullRequestUrl}
                       workflowCurrent={workflowCurrent}
                       mutationsEnabled={mutationsEnabled}
+                      claudeCodeProviderEnabled={claudeCodeProviderEnabled}
                       currentStep={setupProgressStep}
                     />
                   </div>
@@ -2325,6 +2340,7 @@ function RepositoryTable({
                     repositoryConfig={repositoryConfig}
                     effectiveConfig={effectiveConfig}
                     modelOptions={modelOptions}
+                    claudeCodeProviderEnabled={claudeCodeProviderEnabled}
                     mutationsEnabled={mutationsEnabled}
                   />
                 ) : null}
@@ -2431,6 +2447,7 @@ function RepositorySetupProgressPanel({
   setupPullRequestUrl,
   workflowCurrent,
   mutationsEnabled,
+  claudeCodeProviderEnabled,
   currentStep,
 }: {
   readonly workspace: DashboardWorkspace;
@@ -2438,6 +2455,7 @@ function RepositorySetupProgressPanel({
   readonly setupPullRequestUrl: string | null;
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
+  readonly claudeCodeProviderEnabled: boolean;
   readonly currentStep: 1 | 2 | 3 | 4;
 }): React.ReactElement {
   const canManage =
@@ -2452,6 +2470,7 @@ function RepositorySetupProgressPanel({
       repository={repository}
       setupStatus={repository.setupStatus}
       disabled={!canManage}
+      claudeCodeProviderEnabled={claudeCodeProviderEnabled}
       triggerVariant="outline"
       triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
     />
@@ -2479,6 +2498,7 @@ type DashboardInstallation = DashboardWorkspace["installations"][number];
 type ProviderSecretGuidanceSet = {
   readonly codexOAuth: ReturnType<typeof buildProviderSecretSetupGuidance>;
   readonly codexApiKey: ReturnType<typeof buildProviderSecretSetupGuidance>;
+  readonly claudeCodeOAuth: ReturnType<typeof buildProviderSecretSetupGuidance>;
   readonly openRouterApiKey: ReturnType<
     typeof buildProviderSecretSetupGuidance
   >;
@@ -2489,6 +2509,7 @@ function RepositoryProviderSecretsAction({
   repository,
   setupStatus,
   disabled,
+  claudeCodeProviderEnabled,
   triggerVariant,
   triggerClassName,
 }: {
@@ -2496,6 +2517,7 @@ function RepositoryProviderSecretsAction({
   readonly repository: DashboardWorkspaceData["repositories"][number];
   readonly setupStatus: string;
   readonly disabled: boolean;
+  readonly claudeCodeProviderEnabled: boolean;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
   readonly triggerClassName?: string;
 }): React.ReactElement | null {
@@ -2518,6 +2540,7 @@ function RepositoryProviderSecretsAction({
         repositoryFullName: repository.fullName,
         installation,
       })}
+      claudeCodeProviderEnabled={claudeCodeProviderEnabled}
       disabled={disabled}
       triggerLabel="Enable review"
       triggerVariant={
@@ -2540,6 +2563,7 @@ function RepositoryProviderSecretsDialog({
   repositoryVisibility,
   installation,
   guidanceSet,
+  claudeCodeProviderEnabled,
   triggerLabel,
   triggerVariant = "outline",
   triggerSize = "sm",
@@ -2552,6 +2576,7 @@ function RepositoryProviderSecretsDialog({
   readonly repositoryVisibility: string;
   readonly installation: DashboardInstallation;
   readonly guidanceSet: ProviderSecretGuidanceSet;
+  readonly claudeCodeProviderEnabled: boolean;
   readonly triggerLabel: string;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
   readonly triggerSize?: "sm" | "md" | "lg";
@@ -2572,6 +2597,7 @@ function RepositoryProviderSecretsDialog({
       organizationLogin={organizationLogin}
       organizationSecretPolicy={installation.organizationSecretPolicy}
       guidanceSet={guidanceSet}
+      claudeCodeProviderEnabled={claudeCodeProviderEnabled}
       triggerLabel={triggerLabel}
       triggerVariant={triggerVariant}
       triggerSize={triggerSize}
@@ -2614,6 +2640,11 @@ function buildProviderSecretGuidanceSet({
     }),
     codexApiKey: buildProviderSecretSetupGuidance({
       provider: "openai_api_key",
+      repoFullName: repositoryFullName,
+      organizationLogin,
+    }),
+    claudeCodeOAuth: buildProviderSecretSetupGuidance({
+      provider: "claude_code_oauth",
       repoFullName: repositoryFullName,
       organizationLogin,
     }),

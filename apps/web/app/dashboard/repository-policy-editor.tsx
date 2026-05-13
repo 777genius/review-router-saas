@@ -1,19 +1,21 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import {
-  useEffect,
-  useId,
-  useMemo,
-  useState,
-  type FocusEvent,
-} from "react";
+import { useEffect, useId, useMemo, useState, type FocusEvent } from "react";
 import * as RadixSelect from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
   ReviewConfiguration,
   ReviewProviderConfiguration,
 } from "@reviewrouter/features-review-config";
+import {
+  getDefaultProviderConfigForAuthMode,
+  getProviderAuthModeMetadata,
+  providerKindForAuthMode,
+  type ProviderAuthMode,
+  type ProviderKind,
+  type ReviewModelOption,
+} from "@reviewrouter/features-review-providers";
 import { FormSubmitButton } from "../form-submit-button";
 import {
   checkProviderRepositorySecretClientAction,
@@ -82,32 +84,54 @@ export function clearProviderSecretStatusCacheForTest(): void {
   providerSecretStatusCache.clear();
 }
 
-type ReviewModelOption = {
-  readonly value: string;
-  readonly label: string;
-  readonly provider: "codex" | "openrouter";
-  readonly description?: string;
-  readonly badge?: "FREE RECOMMENDED" | "FREE" | "PAID" | "Unsupported";
-  readonly disabled?: boolean;
-};
+const providerAuthModeOrder = [
+  "codex_subscription_oauth",
+  "codex_openai_api_key",
+  "claude_code_oauth",
+  "openrouter_api_key",
+] as const satisfies readonly ProviderAuthMode[];
 
-const providerAuthOptions = [
-  {
-    value: "codex_subscription_oauth",
+const providerAuthOptionCopyByAuthMode = {
+  codex_subscription_oauth: {
     label: "Codex OAuth",
     description: "Uses the user's Codex subscription in GitHub Actions.",
   },
-  {
-    value: "codex_openai_api_key",
+  codex_openai_api_key: {
     label: "Codex API key",
     description: "Uses OPENAI_API_KEY from GitHub Actions secrets.",
   },
-  {
-    value: "openrouter_api_key",
+  claude_code_oauth: {
+    label: "Claude Code subscription",
+    description: "Uses CLAUDE_CODE_OAUTH_TOKEN from GitHub Actions secrets.",
+  },
+  openrouter_api_key: {
     label: "OpenRouter API key",
     description: "Uses OPENROUTER_API_KEY from GitHub Actions secrets.",
   },
-] as const;
+} as const satisfies Record<
+  ProviderAuthMode,
+  { readonly label: string; readonly description: string }
+>;
+
+function buildProviderAuthOptions(input: {
+  readonly claudeCodeProviderEnabled: boolean;
+  readonly providers: readonly ReviewProviderConfiguration[];
+}): readonly DashboardSelectOption[] {
+  const selectedAuthModes = new Set(
+    input.providers.map((provider) => provider.authMode),
+  );
+  return providerAuthModeOrder
+    .filter(
+      (authMode) =>
+        authMode !== "claude_code_oauth" ||
+        input.claudeCodeProviderEnabled ||
+        selectedAuthModes.has(authMode),
+    )
+    .map((authMode) => ({
+      value: authMode,
+      ...providerAuthOptionCopyByAuthMode[authMode],
+    }));
+}
 
 const reasoningEffortOptions = [
   { value: "low", label: "Low", description: "Faster and cheaper." },
@@ -147,7 +171,7 @@ type DashboardSelectOption = {
 
 const fieldHelp = {
   providerAuthMode:
-    "Where the review action gets model credentials. Codex OAuth uses the connected Codex subscription; API-key modes use GitHub Actions secrets.",
+    "Where the review action gets model credentials. Subscription modes use GitHub Actions secrets seeded from the provider CLI; API-key modes use provider API keys.",
   model:
     "Model passed to the review runtime. Pick a known model or type a custom model name.",
   reasoningEffort:
@@ -169,19 +193,12 @@ const fieldHelp = {
     "Number of providers that should agree before an inline finding is treated as agreed.",
 } as const;
 
-const defaultCodexProvider = {
-  kind: "codex",
-  authMode: "codex_subscription_oauth",
-  model: "gpt-5.5",
-  reasoningEffort: "medium",
-  agenticContext: true,
-  fastMode: false,
-} satisfies ReviewProviderConfiguration;
+const defaultCodexProvider = getDefaultProviderConfigForAuthMode(
+  "codex_subscription_oauth",
+) satisfies ReviewProviderConfiguration;
 
-const secretMetadataByAuthMode = {
+const secretCopyByAuthMode = {
   codex_subscription_oauth: {
-    providerKind: "codex",
-    secretName: "CODEX_AUTH_JSON",
     label: "Codex OAuth",
     description:
       "Codex OAuth uses CODEX_AUTH_JSON from GitHub Actions secrets.",
@@ -190,17 +207,21 @@ const secretMetadataByAuthMode = {
       "Run the Codex OAuth setup command from the setup panel, or seed auth.json from a trusted machine.",
   },
   codex_openai_api_key: {
-    providerKind: "codex",
-    secretName: "OPENAI_API_KEY",
     label: "Codex API key",
     description:
       "Codex API-key mode uses OPENAI_API_KEY from GitHub Actions secrets.",
     commandSuffix: "",
     recovery: "Create an OpenAI API key, then store it as a GitHub secret.",
   },
+  claude_code_oauth: {
+    label: "Claude Code subscription",
+    description:
+      "Claude Code subscription mode uses CLAUDE_CODE_OAUTH_TOKEN from GitHub Actions secrets.",
+    commandSuffix: "--app actions",
+    recovery:
+      "Run claude setup-token on a trusted machine, then store only the printed token value.",
+  },
   openrouter_api_key: {
-    providerKind: "openrouter",
-    secretName: "OPENROUTER_API_KEY",
     label: "OpenRouter API key",
     description:
       "OpenRouter providers use OPENROUTER_API_KEY from GitHub Actions secrets.",
@@ -208,10 +229,8 @@ const secretMetadataByAuthMode = {
     recovery: "Create an OpenRouter API key, then store it as a GitHub secret.",
   },
 } as const satisfies Record<
-  ReviewProviderConfiguration["authMode"],
+  ProviderAuthMode,
   {
-    readonly providerKind: ReviewProviderConfiguration["kind"];
-    readonly secretName: string;
     readonly label: string;
     readonly description: string;
     readonly commandSuffix: string;
@@ -234,7 +253,7 @@ function ProviderSecretNotice({
     secretCheckTarget ? "checking" : "missing",
   );
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const metadata = secretMetadataByAuthMode[authMode];
+  const metadata = getSecretMetadata(authMode);
   const command = repositoryFullName
     ? `gh secret set ${metadata.secretName} --repo ${repositoryFullName}${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`
     : `gh secret set ${metadata.secretName} --repo <owner>/<repo>${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`;
@@ -392,6 +411,26 @@ function ProviderSecretNotice({
   );
 }
 
+function getSecretMetadata(authMode: ProviderAuthMode): {
+  readonly providerKind: ProviderKind;
+  readonly secretName: string;
+  readonly label: string;
+  readonly description: string;
+  readonly commandSuffix: string;
+  readonly recovery: string;
+} {
+  const authMetadata = getProviderAuthModeMetadata(authMode);
+  const secretName = authMetadata.secretNames[0];
+  if (!secretName) {
+    throw new Error(`missing_provider_secret_name:${authMode}`);
+  }
+  return {
+    providerKind: authMetadata.providerKind,
+    secretName,
+    ...secretCopyByAuthMode[authMode],
+  };
+}
+
 function checkProviderSecretStatusWithCache(input: {
   readonly workspaceId: string;
   readonly repositoryId: string;
@@ -468,6 +507,7 @@ export function RepositoryPolicyOverrideDetails({
   configVersion,
   modelOptions,
   mutationsEnabled,
+  claudeCodeProviderEnabled = true,
   saveAction,
   clearAction,
 }: {
@@ -478,6 +518,7 @@ export function RepositoryPolicyOverrideDetails({
   readonly configVersion: number;
   readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
+  readonly claudeCodeProviderEnabled?: boolean;
   readonly saveAction: DashboardFormAction;
   readonly clearAction: DashboardFormAction;
 }): React.ReactElement {
@@ -525,6 +566,7 @@ export function RepositoryPolicyOverrideDetails({
             action={saveAction}
             config={effectiveConfig}
             modelOptions={modelOptions}
+            claudeCodeProviderEnabled={claudeCodeProviderEnabled}
             hiddenFields={[
               { name: "workspaceId", value: workspaceId },
               { name: "repositoryId", value: repository.id },
@@ -563,6 +605,7 @@ export function RepositoryPolicyEditor({
   effectiveConfig,
   modelOptions,
   mutationsEnabled,
+  claudeCodeProviderEnabled = true,
   compact = false,
 }: {
   readonly workspaceId: string;
@@ -571,6 +614,7 @@ export function RepositoryPolicyEditor({
   readonly effectiveConfig: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
+  readonly claudeCodeProviderEnabled?: boolean;
   readonly compact?: boolean;
 }): React.ReactElement {
   const router = useRouter();
@@ -631,6 +675,7 @@ export function RepositoryPolicyEditor({
             action={saveRepositorySettings}
             config={effectiveConfig}
             modelOptions={modelOptions}
+            claudeCodeProviderEnabled={claudeCodeProviderEnabled}
             hiddenFields={[
               { name: "workspaceId", value: workspaceId },
               { name: "repositoryId", value: repository.id },
@@ -708,6 +753,7 @@ export function ReviewConfigForm({
   action,
   config,
   modelOptions,
+  claudeCodeProviderEnabled = true,
   hiddenFields,
   mutationsEnabled,
   submitLabel,
@@ -717,6 +763,7 @@ export function ReviewConfigForm({
   readonly action: DashboardFormAction;
   readonly config: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
+  readonly claudeCodeProviderEnabled?: boolean;
   readonly hiddenFields: readonly {
     readonly name: string;
     readonly value: string;
@@ -737,10 +784,19 @@ export function ReviewConfigForm({
   const [inlineMinAgreement, setInlineMinAgreement] = useState(
     Math.min(config.execution.inlineMinAgreement, initialProviders.length),
   );
+  const providerAuthOptions = useMemo(
+    () =>
+      buildProviderAuthOptions({
+        claudeCodeProviderEnabled,
+        providers,
+      }),
+    [claudeCodeProviderEnabled, providers],
+  );
 
   const modelOptionsByProvider = useMemo(
-    () => ({
+    (): Record<ProviderKind, readonly ReviewModelOption[]> => ({
       codex: modelOptions.filter((option) => option.provider === "codex"),
+      claude: modelOptions.filter((option) => option.provider === "claude"),
       openrouter: modelOptions.filter(
         (option) => option.provider === "openrouter",
       ),
@@ -811,7 +867,8 @@ export function ReviewConfigForm({
     index: number,
     authMode: ReviewProviderConfiguration["authMode"],
   ): void {
-    const kind = authMode === "openrouter_api_key" ? "openrouter" : "codex";
+    const kind = providerKindForAuthMode(authMode);
+    const defaultProvider = getDefaultProviderConfigForAuthMode(authMode);
     const nextOptions = modelOptionsByProvider[kind];
     updateProvider(index, (provider) => ({
       ...provider,
@@ -823,7 +880,19 @@ export function ReviewConfigForm({
         )?.value ??
         firstSelectableModel(nextOptions)?.value ??
         nextOptions[0]?.value ??
-        provider.model,
+        defaultProvider.model,
+      reasoningEffort:
+        kind === "codex" && provider.kind === "codex"
+          ? provider.reasoningEffort
+          : defaultProvider.reasoningEffort,
+      agenticContext:
+        kind === "codex" && provider.kind === "codex"
+          ? provider.agenticContext
+          : defaultProvider.agenticContext,
+      fastMode:
+        kind === "codex" && provider.kind === "codex"
+          ? provider.fastMode
+          : defaultProvider.fastMode,
     }));
   }
 

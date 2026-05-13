@@ -18,6 +18,7 @@
     "@reviewrouter/features-repo-health": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
+    "@reviewrouter/features-review-providers": "workspace:*",
     "@reviewrouter/features-support-diagnostics": "workspace:*",
     "@reviewrouter/features-workflow-provisioning": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",

@@ -25,6 +25,7 @@ import {
 type ProviderSecretGuidanceSet = {
   readonly codexOAuth: ProviderSecretSetupGuidance;
   readonly codexApiKey: ProviderSecretSetupGuidance;
+  readonly claudeCodeOAuth: ProviderSecretSetupGuidance;
   readonly openRouterApiKey: ProviderSecretSetupGuidance;
 };
 
@@ -36,6 +37,7 @@ export function ProviderSecretSetupDialog({
   organizationLogin,
   organizationSecretPolicy,
   guidanceSet,
+  claudeCodeProviderEnabled = true,
   triggerLabel,
   triggerVariant = "outline",
   triggerSize = "sm",
@@ -49,6 +51,7 @@ export function ProviderSecretSetupDialog({
   readonly organizationLogin: string | null;
   readonly organizationSecretPolicy: OrganizationSecretPolicy | null;
   readonly guidanceSet: ProviderSecretGuidanceSet;
+  readonly claudeCodeProviderEnabled?: boolean;
   readonly triggerLabel: string;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
   readonly triggerSize?: "sm" | "md" | "lg";
@@ -156,7 +159,9 @@ export function ProviderSecretSetupDialog({
               organizationSecretPolicy={organizationSecretPolicy}
               codexOAuthGuidance={guidanceSet.codexOAuth}
               codexApiKeyGuidance={guidanceSet.codexApiKey}
+              claudeCodeOAuthGuidance={guidanceSet.claudeCodeOAuth}
               openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}
+              claudeCodeProviderEnabled={claudeCodeProviderEnabled}
             />
           </div>
         </DialogPopup>

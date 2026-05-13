@@ -1,17 +1,30 @@
+import {
+  providerAuthModeBelongsToKind,
+  providerAuthModeSchema,
+  providerKindSchema,
+} from "@reviewrouter/features-review-providers";
 import { z } from "zod";
 
-export const reviewProviderConfigurationSchema = z.object({
-  kind: z.enum(["codex", "openrouter"]),
-  authMode: z.enum([
-    "codex_subscription_oauth",
-    "codex_openai_api_key",
-    "openrouter_api_key",
-  ]),
-  model: z.string().min(1),
-  reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).default("medium"),
-  agenticContext: z.boolean().default(true),
-  fastMode: z.boolean().default(false),
-});
+export const reviewProviderConfigurationSchema = z
+  .object({
+    kind: providerKindSchema,
+    authMode: providerAuthModeSchema,
+    model: z.string().trim().min(1),
+    reasoningEffort: z
+      .enum(["low", "medium", "high", "xhigh"])
+      .default("medium"),
+    agenticContext: z.boolean().default(true),
+    fastMode: z.boolean().default(false),
+  })
+  .superRefine((provider, context) => {
+    if (!providerAuthModeBelongsToKind(provider.authMode, provider.kind)) {
+      context.addIssue({
+        code: "custom",
+        path: ["authMode"],
+        message: "provider auth mode does not belong to provider kind",
+      });
+    }
+  });
 
 const blockingPolicySchema = z.object({
   failOnSeverity: z.enum(["off", "critical", "major"]).default("critical"),
@@ -95,13 +108,7 @@ function normalizeReviewConfiguration(
     | z.infer<typeof reviewConfigurationV2Schema>,
 ): ReviewConfiguration {
   const providers =
-    input.schemaVersion === 1
-      ? [input.provider]
-      : input.provider &&
-          input.providers.length === 1 &&
-          !sameProvider(input.provider, input.providers[0]!)
-        ? [input.provider]
-        : [...input.providers];
+    input.schemaVersion === 1 ? [input.provider] : [...input.providers];
   const provider = providers[0]!;
   const execution =
     input.schemaVersion === 1
@@ -133,18 +140,4 @@ function clamp(value: number | undefined, min: number, max: number): number {
     return fallback;
   }
   return Math.min(Math.max(Number(value), min), max);
-}
-
-function sameProvider(
-  left: ReviewProviderConfiguration,
-  right: ReviewProviderConfiguration,
-): boolean {
-  return (
-    left.kind === right.kind &&
-    left.authMode === right.authMode &&
-    left.model === right.model &&
-    left.reasoningEffort === right.reasoningEffort &&
-    left.agenticContext === right.agenticContext &&
-    left.fastMode === right.fastMode
-  );
 }

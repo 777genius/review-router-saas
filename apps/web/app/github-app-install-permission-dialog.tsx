@@ -49,7 +49,7 @@ const sensitivePermissionRows: readonly PermissionRow[] = [
   {
     title: "Secrets: read",
     badge: "Cannot read secret values",
-    body: "GitHub returns metadata only: secret name, timestamps, visibility, and selected repository access. ReviewRouter checks that CODEX_AUTH_JSON, OPENAI_API_KEY, or OPENROUTER_API_KEY exists.",
+    body: "GitHub returns metadata only: secret name, timestamps, visibility, and selected repository access. ReviewRouter checks that CODEX_AUTH_JSON, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, or OPENROUTER_API_KEY exists.",
     docs: [
       {
         label: "GitHub Docs: Get a repository secret",

@@ -12,7 +12,11 @@ export type RepositoryHealthStatus =
 export const defaultActionHealthStaleAfterMs = 24 * 60 * 60 * 1000;
 
 export type RepositoryWorkflowCheck =
-  | { readonly status: "present"; readonly expectedActionRefFound: boolean }
+  | {
+      readonly status: "present";
+      readonly expectedActionRefFound: boolean;
+      readonly expectedContentMarkersFound?: boolean;
+    }
   | { readonly status: "missing" }
   | { readonly status: "unavailable"; readonly reason: string };
 
