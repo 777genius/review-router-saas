@@ -1,8 +1,16 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   parseReviewConfiguration,
+  type ReviewProviderConfiguration,
   safeDefaultReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import {
+  getProviderCatalogEntry,
+  providerAuthModeSchema,
+  providerKindForAuthMode,
+  providerKindSchema,
+  type ProviderAuthMode,
+} from "@reviewrouter/features-review-providers";
 import type {
   ActionHealthReport,
   ActionRepositoryContext,
@@ -256,24 +264,8 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     }
 
     const providers = version.providers.length
-      ? version.providers.map((provider) => ({
-          kind: toProviderKind(provider.providerKind),
-          authMode: toAuthMode(provider.providerAuthMode),
-          model: provider.model,
-          reasoningEffort: toReasoningEffort(provider.reasoningEffort),
-          agenticContext: provider.agenticContext,
-          fastMode: provider.fastMode,
-        }))
-      : [
-          {
-            kind: toProviderKind(version.providerKind),
-            authMode: toAuthMode(version.providerAuthMode),
-            model: version.model,
-            reasoningEffort: toReasoningEffort(version.reasoningEffort),
-            agenticContext: version.agenticContext,
-            fastMode: version.fastMode,
-          },
-        ];
+      ? version.providers.map(toReviewProviderConfiguration)
+      : [toReviewProviderConfiguration(version)];
 
     return {
       version: version.version,
@@ -361,19 +353,43 @@ function extractReviewRouterRuntimeGitRef(
   return null;
 }
 
-function toAuthMode(value: string) {
-  switch (value) {
-    case "codex_openai_api_key":
-    case "openrouter_api_key":
-    case "codex_subscription_oauth":
-      return value;
-    default:
-      return "codex_subscription_oauth";
-  }
+function toReviewProviderConfiguration(input: {
+  readonly providerKind: string;
+  readonly providerAuthMode: string;
+  readonly model: string;
+  readonly reasoningEffort: string;
+  readonly agenticContext: boolean;
+  readonly fastMode: boolean;
+}): ReviewProviderConfiguration {
+  const authMode = toProviderAuthMode({
+    providerAuthMode: input.providerAuthMode,
+    providerKind: input.providerKind,
+  });
+  return {
+    kind: providerKindForAuthMode(authMode),
+    authMode,
+    model: input.model,
+    reasoningEffort: toReasoningEffort(input.reasoningEffort),
+    agenticContext: input.agenticContext,
+    fastMode: input.fastMode,
+  };
 }
 
-function toProviderKind(value: string) {
-  return value === "openrouter" ? "openrouter" : "codex";
+function toProviderAuthMode(input: {
+  readonly providerAuthMode: string;
+  readonly providerKind: string;
+}): ProviderAuthMode {
+  const authMode = providerAuthModeSchema.safeParse(input.providerAuthMode);
+  if (authMode.success) {
+    return authMode.data;
+  }
+
+  const kind = providerKindSchema.safeParse(input.providerKind);
+  if (kind.success) {
+    return getProviderCatalogEntry(kind.data).defaultAuthMode;
+  }
+
+  return safeDefaultReviewConfiguration.provider.authMode;
 }
 
 function toReasoningEffort(value: string) {

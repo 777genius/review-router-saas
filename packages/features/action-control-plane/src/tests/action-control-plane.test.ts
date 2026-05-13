@@ -264,6 +264,28 @@ describe("action control plane", () => {
     });
   });
 
+  it("accepts the legacy review-router.yml workflow path", async () => {
+    const sessions = new StaticSessionTokenService();
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            workflow_ref:
+              "777genius/example/.github/workflows/review-router.yml@refs/pull/1/merge",
+          }),
+        ),
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      repository: "777genius/example",
+    });
+  });
+
   it("accepts review comment OIDC claims for interaction commands", async () => {
     const sessions = new StaticSessionTokenService();
     await exchangeGitHubOidcToken(
