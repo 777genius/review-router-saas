@@ -14,7 +14,8 @@ describe("RepositoryVisibilityBadge", () => {
   ])("renders %s visibility as %s", (visibility, label) => {
     render(<RepositoryVisibilityBadge visibility={visibility} />);
 
-    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.getByLabelText(`${label} repository`)).toBeTruthy();
+    expect(document.body.textContent).not.toContain(label);
     expect(document.body.textContent).not.toContain("🔒");
     expect(document.body.textContent).not.toContain("◎");
   });

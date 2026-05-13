@@ -88,6 +88,47 @@ export function RepositorySetupDisclosureToggle({
   );
 }
 
+export function RepositorySetupRowDisclosureController(): null {
+  useEffect(() => {
+    function handleRowClick(event: MouseEvent): void {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest(repositoryRowInteractiveSelector)) return;
+
+      const row = target.closest<HTMLElement>("[data-repository-setup-row]");
+      if (!row) return;
+      if (target.closest("[data-repository-setup-panel]")) return;
+
+      const disclosureId = row.dataset.disclosureId;
+      if (!disclosureId) return;
+
+      const input = document.getElementById(disclosureId);
+      if (!(input instanceof HTMLInputElement)) return;
+
+      input.checked = !input.checked;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    document.addEventListener("click", handleRowClick);
+    return () => document.removeEventListener("click", handleRowClick);
+  }, []);
+
+  return null;
+}
+
+const repositoryRowInteractiveSelector = [
+  "a",
+  "button",
+  "input",
+  "label",
+  "select",
+  "textarea",
+  "[role='button']",
+  "[role='link']",
+  "[role='tab']",
+  "[data-ignore-repository-row-toggle]",
+].join(",");
+
 function SetupDisclosureChevron(): React.ReactElement {
   return (
     <svg

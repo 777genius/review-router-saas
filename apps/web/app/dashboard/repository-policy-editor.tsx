@@ -641,14 +641,20 @@ export function RepositoryPolicyEditor({
   }
 
   return (
-    <div className={compact ? "grid gap-3" : "w-full"}>
+    <div
+      className={
+        compact
+          ? "grid gap-3 justify-items-end"
+          : "grid w-full justify-items-end"
+      }
+    >
       <button
         type="button"
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => setOpen((value) => !value)}
         className={[
-          "flex w-full min-w-0 cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200",
+          "inline-flex max-w-full min-w-0 cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200",
           compact ? "px-3 sm:px-4" : "",
         ].join(" ")}
       >
@@ -667,7 +673,7 @@ export function RepositoryPolicyEditor({
         <div
           id={panelId}
           className={[
-            "mt-4 grid gap-4 px-1 pb-1 sm:px-2",
+            "mt-4 grid w-full justify-self-stretch gap-4 px-1 pb-1 sm:px-2",
             compact ? "col-span-full w-full flex-[1_0_100%]" : "",
           ].join(" ")}
         >

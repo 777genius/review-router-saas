@@ -1,5 +1,3 @@
-import { Badge } from "@reviewrouter/ui";
-
 type RepositoryVisibilityBadgeProps = {
   readonly visibility: string;
 };
@@ -10,26 +8,32 @@ export function RepositoryVisibilityBadge({
   const view = repositoryVisibilityView(visibility);
 
   return (
-    <Badge tone={view.tone} className="gap-1.5 px-2.5 py-1 text-[0.62rem]">
+    <span
+      className={[
+        "inline-flex h-5 w-5 shrink-0 items-center justify-center",
+        view.color,
+      ].join(" ")}
+      title={`${view.label} repository`}
+      aria-label={`${view.label} repository`}
+    >
       <VisibilityIcon kind={view.kind} />
-      <span>{view.label}</span>
-    </Badge>
+    </span>
   );
 }
 
 function repositoryVisibilityView(visibility: string): {
   readonly kind: "public" | "private" | "internal";
   readonly label: string;
-  readonly tone: "success" | "warning" | "accent";
+  readonly color: string;
 } {
   const normalized = visibility.toLowerCase();
   if (normalized === "private") {
-    return { kind: "private", label: "Private", tone: "warning" };
+    return { kind: "private", label: "Private", color: "text-amber-200" };
   }
   if (normalized === "internal") {
-    return { kind: "internal", label: "Internal", tone: "accent" };
+    return { kind: "internal", label: "Internal", color: "text-cyan-200" };
   }
-  return { kind: "public", label: "Public", tone: "success" };
+  return { kind: "public", label: "Public", color: "text-lime-200" };
 }
 
 function VisibilityIcon({
@@ -42,7 +46,7 @@ function VisibilityIcon({
       <svg
         aria-hidden="true"
         viewBox="0 0 16 16"
-        className="h-3.5 w-3.5"
+        className="h-4 w-4"
         fill="none"
       >
         <path
@@ -69,7 +73,7 @@ function VisibilityIcon({
       <svg
         aria-hidden="true"
         viewBox="0 0 16 16"
-        className="h-3.5 w-3.5"
+        className="h-4 w-4"
         fill="none"
       >
         <path
@@ -91,12 +95,7 @@ function VisibilityIcon({
   }
 
   return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 16 16"
-      className="h-3.5 w-3.5"
-      fill="none"
-    >
+    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none">
       <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.5" />
       <path
         d="M2.8 8h10.4M8 2.5c1.45 1.55 2.2 3.35 2.2 5.5s-.75 3.95-2.2 5.5C6.55 11.95 5.8 10.15 5.8 8S6.55 4.05 8 2.5Z"

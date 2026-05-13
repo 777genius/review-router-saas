@@ -95,7 +95,10 @@ import {
   type RepositorySearchFilter,
   type RepositorySearchIndexItem,
 } from "./repository-live-search";
-import { RepositorySetupDisclosureToggle } from "./repository-setup-optimistic-status";
+import {
+  RepositorySetupDisclosureToggle,
+  RepositorySetupRowDisclosureController,
+} from "./repository-setup-optimistic-status";
 import { RepositorySetupProgressPanel as RepositorySetupProgressPanelClient } from "./repository-setup-progress-panel";
 import {
   RepositoryPolicyEditor,
@@ -2282,46 +2285,57 @@ function RepositoryTable({
         </div>
       </div>
 
-      <div
-        data-repository-results
-        className="grid gap-3 p-3 text-slate-200 lg:gap-0 lg:p-0"
-      >
+      <div data-repository-results className="grid text-slate-200">
+        <RepositorySetupRowDisclosureController />
         {displayRows.map(
-          ({
-            repository,
-            setupPullRequestUrl,
-            workflowCurrent,
-            setupProgressStep,
-          }) => {
+          (
+            {
+              repository,
+              setupPullRequestUrl,
+              workflowCurrent,
+              setupProgressStep,
+            },
+            rowIndex,
+          ) => {
             const repositoryConfig =
               repositoryConfigById.get(repository.id) ?? null;
             const effectiveConfig = repositoryConfig?.config ?? activeConfig;
             const repositoryUrl = githubRepositoryUrl(repository.fullName);
             const setupDisclosureId = `repo-setup-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+            const isSelectedRepository =
+              repository.fullName === selectedRepositoryFullName;
+            const rowStripeClass = (() => {
+              if (isSelectedRepository) {
+                return setupProgressStep === 4
+                  ? "bg-emerald-400/[0.075]"
+                  : "bg-cyan-300/[0.045]";
+              }
+              if (setupProgressStep === 4) {
+                return rowIndex % 2 === 0
+                  ? "bg-emerald-400/[0.04] hover:bg-emerald-400/[0.07]"
+                  : "bg-emerald-300/[0.07] hover:bg-emerald-300/[0.095]";
+              }
+              return rowIndex % 2 === 0
+                ? "bg-slate-950/[0.2] hover:bg-cyan-300/[0.035]"
+                : "bg-cyan-300/[0.035] hover:bg-cyan-300/[0.06]";
+            })();
 
             return (
               <div
                 key={repository.id}
                 data-repository-row-id={repository.id}
+                data-repository-setup-row
+                data-disclosure-id={setupDisclosureId}
                 hidden={!initiallyVisibleRepositoryIds.has(repository.id)}
                 className={[
-                  "grid gap-4 border-t border-cyan-200/10 px-1 py-5 transition first:border-t-0 lg:px-6 lg:py-6",
-                  setupProgressStep === 4
-                    ? "bg-emerald-400/[0.045] hover:bg-emerald-400/[0.07]"
-                    : "hover:bg-cyan-300/[0.035]",
-                  repository.fullName === selectedRepositoryFullName
-                    ? setupProgressStep === 4
-                      ? "rounded-2xl bg-emerald-400/[0.075] px-3 lg:rounded-none"
-                      : "rounded-2xl bg-cyan-300/[0.045] px-3 lg:rounded-none"
-                    : "",
+                  "grid cursor-pointer gap-4 border-t border-cyan-200/10 px-4 py-5 transition-colors first:border-t-0 lg:px-6 lg:py-6",
+                  rowStripeClass,
                 ].join(" ")}
               >
                 <input
                   id={setupDisclosureId}
                   type="checkbox"
-                  defaultChecked={
-                    repository.fullName === selectedRepositoryFullName
-                  }
+                  defaultChecked={isSelectedRepository}
                   className="repository-setup-disclosure peer sr-only"
                 />
                 {setupProgressStep < 3 ? (
@@ -2347,9 +2361,6 @@ function RepositoryTable({
                     <RepositoryVisibilityBadge
                       visibility={repository.visibility}
                     />
-                    <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 font-mono text-xs text-slate-300">
-                      {repository.defaultBranch}
-                    </span>
                     {repository.archived ? (
                       <Badge tone="warning">Archived</Badge>
                     ) : null}
@@ -2361,7 +2372,10 @@ function RepositoryTable({
                   </div>
                 </div>
 
-                <div className="hidden peer-checked:block">
+                <div
+                  className="hidden peer-checked:block"
+                  data-repository-setup-panel
+                >
                   <div className="rounded-2xl border border-cyan-200/10 bg-slate-950/45 px-4 pb-1 pt-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:px-5">
                     <RepositorySetupProgressPanel
                       workspace={workspace}
@@ -2458,16 +2472,17 @@ function RepositoryStarsBadge({
 
   return (
     <span
-      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-amber-200/20 bg-amber-200/[0.055] px-2.5 font-mono text-xs font-semibold leading-none text-amber-100/90"
+      className="inline-flex shrink-0 items-center gap-1.5 font-mono text-xs font-semibold leading-none text-amber-100/90"
       title={`${safeCount} GitHub stars`}
       aria-label={`${safeCount} GitHub stars`}
     >
-      <span
+      <svg
         aria-hidden="true"
-        className="grid h-4 w-4 place-items-center rounded-full bg-amber-100/10 text-[0.82rem] leading-none"
+        viewBox="0 0 16 16"
+        className="h-3.5 w-3.5 shrink-0 translate-y-px fill-amber-300 text-amber-300"
       >
-        ★
-      </span>
+        <path d="M8 1.6 9.9 5.5l4.3.6-3.1 3 0.7 4.3L8 11.4l-3.8 2 0.7-4.3-3.1-3 4.3-.6L8 1.6Z" />
+      </svg>
       <span className="leading-none">{formatRepositoryStars(safeCount)}</span>
     </span>
   );
