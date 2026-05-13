@@ -9,6 +9,7 @@ import "./globals.css";
 import {
   reviewRouterContactEmail,
   reviewRouterContactMailto,
+  reviewRouterGitHubRepoUrl,
   reviewRouterWebUrl,
 } from "./public-urls";
 import {
@@ -140,11 +141,19 @@ export default async function RootLayout({
         <footer className="border-t border-cyan-200/10 bg-slate-950/55">
           <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-8 text-sm text-slate-400 sm:px-6 md:grid-cols-[1fr_auto] md:items-center">
             <p>
-              ReviewRouter is a metadata control plane. Code review execution,
-              provider credentials, and PR diffs stay in customer GitHub Actions
-              by default.
+              ReviewRouter is an open-source metadata control plane. Code review
+              execution, provider credentials, and PR diffs stay in customer
+              GitHub Actions by default.
             </p>
             <div className="flex flex-wrap gap-2">
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href={reviewRouterGitHubRepoUrl}
+                rel="noreferrer noopener"
+                target="_blank"
+              >
+                GitHub
+              </a>
               <a
                 className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
                 href={reviewRouterContactMailto}
@@ -162,6 +171,12 @@ export default async function RootLayout({
                 href="/privacy"
               >
                 Privacy
+              </a>
+              <a
+                className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"
+                href="/compare"
+              >
+                Compare
               </a>
               <a
                 className="inline-flex min-h-11 items-center rounded-lg px-2 text-cyan-100 hover:bg-cyan-300/[0.06] hover:underline"

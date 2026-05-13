@@ -111,7 +111,7 @@ export function buildApiDemoIndex(input: {
       openapi: `${input.apiUrl}/openapi.json`,
       apiDocs: `${input.apiUrl}/docs`,
       dashboard: `${input.webUrl}/dashboard`,
-      docs: "https://github.com/777genius/review-router-saas",
+      docs: "https://github.com/777genius/review-router",
     },
   };
 }
@@ -336,7 +336,7 @@ export function buildApiDemoDocument(input: {
     links: {
       dashboard: `${input.webUrl}/dashboard`,
       gettingStarted: `${input.webUrl}/getting-started`,
-      docs: "https://github.com/777genius/review-router-saas",
+      docs: "https://github.com/777genius/review-router",
       openapi: `${input.apiUrl}/openapi.json`,
       apiDocs: `${input.apiUrl}/docs`,
       demoMarkdown: `${input.apiUrl}/demo.md`,

@@ -6,7 +6,7 @@ export const defaultSeoTitle =
   "ReviewRouter | Privacy-first AI code review in CI";
 
 export const defaultSeoDescription =
-  "Privacy-first AI code review for GitHub pull requests. Configure Codex, Claude Code, OpenAI, and OpenRouter reviews while code, PR diffs, and secrets stay in CI.";
+  "Privacy-first AI code review for complex GitHub codebases. Configure Codex, Claude Code, OpenAI, and OpenRouter reviews while code, PR diffs, and secrets stay in CI.";
 
 export const seoKeywords = [
   "AI code review",
@@ -19,6 +19,8 @@ export const seoKeywords = [
   "OpenRouter code review",
   "CI code review",
   "GitHub Actions",
+  "complex codebases",
+  "private codebase review",
 ] as const;
 
 const defaultSocialImage = {

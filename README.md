@@ -1,6 +1,7 @@
 # ReviewRouter
 
 ReviewRouter is a local-beta SaaS control plane for AI pull request review.
+It is open source: https://github.com/777genius/review-router.
 
 The product does not run customer review workloads in the cloud by default.
 Customer code, diffs, provider secrets, and Codex OAuth files stay inside the
@@ -17,8 +18,8 @@ Implemented local-beta baseline:
 - workflow setup PR provisioning
 - GitHub Actions OIDC action session exchange
 - versioned workspace default and repository override review config
-- Codex OAuth, Codex API-key, and OpenRouter setup guidance without secret
-  custody
+- Codex OAuth, Claude Code OAuth, OpenAI API-key, and OpenRouter setup guidance
+  without sending secrets to ReviewRouter
 - safe action health reports and repo-health rollups
 - audit log, entitlements, outbox, worker loop, rate limits, and DB-backed
   smoke checks

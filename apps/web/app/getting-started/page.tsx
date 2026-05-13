@@ -157,8 +157,8 @@ export default function GettingStartedPage(): React.ReactElement {
           <Badge tone="neutral">Router mode</Badge>
           <h2 className="text-2xl font-semibold text-cyan-50">OpenRouter</h2>
           <p className="text-sm leading-6 text-slate-300">
-            OpenRouter follows the same custody rule: the key belongs in GitHub
-            Actions secrets, not in ReviewRouter SaaS.
+            OpenRouter follows the same rule: the key belongs in GitHub Actions
+            secrets, not in ReviewRouter SaaS.
           </p>
           <CodeBlock code={openRouterKeyCommand} />
         </Card>

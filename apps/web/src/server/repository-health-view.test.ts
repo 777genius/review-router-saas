@@ -15,7 +15,7 @@ describe("repository health view", () => {
       tone: "warning",
       label: "Provider setup needed",
       nextAction:
-        "Seed Codex OAuth or API-key secrets directly into GitHub Actions.",
+        "Seed Codex, Claude Code, OpenAI, or OpenRouter secrets directly into GitHub Actions.",
       blocksReview: true,
     });
     expect(describeRepositoryHealth("provider_unhealthy")).toMatchObject({

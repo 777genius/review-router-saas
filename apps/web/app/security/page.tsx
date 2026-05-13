@@ -15,14 +15,14 @@ const secretCommand = `curl -fsSL ${resolveCodexSeedScriptUrl()} | REVIEW_ROUTER
 
 const securitySections = [
   {
-    label: "Code custody",
-    title: "Review execution stays in customer CI.",
-    body: "ReviewRouter v1 manages metadata, workflow setup, model settings, health, and audit. It does not store repository code, pull request diffs, prompts, or model responses by default.",
+    label: "Code storage",
+    title: "Review execution runs inside customer GitHub Actions.",
+    body: "ReviewRouter manages metadata, workflow setup, model settings, health, and audit. Repository checkout, diff analysis, prompts, and model responses stay out of ReviewRouter cloud by default.",
   },
   {
     label: "Provider secrets",
-    title: "Provider OAuth tokens and API keys stay out of the SaaS.",
-    body: "Provider credentials are stored directly in GitHub Actions secrets or on a trusted self-hosted runner. The dashboard only shows setup guidance and provider health metadata.",
+    title: "Provider OAuth tokens and API keys stay in your boundary.",
+    body: "Codex OAuth, Claude Code OAuth, OpenAI API keys, and OpenRouter keys are stored directly in GitHub Actions secrets or on a trusted self-hosted runner. The dashboard only shows setup guidance and safe provider health metadata.",
   },
   {
     label: "Fork safety",
@@ -33,6 +33,27 @@ const securitySections = [
     label: "Action config",
     title: "OIDC avoids long-lived ReviewRouter API tokens in repos.",
     body: "GitHub Actions can request short-lived runtime config through OIDC. Static fallback exists for local beta, but production should prefer OIDC.",
+  },
+] as const;
+
+const boundaryRows = [
+  {
+    layer: "ReviewRunner",
+    ownedBy: "Customer repository CI",
+    sensitiveData:
+      "Repository checkout, PR diff, prompts, model output, provider calls",
+  },
+  {
+    layer: "Provider credentials",
+    ownedBy: "GitHub Actions secrets or trusted runner",
+    sensitiveData:
+      "Codex auth.json, Claude Code OAuth token, OpenAI key, OpenRouter key",
+  },
+  {
+    layer: "ReviewRouter SaaS",
+    ownedBy: "ReviewRouter control plane",
+    sensitiveData:
+      "Installation metadata, setup PR state, policy config, audit events, health summaries",
   },
 ] as const;
 
@@ -158,12 +179,13 @@ export default function SecurityPage(): React.ReactElement {
         <div className="space-y-5">
           <Badge tone="accent">Security model</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
-            Designed to avoid code and secret custody.
+            Code and secrets stay under your control.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
-            ReviewRouter is a control plane. It helps install, configure, and
-            monitor AI review, while review workloads execute inside GitHub
-            Actions under the repository owner&apos;s control.
+            ReviewRouter is a control plane for complex private codebases. It
+            helps install, configure, and monitor AI review, while source code,
+            PR diffs, prompts, model responses, and provider credentials stay
+            out of ReviewRouter cloud by default.
           </p>
           <div className="flex flex-wrap gap-3">
             <LinkButton href="/" variant="outline">
@@ -202,6 +224,48 @@ export default function SecurityPage(): React.ReactElement {
         ))}
       </section>
 
+      <Card className="space-y-4 border-lime-300/20">
+        <Badge tone="success">Privacy boundary</Badge>
+        <h2 className="text-2xl font-semibold text-cyan-50">
+          The SaaS configures review. Your CI performs review.
+        </h2>
+        <p className="text-sm leading-6 text-slate-300">
+          ReviewRouter cloud should not sit in the source-code path by default.
+          When an AI model is used, the review action calls the provider you
+          selected from your GitHub Actions job using credentials you control.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[680px] border-collapse text-left text-sm">
+            <thead className="text-cyan-100">
+              <tr>
+                <th className="border-b border-cyan-200/15 px-3 py-2">Layer</th>
+                <th className="border-b border-cyan-200/15 px-3 py-2">
+                  Owned by
+                </th>
+                <th className="border-b border-cyan-200/15 px-3 py-2">
+                  Data handled
+                </th>
+              </tr>
+            </thead>
+            <tbody className="text-slate-300">
+              {boundaryRows.map((row) => (
+                <tr key={row.layer}>
+                  <td className="border-b border-cyan-200/10 px-3 py-3 font-mono text-cyan-50">
+                    {row.layer}
+                  </td>
+                  <td className="border-b border-cyan-200/10 px-3 py-3">
+                    {row.ownedBy}
+                  </td>
+                  <td className="border-b border-cyan-200/10 px-3 py-3">
+                    {row.sensitiveData}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
       <Card className="space-y-4">
         <Badge tone="warning">GitHub App permissions</Badge>
         <h2 className="text-2xl font-semibold text-cyan-50">
@@ -235,7 +299,7 @@ export default function SecurityPage(): React.ReactElement {
                             href={doc.href}
                             target="_blank"
                             rel="noreferrer"
-                            className="text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 hover:text-cyan-50"
+                            className="inline-flex min-h-11 items-center text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 hover:text-cyan-50"
                           >
                             {doc.label}
                           </a>

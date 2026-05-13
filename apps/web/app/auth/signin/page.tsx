@@ -121,7 +121,7 @@ export default async function SignInPage({
         </Card>
       ) : (
         <Card className="rounded-2xl p-5 sm:p-6">
-          <Badge tone="success">No secret custody</Badge>
+          <Badge tone="success">No secrets stored here</Badge>
           <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
             Sign-in only connects metadata.
           </h2>

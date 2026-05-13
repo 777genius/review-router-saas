@@ -1,0 +1,27 @@
+ReviewRouter splits the product into two parts. The SaaS handles the control plane: setup, policy, health, audit, provider selection, and workflow updates. The customer GitHub Actions runner handles the sensitive execution: checkout, diff access, provider authentication, and AI review.
+That split keeps the product useful without making the cloud service a code sink.
+How setup works
+1. Install the GitHub App. Choose one repository, selected repositories, or an organization. ReviewRouter syncs metadata so the dashboard can show what is connected and what still needs setup.
+2. Merge the setup PR. ReviewRouter opens a pull request that adds or updates the workflow. The repository owner reviews the workflow before it lands. Nothing is pushed directly to the default branch.
+3. Connect the provider. Run a local setup command to put provider credentials where they belong: GitHub Actions secrets. Codex OAuth, Claude Code OAuth, OpenAI keys, and OpenRouter keys do not need to pass through ReviewRouter SaaS.
+4. Review pull requests in CI. When a PR is opened, the workflow asks ReviewRouter for metadata-only runtime config, runs the selected reviewer in CI, and posts findings back to GitHub.
+What teams get in the dashboard
+- Workspace-level defaults and repository-level overrides.
+- Provider and model selection for Codex, Claude Code, OpenAI, and OpenRouter flows.
+- Review limits, reasoning depth, and agentic context controls.
+- Repository setup status and workflow health.
+- Audit events for setup, config changes, and operational actions.
+- Provider setup guidance that keeps secrets in GitHub Actions.
+The goal is not to replace GitHub Actions. The goal is to make the AI review workflow easier to install, safer to operate, and easier to understand across many repositories.
+The security boundary
+ReviewRouter is designed around a default no-code-custody model. In v1, the SaaS should not need to read your repository source code or your pull request diff to provide setup, routing, health, and audit. The workflow in your CI environment has the repository access because GitHub Actions already owns that boundary.
+This also keeps provider credentials close to the place where they are used. If a team wants Codex OAuth, Claude Code OAuth, OpenAI, or OpenRouter, those secrets can live in GitHub Actions secrets or trusted runner storage instead of being copied into another database.
+Who should care
+ReviewRouter is for teams that want AI pull request review, but also care about ownership of code, credentials, and execution. It is especially relevant if you want a shared GitHub App identity, consistent setup PRs, central policy controls, and health visibility without giving up the CI boundary.
+It is also useful for teams testing multiple review providers. Some repositories may use Codex. Others may use OpenRouter. Some teams may want Claude Code subscription mode. ReviewRouter gives that routing a place to live.
+Current status
+ReviewRouter is in beta. The core direction is implemented: GitHub App onboarding, repository sync, workflow setup PRs, dashboard-managed review config, provider setup guidance, health, audit, rate limits, outbox processing, and smoke checks.
+The next work is about hardening the hosted beta: GitHub App lifecycle polish, public onboarding, billing boundaries, support tooling, and production release automation for the separate review Action runtime.
+If your team wants AI review but has been uncomfortable with the usual custody model, ReviewRouter is the attempt to make the boundary explicit: cloud for coordination, CI for execution.
+Website: https://reviewrouter.site
+GitHub: https://github.com/777genius/review-router
