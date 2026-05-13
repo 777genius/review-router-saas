@@ -70,7 +70,7 @@ export async function provisionOrgRulesetRequiredWorkflow(
         input.staticRuntimeEnv ??
         mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
     });
-    const sourceWrite = await setupGateway.writeSourceWorkflow({
+    const sourceWrite = await writeSourceWorkflowWithSafeErrors(setupGateway, {
       owner: sourceOwner,
       repo: sourceRepo,
       branch,
@@ -94,6 +94,7 @@ export async function provisionOrgRulesetRequiredWorkflow(
         targetSelection: toTargetSelection(
           record.scope,
           record.targetRepositoryIds,
+          [sourceRepo],
         ),
       }),
     });
@@ -140,11 +141,35 @@ export async function provisionOrgRulesetRequiredWorkflow(
   }
 }
 
+async function writeSourceWorkflowWithSafeErrors(
+  setupGateway: OrgRulesetSetupGatewayPort,
+  input: Parameters<OrgRulesetSetupGatewayPort["writeSourceWorkflow"]>[0],
+): ReturnType<OrgRulesetSetupGatewayPort["writeSourceWorkflow"]> {
+  try {
+    return await setupGateway.writeSourceWorkflow(input);
+  } catch (error) {
+    const status = getHttpStatus(error);
+    if (status === 403) {
+      throw new Error("org_ruleset_source_repository_not_writable");
+    }
+    if (status === 404) {
+      throw new Error("org_ruleset_source_repository_not_installed");
+    }
+    if (status === 409 || status === 422) {
+      throw new Error("org_ruleset_source_repository_branch_blocked");
+    }
+    throw error;
+  }
+}
+
 function toTargetSelection(
   scope: "selected_repositories" | "all_repositories",
   targetRepositoryIds: readonly string[],
+  excludeRepositoryNames: readonly string[],
 ): OrgRulesetTargetSelection {
-  if (scope === "all_repositories") return { scope };
+  if (scope === "all_repositories") {
+    return { scope, excludeRepositoryNames };
+  }
   return { scope, repositoryIds: targetRepositoryIds };
 }
 
@@ -162,6 +187,12 @@ function branchNameFromRef(ref: string): string {
     throw new Error("workflow_ref_invalid");
   }
   return ref.slice(prefix.length);
+}
+
+function getHttpStatus(error: unknown): number {
+  return typeof error === "object" && error !== null && "status" in error
+    ? Number(error.status)
+    : 0;
 }
 
 async function auditOptional(

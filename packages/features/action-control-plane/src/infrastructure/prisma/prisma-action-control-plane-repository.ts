@@ -34,6 +34,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
               where: { status: "configured" },
               select: {
                 scope: true,
+                sourceGithubRepositoryId: true,
                 sourceRepositoryFullName: true,
                 sourceWorkflowPath: true,
                 sourceWorkflowRef: true,
@@ -73,10 +74,13 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       trustedWorkflowRefs: [
         ...repository.workspace.orgRulesets
           .filter((ruleset) => {
-            if (ruleset.scope === "all_repositories") return true;
-            return parseTargetRepositoryIds(
-              ruleset.targetRepositoryIds,
-            ).includes(repository.githubRepositoryId.toString());
+            return orgRulesetTargetsRepository({
+              scope: ruleset.scope,
+              sourceGithubRepositoryId:
+                ruleset.sourceGithubRepositoryId?.toString() ?? null,
+              targetRepositoryIds: ruleset.targetRepositoryIds,
+              githubRepositoryId: repository.githubRepositoryId.toString(),
+            });
           })
           .flatMap((ruleset) => {
             if (!ruleset.sourceRepositoryFullName) return [];
@@ -294,6 +298,21 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       }),
     };
   }
+}
+
+export function orgRulesetTargetsRepository(input: {
+  readonly scope: string;
+  readonly sourceGithubRepositoryId: string | null;
+  readonly targetRepositoryIds: unknown;
+  readonly githubRepositoryId: string;
+}): boolean {
+  if (input.sourceGithubRepositoryId === input.githubRepositoryId) {
+    return false;
+  }
+  if (input.scope === "all_repositories") return true;
+  return parseTargetRepositoryIds(input.targetRepositoryIds).includes(
+    input.githubRepositoryId,
+  );
 }
 
 function parseTargetRepositoryIds(value: unknown): readonly string[] {

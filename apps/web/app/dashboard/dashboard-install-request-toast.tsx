@@ -68,7 +68,9 @@ function removeGitHubAppRequestParamsFromUrl(): void {
   const url = new URL(window.location.href);
   let changed = false;
   for (const key of githubAppRequestQueryKeys) {
-    changed = url.searchParams.delete(key) || changed;
+    const hadKey = url.searchParams.has(key);
+    url.searchParams.delete(key);
+    changed = hadKey || changed;
   }
   if (!changed) return;
 

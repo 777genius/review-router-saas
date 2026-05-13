@@ -16,7 +16,10 @@ import {
   listWorkspaceOutboxFailures,
   PrismaOutboxEventRepository,
 } from "@reviewrouter/features-outbox";
-import { PrismaOrgRulesetProvisioningRepository } from "@reviewrouter/features-org-ruleset-provisioning";
+import {
+  defaultOrgRulesetSourceRepositoryName,
+  PrismaOrgRulesetProvisioningRepository,
+} from "@reviewrouter/features-org-ruleset-provisioning";
 import {
   listRepositoryWorkflowProvisioning,
   PrismaWorkflowProvisioningQuery,
@@ -2677,6 +2680,9 @@ function OrgRulesetAdvancedCard({
 
   const rulesetsUnsupported =
     orgRuleset?.safeErrorCode === "org_rulesets_not_supported";
+  const organizationPlanName =
+    organizationInstallation.organizationSecretPolicy?.planName ?? null;
+  const rulesetsUnavailableByPlan = organizationPlanName === "free";
   const permissionMissing =
     permissionUpgradeNeeded ||
     orgRuleset?.safeErrorCode === "org_admin_permission_required" ||
@@ -2684,23 +2690,36 @@ function OrgRulesetAdvancedCard({
   const rulesetUrl = safeGitHubDashboardLink(orgRuleset?.rulesetUrl ?? "");
   const permissionApprovalUrl =
     buildInstallationSettingsUrl(organizationInstallation) ?? appInstallUrl;
+  const sourceRepositoryFullName = `${organizationInstallation.accountLogin}/${defaultOrgRulesetSourceRepositoryName}`;
 
   return (
     <details className="rounded-[1.5rem] border border-amber-300/20 bg-amber-300/[0.08] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
       <summary className="cursor-pointer list-none">
         <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
           <div>
-            <Badge tone="warning">Advanced org-wide mode</Badge>
+            <Badge tone={rulesetsUnavailableByPlan ? "neutral" : "warning"}>
+              {rulesetsUnavailableByPlan
+                ? "Plan upgrade required"
+                : "Advanced org-wide mode"}
+            </Badge>
             <p className="mt-2 text-sm leading-6 text-amber-50">
               Enable a GitHub Organization Ruleset required workflow for many
               repositories without opening setup PRs in every repo. Default
               onboarding stays per-repository setup PR.
             </p>
           </div>
-          <Badge tone={orgRulesetStatusTone(orgRuleset?.status)}>
-            {orgRuleset?.status
-              ? orgRuleset.status.replaceAll("_", " ")
-              : "not enabled"}
+          <Badge
+            tone={
+              rulesetsUnavailableByPlan
+                ? "neutral"
+                : orgRulesetStatusTone(orgRuleset?.status)
+            }
+          >
+            {rulesetsUnavailableByPlan
+              ? "unavailable"
+              : orgRuleset?.status
+                ? orgRuleset.status.replaceAll("_", " ")
+                : "not enabled"}
           </Badge>
         </div>
       </summary>
@@ -2716,6 +2735,60 @@ function OrgRulesetAdvancedCard({
             workflow. Provider secrets still stay in GitHub Actions, not in
             ReviewRouter SaaS.
           </p>
+          {rulesetsUnavailableByPlan ? (
+            <div className="mt-4 rounded-xl border border-cyan-200/15 bg-cyan-300/[0.06] p-4 text-cyan-50">
+              <p className="font-semibold">
+                Organization-wide required workflows are not available on the
+                current GitHub Free plan.
+              </p>
+              <p className="mt-2 text-slate-300">
+                GitHub requires a paid organization plan, Team or Enterprise, to
+                use organization rulesets for private repositories. Until this
+                organization is upgraded, use per-repository setup PRs from the
+                repositories list. After the upgrade, create{" "}
+                <strong className="text-cyan-100">
+                  {sourceRepositoryFullName}
+                </strong>{" "}
+                and enable org-wide mode here.
+              </p>
+              <LinkButton
+                href={dashboardSectionHref(
+                  "repositories",
+                  dashboardWorkspaceUrlKey(workspace),
+                )}
+                variant="outline"
+                size="sm"
+                className="mt-3"
+              >
+                Open repositories
+              </LinkButton>
+            </div>
+          ) : (
+            <div className="mt-3 text-slate-300">
+              <p>Manual source setup before enabling org-wide mode:</p>
+              <ol className="mt-2 list-decimal space-y-1 pl-5">
+                <li>
+                  Create the private source repository{" "}
+                  <strong className="text-amber-100">
+                    {sourceRepositoryFullName}
+                  </strong>
+                  .
+                </li>
+                <li>
+                  In that repository, open Settings - Actions - General - Access
+                  and choose Accessible from repositories in{" "}
+                  <strong className="text-amber-100">
+                    {organizationInstallation.accountLogin}
+                  </strong>{" "}
+                  organization.
+                </li>
+                <li>
+                  Make sure the ReviewRouter GitHub App installation includes
+                  that source repository.
+                </li>
+              </ol>
+            </div>
+          )}
           {rulesetsUnsupported ? (
             <p className="mt-3 text-amber-100">
               GitHub accepted the App permissions, but this organization plan
@@ -2749,95 +2822,99 @@ function OrgRulesetAdvancedCard({
           ) : null}
         </div>
 
-        <div className="rounded-2xl border border-amber-200/10 bg-slate-950/55 p-4">
-          <form
-            action={enableOrgRulesetWorkflowAction}
-            className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_auto] 2xl:items-end"
-          >
-            <input type="hidden" name="workspaceId" value={workspace.id} />
-            <input
-              type="hidden"
-              name="githubInstallationId"
-              value={organizationInstallation.githubInstallationId}
-            />
-            <SelectField
-              name="scope"
-              label="Repository scope"
-              defaultValue={orgRuleset?.scope ?? "selected_repositories"}
-              disabled={!mutationsEnabled}
-              options={[
-                {
-                  value: "selected_repositories",
-                  label: "Selected App repos",
-                  description: "Safer default, matches App repository access.",
-                },
-                {
-                  value: "all_repositories",
-                  label: "All organization repos",
-                  description:
-                    "Advanced, ruleset applies broadly where GitHub allows it.",
-                },
-              ]}
-            />
-            <SelectField
-              name="enforcement"
-              label="Ruleset enforcement"
-              defaultValue={orgRuleset?.enforcement ?? "evaluate"}
-              disabled={!mutationsEnabled}
-              options={[
-                {
-                  value: "evaluate",
-                  label: "Evaluate first",
-                  description:
-                    "Non-blocking smoke mode. GitHub Enterprise only.",
-                },
-                {
-                  value: "active",
-                  label: "Active",
-                  description: "Blocks according to GitHub required workflow.",
-                },
-              ]}
-            />
-            <div className="flex items-end">
-              <FormSubmitButton
-                variant="soft"
-                tone="warning"
-                className="w-full whitespace-nowrap"
-                disabled={
-                  !mutationsEnabled ||
-                  organizationInstallation.status !== "active" ||
-                  orgRuleset?.status === "processing" ||
-                  rulesetsUnsupported
-                }
-                idleLabel={orgRuleset ? "Update org-wide" : "Enable org-wide"}
-                pendingLabel="Checking permission..."
-              />
-            </div>
-          </form>
-
-          <div className="mt-4 flex flex-wrap gap-2 border-t border-amber-200/10 pt-4">
-            {permissionMissing && permissionApprovalUrl ? (
-              <GitHubAppInstallPermissionDialog
-                href={permissionApprovalUrl}
-                variant="outline"
-                size="sm"
-                continueLabel="Continue to GitHub permissions"
-              >
-                Review App permissions
-              </GitHubAppInstallPermissionDialog>
-            ) : null}
-            <LinkButton
-              href={dashboardSectionHref(
-                "repositories",
-                dashboardWorkspaceUrlKey(workspace),
-              )}
-              variant="ghost"
-              size="sm"
+        {rulesetsUnavailableByPlan ? null : (
+          <div className="rounded-2xl border border-amber-200/10 bg-slate-950/55 p-4">
+            <form
+              action={enableOrgRulesetWorkflowAction}
+              className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_auto] 2xl:items-end"
             >
-              Use setup PR fallback
-            </LinkButton>
+              <input type="hidden" name="workspaceId" value={workspace.id} />
+              <input
+                type="hidden"
+                name="githubInstallationId"
+                value={organizationInstallation.githubInstallationId}
+              />
+              <SelectField
+                name="scope"
+                label="Repository scope"
+                defaultValue={orgRuleset?.scope ?? "selected_repositories"}
+                disabled={!mutationsEnabled}
+                options={[
+                  {
+                    value: "selected_repositories",
+                    label: "Selected App repos",
+                    description:
+                      "Safer default, matches App repository access.",
+                  },
+                  {
+                    value: "all_repositories",
+                    label: "All organization repos",
+                    description:
+                      "Advanced, ruleset applies broadly where GitHub allows it.",
+                  },
+                ]}
+              />
+              <SelectField
+                name="enforcement"
+                label="Ruleset enforcement"
+                defaultValue={orgRuleset?.enforcement ?? "evaluate"}
+                disabled={!mutationsEnabled}
+                options={[
+                  {
+                    value: "evaluate",
+                    label: "Evaluate first",
+                    description:
+                      "Non-blocking smoke mode. GitHub Enterprise only.",
+                  },
+                  {
+                    value: "active",
+                    label: "Active",
+                    description:
+                      "Blocks according to GitHub required workflow.",
+                  },
+                ]}
+              />
+              <div className="flex items-end">
+                <FormSubmitButton
+                  variant="soft"
+                  tone="warning"
+                  className="w-full whitespace-nowrap"
+                  disabled={
+                    !mutationsEnabled ||
+                    organizationInstallation.status !== "active" ||
+                    orgRuleset?.status === "processing" ||
+                    rulesetsUnsupported
+                  }
+                  idleLabel={orgRuleset ? "Update org-wide" : "Enable org-wide"}
+                  pendingLabel="Checking permission..."
+                />
+              </div>
+            </form>
+
+            <div className="mt-4 flex flex-wrap gap-2 border-t border-amber-200/10 pt-4">
+              {permissionMissing && permissionApprovalUrl ? (
+                <GitHubAppInstallPermissionDialog
+                  href={permissionApprovalUrl}
+                  variant="outline"
+                  size="sm"
+                  continueLabel="Continue to GitHub permissions"
+                >
+                  Review App permissions
+                </GitHubAppInstallPermissionDialog>
+              ) : null}
+              <LinkButton
+                href={dashboardSectionHref(
+                  "repositories",
+                  dashboardWorkspaceUrlKey(workspace),
+                )}
+                variant="ghost"
+                size="sm"
+              >
+                Use setup PR fallback
+              </LinkButton>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </details>
   );
@@ -3249,7 +3326,7 @@ function orgRulesetErrorText(error: string): string {
     case "org_admin_permission_required":
       return "Organization Administration: write is required for org-wide rulesets.";
     case "org_rulesets_not_supported":
-      return "GitHub organization rulesets are unavailable on this organization plan. Use per-repository setup PR fallback, or upgrade the organization plan before retrying org-wide mode.";
+      return "GitHub organization rulesets are unavailable on this organization plan. Private organization repositories require GitHub Team or Enterprise; use per-repository setup PR fallback until the organization plan is upgraded.";
     case "org_ruleset_permission_update_pending":
       return "GitHub rejected the ruleset probe. The App permission update may still need approval.";
     case "org_ruleset_all_repositories_requires_all_access":
@@ -3320,10 +3397,24 @@ function dashboardErrorText(error: string): string {
       return "This organization installation has no selected, active repositories to target.";
     case "org_ruleset_all_repositories_requires_all_access":
       return "All-repositories org ruleset requires installing the GitHub App for all repositories first. Use selected repositories or per-repository setup PR fallback.";
+    case "org_ruleset_source_repository_invalid":
+      return "The configured source repository must be a full GitHub name like org/reviewrouter-workflows.";
+    case "org_ruleset_source_repository_wrong_owner":
+      return "The source repository must belong to the same GitHub organization as the App installation.";
+    case "org_ruleset_source_repository_not_installed":
+      return "The source repository reviewrouter-workflows is not visible to the GitHub App. Create it, add it to the App installation, then sync repositories and retry.";
+    case "org_ruleset_source_repository_archived":
+      return "The source repository reviewrouter-workflows is archived. Unarchive it or create a fresh source repository before enabling org-wide mode.";
+    case "org_ruleset_source_repository_not_writable":
+      return "ReviewRouter could not write the central workflow to reviewrouter-workflows. Check App repository access, Contents: write, Workflows: write, and branch protection.";
+    case "org_ruleset_source_repository_branch_blocked":
+      return "GitHub blocked the direct workflow commit to reviewrouter-workflows. Check branch protection or exclude the source repository from active rulesets.";
+    case "org_ruleset_source_repository_actions_access_required":
+      return "GitHub could not use the source workflow from other private repositories. In reviewrouter-workflows, set Settings - Actions - General - Access to organization repositories.";
     case "org_admin_permission_required":
       return "GitHub did not allow organization ruleset access. Approve the optional Organization Administration: write permission if it is still pending; if it is already approved, the organization plan may not support rulesets. Use per-repository setup PR fallback.";
     case "org_rulesets_not_supported":
-      return "GitHub accepted the App permissions, but organization rulesets are unavailable on this organization plan. Use per-repository setup PR fallback, or upgrade the organization plan before retrying org-wide mode.";
+      return "GitHub accepted the App permissions, but organization rulesets are unavailable on this organization plan. Private organization repositories require GitHub Team or Enterprise; use per-repository setup PR fallback until the organization plan is upgraded.";
     case "org_ruleset_permission_update_pending":
       return "GitHub rejected the ruleset permission probe. An organization owner may still need to approve the App permission update.";
     case "github_org_ruleset_validation_failed":

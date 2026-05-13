@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const defaultOrgRulesetName = "ReviewRouter required workflow";
 export const defaultOrgRulesetSourceBranch = "main";
+export const defaultOrgRulesetSourceRepositoryName = "reviewrouter-workflows";
 
 export const orgRulesetScopeSchema = z.enum([
   "selected_repositories",
@@ -37,6 +38,7 @@ export type OrgRulesetTargetSelection =
     }
   | {
       readonly scope: "all_repositories";
+      readonly excludeRepositoryNames: readonly string[];
     };
 
 export type OrgRulesetProvisioningRequest = {
@@ -116,7 +118,7 @@ export type GitHubOrgRulesetPayload = {
         };
         readonly repository_name: {
           readonly include: readonly ["~ALL"];
-          readonly exclude: readonly [];
+          readonly exclude: readonly string[];
           readonly protected: false;
         };
       };
@@ -217,30 +219,79 @@ export function assertOrganizationRulesetTarget(
   }
 }
 
+export function resolveOrgRulesetSourceRepository(input: {
+  readonly target: OrgRulesetProvisioningTarget;
+  readonly sourceRepositoryFullName?: string;
+}): OrgRulesetRepositoryTarget {
+  const sourceFullName = normalizeSourceRepositoryFullName({
+    organizationLogin: input.target.organizationLogin,
+    ...(input.sourceRepositoryFullName
+      ? { sourceRepositoryFullName: input.sourceRepositoryFullName }
+      : {}),
+  });
+  const sourceOwner = sourceFullName.split("/")[0]!;
+  if (
+    sourceOwner.toLowerCase() !== input.target.organizationLogin.toLowerCase()
+  ) {
+    throw new Error("org_ruleset_source_repository_wrong_owner");
+  }
+
+  const repository = input.target.repositories.find(
+    (item) =>
+      item.fullName.toLowerCase() === sourceFullName.toLowerCase(),
+  );
+  if (!repository || !repository.selected) {
+    throw new Error("org_ruleset_source_repository_not_installed");
+  }
+  if (repository.archived) {
+    throw new Error("org_ruleset_source_repository_archived");
+  }
+  return repository;
+}
+
+export function normalizeSourceRepositoryFullName(input: {
+  readonly organizationLogin: string;
+  readonly sourceRepositoryFullName?: string;
+}): string {
+  const fullName =
+    input.sourceRepositoryFullName?.trim() ||
+    `${input.organizationLogin}/${defaultOrgRulesetSourceRepositoryName}`;
+  const [owner, name, extra] = fullName.split("/");
+  if (!owner || !name || extra) {
+    throw new Error("org_ruleset_source_repository_invalid");
+  }
+  return `${requiredString(owner)}/${requiredString(name)}`;
+}
+
 export function chooseDefaultSourceRepository(
   target: OrgRulesetProvisioningTarget,
 ): OrgRulesetRepositoryTarget {
-  const repository = [...target.repositories]
-    .filter((item) => item.selected && !item.archived)
-    .sort((left, right) => left.fullName.localeCompare(right.fullName))[0];
-  if (!repository) {
-    throw new Error("org_ruleset_source_repository_missing");
-  }
-  return repository;
+  return resolveOrgRulesetSourceRepository({ target });
 }
 
 export function resolveOrgRulesetTargetSelection(input: {
   readonly scope: OrgRulesetScope;
   readonly repositories: readonly OrgRulesetRepositoryTarget[];
   readonly selectedRepositoryIds?: readonly string[];
+  readonly excludedRepositoryIds?: readonly string[];
+  readonly excludedRepositoryNames?: readonly string[];
 }): OrgRulesetTargetSelection {
+  const excludedRepositoryIds = new Set(input.excludedRepositoryIds ?? []);
   if (input.scope === "all_repositories") {
-    return { scope: "all_repositories" };
+    return {
+      scope: "all_repositories",
+      excludeRepositoryNames: normalizeRepositoryNames(
+        input.excludedRepositoryNames ?? [],
+      ),
+    };
   }
 
   const allowed = new Set(
     input.repositories
       .filter((repository) => repository.selected && !repository.archived)
+      .filter(
+        (repository) => !excludedRepositoryIds.has(repository.githubRepositoryId),
+      )
       .map((repository) => repository.githubRepositoryId),
   );
   const requested = normalizeRepositoryIds(
@@ -334,6 +385,14 @@ export function normalizeRepositoryIds(
   );
 }
 
+export function normalizeRepositoryNames(
+  repositoryNames: readonly string[],
+): readonly string[] {
+  return [...new Set(repositoryNames.map((name) => requiredString(name)))].sort(
+    (left, right) => left.localeCompare(right),
+  );
+}
+
 export function safeOrgRulesetErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message : "unknown_error";
   if (
@@ -364,6 +423,9 @@ export function safeOrgRulesetErrorCode(error: unknown): string {
     return "org_rulesets_not_supported";
   }
   if (status === 422) {
+    if (isSourceWorkflowAccessError(error)) {
+      return "org_ruleset_source_repository_actions_access_required";
+    }
     return "github_org_ruleset_validation_failed";
   }
   if (status >= 400 && status <= 599) {
@@ -392,7 +454,7 @@ function buildRulesetConditions(
       ref_name,
       repository_name: {
         include: ["~ALL"],
-        exclude: [],
+        exclude: targetSelection.excludeRepositoryNames,
         protected: false,
       },
     };
@@ -447,6 +509,18 @@ function isGitHubRulesetsPlanUpgradeError(error: unknown): boolean {
         ? String(error.message)
         : "";
   return /upgrade to github team|upgrade.*enterprise|rulesets.*unavailable/i.test(
+    message,
+  );
+}
+
+function isSourceWorkflowAccessError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : "";
+  return /workflow.*(access|accessible)|source.*workflow|actions.*access|repository.*access/i.test(
     message,
   );
 }

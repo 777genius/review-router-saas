@@ -86,6 +86,7 @@ export class PrismaOrgRulesetProvisioningRepository implements OrgRulesetProvisi
       where: { workspaceId: input.workspaceId, status: "configured" },
       select: {
         scope: true,
+        sourceGithubRepositoryId: true,
         sourceRepositoryFullName: true,
         sourceWorkflowPath: true,
         sourceWorkflowRef: true,
@@ -95,6 +96,11 @@ export class PrismaOrgRulesetProvisioningRepository implements OrgRulesetProvisi
 
     return rows
       .filter((row) => {
+        if (
+          row.sourceGithubRepositoryId?.toString() === input.githubRepositoryId
+        ) {
+          return false;
+        }
         if (row.scope === "all_repositories") return true;
         return parseTargetRepositoryIds(row.targetRepositoryIds).includes(
           input.githubRepositoryId,

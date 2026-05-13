@@ -697,6 +697,10 @@ export async function enableOrgRulesetWorkflowAction(
 
     const octokit =
       await createGitHubAppInstallationOctokit(githubInstallationId);
+    await assertOrgRulesetOrganizationPlanAllowed({
+      octokit,
+      organizationLogin: installation.accountLogin,
+    });
     const scope = readFormString(formData, "scope") as OrgRulesetScope;
     const enforcement = readFormString(
       formData,
@@ -1204,6 +1208,35 @@ async function assertRepositoryVisibleToGitHubApp(input: {
   }
 }
 
+async function assertOrgRulesetOrganizationPlanAllowed(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly organizationLogin: string;
+}): Promise<void> {
+  try {
+    const response = await input.octokit.request("GET /orgs/{org}", {
+      org: input.organizationLogin,
+    });
+    const planName = readGitHubOrganizationPlanName(
+      (response.data as { readonly plan?: unknown }).plan,
+    );
+    if (planName === "free") {
+      throw new Error("org_rulesets_not_supported");
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "org_rulesets_not_supported"
+    ) {
+      throw error;
+    }
+    const status = githubApiStatus(error);
+    if (status === 401 || status === 403) return;
+    throw error;
+  }
+}
+
 async function verifyRepositorySecret(input: {
   readonly octokit: Awaited<
     ReturnType<typeof createGitHubAppInstallationOctokit>
@@ -1322,6 +1355,20 @@ function githubApiStatus(error: unknown): number | null {
     typeof error.status === "number"
   ) {
     return error.status;
+  }
+
+  return null;
+}
+
+function readGitHubOrganizationPlanName(value: unknown): string | null {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "name" in value &&
+    typeof value.name === "string" &&
+    value.name.trim().length > 0
+  ) {
+    return value.name.trim().toLowerCase();
   }
 
   return null;
@@ -1715,6 +1762,13 @@ function safeDashboardErrorCode(error: unknown): string {
       "org_ruleset_requires_organization_installation",
       "org_ruleset_no_selected_repositories",
       "org_ruleset_all_repositories_requires_all_access",
+      "org_ruleset_source_repository_invalid",
+      "org_ruleset_source_repository_wrong_owner",
+      "org_ruleset_source_repository_not_installed",
+      "org_ruleset_source_repository_archived",
+      "org_ruleset_source_repository_not_writable",
+      "org_ruleset_source_repository_branch_blocked",
+      "org_ruleset_source_repository_actions_access_required",
       "org_admin_permission_required",
       "org_rulesets_not_supported",
       "org_ruleset_permission_update_pending",
