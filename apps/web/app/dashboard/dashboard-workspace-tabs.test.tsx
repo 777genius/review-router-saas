@@ -30,7 +30,7 @@ describe("DashboardWorkspaceTabs", () => {
           id: "github-app-organization-request-pending",
           label: "Padelapp-Club",
           statusLabel: "Request pending",
-          href: "/dashboard?setup_action=request",
+          href: "/dashboard?section=repositories",
         }}
       />,
     );

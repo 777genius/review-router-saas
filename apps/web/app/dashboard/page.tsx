@@ -499,7 +499,10 @@ async function listDashboardRepositoryAccess(input: {
     actor,
     excludedWorkspaceIds: fullAccessWorkspaceIds,
   });
-  if (discovered.status === "ready") {
+  const requestedRepositoryFullName = normalizeRequestedRepositoryFullName(
+    input.requestedRepositoryFullName,
+  );
+  if (discovered.status === "ready" && !requestedRepositoryFullName) {
     return discovered;
   }
 
@@ -511,9 +514,6 @@ async function listDashboardRepositoryAccess(input: {
       ? { workspaceId: { notIn: [...fullAccessWorkspaceIds] } }
       : {}),
   } as const;
-  const requestedRepositoryFullName = normalizeRequestedRepositoryFullName(
-    input.requestedRepositoryFullName,
-  );
   const requestedCandidates = requestedRepositoryFullName
     ? await prisma.repositoryConnection.findMany({
         where: {
@@ -540,8 +540,12 @@ async function listDashboardRepositoryAccess(input: {
       }),
     })),
   );
-  const repositoryIds = new Set<string>();
-  const workspaceIds = new Set<string>();
+  const repositoryIds = new Set<string>(
+    discovered.status === "ready" ? [...discovered.repositoryIds] : [],
+  );
+  const workspaceIds = new Set<string>(
+    discovered.status === "ready" ? discovered.workspaceIds : [],
+  );
 
   for (const item of allowed) {
     if (!item.allowed) continue;
@@ -1087,7 +1091,11 @@ function WorkspaceSwitcher({
     readonly githubAvatarUrl: string | null;
   };
 }): React.ReactElement | null {
-  if (workspaces.length < 2 && !appInstallUrl && !pendingOrganizationInstallRequest) {
+  if (
+    workspaces.length < 2 &&
+    !appInstallUrl &&
+    !pendingOrganizationInstallRequest
+  ) {
     return null;
   }
 
@@ -1108,7 +1116,7 @@ function WorkspaceSwitcher({
     ? {
         id: pendingOrganizationInstallRequest.id,
         label: pendingOrganizationInstallRequest.accountLogin,
-        href: dashboardPendingInstallRequestHref(selectedSection),
+        href: dashboardSectionHref(selectedSection),
         statusLabel: "Request pending",
       }
     : null;
@@ -1629,9 +1637,10 @@ function WorkspaceCard({
                 </summary>
                 <div className="mt-4 grid gap-3">
                   {repositories.map((repository) => {
-                    const repositoryConfig = repositoryConfigs.find(
-                      (item) => item.repositoryId === repository.id,
-                    )?.config ?? null;
+                    const repositoryConfig =
+                      repositoryConfigs.find(
+                        (item) => item.repositoryId === repository.id,
+                      )?.config ?? null;
                     const effectiveConfig =
                       repositoryConfig?.config ?? activeConfig;
                     const configVersion =
@@ -3158,20 +3167,10 @@ function dashboardSectionHref(
   return `/dashboard?${query.toString()}#dashboard-section-content`;
 }
 
-function dashboardPendingInstallRequestHref(section: DashboardSection): string {
-  const query = new URLSearchParams({
-    section,
-    setup_action: "request",
-  });
-  return `/dashboard?${query.toString()}`;
-}
-
 function dashboardNoticeText(notice: string, repository: string): string {
   switch (notice) {
     case "app_installed":
       return "GitHub App is connected. Search for one repository, create the setup PR, then seed provider credentials from this dashboard.";
-    case "org_install_request_sent":
-      return "GitHub sent the install request to the organization owners. ReviewRouter will show the organization as a workspace after an owner approves the request.";
     case "sync_requested":
       return "Repository metadata refresh was queued. Reload in a few seconds if the repository list does not update immediately.";
     case "sync_already_requested":
@@ -3221,8 +3220,6 @@ function dashboardNoticeTitle(notice: string): string {
   switch (notice) {
     case "app_installed":
       return "GitHub App installed";
-    case "org_install_request_sent":
-      return "Organization request sent";
     case "sync_requested":
     case "sync_already_requested":
       return "Refresh queued";
@@ -3265,8 +3262,6 @@ function dashboardNoticeTone(
     case "repository_review_config_cleared":
     case "repository_access_refreshed":
       return "success";
-    case "org_install_request_sent":
-      return "warning";
     case "sync_already_requested":
       return "accent";
     case "outbox_retry_not_found":
