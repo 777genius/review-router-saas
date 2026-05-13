@@ -8,9 +8,10 @@ const repoCodexCommandFragment =
 const orgCodexCommandFragment =
   "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash";
 const commonTexts = ["ReviewRouter", "Security", "Support"];
+const landingHeroText = "Privacy-first AI code review";
 
 const pages = [
-  ["/", ["AI code review that stays inside your CI", "Install GitHub App"]],
+  ["/", [landingHeroText, "that stays inside your CI", "Install GitHub App"]],
   [
     "/auth/signin",
     ["Sign in to ReviewRouter", "Continue with GitHub", "No secret custody"],
@@ -150,7 +151,7 @@ try {
     assertIncludesAny(
       dashboardPostInstallHtml,
       [
-        "AI code review that stays inside your CI",
+        landingHeroText,
         "Finish ReviewRouter setup",
         "Manage repository review rollout",
         "ReviewRouter is a metadata control plane",
@@ -193,7 +194,7 @@ try {
     assertIncludesAny(
       dashboardCleanHtml,
       [
-        "AI code review that stays inside your CI",
+        landingHeroText,
         "Manage repository review rollout",
         "ReviewRouter is a metadata control plane",
       ],
@@ -308,7 +309,7 @@ try {
   assertIncludesAny(
     setupPrDashboardHtml,
     [
-      "AI code review that stays inside your CI",
+      landingHeroText,
       "Manage repository review rollout",
       "ReviewRouter is a metadata control plane",
     ],
@@ -332,7 +333,7 @@ try {
   assertIncludesAny(
     syncDashboardHtml,
     [
-      "AI code review that stays inside your CI",
+      landingHeroText,
       "Manage repository review rollout",
       "ReviewRouter is a metadata control plane",
     ],
