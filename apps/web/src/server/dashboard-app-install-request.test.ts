@@ -24,7 +24,8 @@ describe("GitHub App organization install request helpers", () => {
       id: "github-app-organization-request-pending",
       accountLogin: "Organization request",
     });
-    expect(buildPendingOrganizationInstallRequest({ setup_action: "install" }))
-      .toBeNull();
+    expect(
+      buildPendingOrganizationInstallRequest({ setup_action: "install" }),
+    ).toBeNull();
   });
 });

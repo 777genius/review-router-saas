@@ -48,6 +48,18 @@ const modelOptions = [
       "anthropic/claude-sonnet-4.5 - $3.00/$15.00 per 1M input/output",
     badge: "PAID" as const,
   },
+  {
+    value: "sonnet",
+    label: "sonnet",
+    provider: "claude" as const,
+    description: "Claude Code default model.",
+  },
+  {
+    value: "opus",
+    label: "opus",
+    provider: "claude" as const,
+    description: "Claude Code model.",
+  },
 ];
 
 afterEach(() => {
@@ -251,6 +263,69 @@ describe("ReviewConfigForm", () => {
     expect(formData.get("authMode")).toBe("codex_openai_api_key");
   });
 
+  it("shows Claude Code by default, allows disabling it, and hides Codex controls after selection", () => {
+    renderReviewConfigForm();
+    fireEvent.click(screen.getByRole("combobox", { name: "Provider auth" }));
+    expect(
+      screen.getByRole("option", { name: /Claude Code subscription/i }),
+    ).toBeTruthy();
+
+    cleanup();
+    renderReviewConfigForm({ claudeCodeProviderEnabled: false });
+    fireEvent.click(screen.getByRole("combobox", { name: "Provider auth" }));
+    expect(
+      screen.queryByRole("option", { name: /Claude Code subscription/i }),
+    ).toBeNull();
+
+    cleanup();
+    renderReviewConfigForm();
+    fireEvent.click(screen.getByRole("combobox", { name: "Provider auth" }));
+    fireEvent.click(
+      screen.getByRole("option", { name: /Claude Code subscription/i }),
+    );
+
+    expect(
+      (screen.getByRole("textbox", { name: "Model" }) as HTMLInputElement)
+        .value,
+    ).toBe("sonnet");
+    expect(screen.queryByText("Reasoning effort")).toBeNull();
+    expect(screen.queryByText("Fast mode")).toBeNull();
+    expect(screen.queryByText("Agentic context")).toBeNull();
+  });
+
+  it("checks the Claude Code OAuth secret for a saved Claude provider", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "missing",
+    });
+
+    renderReviewConfigForm({
+      config: claudeReviewConfiguration(),
+      claudeCodeProviderEnabled: false,
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /Claude Code subscription mode uses CLAUDE_CODE_OAUTH_TOKEN/i,
+        ),
+      ).toBeTruthy();
+    });
+    expect(
+      screen.getByText(
+        "gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo 777genius/agent-teams-ai --app actions",
+      ),
+    ).toBeTruthy();
+    const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
+      .calls[0]?.[0] as FormData;
+    expect(formData.get("providerKind")).toBe("claude");
+    expect(formData.get("authMode")).toBe("claude_code_oauth");
+  });
+
   it("shows a loader instead of a setup warning while secret status is loading", () => {
     vi.mocked(checkProviderRepositorySecretClientAction).mockReturnValue(
       new Promise(() => undefined),
@@ -368,9 +443,9 @@ describe("ReviewConfigForm", () => {
     expect(screen.queryByText("Provider 1")).toBeNull();
     expect(checkProviderRepositorySecretClientAction).not.toHaveBeenCalled();
 
-    const rowButton = screen.getByText("777genius/agent-teams-ai").closest(
-      "button",
-    );
+    const rowButton = screen
+      .getByText("777genius/agent-teams-ai")
+      .closest("button");
     expect(rowButton).not.toBeNull();
     fireEvent.click(rowButton!);
 
@@ -423,6 +498,7 @@ describe("ReviewConfigForm", () => {
 function renderReviewConfigForm(input?: {
   readonly config?: ReviewConfiguration;
   readonly repositoryFullName?: string;
+  readonly claudeCodeProviderEnabled?: boolean;
   readonly repositorySecretCheckTarget?: {
     readonly workspaceId: string;
     readonly repositoryId: string;
@@ -433,6 +509,7 @@ function renderReviewConfigForm(input?: {
       action={() => undefined}
       config={input?.config ?? safeDefaultReviewConfiguration}
       modelOptions={modelOptions}
+      claudeCodeProviderEnabled={input?.claudeCodeProviderEnabled ?? true}
       hiddenFields={[{ name: "workspaceId", value: "workspace_1" }]}
       mutationsEnabled={true}
       submitLabel="Save workspace default"
@@ -525,5 +602,22 @@ function codexReviewConfiguration(
     ...safeDefaultReviewConfiguration,
     provider: codexProvider,
     providers: [codexProvider],
+  };
+}
+
+function claudeReviewConfiguration(): ReviewConfiguration {
+  const claudeProvider: ReviewProviderConfiguration = {
+    kind: "claude",
+    authMode: "claude_code_oauth",
+    model: "sonnet",
+    reasoningEffort: "medium",
+    agenticContext: true,
+    fastMode: false,
+  };
+
+  return {
+    ...safeDefaultReviewConfiguration,
+    provider: claudeProvider,
+    providers: [claudeProvider],
   };
 }

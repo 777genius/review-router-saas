@@ -276,6 +276,25 @@ describe("ProviderSecretSetupChooser", () => {
       );
     }
   });
+
+  it("shows Claude Code setup by default and allows disabling it", () => {
+    renderProviderSecretSetupChooser();
+    expect(screen.getByText("Claude Code subscription")).toBeTruthy();
+
+    cleanup();
+    renderProviderSecretSetupChooser({ claudeCodeProviderEnabled: false });
+    expect(screen.queryByText("Claude Code subscription")).toBeNull();
+
+    cleanup();
+    renderProviderSecretSetupChooser();
+
+    fireEvent.click(screen.getByTestId("provider-choice-claude-code-oauth"));
+    expect(pageText()).toContain("claude setup-token");
+    expect(pageText()).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(pageText()).toContain(
+      "gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo 777genius/plugin-kit-ai-starter-claude-python",
+    );
+  });
 });
 
 describe("ProviderSecretSetupDialog", () => {
@@ -327,6 +346,7 @@ function renderProviderSecretSetupChooser(input?: {
   readonly organizationLogin?: string | null;
   readonly repositoryVisibility?: string;
   readonly organizationSecretPolicy?: OrganizationSecretPolicy | null;
+  readonly claudeCodeProviderEnabled?: boolean;
 }): void {
   const organizationLogin = input?.organizationLogin ?? null;
   render(
@@ -339,10 +359,15 @@ function renderProviderSecretSetupChooser(input?: {
       organizationSecretPolicy={input?.organizationSecretPolicy ?? null}
       codexOAuthGuidance={guidance("CODEX_AUTH_JSON", organizationLogin)}
       codexApiKeyGuidance={guidance("OPENAI_API_KEY", organizationLogin)}
+      claudeCodeOAuthGuidance={guidance(
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        organizationLogin,
+      )}
       openRouterApiKeyGuidance={guidance(
         "OPENROUTER_API_KEY",
         organizationLogin,
       )}
+      claudeCodeProviderEnabled={input?.claudeCodeProviderEnabled ?? true}
     />,
   );
 }
@@ -359,6 +384,7 @@ function renderProviderSecretSetupDialog(): void {
       guidanceSet={{
         codexOAuth: guidance("CODEX_AUTH_JSON"),
         codexApiKey: guidance("OPENAI_API_KEY"),
+        claudeCodeOAuth: guidance("CLAUDE_CODE_OAUTH_TOKEN"),
         openRouterApiKey: guidance("OPENROUTER_API_KEY"),
       }}
       triggerLabel="Enable review"
@@ -406,7 +432,9 @@ function guidance(
         ? "codex_oauth"
         : secretName === "OPENAI_API_KEY"
           ? "openai_api_key"
-          : "openrouter_api_key",
+          : secretName === "CLAUDE_CODE_OAUTH_TOKEN"
+            ? "claude_code_oauth"
+            : "openrouter_api_key",
     recommendedScope: organizationLogin
       ? "organization_selected_repositories"
       : "repository",

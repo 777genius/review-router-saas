@@ -172,9 +172,11 @@ function forbidProviderSecretsInSaaS() {
   const forbidden = [
     "CODEX_AUTH_JSON",
     "CODEX_CONFIG_TOML",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
     "GEMINI_API_KEY",
   ];
   for (const name of forbidden) {

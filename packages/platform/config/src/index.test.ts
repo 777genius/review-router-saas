@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  isClaudeCodeProviderEnabled,
   isWorkflowProvisioningEnabled,
   loadRuntimeEnv,
   readGitHubAppPrivateKey,
@@ -55,6 +56,20 @@ describe("platform config", () => {
       isWorkflowProvisioningEnabled({
         REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
         REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+  });
+
+  it("enables Claude Code provider UI by default and keeps an explicit rollback switch", () => {
+    expect(isClaudeCodeProviderEnabled({} as NodeJS.ProcessEnv)).toBe(true);
+    expect(
+      isClaudeCodeProviderEnabled({
+        REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isClaudeCodeProviderEnabled({
+        REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: "0",
       } as NodeJS.ProcessEnv),
     ).toBe(false);
   });

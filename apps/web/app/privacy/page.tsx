@@ -23,7 +23,7 @@ const collectedMetadata = [
 const notCollectedByDefault = [
   "repository source code",
   "pull request diffs, prompts, or model responses",
-  "Codex auth.json, refresh tokens, OpenAI API keys, or OpenRouter keys",
+  "Codex auth.json, Claude Code OAuth tokens, OpenAI API keys, or OpenRouter keys",
   "raw GitHub webhook payload bodies after normalization",
 ] as const;
 

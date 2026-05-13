@@ -64,4 +64,46 @@ describe("workflow setup readiness", () => {
       }),
     ).resolves.toBe(false);
   });
+
+  it("requires Claude workflow capability markers when checking Claude readiness", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        { ...readinessInput, providerKind: "claude" },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
+
+    expect(probe.input?.expectedContentMarkerGroups).toEqual([
+      [
+        ".github/workflows/reviewrouter-reusable.yml",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+      ],
+      [
+        "Install Claude Code CLI",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "Skip fork pull requests",
+      ],
+    ]);
+  });
+
+  it("requires a workflow update when a current action ref lacks Claude markers", async () => {
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        { ...readinessInput, providerKind: "claude" },
+        {
+          workflowProbe: new CapturingWorkflowProbe({
+            status: "present",
+            expectedActionRefFound: true,
+            expectedContentMarkersFound: false,
+          }),
+        },
+      ),
+    ).resolves.toBe(false);
+  });
 });

@@ -11,7 +11,8 @@ afterEach(() => {
 describe("DashboardWorkspaceTabs", () => {
   it("renders a GitHub redirect request as an ephemeral pending workspace tab", async () => {
     Object.defineProperty(document, "referrer", {
-      value: "https://github.com/apps/review-router-ai/installations/select_target",
+      value:
+        "https://github.com/apps/review-router-ai/installations/select_target",
       configurable: true,
     });
 

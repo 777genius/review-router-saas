@@ -228,6 +228,9 @@ importers:
       '@reviewrouter/features-review-config':
         specifier: workspace:*
         version: link:../../packages/features/review-config
+      '@reviewrouter/features-review-providers':
+        specifier: workspace:*
+        version: link:../../packages/features/review-providers
       '@reviewrouter/features-support-diagnostics':
         specifier: workspace:*
         version: link:../../packages/features/support-diagnostics
@@ -333,6 +336,9 @@ importers:
       '@reviewrouter/features-review-config':
         specifier: workspace:*
         version: link:../review-config
+      '@reviewrouter/features-review-providers':
+        specifier: workspace:*
+        version: link:../review-providers
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -444,6 +450,9 @@ importers:
 
   packages/features/provider-setup:
     dependencies:
+      '@reviewrouter/features-review-providers':
+        specifier: workspace:*
+        version: link:../review-providers
       zod:
         specifier: ^4.4.2
         version: 4.4.2
@@ -486,6 +495,15 @@ importers:
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-review-providers':
+        specifier: workspace:*
+        version: link:../review-providers
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
+  packages/features/review-providers:
+    dependencies:
       zod:
         specifier: ^4.4.2
         version: 4.4.2
@@ -516,6 +534,9 @@ importers:
       '@reviewrouter/features-review-config':
         specifier: workspace:*
         version: link:../review-config
+      '@reviewrouter/features-review-providers':
+        specifier: workspace:*
+        version: link:../review-providers
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared

@@ -237,8 +237,7 @@ export function resolveOrgRulesetSourceRepository(input: {
   }
 
   const repository = input.target.repositories.find(
-    (item) =>
-      item.fullName.toLowerCase() === sourceFullName.toLowerCase(),
+    (item) => item.fullName.toLowerCase() === sourceFullName.toLowerCase(),
   );
   if (!repository || !repository.selected) {
     throw new Error("org_ruleset_source_repository_not_installed");
@@ -290,7 +289,8 @@ export function resolveOrgRulesetTargetSelection(input: {
     input.repositories
       .filter((repository) => repository.selected && !repository.archived)
       .filter(
-        (repository) => !excludedRepositoryIds.has(repository.githubRepositoryId),
+        (repository) =>
+          !excludedRepositoryIds.has(repository.githubRepositoryId),
       )
       .map((repository) => repository.githubRepositoryId),
   );

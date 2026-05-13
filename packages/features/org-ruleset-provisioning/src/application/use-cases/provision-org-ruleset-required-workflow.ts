@@ -150,13 +150,19 @@ async function writeSourceWorkflowWithSafeErrors(
   } catch (error) {
     const status = getHttpStatus(error);
     if (status === 403) {
-      throw new Error("org_ruleset_source_repository_not_writable");
+      throw new Error("org_ruleset_source_repository_not_writable", {
+        cause: error,
+      });
     }
     if (status === 404) {
-      throw new Error("org_ruleset_source_repository_not_installed");
+      throw new Error("org_ruleset_source_repository_not_installed", {
+        cause: error,
+      });
     }
     if (status === 409 || status === 422) {
-      throw new Error("org_ruleset_source_repository_branch_blocked");
+      throw new Error("org_ruleset_source_repository_branch_blocked", {
+        cause: error,
+      });
     }
     throw error;
   }

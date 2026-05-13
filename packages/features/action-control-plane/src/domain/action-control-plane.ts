@@ -1,4 +1,9 @@
 import {
+  providerAuthModeSchema,
+  providerKindSchema,
+  providerAuthModeBelongsToKind,
+} from "@reviewrouter/features-review-providers";
+import {
   collectPayloadStrings,
   looksLikeCodeOrDiff,
   looksLikeSecretValue,
@@ -78,19 +83,25 @@ export type ActionSessionClaims = {
   readonly protocolVersion: 1;
 };
 
-const actionRuntimeProviderSchema = z.object({
-  kind: z.enum(["codex", "openrouter"]),
-  authMode: z.enum([
-    "codex_subscription_oauth",
-    "codex_openai_api_key",
-    "openrouter_api_key",
-  ]),
-  model: z.string().min(1),
-  reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
-  agenticContext: z.boolean(),
-  fastMode: z.boolean(),
-  secretBackedProviderEnabled: z.boolean(),
-});
+const actionRuntimeProviderSchema = z
+  .object({
+    kind: providerKindSchema,
+    authMode: providerAuthModeSchema,
+    model: z.string().min(1),
+    reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
+    agenticContext: z.boolean(),
+    fastMode: z.boolean(),
+    secretBackedProviderEnabled: z.boolean(),
+  })
+  .superRefine((provider, context) => {
+    if (!providerAuthModeBelongsToKind(provider.authMode, provider.kind)) {
+      context.addIssue({
+        code: "custom",
+        path: ["authMode"],
+        message: "provider auth mode does not belong to provider kind",
+      });
+    }
+  });
 
 export const actionRuntimeConfigResponseSchema = z.object({
   protocolVersion: z.literal(1),
@@ -172,6 +183,10 @@ export const actionHealthReportSchema = z
         "provider_auth_missing",
         "provider_auth_invalid",
         "provider_rate_limited",
+        "provider_cli_missing",
+        "provider_cli_failed",
+        "workflow_incompatible",
+        "invalid_provider_config",
         "runtime_error",
       ])
       .default("none"),

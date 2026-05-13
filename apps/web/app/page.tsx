@@ -42,7 +42,7 @@ const setupSteps = [
   },
   {
     title: "Connect provider",
-    body: "Run one local command to seed Codex OAuth or API keys directly into GitHub Actions secrets.",
+    body: "Run one local command to seed Codex OAuth, Claude Code OAuth, or API keys directly into GitHub Actions secrets.",
     badge: "STEP 3",
     number: "3",
     className: "setup-blueprint__step--three",

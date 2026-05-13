@@ -21,7 +21,7 @@ const securitySections = [
   },
   {
     label: "Provider secrets",
-    title: "Codex OAuth and API keys stay out of the SaaS.",
+    title: "Provider OAuth tokens and API keys stay out of the SaaS.",
     body: "Provider credentials are stored directly in GitHub Actions secrets or on a trusted self-hosted runner. The dashboard only shows setup guidance and provider health metadata.",
   },
   {
@@ -181,8 +181,10 @@ export default function SecurityPage(): React.ReactElement {
           <p className="text-sm leading-6 text-slate-300">
             The local helper validates Codex ChatGPT subscription auth and
             writes <code>CODEX_AUTH_JSON</code> to repository or organization
-            selected-repo Actions secrets through <code>gh</code>. It does not
-            send auth JSON to ReviewRouter SaaS.
+            selected-repo Actions secrets through <code>gh</code>. Claude Code
+            subscription OAuth uses <code>CLAUDE_CODE_OAUTH_TOKEN</code> from{" "}
+            <code>claude setup-token</code>. Neither token is sent to
+            ReviewRouter SaaS.
           </p>
           <CodeBlock code={secretCommand} />
         </Card>

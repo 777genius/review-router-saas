@@ -27,9 +27,19 @@ import {
   clearReviewConfiguration,
   PrismaReviewConfigurationRepository,
   resolveReviewRuntimeEnv,
+  type ResolvedReviewRuntimeEnv,
   saveReviewConfiguration,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import {
+  getProviderSecretNames,
+  providerAuthModeBelongsToKind,
+  providerAuthModeSchema,
+  providerKindForAuthMode,
+  providerKindSchema,
+  type ProviderAuthMode,
+  type ProviderKind,
+} from "@reviewrouter/features-review-providers";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   isWorkflowProvisioningEnabled,
@@ -317,6 +327,14 @@ async function createSetupPullRequestMutation(
       repository.installation.githubInstallationId.toString(),
     );
     const actionRef = resolveReviewRouterActionRef();
+    const resolvedRuntime = await loadResolvedReviewRuntime({
+      prisma,
+      workspaceId,
+      repositoryId,
+    });
+    const workflowProviderKind = workflowReadinessProviderKind(
+      resolvedRuntime.config,
+    );
     const workflowReady = await isWorkflowSetupAlreadyCurrent(
       {
         githubInstallationId:
@@ -325,6 +343,7 @@ async function createSetupPullRequestMutation(
         name: repository.name,
         defaultBranch: repository.defaultBranch,
         actionRef,
+        ...(workflowProviderKind ? { providerKind: workflowProviderKind } : {}),
       },
       {
         workflowProbe: new OctokitRepositoryWorkflowProbe({
@@ -356,12 +375,6 @@ async function createSetupPullRequestMutation(
         section: "repositories",
       };
     } else {
-      const staticRuntimeEnv = await loadStaticRuntimeEnv({
-        prisma,
-        workspaceId,
-        repositoryId,
-      });
-
       const pullRequest = await new PostgresLeaseLock(prisma).withLock(
         `repo:${repositoryId}:workflow-provision`,
         5 * 60_000,
@@ -372,7 +385,7 @@ async function createSetupPullRequestMutation(
               actionRef,
               apiUrl: resolveWorkflowPublicApiUrl(),
               runtimeConfigMode: "oidc",
-              staticRuntimeEnv,
+              staticRuntimeEnv: resolvedRuntime.runtimeEnv,
               workflowStyle,
               actor: actor.actor,
             },
@@ -474,6 +487,17 @@ async function confirmSetupPullRequestMergedMutation(
           octokit,
         )
       : false;
+    const workflowProviderKind = setupPullRequestMerged
+      ? undefined
+      : workflowReadinessProviderKind(
+          (
+            await loadResolvedReviewRuntime({
+              prisma,
+              workspaceId,
+              repositoryId,
+            })
+          ).config,
+        );
     const workflowReady = setupPullRequestMerged
       ? true
       : await isWorkflowSetupAlreadyCurrent(
@@ -484,6 +508,9 @@ async function confirmSetupPullRequestMergedMutation(
             name: repository.name,
             defaultBranch: repository.defaultBranch,
             actionRef: resolveReviewRouterActionRef(),
+            ...(workflowProviderKind
+              ? { providerKind: workflowProviderKind }
+              : {}),
           },
           {
             workflowProbe: new OctokitRepositoryWorkflowProbe({
@@ -1419,13 +1446,13 @@ function assertRepositoryConfigMutable(input: {
   }
 }
 
-async function loadStaticRuntimeEnv(input: {
+async function loadResolvedReviewRuntime(input: {
   readonly prisma: PrismaClient;
   readonly workspaceId: string;
   readonly repositoryId: string;
-}): Promise<Record<string, string>> {
+}): Promise<ResolvedReviewRuntimeEnv> {
   const configurations = new PrismaReviewConfigurationRepository(input.prisma);
-  const resolved = await resolveReviewRuntimeEnv(
+  return resolveReviewRuntimeEnv(
     {
       scope: "repository",
       workspaceId: input.workspaceId,
@@ -1433,7 +1460,14 @@ async function loadStaticRuntimeEnv(input: {
     },
     { configurations },
   );
-  return resolved.runtimeEnv;
+}
+
+function workflowReadinessProviderKind(
+  config: ReviewConfiguration,
+): ProviderKind | undefined {
+  return config.providers.some((provider) => provider.kind === "claude")
+    ? "claude"
+    : undefined;
 }
 
 async function checkSetupPullRequestMerged(
@@ -1523,14 +1557,17 @@ function pullRequestNumberFromUrl(url: string): number | null {
 
 function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
   const providerCount = readFormNumber(formData, "providerCount");
+  if (!Number.isInteger(providerCount) || providerCount < 1) {
+    throw new Error("invalid_form_value:providerCount");
+  }
   const providers = Array.from({ length: providerCount }, (_, index) => {
-    const authMode = readFormString(
+    const authMode = readProviderAuthMode(
       formData,
       `providerAuthMode.${index}`,
-    ) as ReviewConfiguration["provider"]["authMode"];
+    );
 
     return {
-      kind: authMode === "openrouter_api_key" ? "openrouter" : "codex",
+      kind: providerKindForAuthMode(authMode),
       authMode,
       model: readFormString(formData, `providerModel.${index}`),
       reasoningEffort: readFormString(
@@ -1575,6 +1612,19 @@ function readFormString(formData: FormData, key: string): string {
   return value;
 }
 
+function readProviderAuthMode(
+  formData: FormData,
+  key: string,
+): ProviderAuthMode {
+  const authMode = providerAuthModeSchema.safeParse(
+    readFormString(formData, key),
+  );
+  if (!authMode.success) {
+    throw new Error(`invalid_form_value:${key}`);
+  }
+  return authMode.data;
+}
+
 function readOptionalFormString(formData: FormData, key: string): string {
   const value = formData.get(key);
   return typeof value === "string" ? value.trim() : "";
@@ -1586,24 +1636,22 @@ function readWorkflowStyle(formData: FormData): "reusable" | "explicit" {
 }
 
 function readProviderSetupSelection(formData: FormData): {
-  readonly providerKind: "codex" | "openrouter";
-  readonly authMode:
-    | "codex_subscription_oauth"
-    | "codex_openai_api_key"
-    | "openrouter_api_key";
+  readonly providerKind: ProviderKind;
+  readonly authMode: ProviderAuthMode;
 } {
-  const providerKind = readFormString(formData, "providerKind");
-  const authMode = readFormString(formData, "authMode");
+  const providerKind = providerKindSchema.safeParse(
+    readFormString(formData, "providerKind"),
+  );
+  const authMode = providerAuthModeSchema.safeParse(
+    readFormString(formData, "authMode"),
+  );
 
   if (
-    providerKind === "codex" &&
-    (authMode === "codex_subscription_oauth" ||
-      authMode === "codex_openai_api_key")
+    providerKind.success &&
+    authMode.success &&
+    providerAuthModeBelongsToKind(authMode.data, providerKind.data)
   ) {
-    return { providerKind, authMode };
-  }
-  if (providerKind === "openrouter" && authMode === "openrouter_api_key") {
-    return { providerKind, authMode };
+    return { providerKind: providerKind.data, authMode: authMode.data };
   }
 
   throw new Error("invalid_form_value:providerSetup");
@@ -1634,19 +1682,9 @@ function readProviderSetupConfirmationMode(
 }
 
 function providerSecretNamesForAuthMode(
-  authMode:
-    | "codex_subscription_oauth"
-    | "codex_openai_api_key"
-    | "openrouter_api_key",
+  authMode: ProviderAuthMode,
 ): readonly string[] {
-  switch (authMode) {
-    case "codex_subscription_oauth":
-      return ["CODEX_AUTH_JSON"];
-    case "codex_openai_api_key":
-      return ["OPENAI_API_KEY"];
-    case "openrouter_api_key":
-      return ["OPENROUTER_API_KEY"];
-  }
+  return getProviderSecretNames(authMode);
 }
 
 function providerSetupStateForSecretCheckError(

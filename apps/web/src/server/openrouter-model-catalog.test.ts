@@ -115,6 +115,11 @@ describe("openrouter model catalog", () => {
       });
 
     const options = await getReviewModelOptions({ fetchImpl });
+    expect(
+      options
+        .filter((option) => option.provider === "claude")
+        .map((option) => option.value),
+    ).toEqual(["sonnet", "opus", "haiku"]);
     const free = options.find((option) => option.value === "vendor/free:free");
     const paid = options.find((option) => option.value === "vendor/paid");
     const nemotron = options.find(

@@ -16,9 +16,15 @@ export const metadata: Metadata = createPublicPageMetadata({
 const uninstallPath =
   "GitHub -> Settings -> Applications -> Installed GitHub Apps -> ReviewRouter -> Configure -> Uninstall";
 const removeSecrets = `gh secret delete CODEX_AUTH_JSON --repo owner/repo
+gh secret delete CLAUDE_CODE_OAUTH_TOKEN --repo owner/repo
+gh secret delete OPENAI_API_KEY --repo owner/repo
+gh secret delete OPENROUTER_API_KEY --repo owner/repo
 # optional, only if it was intentionally stored
 gh secret delete CODEX_CONFIG_TOML --repo owner/repo`;
 const orgRemoveSecrets = `gh secret delete CODEX_AUTH_JSON --org acme --app actions
+gh secret delete CLAUDE_CODE_OAUTH_TOKEN --org acme --app actions
+gh secret delete OPENAI_API_KEY --org acme --app actions
+gh secret delete OPENROUTER_API_KEY --org acme --app actions
 # verify selected repositories before deleting shared org secrets`;
 
 const disconnectSteps = [
@@ -95,7 +101,7 @@ export default function DisconnectPage(): React.ReactElement {
         <Card className="space-y-4">
           <Badge tone="danger">Repository secrets</Badge>
           <h2 className="text-2xl font-semibold text-cyan-50">
-            Remove repo-scoped Codex OAuth secrets
+            Remove repo-scoped provider secrets
           </h2>
           <CodeBlock code={removeSecrets} />
         </Card>

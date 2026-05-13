@@ -809,6 +809,49 @@ describe("action control plane", () => {
     });
   });
 
+  it("returns Claude runtime config without provider secrets", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      providers: [
+        {
+          kind: "claude",
+          authMode: "claude_code_oauth",
+          model: "sonnet",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+      ],
+    });
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session", actionVersion: "v1.2.3" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService(),
+        compatibility: new StaticActionRuntimeCompatibilityPolicy({
+          providerActionVersionAllowlist: { claude: ["v1.2.3"] },
+        }),
+        clock,
+      },
+    );
+
+    expect(config.provider).toMatchObject({
+      kind: "claude",
+      authMode: "claude_code_oauth",
+      model: "sonnet",
+    });
+    expect(config.runtimeEnv).toMatchObject({
+      REVIEW_AUTH_MODE: "claude-oauth",
+      REVIEW_PROVIDERS: "claude/sonnet",
+      SYNTHESIS_MODEL: "claude/sonnet",
+      CLAUDE_MODEL: "sonnet",
+    });
+    expect(config.runtimeEnv).not.toHaveProperty("CODEX_MODEL");
+    expect(JSON.stringify(config)).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+
   it("adds a derived ledger key to runtime config when configured", async () => {
     const ledgerKeys = new StaticActionLedgerKeys();
     const config = await getActionRuntimeConfig(
@@ -846,6 +889,37 @@ describe("action control plane", () => {
         },
       ),
     ).rejects.toThrow("action_version_blocked:v0.9.0");
+  });
+
+  it("blocks Claude runtime config for action refs outside the provider allowlist", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      providers: [
+        {
+          kind: "claude",
+          authMode: "claude_code_oauth",
+          model: "sonnet",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+      ],
+    });
+
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session", actionVersion: "v1.0.0" },
+        {
+          repositories,
+          sessions: new StaticSessionTokenService(),
+          compatibility: new StaticActionRuntimeCompatibilityPolicy({
+            providerActionVersionAllowlist: { claude: ["v1.2.3"] },
+          }),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("action_version_provider_unsupported:claude:v1.0.0");
   });
 
   it("checks action control plane entitlements before returning config", async () => {
@@ -1053,6 +1127,7 @@ describe("action control plane", () => {
 
   it("rejects raw health payloads with extra fields, code, secrets, or oversized content", () => {
     const openAiToken = "s" + "k-" + "a".repeat(24);
+    const claudeToken = "s" + "k-ant-oat01-" + "c".repeat(24);
     const githubToken = "github" + "_pat_" + "b".repeat(24);
     const bearerToken = "opaque-session-token-1234567890";
 
@@ -1074,6 +1149,13 @@ describe("action control plane", () => {
       assertSafeActionHealthReport({
         ...safeHealthReport(),
         safeErrorSummary: `GitHub returned token ${githubToken}`,
+      }),
+    ).toThrow("health_report_contains_secret_value");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        safeErrorSummary: `Claude returned ${claudeToken}`,
       }),
     ).toThrow("health_report_contains_secret_value");
 

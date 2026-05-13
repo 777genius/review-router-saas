@@ -43,12 +43,19 @@ export class OctokitRepositoryWorkflowProbe implements RepositoryWorkflowProbePo
       if (!yaml) {
         return { status: "unavailable", reason: "workflow_file_not_decodable" };
       }
+      const expectedContentMarkersFound = workflowContainsExpectedMarkerGroup(
+        yaml,
+        input.expectedContentMarkerGroups,
+      );
       return {
         status: "present",
         expectedActionRefFound: workflowUsesActionRef(
           yaml,
           input.expectedActionRef,
         ),
+        ...(input.expectedContentMarkerGroups !== undefined
+          ? { expectedContentMarkersFound }
+          : {}),
       };
     } catch (error) {
       if (getErrorStatus(error) === 404) {
@@ -57,6 +64,18 @@ export class OctokitRepositoryWorkflowProbe implements RepositoryWorkflowProbePo
       return { status: "unavailable", reason: safeProbeErrorReason(error) };
     }
   }
+}
+
+function workflowContainsExpectedMarkerGroup(
+  yaml: string,
+  markerGroups?: readonly (readonly string[])[],
+): boolean {
+  if (!markerGroups || markerGroups.length === 0) {
+    return true;
+  }
+  return markerGroups.some((markers) =>
+    markers.every((marker) => yaml.includes(marker)),
+  );
 }
 
 function decodeWorkflowFile(data: unknown): string | null {

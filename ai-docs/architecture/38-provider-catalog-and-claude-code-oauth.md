@@ -254,7 +254,7 @@ Keeping it in one existing package would create an awkward dependency direction:
 
 ### Option 1 - Add Claude Inline Across Existing Files
 
-🎯 8   🛡️ 5   🧠 4   Approximate change size: 650-900 LOC.
+🎯 8 🛡️ 5 🧠 4 Approximate change size: 650-900 LOC.
 
 This means adding `claude` and `claude_code_oauth` to every existing switch,
 union, copy block, and test without a shared provider catalog.
@@ -278,7 +278,7 @@ Decision: do not use except for an emergency patch.
 
 ### Option 2 - New Provider Catalog Bounded Context
 
-🎯 9   🛡️ 9   🧠 7   Approximate change size: 1000-1500 LOC.
+🎯 9 🛡️ 9 🧠 7 Approximate change size: 1000-1500 LOC.
 
 This introduces `@reviewrouter/features-review-providers` and moves provider
 identity, auth modes, secret metadata, runtime plan, and model catalog policy
@@ -302,7 +302,7 @@ Decision: use this.
 
 ### Option 3 - Put Catalog Inside `features-review-config`
 
-🎯 7   🛡️ 7   🧠 5   Approximate change size: 800-1200 LOC.
+🎯 7 🛡️ 7 🧠 5 Approximate change size: 800-1200 LOC.
 
 This keeps provider catalog close to config parsing and runtime env mapping.
 
@@ -326,23 +326,24 @@ Decision: avoid.
 These decisions should be treated as the RFC baseline unless a follow-up ADR
 changes them.
 
-| Decision | Status | Rationale | Revisit trigger |
-| --- | --- | --- | --- |
-| New `features-review-providers` bounded context | accepted | provider policy is shared by config, setup, workflow, action API, dashboard, and public copy | only if package dependency graph becomes worse than current duplication |
-| Keep DB `schemaVersion: 2` | accepted | adding `claude` is enum-domain expansion, not JSON shape change | provider-specific payloads become large or incompatible |
-| Generic provider object plus catalog validation | accepted | lowest safe migration cost for current DB/forms | TypeScript narrowing bugs become common |
-| Claude UI behind feature flag | accepted | backend/workflow support must land before user exposure | real E2E is green and public docs are updated |
-| Native stable Claude installer for beta | accepted | official, simple, lower moving-target risk than latest | install spike proves signed apt or exact npm is better |
-| Production install pinning unresolved | open | exact version, signed apt, and npm exact all have tradeoffs | before public flag is enabled |
-| Setup-token revocation route unresolved | open | official docs reviewed do not clearly document per-token revocation | before final disconnect/security copy |
-| Self-hosted runner Claude OAuth support | conditional | inherited env can change Claude auth precedence | after env sanitation is tested |
+| Decision                                        | Status      | Rationale                                                                                    | Revisit trigger                                                         |
+| ----------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| New `features-review-providers` bounded context | accepted    | provider policy is shared by config, setup, workflow, action API, dashboard, and public copy | only if package dependency graph becomes worse than current duplication |
+| Keep DB `schemaVersion: 2`                      | accepted    | adding `claude` is enum-domain expansion, not JSON shape change                              | provider-specific payloads become large or incompatible                 |
+| Generic provider object plus catalog validation | accepted    | lowest safe migration cost for current DB/forms                                              | TypeScript narrowing bugs become common                                 |
+| Claude UI default-on with rollback flag         | accepted    | backend/workflow support is implemented and local gates cover user setup paths               | real E2E failure or provider policy change                              |
+| Native stable Claude installer for beta         | accepted    | official, simple, lower moving-target risk than latest                                       | install spike proves signed apt or exact npm is better                  |
+| Production install pinning unresolved           | open        | exact version, signed apt, and npm exact all have tradeoffs                                  | before hardening public rollout                                         |
+| Setup-token revocation route unresolved         | open        | official docs reviewed do not clearly document per-token revocation                          | before final disconnect/security copy                                   |
+| Self-hosted runner Claude OAuth support         | conditional | inherited env can change Claude auth precedence                                              | after env sanitation is tested                                          |
 
 Decision hygiene:
 
 - If implementation contradicts an accepted decision, update this document or
   create an ADR before merging.
 - Do not hide decision changes inside code review comments.
-- For open decisions, ship only behind beta flag or with conservative fallback.
+- For open execution details, ship with conservative fallback and a fast
+  rollback switch.
 
 ## Target Dependency Graph
 
@@ -385,19 +386,19 @@ fetch or render environment-specific details.
 
 ## Layer Responsibility Matrix
 
-| Layer | Owns | Must not own |
-| --- | --- | --- |
-| `features-review-providers/domain` | provider enums, metadata, capabilities, runtime ids, deterministic runtime plan | HTTP fetch, Prisma, GitHub CLI syntax, React rendering |
-| `features-review-providers/application` | model catalog use case, model catalog port | concrete OpenRouter HTTP calls |
-| `features-review-providers/infrastructure` | OpenRouter HTTP adapter, caching and response normalization | provider auth mode definitions |
-| `features-review-config/domain` | persisted review config shape and invariants | GitHub secret names, CLI install details |
-| `features-review-config/application` | resolve/save config, map config to non-secret runtime env through provider runtime plan | workflow YAML rendering |
-| `features-provider-setup/domain` | credential setup guidance commands and warnings | token validation by decrypted value |
-| `features-workflow-provisioning/domain` | deterministic workflow file rendering, workflow path constants | reading GitHub state |
-| `features-workflow-provisioning/application` | setup PR orchestration through ports | Octokit calls |
-| `features-action-control-plane/domain` | OIDC/session/runtime config API contract, safe health payload schema | Prisma coercion, UI copy |
-| `apps/web/dashboard` | forms, rendering, server action input parsing | provider truth tables |
-| `apps/api` | Fastify route composition | provider policy |
+| Layer                                        | Owns                                                                                    | Must not own                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `features-review-providers/domain`           | provider enums, metadata, capabilities, runtime ids, deterministic runtime plan         | HTTP fetch, Prisma, GitHub CLI syntax, React rendering |
+| `features-review-providers/application`      | model catalog use case, model catalog port                                              | concrete OpenRouter HTTP calls                         |
+| `features-review-providers/infrastructure`   | OpenRouter HTTP adapter, caching and response normalization                             | provider auth mode definitions                         |
+| `features-review-config/domain`              | persisted review config shape and invariants                                            | GitHub secret names, CLI install details               |
+| `features-review-config/application`         | resolve/save config, map config to non-secret runtime env through provider runtime plan | workflow YAML rendering                                |
+| `features-provider-setup/domain`             | credential setup guidance commands and warnings                                         | token validation by decrypted value                    |
+| `features-workflow-provisioning/domain`      | deterministic workflow file rendering, workflow path constants                          | reading GitHub state                                   |
+| `features-workflow-provisioning/application` | setup PR orchestration through ports                                                    | Octokit calls                                          |
+| `features-action-control-plane/domain`       | OIDC/session/runtime config API contract, safe health payload schema                    | Prisma coercion, UI copy                               |
+| `apps/web/dashboard`                         | forms, rendering, server action input parsing                                           | provider truth tables                                  |
+| `apps/api`                                   | Fastify route composition                                                               | provider policy                                        |
 
 This matrix is the guardrail for code review. If an implementation puts a
 provider rule into more than one owner, prefer moving the rule back to the
@@ -408,18 +409,18 @@ catalog.
 The clean implementation should change the existing packages at these specific
 seams.
 
-| Existing package/file | Current responsibility | Claude-safe change |
-| --- | --- | --- |
-| `packages/features/review-config/src/domain/review-configuration.ts` | Parse persisted v1/v2 config | Import catalog schemas, add `claude`, validate `authMode`/`kind` pairs with `superRefine` |
-| `packages/features/review-config/src/application/use-cases/map-config-to-runtime-env.ts` | Map config into action env | Delegate to `buildProviderRuntimePlan`; keep old export as compatibility wrapper |
-| `packages/features/provider-setup/src/domain/provider-secret-setup.ts` | Emit setup guidance and `gh secret set` commands | Use catalog secret metadata and add Claude guidance without duplicating secret names |
-| `packages/features/workflow-provisioning/src/domain/workflow-template.ts` | Render reusable/explicit workflow YAML | Use workflow adapter helpers backed by catalog metadata for secret pass-through and CLI requirements |
-| `packages/features/action-control-plane/src/domain/action-control-plane.ts` | Runtime config and health schemas | Accept `claude`/`claude_code_oauth`, keep runtime config secret-free, add feature-minimum compatibility |
-| `packages/features/repo-health/src/domain/repository-health.ts` | Turn workflow/provider state into UI health | Add capability mismatch state or metadata so old workflows can say "workflow update required for Claude" |
-| `apps/web/app/dashboard/actions.ts` | Parse dashboard policy forms | Derive `kind` from `authMode` server-side through catalog helper |
-| `apps/web/app/dashboard/repository-policy-editor.tsx` | Render provider controls | Render from catalog capabilities; hide Codex-only controls for Claude |
-| `apps/web/app/dashboard/provider-secret-setup-dialog.tsx` | Render provider setup instructions | Use generic guidance sets keyed by provider setup kind |
-| `apps/web/src/server/openrouter-model-catalog.ts` | Static Codex plus OpenRouter dynamic options | Move static provider model options into catalog; keep OpenRouter HTTP as adapter |
+| Existing package/file                                                                    | Current responsibility                           | Claude-safe change                                                                                       |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `packages/features/review-config/src/domain/review-configuration.ts`                     | Parse persisted v1/v2 config                     | Import catalog schemas, add `claude`, validate `authMode`/`kind` pairs with `superRefine`                |
+| `packages/features/review-config/src/application/use-cases/map-config-to-runtime-env.ts` | Map config into action env                       | Delegate to `buildProviderRuntimePlan`; keep old export as compatibility wrapper                         |
+| `packages/features/provider-setup/src/domain/provider-secret-setup.ts`                   | Emit setup guidance and `gh secret set` commands | Use catalog secret metadata and add Claude guidance without duplicating secret names                     |
+| `packages/features/workflow-provisioning/src/domain/workflow-template.ts`                | Render reusable/explicit workflow YAML           | Use workflow adapter helpers backed by catalog metadata for secret pass-through and CLI requirements     |
+| `packages/features/action-control-plane/src/domain/action-control-plane.ts`              | Runtime config and health schemas                | Accept `claude`/`claude_code_oauth`, keep runtime config secret-free, add feature-minimum compatibility  |
+| `packages/features/repo-health/src/domain/repository-health.ts`                          | Turn workflow/provider state into UI health      | Add capability mismatch state or metadata so old workflows can say "workflow update required for Claude" |
+| `apps/web/app/dashboard/actions.ts`                                                      | Parse dashboard policy forms                     | Derive `kind` from `authMode` server-side through catalog helper                                         |
+| `apps/web/app/dashboard/repository-policy-editor.tsx`                                    | Render provider controls                         | Render from catalog capabilities; hide Codex-only controls for Claude                                    |
+| `apps/web/app/dashboard/provider-secret-setup-dialog.tsx`                                | Render provider setup instructions               | Use generic guidance sets keyed by provider setup kind                                                   |
+| `apps/web/src/server/openrouter-model-catalog.ts`                                        | Static Codex plus OpenRouter dynamic options     | Move static provider model options into catalog; keep OpenRouter HTTP as adapter                         |
 
 Migration rule:
 
@@ -432,23 +433,23 @@ Migration rule:
 
 Current architecture before implementation:
 
-| Criterion | Score | Notes |
-| --- | ---: | --- |
-| Clean Architecture | 7/10 | Feature packages and boundary checks exist, but provider policy is duplicated in web/server/workflow files |
-| SOLID | 6/10 | SRP is weak around provider metadata; OCP is weak because adding Claude currently touches many switches |
-| DDD | 7/10 | Bounded contexts are mostly clear; provider catalog is the missing ubiquitous language owner |
-| DRY | 5/10 | Secret names, provider kinds, auth modes, model options, and runtime mapping are repeated |
-| Port/adapter | 7/10 | Existing ports are good; OpenRouter model catalog should move behind a provider model port |
+| Criterion          | Score | Notes                                                                                                      |
+| ------------------ | ----: | ---------------------------------------------------------------------------------------------------------- |
+| Clean Architecture |  7/10 | Feature packages and boundary checks exist, but provider policy is duplicated in web/server/workflow files |
+| SOLID              |  6/10 | SRP is weak around provider metadata; OCP is weak because adding Claude currently touches many switches    |
+| DDD                |  7/10 | Bounded contexts are mostly clear; provider catalog is the missing ubiquitous language owner               |
+| DRY                |  5/10 | Secret names, provider kinds, auth modes, model options, and runtime mapping are repeated                  |
+| Port/adapter       |  7/10 | Existing ports are good; OpenRouter model catalog should move behind a provider model port                 |
 
 Target after the catalog migration:
 
-| Criterion | Target | Main proof |
-| --- | ---: | --- |
-| Clean Architecture | 9/10 | `architecture:check` passes and provider policy is isolated to `features-review-providers` |
-| SOLID | 9/10 | Adding a fourth provider mostly adds catalog metadata plus optional adapters |
-| DDD | 9/10 | `ProviderKind`, `ProviderAuthMode`, `ProviderRuntimePlan`, and `ProviderSetupGuidance` are used consistently |
-| DRY | 9/10 | No local secret/auth/model truth tables in dashboard/workflow/control-plane |
-| Port/adapter | 9/10 | Dynamic model fetching and workflow rendering are adapters around catalog policy |
+| Criterion          | Target | Main proof                                                                                                   |
+| ------------------ | -----: | ------------------------------------------------------------------------------------------------------------ |
+| Clean Architecture |   9/10 | `architecture:check` passes and provider policy is isolated to `features-review-providers`                   |
+| SOLID              |   9/10 | Adding a fourth provider mostly adds catalog metadata plus optional adapters                                 |
+| DDD                |   9/10 | `ProviderKind`, `ProviderAuthMode`, `ProviderRuntimePlan`, and `ProviderSetupGuidance` are used consistently |
+| DRY                |   9/10 | No local secret/auth/model truth tables in dashboard/workflow/control-plane                                  |
+| Port/adapter       |   9/10 | Dynamic model fetching and workflow rendering are adapters around catalog policy                             |
 
 ## Port and Adapter Contracts
 
@@ -651,10 +652,10 @@ action control plane imports provider setup command builders
 
 Composition-root score:
 
-- Explicit use-case wiring: 🎯 9   🛡️ 9   🧠 5   Approx. 80-140 LOC.
-- Global singleton catalog plus ad hoc adapter imports: 🎯 6   🛡️ 5   🧠 3
+- Explicit use-case wiring: 🎯 9 🛡️ 9 🧠 5 Approx. 80-140 LOC.
+- Global singleton catalog plus ad hoc adapter imports: 🎯 6 🛡️ 5 🧠 3
   Approx. 30-60 LOC, but encourages hidden coupling.
-- Service locator container: 🎯 5   🛡️ 6   🧠 7   Approx. 150-260 LOC,
+- Service locator container: 🎯 5 🛡️ 6 🧠 7 Approx. 150-260 LOC,
   unnecessary for this repo today.
 
 Decision:
@@ -772,11 +773,7 @@ Next, React, Fastify, or network imports.
 Suggested core types:
 
 ```ts
-export const providerKindSchema = z.enum([
-  "codex",
-  "claude",
-  "openrouter",
-]);
+export const providerKindSchema = z.enum(["codex", "claude", "openrouter"]);
 
 export const providerAuthModeSchema = z.enum([
   "codex_subscription_oauth",
@@ -814,7 +811,11 @@ export type ProviderAuthModeMetadata = {
   readonly shortLabel: string;
   readonly description: string;
   readonly secretNames: readonly string[];
-  readonly runtimeAuthMode: "codex-oauth" | "openai-api" | "claude-oauth" | "openrouter-api";
+  readonly runtimeAuthMode:
+    | "codex-oauth"
+    | "openai-api"
+    | "claude-oauth"
+    | "openrouter-api";
   readonly credentialCustody: "github_actions_secret";
   readonly sendsSecretToReviewRouter: false;
 };
@@ -1173,7 +1174,7 @@ This is one of the highest-risk choices because it decides whether dashboard
 provider switches work without reinstalling workflows.
 
 Option 1 - Install by secret-presence booleans.
-🎯 9   🛡️ 9   🧠 5   Approx. 90-140 LOC.
+🎯 9 🛡️ 9 🧠 5 Approx. 90-140 LOC.
 
 - Render `CODEX_AUTH_JSON_PRESENT`, `OPENAI_API_KEY_PRESENT`,
   `OPENROUTER_API_KEY_PRESENT`, and `CLAUDE_CODE_OAUTH_TOKEN_PRESENT`.
@@ -1188,7 +1189,7 @@ Verdict: preferred for beta and probably production. The cost of an extra CLI
 install is lower than the cost of a dynamic provider switch failing.
 
 Option 2 - Render static `REVIEWROUTER_REQUIRED_CLI_TOOLS`.
-🎯 8   🛡️ 8   🧠 4   Approx. 60-100 LOC.
+🎯 8 🛡️ 8 🧠 4 Approx. 60-100 LOC.
 
 - Workflow provisioning writes `REVIEWROUTER_REQUIRED_CLI_TOOLS=codex,claude`
   from the provider runtime plan at setup time.
@@ -1200,7 +1201,7 @@ Verdict: acceptable for explicit "workflow update required" UX, but weaker for
 subscription-provider switching.
 
 Option 3 - Let the Action install provider CLIs after fetching runtime config.
-🎯 6   🛡️ 6   🧠 8   Approx. 180-280 LOC.
+🎯 6 🛡️ 6 🧠 8 Approx. 180-280 LOC.
 
 - The action fetches OIDC runtime config first, then installs missing CLIs.
 - It avoids unnecessary installs and follows dynamic config exactly.
@@ -1338,13 +1339,13 @@ authMode=codex_openai_api_key requires kind=codex
 Do not derive kind with:
 
 ```ts
-authMode === "openrouter_api_key" ? "openrouter" : "codex"
+authMode === "openrouter_api_key" ? "openrouter" : "codex";
 ```
 
 Use:
 
 ```ts
-providerKindForAuthMode(authMode)
+providerKindForAuthMode(authMode);
 ```
 
 Preferred schema shape:
@@ -1355,7 +1356,9 @@ const reviewProviderConfigurationSchema = z
     kind: providerKindSchema,
     authMode: providerAuthModeSchema,
     model: z.string().trim().min(1),
-    reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).default("medium"),
+    reasoningEffort: z
+      .enum(["low", "medium", "high", "xhigh"])
+      .default("medium"),
     agenticContext: z.boolean().default(true),
     fastMode: z.boolean().default(false),
   })
@@ -1381,7 +1384,7 @@ Why not a discriminated union:
 ### Top 3 Config Schema Strategies
 
 Option 1 - Generic provider object plus catalog `superRefine`.
-🎯 9   🛡️ 8   🧠 4   Approx. 80-140 LOC.
+🎯 9 🛡️ 8 🧠 4 Approx. 80-140 LOC.
 
 - Preserves current persisted shape.
 - Works with existing dashboard form structure.
@@ -1392,7 +1395,7 @@ Option 1 - Generic provider object plus catalog `superRefine`.
 Verdict: preferred for this change.
 
 Option 2 - Discriminated union by `kind`.
-🎯 7   🛡️ 9   🧠 6   Approx. 180-280 LOC.
+🎯 7 🛡️ 9 🧠 6 Approx. 180-280 LOC.
 
 - Stronger compile-time narrowing.
 - Makes provider-specific fields clearer.
@@ -1401,7 +1404,7 @@ Option 2 - Discriminated union by `kind`.
 Verdict: good later if provider-specific config grows beyond shared fields.
 
 Option 3 - New `schemaVersion: 3` with provider-specific config payloads.
-🎯 5   🛡️ 8   🧠 8   Approx. 350-650 LOC plus migration/testing.
+🎯 5 🛡️ 8 🧠 8 Approx. 350-650 LOC plus migration/testing.
 
 - Cleanest long-term shape if each provider gets many unique settings.
 - Not justified for adding one Claude auth mode and one model env.
@@ -1632,14 +1635,14 @@ Recommended production policy:
 Top 3 Claude CLI install strategies:
 
 Option 1 - Native stable installer.
-🎯 8   🛡️ 7   🧠 4   Approx. 40-70 LOC.
+🎯 8 🛡️ 7 🧠 4 Approx. 40-70 LOC.
 
 - Uses the officially documented stable channel.
 - Fastest to implement and likely best for beta.
 - Lower reproducibility than an exact version or signed apt repo.
 
 Option 2 - Signed apt install on `ubuntu-latest`.
-🎯 8   🛡️ 9   🧠 7   Approx. 90-140 LOC.
+🎯 8 🛡️ 9 🧠 7 Approx. 90-140 LOC.
 
 - Uses GitHub-hosted Ubuntu runner's native package manager.
 - Lets us verify the published signing-key fingerprint before install.
@@ -1647,7 +1650,7 @@ Option 2 - Signed apt install on `ubuntu-latest`.
   `ubuntu-latest` workflows, less portable if runner OS changes.
 
 Option 3 - npm exact version.
-🎯 7   🛡️ 8   🧠 5   Approx. 40-80 LOC.
+🎯 7 🛡️ 8 🧠 5 Approx. 40-80 LOC.
 
 - Easy to pin and cache.
 - Works with existing Node setup.
@@ -1973,29 +1976,29 @@ Runtime env:
 
 Compatibility matrix:
 
-| Action capability | SaaS may return Claude config | Workflow may expose Claude UI |
-| --- | --- | --- |
-| action lacks Claude provider | no | no |
+| Action capability                                                 | SaaS may return Claude config     | Workflow may expose Claude UI    |
+| ----------------------------------------------------------------- | --------------------------------- | -------------------------------- |
+| action lacks Claude provider                                      | no                                | no                               |
 | action has Claude provider but workflow lacks secret pass-through | no, or warn/update workflow first | only with update-required banner |
-| action has Claude and workflow passes secret | yes | yes |
-| reusable workflow ref untrusted | no | no |
+| action has Claude and workflow passes secret                      | yes                               | yes                              |
+| reusable workflow ref untrusted                                   | no                                | no                               |
 
 Contract rollout matrix:
 
-| Contract | Current | Claude change | Backward compatibility rule |
-| --- | --- | --- | --- |
-| DB review config | `schemaVersion: 2` | new enum values only | keep v2, strict parse unknown values |
-| Runtime config API | `protocolVersion: 1` | new provider/auth enum and env keys | keep v1 unless response shape changes |
+| Contract            | Current                   | Claude change                         | Backward compatibility rule                           |
+| ------------------- | ------------------------- | ------------------------------------- | ----------------------------------------------------- |
+| DB review config    | `schemaVersion: 2`        | new enum values only                  | keep v2, strict parse unknown values                  |
+| Runtime config API  | `protocolVersion: 1`      | new provider/auth enum and env keys   | keep v1 unless response shape changes                 |
 | Workflow static env | Codex/OpenRouter oriented | all supported secrets and CLI markers | old workflows are detected as incompatible for Claude |
-| Action runtime | provider adapters | Claude provider must be present | SaaS blocks Claude config for unsupported refs |
-| Dashboard form | local auth tables | catalog-backed metadata | feature flag can hide creation, not parsing |
+| Action runtime      | provider adapters         | Claude provider must be present       | SaaS blocks Claude config for unsupported refs        |
+| Dashboard form      | local auth tables         | catalog-backed metadata               | rollback flag can hide creation, not parsing          |
 
 Version owner:
 
 - Provider catalog owns enum expansion and default models.
 - Action compatibility policy owns minimum supported action refs.
 - Workflow readiness owns generated-template capability markers.
-- Product feature flag owns whether users can create new Claude configs.
+- Product rollback flag owns emergency hiding of new Claude config creation.
 - None of these owners may silently coerce Claude to Codex.
 
 ## Contract Fixture Strategy
@@ -2043,16 +2046,16 @@ Why fixtures matter:
 These are not preferences. They come from official Claude Code behavior and must
 be encoded as tests, copy, and workflow choices.
 
-| Constraint | Architectural consequence |
-| --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` is a long-lived subscription OAuth token for CI/scripts | Store only in GitHub Actions secrets; never in SaaS DB/env/logs |
-| Token requires Claude Pro, Max, Team, or Enterprise | Product copy must say "Claude Code subscription", not generic Claude API |
-| Free Claude.ai plan does not include Claude Code | Setup UI must offer an alternative provider path, not pretend this is free |
-| Token is inference-only | Do not design Remote Control or interactive session features around this token |
-| `claude --bare` does not read this token | Action must keep using regular `claude --print` path for OAuth subscription mode |
+| Constraint                                                                                            | Architectural consequence                                                          |
+| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `CLAUDE_CODE_OAUTH_TOKEN` is a long-lived subscription OAuth token for CI/scripts                     | Store only in GitHub Actions secrets; never in SaaS DB/env/logs                    |
+| Token requires Claude Pro, Max, Team, or Enterprise                                                   | Product copy must say "Claude Code subscription", not generic Claude API           |
+| Free Claude.ai plan does not include Claude Code                                                      | Setup UI must offer an alternative provider path, not pretend this is free         |
+| Token is inference-only                                                                               | Do not design Remote Control or interactive session features around this token     |
+| `claude --bare` does not read this token                                                              | Action must keep using regular `claude --print` path for OAuth subscription mode   |
 | Cloud provider flags, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, and `apiKeyHelper` take precedence | Workflow must sanitize higher-precedence Claude credentials for subscription OAuth |
-| `claude setup-token` prints the token and does not save it | Setup copy should tell users exactly where to store it with `gh secret set` |
-| SaaS cannot read GitHub secret values | Token correctness can only be proven by Action runtime/E2E, not dashboard metadata |
+| `claude setup-token` prints the token and does not save it                                            | Setup copy should tell users exactly where to store it with `gh secret set`        |
+| SaaS cannot read GitHub secret values                                                                 | Token correctness can only be proven by Action runtime/E2E, not dashboard metadata |
 
 Claude auth precedence that matters for CI:
 
@@ -2193,15 +2196,15 @@ health report containing token-shaped value is rejected
 
 ## Data Classification
 
-| Data | SaaS DB | SaaS env | GitHub secret | Action runtime env | Dashboard visible |
-| --- | --- | --- | --- | --- | --- |
-| `CLAUDE_CODE_OAUTH_TOKEN` value | never | never | yes | yes, only in runner | never |
-| Claude secret name | yes | yes | yes | yes | yes |
-| Claude selected model | yes | yes, as runtime config | no | yes | yes |
-| Provider auth mode | yes | yes, as runtime config | no | yes | yes |
-| PR diff/code | never by default | never | no | yes, in runner | no |
-| Prompt/model output | never by default | never | no | yes, in runner | no |
-| Health status | yes, safe enum/text | no | no | reported by action | yes |
+| Data                            | SaaS DB             | SaaS env               | GitHub secret | Action runtime env  | Dashboard visible |
+| ------------------------------- | ------------------- | ---------------------- | ------------- | ------------------- | ----------------- |
+| `CLAUDE_CODE_OAUTH_TOKEN` value | never               | never                  | yes           | yes, only in runner | never             |
+| Claude secret name              | yes                 | yes                    | yes           | yes                 | yes               |
+| Claude selected model           | yes                 | yes, as runtime config | no            | yes                 | yes               |
+| Provider auth mode              | yes                 | yes, as runtime config | no            | yes                 | yes               |
+| PR diff/code                    | never by default    | never                  | no            | yes, in runner      | no                |
+| Prompt/model output             | never by default    | never                  | no            | yes, in runner      | no                |
+| Health status                   | yes, safe enum/text | no                     | no            | reported by action  | yes               |
 
 Rules:
 
@@ -2706,7 +2709,7 @@ are small by design and should produce concrete evidence, not broad prototypes.
 
 ### Spike 1 - Claude CLI Install on `ubuntu-latest`
 
-🎯 8   🛡️ 8   🧠 4   Approximate change size: 0-60 LOC if captured as a script
+🎯 8 🛡️ 8 🧠 4 Approximate change size: 0-60 LOC if captured as a script
 or note.
 
 Question:
@@ -2751,7 +2754,7 @@ Acceptance:
 
 ### Spike 2 - Workflow Compatibility Detection Fixtures
 
-🎯 9   🛡️ 9   🧠 5   Approximate change size: 120-220 LOC.
+🎯 9 🛡️ 9 🧠 5 Approximate change size: 120-220 LOC.
 
 Question:
 
@@ -2775,7 +2778,7 @@ Acceptance:
 
 ### Spike 3 - Action Version Minimum
 
-🎯 8   🛡️ 9   🧠 4   Approximate change size: 40-120 LOC.
+🎯 8 🛡️ 9 🧠 4 Approximate change size: 40-120 LOC.
 
 Question:
 
@@ -2794,7 +2797,7 @@ supportsProvider(actionVersion, "claude") -> true/false
 
 ### Spike 4 - Claude Token Failure Classification
 
-🎯 7   🛡️ 8   🧠 6   Approximate change size: Action-side if not already done.
+🎯 7 🛡️ 8 🧠 6 Approximate change size: Action-side if not already done.
 
 Question:
 
@@ -2810,7 +2813,7 @@ Acceptance:
 
 ### Spike 5 - Model Alias Confirmation
 
-🎯 7   🛡️ 7   🧠 3   Approximate change size: docs/test update only.
+🎯 7 🛡️ 7 🧠 3 Approximate change size: docs/test update only.
 
 Question:
 
@@ -2825,7 +2828,7 @@ Acceptance:
 
 ### Spike 6 - Token Revocation Route
 
-🎯 5   🛡️ 8   🧠 3   Approximate change size: docs update only.
+🎯 5 🛡️ 8 🧠 3 Approximate change size: docs update only.
 
 Question:
 
@@ -2873,15 +2876,15 @@ Reason:
 
 Slice gates:
 
-| Slice | May expose Claude to users? | Must prove |
-| --- | --- | --- |
-| PR 1 catalog parity | no | Codex/OpenRouter behavior is byte-for-byte or assertion-equivalent |
-| PR 2 runtime plan migration | no | Existing runtime env and model options do not regress |
-| PR 3 backend Claude support | no | Unsupported action refs are blocked and runtime config is secret-free |
-| PR 4 workflow readiness | no | Generated workflows can pass/install Claude and old workflows are detected |
-| PR 5 dashboard/setup | feature-flag only | User can configure Claude without SaaS seeing the token |
-| PR 6 public copy | feature-flag only | Copy matches real merged behavior and readiness gates |
-| PR 7 E2E | yes after evidence | Real PR receives real ReviewRouter comments and cleanup is recorded |
+| Slice                       | May expose Claude to users? | Must prove                                                                 |
+| --------------------------- | --------------------------- | -------------------------------------------------------------------------- |
+| PR 1 catalog parity         | no                          | Codex/OpenRouter behavior is byte-for-byte or assertion-equivalent         |
+| PR 2 runtime plan migration | no                          | Existing runtime env and model options do not regress                      |
+| PR 3 backend Claude support | no                          | Unsupported action refs are blocked and runtime config is secret-free      |
+| PR 4 workflow readiness     | no                          | Generated workflows can pass/install Claude and old workflows are detected |
+| PR 5 dashboard/setup        | yes with rollback switch    | User can configure Claude without SaaS seeing the token                    |
+| PR 6 public copy            | yes with rollback switch    | Copy matches real merged behavior and readiness gates                      |
+| PR 7 E2E                    | yes after evidence          | Real PR receives real ReviewRouter comments and cleanup is recorded        |
 
 Stop conditions:
 
@@ -3122,24 +3125,24 @@ missing one provider path.
 
 Use this map when splitting implementation PRs or assigning reviewers.
 
-| Area | Primary owner in code | Reviewer focus |
-| --- | --- | --- |
-| Provider catalog | `packages/features/review-providers` | exhaustiveness, no framework imports, secret-free runtime plan |
-| Config parsing | `packages/features/review-config` | backward compatibility, strict auth/kind validation |
-| Runtime config API | `packages/features/action-control-plane` | OIDC trust, compatibility gate, secret-free response |
-| Workflow rendering | `packages/features/workflow-provisioning` | secret pass-through, CLI install, fork/bot safety |
-| Setup guidance | `packages/features/provider-setup` | no token custody, correct `gh secret` scopes |
-| Repository health | `packages/features/repo-health` and web server helpers | readiness causes are distinct and actionable |
-| Dashboard UI | `apps/web/app/dashboard` | feature flag, server-authoritative parsing, capability-driven controls |
-| Public copy/API demo | `apps/web/app/*`, `features-api-demo` | truthful claims, disconnect cleanup, no overpromising |
-| E2E evidence | smoke repo plus action run | real comments, safe health, cleanup recorded |
+| Area                 | Primary owner in code                                  | Reviewer focus                                                    |
+| -------------------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
+| Provider catalog     | `packages/features/review-providers`                   | exhaustiveness, no framework imports, secret-free runtime plan    |
+| Config parsing       | `packages/features/review-config`                      | backward compatibility, strict auth/kind validation               |
+| Runtime config API   | `packages/features/action-control-plane`               | OIDC trust, compatibility gate, secret-free response              |
+| Workflow rendering   | `packages/features/workflow-provisioning`              | secret pass-through, CLI install, fork/bot safety                 |
+| Setup guidance       | `packages/features/provider-setup`                     | no token custody, correct `gh secret` scopes                      |
+| Repository health    | `packages/features/repo-health` and web server helpers | readiness causes are distinct and actionable                      |
+| Dashboard UI         | `apps/web/app/dashboard`                               | default-on Claude UI, rollback flag, server-authoritative parsing |
+| Public copy/API demo | `apps/web/app/*`, `features-api-demo`                  | truthful claims, disconnect cleanup, no overpromising             |
+| E2E evidence         | smoke repo plus action run                             | real comments, safe health, cleanup recorded                      |
 
 Reviewer rule:
 
 - A PR that changes more than two rows in this table should justify why it is
   not being split.
 - A PR exposing Claude in UI must include backend/workflow compatibility proof
-  or stay behind the feature flag.
+  and keep an explicit rollback switch.
 
 ### New Package
 
@@ -3390,19 +3393,19 @@ Minimum final proof:
 10. Cut or pin action version that includes Claude support.
 11. Enable public copy only after E2E proof is recorded.
 
-Feature flag recommendation:
+Rollback flag recommendation:
 
 ```text
-REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER=1
+REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER=0
 ```
 
-Use the flag only for UI exposure and public copy. Domain parsing can support
-Claude before the flag is on, but the dashboard should not offer Claude to
-normal users until workflow/control-plane support is ready.
+Claude provider UI is enabled by default. Use the flag only as an emergency
+opt-out for UI exposure. Domain parsing still supports Claude while the flag is
+off so saved configs can render and be recovered safely.
 
 Rollback plan:
 
-- Turn off UI/public feature flag.
+- Set `REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER=0` to hide new Claude setup UI.
 - Keep catalog parsing so existing saved Claude configs can be shown safely.
 - Block runtime Claude config through compatibility policy if needed.
 - Do not delete saved config rows automatically.
@@ -3448,21 +3451,21 @@ When recording health:
 Top 3 concurrency policies:
 
 Option 1 - Last-write-wins plus configVersion visibility.
-🎯 8   🛡️ 7   🧠 3   Approx. 40-90 LOC.
+🎯 8 🛡️ 7 🧠 3 Approx. 40-90 LOC.
 
 - Simple and likely enough for beta.
 - Requires clear "last saved" UI state.
 - Can still surprise users with multiple open tabs.
 
 Option 2 - Optimistic concurrency on configVersion.
-🎯 8   🛡️ 9   🧠 6   Approx. 120-220 LOC.
+🎯 8 🛡️ 9 🧠 6 Approx. 120-220 LOC.
 
 - Rejects stale form submissions.
 - Better for teams editing shared repository policy.
 - More UI recovery work.
 
 Option 3 - Merge provider-array edits.
-🎯 5   🛡️ 6   🧠 8   Approx. 250-450 LOC.
+🎯 5 🛡️ 6 🧠 8 Approx. 250-450 LOC.
 
 - Complex because provider order affects synthesis model.
 - Hard to explain when conflicts happen.
@@ -3643,29 +3646,29 @@ Confidence: high.
 
 Concern:
 
-- Backend may support Claude before public UI/docs are ready.
 - Public copy can create false expectations if real E2E is not finished.
+- A provider policy change may require hiding new Claude setup quickly.
 
 Derisk:
 
-- Gate dashboard option and public copy behind
-  `REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER`.
+- Keep Claude UI default-on after backend/workflow/local gates pass.
+- Keep `REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER=0` as an emergency opt-out.
 - Keep parser/runtime tests independent of flag.
-- Only enable flag after local gates and real smoke.
+- Treat real smoke as release evidence, not as a domain parsing prerequisite.
 
 ## Open Questions Before Implementation
 
 These are not blockers for writing the catalog, but they should be answered
 before public rollout.
 
-| Question | Current confidence | Owner | Decision needed by |
-| --- | ---: | --- | --- |
-| Exact minimum ReviewRouter Action ref that supports Claude | 7/10 | action/runtime | before PR 3 merges |
-| Claude CLI install path for production | 7/10 | workflow provisioning | before public flag |
-| Official setup-token revocation route | 5/10 | docs/security | before final disconnect copy |
-| Whether to support Claude on self-hosted runners initially | 6/10 | workflow/runtime | before public docs |
-| Whether org secret metadata checks need new GitHub App permissions | 7/10 | GitHub integration | before setup UI |
-| Whether static fallback should support Claude or force workflow update | 7/10 | action/control-plane | before PR 4 |
+| Question                                                               | Current confidence | Owner                 | Decision needed by           |
+| ---------------------------------------------------------------------- | -----------------: | --------------------- | ---------------------------- |
+| Exact minimum ReviewRouter Action ref that supports Claude             |               7/10 | action/runtime        | before PR 3 merges           |
+| Claude CLI install path for production                                 |               7/10 | workflow provisioning | before public flag           |
+| Official setup-token revocation route                                  |               5/10 | docs/security         | before final disconnect copy |
+| Whether to support Claude on self-hosted runners initially             |               6/10 | workflow/runtime      | before public docs           |
+| Whether org secret metadata checks need new GitHub App permissions     |               7/10 | GitHub integration    | before setup UI              |
+| Whether static fallback should support Claude or force workflow update |               7/10 | action/control-plane  | before PR 4                  |
 
 Default answers if time is constrained:
 
@@ -3680,17 +3683,17 @@ Default answers if time is constrained:
 
 ## Release Risk Register
 
-| Risk | Probability | Impact | Mitigation | Release blocker? |
-| --- | ---: | ---: | --- | --- |
-| Old workflow receives Claude config and cannot run it | 6/10 | 8/10 | provider-aware compatibility and workflow readiness | yes |
-| Claude token value leaks through health/logs | 3/10 | 10/10 | health sanitizer, secret-shaped reject tests, no raw stderr | yes |
-| `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` overrides OAuth | 5/10 | 7/10 | sanitized env allowlist and workflow incompatibility markers | yes |
-| CLI install flakes on GitHub-hosted Ubuntu | 4/10 | 7/10 | install spike, stable/exact/signed apt fallback | beta blocker if frequent |
-| Dashboard says ready when only secret metadata exists | 6/10 | 6/10 | separate readiness state machine | yes |
-| OpenRouter/Codex regress during catalog migration | 4/10 | 8/10 | parity tests before Claude is added | yes |
-| Org secret selected-repo metadata cannot be read | 5/10 | 5/10 | manual confirmation fallback and precise copy | no |
-| Setup-token revocation route remains unclear | 7/10 | 4/10 | document GitHub secret deletion and avoid revoke promises | no for beta |
-| Self-hosted runner env pollution | 5/10 | 7/10 | env sanitation or docs mark manual validation required | public docs blocker |
+| Risk                                                          | Probability | Impact | Mitigation                                                   | Release blocker?         |
+| ------------------------------------------------------------- | ----------: | -----: | ------------------------------------------------------------ | ------------------------ |
+| Old workflow receives Claude config and cannot run it         |        6/10 |   8/10 | provider-aware compatibility and workflow readiness          | yes                      |
+| Claude token value leaks through health/logs                  |        3/10 |  10/10 | health sanitizer, secret-shaped reject tests, no raw stderr  | yes                      |
+| `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` overrides OAuth |        5/10 |   7/10 | sanitized env allowlist and workflow incompatibility markers | yes                      |
+| CLI install flakes on GitHub-hosted Ubuntu                    |        4/10 |   7/10 | install spike, stable/exact/signed apt fallback              | beta blocker if frequent |
+| Dashboard says ready when only secret metadata exists         |        6/10 |   6/10 | separate readiness state machine                             | yes                      |
+| OpenRouter/Codex regress during catalog migration             |        4/10 |   8/10 | parity tests before Claude is added                          | yes                      |
+| Org secret selected-repo metadata cannot be read              |        5/10 |   5/10 | manual confirmation fallback and precise copy                | no                       |
+| Setup-token revocation route remains unclear                  |        7/10 |   4/10 | document GitHub secret deletion and avoid revoke promises    | no for beta              |
+| Self-hosted runner env pollution                              |        5/10 |   7/10 | env sanitation or docs mark manual validation required       | public docs blocker      |
 
 Top release blockers:
 
@@ -3797,8 +3800,8 @@ export function buildProviderRuntimePlan(input: {
   const providers = input.providers.map(validateProvider);
   const providerIds = providers.map(toRuntimeProviderId);
   const requiredSecretNames = uniqueStable(
-    providers.flatMap((provider) =>
-      getProviderAuthModeMetadata(provider.authMode).secretNames,
+    providers.flatMap(
+      (provider) => getProviderAuthModeMetadata(provider.authMode).secretNames,
     ),
   );
   const requiredCliTools = uniqueStable(
@@ -4044,17 +4047,17 @@ apps/web/src/server/workflow-setup-readiness.ts
 
 ## Threat Model for Claude Code OAuth
 
-| Threat | Impact | Mitigation |
-| --- | --- | --- |
-| User pastes token into SaaS support/chat | SaaS could receive secret | UI/docs repeatedly say store only in GitHub secret; support runbook says never request token |
-| Token stored as shell command text | CI auth fails confusingly | Action token shape validation, dashboard recovery copy, tests |
-| Old workflow lacks Claude secret pass-through | Claude config fails at runtime | workflow compatibility detection and update-required banner |
-| Fork PR tries to access secret | secret exposure | fork PR skip remains required and tested |
-| `ANTHROPIC_API_KEY` overrides subscription token | wrong auth path, possible failure | generated workflow does not pass it; SaaS readiness rejects it; docs warn |
-| CLI install supply-chain drift | unexpected runtime behavior | stable/exact version policy, one install helper, `claude --version` logging |
-| Raw CLI stderr leaks prompt/code | privacy leak in health/dashboard | classify errors in action, send safe summaries only |
-| Unknown provider DB string executes as Codex | wrong provider execution | strict catalog parsing and fail-closed runtime config |
-| Reusable workflow caller points to malicious called workflow | OIDC config issued to wrong runtime | validate `job_workflow_ref` for reusable style |
+| Threat                                                       | Impact                              | Mitigation                                                                                   |
+| ------------------------------------------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| User pastes token into SaaS support/chat                     | SaaS could receive secret           | UI/docs repeatedly say store only in GitHub secret; support runbook says never request token |
+| Token stored as shell command text                           | CI auth fails confusingly           | Action token shape validation, dashboard recovery copy, tests                                |
+| Old workflow lacks Claude secret pass-through                | Claude config fails at runtime      | workflow compatibility detection and update-required banner                                  |
+| Fork PR tries to access secret                               | secret exposure                     | fork PR skip remains required and tested                                                     |
+| `ANTHROPIC_API_KEY` overrides subscription token             | wrong auth path, possible failure   | generated workflow does not pass it; SaaS readiness rejects it; docs warn                    |
+| CLI install supply-chain drift                               | unexpected runtime behavior         | stable/exact version policy, one install helper, `claude --version` logging                  |
+| Raw CLI stderr leaks prompt/code                             | privacy leak in health/dashboard    | classify errors in action, send safe summaries only                                          |
+| Unknown provider DB string executes as Codex                 | wrong provider execution            | strict catalog parsing and fail-closed runtime config                                        |
+| Reusable workflow caller points to malicious called workflow | OIDC config issued to wrong runtime | validate `job_workflow_ref` for reusable style                                               |
 
 ## PR Review Checklist
 
@@ -4092,7 +4095,7 @@ Workflow:
 
 Dashboard:
 
-- Claude option is feature-flagged until E2E proof.
+- Claude option is visible by default and can be hidden with the rollback flag.
 - Saving Claude config posts `authMode=claude_code_oauth`.
 - Server derives kind from auth mode.
 - Codex-only controls are hidden for Claude.
@@ -4105,7 +4108,7 @@ Testing:
 - Workflow tests cover reusable and explicit Claude paths.
 - Action control plane tests cover old action ref blocking.
 - Dashboard tests cover switching between Codex, Claude, and OpenRouter.
-- Real E2E evidence is recorded before public copy is enabled.
+- Real E2E evidence is recorded before removing the rollback switch.
 
 ## Verification Gates
 
@@ -4170,7 +4173,7 @@ apps/web/src/server/workflow-setup-readiness.test.ts
   reusable workflow marker check accepts trusted ReviewRouter runtime ref only
 
 apps/web/app/dashboard/repository-policy-editor.test.tsx
-  Claude option appears only when feature flag is enabled
+  Claude option appears by default and can be hidden by rollback flag
   Claude hides reasoning/fast/agentic controls
   switching auth mode derives provider kind server-side
 ```
@@ -4250,10 +4253,11 @@ secret is deleted.
 
 `apps/web` is done when:
 
-- Claude provider is feature-flagged.
+- Claude provider is visible by default and can be hidden with the rollback flag.
 - Server derives provider kind from auth mode.
 - Codex-only controls are hidden for Claude.
-- Public pages and API demo do not claim Claude support before the E2E gate.
+- Public pages and API demo describe Claude support truthfully and avoid
+  claiming SaaS custody of Claude tokens.
 
 ## Release Evidence Packet
 

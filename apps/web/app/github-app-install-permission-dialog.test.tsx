@@ -37,6 +37,7 @@ describe("GitHubAppInstallPermissionDialog", () => {
 
     expect(within(dialog).getByText("Secrets: read")).toBeTruthy();
     expect(within(dialog).getByText("Organization secrets: read")).toBeTruthy();
+    expect(within(dialog).getByText(/CLAUDE_CODE_OAUTH_TOKEN/)).toBeTruthy();
   });
 
   it("closes the explainer when Cancel is clicked", () => {

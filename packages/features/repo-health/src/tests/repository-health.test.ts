@@ -410,6 +410,52 @@ describe("repository health", () => {
     });
   });
 
+  it("checks expected workflow capability markers without returning raw YAML", async () => {
+    const workflow = [
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",
+      "secrets:",
+      "  CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    ].join("\n");
+    const probe = new OctokitRepositoryWorkflowProbe({
+      createRequester: async () => ({
+        request: async () => ({
+          data: {
+            type: "file",
+            encoding: "base64",
+            content: Buffer.from(workflow).toString("base64"),
+          },
+        }),
+      }),
+    });
+
+    await expect(
+      probe.probeWorkflow({
+        ...probeInput(),
+        expectedContentMarkerGroups: [
+          [
+            ".github/workflows/reviewrouter-reusable.yml",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+          ],
+        ],
+      }),
+    ).resolves.toEqual({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    const result = await probe.probeWorkflow({
+      ...probeInput(),
+      expectedContentMarkerGroups: [["Install Claude Code CLI"]],
+    });
+    expect(result).toEqual({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: false,
+    });
+    expect(JSON.stringify(result)).not.toContain("CLAUDE_CODE_OAUTH_TOKEN:");
+  });
+
   it("maps missing or failed GitHub workflow probes to safe metadata", async () => {
     const missingProbe = new OctokitRepositoryWorkflowProbe({
       createRequester: async () => ({
