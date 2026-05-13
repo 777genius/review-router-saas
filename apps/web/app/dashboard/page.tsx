@@ -55,6 +55,10 @@ import {
   saveWorkspaceReviewConfigAction,
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
+import {
+  buildPendingOrganizationInstallRequest,
+  type PendingOrganizationInstallRequest,
+} from "../../src/server/dashboard-app-install-request";
 import { safeGitHubDashboardLink } from "../../src/server/safe-dashboard-link";
 import type { WorkspaceHealthSummary } from "../../src/server/repository-health-view";
 import {
@@ -76,6 +80,7 @@ import { GitHubAccountAvatar } from "../github-account-avatar";
 import { GitHubSignInButton } from "../github-sign-in-button";
 import { ActionToast } from "../action-toast";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
+import { DashboardInstallRequestToast } from "./dashboard-install-request-toast";
 import { DashboardSectionTabs } from "./dashboard-section-tabs";
 import { DashboardWorkspaceTabs } from "./dashboard-workspace-tabs";
 import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
@@ -798,16 +803,24 @@ export default async function DashboardPage({
   const workspaces = filterVisibleDashboardWorkspaces(dashboardData);
   const appInstallUrl = getGitHubAppInstallUrl();
   const selectedSection = resolveDashboardSection(params);
+  const pendingOrganizationInstallRequest =
+    buildPendingOrganizationInstallRequest(params);
 
   if (workspaces.length === 0) {
     if (mutationStatus.signedIn) {
       return (
-        <DashboardEmptyAccessState
-          repositoryAccess={repositoryAccess}
-          githubLogin={mutationStatus.githubLogin}
-          githubAvatarUrl={mutationStatus.githubAvatarUrl}
-          appInstallUrl={appInstallUrl}
-        />
+        <>
+          <DashboardInstallRequestToast
+            request={pendingOrganizationInstallRequest}
+          />
+          <DashboardActionToast params={params} />
+          <DashboardEmptyAccessState
+            repositoryAccess={repositoryAccess}
+            githubLogin={mutationStatus.githubLogin}
+            githubAvatarUrl={mutationStatus.githubAvatarUrl}
+            appInstallUrl={appInstallUrl}
+          />
+        </>
       );
     }
 
@@ -831,6 +844,7 @@ export default async function DashboardPage({
         selectedWorkspaceId={selectedWorkspace.workspace.id}
         selectedSection={selectedSection}
         appInstallUrl={appInstallUrl}
+        pendingOrganizationInstallRequest={pendingOrganizationInstallRequest}
         fallbackUser={{
           githubLogin: mutationStatus.githubLogin,
           githubAvatarUrl: mutationStatus.githubAvatarUrl,
@@ -1057,18 +1071,22 @@ function WorkspaceSwitcher({
   selectedWorkspaceId,
   selectedSection,
   appInstallUrl,
+  pendingOrganizationInstallRequest,
   fallbackUser,
 }: {
   readonly workspaces: readonly DashboardWorkspaceData[];
   readonly selectedWorkspaceId: string;
   readonly selectedSection: DashboardSection;
   readonly appInstallUrl: string | null;
+  readonly pendingOrganizationInstallRequest: PendingOrganizationInstallRequest | null;
   readonly fallbackUser: {
     readonly githubLogin: string | null;
     readonly githubAvatarUrl: string | null;
   };
 }): React.ReactElement | null {
-  if (workspaces.length < 2 && !appInstallUrl) return null;
+  if (workspaces.length < 2 && !appInstallUrl && !pendingOrganizationInstallRequest) {
+    return null;
+  }
 
   const items = workspaces.map((workspace) => {
     const workspaceKey = dashboardWorkspaceUrlKey(
@@ -1083,6 +1101,14 @@ function WorkspaceSwitcher({
       href: dashboardSectionHref(selectedSection, workspaceKey),
     };
   });
+  const pendingTab = pendingOrganizationInstallRequest
+    ? {
+        id: pendingOrganizationInstallRequest.id,
+        label: pendingOrganizationInstallRequest.accountLogin,
+        href: dashboardPendingInstallRequestHref(selectedSection),
+        statusLabel: "Request pending",
+      }
+    : null;
 
   return (
     <section className="py-3">
@@ -1114,10 +1140,11 @@ function WorkspaceSwitcher({
             </GitHubAppInstallPermissionDialog>
           ) : null}
         </div>
-        {workspaces.length > 1 ? (
+        {items.length > 1 || pendingTab ? (
           <DashboardWorkspaceTabs
             items={items}
             selectedWorkspaceId={selectedWorkspaceId}
+            pendingInstallRequest={pendingTab}
           />
         ) : null}
       </div>
@@ -1291,6 +1318,9 @@ function WorkspaceCard({
         fallbackUser={fallbackUser}
       />
       <div id="dashboard-section-content" className="space-y-5 scroll-mt-28">
+        <DashboardInstallRequestToast
+          request={buildPendingOrganizationInstallRequest(params)}
+        />
         <DashboardActionToast
           params={params}
           secondaryAction={setupReadyEnableReviewAction}
@@ -3051,10 +3081,20 @@ function dashboardSectionHref(
   return `/dashboard?${query.toString()}#dashboard-section-content`;
 }
 
+function dashboardPendingInstallRequestHref(section: DashboardSection): string {
+  const query = new URLSearchParams({
+    section,
+    setup_action: "request",
+  });
+  return `/dashboard?${query.toString()}`;
+}
+
 function dashboardNoticeText(notice: string, repository: string): string {
   switch (notice) {
     case "app_installed":
       return "GitHub App is connected. Search for one repository, create the setup PR, then seed provider credentials from this dashboard.";
+    case "org_install_request_sent":
+      return "GitHub sent the install request to the organization owners. ReviewRouter will show the organization as a workspace after an owner approves the request.";
     case "sync_requested":
       return "Repository metadata refresh was queued. Reload in a few seconds if the repository list does not update immediately.";
     case "sync_already_requested":
@@ -3104,6 +3144,8 @@ function dashboardNoticeTitle(notice: string): string {
   switch (notice) {
     case "app_installed":
       return "GitHub App installed";
+    case "org_install_request_sent":
+      return "Organization request sent";
     case "sync_requested":
     case "sync_already_requested":
       return "Refresh queued";
@@ -3146,6 +3188,8 @@ function dashboardNoticeTone(
     case "repository_review_config_cleared":
     case "repository_access_refreshed":
       return "success";
+    case "org_install_request_sent":
+      return "warning";
     case "sync_already_requested":
       return "accent";
     case "outbox_retry_not_found":

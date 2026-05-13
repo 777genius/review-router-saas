@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import { Tabs } from "@base-ui/react/tabs";
 import { GitHubAccountAvatar } from "../github-account-avatar";
 
@@ -7,17 +8,57 @@ export type DashboardWorkspaceTabItem = {
   readonly id: string;
   readonly label: string;
   readonly avatarUrl?: string | null;
-  readonly repositoryCount: number;
+  readonly repositoryCount?: number;
+  readonly statusLabel?: string;
   readonly href: string;
+};
+
+export type DashboardPendingWorkspaceTabItem = {
+  readonly id: string;
+  readonly label: string;
+  readonly avatarUrl?: string | null;
+  readonly repositoryCount?: number;
+  readonly href: string;
+  readonly statusLabel: string;
 };
 
 export function DashboardWorkspaceTabs({
   items,
   selectedWorkspaceId,
+  pendingInstallRequest,
 }: {
   readonly items: readonly DashboardWorkspaceTabItem[];
   readonly selectedWorkspaceId: string;
+  readonly pendingInstallRequest?: DashboardPendingWorkspaceTabItem | null;
 }): React.ReactElement {
+  const [showPendingRequest, setShowPendingRequest] = useState(false);
+  const activeLabels = useMemo(
+    () => new Set(items.map((item) => item.label.toLowerCase())),
+    [items],
+  );
+  const visibleItems =
+    showPendingRequest &&
+    pendingInstallRequest &&
+    !activeLabels.has(pendingInstallRequest.label.toLowerCase())
+      ? [...items, pendingInstallRequest]
+      : items;
+
+  useEffect(() => {
+    if (!pendingInstallRequest) return;
+    if (!isLikelyGitHubRedirect()) return;
+    if (activeLabels.has(pendingInstallRequest.label.toLowerCase())) return;
+
+    const key = `reviewrouter:github-app-request-tab:${pendingInstallRequest.label}`;
+    try {
+      if (window.sessionStorage.getItem(key) === "1") return;
+      window.sessionStorage.setItem(key, "1");
+    } catch {
+      // Storage can be blocked. Keep this page render ephemeral.
+    }
+
+    setShowPendingRequest(true);
+  }, [activeLabels, pendingInstallRequest]);
+
   return (
     <Tabs.Root value={selectedWorkspaceId}>
       <Tabs.List
@@ -25,7 +66,7 @@ export function DashboardWorkspaceTabs({
         activateOnFocus
         className="flex gap-4 overflow-x-auto overflow-y-hidden border-b border-cyan-200/15 pb-px [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        {items.map((item) => (
+        {visibleItems.map((item) => (
           <Tabs.Tab
             key={item.id}
             value={item.id}
@@ -54,12 +95,29 @@ export function DashboardWorkspaceTabs({
               className="-my-1"
             />
             <span>{item.label}</span>
-            <span className="font-mono text-xs text-slate-500 group-hover:text-slate-300 group-data-[active]:text-cyan-100/80">
-              {item.repositoryCount} repos
+            <span
+              className={[
+                "font-mono text-xs group-hover:text-slate-300 group-data-[active]:text-cyan-100/80",
+                item.statusLabel ? "text-amber-200/85" : "text-slate-500",
+              ].join(" ")}
+            >
+              {item.statusLabel ?? `${item.repositoryCount ?? 0} repos`}
             </span>
           </Tabs.Tab>
         ))}
       </Tabs.List>
     </Tabs.Root>
   );
+}
+
+function isLikelyGitHubRedirect(): boolean {
+  try {
+    const referrer = new URL(document.referrer);
+    return (
+      referrer.hostname === "github.com" ||
+      referrer.hostname.endsWith(".github.com")
+    );
+  } catch {
+    return false;
+  }
 }
