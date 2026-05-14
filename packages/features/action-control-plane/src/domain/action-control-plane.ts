@@ -438,9 +438,13 @@ export function isAllowedOidcWorkflowIdentity(input: {
   readonly allowedPaths?: readonly string[];
   readonly trustedWorkflowRefs?: readonly string[];
 }): boolean {
-  if (input.jobWorkflowRef) {
+  const jobWorkflowRef = input.jobWorkflowRef?.trim();
+  if (
+    jobWorkflowRef &&
+    jobWorkflowRef.toLowerCase() !== input.workflowRef.toLowerCase()
+  ) {
     if (
-      !isTrustedWorkflowRef(input.jobWorkflowRef, input.trustedWorkflowRefs)
+      !isTrustedWorkflowRef(jobWorkflowRef, input.trustedWorkflowRefs)
     ) {
       return false;
     }
