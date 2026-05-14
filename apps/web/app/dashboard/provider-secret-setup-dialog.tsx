@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import {
   Badge,
@@ -17,10 +16,6 @@ import {
 } from "@reviewrouter/ui";
 import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
 import type { OrganizationSecretPolicy } from "./provider-secret-setup-chooser";
-import {
-  providerSetupConfirmedEventName,
-  type ProviderSetupConfirmedEventDetail,
-} from "./repository-setup-optimistic-events";
 
 type ProviderSecretGuidanceSet = {
   readonly codexOAuth: ProviderSecretSetupGuidance;
@@ -58,41 +53,10 @@ export function ProviderSecretSetupDialog({
   readonly triggerClassName?: string | undefined;
   readonly disabled?: boolean;
 }): React.ReactElement {
-  const router = useRouter();
   const [open, setOpen] = useState(false);
-  const refreshAfterClose = useRef(false);
-
-  useEffect(() => {
-    function handleProviderSetupConfirmed(event: Event): void {
-      const detail = (event as CustomEvent<ProviderSetupConfirmedEventDetail>)
-        .detail;
-      if (detail?.repositoryId === repositoryId) {
-        refreshAfterClose.current = true;
-      }
-    }
-
-    window.addEventListener(
-      providerSetupConfirmedEventName,
-      handleProviderSetupConfirmed,
-    );
-    return () => {
-      window.removeEventListener(
-        providerSetupConfirmedEventName,
-        handleProviderSetupConfirmed,
-      );
-    };
-  }, [repositoryId]);
-
-  function handleOpenChange(nextOpen: boolean): void {
-    setOpen(nextOpen);
-    if (!nextOpen && refreshAfterClose.current) {
-      refreshAfterClose.current = false;
-      router.refresh();
-    }
-  }
 
   return (
-    <DialogRoot open={open} onOpenChange={handleOpenChange}>
+    <DialogRoot open={open} onOpenChange={setOpen}>
       <DialogTrigger
         render={
           <Button

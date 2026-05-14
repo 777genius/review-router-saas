@@ -355,7 +355,7 @@ describe("ProviderSecretSetupDialog", () => {
     ).toBe("button");
   });
 
-  it("keeps the dialog open after confirmation and refreshes after the user closes it", async () => {
+  it("keeps the dialog open after confirmation without refreshing the repository list on close", async () => {
     mockProviderSetupFetch().mockResolvedValueOnce(
       providerSetupResponse({
         params: {
@@ -381,9 +381,7 @@ describe("ProviderSecretSetupDialog", () => {
       screen.getByRole("button", { name: "Close provider secrets dialog" }),
     );
 
-    await waitFor(() => {
-      expect(routerMock.refresh).toHaveBeenCalledTimes(1);
-    });
+    expect(routerMock.refresh).not.toHaveBeenCalled();
   });
 });
 
