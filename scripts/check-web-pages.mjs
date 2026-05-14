@@ -14,7 +14,11 @@ const pages = [
   ["/", [landingHeroText, "that stays inside your CI", "Install GitHub App"]],
   [
     "/auth/signin",
-    ["Sign in to ReviewRouter", "Continue with GitHub", "No secret custody"],
+    [
+      "Sign in to ReviewRouter",
+      "Continue with GitHub",
+      "No secrets stored here",
+    ],
   ],
   [
     "/auth/signin?error=OAuthCallback",
@@ -33,7 +37,7 @@ const pages = [
   ],
   [
     "/security",
-    ["Designed to avoid code and secret custody", repoCodexCommandFragment],
+    ["Code and secrets stay under your control", repoCodexCommandFragment],
   ],
   ["/fair-use", ["Fair use"]],
   ["/disconnect", ["Disconnect"]],
