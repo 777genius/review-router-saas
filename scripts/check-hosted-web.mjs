@@ -28,7 +28,7 @@ assertIncludesAny(
     "Manage repository review rollout",
     "ReviewRouter is a metadata control plane",
     "ReviewRouter is an open-source metadata control plane",
-    "ReviewRouter is an open-source metadata control plane",
+    "Metadata control plane for CI-native AI review",
   ],
   "dashboard missing landing or workspace hero",
 );
@@ -81,6 +81,7 @@ if (installUrls.length === 0) {
     [
       "ReviewRouter is a metadata control plane",
       "ReviewRouter is an open-source metadata control plane",
+      "Metadata control plane for CI-native AI review",
     ],
     "dashboard without install URL must render signed-out metadata shell",
   );
@@ -159,6 +160,7 @@ assertIncludesAny(
     "Manage repository review rollout",
     "ReviewRouter is a metadata control plane",
     "ReviewRouter is an open-source metadata control plane",
+    "Metadata control plane for CI-native AI review",
   ],
   "dashboard setup PR notice should render landing or dashboard",
 );
@@ -176,6 +178,7 @@ assertIncludesAny(
     "Manage repository review rollout",
     "ReviewRouter is a metadata control plane",
     "ReviewRouter is an open-source metadata control plane",
+    "Metadata control plane for CI-native AI review",
   ],
   "dashboard sync notice should render landing or dashboard",
 );
