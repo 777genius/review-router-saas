@@ -118,14 +118,29 @@ export const conflictRuntimeModelFindingSchema = z
     body: createSafeModelMarkdownSchema(4_000),
     path: z
       .string()
+      .nullable()
       .optional()
       .transform((value) =>
-        value === undefined
+        value === undefined || value === null
           ? undefined
           : normalizeConflictRuntimeRepositoryPath(value),
       ),
-    startLine: z.number().int().positive().max(1_000_000).optional(),
-    endLine: z.number().int().positive().max(1_000_000).optional(),
+    startLine: z
+      .number()
+      .int()
+      .positive()
+      .max(1_000_000)
+      .nullable()
+      .optional()
+      .transform((value) => value ?? undefined),
+    endLine: z
+      .number()
+      .int()
+      .positive()
+      .max(1_000_000)
+      .nullable()
+      .optional()
+      .transform((value) => value ?? undefined),
   })
   .strict()
   .superRefine((finding, context) => {

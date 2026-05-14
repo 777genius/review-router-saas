@@ -217,12 +217,24 @@ describe("conflict runtime", () => {
           startLine: 12,
           endLine: 14,
         },
+        {
+          severity: "info",
+          title: "No line location",
+          body: "Provider schemas require nullable fields instead of omitted optional fields.",
+          path: null,
+          startLine: null,
+          endLine: null,
+        },
       ],
     });
 
     expect(buildConflictRuntimeSummaryMarkdown(output)).toContain(
       "[major] Validate conflict branch behavior (src/review.ts:12)",
     );
+    expect(output.findings[1]?.title).toBe("No line location");
+    expect(output.findings[1]?.path).toBeUndefined();
+    expect(output.findings[1]?.startLine).toBeUndefined();
+    expect(output.findings[1]?.endLine).toBeUndefined();
     expect(() =>
       parseConflictRuntimeModelOutput({
         protocolVersion: 1,

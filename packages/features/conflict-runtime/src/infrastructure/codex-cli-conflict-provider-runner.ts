@@ -148,6 +148,7 @@ function buildCodexConflictReviewPrompt(input: {
     "Review only the provided bounded diff for bugs, security issues, and clear regressions.",
     "This is not a merge-result review. Do not claim branch protection passed or that the merge result was reviewed.",
     "Return only JSON that matches the provided schema.",
+    "For findings without a file path or line range, set path, startLine, and endLine to null.",
     "",
     "Context:",
     JSON.stringify(
@@ -218,7 +219,7 @@ const modelOutputJsonSchema = {
   additionalProperties: false,
   required: ["protocolVersion", "summaryMarkdown", "findings"],
   properties: {
-    protocolVersion: { const: 1 },
+    protocolVersion: { type: "integer", const: 1 },
     summaryMarkdown: { type: "string", minLength: 1, maxLength: 60_000 },
     findings: {
       type: "array",
@@ -226,7 +227,7 @@ const modelOutputJsonSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["severity", "title", "body"],
+        required: ["severity", "title", "body", "path", "startLine", "endLine"],
         properties: {
           severity: {
             type: "string",
@@ -234,9 +235,21 @@ const modelOutputJsonSchema = {
           },
           title: { type: "string", minLength: 1, maxLength: 200 },
           body: { type: "string", minLength: 1, maxLength: 4_000 },
-          path: { type: "string", minLength: 1, maxLength: 500 },
-          startLine: { type: "integer", minimum: 1, maximum: 1_000_000 },
-          endLine: { type: "integer", minimum: 1, maximum: 1_000_000 },
+          path: {
+            type: ["string", "null"],
+            minLength: 1,
+            maxLength: 500,
+          },
+          startLine: {
+            type: ["integer", "null"],
+            minimum: 1,
+            maximum: 1_000_000,
+          },
+          endLine: {
+            type: ["integer", "null"],
+            minimum: 1,
+            maximum: 1_000_000,
+          },
         },
       },
     },

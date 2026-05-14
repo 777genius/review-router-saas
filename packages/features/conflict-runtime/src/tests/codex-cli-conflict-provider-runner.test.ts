@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -59,12 +59,16 @@ describe("CodexCliConflictProviderRunner", () => {
   it("runs codex with read-only sandbox, schema output, and no runtime/posting secrets", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "rr-codex-test-"));
     const calls: ConflictRuntimeCommandInput[] = [];
+    let schema: unknown;
     try {
       const result = await new CodexCliConflictProviderRunner({
         workspace: "/repo",
         tempRoot,
         runCommand: async (input) => {
           calls.push(input);
+          const schemaPath =
+            input.args[input.args.indexOf("--output-schema") + 1];
+          schema = JSON.parse(await readFile(String(schemaPath), "utf8"));
           const outputPath =
             input.args[input.args.indexOf("--output-last-message") + 1];
           await writeFile(
@@ -118,6 +122,35 @@ describe("CodexCliConflictProviderRunner", () => {
         ]),
       );
       expect(calls[0]?.args).not.toContain("--ask-for-approval");
+      expect(schema).toMatchObject({
+        properties: {
+          protocolVersion: {
+            type: "integer",
+            const: 1,
+          },
+        },
+      });
+      const schemaObject = schema as {
+        properties: {
+          findings: {
+            items: {
+              required: readonly string[];
+              properties: { path: { type: readonly string[] } };
+            };
+          };
+        };
+      };
+      expect(schemaObject.properties.findings.items.required).toEqual([
+        "severity",
+        "title",
+        "body",
+        "path",
+        "startLine",
+        "endLine",
+      ]);
+      expect(
+        schemaObject.properties.findings.items.properties.path.type,
+      ).toEqual(["string", "null"]);
       expect(calls[0]?.env).toMatchObject({
         CODEX_HOME: expect.stringContaining("reviewrouter-conflict-"),
         HOME: calls[0]?.env?.CODEX_HOME,
