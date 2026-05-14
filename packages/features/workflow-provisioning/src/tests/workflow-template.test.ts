@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzeConflictReviewWorkflowCapability,
   analyzeWorkflowProviderCompatibility,
   defaultInteractionWorkflowPath,
   defaultRequiredWorkflowPath,
   defaultWorkflowPath,
   getWorkflowProviderContentMarkerGroups,
+  getWorkflowSetupContentMarkerGroups,
   renderReviewRouterInteractionWorkflow,
   renderReviewRouterReusableInteractionWorkflow,
   renderReviewRouterReusableWorkflow,
@@ -17,15 +19,32 @@ const workflowOptions = {
   actionRef: "777genius/review-router@v1",
   apiUrl: "https://app.reviewrouter.dev",
   runtimeConfigMode: "oidc" as const,
+  conflictReviewFallbackEnabled: true,
   staticRuntimeEnv: {
     REVIEW_AUTH_MODE: "codex-oauth",
     CODEX_MODEL: "gpt-5.5",
   },
 };
 
+function getWorkflowJobSection(workflow: string, jobId: string): string {
+  const startMatch = new RegExp(`^ {2}${jobId}:\\s*$`, "m").exec(workflow);
+  if (!startMatch) {
+    throw new Error(`missing job ${jobId}`);
+  }
+  const start = startMatch.index;
+  const afterStart = start + startMatch[0].length;
+  const remainder = workflow.slice(afterStart);
+  const nextJobMatch = /^ {2}[A-Za-z0-9_-]+:\s*$/m.exec(remainder);
+  const end = nextJobMatch ? afterStart + nextJobMatch.index : workflow.length;
+  return workflow.slice(start, end);
+}
+
 describe("renderReviewRouterWorkflow", () => {
   it("renders a review-only pull request workflow", () => {
-    const workflow = renderReviewRouterWorkflow(workflowOptions);
+    const workflow = renderReviewRouterWorkflow({
+      ...workflowOptions,
+      conflictReviewFallbackEnabled: false,
+    });
 
     expect(workflow).toContain("name: ReviewRouter");
     expect(workflow).toContain("pull_request:");
@@ -91,7 +110,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("issue_comment:");
     expect(workflow).toContain("types: [created, edited]");
     expect(workflow).toContain(
-      "github.event_name != 'issue_comment' || github.event.issue.pull_request",
+      "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))",
     );
     expect(workflow).not.toContain("pull_request:\n");
     expect(workflow).not.toContain("pull_request_target");
@@ -144,25 +163,100 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(interactionWorkflow?.content).toContain("issue_comment:");
     expect(interactionWorkflow?.content).toContain(
-      "github.event_name != 'issue_comment' || github.event.issue.pull_request",
+      "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))",
     );
   });
 
-  it("renders compact reusable caller workflows by default", () => {
+  it("does not render conflict fallback trigger or inputs unless enabled", () => {
+    const workflow = renderReviewRouterReusableWorkflow({
+      ...workflowOptions,
+      conflictReviewFallbackEnabled: false,
+    });
+
+    expect(workflow).not.toContain("repository_dispatch:");
+    expect(workflow).not.toContain("github.event.client_payload");
+    expect(workflow).not.toContain("review_kind:");
+    expect(workflow).not.toContain("conflict_dispatch_id:");
+  });
+
+  it("rejects mutable reusable workflow refs when conflict fallback is enabled", () => {
+    expect(() =>
+      renderReviewRouterReusableWorkflow({
+        ...workflowOptions,
+        actionRef: "777genius/review-router@main",
+      }),
+    ).toThrow("invalid_conflict_review_reusable_workflow_runtime_ref");
+
+    expect(() =>
+      renderReviewRouterReusableWorkflow({
+        ...workflowOptions,
+        actionRef: "777genius/review-router@main",
+        conflictReviewFallbackEnabled: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it("renders compact reusable caller workflows with conflict fallback enabled", () => {
     const reviewWorkflow = renderReviewRouterReusableWorkflow(workflowOptions);
     const interactionWorkflow =
       renderReviewRouterReusableInteractionWorkflow(workflowOptions);
+    const reviewJob = getWorkflowJobSection(reviewWorkflow, "review");
+    const conflictReviewJob = getWorkflowJobSection(
+      reviewWorkflow,
+      "conflict-review",
+    );
 
     expect(reviewWorkflow).toContain("pull_request:");
     expect(reviewWorkflow).toContain("merge_group:");
+    expect(reviewWorkflow).toContain("repository_dispatch:");
+    expect(reviewWorkflow).toContain("types: [reviewrouter_conflict_review]");
     expect(reviewWorkflow).toContain("workflow_dispatch:");
-    expect(reviewWorkflow).toContain("id-token: write");
+    expect(reviewWorkflow).toContain("permissions: {}\n\nconcurrency:");
+    expect(reviewWorkflow).toContain("concurrency:");
     expect(reviewWorkflow).toContain(
+      "group: reviewrouter-conflict-${{ github.repository }}-${{ github.workflow }}-${{ github.run_id }}",
+    );
+    expect(reviewWorkflow).toContain("cancel-in-progress: false");
+    expect(reviewJob).toContain(
+      "if: ${{ github.event_name != 'repository_dispatch' }}",
+    );
+    expect(reviewJob).toContain("pull-requests: write");
+    expect(reviewJob).toContain("issues: write");
+    expect(reviewJob).not.toContain("github.event.client_payload");
+    expect(reviewJob).not.toContain("review_kind:");
+    expect(conflictReviewJob).toContain("name: conflict review");
+    expect(conflictReviewJob).toContain(
+      "github.event_name == 'repository_dispatch' && github.event.action == 'reviewrouter_conflict_review'",
+    );
+    expect(conflictReviewJob).toContain("contents: read");
+    expect(conflictReviewJob).toContain("id-token: write");
+    expect(conflictReviewJob).not.toContain("pull-requests: write");
+    expect(conflictReviewJob).not.toContain("issues: write");
+    expect(conflictReviewJob).not.toContain("write-all");
+    expect(conflictReviewJob).not.toContain("read-all");
+    expect(reviewJob).toContain(
       "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",
+    );
+    expect(conflictReviewJob).toContain(
+      "uses: 777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@v1",
     );
     expect(reviewWorkflow).toContain("runtime_ref: v1");
     expect(reviewWorkflow).toContain('api_url: "https://app.reviewrouter.dev"');
     expect(reviewWorkflow).toContain("runtime_config_mode: oidc");
+    expect(reviewJob).toContain(
+      "pr_number: ${{ github.event.pull_request.number || inputs.pr_number }}",
+    );
+    expect(conflictReviewJob).toContain(
+      "pr_number: ${{ github.event.client_payload.pr_number }}",
+    );
+    expect(conflictReviewJob).toContain("review_kind: conflict-head");
+    expect(conflictReviewJob).toContain("conflict_repository_id:");
+    expect(conflictReviewJob).toContain("conflict_dispatch_event_type:");
+    expect(conflictReviewJob).toContain("conflict_dispatch_id:");
+    expect(conflictReviewJob).toContain("conflict_dispatch_nonce:");
+    expect(conflictReviewJob).toContain("conflict_head_sha:");
+    expect(conflictReviewJob).toContain("conflict_base_ref:");
+    expect(conflictReviewJob).toContain("conflict_base_sha:");
     expect(reviewWorkflow).toContain(
       [
         "static_runtime_env_json: |-",
@@ -181,6 +275,15 @@ describe("renderReviewRouterWorkflow", () => {
     expect(reviewWorkflow).toContain(
       "REVIEW_ROUTER_LEDGER_KEY: ${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}",
     );
+    expect(conflictReviewJob).toContain(
+      "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
+    );
+    expect(conflictReviewJob).toContain(
+      "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
+    );
+    expect(conflictReviewJob).not.toContain("REVIEW_ROUTER_LEDGER_KEY");
+    expect(conflictReviewJob).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(conflictReviewJob).not.toContain("OPENROUTER_API_KEY");
     expect(reviewWorkflow).not.toContain("pull_request_target");
     expect(reviewWorkflow).not.toContain("actions/setup-node@v6");
 
@@ -188,7 +291,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflow).toContain("issue_comment:");
     expect(interactionWorkflow).toContain("types: [created, edited]");
     expect(interactionWorkflow).toContain(
-      "github.event_name != 'issue_comment' || github.event.issue.pull_request",
+      "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))",
     );
     expect(interactionWorkflow).toContain("actions: write");
     expect(interactionWorkflow).toContain(
@@ -204,12 +307,25 @@ describe("renderReviewRouterWorkflow", () => {
     const files = renderReviewRouterWorkflowFiles({
       ...workflowOptions,
       workflowStyle: "explicit",
+      conflictReviewFallbackEnabled: false,
     });
 
     expect(files[0]?.content).toContain("uses: 777genius/review-router@v1");
     expect(files[0]?.content).toContain("actions/setup-node@v6");
     expect(files[0]?.content).not.toContain(
       ".github/workflows/reviewrouter-reusable.yml",
+    );
+  });
+
+  it("rejects conflict fallback on explicit workflows", () => {
+    expect(() =>
+      renderReviewRouterWorkflowFiles({
+        ...workflowOptions,
+        workflowStyle: "explicit",
+      }),
+    ).toThrow("conflict_review_explicit_workflow_unsupported");
+    expect(() => renderReviewRouterWorkflow(workflowOptions)).toThrow(
+      "conflict_review_explicit_workflow_unsupported",
     );
   });
 
@@ -223,6 +339,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("merge_group:");
     expect(workflow).not.toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("repository_dispatch:");
     expect(workflow).not.toContain("pull_request_target");
     expect(workflow).toContain("contents: read");
     expect(workflow).toContain("pull-requests: write");
@@ -252,6 +369,7 @@ describe("renderReviewRouterWorkflow", () => {
     const explicitWorkflow = renderReviewRouterWorkflow({
       ...workflowOptions,
       workflowStyle: "explicit",
+      conflictReviewFallbackEnabled: false,
     });
 
     expect(
@@ -320,6 +438,193 @@ describe("renderReviewRouterWorkflow", () => {
     ).toEqual([]);
   });
 
+  it("exports combined conflict fallback marker groups for setup readiness probes", () => {
+    expect(
+      getWorkflowSetupContentMarkerGroups({
+        conflictReviewFallbackEnabled: true,
+      }),
+    ).toEqual([
+      [
+        ".github/workflows/reviewrouter-reusable.yml",
+        ".github/workflows/reviewrouter-conflict-reusable.yml",
+        "repository_dispatch:",
+        "types: [reviewrouter_conflict_review]",
+        "conflict-review:",
+        "github.event_name == 'repository_dispatch'",
+        "github.event.action == 'reviewrouter_conflict_review'",
+        "review_kind: conflict-head",
+        "conflict_repository_id:",
+        "conflict_dispatch_event_type:",
+        "conflict_dispatch_id:",
+      ],
+    ]);
+
+    expect(
+      getWorkflowSetupContentMarkerGroups({
+        providerKind: "claude",
+        conflictReviewFallbackEnabled: true,
+      }),
+    ).toEqual([
+      [
+        ".github/workflows/reviewrouter-reusable.yml",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        ".github/workflows/reviewrouter-conflict-reusable.yml",
+        "repository_dispatch:",
+        "types: [reviewrouter_conflict_review]",
+        "conflict-review:",
+        "github.event_name == 'repository_dispatch'",
+        "github.event.action == 'reviewrouter_conflict_review'",
+        "review_kind: conflict-head",
+        "conflict_repository_id:",
+        "conflict_dispatch_event_type:",
+        "conflict_dispatch_id:",
+      ],
+    ]);
+  });
+
+  it("detects conflict review capability only on the reusable review workflow", () => {
+    const reviewWorkflow = renderReviewRouterReusableWorkflow(workflowOptions);
+    const explicitWorkflow = renderReviewRouterWorkflow({
+      ...workflowOptions,
+      workflowStyle: "explicit",
+      conflictReviewFallbackEnabled: false,
+    });
+    const requiredWorkflow =
+      renderReviewRouterRequiredWorkflow(workflowOptions);
+
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: reviewWorkflow,
+      }),
+    ).toEqual({ supported: true });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: explicitWorkflow,
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "repository_dispatch_missing",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: requiredWorkflow,
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "repository_dispatch_missing",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: reviewWorkflow
+          .replace("  repository_dispatch:", "  # repository_dispatch:")
+          .replace(
+            "    types: [reviewrouter_conflict_review]",
+            "    # types: [reviewrouter_conflict_review]",
+          ),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "repository_dispatch_missing",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: reviewWorkflow.replace("conflict_dispatch_id:", ""),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "conflict_dispatch_inputs_missing",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: [
+          reviewWorkflow,
+          "  unsafe:",
+          "    runs-on: ubuntu-latest",
+          "    steps:",
+          "      - run: echo unsafe",
+        ].join("\n"),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "conflict_fallback_workflow_shape_untrusted",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: [
+          reviewWorkflow,
+          "  unsafe:",
+          "    uses: attacker/workflows/.github/workflows/review.yml@main",
+        ].join("\n"),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "conflict_fallback_workflow_shape_untrusted",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: reviewWorkflow.replace(
+          ".github/workflows/reviewrouter-conflict-reusable.yml@v1",
+          ".github/workflows/reviewrouter-conflict-reusable.yml@main",
+        ),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "conflict_reusable_workflow_ref_untrusted",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: reviewWorkflow.replace(
+          "github.run_id",
+          "github.event.client_payload.dispatch_id",
+        ),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "conflict_concurrency_missing",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: reviewWorkflow.replace(
+          [
+            "    permissions:",
+            "      contents: read",
+            "      id-token: write",
+            "    uses: 777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@v1",
+          ].join("\n"),
+          [
+            "    permissions:",
+            "      contents: read",
+            "      pull-requests: write",
+            "      id-token: write",
+            "    uses: 777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@v1",
+          ].join("\n"),
+        ),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "conflict_workflow_write_permissions_forbidden",
+    });
+    expect(
+      analyzeConflictReviewWorkflowCapability({
+        workflowYaml: reviewWorkflow.replace(
+          "permissions: {}\n\nconcurrency:",
+          [
+            "permissions:",
+            "  contents: read",
+            "  pull-requests: write",
+            "  issues: write",
+            "  id-token: write",
+            "",
+            "concurrency:",
+          ].join("\n"),
+        ),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: "workflow_write_permissions_forbidden",
+    });
+  });
+
   it("uses github-actions comment identity when runtime config is static", () => {
     const reviewWorkflow = renderReviewRouterWorkflow({
       actionRef: "777genius/review-router@v1",
@@ -352,6 +657,13 @@ describe("renderReviewRouterWorkflow", () => {
       renderReviewRouterInteractionWorkflow({
         actionRef: "777genius/review-router@v1",
         apiUrl: "http://127.0.0.1:4000",
+        runtimeConfigMode: "oidc",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      renderReviewRouterInteractionWorkflow({
+        actionRef: "777genius/review-router@v1",
+        apiUrl: "http://[::1]:4000",
         runtimeConfigMode: "oidc",
       }),
     ).not.toThrow();
@@ -402,6 +714,14 @@ describe("renderReviewRouterWorkflow", () => {
       renderReviewRouterWorkflow({
         actionRef: "777genius/review-router@v1",
         apiUrl: "https://app.reviewrouter.dev?target=evil",
+        runtimeConfigMode: "oidc",
+      }),
+    ).toThrow("invalid_workflow_api_url");
+
+    expect(() =>
+      renderReviewRouterWorkflow({
+        actionRef: "777genius/review-router@v1",
+        apiUrl: "https://app.reviewrouter.dev/base-path",
         runtimeConfigMode: "oidc",
       }),
     ).toThrow("invalid_workflow_api_url");

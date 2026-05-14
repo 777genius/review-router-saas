@@ -68,9 +68,11 @@ export function looksLikeSecretValue(value: string): boolean {
     /\b[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)[A-Z0-9_]*\s*[:=]\s*\S+/i.test(
       value,
     ) ||
+    /\b[A-Z0-9_]*NONCE[A-Z0-9_]*\s*[:=]\s*\S+/i.test(value) ||
     /\b[A-Za-z0-9_]*(token|secret|password|privateKey|apiKey|authJson)[A-Za-z0-9_]*\s*[:=]\s*\S+/i.test(
       value,
     ) ||
+    /\b[A-Za-z0-9_]*nonce[A-Za-z0-9_]*\s*[:=]\s*\S+/.test(value) ||
     /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/i.test(value) ||
     /\b(refresh[_-]?token|access[_-]?token)\b\s*[:=]\s*\S+/i.test(value) ||
     /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,})\b/.test(

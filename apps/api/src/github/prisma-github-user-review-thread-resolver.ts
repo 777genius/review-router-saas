@@ -480,12 +480,16 @@ function botLoginFromSlug(slug: string | undefined): string | undefined {
   return normalized ? `${normalized}[bot]` : undefined;
 }
 
-function canonicalBotLogin(value: string | null | undefined): string | undefined {
+function canonicalBotLogin(
+  value: string | null | undefined,
+): string | undefined {
   const normalized = normalizeBotLogin(value);
   return normalized?.endsWith("[bot]") ? normalized.slice(0, -5) : normalized;
 }
 
-function normalizeBotLogin(value: string | null | undefined): string | undefined {
+function normalizeBotLogin(
+  value: string | null | undefined,
+): string | undefined {
   const login = (value ?? "").trim().toLowerCase();
   if (!login) return undefined;
   if (!/^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?(?:\[bot\])?$/.test(login)) {

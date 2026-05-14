@@ -13,16 +13,17 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members       WorkspaceMember[]
-  installations GitHubInstallation[]
-  repositories  RepositoryConnection[]
-  provisioning  WorkflowProvisioning[]
-  orgRulesets   OrgRulesetProvisioning[]
-  reviewConfigs ReviewConfiguration[]
-  providerSetup ProviderSetupState[]
-  actionHealth  ActionRunHealthReport[]
-  auditEvents   AuditEvent[]
-  entitlement   WorkspaceEntitlement?
+  members                WorkspaceMember[]
+  installations          GitHubInstallation[]
+  repositories           RepositoryConnection[]
+  provisioning           WorkflowProvisioning[]
+  orgRulesets            OrgRulesetProvisioning[]
+  reviewConfigs          ReviewConfiguration[]
+  providerSetup          ProviderSetupState[]
+  actionHealth           ActionRunHealthReport[]
+  conflictReviewAttempts ConflictReviewAttempt[]
+  auditEvents            AuditEvent[]
+  entitlement            WorkspaceEntitlement?
 }
 
 model User {
@@ -116,14 +117,15 @@ model RepositoryConnection {
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
 
-  workspace      Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation   GitHubInstallation       @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  provisioning   WorkflowProvisioning[]
-  reviewConfigs  ReviewConfiguration[]
-  providerSetup  ProviderSetupState[]
-  actionHealth   ActionRunHealthReport[]
-  rulesetSources OrgRulesetProvisioning[] @relation("OrgRulesetSourceRepository")
-  permissionCache RepositoryPermissionCache[]
+  workspace              Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation           GitHubInstallation          @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  provisioning           WorkflowProvisioning[]
+  reviewConfigs          ReviewConfiguration[]
+  providerSetup          ProviderSetupState[]
+  actionHealth           ActionRunHealthReport[]
+  conflictReviewAttempts ConflictReviewAttempt[]
+  rulesetSources         OrgRulesetProvisioning[]    @relation("OrgRulesetSourceRepository")
+  permissionCache        RepositoryPermissionCache[]
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
@@ -261,6 +263,68 @@ model ActionRunHealthReport {
 
   @@unique([repositoryId, githubRunId, githubRunAttempt])
   @@index([workspaceId, receivedAt])
+}
+
+model ConflictReviewAttempt {
+  id                        String                      @id @default(cuid())
+  workspaceId               String
+  repositoryId              String
+  githubRepositoryId        BigInt
+  githubInstallationId      BigInt
+  pullRequestNumber         Int
+  headSha                   String
+  baseRef                   String
+  baseSha                   String
+  fallbackVersion           Int
+  dispatchId                String                      @unique
+  dispatchNonceHash         String
+  dispatchEventType         String
+  status                    ConflictReviewAttemptStatus @default(recorded)
+  version                   Int                         @default(1)
+  githubRunId               String?
+  githubRunAttempt          String?
+  configSnapshotId          String?
+  postingManifestHash       String?
+  safeErrorCode             String?
+  safeErrorSummary          String?
+  normalReviewRecheckNeeded Boolean                     @default(false)
+  createdAt                 DateTime                    @default(now())
+  updatedAt                 DateTime                    @updatedAt
+  dispatchedAt              DateTime?
+  startedAt                 DateTime?
+  completedAt               DateTime?
+
+  workspace      Workspace                     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository     RepositoryConnection          @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  postingIntents ConflictReviewPostingIntent[]
+
+  @@unique([repositoryId, pullRequestNumber, headSha, baseRef, baseSha, fallbackVersion])
+  @@index([workspaceId, status])
+  @@index([repositoryId, pullRequestNumber, status])
+  @@index([githubRepositoryId, pullRequestNumber, headSha])
+  @@index([dispatchId, status])
+}
+
+model ConflictReviewPostingIntent {
+  id                   String                            @id @default(cuid())
+  attemptId            String
+  operationKind        String
+  operationFingerprint String
+  manifestHash         String
+  status               ConflictReviewPostingIntentStatus @default(pending)
+  githubExternalId     String?
+  githubUrl            String?
+  bodyHash             String?
+  safeErrorCode        String?
+  safeErrorSummary     String?
+  createdAt            DateTime                          @default(now())
+  updatedAt            DateTime                          @updatedAt
+  completedAt          DateTime?
+
+  attempt ConflictReviewAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, operationKind, operationFingerprint])
+  @@index([attemptId, status])
 }
 
 model WorkflowProvisioning {
@@ -511,4 +575,28 @@ enum OutboxEventStatus {
   retry_wait
   processed
   dead_letter
+}
+
+enum ConflictReviewAttemptStatus {
+  recorded
+  dispatched
+  started
+  model_running
+  posting_started
+  summary_posted
+  inline_posting_completed
+  status_posted
+  completed
+  failed
+  skipped
+  stale
+  degraded
+  dead_letter
+}
+
+enum ConflictReviewPostingIntentStatus {
+  pending
+  completed
+  failed
+  ambiguous
 }

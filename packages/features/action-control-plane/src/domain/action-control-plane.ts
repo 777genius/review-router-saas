@@ -7,14 +7,21 @@ import {
   collectPayloadStrings,
   looksLikeCodeOrDiff,
   looksLikeSecretValue,
+  safeConflictReviewDispatchId,
+  safeGitHubBranchName,
 } from "@reviewrouter/shared";
 import { z } from "zod";
 
 export const defaultActionOidcAudience = "reviewrouter";
+export const actionConflictReviewDispatchEventType =
+  "reviewrouter_conflict_review";
 export const githubActionsOidcIssuer =
   "https://token.actions.githubusercontent.com";
 export const actionSessionAudience = "reviewrouter-action-api";
+export const actionConflictReviewPostingSessionAudience =
+  "reviewrouter-conflict-posting-api";
 export const actionSessionTtlSeconds = 15 * 60;
+export const actionConflictReviewPostingSessionTtlSeconds = 5 * 60;
 export const actionOidcReplayNonceFallbackTtlSeconds = actionSessionTtlSeconds;
 export const allowedWorkflowPaths = [
   ".github/workflows/reviewrouter.yml",
@@ -29,6 +36,7 @@ export const allowedActionEvents = [
   "issue_comment",
   "workflow_dispatch",
   "merge_group",
+  "repository_dispatch",
 ] as const;
 
 export const githubActionsOidcClaimsSchema = z.object({
@@ -43,7 +51,16 @@ export const githubActionsOidcClaimsSchema = z.object({
   run_id: z.string().min(1),
   run_attempt: z.string().min(1),
   workflow_ref: z.string().min(1),
+  workflow_sha: z
+    .string()
+    .regex(/^[a-fA-F0-9]{40}$/)
+    .optional(),
   job_workflow_ref: z.string().optional(),
+  job_workflow_sha: z
+    .string()
+    .regex(/^[a-fA-F0-9]{40}$/)
+    .optional(),
+  runner_environment: z.string().optional(),
   actor: z.string().min(1),
   iat: z.number().optional(),
   nbf: z.number().optional(),
@@ -82,8 +99,186 @@ export type ActionSessionClaims = {
   readonly githubRunId: string;
   readonly githubRunAttempt: string;
   readonly eventName: (typeof allowedActionEvents)[number];
+  readonly reviewKind?: "normal" | "conflict-head";
+  readonly conflictDispatchId?: string;
+  readonly pullRequestNumber?: number;
+  readonly headSha?: string;
+  readonly baseRef?: string;
+  readonly baseSha?: string;
+  readonly configSnapshotId?: string;
   readonly protocolVersion: 1;
 };
+
+export type ActionConflictReviewPostingSessionClaims = {
+  readonly purpose: "conflict-review-posting";
+  readonly attemptId: string;
+  readonly workspaceId: string;
+  readonly repositoryId: string;
+  readonly githubRepositoryId: string;
+  readonly githubInstallationId: string;
+  readonly repository: string;
+  readonly githubRunId: string;
+  readonly githubRunAttempt: string;
+  readonly dispatchId: string;
+  readonly pullRequestNumber: number;
+  readonly headSha: string;
+  readonly baseRef: string;
+  readonly baseSha: string;
+  readonly configSnapshotId: string;
+  readonly manifestHash: string;
+  readonly operationScopeHash: string;
+  readonly protocolVersion: 1;
+};
+
+export type ActionConflictReviewDispatchPayload = {
+  readonly protocolVersion: 1;
+  readonly dispatchEventType: typeof actionConflictReviewDispatchEventType;
+  readonly dispatchId: string;
+  readonly nonce: string;
+  readonly repositoryId: string;
+  readonly pullRequestNumber: number;
+  readonly headSha: string;
+  readonly baseRef: string;
+  readonly baseSha: string;
+  readonly fallbackVersion: 1;
+};
+
+export const actionConflictReviewDispatchPayloadSchema = z
+  .object({
+    protocolVersion: z.literal(1).optional(),
+    protocol_version: z.literal(1).optional(),
+    dispatchEventType: z
+      .literal(actionConflictReviewDispatchEventType)
+      .optional(),
+    dispatch_event_type: z
+      .literal(actionConflictReviewDispatchEventType)
+      .optional(),
+    dispatchId: safeConflictReviewDispatchId.optional(),
+    dispatch_id: safeConflictReviewDispatchId.optional(),
+    nonce: z.string().min(32).max(160),
+    repositoryId: z
+      .string()
+      .regex(/^[0-9]+$/)
+      .optional(),
+    repository_id: z
+      .string()
+      .regex(/^[0-9]+$/)
+      .optional(),
+    pullRequestNumber: z.number().int().positive().optional(),
+    pr_number: z.number().int().positive().optional(),
+    headSha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    head_sha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    baseRef: safeGitHubBranchName.optional(),
+    base_ref: safeGitHubBranchName.optional(),
+    baseSha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    base_sha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    fallbackVersion: z.literal(1).optional(),
+    fallback_version: z.literal(1).optional(),
+  })
+  .strict()
+  .transform((payload, context) => {
+    const normalized = {
+      protocolVersion: coalesceConflictDispatchAlias(
+        payload.protocolVersion,
+        payload.protocol_version,
+        "protocolVersion",
+        context,
+      ),
+      dispatchId: coalesceConflictDispatchAlias(
+        payload.dispatchId,
+        payload.dispatch_id,
+        "dispatchId",
+        context,
+      ),
+      dispatchEventType: coalesceConflictDispatchAlias(
+        payload.dispatchEventType,
+        payload.dispatch_event_type,
+        "dispatchEventType",
+        context,
+      ),
+      nonce: payload.nonce,
+      repositoryId: coalesceConflictDispatchAlias(
+        payload.repositoryId,
+        payload.repository_id,
+        "repositoryId",
+        context,
+      ),
+      pullRequestNumber: coalesceConflictDispatchAlias(
+        payload.pullRequestNumber,
+        payload.pr_number,
+        "pullRequestNumber",
+        context,
+      ),
+      headSha: coalesceConflictDispatchAlias(
+        payload.headSha,
+        payload.head_sha,
+        "headSha",
+        context,
+      ),
+      baseRef: coalesceConflictDispatchAlias(
+        payload.baseRef,
+        payload.base_ref,
+        "baseRef",
+        context,
+      ),
+      baseSha: coalesceConflictDispatchAlias(
+        payload.baseSha,
+        payload.base_sha,
+        "baseSha",
+        context,
+      ),
+      fallbackVersion: coalesceConflictDispatchAlias(
+        payload.fallbackVersion,
+        payload.fallback_version,
+        "fallbackVersion",
+        context,
+      ),
+    };
+    for (const [key, value] of Object.entries(normalized)) {
+      if (value === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: "required",
+        });
+      }
+    }
+    return normalized as ActionConflictReviewDispatchPayload;
+  });
+
+export function parseActionConflictReviewDispatchPayload(
+  input: unknown,
+): ActionConflictReviewDispatchPayload {
+  return actionConflictReviewDispatchPayloadSchema.parse(input);
+}
+
+function coalesceConflictDispatchAlias<T>(
+  primary: T | undefined,
+  alias: T | undefined,
+  path: string,
+  context: z.RefinementCtx,
+): T | undefined {
+  if (primary !== undefined && alias !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: [path],
+      message: "conflicting_aliases",
+    });
+  }
+  return primary ?? alias;
+}
 
 const actionRuntimeProviderSchema = z
   .object({
@@ -105,6 +300,127 @@ const actionRuntimeProviderSchema = z
     }
   });
 
+export const conflictReviewRuntimeProtocolVersion = 1;
+export const conflictReviewRuntimeDiffMaxFiles = 100;
+export const conflictReviewRuntimeDiffMaxBytes = 256 * 1024;
+export const conflictReviewRuntimeDiffMaxPatchBytesPerFile = 48 * 1024;
+export const conflictReviewAdvisoryStatusContext =
+  "ReviewRouter conflict review";
+export const conflictReviewPostingSessionPath =
+  "/api/action/v1/conflict-posting/session";
+export const conflictReviewPostingSummaryPath =
+  "/api/action/v1/conflict-posting/summary";
+export const conflictReviewPostingStatusPath =
+  "/api/action/v1/conflict-posting/status";
+export const conflictReviewSummaryMaxBytes = 60_000;
+
+const shaSchema = z.string().regex(/^[a-fA-F0-9]{40}$/);
+
+export const actionConflictReviewRuntimeConfigSchema = z
+  .object({
+    protocolVersion: z.literal(conflictReviewRuntimeProtocolVersion),
+    reviewKind: z.literal("conflict-head"),
+    dispatchId: safeConflictReviewDispatchId,
+    pullRequestNumber: z.number().int().positive(),
+    headSha: shaSchema,
+    baseRef: safeGitHubBranchName,
+    baseSha: shaSchema,
+    checkout: z
+      .object({
+        mode: z.literal("exact_head_sha"),
+        headSha: shaSchema,
+        baseRef: safeGitHubBranchName,
+        baseSha: shaSchema,
+        persistCredentials: z.literal(false),
+      })
+      .strict(),
+    diff: z
+      .object({
+        mode: z.literal("expected_base_to_head"),
+        baseSha: shaSchema,
+        headSha: shaSchema,
+        maxFiles: z.number().int().positive(),
+        maxBytes: z.number().int().positive(),
+        maxPatchBytesPerFile: z.number().int().positive(),
+      })
+      .strict(),
+    posting: z.discriminatedUnion("mode", [
+      z
+        .object({
+          mode: z.literal("disabled"),
+          reason: z.literal("posting_proxy_not_enabled"),
+        })
+        .strict(),
+      z
+        .object({
+          mode: z.literal("proxy"),
+          sessionEndpoint: z.literal(conflictReviewPostingSessionPath),
+          summaryEndpoint: z.literal(conflictReviewPostingSummaryPath),
+          statusEndpoint: z.literal(conflictReviewPostingStatusPath),
+          allowedOperations: z.tuple([
+            z.literal("summary_comment"),
+            z.literal("advisory_status"),
+          ]),
+          summaryMaxBytes: z.literal(conflictReviewSummaryMaxBytes),
+          statusContext: z.literal(conflictReviewAdvisoryStatusContext),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+
+export type ActionConflictReviewRuntimeConfig = z.infer<
+  typeof actionConflictReviewRuntimeConfigSchema
+>;
+
+export function buildActionConflictReviewRuntimeConfig(
+  session: ActionSessionClaims,
+  options: { readonly postingMode?: "disabled" | "proxy" } = {},
+): ActionConflictReviewRuntimeConfig {
+  if (session.reviewKind !== "conflict-head") {
+    throw new Error("conflict_review_session_required");
+  }
+  return actionConflictReviewRuntimeConfigSchema.parse({
+    protocolVersion: conflictReviewRuntimeProtocolVersion,
+    reviewKind: "conflict-head",
+    dispatchId: session.conflictDispatchId,
+    pullRequestNumber: session.pullRequestNumber,
+    headSha: session.headSha,
+    baseRef: session.baseRef,
+    baseSha: session.baseSha,
+    checkout: {
+      mode: "exact_head_sha",
+      headSha: session.headSha,
+      baseRef: session.baseRef,
+      baseSha: session.baseSha,
+      persistCredentials: false,
+    },
+    diff: {
+      mode: "expected_base_to_head",
+      baseSha: session.baseSha,
+      headSha: session.headSha,
+      maxFiles: conflictReviewRuntimeDiffMaxFiles,
+      maxBytes: conflictReviewRuntimeDiffMaxBytes,
+      maxPatchBytesPerFile: conflictReviewRuntimeDiffMaxPatchBytesPerFile,
+    },
+    posting:
+      options.postingMode === "proxy"
+        ? {
+            mode: "proxy",
+            sessionEndpoint: conflictReviewPostingSessionPath,
+            summaryEndpoint: conflictReviewPostingSummaryPath,
+            statusEndpoint: conflictReviewPostingStatusPath,
+            allowedOperations: ["summary_comment", "advisory_status"],
+            summaryMaxBytes: conflictReviewSummaryMaxBytes,
+            statusContext: conflictReviewAdvisoryStatusContext,
+          }
+        : {
+            mode: "disabled",
+            reason: "posting_proxy_not_enabled",
+          },
+  });
+}
+
 export const actionRuntimeConfigResponseSchema = z.object({
   protocolVersion: z.literal(1),
   configVersion: z.number().int().min(1),
@@ -123,6 +439,7 @@ export const actionRuntimeConfigResponseSchema = z.object({
     targetTokensPerBatch: z.number().int().min(4000).max(200000),
   }),
   runtimeEnv: z.record(z.string(), z.string()),
+  conflictReview: actionConflictReviewRuntimeConfigSchema.optional(),
 });
 
 export type ActionRuntimeConfigResponse = z.infer<
@@ -338,6 +655,24 @@ export function validateOidcClaimsAgainstRepository(input: {
     throw new Error("repository_owner_mismatch");
   }
   if (
+    input.claims.event_name === "repository_dispatch" &&
+    input.claims.runner_environment !== undefined &&
+    input.claims.runner_environment !== "github-hosted"
+  ) {
+    throw new Error("workflow_ref_not_allowed");
+  }
+  if (
+    input.claims.event_name === "repository_dispatch" &&
+    isAllowedConflictReviewWorkflowIdentity({
+      workflowRef: input.claims.workflow_ref,
+      jobWorkflowRef: input.claims.job_workflow_ref,
+      repository: repository.fullName,
+    }) === false
+  ) {
+    throw new Error("workflow_ref_not_allowed");
+  }
+  if (
+    input.claims.event_name !== "repository_dispatch" &&
     isAllowedOidcWorkflowIdentity({
       workflowRef: input.claims.workflow_ref,
       jobWorkflowRef: input.claims.job_workflow_ref,
@@ -443,9 +778,7 @@ export function isAllowedOidcWorkflowIdentity(input: {
     jobWorkflowRef &&
     jobWorkflowRef.toLowerCase() !== input.workflowRef.toLowerCase()
   ) {
-    if (
-      !isTrustedWorkflowRef(jobWorkflowRef, input.trustedWorkflowRefs)
-    ) {
+    if (!isTrustedWorkflowRef(jobWorkflowRef, input.trustedWorkflowRefs)) {
       return false;
     }
 
@@ -482,4 +815,35 @@ function isTrustedWorkflowRef(
       (trustedRef) => trustedRef.toLowerCase() === workflowRef.toLowerCase(),
     ) ?? false
   );
+}
+
+function isAllowedConflictReviewWorkflowIdentity(input: {
+  readonly workflowRef: string;
+  readonly jobWorkflowRef?: string | undefined;
+  readonly repository: string;
+}): boolean {
+  if (!input.jobWorkflowRef) {
+    return false;
+  }
+  if (!isTrustedConflictReviewReusableWorkflowRef(input.jobWorkflowRef)) {
+    return false;
+  }
+  return isAllowedWorkflowRef({
+    workflowRef: input.workflowRef,
+    repository: input.repository,
+    allowedPaths: [".github/workflows/reviewrouter.yml"],
+  });
+}
+
+function isTrustedConflictReviewReusableWorkflowRef(
+  workflowRef: string,
+): boolean {
+  if (
+    /^777genius\/review-router\/\.github\/workflows\/reviewrouter-conflict-reusable\.ya?ml@(refs\/tags\/v1(?:\.[0-9]+\.[0-9]+)?|[a-fA-F0-9]{40})$/i.test(
+      workflowRef,
+    )
+  ) {
+    return true;
+  }
+  return false;
 }

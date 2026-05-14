@@ -76,22 +76,22 @@ This matrix ties the user-facing decisions to concrete implementation rules.
 If implementation changes a row, it changes the product behavior and needs a new
 decision.
 
-| Requirement | Locked implementation rule |
-| --- | --- |
-| Close resolved comments for convenience | `resolve` mode calls `resolveReviewThread` only after strict quorum and guards |
-| Do not launch extra processes | Revalidation is added to normal provider prompts only |
-| Do not recheck closed comments every commit | Resolved threads are ignored by lifecycle inventory |
-| Do not close because code changed | Missing finding, moved line, changed fingerprint, and outdated hunk are not verdicts |
-| Multi-provider cross-check | Review plan with 2+ providers requires at least two provider identities with valid `resolved` |
-| Single provider remains usable | Single-provider review plan can close with one strict `resolved` |
-| `still_valid` wins | Any valid `still_valid` blocks resolve, even with resolved quorum |
-| Missing/failed/invalid output is safe | Missing, parse error, provider failure, invalid evidence become `uncertain` |
-| Human discussion is respected | Human/unknown reply puts thread in manual attention and blocks mutation |
-| Old resolved comment cannot hide new bug | Dedupe index uses trusted unresolved threads only |
-| Summary must be honest | `previousStillValid` affects counters, uncertainty blocks `All Clear`, mutation failures are shown |
-| Race-safe mutation | Head SHA and candidate thread are refreshed immediately before mutation |
-| No prompt injection from old comments | Old finding data is delimited as untrusted evidence |
-| Manual skip/dismiss is policy | Active command ledger state blocks v1 auto-resolve |
+| Requirement                                 | Locked implementation rule                                                                         |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Close resolved comments for convenience     | `resolve` mode calls `resolveReviewThread` only after strict quorum and guards                     |
+| Do not launch extra processes               | Revalidation is added to normal provider prompts only                                              |
+| Do not recheck closed comments every commit | Resolved threads are ignored by lifecycle inventory                                                |
+| Do not close because code changed           | Missing finding, moved line, changed fingerprint, and outdated hunk are not verdicts               |
+| Multi-provider cross-check                  | Review plan with 2+ providers requires at least two provider identities with valid `resolved`      |
+| Single provider remains usable              | Single-provider review plan can close with one strict `resolved`                                   |
+| `still_valid` wins                          | Any valid `still_valid` blocks resolve, even with resolved quorum                                  |
+| Missing/failed/invalid output is safe       | Missing, parse error, provider failure, invalid evidence become `uncertain`                        |
+| Human discussion is respected               | Human/unknown reply puts thread in manual attention and blocks mutation                            |
+| Old resolved comment cannot hide new bug    | Dedupe index uses trusted unresolved threads only                                                  |
+| Summary must be honest                      | `previousStillValid` affects counters, uncertainty blocks `All Clear`, mutation failures are shown |
+| Race-safe mutation                          | Head SHA and candidate thread are refreshed immediately before mutation                            |
+| No prompt injection from old comments       | Old finding data is delimited as untrusted evidence                                                |
+| Manual skip/dismiss is policy               | Active command ledger state blocks v1 auto-resolve                                                 |
 
 ## Locked Decisions
 
@@ -166,14 +166,14 @@ Old inline ReviewRouter thread:
 
 After this design, the same scenario must end in exactly one of these states:
 
-| Provider revalidation result | Thread result | Summary result | Check result |
-| --- | --- | --- | --- |
-| Resolved quorum | Thread auto-resolved | `0 Major`, plus "resolved by this run" entry | Pass if no other blocking findings |
-| Any valid `still_valid` | Thread remains unresolved | `1 Major` via `previousStillValid` | Fails if `failOnSeverity` includes major |
-| `uncertain`, missing, parse error, provider failure | Thread remains unresolved | No "All Clear"; "needs attention" entry | Does not fail by severity by default |
-| Human reply | Thread remains unresolved | Manual attention entry | Does not auto-close |
-| Head SHA changed before mutation | Thread remains unresolved | Resolution skipped due to stale head | Does not claim success |
-| Mutation failed | Thread remains unresolved | Mutation failure warning | Does not claim success |
+| Provider revalidation result                        | Thread result             | Summary result                               | Check result                             |
+| --------------------------------------------------- | ------------------------- | -------------------------------------------- | ---------------------------------------- |
+| Resolved quorum                                     | Thread auto-resolved      | `0 Major`, plus "resolved by this run" entry | Pass if no other blocking findings       |
+| Any valid `still_valid`                             | Thread remains unresolved | `1 Major` via `previousStillValid`           | Fails if `failOnSeverity` includes major |
+| `uncertain`, missing, parse error, provider failure | Thread remains unresolved | No "All Clear"; "needs attention" entry      | Does not fail by severity by default     |
+| Human reply                                         | Thread remains unresolved | Manual attention entry                       | Does not auto-close                      |
+| Head SHA changed before mutation                    | Thread remains unresolved | Resolution skipped due to stale head         | Does not claim success                   |
+| Mutation failed                                     | Thread remains unresolved | Mutation failure warning                     | Does not claim success                   |
 
 There must be no state where ReviewRouter says "All Clear" while a known old
 unresolved ReviewRouter finding is still unclassified.
@@ -309,19 +309,19 @@ Multi-provider plan:
 
 Decision matrix:
 
-| Situation | Action | Why |
-| --- | --- | --- |
-| Single-provider review plan, valid resolved with evidence | Resolve | Single-provider setup has no cross-provider quorum available |
-| Single-provider review plan, resolved without evidence | Keep open as uncertain | No proof |
-| Multi-provider review plan, 2+ valid resolved | Resolve | Strict quorum reached |
-| Multi-provider review plan, only 1 valid resolved | Keep open as uncertain | Avoid false close from one mistaken provider |
-| Any provider returns valid still_valid | Keep open as still valid | Safety wins over convenience |
-| Provider omitted the target | Keep open as uncertain | Missing answer is not resolved |
-| Provider failed or output parse failed | Keep open as uncertain | Failed verifier cannot vote |
-| Thread has human reply | Manual attention | Automation must not close active discussion |
-| Thread marker is untrusted | Manual attention, no dedupe trust | Marker alone is not authority |
-| PR head changed before mutation | No mutation | Review result is stale |
-| GitHub mutation failed | Keep open, report failure | Summary must match actual state |
+| Situation                                                 | Action                            | Why                                                          |
+| --------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------ |
+| Single-provider review plan, valid resolved with evidence | Resolve                           | Single-provider setup has no cross-provider quorum available |
+| Single-provider review plan, resolved without evidence    | Keep open as uncertain            | No proof                                                     |
+| Multi-provider review plan, 2+ valid resolved             | Resolve                           | Strict quorum reached                                        |
+| Multi-provider review plan, only 1 valid resolved         | Keep open as uncertain            | Avoid false close from one mistaken provider                 |
+| Any provider returns valid still_valid                    | Keep open as still valid          | Safety wins over convenience                                 |
+| Provider omitted the target                               | Keep open as uncertain            | Missing answer is not resolved                               |
+| Provider failed or output parse failed                    | Keep open as uncertain            | Failed verifier cannot vote                                  |
+| Thread has human reply                                    | Manual attention                  | Automation must not close active discussion                  |
+| Thread marker is untrusted                                | Manual attention, no dedupe trust | Marker alone is not authority                                |
+| PR head changed before mutation                           | No mutation                       | Review result is stale                                       |
+| GitHub mutation failed                                    | Keep open, report failure         | Summary must match actual state                              |
 
 Important nuance:
 
@@ -405,15 +405,15 @@ shortcut.
 
 Use these categories after aggregation:
 
-| Category | Meaning | Affects summary counts | Affects `failOnSeverity` | Can be auto-resolved |
-| --- | --- | --- | --- | --- |
-| `currentFindings` | Findings emitted by providers for the current head review | Yes | Yes | No, they are new/current |
-| `resolvedByLifecycle` | Old unresolved threads with resolved quorum and successful mutation | Listed separately | No | Already resolved |
-| `previousStillValid` | Old unresolved findings that providers say still apply | Yes | Yes | No |
-| `previousUncertain` | Old unresolved findings that could not be proven resolved or still valid | Separate warning | No | No |
-| `manualAttention` | Human reply, suspicious marker/author, permission issue, or unsupported state | Separate warning | No by default | No |
-| `mutationSkipped` | Resolved quorum existed, but mutation was intentionally not attempted due to report mode, head SHA race, or missing permission | Separate warning | No by default | No |
-| `mutationFailed` | Resolved quorum existed, but GitHub mutation failed | Separate warning | No by default unless also still valid | No |
+| Category              | Meaning                                                                                                                        | Affects summary counts | Affects `failOnSeverity`              | Can be auto-resolved     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------- | ------------------------------------- | ------------------------ |
+| `currentFindings`     | Findings emitted by providers for the current head review                                                                      | Yes                    | Yes                                   | No, they are new/current |
+| `resolvedByLifecycle` | Old unresolved threads with resolved quorum and successful mutation                                                            | Listed separately      | No                                    | Already resolved         |
+| `previousStillValid`  | Old unresolved findings that providers say still apply                                                                         | Yes                    | Yes                                   | No                       |
+| `previousUncertain`   | Old unresolved findings that could not be proven resolved or still valid                                                       | Separate warning       | No                                    | No                       |
+| `manualAttention`     | Human reply, suspicious marker/author, permission issue, or unsupported state                                                  | Separate warning       | No by default                         | No                       |
+| `mutationSkipped`     | Resolved quorum existed, but mutation was intentionally not attempted due to report mode, head SHA race, or missing permission | Separate warning       | No by default                         | No                       |
+| `mutationFailed`      | Resolved quorum existed, but GitHub mutation failed                                                                            | Separate warning       | No by default unless also still valid | No                       |
 
 Active findings are:
 
@@ -1178,11 +1178,11 @@ If the issue was only moved/renamed but the failure mode remains, answer still_v
 A provider `resolved` vote is valid only if it passes severity-aware gates:
 
 | Severity | Minimum confidence for `resolved` |
-| --- | ---: |
-| critical | `0.90` |
-| major | `0.85` |
-| minor | `0.80` |
-| unknown | `0.90` |
+| -------- | --------------------------------: |
+| critical |                            `0.90` |
+| major    |                            `0.85` |
+| minor    |                            `0.80` |
+| unknown  |                            `0.90` |
 
 Evidence is required for `resolved`.
 
@@ -1243,18 +1243,18 @@ active previous finding. If `still_valid` is vague and unsupported, classify as
 For multi-provider review plans, use this matrix after per-provider vote
 normalization:
 
-| Provider A | Provider B | Result |
-| --- | --- | --- |
-| `resolved` | `resolved` | `resolvedCandidate` |
-| `resolved` | `still_valid` | `previousStillValid` |
-| `resolved` | `uncertain` | `previousUncertain` |
-| `resolved` | missing/failed/parse error | `previousUncertain` |
-| `still_valid` | `still_valid` | `previousStillValid` |
-| `still_valid` | `uncertain` | `previousStillValid` |
-| `still_valid` | missing/failed/parse error | `previousStillValid` if still_valid vote is valid |
-| `uncertain` | `uncertain` | `previousUncertain` |
-| `uncertain` | missing/failed/parse error | `previousUncertain` |
-| missing/failed/parse error | missing/failed/parse error | `previousUncertain` |
+| Provider A                 | Provider B                 | Result                                            |
+| -------------------------- | -------------------------- | ------------------------------------------------- |
+| `resolved`                 | `resolved`                 | `resolvedCandidate`                               |
+| `resolved`                 | `still_valid`              | `previousStillValid`                              |
+| `resolved`                 | `uncertain`                | `previousUncertain`                               |
+| `resolved`                 | missing/failed/parse error | `previousUncertain`                               |
+| `still_valid`              | `still_valid`              | `previousStillValid`                              |
+| `still_valid`              | `uncertain`                | `previousStillValid`                              |
+| `still_valid`              | missing/failed/parse error | `previousStillValid` if still_valid vote is valid |
+| `uncertain`                | `uncertain`                | `previousUncertain`                               |
+| `uncertain`                | missing/failed/parse error | `previousUncertain`                               |
+| missing/failed/parse error | missing/failed/parse error | `previousUncertain`                               |
 
 For three or more providers:
 
@@ -1685,15 +1685,15 @@ Do not enable that by default in v1.
 
 State-to-summary/check matrix:
 
-| Lifecycle state exists | Summary may say no new findings | Summary may say All Clear | Counts in severity totals | Can fail `failOnSeverity` |
-| --- | --- | --- | --- | --- |
-| `resolvedByLifecycle` only | Yes | Yes, if no other blockers | No | No |
-| `previousStillValid` | Yes, if no current findings | No | Yes | Yes |
-| `previousUncertain` | Yes, if no current findings | No | Separate warning | No by default |
-| `manualAttention` | Yes, if no current findings | No | Separate warning | No by default |
-| `mutationSkipped` | Yes, if no current findings | No | Separate warning | No by default |
-| `mutationFailed` | Yes, if no current findings | No | Separate warning | No by default |
-| lifecycle inventory failure | Yes, if no current findings | No | Unknown | No by default |
+| Lifecycle state exists      | Summary may say no new findings | Summary may say All Clear | Counts in severity totals | Can fail `failOnSeverity` |
+| --------------------------- | ------------------------------- | ------------------------- | ------------------------- | ------------------------- |
+| `resolvedByLifecycle` only  | Yes                             | Yes, if no other blockers | No                        | No                        |
+| `previousStillValid`        | Yes, if no current findings     | No                        | Yes                       | Yes                       |
+| `previousUncertain`         | Yes, if no current findings     | No                        | Separate warning          | No by default             |
+| `manualAttention`           | Yes, if no current findings     | No                        | Separate warning          | No by default             |
+| `mutationSkipped`           | Yes, if no current findings     | No                        | Separate warning          | No by default             |
+| `mutationFailed`            | Yes, if no current findings     | No                        | Separate warning          | No by default             |
+| lifecycle inventory failure | Yes, if no current findings     | No                        | Unknown                   | No by default             |
 
 Formatter rule:
 
@@ -2036,11 +2036,11 @@ resolve:
 
 Mode matrix:
 
-| Mode | Load GraphQL inventory | Add revalidation prompts | Count `previousStillValid` | Block false All Clear | Call `resolveReviewThread` |
-| --- | --- | --- | --- | --- | --- |
-| `off` | No | No | No | No lifecycle claim | No |
-| `report` | Yes | Yes | Yes | Yes | No |
-| `resolve` | Yes | Yes | Yes | Yes | Yes, after guards |
+| Mode      | Load GraphQL inventory | Add revalidation prompts | Count `previousStillValid` | Block false All Clear | Call `resolveReviewThread` |
+| --------- | ---------------------- | ------------------------ | -------------------------- | --------------------- | -------------------------- |
+| `off`     | No                     | No                       | No                         | No lifecycle claim    | No                         |
+| `report`  | Yes                    | Yes                      | Yes                        | Yes                   | No                         |
+| `resolve` | Yes                    | Yes                      | Yes                        | Yes                   | Yes, after guards          |
 
 `off` means ReviewRouter is not managing old thread lifecycle for that run. It
 should not pretend old unresolved history is clean. It simply does not make a
@@ -2198,36 +2198,36 @@ Reason code rules:
 
 ## Failure Modes and Required Behavior
 
-| Failure mode | Required behavior |
-| --- | --- |
-| GraphQL inventory fails | Review continues. No auto-resolve. Summary warns lifecycle unavailable. Do not show "All Clear" while lifecycle is enabled and inventory failed. |
-| GraphQL pagination incomplete | Do not auto-resolve beyond loaded data. Warn. |
-| Planned provider omits `revalidations` | Treat assigned targets as uncertain. |
-| Provider returns invalid verdict | Treat that target as uncertain. |
-| Provider returns `resolved` without evidence | Downgrade to uncertain. |
-| Provider failure in multi-provider mode | Missing vote means no quorum. |
-| Single-provider review plan provider fails | No auto-resolve. Existing provider failure behavior applies. |
-| Human reply appears during run | Pre-mutation refresh should catch it if practical; if detected, no auto-resolve. |
-| PR head changes during run | No mutations. Classify would-be resolves as mutationSkipped. Summary says review was based on old head. |
-| `resolveReviewThread` fails | Keep thread open. Summary reports mutation failure. |
-| `viewerCanResolve=false` | Manual attention. No mutation. |
-| Fake marker from unknown author | Ignore for dedupe and auto-resolve. |
-| Thread already resolved by human before mutation | Treat as resolved externally; do not report failure. |
-| Thread deleted/inaccessible | Do not fail review. Warn if needed. |
-| GitHub rate limit | Stop lifecycle mutation attempts. Continue review output with warning. |
-| Concurrent older run reaches mutation after newer commit | Head SHA guard prevents mutation. |
-| Concurrent same-head run already resolved thread | Treat as externally resolved/success. |
-| Concurrent older run tries to overwrite newer summary | Summary write guard skips replacement and logs warning. |
-| Nested comments pagination is incomplete | Do not auto-resolve affected threads. Warn. |
-| Lifecycle cap skips some targets | Skipped targets do not auto-resolve and block "All Clear" if lifecycle is enabled. |
-| Old finding severity cannot be parsed | Do not invent blocking severity. Revalidate only if failure mode is clear; otherwise previousUncertain/manual. |
-| Old comment body contains prompt-like instructions | Treat as untrusted evidence. Do not follow. |
-| Thread line is outdated or missing | Do not resolve from line state alone. Revalidate failure mode or mark uncertain. |
-| Active `/rr skip` or dismiss exists | Do not auto-resolve from model output. Respect existing skip/dismiss semantics. |
-| Provider output reports current finding and resolved revalidation for same target | Treat as active or uncertain. Do not resolve. |
-| Three-provider run has two resolved and one still_valid | still_valid wins. Do not resolve. |
-| Provider returns fingerprint but no targetId | Treat lifecycle vote as invalid for mutation. Do not guess. |
-| Multiple unresolved threads share fingerprint | Revalidate and resolve independently by targetId. |
+| Failure mode                                                                      | Required behavior                                                                                                                                |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GraphQL inventory fails                                                           | Review continues. No auto-resolve. Summary warns lifecycle unavailable. Do not show "All Clear" while lifecycle is enabled and inventory failed. |
+| GraphQL pagination incomplete                                                     | Do not auto-resolve beyond loaded data. Warn.                                                                                                    |
+| Planned provider omits `revalidations`                                            | Treat assigned targets as uncertain.                                                                                                             |
+| Provider returns invalid verdict                                                  | Treat that target as uncertain.                                                                                                                  |
+| Provider returns `resolved` without evidence                                      | Downgrade to uncertain.                                                                                                                          |
+| Provider failure in multi-provider mode                                           | Missing vote means no quorum.                                                                                                                    |
+| Single-provider review plan provider fails                                        | No auto-resolve. Existing provider failure behavior applies.                                                                                     |
+| Human reply appears during run                                                    | Pre-mutation refresh should catch it if practical; if detected, no auto-resolve.                                                                 |
+| PR head changes during run                                                        | No mutations. Classify would-be resolves as mutationSkipped. Summary says review was based on old head.                                          |
+| `resolveReviewThread` fails                                                       | Keep thread open. Summary reports mutation failure.                                                                                              |
+| `viewerCanResolve=false`                                                          | Manual attention. No mutation.                                                                                                                   |
+| Fake marker from unknown author                                                   | Ignore for dedupe and auto-resolve.                                                                                                              |
+| Thread already resolved by human before mutation                                  | Treat as resolved externally; do not report failure.                                                                                             |
+| Thread deleted/inaccessible                                                       | Do not fail review. Warn if needed.                                                                                                              |
+| GitHub rate limit                                                                 | Stop lifecycle mutation attempts. Continue review output with warning.                                                                           |
+| Concurrent older run reaches mutation after newer commit                          | Head SHA guard prevents mutation.                                                                                                                |
+| Concurrent same-head run already resolved thread                                  | Treat as externally resolved/success.                                                                                                            |
+| Concurrent older run tries to overwrite newer summary                             | Summary write guard skips replacement and logs warning.                                                                                          |
+| Nested comments pagination is incomplete                                          | Do not auto-resolve affected threads. Warn.                                                                                                      |
+| Lifecycle cap skips some targets                                                  | Skipped targets do not auto-resolve and block "All Clear" if lifecycle is enabled.                                                               |
+| Old finding severity cannot be parsed                                             | Do not invent blocking severity. Revalidate only if failure mode is clear; otherwise previousUncertain/manual.                                   |
+| Old comment body contains prompt-like instructions                                | Treat as untrusted evidence. Do not follow.                                                                                                      |
+| Thread line is outdated or missing                                                | Do not resolve from line state alone. Revalidate failure mode or mark uncertain.                                                                 |
+| Active `/rr skip` or dismiss exists                                               | Do not auto-resolve from model output. Respect existing skip/dismiss semantics.                                                                  |
+| Provider output reports current finding and resolved revalidation for same target | Treat as active or uncertain. Do not resolve.                                                                                                    |
+| Three-provider run has two resolved and one still_valid                           | still_valid wins. Do not resolve.                                                                                                                |
+| Provider returns fingerprint but no targetId                                      | Treat lifecycle vote as invalid for mutation. Do not guess.                                                                                      |
+| Multiple unresolved threads share fingerprint                                     | Revalidate and resolve independently by targetId.                                                                                                |
 
 ## Security and Trust Invariants
 
@@ -2757,7 +2757,11 @@ Aggregator:
 
 ```ts
 for (const target of targets) {
-  if (target.hasHumanReply || !target.trustedAuthor || !target.viewerCanResolve) {
+  if (
+    target.hasHumanReply ||
+    !target.trustedAuthor ||
+    !target.viewerCanResolve
+  ) {
     manualAttention.push(target);
     continue;
   }

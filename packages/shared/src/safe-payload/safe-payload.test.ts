@@ -56,6 +56,10 @@ describe("safe payload helpers", () => {
     expect(looksLikeSecretValue("refresh_token=opaque-refresh-token")).toBe(
       true,
     );
+    expect(looksLikeSecretValue("nonce=raw-dispatch-nonce")).toBe(true);
+    expect(looksLikeSecretValue("DISPATCH_NONCE: raw-dispatch-nonce")).toBe(
+      true,
+    );
   });
 
   it("keeps enough long-string context to detect unsafe tail content", () => {

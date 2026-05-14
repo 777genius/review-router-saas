@@ -61,6 +61,14 @@ const pullRequestRepositorySchema = z
   })
   .passthrough();
 
+const pushRepositorySchema = z
+  .object({
+    id: z.number().int().positive(),
+    name: z.string().min(1),
+    full_name: z.string().min(1),
+  })
+  .passthrough();
+
 const repositoryOwnerSchema = z
   .object({
     login: z.string().min(1),
@@ -107,6 +115,18 @@ export type GitHubPullRequestWebhookPayload = z.infer<
   typeof githubPullRequestWebhookPayloadSchema
 >;
 
+export const githubPushWebhookPayloadSchema = z.object({
+  ref: z.string().min(1),
+  deleted: z.boolean().default(false),
+  installation: installationReferenceSchema,
+  repository: pushRepositorySchema,
+  sender: senderSchema.optional(),
+});
+
+export type GitHubPushWebhookPayload = z.infer<
+  typeof githubPushWebhookPayloadSchema
+>;
+
 export const githubRepositoryWebhookPayloadSchema = z.object({
   action: z.string().min(1),
   installation: installationReferenceSchema,
@@ -141,6 +161,13 @@ export type GitHubPullRequestWebhookEnvelope = {
   readonly payload: GitHubPullRequestWebhookPayload;
 };
 
+export type GitHubPushWebhookEnvelope = {
+  readonly deliveryId: string;
+  readonly eventName: "push";
+  readonly payloadHash?: string;
+  readonly payload: GitHubPushWebhookPayload;
+};
+
 export type GitHubRepositoryWebhookEnvelope = {
   readonly deliveryId: string;
   readonly eventName: "repository";
@@ -161,6 +188,12 @@ export type GitHubPullRequestWebhookHandlerPort = {
   ): Promise<Record<string, unknown>>;
 };
 
+export type GitHubPushWebhookHandlerPort = {
+  handleGitHubPushWebhook(
+    envelope: GitHubPushWebhookEnvelope,
+  ): Promise<Record<string, unknown>>;
+};
+
 export type GitHubRepositoryWebhookHandlerPort = {
   handleGitHubRepositoryWebhook(
     envelope: GitHubRepositoryWebhookEnvelope,
@@ -178,6 +211,7 @@ export const supportedGitHubInstallationWebhookEvents = [
   "installation",
   "installation_repositories",
   "pull_request",
+  "push",
   "repository",
 ] as const;
 

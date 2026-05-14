@@ -6,9 +6,19 @@ import type {
 import type { ReviewConfiguration } from "@reviewrouter/features-review-config";
 
 export type RuntimeReviewConfigurationRecord = {
+  readonly source: "repository" | "workspace";
   readonly version: number;
   readonly config: ReviewConfiguration;
 };
+
+export function runtimeReviewConfigurationSnapshotId(
+  record: RuntimeReviewConfigurationRecord | null,
+): string {
+  if (!record) {
+    return "default:1";
+  }
+  return `${record.source}:${record.version}`;
+}
 
 export interface ActionControlPlaneRepositoryPort {
   findSelectedRepositoryByGithubId(
