@@ -27,6 +27,7 @@ import {
   clearProviderSecretStatusCacheForTest,
   type ProviderSecretAvailabilityStatus,
 } from "./provider-secret-status-cache";
+import { ProviderAuthLogoFrame } from "./provider-auth-logo";
 
 export { clearProviderSecretStatusCacheForTest };
 
@@ -96,6 +97,7 @@ function buildProviderAuthOptions(input: {
     )
     .map((authMode) => ({
       value: authMode,
+      providerAuthMode: authMode,
       ...providerAuthOptionCopyByAuthMode[authMode],
     }));
 }
@@ -134,6 +136,7 @@ type DashboardSelectOption = {
   readonly value: string;
   readonly label: string;
   readonly description?: string;
+  readonly providerAuthMode?: ProviderAuthMode;
 };
 
 const fieldHelp = {
@@ -1210,8 +1213,15 @@ function DashboardSelectField({
           ].join(" ")}
         >
           <RadixSelect.Value>
-            <span className="min-w-0 truncate">
-              {selectedOption?.label ?? currentValue}
+            <span className="flex min-w-0 items-center gap-2">
+              {selectedOption?.providerAuthMode ? (
+                <ProviderAuthLogoFrame
+                  authMode={selectedOption.providerAuthMode}
+                />
+              ) : null}
+              <span className="min-w-0 truncate">
+                {selectedOption?.label ?? currentValue}
+              </span>
             </span>
           </RadixSelect.Value>
           <RadixSelect.Icon className="grid h-7 w-7 shrink-0 place-items-center text-cyan-100/80">
@@ -1231,11 +1241,14 @@ function DashboardSelectField({
                   key={option.value}
                   value={option.value}
                   textValue={option.label}
-                  className="flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-sm text-slate-300 outline-none transition data-[highlighted]:bg-cyan-300/[0.08] data-[highlighted]:text-cyan-50 data-[state=checked]:bg-cyan-300/[0.1] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                  className="group flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-sm text-slate-300 outline-none transition data-[highlighted]:bg-cyan-300/[0.08] data-[highlighted]:text-cyan-50 data-[state=checked]:bg-cyan-300/[0.1] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
                 >
                   <RadixSelect.ItemIndicator className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-emerald-300">
                     ✓
                   </RadixSelect.ItemIndicator>
+                  {option.providerAuthMode ? (
+                    <ProviderAuthLogoFrame authMode={option.providerAuthMode} />
+                  ) : null}
                   <RadixSelect.ItemText>
                     <span className="block font-semibold">{option.label}</span>
                     {option.description ? (

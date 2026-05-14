@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition, type FormEvent } from "react";
 import { Tabs } from "@base-ui/react/tabs";
+import { CheckCircle2 } from "lucide-react";
 import type {
   ProviderSecretScope,
   ProviderSecretSetupGuidance,
@@ -12,6 +13,7 @@ import type {
 } from "@reviewrouter/features-review-providers";
 import { Badge, Button, CodeBlock } from "@reviewrouter/ui";
 import { clearProviderSecretStatusCache } from "./provider-secret-status-cache";
+import { ProviderAuthLogoFrame } from "./provider-auth-logo";
 import { providerSetupConfirmedEvent } from "./repository-setup-optimistic-events";
 
 type ProviderChoice =
@@ -105,11 +107,12 @@ export function ProviderSecretSetupChooser({
   const [verificationError, setVerificationError] =
     useState<VerificationFallbackError | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [confirmed, setConfirmed] = useState(false);
-  const [confirmedMode, setConfirmedMode] = useState<"verified" | "manual">(
-    "verified",
-  );
+  const [confirmedProviderModes, setConfirmedProviderModes] = useState<
+    Partial<Record<ProviderChoice, "verified" | "manual">>
+  >({});
   const [isPending, startTransition] = useTransition();
+  const confirmedMode = confirmedProviderModes[providerChoice] ?? "verified";
+  const confirmed = confirmedProviderModes[providerChoice] !== undefined;
 
   const activeGuidance =
     providerChoice === "codex_oauth"
@@ -205,7 +208,6 @@ export function ProviderSecretSetupChooser({
             setProviderChoice(value);
             setVerificationError(null);
             setSubmitError(null);
-            setConfirmed(false);
           }
         }}
       >
@@ -217,28 +219,54 @@ export function ProviderSecretSetupChooser({
             claudeCodeProviderEnabled ? "sm:grid-cols-4" : "sm:grid-cols-3",
           ].join(" ")}
         >
-          {visibleProviderChoices.map((choice) => (
-            <Tabs.Tab
-              key={choice.value}
-              value={choice.value}
-              data-testid={choice.testId}
-              className={({ active }) =>
-                [
-                  "group min-h-20 rounded-xl px-4 py-3 text-left transition duration-200 ease-out hover:-translate-y-0.5 hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 active:translate-y-0",
-                  active
-                    ? "bg-cyan-300/[0.13] text-cyan-50 shadow-[0_16px_40px_-30px_rgba(0,240,255,0.95)]"
-                    : "text-slate-300 hover:bg-cyan-300/[0.05] hover:text-cyan-50",
-                ].join(" ")
-              }
-            >
-              <span className="block text-sm font-semibold">
-                {choice.title}
-              </span>
-              <span className="mt-1 block text-xs leading-5 text-slate-400 group-hover:text-slate-300 group-data-[active]:text-cyan-100/80">
-                {choice.body}
-              </span>
-            </Tabs.Tab>
-          ))}
+          {visibleProviderChoices.map((choice) => {
+            const choiceConfirmed =
+              confirmedProviderModes[choice.value] !== undefined;
+
+            return (
+              <Tabs.Tab
+                key={choice.value}
+                value={choice.value}
+                data-testid={choice.testId}
+                data-complete={choiceConfirmed ? "true" : undefined}
+                className={({ active }) =>
+                  [
+                    "group min-h-20 rounded-xl px-4 py-3 text-left transition duration-200 ease-out hover:-translate-y-0.5 hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200 active:translate-y-0",
+                    active
+                      ? "bg-cyan-300/[0.13] text-cyan-50 shadow-[0_16px_40px_-30px_rgba(0,240,255,0.95)]"
+                      : "text-slate-300 hover:bg-cyan-300/[0.05] hover:text-cyan-50",
+                  ].join(" ")
+                }
+              >
+                <span className="flex items-start justify-between gap-3">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span data-testid={`${choice.testId}-logo`}>
+                      <ProviderAuthLogoFrame
+                        authMode={
+                          providerChoiceToSetupSelection(choice.value).authMode
+                        }
+                      />
+                    </span>
+                    <span className="text-sm font-semibold leading-5">
+                      {choice.title}
+                    </span>
+                  </span>
+                  {choiceConfirmed ? (
+                    <span
+                      className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-emerald-300/15 text-emerald-200 ring-1 ring-emerald-300/30"
+                      data-testid={`${choice.testId}-confirmed`}
+                      title="Setup confirmed"
+                    >
+                      <CheckCircle2 aria-hidden="true" className="h-4 w-4" />
+                    </span>
+                  ) : null}
+                </span>
+                <span className="mt-2 block text-xs leading-5 text-slate-400 group-hover:text-slate-300 group-data-[active]:text-cyan-100/80">
+                  {choice.body}
+                </span>
+              </Tabs.Tab>
+            );
+          })}
         </Tabs.List>
       </Tabs.Root>
 
@@ -273,7 +301,9 @@ export function ProviderSecretSetupChooser({
                       setSelectedSecretScope(option.scope);
                       setVerificationError(null);
                       setSubmitError(null);
-                      setConfirmed(false);
+                      setConfirmedProviderModes((choices) =>
+                        removeConfirmedProviderChoice(choices, providerChoice),
+                      );
                     }}
                     className="mt-1 h-4 w-4 accent-cyan-300"
                   />
@@ -369,9 +399,12 @@ export function ProviderSecretSetupChooser({
             const formData = new FormData(event.currentTarget);
             const submittedConfirmationMode =
               readSubmittedConfirmationMode(formData);
+            const submittedProviderChoice = providerChoice;
+            const submittedProviderSetupSelection = providerSetupSelection;
             setSubmitError(null);
-            setConfirmed(false);
-            setConfirmedMode(submittedConfirmationMode);
+            setConfirmedProviderModes((choices) =>
+              removeConfirmedProviderChoice(choices, submittedProviderChoice),
+            );
             startTransition(() => {
               void confirmProviderSecretSetup(formData)
                 .then(({ params }) => {
@@ -389,12 +422,14 @@ export function ProviderSecretSetupChooser({
                   }
                   setVerificationError(null);
                   setSubmitError(null);
-                  setConfirmedMode(submittedConfirmationMode);
-                  setConfirmed(true);
+                  setConfirmedProviderModes((choices) => ({
+                    ...choices,
+                    [submittedProviderChoice]: submittedConfirmationMode,
+                  }));
                   clearProviderSecretStatusCache({
                     workspaceId,
                     repositoryId,
-                    authMode: providerSetupSelection.authMode,
+                    authMode: submittedProviderSetupSelection.authMode,
                   });
                   window.dispatchEvent(
                     providerSetupConfirmedEvent({
@@ -717,4 +752,13 @@ function readSubmittedConfirmationMode(
   formData: FormData,
 ): "verified" | "manual" {
   return formData.get("confirmationMode") === "manual" ? "manual" : "verified";
+}
+
+function removeConfirmedProviderChoice(
+  choices: Partial<Record<ProviderChoice, "verified" | "manual">>,
+  choice: ProviderChoice,
+): Partial<Record<ProviderChoice, "verified" | "manual">> {
+  const next = { ...choices };
+  delete next[choice];
+  return next;
 }

@@ -282,6 +282,53 @@ describe("ProviderSecretSetupChooser", () => {
     }
   });
 
+  it("marks the confirmed provider tab as complete", async () => {
+    mockProviderSetupFetch().mockResolvedValueOnce(
+      providerSetupResponse({
+        params: {
+          notice: "provider_setup_confirmed",
+          workspace: "workspace_1",
+          section: "repositories",
+          repository: "777genius/plugin-kit-ai-starter-claude-python",
+        },
+      }),
+    );
+
+    renderProviderSecretSetupChooser();
+    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+
+    await screen.findByText(/Provider secret metadata was verified/i);
+    expect(
+      screen.getByTestId("provider-choice-codex-oauth-confirmed"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("provider-choice-openrouter-api-key-confirmed"),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
+    expect(
+      screen.getByTestId("provider-choice-codex-oauth-confirmed"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByTestId("provider-choice-openrouter-api-key-confirmed"),
+    ).toBeNull();
+  });
+
+  it("renders provider brand icons in the credential tabs", () => {
+    renderProviderSecretSetupChooser();
+
+    expect(screen.getByTestId("provider-choice-codex-oauth-logo")).toBeTruthy();
+    expect(
+      screen.getByTestId("provider-choice-codex-api-key-logo"),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("provider-choice-claude-code-oauth-logo"),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("provider-choice-openrouter-api-key-logo"),
+    ).toBeTruthy();
+  });
+
   it("clears stale secret-status cache after provider confirmation", async () => {
     await checkProviderSecretStatusWithCache({
       workspaceId: "workspace_1",
