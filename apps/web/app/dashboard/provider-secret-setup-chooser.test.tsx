@@ -12,6 +12,10 @@ import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
 import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
 import type { OrganizationSecretPolicy } from "./provider-secret-setup-chooser";
 import {
+  checkProviderSecretStatusWithCache,
+  clearProviderSecretStatusCacheForTest,
+} from "./provider-secret-status-cache";
+import {
   providerSetupConfirmedEventName,
   type ProviderSetupConfirmedEventDetail,
 } from "./repository-setup-optimistic-events";
@@ -28,6 +32,7 @@ vi.mock("next/navigation", () => ({
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  clearProviderSecretStatusCacheForTest();
   cleanup();
 });
 
@@ -275,6 +280,46 @@ describe("ProviderSecretSetupChooser", () => {
         providerSetupConfirmed,
       );
     }
+  });
+
+  it("clears stale secret-status cache after provider confirmation", async () => {
+    await checkProviderSecretStatusWithCache({
+      workspaceId: "workspace_1",
+      repositoryId: "repo_1",
+      authMode: "codex_subscription_oauth",
+      formData: new FormData(),
+      forceRefresh: false,
+      check: vi.fn().mockResolvedValue({ status: "missing" }),
+    });
+    mockProviderSetupFetch().mockResolvedValueOnce(
+      providerSetupResponse({
+        params: {
+          notice: "provider_setup_confirmed",
+          workspace: "workspace_1",
+          section: "repositories",
+          repository: "777genius/plugin-kit-ai-starter-claude-python",
+        },
+      }),
+    );
+    const refreshedCheck = vi
+      .fn()
+      .mockResolvedValue({ status: "available_repository" });
+
+    renderProviderSecretSetupChooser();
+    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+    await screen.findByText(/Provider secret metadata was verified/i);
+
+    await expect(
+      checkProviderSecretStatusWithCache({
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        authMode: "codex_subscription_oauth",
+        formData: new FormData(),
+        forceRefresh: false,
+        check: refreshedCheck,
+      }),
+    ).resolves.toEqual({ status: "available_repository" });
+    expect(refreshedCheck).toHaveBeenCalledTimes(1);
   });
 
   it("shows Claude Code setup by default and allows disabling it", () => {

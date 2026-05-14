@@ -31,6 +31,7 @@ This folder is the canonical planning and architecture knowledge base for Review
 25. [UI Component Wrapper Conventions](./architecture/36-ui-component-wrapper-conventions.md)
 26. [Frontend Clean Architecture](./architecture/37-frontend-clean-architecture.md)
 27. [Visual Direction](./product/08-visual-direction.md)
+28. [Review Thread Lifecycle and Auto-Resolve](./architecture/40-review-thread-lifecycle.md)
 
 ## Folder Map
 

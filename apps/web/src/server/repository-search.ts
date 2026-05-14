@@ -129,6 +129,7 @@ export function repositorySearchReadiness({
 }): RepositorySearchReadiness {
   const healthView = describeRepositoryHealth(healthStatus);
   if (healthView.tone === "danger") return "needs_attention";
+  if (healthView.blocksReview) return "needs_setup";
   return setupProgressStep === 4 ? "ready" : "needs_setup";
 }
 

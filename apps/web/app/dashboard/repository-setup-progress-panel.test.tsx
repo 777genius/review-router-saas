@@ -146,7 +146,7 @@ describe("RepositorySetupProgressPanel", () => {
     expect(actionUnmounts).toBe(0);
   });
 
-  it("does not mount a hidden provider action for rows that are already complete", () => {
+  it("keeps the provider action available for rows that are already complete", () => {
     let actionMounts = 0;
 
     function MountedAction(): React.ReactElement {
@@ -173,8 +173,8 @@ describe("RepositorySetupProgressPanel", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "Enable review" })).toBeNull();
-    expect(actionMounts).toBe(0);
+    expect(screen.getByRole("button", { name: "Enable review" })).toBeTruthy();
+    expect(actionMounts).toBe(1);
   });
 
   it("advances to provider setup when merge confirmation is detected in the background", async () => {

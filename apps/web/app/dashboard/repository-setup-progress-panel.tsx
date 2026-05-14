@@ -65,8 +65,6 @@ export function RepositorySetupProgressPanel({
     normalizeSetupIssue(initialSetupIssue),
   );
   const [currentStep, setCurrentStep] = useState(initialStep);
-  const [keepProviderActionMounted, setKeepProviderActionMounted] =
-    useState(false);
   const [toast, setToast] = useState<SetupToast | null>(null);
   const canManage = mutationsEnabled && selected && !archived;
 
@@ -75,7 +73,6 @@ export function RepositorySetupProgressPanel({
     setSetupPullRequestUrl(initialSetupPullRequestUrl);
     setSetupIssue(normalizeSetupIssue(initialSetupIssue));
     setCurrentStep(initialStep);
-    setKeepProviderActionMounted(false);
     if (initialStep > 2) {
       setToast((current) =>
         current?.errorCode === "setup_pr_not_merged" ? null : current,
@@ -107,7 +104,6 @@ export function RepositorySetupProgressPanel({
       setSetupStatus("configured");
       setSetupIssue(null);
       setCurrentStep(4);
-      setKeepProviderActionMounted(true);
     }
 
     window.addEventListener(
@@ -231,7 +227,6 @@ export function RepositorySetupProgressPanel({
     mutationsEnabled,
     currentStep,
     enableReviewAction: canManage ? enableReviewAction : null,
-    keepProviderActionMounted,
     onSetupComplete: handleSetupMutation,
     onMergeComplete: handleMergeMutation,
   });
@@ -298,7 +293,6 @@ function buildSetupSteps({
   mutationsEnabled,
   currentStep,
   enableReviewAction,
-  keepProviderActionMounted,
   onSetupComplete,
   onMergeComplete,
 }: {
@@ -313,7 +307,6 @@ function buildSetupSteps({
   readonly mutationsEnabled: boolean;
   readonly currentStep: SetupStep;
   readonly enableReviewAction?: ReactNode;
-  readonly keepProviderActionMounted: boolean;
   readonly onSetupComplete: (params: Record<string, string>) => void;
   readonly onMergeComplete: (params: Record<string, string>) => void;
 }): readonly RepositorySetupProgressStep[] {
@@ -356,8 +349,7 @@ function buildSetupSteps({
       />
     ) : null;
   const shouldRenderProviderAction =
-    Boolean(enableReviewAction) &&
-    (currentStep === 3 || keepProviderActionMounted);
+    Boolean(enableReviewAction) && currentStep >= 3;
   const lockedReviewAction =
     currentStep < 4 ? (
       <Button
@@ -374,7 +366,6 @@ function buildSetupSteps({
   const reviewAction = shouldRenderProviderAction
     ? enableReviewAction
     : lockedReviewAction;
-  const reviewActionHidden = shouldRenderProviderAction && currentStep === 4;
 
   const setupPrHelper = setupIssue
     ? setupIssueHelperText(setupIssue)
@@ -408,7 +399,6 @@ function buildSetupSteps({
             ? "Seed provider access."
             : "Available after merge.",
       action: reviewAction,
-      actionHidden: reviewActionHidden,
     },
     {
       number: 4,
@@ -423,7 +413,6 @@ type RepositorySetupProgressStep = {
   readonly title: string;
   readonly helper: string | null;
   readonly action?: ReactNode;
-  readonly actionHidden?: boolean;
 };
 
 function RepositorySetupProgressStepItem({
@@ -481,19 +470,14 @@ function RepositorySetupProgressStepItem({
           ) : null}
           {step.action ? (
             <div
-              aria-hidden={step.actionHidden ? "true" : undefined}
-              className={
-                step.actionHidden
-                  ? "hidden"
-                  : [
-                      "mt-3",
-                      step.number === 4
-                        ? "md:flex md:justify-end"
-                        : step.number === 1
-                          ? "md:flex md:justify-start"
-                          : "md:flex md:justify-center",
-                    ].join(" ")
-              }
+              className={[
+                "mt-3",
+                step.number === 4
+                  ? "md:flex md:justify-end"
+                  : step.number === 1
+                    ? "md:flex md:justify-start"
+                    : "md:flex md:justify-center",
+              ].join(" ")}
             >
               {step.action}
             </div>

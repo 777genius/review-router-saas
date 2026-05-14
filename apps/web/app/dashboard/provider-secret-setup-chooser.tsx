@@ -11,6 +11,7 @@ import type {
   ProviderKind,
 } from "@reviewrouter/features-review-providers";
 import { Badge, Button, CodeBlock } from "@reviewrouter/ui";
+import { clearProviderSecretStatusCache } from "./provider-secret-status-cache";
 import { providerSetupConfirmedEvent } from "./repository-setup-optimistic-events";
 
 type ProviderChoice =
@@ -390,6 +391,11 @@ export function ProviderSecretSetupChooser({
                   setSubmitError(null);
                   setConfirmedMode(submittedConfirmationMode);
                   setConfirmed(true);
+                  clearProviderSecretStatusCache({
+                    workspaceId,
+                    repositoryId,
+                    authMode: providerSetupSelection.authMode,
+                  });
                   window.dispatchEvent(
                     providerSetupConfirmedEvent({
                       repositoryId,

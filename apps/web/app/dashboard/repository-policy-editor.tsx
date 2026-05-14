@@ -22,6 +22,13 @@ import {
   clearRepositoryReviewConfigClientAction,
   saveRepositoryReviewConfigClientAction,
 } from "./actions";
+import {
+  checkProviderSecretStatusWithCache,
+  clearProviderSecretStatusCacheForTest,
+  type ProviderSecretAvailabilityStatus,
+} from "./provider-secret-status-cache";
+
+export { clearProviderSecretStatusCacheForTest };
 
 type DashboardFormAction = (formData: FormData) => void | Promise<void>;
 
@@ -42,47 +49,7 @@ type RepositorySecretCheckTarget = {
   readonly repositoryId: string;
 };
 
-type ProviderSecretStatus =
-  | "checking"
-  | "available_repository"
-  | "available_organization"
-  | "not_available_to_repository"
-  | "missing"
-  | "permission_required"
-  | "unknown";
-
-type ProviderSecretAvailabilityStatus = Exclude<
-  ProviderSecretStatus,
-  "checking"
->;
-
-type ProviderSecretCheckResult = {
-  readonly status: ProviderSecretAvailabilityStatus;
-};
-
-type ProviderSecretStatusCacheEntry =
-  | {
-      readonly expiresAt: number;
-      readonly promise: Promise<ProviderSecretCheckResult>;
-      readonly result?: never;
-    }
-  | {
-      readonly expiresAt: number;
-      readonly promise?: never;
-      readonly result: ProviderSecretCheckResult;
-    };
-
-const providerSecretStatusCacheTtlMs = 60_000;
-const providerSecretStatusUnknownCacheTtlMs = 15_000;
-const providerSecretStatusPendingTtlMs = 15_000;
-const providerSecretStatusCache = new Map<
-  string,
-  ProviderSecretStatusCacheEntry
->();
-
-export function clearProviderSecretStatusCacheForTest(): void {
-  providerSecretStatusCache.clear();
-}
+type ProviderSecretStatus = "checking" | ProviderSecretAvailabilityStatus;
 
 const providerAuthModeOrder = [
   "codex_subscription_oauth",
@@ -280,6 +247,7 @@ function ProviderSecretNotice({
 
     void checkProviderSecretStatusWithCache({
       authMode,
+      check: checkProviderRepositorySecretClientAction,
       formData,
       forceRefresh: refreshVersion > 0,
       repositoryId: secretRepositoryId,
@@ -430,55 +398,6 @@ function getSecretMetadata(authMode: ProviderAuthMode): {
     secretName,
     ...secretCopyByAuthMode[authMode],
   };
-}
-
-function checkProviderSecretStatusWithCache(input: {
-  readonly workspaceId: string;
-  readonly repositoryId: string;
-  readonly authMode: ReviewProviderConfiguration["authMode"];
-  readonly formData: FormData;
-  readonly forceRefresh: boolean;
-}): Promise<ProviderSecretCheckResult> {
-  const cacheKey = providerSecretStatusCacheKey(input);
-  const now = Date.now();
-  const cached = providerSecretStatusCache.get(cacheKey);
-
-  if (!input.forceRefresh && cached && cached.expiresAt > now) {
-    if (cached.result) return Promise.resolve(cached.result);
-    return cached.promise;
-  }
-
-  const promise = checkProviderRepositorySecretClientAction(input.formData)
-    .then((result) => {
-      providerSecretStatusCache.set(cacheKey, {
-        expiresAt:
-          Date.now() +
-          (result.status === "unknown"
-            ? providerSecretStatusUnknownCacheTtlMs
-            : providerSecretStatusCacheTtlMs),
-        result,
-      });
-      return result;
-    })
-    .catch((error: unknown) => {
-      providerSecretStatusCache.delete(cacheKey);
-      throw error;
-    });
-
-  providerSecretStatusCache.set(cacheKey, {
-    expiresAt: now + providerSecretStatusPendingTtlMs,
-    promise,
-  });
-
-  return promise;
-}
-
-function providerSecretStatusCacheKey(input: {
-  readonly workspaceId: string;
-  readonly repositoryId: string;
-  readonly authMode: ReviewProviderConfiguration["authMode"];
-}): string {
-  return `${input.workspaceId}:${input.repositoryId}:${input.authMode}`;
 }
 
 function SecretRefreshButton({
@@ -949,7 +868,9 @@ export function ReviewConfigForm({
               return (
                 <div
                   key={`${index}:${provider.authMode}`}
-                  className="grid gap-5 rounded-xl border border-cyan-200/20 bg-slate-950/45 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] md:p-5"
+                  className={`grid gap-5 ${
+                    index > 0 ? "border-t border-cyan-200/10 pt-6" : ""
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">

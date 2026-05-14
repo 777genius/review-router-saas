@@ -49,6 +49,15 @@ describe("repositorySearchReadiness", () => {
     ).toBe("needs_attention");
   });
 
+  it("keeps provider setup blockers out of the ready filter", () => {
+    expect(
+      repositorySearchReadiness({
+        setupProgressStep: 4,
+        healthStatus: "provider_needs_setup",
+      }),
+    ).toBe("needs_setup");
+  });
+
   it("uses the same readiness bucket for ready and needs-setup filters", () => {
     expect(
       repositoryMatchesSearchFilter(
