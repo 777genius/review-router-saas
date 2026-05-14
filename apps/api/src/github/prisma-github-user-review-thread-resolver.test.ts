@@ -194,6 +194,71 @@ describe("PrismaGitHubUserReviewThreadResolver", () => {
     expect(fetch.mock.calls[2]![1]!.body).toContain("resolveReviewThread");
   });
 
+  it("normalizes configured GitHub App bot logins before trusting the parent comment", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            repository: {
+              pullRequest: {
+                headRefOid: "a".repeat(40),
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            node: {
+              id: "thread-123",
+              isResolved: false,
+              viewerCanResolve: true,
+              comments: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  {
+                    id: "comment-123",
+                    author: { login: "custom-reviewer[bot]" },
+                    body: `<!-- review-router-finding:${"b".repeat(24)} -->`,
+                    createdAt: "2026-05-14T11:59:00.000Z",
+                    updatedAt: "2026-05-14T11:59:00.000Z",
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            resolveReviewThread: {
+              thread: {
+                id: "thread-123",
+                isResolved: true,
+              },
+            },
+          },
+        }),
+      );
+    const resolver = new PrismaGitHubUserReviewThreadResolver(
+      createPrismaMock(),
+      {
+        env: {
+          ...env,
+          REVIEW_APP_BOT_LOGIN: "custom-reviewer",
+        },
+        fetch: fetch as unknown as typeof globalThis.fetch,
+      },
+    );
+
+    const result = await resolver.resolveReviewThreadLifecycle(request());
+
+    expect(result.status).toBe("resolved");
+  });
+
   it("keeps the thread open when no authorized workspace user token is available", async () => {
     const prisma = createPrismaMock();
     vi.mocked(prisma.repositoryPermissionCache.findMany).mockResolvedValue([]);

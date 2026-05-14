@@ -446,7 +446,7 @@ function isTrustedReviewRouterAuthor(
   login: string | null | undefined,
   env: ResolverEnvironment | undefined,
 ): boolean {
-  const normalized = login?.trim().toLowerCase();
+  const normalized = canonicalBotLogin(login);
   if (!normalized) return false;
   return trustedReviewRouterAuthors(env).has(normalized);
 }
@@ -470,14 +470,28 @@ function trustedReviewRouterAuthors(
   ];
   return new Set(
     values
-      .filter((value): value is string => Boolean(value?.trim()))
-      .map((value) => value.trim().toLowerCase()),
+      .map((value) => canonicalBotLogin(value))
+      .filter((value): value is string => Boolean(value)),
   );
 }
 
 function botLoginFromSlug(slug: string | undefined): string | undefined {
   const normalized = slug?.trim();
   return normalized ? `${normalized}[bot]` : undefined;
+}
+
+function canonicalBotLogin(value: string | null | undefined): string | undefined {
+  const normalized = normalizeBotLogin(value);
+  return normalized?.endsWith("[bot]") ? normalized.slice(0, -5) : normalized;
+}
+
+function normalizeBotLogin(value: string | null | undefined): string | undefined {
+  const login = (value ?? "").trim().toLowerCase();
+  if (!login) return undefined;
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?(?:\[bot\])?$/.test(login)) {
+    return undefined;
+  }
+  return login;
 }
 
 function splitCommaSeparated(value: string | undefined): string[] {
