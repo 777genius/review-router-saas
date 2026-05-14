@@ -64,6 +64,16 @@ describe("conflict runtime reusable workflow contract", () => {
     expect(workflow).toContain("ref: ${{ inputs.runtime_ref }}");
     expect(workflow).toContain("repository: ${{ github.repository }}");
     expect(workflow).toContain("ref: ${{ inputs.conflict_head_sha }}");
+    expect(
+      workflow.indexOf("pnpm --filter @reviewrouter/platform-db db:generate"),
+    ).toBeGreaterThan(workflow.indexOf("pnpm install --frozen-lockfile"));
+    expect(
+      workflow.indexOf(
+        "pnpm --filter @reviewrouter/features-conflict-runtime build",
+      ),
+    ).toBeGreaterThan(
+      workflow.indexOf("pnpm --filter @reviewrouter/platform-db db:generate"),
+    );
     expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2);
     expect(jobEnv).not.toContain("REVIEW_ROUTER_CONFLICT_SESSION_FILE");
     expect(

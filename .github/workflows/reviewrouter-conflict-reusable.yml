@@ -93,7 +93,7 @@ jobs:
       - name: Checkout trusted ReviewRouter runtime
         uses: actions/checkout@v6
         with:
-          repository: 777genius/review-router
+          repository: 777genius/review-router-saas
           ref: ${{ inputs.runtime_ref }}
           path: .reviewrouter-runtime
           persist-credentials: false
@@ -110,6 +110,7 @@ jobs:
           set -euo pipefail
           corepack enable
           pnpm install --frozen-lockfile
+          pnpm --filter @reviewrouter/platform-db db:generate
           pnpm --filter @reviewrouter/features-conflict-runtime build
 
       - name: Preflight conflict runtime before PR checkout
