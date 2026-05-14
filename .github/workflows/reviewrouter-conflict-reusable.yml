@@ -111,7 +111,7 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
           pnpm --filter @reviewrouter/platform-db db:generate
-          pnpm --filter @reviewrouter/features-conflict-runtime build
+          pnpm --filter @reviewrouter/features-conflict-runtime... build
 
       - name: Preflight conflict runtime before PR checkout
         shell: bash
@@ -120,7 +120,7 @@ jobs:
           REVIEW_ROUTER_CONFLICT_SESSION_FILE: ${{ runner.temp }}/reviewrouter-conflict/session.json
         run: |
           set -euo pipefail
-          node packages/features/conflict-runtime/dist/interface/cli/reviewrouter-conflict-runtime.js preflight
+          node --conditions=production packages/features/conflict-runtime/dist/interface/cli/reviewrouter-conflict-runtime.js preflight
 
       - name: Checkout exact conflict head
         uses: actions/checkout@v6
@@ -146,4 +146,4 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          node packages/features/conflict-runtime/dist/interface/cli/reviewrouter-conflict-runtime.js run
+          node --conditions=production packages/features/conflict-runtime/dist/interface/cli/reviewrouter-conflict-runtime.js run

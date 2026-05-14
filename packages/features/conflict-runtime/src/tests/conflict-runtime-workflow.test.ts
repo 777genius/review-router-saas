@@ -69,11 +69,12 @@ describe("conflict runtime reusable workflow contract", () => {
     ).toBeGreaterThan(workflow.indexOf("pnpm install --frozen-lockfile"));
     expect(
       workflow.indexOf(
-        "pnpm --filter @reviewrouter/features-conflict-runtime build",
+        "pnpm --filter @reviewrouter/features-conflict-runtime... build",
       ),
     ).toBeGreaterThan(
       workflow.indexOf("pnpm --filter @reviewrouter/platform-db db:generate"),
     );
+    expect(workflow.match(/node --conditions=production /g)).toHaveLength(2);
     expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2);
     expect(jobEnv).not.toContain("REVIEW_ROUTER_CONFLICT_SESSION_FILE");
     expect(
