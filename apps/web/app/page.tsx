@@ -18,7 +18,7 @@ import {
 } from "./seo";
 
 export const metadata: Metadata = createPublicPageMetadata({
-  title: "Privacy-first AI code review in CI",
+  title: "Free privacy-first AI code review in CI",
   description: defaultSeoDescription,
   path: "/",
 });
@@ -142,13 +142,16 @@ export default async function HomePage(): Promise<React.ReactElement> {
         <div className="setup-blueprint__intro">
           <p className="setup-blueprint__eyebrow">ReviewRouter Setup ///</p>
           <h1 id="setup-blueprint-title">
-            Privacy-first AI code review
+            Free privacy-first
+            <br />
+            AI code review
             <br />
             that stays inside your CI
           </h1>
           <span aria-hidden="true" className="setup-blueprint__intro-rule" />
           <p>
-            Connect your repository, add the workflow, and enable secure access.
+            Connect your repository, add the workflow, and enable secure access
+            for free.
           </p>
         </div>
 

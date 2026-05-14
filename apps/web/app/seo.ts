@@ -3,10 +3,10 @@ import type { Metadata } from "next";
 export const siteName = "ReviewRouter";
 
 export const defaultSeoTitle =
-  "ReviewRouter | Privacy-first AI code review in CI";
+  "ReviewRouter | Free privacy-first AI code review in CI";
 
 export const defaultSeoDescription =
-  "Privacy-first AI code review for complex GitHub codebases. Configure Codex, Claude Code, OpenAI, and OpenRouter reviews while code, PR diffs, and secrets stay in CI.";
+  "Free privacy-first AI code review for complex GitHub codebases. Configure Codex, Claude Code, OpenAI, and OpenRouter reviews while code, PR diffs, and secrets stay in CI.";
 
 export const seoKeywords = [
   "AI code review",

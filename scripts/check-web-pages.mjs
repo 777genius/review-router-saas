@@ -8,10 +8,18 @@ const repoCodexCommandFragment =
 const orgCodexCommandFragment =
   "/install/codex | bash -s -- --confirm-write --scope org --org acme --visibility selected --repos repo-a,repo-b";
 const commonTexts = ["ReviewRouter", "Security", "Support"];
-const landingHeroText = "Privacy-first AI code review";
+const landingHeroText = "Free privacy-first";
 
 const pages = [
-  ["/", [landingHeroText, "that stays inside your CI", "Install GitHub App"]],
+  [
+    "/",
+    [
+      landingHeroText,
+      "AI code review",
+      "that stays inside your CI",
+      "Install GitHub App",
+    ],
+  ],
   [
     "/auth/signin",
     [
