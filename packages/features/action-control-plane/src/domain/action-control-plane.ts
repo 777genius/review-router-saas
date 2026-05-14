@@ -29,6 +29,7 @@ export const allowedActionEvents = [
   "issue_comment",
   "workflow_dispatch",
   "merge_group",
+  "repository_dispatch",
 ] as const;
 
 export const githubActionsOidcClaimsSchema = z.object({
@@ -43,7 +44,16 @@ export const githubActionsOidcClaimsSchema = z.object({
   run_id: z.string().min(1),
   run_attempt: z.string().min(1),
   workflow_ref: z.string().min(1),
+  workflow_sha: z
+    .string()
+    .regex(/^[a-fA-F0-9]{40}$/)
+    .optional(),
   job_workflow_ref: z.string().optional(),
+  job_workflow_sha: z
+    .string()
+    .regex(/^[a-fA-F0-9]{40}$/)
+    .optional(),
+  runner_environment: z.string().optional(),
   actor: z.string().min(1),
   iat: z.number().optional(),
   nbf: z.number().optional(),
@@ -82,6 +92,13 @@ export type ActionSessionClaims = {
   readonly githubRunId: string;
   readonly githubRunAttempt: string;
   readonly eventName: (typeof allowedActionEvents)[number];
+  readonly reviewKind?: "normal" | "conflict-head";
+  readonly conflictDispatchId?: string;
+  readonly pullRequestNumber?: number;
+  readonly headSha?: string;
+  readonly baseRef?: string;
+  readonly baseSha?: string;
+  readonly configSnapshotId?: string;
   readonly protocolVersion: 1;
 };
 
@@ -268,6 +285,24 @@ export function validateOidcClaimsAgainstRepository(input: {
     throw new Error("repository_owner_mismatch");
   }
   if (
+    input.claims.event_name === "repository_dispatch" &&
+    input.claims.runner_environment !== undefined &&
+    input.claims.runner_environment !== "github-hosted"
+  ) {
+    throw new Error("workflow_ref_not_allowed");
+  }
+  if (
+    input.claims.event_name === "repository_dispatch" &&
+    isAllowedConflictReviewWorkflowIdentity({
+      workflowRef: input.claims.workflow_ref,
+      jobWorkflowRef: input.claims.job_workflow_ref,
+      repository: repository.fullName,
+    }) === false
+  ) {
+    throw new Error("workflow_ref_not_allowed");
+  }
+  if (
+    input.claims.event_name !== "repository_dispatch" &&
     isAllowedOidcWorkflowIdentity({
       workflowRef: input.claims.workflow_ref,
       jobWorkflowRef: input.claims.job_workflow_ref,
@@ -408,4 +443,35 @@ function isTrustedWorkflowRef(
       (trustedRef) => trustedRef.toLowerCase() === workflowRef.toLowerCase(),
     ) ?? false
   );
+}
+
+function isAllowedConflictReviewWorkflowIdentity(input: {
+  readonly workflowRef: string;
+  readonly jobWorkflowRef?: string | undefined;
+  readonly repository: string;
+}): boolean {
+  if (!input.jobWorkflowRef) {
+    return false;
+  }
+  if (!isTrustedConflictReviewReusableWorkflowRef(input.jobWorkflowRef)) {
+    return false;
+  }
+  return isAllowedWorkflowRef({
+    workflowRef: input.workflowRef,
+    repository: input.repository,
+    allowedPaths: [".github/workflows/reviewrouter.yml"],
+  });
+}
+
+function isTrustedConflictReviewReusableWorkflowRef(
+  workflowRef: string,
+): boolean {
+  if (
+    /^777genius\/review-router\/\.github\/workflows\/reviewrouter-reusable\.ya?ml@(refs\/tags\/v1(?:\.[0-9]+\.[0-9]+)?|[a-fA-F0-9]{40})$/i.test(
+      workflowRef,
+    )
+  ) {
+    return true;
+  }
+  return false;
 }

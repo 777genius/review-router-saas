@@ -18,6 +18,10 @@ import type {
   ActionLedgerKeyInput,
   ActionLedgerKeyPort,
 } from "../application/ports/action-ledger-key-port.js";
+import type {
+  ActionConflictReviewDispatchPayload,
+  ActionConflictReviewExchangeVerifierPort,
+} from "../application/ports/action-conflict-review-exchange-verifier-port.js";
 import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
 import type {
@@ -73,6 +77,8 @@ class InMemoryActionControlPlaneRepository implements ActionControlPlaneReposito
   public healthReports: ActionHealthReport[] = [];
   public repository: ActionRepositoryContext | null = repositoryContext;
   public runtimeConfig = safeDefaultReviewConfiguration;
+  public runtimeConfigVersion = 7;
+  public runtimeConfigSource: "repository" | "workspace" = "repository";
 
   async findSelectedRepositoryByGithubId(
     githubRepositoryId: string,
@@ -84,7 +90,11 @@ class InMemoryActionControlPlaneRepository implements ActionControlPlaneReposito
   }
 
   async findRuntimeReviewConfiguration() {
-    return { version: 7, config: this.runtimeConfig };
+    return {
+      source: this.runtimeConfigSource,
+      version: this.runtimeConfigVersion,
+      config: this.runtimeConfig,
+    };
   }
 
   async recordHealthReport(input: {
@@ -105,6 +115,10 @@ class StaticOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
 class StaticSessionTokenService implements ActionSessionTokenServicePort {
   public signedClaims: ActionSessionClaims | null = null;
 
+  constructor(
+    private readonly verifiedClaims: ActionSessionClaims = sessionClaims,
+  ) {}
+
   async sign(input: {
     readonly claims: ActionSessionClaims;
     readonly expiresInSeconds: number;
@@ -120,7 +134,35 @@ class StaticSessionTokenService implements ActionSessionTokenServicePort {
   }
 
   async verify(): Promise<ActionSessionClaims> {
-    return sessionClaims;
+    return this.verifiedClaims;
+  }
+}
+
+class InMemoryConflictReviewExchangeVerifier implements ActionConflictReviewExchangeVerifierPort {
+  public calls: Array<{
+    readonly dispatchPayload: ActionConflictReviewDispatchPayload;
+    readonly claims: GitHubActionsOidcClaims;
+    readonly configSnapshotId: string;
+  }> = [];
+
+  async verifyConflictReviewExchange(input: {
+    readonly claims: GitHubActionsOidcClaims;
+    readonly dispatchPayload: ActionConflictReviewDispatchPayload;
+    readonly configSnapshotId: string;
+  }) {
+    this.calls.push({
+      claims: input.claims,
+      dispatchPayload: input.dispatchPayload,
+      configSnapshotId: input.configSnapshotId,
+    });
+    return {
+      reviewKind: "conflict-head" as const,
+      dispatchId: input.dispatchPayload.dispatchId,
+      pullRequestNumber: input.dispatchPayload.pullRequestNumber,
+      headSha: input.dispatchPayload.headSha,
+      baseRef: input.dispatchPayload.baseRef,
+      baseSha: input.dispatchPayload.baseSha,
+    };
   }
 }
 
@@ -621,6 +663,198 @@ describe("action control plane", () => {
     ).rejects.toThrow("workflow_ref_not_allowed");
   });
 
+  it("allows repository_dispatch only through the trusted review reusable workflow and conflict record", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    const sessions = new StaticSessionTokenService();
+    const conflictReviews = new InMemoryConflictReviewExchangeVerifier();
+    const conflictDispatchPayload = conflictDispatch();
+
+    await exchangeGitHubOidcToken(
+      {
+        oidcToken: "oidc",
+        audience: defaultActionOidcAudience,
+        conflictDispatchPayload,
+      },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            event_name: "repository_dispatch",
+            workflow_ref:
+              "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+            job_workflow_ref:
+              "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+          }),
+        ),
+        repositories: repository,
+        sessions,
+        conflictReviews,
+        clock,
+      },
+    );
+
+    expect(conflictReviews.calls).toEqual([
+      expect.objectContaining({ dispatchPayload: conflictDispatchPayload }),
+    ]);
+    expect(sessions.signedClaims).toMatchObject({
+      eventName: "repository_dispatch",
+      reviewKind: "conflict-head",
+      conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      configSnapshotId: "repository:7",
+    });
+  });
+
+  it("rejects repository_dispatch without conflict payload", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              event_name: "repository_dispatch",
+              workflow_ref:
+                "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_payload_required");
+  });
+
+  it("rejects repository_dispatch from the interaction reusable workflow", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+
+    await expect(
+      exchangeGitHubOidcToken(
+        {
+          oidcToken: "oidc",
+          audience: defaultActionOidcAudience,
+          conflictDispatchPayload: conflictDispatch(),
+        },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              event_name: "repository_dispatch",
+              workflow_ref:
+                "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml@refs/tags/v1",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
+  it("does not let trustedWorkflowRefs widen the conflict review caller workflow", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    repository.repository = {
+      ...repositoryContext,
+      trustedWorkflowRefs: [
+        "777genius/example/.github/workflows/deploy.yml@refs/heads/main",
+      ],
+    };
+
+    await expect(
+      exchangeGitHubOidcToken(
+        {
+          oidcToken: "oidc",
+          audience: defaultActionOidcAudience,
+          conflictDispatchPayload: conflictDispatch(),
+        },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              event_name: "repository_dispatch",
+              workflow_ref:
+                "777genius/example/.github/workflows/deploy.yml@refs/heads/main",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
+  it("rejects repository_dispatch from mutable reusable workflow refs", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+
+    await expect(
+      exchangeGitHubOidcToken(
+        {
+          oidcToken: "oidc",
+          audience: defaultActionOidcAudience,
+          conflictDispatchPayload: conflictDispatch(),
+        },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              event_name: "repository_dispatch",
+              workflow_ref:
+                "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/heads/main",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
+  it("rejects repository_dispatch from self-hosted runners", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+
+    await expect(
+      exchangeGitHubOidcToken(
+        {
+          oidcToken: "oidc",
+          audience: defaultActionOidcAudience,
+          conflictDispatchPayload: conflictDispatch(),
+        },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              event_name: "repository_dispatch",
+              workflow_ref:
+                "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+              runner_environment: "self-hosted",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
   it("rejects OIDC claims for a different repository id", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     await expect(
@@ -816,6 +1050,63 @@ describe("action control plane", () => {
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("returns conflict review runtime identity from the verified action session", async () => {
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService({
+          ...sessionClaims,
+          eventName: "repository_dispatch",
+          reviewKind: "conflict-head",
+          conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+          pullRequestNumber: 7,
+          headSha: "a".repeat(40),
+          baseRef: "main",
+          baseSha: "b".repeat(40),
+          configSnapshotId: "repository:7",
+        }),
+        clock,
+      },
+    );
+
+    expect(config.runtimeEnv).toMatchObject({
+      REVIEW_ROUTER_REVIEW_KIND: "conflict-head",
+      REVIEW_ROUTER_CONFLICT_DISPATCH_ID:
+        "cr_123e4567-e89b-12d3-a456-426614174000",
+      REVIEW_ROUTER_CONFLICT_PR_NUMBER: "7",
+      REVIEW_ROUTER_CONFLICT_HEAD_SHA: "a".repeat(40),
+      REVIEW_ROUTER_CONFLICT_BASE_REF: "main",
+      REVIEW_ROUTER_CONFLICT_BASE_SHA: "b".repeat(40),
+    });
+  });
+
+  it("rejects conflict runtime config when the review config changed after exchange", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfigVersion = 8;
+
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session" },
+        {
+          repositories,
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_config_snapshot_mismatch");
   });
 
   it("returns multi-provider runtime config for the action", async () => {
@@ -1048,6 +1339,30 @@ describe("action control plane", () => {
         },
       ),
     ).rejects.toThrow("repository_not_selected");
+  });
+
+  it("does not issue the generic branded comment token for conflict-head sessions", async () => {
+    await expect(
+      issueActionCommentToken(
+        { sessionToken: "session" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          commentTokens: new InMemoryCommentTokenIssuer(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_posting_token_unavailable");
   });
 
   it("checks action control plane entitlements before issuing branded comment tokens", async () => {
@@ -1359,6 +1674,67 @@ describe("action control plane", () => {
     ).resolves.toMatchObject(claims);
   });
 
+  it("requires complete conflict identity in action session tokens", async () => {
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const claims: ActionSessionClaims = {
+      ...sessionClaims,
+      eventName: "repository_dispatch",
+      reviewKind: "conflict-head",
+      conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      configSnapshotId: "repository:7",
+    };
+    const signed = await sessions.sign({
+      claims,
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+
+    await expect(
+      sessions.verify({ token: signed.token, now: fixedNow }),
+    ).resolves.toMatchObject(claims);
+
+    const { configSnapshotId, ...incompleteClaims } = claims;
+    expect(configSnapshotId).toBe("repository:7");
+    const incomplete = await sessions.sign({
+      claims: incompleteClaims as unknown as ActionSessionClaims,
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+    await expect(
+      sessions.verify({ token: incomplete.token, now: fixedNow }),
+    ).rejects.toThrow("invalid_action_session_configSnapshotId");
+
+    const unsafeDispatchId = await sessions.sign({
+      claims: {
+        ...claims,
+        conflictDispatchId: "cr_123",
+      },
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+    await expect(
+      sessions.verify({ token: unsafeDispatchId.token, now: fixedNow }),
+    ).rejects.toThrow("invalid_action_session_conflictDispatchId");
+
+    const unsafeBaseRef = await sessions.sign({
+      claims: {
+        ...claims,
+        baseRef: "refs/heads/main",
+      },
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+    await expect(
+      sessions.verify({ token: unsafeBaseRef.token, now: fixedNow }),
+    ).rejects.toThrow("invalid_action_session_baseRef");
+  });
+
   it("verifies GitHub Actions OIDC JWTs with JWKS and rejects wrong audience", async () => {
     const { privateKey, publicKey } = await generateKeyPair("RS256");
     const publicJwk = await exportJWK(publicKey);
@@ -1399,6 +1775,20 @@ function githubOidcClaims(
       "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
     actor: "777genius",
     ...overrides,
+  };
+}
+
+function conflictDispatch(): ActionConflictReviewDispatchPayload {
+  return {
+    protocolVersion: 1,
+    dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+    nonce: "n".repeat(40),
+    repositoryId: "123456",
+    pullRequestNumber: 7,
+    headSha: "a".repeat(40),
+    baseRef: "main",
+    baseSha: "b".repeat(40),
+    fallbackVersion: 1,
   };
 }
 

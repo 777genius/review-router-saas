@@ -30,6 +30,7 @@ assertEqual(
     "check_run",
     "issue_comment",
     "pull_request",
+    "push",
     "repository",
     "status",
     "workflow_job",

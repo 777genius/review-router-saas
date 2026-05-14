@@ -60,6 +60,7 @@ export async function provisionReviewRouterWorkflow(
     apiUrl: plan.apiUrl,
     runtimeConfigMode: plan.runtimeConfigMode,
     workflowStyle: plan.workflowStyle,
+    conflictReviewFallbackEnabled: plan.conflictReviewFallbackEnabled === true,
     staticRuntimeEnv:
       plan.staticRuntimeEnv ??
       mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
@@ -150,10 +151,12 @@ function safeWorkflowProvisioningErrorSummary(error: unknown): string {
       "invalid_workflow_action_ref",
       "invalid_reusable_workflow_action_ref",
       "invalid_reusable_workflow_runtime_ref",
+      "invalid_conflict_review_reusable_workflow_runtime_ref",
       "invalid_workflow_api_url",
       "invalid_workflow_env_key",
       "invalid_workflow_env_value",
       "workflow_provisioning_disabled",
+      "conflict_review_explicit_workflow_unsupported",
     ].includes(message)
   ) {
     return message;

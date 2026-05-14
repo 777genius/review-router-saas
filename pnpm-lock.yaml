@@ -147,6 +147,9 @@ importers:
       '@reviewrouter/features-api-demo':
         specifier: workspace:*
         version: link:../../packages/features/api-demo
+      '@reviewrouter/features-conflict-review':
+        specifier: workspace:*
+        version: link:../../packages/features/conflict-review
       '@reviewrouter/features-entitlements':
         specifier: workspace:*
         version: link:../../packages/features/entitlements
@@ -300,6 +303,9 @@ importers:
       '@reviewrouter/features-audit-log':
         specifier: workspace:*
         version: link:../../packages/features/audit-log
+      '@reviewrouter/features-conflict-review':
+        specifier: workspace:*
+        version: link:../../packages/features/conflict-review
       '@reviewrouter/features-org-ruleset-provisioning':
         specifier: workspace:*
         version: link:../../packages/features/org-ruleset-provisioning
@@ -372,6 +378,30 @@ importers:
       '@prisma/client':
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
+  packages/features/conflict-review:
+    dependencies:
+      '@octokit/app':
+        specifier: ^16.1.2
+        version: 16.1.2
+      '@prisma/client':
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/features-github-installations':
+        specifier: workspace:*
+        version: link:../github-installations
+      '@reviewrouter/features-outbox':
+        specifier: workspace:*
+        version: link:../outbox
+      '@reviewrouter/features-workflow-provisioning':
+        specifier: workspace:*
+        version: link:../workflow-provisioning
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared

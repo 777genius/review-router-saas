@@ -3,6 +3,7 @@ export * from "./application/ports/action-oidc-replay-nonce-store-port.js";
 export * from "./application/ports/action-entitlement-policy-port.js";
 export * from "./application/ports/action-ledger-key-port.js";
 export * from "./application/ports/action-control-plane-repository-port.js";
+export * from "./application/ports/action-conflict-review-exchange-verifier-port.js";
 export * from "./application/ports/action-rate-limit-policy-port.js";
 export * from "./application/ports/action-runtime-compatibility-policy-port.js";
 export * from "./application/ports/action-session-token-service-port.js";

@@ -33,6 +33,9 @@ export async function issueActionCommentToken(
   }
 
   validateActionSessionAgainstRepository({ session, repository });
+  if (session.reviewKind === "conflict-head") {
+    throw new Error("conflict_review_posting_token_unavailable");
+  }
   await dependencies.entitlements?.assertActionControlPlaneAllowed({
     workspaceId: session.workspaceId,
     repositoryId: session.repositoryId,

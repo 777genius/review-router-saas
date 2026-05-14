@@ -1,4 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import {
+  safeConflictReviewDispatchId,
+  safeGitHubBranchName,
+} from "@reviewrouter/shared";
 import { z } from "zod";
 import {
   actionHealthReportMaxBytes,
@@ -32,9 +36,139 @@ export type RegisterActionControlPlaneRoutesDependencies =
       readonly controlPlaneEnabled?: boolean;
     };
 
+const conflictDispatchPayloadSchema = z
+  .object({
+    protocolVersion: z.literal(1).optional(),
+    protocol_version: z.literal(1).optional(),
+    dispatchId: safeConflictReviewDispatchId.optional(),
+    dispatch_id: safeConflictReviewDispatchId.optional(),
+    nonce: z.string().min(32).max(160),
+    repositoryId: z
+      .string()
+      .regex(/^[0-9]+$/)
+      .optional(),
+    repository_id: z
+      .string()
+      .regex(/^[0-9]+$/)
+      .optional(),
+    pullRequestNumber: z.number().int().positive().optional(),
+    pr_number: z.number().int().positive().optional(),
+    headSha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    head_sha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    baseRef: safeGitHubBranchName.optional(),
+    base_ref: safeGitHubBranchName.optional(),
+    baseSha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    base_sha: z
+      .string()
+      .regex(/^[a-fA-F0-9]{40}$/)
+      .optional(),
+    fallbackVersion: z.literal(1).optional(),
+    fallback_version: z.literal(1).optional(),
+  })
+  .strict()
+  .transform((payload, context) => {
+    const normalized = {
+      protocolVersion: coalesceConflictDispatchAlias(
+        payload.protocolVersion,
+        payload.protocol_version,
+        "protocolVersion",
+        context,
+      ),
+      dispatchId: coalesceConflictDispatchAlias(
+        payload.dispatchId,
+        payload.dispatch_id,
+        "dispatchId",
+        context,
+      ),
+      nonce: payload.nonce,
+      repositoryId: coalesceConflictDispatchAlias(
+        payload.repositoryId,
+        payload.repository_id,
+        "repositoryId",
+        context,
+      ),
+      pullRequestNumber: coalesceConflictDispatchAlias(
+        payload.pullRequestNumber,
+        payload.pr_number,
+        "pullRequestNumber",
+        context,
+      ),
+      headSha: coalesceConflictDispatchAlias(
+        payload.headSha,
+        payload.head_sha,
+        "headSha",
+        context,
+      ),
+      baseRef: coalesceConflictDispatchAlias(
+        payload.baseRef,
+        payload.base_ref,
+        "baseRef",
+        context,
+      ),
+      baseSha: coalesceConflictDispatchAlias(
+        payload.baseSha,
+        payload.base_sha,
+        "baseSha",
+        context,
+      ),
+      fallbackVersion: coalesceConflictDispatchAlias(
+        payload.fallbackVersion,
+        payload.fallback_version,
+        "fallbackVersion",
+        context,
+      ),
+    };
+    for (const [key, value] of Object.entries(normalized)) {
+      if (value === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: "required",
+        });
+      }
+    }
+    return normalized as {
+      readonly protocolVersion: 1;
+      readonly dispatchId: string;
+      readonly nonce: string;
+      readonly repositoryId: string;
+      readonly pullRequestNumber: number;
+      readonly headSha: string;
+      readonly baseRef: string;
+      readonly baseSha: string;
+      readonly fallbackVersion: 1;
+    };
+  });
+
+function coalesceConflictDispatchAlias<T>(
+  primary: T | undefined,
+  alias: T | undefined,
+  path: string,
+  context: z.RefinementCtx,
+): T | undefined {
+  if (primary !== undefined && alias !== undefined && primary !== alias) {
+    context.addIssue({
+      code: "custom",
+      path: [path],
+      message: "conflicting_aliases",
+    });
+  }
+  return primary ?? alias;
+}
+
 const exchangeBodySchema = z.object({
   oidcToken: z.string().min(1),
   audience: z.string().min(1).optional(),
+  conflictDispatch: conflictDispatchPayloadSchema.optional(),
 });
 
 type ActionErrorFormat = "legacy" | "v1";
@@ -63,6 +197,9 @@ export async function registerActionControlPlaneRoutes(
               body.audience ??
               dependencies.oidcAudience ??
               defaultActionOidcAudience,
+            ...(body.conflictDispatch
+              ? { conflictDispatchPayload: body.conflictDispatch }
+              : {}),
           },
           dependencies,
         );
@@ -242,6 +379,7 @@ function statusCodeForActionError(message: string): number {
     message.includes("repository_not_selected") ||
     message.includes("installation_not_active") ||
     message.includes("workflow_ref_not_allowed") ||
+    message.includes("conflict_review_") ||
     message.includes("entitlement_denied") ||
     message.includes("mismatch")
   ) {
@@ -268,6 +406,9 @@ function safeActionErrorCode(message: string): string {
   }
   if (message.includes("workflow_ref_not_allowed")) {
     return "workflow_ref_not_allowed";
+  }
+  if (message.includes("conflict_review_")) {
+    return "conflict_review_exchange_denied";
   }
   if (message.includes("entitlement_denied")) {
     return "action_control_plane_entitlement_denied";
@@ -318,6 +459,8 @@ function safeActionErrorMessage(code: string): string {
       return "GitHub App installation is not active for this repository.";
     case "workflow_ref_not_allowed":
       return "Workflow file is not allowed to fetch ReviewRouter runtime config.";
+    case "conflict_review_exchange_denied":
+      return "Conflict review runtime config exchange was not allowed for this run.";
     case "action_control_plane_entitlement_denied":
       return "Action control plane is not enabled for this workspace.";
     case "action_repository_mismatch":

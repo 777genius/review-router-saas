@@ -12,6 +12,11 @@ import {
   type RegisterActionControlPlaneRoutesDependencies,
 } from "@reviewrouter/features-action-control-plane";
 import {
+  ConflictReviewPullRequestWebhookHandler,
+  ConflictReviewPushWebhookHandler,
+  PrismaConflictReviewRepository,
+} from "@reviewrouter/features-conflict-review";
+import {
   OutboxInstallationSyncRequester,
   PrismaGitHubInstallationRepository,
   PrismaInstallationWorkspaceOwnerGrant,
@@ -28,12 +33,19 @@ import {
   createPrismaClient,
   type PrismaClient,
 } from "@reviewrouter/platform-db";
-import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
+import {
+  isConflictReviewFallbackEnabled,
+  readGitHubAppPrivateKey,
+} from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
+import {
+  CompositePullRequestWebhookHandler,
+  CompositePushWebhookHandler,
+} from "./github/composite-github-webhook-handlers.js";
 import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
@@ -97,21 +109,10 @@ export async function createApiApp(
   const githubWebhookDependencies =
     options.githubWebhookDependencies ??
     (options.githubWebhookSecret && prisma
-      ? {
+      ? createDefaultGitHubWebhookDependencies({
           webhookSecret: options.githubWebhookSecret,
-          installations: new PrismaGitHubInstallationRepository(prisma),
-          ownerGrants: new PrismaInstallationWorkspaceOwnerGrant(prisma),
-          deliveries: new PrismaWebhookDeliveryRepository(prisma),
-          syncRequests: new OutboxInstallationSyncRequester(
-            new PrismaOutboxEventRepository(prisma),
-          ),
-          appAuthorizations: new PrismaGitHubAppAuthorizationWebhookHandler(
-            prisma,
-          ),
-          pullRequests: new PrismaSetupPullRequestMergeHandler(prisma),
-          repositories: new PrismaRepositoryWebhookHandler(prisma),
-          clock: new SystemClock(),
-        }
+          prisma,
+        })
       : undefined);
 
   if (githubWebhookDependencies) {
@@ -124,11 +125,16 @@ export async function createApiApp(
       ? (() => {
           const clock = new SystemClock();
           const githubAppPrivateKey = readGitHubAppPrivateKey();
+          const conflictReviewFallbackEnabled =
+            isConflictReviewFallbackEnabled();
           const ledgerSecret =
             process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
             options.actionSessionSecret;
           return {
             repositories: new PrismaActionControlPlaneRepository(prisma),
+            ...(conflictReviewFallbackEnabled
+              ? { conflictReviews: new PrismaConflictReviewRepository(prisma) }
+              : {}),
             entitlements: new PrismaActionEntitlementPolicy(prisma),
             rateLimits: new ActionRateLimitPolicy(
               new PrismaRateLimitStore(prisma),
@@ -184,6 +190,47 @@ export async function createApiApp(
   }
 
   return app;
+}
+
+function createDefaultGitHubWebhookDependencies(input: {
+  readonly webhookSecret: string;
+  readonly prisma: PrismaClient;
+}): RegisterGitHubWebhookRoutesDependencies {
+  const conflictReviewFallbackEnabled = isConflictReviewFallbackEnabled();
+  const outbox = new PrismaOutboxEventRepository(input.prisma);
+  return {
+    webhookSecret: input.webhookSecret,
+    installations: new PrismaGitHubInstallationRepository(input.prisma),
+    ownerGrants: new PrismaInstallationWorkspaceOwnerGrant(input.prisma),
+    deliveries: new PrismaWebhookDeliveryRepository(input.prisma),
+    syncRequests: new OutboxInstallationSyncRequester(outbox),
+    appAuthorizations: new PrismaGitHubAppAuthorizationWebhookHandler(
+      input.prisma,
+    ),
+    pullRequests: new CompositePullRequestWebhookHandler([
+      new PrismaSetupPullRequestMergeHandler(input.prisma),
+      ...(conflictReviewFallbackEnabled
+        ? [
+            new ConflictReviewPullRequestWebhookHandler({
+              outbox,
+              clock: new SystemClock(),
+            }),
+          ]
+        : []),
+    ]),
+    ...(conflictReviewFallbackEnabled
+      ? {
+          pushes: new CompositePushWebhookHandler([
+            new ConflictReviewPushWebhookHandler({
+              outbox,
+              clock: new SystemClock(),
+            }),
+          ]),
+        }
+      : {}),
+    repositories: new PrismaRepositoryWebhookHandler(input.prisma),
+    clock: new SystemClock(),
+  };
 }
 
 function definedOption<const Key extends string>(

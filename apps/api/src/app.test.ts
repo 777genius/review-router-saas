@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
+  ActionConflictReviewDispatchPayload,
+  ActionConflictReviewExchangeVerifierPort,
   ActionControlPlaneRepositoryPort,
   ActionEntitlementPolicyPort,
   ActionHealthReport,
@@ -175,6 +177,27 @@ class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
         "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
       actor: "777genius",
       ...this.overrides,
+    };
+  }
+}
+
+class InMemoryConflictReviewExchangeVerifier implements ActionConflictReviewExchangeVerifierPort {
+  public readonly calls: ActionConflictReviewDispatchPayload[] = [];
+
+  async verifyConflictReviewExchange(input: {
+    readonly claims: GitHubActionsOidcClaims;
+    readonly dispatchPayload: ActionConflictReviewDispatchPayload;
+    readonly configSnapshotId: string;
+    readonly exchangedAt: Date;
+  }) {
+    this.calls.push(input.dispatchPayload);
+    return {
+      reviewKind: "conflict-head" as const,
+      dispatchId: input.dispatchPayload.dispatchId,
+      pullRequestNumber: input.dispatchPayload.pullRequestNumber,
+      headSha: input.dispatchPayload.headSha,
+      baseRef: input.dispatchPayload.baseRef,
+      baseSha: input.dispatchPayload.baseSha,
     };
   }
 }
@@ -761,6 +784,59 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("rejects ambiguous conflict dispatch aliases at the HTTP boundary", async () => {
+    const conflictReviews = new InMemoryConflictReviewExchangeVerifier();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        conflictReviews,
+        oidcVerifier: new StaticActionOidcVerifier({
+          event_name: "repository_dispatch",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+          job_workflow_ref:
+            "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+        }),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "opaque-github-oidc-token",
+        conflictDispatch: {
+          protocolVersion: 1,
+          protocol_version: 1,
+          dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+          dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174001",
+          nonce: "n".repeat(40),
+          repository_id: "123456",
+          pr_number: 7,
+          head_sha: "a".repeat(40),
+          base_ref: "main",
+          base_sha: "b".repeat(40),
+          fallback_version: 1,
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: {
+        code: "invalid_action_request",
+        message: "Action control plane request is invalid.",
+        retryable: false,
+      },
+    });
+    expect(conflictReviews.calls).toHaveLength(0);
   });
 
   it("returns a safe error when App comment identity is unavailable", async () => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  isConflictReviewFallbackEnabled,
   isClaudeCodeProviderEnabled,
   isWorkflowProvisioningEnabled,
   loadRuntimeEnv,
@@ -58,6 +59,17 @@ describe("platform config", () => {
         REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
       } as NodeJS.ProcessEnv),
     ).toBe(false);
+  });
+
+  it("keeps conflict review fallback behind an explicit rollout flag", () => {
+    expect(isConflictReviewFallbackEnabled({} as NodeJS.ProcessEnv)).toBe(
+      false,
+    );
+    expect(
+      isConflictReviewFallbackEnabled({
+        REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
   });
 
   it("enables Claude Code provider UI by default and keeps an explicit rollback switch", () => {

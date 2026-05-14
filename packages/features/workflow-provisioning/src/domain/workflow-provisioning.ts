@@ -21,6 +21,7 @@ export type ProvisionWorkflowInput = {
   readonly runtimeConfigMode: "oidc" | "static";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
+  readonly conflictReviewFallbackEnabled?: boolean;
   readonly setupBranch?: string;
   readonly workflowPath?: string;
 };

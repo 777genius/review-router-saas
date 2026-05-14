@@ -109,6 +109,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     const repositoryConfig = await this.findLatestConfigVersion({
       workspaceId: input.workspaceId,
       targetKey: `repo:${input.repositoryId}`,
+      source: "repository",
     });
     if (repositoryConfig) {
       return repositoryConfig;
@@ -117,6 +118,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     return this.findLatestConfigVersion({
       workspaceId: input.workspaceId,
       targetKey: "workspace:default",
+      source: "workspace",
     });
   }
 
@@ -216,6 +218,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
   private async findLatestConfigVersion(input: {
     readonly workspaceId: string;
     readonly targetKey: string;
+    readonly source: "repository" | "workspace";
   }): Promise<RuntimeReviewConfigurationRecord | null> {
     const configuration = await this.prisma.reviewConfiguration.findUnique({
       where: {
@@ -268,6 +271,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       : [toReviewProviderConfiguration(version)];
 
     return {
+      source: input.source,
       version: version.version,
       config: parseReviewConfiguration({
         schemaVersion: 2,

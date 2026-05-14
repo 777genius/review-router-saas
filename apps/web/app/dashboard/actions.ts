@@ -42,6 +42,7 @@ import {
 } from "@reviewrouter/features-review-providers";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
+  isConflictReviewFallbackEnabled,
   isWorkflowProvisioningEnabled,
   resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
@@ -344,6 +345,7 @@ async function createSetupPullRequestMutation(
         name: repository.name,
         defaultBranch: repository.defaultBranch,
         actionRef,
+        conflictReviewFallbackEnabled: isConflictReviewFallbackEnabled(),
         ...(workflowProviderKind ? { providerKind: workflowProviderKind } : {}),
       },
       {
@@ -388,6 +390,7 @@ async function createSetupPullRequestMutation(
               runtimeConfigMode: "oidc",
               staticRuntimeEnv: resolvedRuntime.runtimeEnv,
               workflowStyle,
+              conflictReviewFallbackEnabled: isConflictReviewFallbackEnabled(),
               actor: actor.actor,
             },
             {

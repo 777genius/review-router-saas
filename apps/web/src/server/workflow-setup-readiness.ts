@@ -2,7 +2,7 @@ import type { RepositoryWorkflowProbePort } from "@reviewrouter/features-repo-he
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
   defaultWorkflowPath,
-  getWorkflowProviderContentMarkerGroups,
+  getWorkflowSetupContentMarkerGroups,
 } from "@reviewrouter/features-workflow-provisioning";
 
 export type WorkflowSetupReadinessInput = {
@@ -12,6 +12,7 @@ export type WorkflowSetupReadinessInput = {
   readonly defaultBranch: string;
   readonly actionRef: string;
   readonly providerKind?: ProviderKind;
+  readonly conflictReviewFallbackEnabled?: boolean;
 };
 
 export async function isWorkflowSetupAlreadyCurrent(
@@ -27,10 +28,12 @@ export async function isWorkflowSetupAlreadyCurrent(
     defaultBranch: input.defaultBranch,
     workflowPath: defaultWorkflowPath,
     expectedActionRef: input.actionRef,
-    ...(input.providerKind
+    ...(input.providerKind || input.conflictReviewFallbackEnabled === true
       ? {
-          expectedContentMarkerGroups: getWorkflowProviderContentMarkerGroups({
+          expectedContentMarkerGroups: getWorkflowSetupContentMarkerGroups({
             providerKind: input.providerKind,
+            conflictReviewFallbackEnabled:
+              input.conflictReviewFallbackEnabled === true,
           }),
         }
       : {}),
