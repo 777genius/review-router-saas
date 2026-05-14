@@ -112,6 +112,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm --filter @reviewrouter/platform-db db:generate
           pnpm --filter @reviewrouter/features-conflict-runtime... build
+          node scripts/rewrite-dist-esm-imports.mjs
 
       - name: Preflight conflict runtime before PR checkout
         shell: bash
