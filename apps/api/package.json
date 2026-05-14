@@ -7,6 +7,7 @@
     "@reviewrouter/features-api-demo": "workspace:*",
     "@reviewrouter/features-action-control-plane": "workspace:*",
     "@reviewrouter/features-entitlements": "workspace:*",
+    "@reviewrouter/features-auth": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",

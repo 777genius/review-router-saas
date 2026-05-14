@@ -10,4 +10,6 @@ export * from "./application/use-cases/list-visible-workspace-scope";
 export * from "./infrastructure/prisma/prisma-user-repository";
 export * from "./infrastructure/prisma/prisma-workspace-membership-repository";
 export * from "./infrastructure/prisma/prisma-workspace-access-repository";
+export * from "./infrastructure/github/token-crypto";
+export * from "./infrastructure/github/github-user-authorization";
 export * from "./interface/next/github-profile";

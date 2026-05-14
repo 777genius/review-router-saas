@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   actionHealthReportMaxBytes,
+  actionReviewThreadLifecycleResolveRequestSchema,
   defaultActionOidcAudience,
   type ActionRuntimeConfigResponse,
 } from "../../domain/action-control-plane.js";
@@ -18,16 +19,22 @@ import {
   type IssueActionCommentTokenDependencies,
 } from "../../application/use-cases/issue-action-comment-token.js";
 import {
+  resolveActionReviewThreadLifecycle,
+  type ResolveActionReviewThreadLifecycleDependencies,
+} from "../../application/use-cases/resolve-action-review-thread-lifecycle.js";
+import {
   recordActionHealthReport,
   type RecordActionHealthReportDependencies,
 } from "../../application/use-cases/record-action-health-report.js";
 import type { GitHubAppCommentTokenIssuerPort } from "../../application/ports/github-app-comment-token-issuer-port.js";
+import type { GitHubReviewThreadLifecycleResolverPort } from "../../application/ports/github-review-thread-lifecycle-resolver-port.js";
 
 export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
     GetActionRuntimeConfigDependencies &
     RecordActionHealthReportDependencies & {
       readonly commentTokens?: GitHubAppCommentTokenIssuerPort;
+      readonly reviewThreadLifecycleResolver?: GitHubReviewThreadLifecycleResolverPort;
       readonly oidcAudience?: string;
       readonly controlPlaneEnabled?: boolean;
     };
@@ -151,12 +158,49 @@ export async function registerActionControlPlaneRoutes(
       }
     };
 
+  const createReviewThreadLifecycleResolveHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (!dependencies.reviewThreadLifecycleResolver) {
+        return sendActionErrorCode(
+          reply,
+          "review_thread_lifecycle_resolver_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = actionReviewThreadLifecycleResolveRequestSchema.parse(
+          request.body,
+        );
+        const result = await resolveActionReviewThreadLifecycle(
+          { sessionToken: readBearerToken(request), request: body },
+          dependencies as ResolveActionReviewThreadLifecycleDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
   app.post("/api/action/exchange-token", createExchangeHandler("legacy"));
   app.post("/api/action/v1/session/exchange", createExchangeHandler("v1"));
   app.get("/api/action/config", createConfigHandler("legacy"));
   app.get("/api/action/v1/config", createConfigHandler("v1"));
   app.post("/api/action/comment-token", createCommentTokenHandler("legacy"));
   app.post("/api/action/v1/comment-token", createCommentTokenHandler("v1"));
+  app.post(
+    "/api/action/v1/review-thread-lifecycle/resolve",
+    createReviewThreadLifecycleResolveHandler("v1"),
+  );
   app.post(
     "/api/action/health-report",
     { bodyLimit: actionHealthReportMaxBytes },
@@ -310,6 +354,8 @@ function safeActionErrorMessage(code: string): string {
       return "ReviewRouter action control plane is temporarily disabled.";
     case "comment_token_unavailable":
       return "ReviewRouter App comment identity is temporarily unavailable.";
+    case "review_thread_lifecycle_resolver_unavailable":
+      return "ReviewRouter review thread resolver is temporarily unavailable.";
     case "repository_not_registered":
       return "Repository is not registered in ReviewRouter.";
     case "repository_not_selected":

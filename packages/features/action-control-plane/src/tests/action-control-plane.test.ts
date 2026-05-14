@@ -24,11 +24,16 @@ import type {
   GitHubAppCommentTokenIssuerPort,
   IssueGitHubAppCommentTokenInput,
 } from "../application/ports/github-app-comment-token-issuer-port.js";
+import type {
+  GitHubReviewThreadLifecycleResolverPort,
+  ResolveGitHubReviewThreadLifecycleInput,
+} from "../application/ports/github-review-thread-lifecycle-resolver-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../application/ports/github-actions-oidc-token-verifier-port.js";
 import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-github-oidc-token.js";
 import { getActionRuntimeConfig } from "../application/use-cases/get-action-runtime-config.js";
 import { issueActionCommentToken } from "../application/use-cases/issue-action-comment-token.js";
 import { pruneExpiredActionOidcReplayNonces } from "../application/use-cases/prune-expired-action-oidc-replay-nonces.js";
+import { resolveActionReviewThreadLifecycle } from "../application/use-cases/resolve-action-review-thread-lifecycle.js";
 import { recordActionHealthReport } from "../application/use-cases/record-action-health-report.js";
 import {
   actionHealthReportMaxBytes,
@@ -37,6 +42,7 @@ import {
   githubActionsOidcIssuer,
   type ActionHealthReport,
   type ActionRepositoryContext,
+  type ActionReviewThreadLifecycleResolveResponse,
   type ActionSessionClaims,
   type GitHubActionsOidcClaims,
 } from "../domain/action-control-plane.js";
@@ -138,6 +144,23 @@ class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
         issues: "write" as const,
       },
     };
+  }
+}
+
+class InMemoryReviewThreadLifecycleResolver implements GitHubReviewThreadLifecycleResolverPort {
+  public readonly calls: ResolveGitHubReviewThreadLifecycleInput[] = [];
+  public response: ActionReviewThreadLifecycleResolveResponse = {
+    protocolVersion: 1,
+    status: "resolved",
+    resolvedBy: "github_user",
+    reasonCodes: [],
+  };
+
+  async resolveReviewThreadLifecycle(
+    input: ResolveGitHubReviewThreadLifecycleInput,
+  ): Promise<ActionReviewThreadLifecycleResolveResponse> {
+    this.calls.push(input);
+    return this.response;
   }
 }
 
@@ -1066,6 +1089,77 @@ describe("action control plane", () => {
       ),
     ).rejects.toThrow("entitlement_denied:action_control_plane");
     expect(commentTokens.calls).toEqual([]);
+  });
+
+  it("resolves review thread lifecycle through a repository-scoped backend resolver", async () => {
+    const resolver = new InMemoryReviewThreadLifecycleResolver();
+    const result = await resolveActionReviewThreadLifecycle(
+      {
+        sessionToken: "session",
+        request: {
+          protocolVersion: 1,
+          pullRequestNumber: 109,
+          reviewedHeadSha: "a".repeat(40),
+          target: {
+            targetId: "rrt_123",
+            threadId: "PRRT_kwDOExample",
+            fingerprint: "b".repeat(24),
+            parentCommentId: "PRRC_kwDOExample",
+            parentCommentUpdatedAt: "2026-05-03T11:59:00.000Z",
+            threadCommentCount: 1,
+          },
+        },
+      },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService(),
+        reviewThreadLifecycleResolver: resolver,
+        clock,
+      },
+    );
+
+    expect(result).toEqual({
+      protocolVersion: 1,
+      status: "resolved",
+      resolvedBy: "github_user",
+      reasonCodes: [],
+    });
+    expect(resolver.calls).toHaveLength(1);
+    expect(resolver.calls[0]!.repository).toEqual(repositoryContext);
+    expect(resolver.calls[0]!.request.target.threadId).toBe("PRRT_kwDOExample");
+  });
+
+  it("checks action control plane entitlements before resolving review thread lifecycle", async () => {
+    const resolver = new InMemoryReviewThreadLifecycleResolver();
+
+    await expect(
+      resolveActionReviewThreadLifecycle(
+        {
+          sessionToken: "session",
+          request: {
+            protocolVersion: 1,
+            pullRequestNumber: 109,
+            reviewedHeadSha: "a".repeat(40),
+            target: {
+              targetId: "rrt_123",
+              threadId: "PRRT_kwDOExample",
+              fingerprint: "b".repeat(24),
+              parentCommentId: "PRRC_kwDOExample",
+              parentCommentUpdatedAt: "2026-05-03T11:59:00.000Z",
+              threadCommentCount: 1,
+            },
+          },
+        },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          reviewThreadLifecycleResolver: resolver,
+          entitlements: new DenyingActionEntitlements(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("entitlement_denied:action_control_plane");
+    expect(resolver.calls).toEqual([]);
   });
 
   it("revalidates repository state before returning runtime config", async () => {

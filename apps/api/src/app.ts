@@ -35,6 +35,7 @@ import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
 import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
+import { PrismaGitHubUserReviewThreadResolver } from "./github/prisma-github-user-review-thread-resolver.js";
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
@@ -144,6 +145,8 @@ export async function createApiApp(
               options.actionSessionSecret,
             ),
             ledgerKeys: new HmacActionLedgerKey(ledgerSecret),
+            reviewThreadLifecycleResolver:
+              new PrismaGitHubUserReviewThreadResolver(prisma),
             ...(process.env.GITHUB_APP_ID && githubAppPrivateKey
               ? {
                   commentTokens: new OctokitGitHubAppCommentTokenIssuer({

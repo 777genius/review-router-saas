@@ -147,6 +147,9 @@ importers:
       '@reviewrouter/features-api-demo':
         specifier: workspace:*
         version: link:../../packages/features/api-demo
+      '@reviewrouter/features-auth':
+        specifier: workspace:*
+        version: link:../../packages/features/auth
       '@reviewrouter/features-entitlements':
         specifier: workspace:*
         version: link:../../packages/features/entitlements

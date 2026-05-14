@@ -144,6 +144,76 @@ export type ActionCommentTokenResponse = z.infer<
   typeof actionCommentTokenResponseSchema
 >;
 
+export const actionReviewThreadLifecycleReasonCodeSchema = z.enum([
+  "already_resolved",
+  "head_sha_changed",
+  "human_reply",
+  "missing_user_authorization",
+  "mutation_failed",
+  "mutation_permission_denied",
+  "pagination_incomplete",
+  "thread_changed_before_mutation",
+  "thread_not_found",
+  "token_decryption_failed",
+  "token_encryption_misconfigured",
+  "token_expired",
+  "token_refresh_failed",
+  "token_revoked",
+  "untrusted_author",
+  "viewer_cannot_resolve",
+]);
+
+export type ActionReviewThreadLifecycleReasonCode = z.infer<
+  typeof actionReviewThreadLifecycleReasonCodeSchema
+>;
+
+export const actionReviewThreadLifecycleResolveRequestSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    pullRequestNumber: z.number().int().min(1).max(1_000_000),
+    reviewedHeadSha: z.string().regex(/^[a-fA-F0-9]{40}$/),
+    target: z
+      .object({
+        targetId: z.string().min(1).max(240),
+        threadId: z.string().min(1).max(240),
+        fingerprint: z.string().min(8).max(128),
+        parentCommentId: z.string().min(1).max(240),
+        parentCommentUpdatedAt: z.string().datetime(),
+        threadCommentCount: z.number().int().min(1).max(100),
+      })
+      .strict(),
+  })
+  .strict();
+
+export type ActionReviewThreadLifecycleResolveRequest = z.infer<
+  typeof actionReviewThreadLifecycleResolveRequestSchema
+>;
+
+export const actionReviewThreadLifecycleResolveResponseSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    status: z.enum([
+      "resolved",
+      "already_resolved",
+      "skipped",
+      "manual_attention",
+      "missing_user_authorization",
+      "missing_resolver_permission",
+      "failed",
+    ]),
+    reasonCodes: z
+      .array(actionReviewThreadLifecycleReasonCodeSchema)
+      .max(16)
+      .default([]),
+    resolvedBy: z.enum(["github_user", "external"]).optional(),
+    errorCode: z.string().max(160).optional(),
+  })
+  .strict();
+
+export type ActionReviewThreadLifecycleResolveResponse = z.infer<
+  typeof actionReviewThreadLifecycleResolveResponseSchema
+>;
+
 export const actionHealthReportMaxBytes = 64 * 1024;
 const actionHealthCountSchema = z.number().int().min(0).max(10_000);
 const actionHealthFindingCountsSchema = z
