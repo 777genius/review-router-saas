@@ -44,6 +44,10 @@ describe("conflict runtime reusable workflow contract", () => {
 
   it("pins checkout behavior and does not interpolate untrusted inputs in shell", () => {
     const workflow = readFileSync(workflowPath, "utf8");
+    const jobEnv = workflow.slice(
+      workflow.indexOf("    env:"),
+      workflow.indexOf("    steps:"),
+    );
     const scriptBodies = [
       ...workflow.matchAll(/\n\s+run: \|\n((?:\s{10,}.+\n?)*)/g),
     ]
@@ -61,6 +65,12 @@ describe("conflict runtime reusable workflow contract", () => {
     expect(workflow).toContain("repository: ${{ github.repository }}");
     expect(workflow).toContain("ref: ${{ inputs.conflict_head_sha }}");
     expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2);
+    expect(jobEnv).not.toContain("REVIEW_ROUTER_CONFLICT_SESSION_FILE");
+    expect(
+      workflow.match(
+        /REVIEW_ROUTER_CONFLICT_SESSION_FILE: \$\{\{ runner\.temp \}\}/g,
+      ),
+    ).toHaveLength(2);
     expect(scriptBodies).not.toContain("${{ inputs.");
     expect(scriptBodies).not.toContain("${{ github.");
     expect(scriptBodies).not.toContain("${{ secrets.");

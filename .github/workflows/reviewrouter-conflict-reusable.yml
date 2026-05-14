@@ -66,7 +66,6 @@ jobs:
       REVIEWROUTER_API_URL: ${{ inputs.api_url }}
       REVIEWROUTER_ACTION_VERSION: ${{ inputs.runtime_ref }}
       REVIEWROUTER_OIDC_AUDIENCE: reviewrouter
-      REVIEW_ROUTER_CONFLICT_SESSION_FILE: ${{ runner.temp }}/reviewrouter-conflict/session.json
       REVIEW_ROUTER_TARGET_WORKSPACE: ${{ github.workspace }}/reviewrouter-target
       INPUT_STATIC_RUNTIME_ENV_JSON: ${{ inputs.static_runtime_env_json }}
       INPUT_PR_NUMBER: ${{ inputs.pr_number }}
@@ -116,6 +115,8 @@ jobs:
       - name: Preflight conflict runtime before PR checkout
         shell: bash
         working-directory: .reviewrouter-runtime
+        env:
+          REVIEW_ROUTER_CONFLICT_SESSION_FILE: ${{ runner.temp }}/reviewrouter-conflict/session.json
         run: |
           set -euo pipefail
           node packages/features/conflict-runtime/dist/interface/cli/reviewrouter-conflict-runtime.js preflight
@@ -138,6 +139,7 @@ jobs:
         shell: bash
         working-directory: .reviewrouter-runtime
         env:
+          REVIEW_ROUTER_CONFLICT_SESSION_FILE: ${{ runner.temp }}/reviewrouter-conflict/session.json
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
           CODEX_CONFIG_TOML: ${{ secrets.CODEX_CONFIG_TOML }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
