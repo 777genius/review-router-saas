@@ -77,6 +77,8 @@ jobs:
       INPUT_CONFLICT_HEAD_SHA: ${{ inputs.conflict_head_sha }}
       INPUT_CONFLICT_BASE_REF: ${{ inputs.conflict_base_ref }}
       INPUT_CONFLICT_BASE_SHA: ${{ inputs.conflict_base_sha }}
+      CODEX_AUTH_JSON_PRESENT: ${{ secrets.CODEX_AUTH_JSON != '' && '1' || '0' }}
+      OPENAI_API_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' && '1' || '0' }}
     steps:
       - name: Validate conflict runtime ref
         shell: bash
@@ -128,7 +130,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Codex CLI
-        if: ${{ secrets.CODEX_AUTH_JSON != '' || secrets.OPENAI_API_KEY != '' }}
+        if: ${{ env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' }}
         shell: bash
         run: npm install -g @openai/codex@0.125.0
 

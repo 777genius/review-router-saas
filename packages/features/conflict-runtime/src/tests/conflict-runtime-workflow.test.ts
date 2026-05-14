@@ -64,6 +64,10 @@ describe("conflict runtime reusable workflow contract", () => {
     expect(scriptBodies).not.toContain("${{ inputs.");
     expect(scriptBodies).not.toContain("${{ github.");
     expect(scriptBodies).not.toContain("${{ secrets.");
+    expect(workflow).not.toContain("if: ${{ secrets.");
+    expect(workflow).toContain(
+      "if: ${{ env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' }}",
+    );
   });
 
   it("passes only Codex-backed model secrets to the conflict runtime", () => {
