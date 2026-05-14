@@ -456,6 +456,7 @@ function trustedReviewRouterAuthors(
 ): ReadonlySet<string> {
   const values = [
     "review-router-ai[bot]",
+    "github-actions[bot]",
     env?.REVIEW_APP_BOT_LOGIN,
     env?.REVIEW_ROUTER_APP_BOT_LOGIN,
     env?.REVIEWROUTER_APP_BOT_LOGIN,
@@ -463,6 +464,9 @@ function trustedReviewRouterAuthors(
     botLoginFromSlug(env?.REVIEW_APP_SLUG),
     botLoginFromSlug(env?.REVIEW_ROUTER_APP_SLUG),
     botLoginFromSlug(env?.REVIEWROUTER_APP_SLUG),
+    botLoginFromSlug(env?.AI_ROBOT_REVIEW_APP_SLUG),
+    ...splitCommaSeparated(env?.REVIEW_THREAD_LIFECYCLE_TRUSTED_AUTHORS),
+    ...splitCommaSeparated(env?.REVIEW_ROUTER_TRUSTED_BOT_AUTHORS),
   ];
   return new Set(
     values
@@ -474,6 +478,13 @@ function trustedReviewRouterAuthors(
 function botLoginFromSlug(slug: string | undefined): string | undefined {
   const normalized = slug?.trim();
   return normalized ? `${normalized}[bot]` : undefined;
+}
+
+function splitCommaSeparated(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
