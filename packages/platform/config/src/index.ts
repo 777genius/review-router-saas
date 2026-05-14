@@ -34,7 +34,7 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: z
     .enum(["0", "1"])
-    .default("0"),
+    .default("1"),
   REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES: z.string().default(""),
   REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
@@ -83,7 +83,8 @@ export function isWorkflowProvisioningEnabled(
 export function isConflictReviewFallbackEnabled(
   input: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  return input.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK === "1";
+  const value = input.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK?.trim();
+  return value === undefined || value === "" || value === "1";
 }
 
 export function isConflictReviewFallbackAllowedForRepository(
@@ -96,6 +97,9 @@ export function isConflictReviewFallbackAllowedForRepository(
   const allowlist = parseConflictReviewFallbackRepositoryAllowlist(
     input.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES,
   );
+  if (allowlist.length === 0) {
+    return true;
+  }
   const normalizedRepository = normalizeRepositoryFullName(repositoryFullName);
   return allowlist.includes(normalizedRepository);
 }

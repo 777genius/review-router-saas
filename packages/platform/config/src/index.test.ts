@@ -63,18 +63,21 @@ describe("platform config", () => {
     ).toBe(false);
   });
 
-  it("keeps conflict review fallback behind an explicit rollout flag", () => {
-    expect(isConflictReviewFallbackEnabled({} as NodeJS.ProcessEnv)).toBe(
-      false,
-    );
+  it("enables conflict review fallback by default and keeps an explicit rollback flag", () => {
+    expect(isConflictReviewFallbackEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(
       isConflictReviewFallbackEnabled({
         REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
       } as NodeJS.ProcessEnv),
     ).toBe(true);
+    expect(
+      isConflictReviewFallbackEnabled({
+        REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
   });
 
-  it("requires an explicit repository rollout allowlist for conflict review fallback", () => {
+  it("allows conflict review fallback for all repositories by default and supports a restrictive allowlist", () => {
     const enabledEnv = {
       REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
       REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES:
@@ -98,6 +101,18 @@ describe("platform config", () => {
         enabledEnv,
       ),
     ).toBe(false);
+    expect(
+      isConflictReviewFallbackAllowedForRepository("777genius/not-enabled", {
+        REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
+        REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES: "",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isConflictReviewFallbackAllowedForRepository(
+        "777genius/not-enabled",
+        {} as NodeJS.ProcessEnv,
+      ),
+    ).toBe(true);
     expect(
       isConflictReviewFallbackAllowedForRepository("777genius/example", {
         ...enabledEnv,
