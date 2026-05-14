@@ -11,7 +11,7 @@ export const metadata: Metadata = createPublicPageMetadata({
   path: "/security",
 });
 
-const secretCommand = `curl -fsSL ${resolveCodexSeedScriptUrl()} | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash`;
+const secretCommand = `curl -fsSL ${resolveCodexSeedScriptUrl()} | bash -s -- --confirm-write --scope repo --repo owner/repo`;
 
 const securitySections = [
   {

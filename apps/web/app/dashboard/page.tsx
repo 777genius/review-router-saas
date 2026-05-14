@@ -2158,6 +2158,7 @@ function RepositoryTable({
     const setupPullRequestUrl = safeGitHubDashboardLink(
       repositoryProvisioning?.pullRequestUrl ?? "",
     );
+    const setupIssue = repositoryProvisioning?.errorMessage ?? null;
     const workflowCurrent = workflowSetupAlreadyCurrent(
       repositoryHealth?.status,
     );
@@ -2165,6 +2166,7 @@ function RepositoryTable({
       setupStatus: repository.setupStatus,
       healthStatus: repositoryHealth?.status,
       workflowCurrent,
+      setupNeedsAttention: isSetupRecoveryIssue(setupIssue),
       providerSetupConfirmed: isRepositoryProviderSetupConfirmed({
         repository,
         repositoryHealth,
@@ -2194,6 +2196,7 @@ function RepositoryTable({
       repository,
       repositoryHealth,
       setupPullRequestUrl,
+      setupIssue,
       workflowCurrent,
       setupProgressStep,
       readiness,
@@ -2292,6 +2295,7 @@ function RepositoryTable({
             {
               repository,
               setupPullRequestUrl,
+              setupIssue,
               workflowCurrent,
               setupProgressStep,
             },
@@ -2338,7 +2342,7 @@ function RepositoryTable({
                   defaultChecked={isSelectedRepository}
                   className="repository-setup-disclosure peer sr-only"
                 />
-                {setupProgressStep < 3 ? (
+                {repository.setupStatus === "setup_pr_open" ? (
                   <RepositorySetupStatusRefresher
                     enabled
                     workspaceId={workspace.id}
@@ -2381,6 +2385,7 @@ function RepositoryTable({
                       workspace={workspace}
                       repository={repository}
                       setupPullRequestUrl={setupPullRequestUrl}
+                      setupIssue={setupIssue}
                       workflowCurrent={workflowCurrent}
                       mutationsEnabled={mutationsEnabled}
                       claudeCodeProviderEnabled={claudeCodeProviderEnabled}
@@ -2501,6 +2506,7 @@ function RepositorySetupProgressPanel({
   workspace,
   repository,
   setupPullRequestUrl,
+  setupIssue,
   workflowCurrent,
   mutationsEnabled,
   claudeCodeProviderEnabled,
@@ -2509,6 +2515,7 @@ function RepositorySetupProgressPanel({
   readonly workspace: DashboardWorkspace;
   readonly repository: DashboardWorkspaceData["repositories"][number];
   readonly setupPullRequestUrl: string | null;
+  readonly setupIssue: string | null;
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
   readonly claudeCodeProviderEnabled: boolean;
@@ -2541,6 +2548,7 @@ function RepositorySetupProgressPanel({
       archived={repository.archived}
       initialSetupStatus={repository.setupStatus}
       initialSetupPullRequestUrl={setupPullRequestUrl}
+      initialSetupIssue={setupIssue}
       workflowCurrent={workflowCurrent}
       mutationsEnabled={mutationsEnabled}
       initialStep={currentStep}
@@ -3326,6 +3334,10 @@ function isProviderSecretCheckError(error: string): boolean {
   );
 }
 
+function isSetupRecoveryIssue(value: string | null | undefined): boolean {
+  return value === "setup_pr_closed" || value === "setup_pr_branch_deleted";
+}
+
 function workspaceInstallSummary(workspace: DashboardWorkspace): string {
   const installation = workspace.installations[0];
   if (!installation) {
@@ -3419,6 +3431,10 @@ function dashboardErrorText(error: string): string {
       return "The GitHub App installation is not active.";
     case "setup_pr_not_merged":
       return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
+    case "setup_pr_closed":
+      return "The saved setup PR was closed before it was merged. Recreate the setup PR, then merge the new one.";
+    case "setup_pr_branch_deleted":
+      return "The saved setup PR branch was deleted, so GitHub cannot merge that PR anymore. Recreate the setup PR to continue.";
     case "repository_not_visible_to_github_app":
       return "The GitHub App installation cannot read this repository. Update App repository access or sync repositories, then try again.";
     case "provider_secret_not_found":

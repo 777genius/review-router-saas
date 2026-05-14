@@ -24,29 +24,21 @@ describe("provider secret setup guidance", () => {
       validatesBeforeWrite: true,
       sendsSecretToReviewRouter: false,
     });
-    expect(guidance.commands[0]?.command).toContain(
-      "REVIEW_ROUTER_SECRET_SCOPE=org",
-    );
-    expect(guidance.commands[0]?.command).toContain(
-      "REVIEW_ROUTER_ORG_SECRET_VISIBILITY=selected",
-    );
-    expect(guidance.commands[0]?.command).toContain(
-      "REVIEW_ROUTER_CONFIRM_WRITE=1",
-    );
-    expect(guidance.commands[0]?.command).toContain(
-      "REVIEW_ROUTER_ORG_SECRET_REPOS=tvaity",
-    );
+    expect(guidance.commands[0]?.command).toContain("--scope org");
+    expect(guidance.commands[0]?.command).toContain("--visibility selected");
+    expect(guidance.commands[0]?.command).toContain("--confirm-write");
+    expect(guidance.commands[0]?.command).toContain("--repos tvaity");
     expect(guidance.commands[0]?.command).not.toContain("CODEX_AUTH_JSON=");
     expect(
       guidance.commands.find(
         (command) => command.scope === "organization_private_repositories",
       )?.command,
-    ).toContain("REVIEW_ROUTER_ORG_SECRET_VISIBILITY=private");
+    ).toContain("--visibility private");
     expect(
       guidance.commands.find(
         (command) => command.scope === "organization_all_repositories",
       )?.command,
-    ).toContain("REVIEW_ROUTER_ORG_SECRET_VISIBILITY=all");
+    ).toContain("--visibility all");
   });
 
   it("builds repository API key commands without embedding secret values", () => {

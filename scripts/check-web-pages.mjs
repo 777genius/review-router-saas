@@ -4,9 +4,9 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const repoCodexCommandFragment =
-  "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash";
+  "/install/codex | bash -s -- --confirm-write --scope repo --repo owner/repo";
 const orgCodexCommandFragment =
-  "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash";
+  "/install/codex | bash -s -- --confirm-write --scope org --org acme --visibility selected --repos repo-a,repo-b";
 const commonTexts = ["ReviewRouter", "Security", "Support"];
 const landingHeroText = "Privacy-first AI code review";
 

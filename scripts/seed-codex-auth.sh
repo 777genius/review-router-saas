@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Seed Codex ChatGPT OAuth auth into GitHub Actions secrets without sending it to ReviewRouter SaaS.
 # Usage examples:
-#   curl -fsSL https://reviewrouter.site/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
-#   REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=my-org REVIEW_ROUTER_ORG_SECRET_VISIBILITY=selected REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash scripts/seed-codex-auth.sh
+#   curl -fsSL https://reviewrouter.site/install/codex | bash -s -- --confirm-write --repo owner/repo
+#   bash scripts/seed-codex-auth.sh --confirm-write --scope org --org my-org --visibility selected --repos repo-a,repo-b
 
 set -Eeuo pipefail
 
@@ -245,7 +245,7 @@ detect_repo() {
     fi
   fi
 
-  fatal "Could not detect repository. Set REVIEW_ROUTER_REPO=owner/repo."
+  fatal "Could not detect repository. Pass --repo owner/repo or set REVIEW_ROUTER_REPO=owner/repo."
 }
 
 normalize_org_repos() {

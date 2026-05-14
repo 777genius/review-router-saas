@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
+import { confirmSetupPullRequestMergedClientAction } from "./actions";
 import { RepositorySetupProgressPanel } from "./repository-setup-progress-panel";
 import {
   providerSetupConfirmedEvent,
@@ -201,6 +202,68 @@ describe("RepositorySetupProgressPanel", () => {
       expect(screen.getByText("3 of 4 - enable review")).toBeTruthy();
     });
     expect(screen.getByRole("button", { name: "Enable review" })).toBeTruthy();
+  });
+
+  it("shows a recovery action when the saved setup PR was closed", () => {
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="needs_attention"
+        initialSetupPullRequestUrl="https://github.com/777genius/example/pull/1"
+        initialSetupIssue="setup_pr_closed"
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={1}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    expect(screen.getByText("Recover setup PR")).toBeTruthy();
+    expect(
+      screen.getByText("Previous setup PR was closed. Recreate it."),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Recreate setup PR/i }),
+    ).toBeTruthy();
+  });
+
+  it("turns a deleted setup branch merge check into a recovery step", async () => {
+    vi.mocked(confirmSetupPullRequestMergedClientAction).mockResolvedValueOnce({
+      params: {
+        error: "setup_pr_branch_deleted",
+        workspace: "workspace_1",
+        section: "repositories",
+      },
+    });
+
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="setup_pr_open"
+        initialSetupPullRequestUrl="https://github.com/777genius/example/pull/1"
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={2}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "I merged it" }));
+
+    expect(
+      await screen.findByText("Setup PR branch was deleted. Recreate it."),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Recreate setup PR/i }),
+    ).toBeTruthy();
   });
 });
 

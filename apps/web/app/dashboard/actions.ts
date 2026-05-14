@@ -65,6 +65,7 @@ import {
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
 import { refreshGitHubUserRepositoryAccess } from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
+import { inspectSetupPullRequestStatus } from "../../src/server/setup-pull-request-status";
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
 import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-readiness";
 
@@ -476,8 +477,8 @@ async function confirmSetupPullRequestMergedMutation(
     const pullRequestNumber = pullRequestNumberFromUrl(
       setupProvisioning?.pullRequestUrl ?? "",
     );
-    const setupPullRequestMerged = pullRequestNumber
-      ? await checkSetupPullRequestMerged(
+    const setupPullRequestStatus = pullRequestNumber
+      ? await inspectSetupPullRequestStatus(
           {
             owner: repository.owner,
             name: repository.name,
@@ -486,7 +487,8 @@ async function confirmSetupPullRequestMergedMutation(
           },
           octokit,
         )
-      : false;
+      : null;
+    const setupPullRequestMerged = setupPullRequestStatus === "merged";
     const workflowProviderKind = setupPullRequestMerged
       ? undefined
       : workflowReadinessProviderKind(
@@ -520,6 +522,24 @@ async function confirmSetupPullRequestMergedMutation(
         );
 
     if (!setupPullRequestMerged && !workflowReady) {
+      if (
+        setupPullRequestStatus === "closed" ||
+        setupPullRequestStatus === "branch_deleted"
+      ) {
+        const reason =
+          setupPullRequestStatus === "closed"
+            ? "setup_pr_closed"
+            : "setup_pr_branch_deleted";
+        await markRepositoryWorkflowSetupNeedsAttention({
+          prisma,
+          repositoryId,
+          setupBranch: setupProvisioning?.branch ?? null,
+          pullRequestNumber,
+          reason,
+        });
+        throw new Error(reason);
+      }
+
       throw new Error("setup_pr_not_merged");
     }
 
@@ -1470,39 +1490,6 @@ function workflowReadinessProviderKind(
     : undefined;
 }
 
-async function checkSetupPullRequestMerged(
-  input: {
-    readonly owner: string;
-    readonly name: string;
-    readonly pullRequestNumber: number;
-    readonly setupBranch: string | null;
-  },
-  octokit: Awaited<ReturnType<typeof createGitHubAppInstallationOctokit>>,
-): Promise<boolean> {
-  try {
-    const response = await octokit.request(
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
-      {
-        owner: input.owner,
-        repo: input.name,
-        pull_number: input.pullRequestNumber,
-      },
-    );
-    const pullRequest = response.data as {
-      readonly merged?: unknown;
-      readonly head?: { readonly ref?: unknown };
-    };
-
-    if (input.setupBranch && pullRequest.head?.ref !== input.setupBranch) {
-      return false;
-    }
-
-    return pullRequest.merged === true;
-  } catch {
-    return false;
-  }
-}
-
 async function markRepositoryWorkflowConfigured(input: {
   readonly prisma: PrismaClient;
   readonly repositoryId: string;
@@ -1543,6 +1530,51 @@ async function markRepositoryWorkflowConfigured(input: {
     input.prisma.repositoryConnection.update({
       where: { id: input.repositoryId },
       data: { setupStatus: "configured" },
+    }),
+  ]);
+}
+
+async function markRepositoryWorkflowSetupNeedsAttention(input: {
+  readonly prisma: PrismaClient;
+  readonly repositoryId: string;
+  readonly setupBranch: string | null;
+  readonly pullRequestNumber: number | null;
+  readonly reason: "setup_pr_closed" | "setup_pr_branch_deleted";
+}): Promise<void> {
+  const provisioningWhere =
+    input.setupBranch || input.pullRequestNumber
+      ? {
+          repositoryId: input.repositoryId,
+          status: "setup_pr_open" as const,
+          OR: [
+            ...(input.setupBranch ? [{ branch: input.setupBranch }] : []),
+            ...(input.pullRequestNumber
+              ? [
+                  {
+                    pullRequestUrl: {
+                      endsWith: `/pull/${input.pullRequestNumber}`,
+                    },
+                  },
+                ]
+              : []),
+          ],
+        }
+      : {
+          repositoryId: input.repositoryId,
+          status: "setup_pr_open" as const,
+        };
+
+  await input.prisma.$transaction([
+    input.prisma.workflowProvisioning.updateMany({
+      where: provisioningWhere,
+      data: {
+        status: "failed",
+        errorMessage: input.reason,
+      },
+    }),
+    input.prisma.repositoryConnection.update({
+      where: { id: input.repositoryId },
+      data: { setupStatus: "needs_attention" },
     }),
   ]);
 }
@@ -1792,6 +1824,8 @@ function safeDashboardErrorCode(error: unknown): string {
       "repository_archived",
       "installation_not_active",
       "setup_pr_not_merged",
+      "setup_pr_closed",
+      "setup_pr_branch_deleted",
       "repository_not_visible_to_github_app",
       "provider_secret_not_found",
       "provider_secret_not_available_to_repository",

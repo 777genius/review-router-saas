@@ -136,8 +136,8 @@ export function ProviderSecretSetupDialog({
                   computer. The command connects your AI provider to{" "}
                   {repositoryFullName}; secrets are written directly to GitHub
                   Actions, while ReviewRouter SaaS stores only metadata and
-                  model settings. Run it in a terminal from the{" "}
-                  {repositoryFullName} repository directory.
+                  model settings. The command includes the repository target, so
+                  it can run from any directory on your machine.
                 </DialogDescription>
               </div>
               <div className="flex flex-wrap items-center gap-2">

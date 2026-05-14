@@ -385,8 +385,9 @@ function ProviderSecretNotice({
         </p>
       ) : null}
       <p className="mt-1 text-amber-100/85">
-        Set a repository secret from a terminal opened in the repository
-        directory:
+        Set a repository secret from any terminal where GitHub CLI is
+        authenticated. The command targets this repository with{" "}
+        <code className="font-mono">--repo</code>:
       </p>
       {sharedProviderCopy ? (
         <p className="mt-1 text-amber-100/80">{sharedProviderCopy}</p>

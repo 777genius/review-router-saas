@@ -61,6 +61,8 @@ export function RepositorySetupStatusRefresher({
                 setupPullRequestMergedEvent({ repositoryId }),
               );
               router.refresh();
+            } else if (isRecoverableSetupPullRequestError(params.error)) {
+              router.refresh();
             }
           })
           .catch(() => {
@@ -90,4 +92,10 @@ export function RepositorySetupStatusRefresher({
   ]);
 
   return null;
+}
+
+function isRecoverableSetupPullRequestError(
+  value: string | undefined,
+): boolean {
+  return value === "setup_pr_closed" || value === "setup_pr_branch_deleted";
 }

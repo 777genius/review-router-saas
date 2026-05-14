@@ -101,12 +101,15 @@ export function repositorySetupProgressStep({
   healthStatus,
   workflowCurrent,
   providerSetupConfirmed,
+  setupNeedsAttention = false,
 }: {
   readonly setupStatus: string;
   readonly healthStatus: string | undefined;
   readonly workflowCurrent: boolean;
   readonly providerSetupConfirmed: boolean;
+  readonly setupNeedsAttention?: boolean;
 }): RepositorySetupStep {
+  if (setupNeedsAttention) return 1;
   if (healthStatus === "healthy") return 4;
   if (workflowCurrent && providerSetupConfirmed) return 4;
   if (workflowCurrent) return 3;

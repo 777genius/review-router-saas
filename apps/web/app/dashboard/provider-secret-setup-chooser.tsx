@@ -149,7 +149,7 @@ export function ProviderSecretSetupChooser({
         ? {
             badge: "Codex subscription",
             title: "Use your ChatGPT Codex subscription",
-            body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The script validates the active Codex account and writes CODEX_AUTH_JSON directly to GitHub Actions secrets.`,
+            body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, validates the active Codex account, and writes CODEX_AUTH_JSON directly to GitHub Actions secrets.`,
             footnote:
               "If Codex later says the token is stale, run codex login again and rerun this same command.",
             apiKey: null as {
@@ -161,7 +161,7 @@ export function ProviderSecretSetupChooser({
           ? {
               badge: "Codex API key",
               title: "Use OpenAI API billing for Codex",
-              body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The command will prompt you to paste your OpenAI API key, then store it as the OPENAI_API_KEY secret in GitHub Actions for this repository.`,
+              body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, prompts you to paste your OpenAI API key, then stores it as the OPENAI_API_KEY secret in GitHub Actions for this repository.`,
               footnote:
                 "This does not use the ChatGPT subscription OAuth file. It uses normal OpenAI API billing.",
               apiKey: {
@@ -184,7 +184,7 @@ export function ProviderSecretSetupChooser({
             : {
                 badge: "OpenRouter API key",
                 title: "Use OpenRouter billing",
-                body: `Run this from your own computer, in a terminal opened in the ${repositoryFullName} repository directory. The command will prompt you to paste your OpenRouter API key, then store it as the OPENROUTER_API_KEY secret in GitHub Actions for this repository.`,
+                body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, prompts you to paste your OpenRouter API key, then stores it as the OPENROUTER_API_KEY secret in GitHub Actions for this repository.`,
                 footnote:
                   "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
                 apiKey: {
@@ -328,8 +328,8 @@ export function ProviderSecretSetupChooser({
         <ol className="mt-4 grid list-decimal gap-2 pl-5 text-sm leading-6 text-emerald-50/90">
           <li>Merge the setup PR for {repositoryFullName}.</li>
           <li>
-            On your own computer, open a terminal in the {repositoryFullName}{" "}
-            repository directory.
+            On your own computer, open any terminal where GitHub CLI is
+            authenticated.
           </li>
           <li>
             Run the command below to connect this AI provider to the repository.

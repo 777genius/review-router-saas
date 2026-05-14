@@ -1,8 +1,34 @@
 import { describe, expect, it } from "vitest";
 import {
   repositoryMatchesSearchFilter,
+  repositorySetupProgressStep,
   repositorySearchReadiness,
 } from "./repository-search";
+
+describe("repositorySetupProgressStep", () => {
+  it("keeps setup recovery on the first step even if health is stale", () => {
+    expect(
+      repositorySetupProgressStep({
+        setupStatus: "needs_attention",
+        healthStatus: "setup_pr_open",
+        workflowCurrent: false,
+        providerSetupConfirmed: false,
+        setupNeedsAttention: true,
+      }),
+    ).toBe(1);
+  });
+
+  it("does not let generic needs-attention hide an already current workflow", () => {
+    expect(
+      repositorySetupProgressStep({
+        setupStatus: "needs_attention",
+        healthStatus: "provider_needs_setup",
+        workflowCurrent: true,
+        providerSetupConfirmed: false,
+      }),
+    ).toBe(3);
+  });
+});
 
 describe("repositorySearchReadiness", () => {
   it("treats completed setup without provider danger as ready", () => {
