@@ -280,9 +280,11 @@ model ConflictReviewAttempt {
   dispatchNonceHash         String
   dispatchEventType         String
   status                    ConflictReviewAttemptStatus @default(recorded)
+  version                   Int                         @default(1)
   githubRunId               String?
   githubRunAttempt          String?
   configSnapshotId          String?
+  postingManifestHash       String?
   safeErrorCode             String?
   safeErrorSummary          String?
   normalReviewRecheckNeeded Boolean                     @default(false)
@@ -292,14 +294,37 @@ model ConflictReviewAttempt {
   startedAt                 DateTime?
   completedAt               DateTime?
 
-  workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  workspace      Workspace                     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository     RepositoryConnection          @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  postingIntents ConflictReviewPostingIntent[]
 
   @@unique([repositoryId, pullRequestNumber, headSha, baseRef, baseSha, fallbackVersion])
   @@index([workspaceId, status])
   @@index([repositoryId, pullRequestNumber, status])
   @@index([githubRepositoryId, pullRequestNumber, headSha])
   @@index([dispatchId, status])
+}
+
+model ConflictReviewPostingIntent {
+  id                   String                            @id @default(cuid())
+  attemptId            String
+  operationKind        String
+  operationFingerprint String
+  manifestHash         String
+  status               ConflictReviewPostingIntentStatus @default(pending)
+  githubExternalId     String?
+  githubUrl            String?
+  bodyHash             String?
+  safeErrorCode        String?
+  safeErrorSummary     String?
+  createdAt            DateTime                          @default(now())
+  updatedAt            DateTime                          @updatedAt
+  completedAt          DateTime?
+
+  attempt ConflictReviewAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, operationKind, operationFingerprint])
+  @@index([attemptId, status])
 }
 
 model WorkflowProvisioning {
@@ -556,8 +581,22 @@ enum ConflictReviewAttemptStatus {
   recorded
   dispatched
   started
+  model_running
+  posting_started
+  summary_posted
+  inline_posting_completed
+  status_posted
   completed
   failed
   skipped
   stale
+  degraded
+  dead_letter
+}
+
+enum ConflictReviewPostingIntentStatus {
+  pending
+  completed
+  failed
+  ambiguous
 }

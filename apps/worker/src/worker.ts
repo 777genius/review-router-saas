@@ -31,6 +31,7 @@ import {
 import { createInstallationSyncRequestedHandler } from "@reviewrouter/features-repositories/outbox";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import {
+  isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   readGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
@@ -164,6 +165,15 @@ function createOutboxHandlers(
     }),
   ];
   if (isConflictReviewFallbackEnabled()) {
+    const conflictReviewRolloutPolicy = {
+      isConflictReviewFallbackAllowed(input: {
+        readonly repositoryFullName: string;
+      }) {
+        return isConflictReviewFallbackAllowedForRepository(
+          input.repositoryFullName,
+        );
+      },
+    };
     handlers.push(
       createConflictReviewDetectionRequestedHandler({
         repositories: new PrismaConflictReviewRepository(prisma),
@@ -171,6 +181,7 @@ function createOutboxHandlers(
           appId,
           privateKey,
         }),
+        rolloutPolicy: conflictReviewRolloutPolicy,
         clock,
         logger,
       }),

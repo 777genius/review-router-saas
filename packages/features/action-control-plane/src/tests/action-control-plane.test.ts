@@ -22,6 +22,10 @@ import type {
   ActionConflictReviewDispatchPayload,
   ActionConflictReviewExchangeVerifierPort,
 } from "../application/ports/action-conflict-review-exchange-verifier-port.js";
+import type { ActionConflictReviewPrePostValidatorPort } from "../application/ports/action-conflict-review-pre-post-validator-port.js";
+import type { ActionConflictReviewPostingSessionRepositoryPort } from "../application/ports/action-conflict-review-posting-session-repository-port.js";
+import type { ActionConflictReviewPostingGatewayPort } from "../application/ports/action-conflict-review-posting-gateway-port.js";
+import type { ActionConflictReviewRuntimeGatePort } from "../application/ports/action-conflict-review-runtime-gate-port.js";
 import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
 import type {
@@ -32,13 +36,18 @@ import type { GitHubActionsOidcTokenVerifierPort } from "../application/ports/gi
 import { exchangeGitHubOidcToken } from "../application/use-cases/exchange-github-oidc-token.js";
 import { getActionRuntimeConfig } from "../application/use-cases/get-action-runtime-config.js";
 import { issueActionCommentToken } from "../application/use-cases/issue-action-comment-token.js";
+import { postConflictReviewStatus } from "../application/use-cases/post-conflict-review-status.js";
+import { postConflictReviewSummary } from "../application/use-cases/post-conflict-review-summary.js";
 import { pruneExpiredActionOidcReplayNonces } from "../application/use-cases/prune-expired-action-oidc-replay-nonces.js";
 import { recordActionHealthReport } from "../application/use-cases/record-action-health-report.js";
+import { requestConflictReviewPostingSession } from "../application/use-cases/request-conflict-review-posting-session.js";
 import {
   actionHealthReportMaxBytes,
   assertSafeActionHealthReport,
   defaultActionOidcAudience,
   githubActionsOidcIssuer,
+  parseActionConflictReviewDispatchPayload,
+  type ActionConflictReviewPostingSessionClaims,
   type ActionHealthReport,
   type ActionRepositoryContext,
   type ActionSessionClaims,
@@ -46,6 +55,7 @@ import {
 } from "../domain/action-control-plane.js";
 import { JoseGitHubActionsOidcTokenVerifier } from "../infrastructure/oidc/jose-github-actions-oidc-token-verifier.js";
 import { StaticActionRuntimeCompatibilityPolicy } from "../infrastructure/config/static-action-runtime-compatibility-policy.js";
+import { JoseActionConflictReviewPostingSessionTokenService } from "../infrastructure/session/jose-action-conflict-review-posting-session-token-service.js";
 import { JoseActionSessionTokenService } from "../infrastructure/session/jose-action-session-token-service.js";
 
 const fixedNow = new Date("2026-05-03T12:00:00.000Z");
@@ -163,6 +173,270 @@ class InMemoryConflictReviewExchangeVerifier implements ActionConflictReviewExch
       baseRef: input.dispatchPayload.baseRef,
       baseSha: input.dispatchPayload.baseSha,
     };
+  }
+}
+
+class ConfigurableConflictReviewRuntimeGate implements ActionConflictReviewRuntimeGatePort {
+  public enabled = true;
+  public readonly calls: Array<{
+    readonly phase: "session_exchange" | "runtime_config" | "posting_session";
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName: string;
+  }> = [];
+
+  async assertConflictReviewRuntimeEnabled(input: {
+    readonly phase: "session_exchange" | "runtime_config" | "posting_session";
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly repositoryFullName: string;
+  }): Promise<void> {
+    this.calls.push(input);
+    if (!this.enabled) {
+      throw new Error("conflict_review_runtime_disabled");
+    }
+  }
+}
+
+class InMemoryConflictPostingSessionRepository implements ActionConflictReviewPostingSessionRepositoryPort {
+  public readonly calls: Array<{
+    readonly manifestHash: string;
+    readonly session: ActionSessionClaims;
+  }> = [];
+  public readonly intents = new Map<
+    string,
+    {
+      readonly intentId: string;
+      readonly operationKind: "summary_comment" | "advisory_status";
+      readonly bodyHash: string;
+      status: "pending" | "completed" | "ambiguous";
+      githubExternalId?: string | undefined;
+      githubUrl?: string | undefined;
+      safeErrorSummary?: string | undefined;
+    }
+  >();
+
+  async issueConflictReviewPostingSession(input: {
+    readonly session: ActionSessionClaims;
+    readonly manifestHash: string;
+    readonly issuedAt: Date;
+  }): Promise<ActionConflictReviewPostingSessionClaims> {
+    this.calls.push({
+      manifestHash: input.manifestHash,
+      session: input.session,
+    });
+    if (
+      input.session.reviewKind !== "conflict-head" ||
+      !input.session.conflictDispatchId ||
+      !input.session.pullRequestNumber ||
+      !input.session.headSha ||
+      !input.session.baseRef ||
+      !input.session.baseSha ||
+      !input.session.configSnapshotId
+    ) {
+      throw new Error("conflict_review_session_required");
+    }
+    return {
+      purpose: "conflict-review-posting",
+      attemptId: "attempt_1",
+      workspaceId: input.session.workspaceId,
+      repositoryId: input.session.repositoryId,
+      githubRepositoryId: input.session.githubRepositoryId,
+      githubInstallationId: "129500385",
+      repository: input.session.repository,
+      githubRunId: input.session.githubRunId,
+      githubRunAttempt: input.session.githubRunAttempt,
+      dispatchId: input.session.conflictDispatchId,
+      pullRequestNumber: input.session.pullRequestNumber,
+      headSha: input.session.headSha,
+      baseRef: input.session.baseRef,
+      baseSha: input.session.baseSha,
+      configSnapshotId: input.session.configSnapshotId,
+      manifestHash: input.manifestHash,
+      operationScopeHash: "d".repeat(64),
+      protocolVersion: 1,
+    };
+  }
+
+  async reserveConflictReviewPostingIntent(input: {
+    readonly scope: ActionConflictReviewPostingSessionClaims;
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly operationFingerprint: string;
+    readonly bodyHash: string;
+    readonly requestedAt: Date;
+  }) {
+    const existing = this.intents.get(input.operationFingerprint);
+    if (existing?.status === "completed" && existing.githubExternalId) {
+      return {
+        status: "completed" as const,
+        intentId: existing.intentId,
+        githubExternalId: existing.githubExternalId,
+        githubUrl: existing.githubUrl ?? null,
+      };
+    }
+    if (existing?.status === "ambiguous") {
+      existing.status = "pending";
+      return { status: "reserved" as const, intentId: existing.intentId };
+    }
+    if (existing) {
+      return { status: "pending" as const, intentId: existing.intentId };
+    }
+    const intentId = `intent_${this.intents.size + 1}`;
+    this.intents.set(input.operationFingerprint, {
+      intentId,
+      operationKind: input.operationKind,
+      bodyHash: input.bodyHash,
+      status: "pending",
+    });
+    return { status: "reserved" as const, intentId };
+  }
+
+  async commitConflictReviewPostingIntent(input: {
+    readonly scope: ActionConflictReviewPostingSessionClaims;
+    readonly intentId: string;
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly githubExternalId: string;
+    readonly githubUrl?: string | undefined;
+    readonly bodyHash: string;
+    readonly completedAt: Date;
+  }): Promise<void> {
+    const existing = [...this.intents.values()].find(
+      (intent) => intent.intentId === input.intentId,
+    );
+    if (!existing || existing.operationKind !== input.operationKind) {
+      throw new Error("conflict_review_posting_intent_commit_race");
+    }
+    existing.status = "completed";
+    existing.githubExternalId = input.githubExternalId;
+    existing.githubUrl = input.githubUrl;
+  }
+
+  async markConflictReviewPostingIntentAmbiguous(input: {
+    readonly scope: ActionConflictReviewPostingSessionClaims;
+    readonly intentId: string;
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly safeErrorCode: string;
+    readonly safeErrorSummary: string;
+    readonly failedAt: Date;
+  }): Promise<void> {
+    const existing = [...this.intents.values()].find(
+      (intent) => intent.intentId === input.intentId,
+    );
+    if (existing) {
+      existing.status = "ambiguous";
+      existing.safeErrorSummary = input.safeErrorSummary;
+    }
+  }
+}
+
+class InMemoryConflictPostingGateway implements ActionConflictReviewPostingGatewayPort {
+  public readonly summaries: Array<{
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+    readonly marker: string;
+    readonly body: string;
+  }> = [];
+  public readonly statuses: Array<{
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+    readonly context: string;
+    readonly state: "success" | "failure" | "error";
+    readonly description: string;
+  }> = [];
+
+  async upsertConflictReviewSummary(input: {
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+    readonly marker: string;
+    readonly body: string;
+  }) {
+    this.summaries.push(input);
+    return {
+      githubExternalId: "summary_1",
+      githubUrl: "https://github.com/777genius/example/pull/7#issuecomment-1",
+    };
+  }
+
+  async postConflictReviewAdvisoryStatus(input: {
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+    readonly context: string;
+    readonly state: "success" | "failure" | "error";
+    readonly description: string;
+  }) {
+    this.statuses.push(input);
+    return {
+      githubExternalId: "status_1",
+      githubUrl: "https://github.com/777genius/example/statuses/1",
+    };
+  }
+}
+
+class ConfigurableConflictPrePostValidator implements ActionConflictReviewPrePostValidatorPort {
+  public error: Error | null = null;
+  public readonly calls: Array<{
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+  }> = [];
+
+  async assertConflictReviewPrePostState(input: {
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+  }): Promise<void> {
+    this.calls.push(input);
+    if (this.error) {
+      throw this.error;
+    }
+  }
+}
+
+class RejectingConflictPostingGateway extends InMemoryConflictPostingGateway {
+  async upsertConflictReviewSummary(input: {
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+    readonly marker: string;
+    readonly body: string;
+  }): Promise<{
+    readonly githubExternalId: string;
+    readonly githubUrl: string;
+  }> {
+    void input;
+    throw new Error(
+      "network_timeout_after_summary_write token:ghs_secret nonce:raw-dispatch-nonce",
+    );
   }
 }
 
@@ -462,6 +736,27 @@ describe("action control plane", () => {
     });
   });
 
+  it("rejects conflict reusable workflow refs outside repository_dispatch", async () => {
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              workflow_ref:
+                "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/1/merge",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
+            }),
+          ),
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("workflow_ref_not_allowed");
+  });
+
   it("rejects official reusable jobs when the caller workflow path is legacy", async () => {
     await expect(
       exchangeGitHubOidcToken(
@@ -663,10 +958,12 @@ describe("action control plane", () => {
     ).rejects.toThrow("workflow_ref_not_allowed");
   });
 
-  it("allows repository_dispatch only through the trusted review reusable workflow and conflict record", async () => {
+  it("allows repository_dispatch only through the trusted conflict reusable workflow and conflict record", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     const sessions = new StaticSessionTokenService();
     const conflictReviews = new InMemoryConflictReviewExchangeVerifier();
+    const conflictReviewRuntimeGate =
+      new ConfigurableConflictReviewRuntimeGate();
     const conflictDispatchPayload = conflictDispatch();
 
     await exchangeGitHubOidcToken(
@@ -682,16 +979,25 @@ describe("action control plane", () => {
             workflow_ref:
               "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
             job_workflow_ref:
-              "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+              "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
           }),
         ),
         repositories: repository,
         sessions,
         conflictReviews,
+        conflictReviewRuntimeGate,
         clock,
       },
     );
 
+    expect(conflictReviewRuntimeGate.calls).toEqual([
+      {
+        phase: "session_exchange",
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+      },
+    ]);
     expect(conflictReviews.calls).toEqual([
       expect.objectContaining({ dispatchPayload: conflictDispatchPayload }),
     ]);
@@ -707,6 +1013,82 @@ describe("action control plane", () => {
     });
   });
 
+  it("parses conflict dispatch payloads with one naming style and rejects ambiguous aliases", () => {
+    const snakeCasePayload = {
+      protocol_version: 1,
+      dispatch_event_type: "reviewrouter_conflict_review",
+      dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174000",
+      nonce: "n".repeat(40),
+      repository_id: "123456",
+      pr_number: 7,
+      head_sha: "a".repeat(40),
+      base_ref: "main",
+      base_sha: "b".repeat(40),
+      fallback_version: 1,
+    };
+
+    expect(parseActionConflictReviewDispatchPayload(snakeCasePayload)).toEqual(
+      conflictDispatch(),
+    );
+    expect(() =>
+      parseActionConflictReviewDispatchPayload({
+        ...snakeCasePayload,
+        dispatchId: snakeCasePayload.dispatch_id,
+      }),
+    ).toThrow("conflicting_aliases");
+    expect(() =>
+      parseActionConflictReviewDispatchPayload({
+        ...snakeCasePayload,
+        provider_config: { model: "gpt-5.5" },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseActionConflictReviewDispatchPayload({
+        ...snakeCasePayload,
+        dispatch_event_type: "wrong_dispatch_action",
+      }),
+    ).toThrow();
+  });
+
+  it("fails conflict session exchange before attempt verification when the runtime gate is disabled", async () => {
+    const repository = new InMemoryActionControlPlaneRepository();
+    const conflictReviews = new InMemoryConflictReviewExchangeVerifier();
+    const conflictReviewRuntimeGate =
+      new ConfigurableConflictReviewRuntimeGate();
+    conflictReviewRuntimeGate.enabled = false;
+
+    await expect(
+      exchangeGitHubOidcToken(
+        {
+          oidcToken: "oidc",
+          audience: defaultActionOidcAudience,
+          conflictDispatchPayload: conflictDispatch(),
+        },
+        {
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({
+              event_name: "repository_dispatch",
+              workflow_ref:
+                "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+              job_workflow_ref:
+                "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
+            }),
+          ),
+          repositories: repository,
+          sessions: new StaticSessionTokenService(),
+          conflictReviews,
+          conflictReviewRuntimeGate,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_runtime_disabled");
+
+    expect(conflictReviewRuntimeGate.calls).toEqual([
+      expect.objectContaining({ phase: "session_exchange" }),
+    ]);
+    expect(conflictReviews.calls).toHaveLength(0);
+  });
+
   it("rejects repository_dispatch without conflict payload", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
 
@@ -720,7 +1102,7 @@ describe("action control plane", () => {
               workflow_ref:
                 "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
               job_workflow_ref:
-                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+                "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
             }),
           ),
           repositories: repository,
@@ -784,7 +1166,7 @@ describe("action control plane", () => {
               workflow_ref:
                 "777genius/example/.github/workflows/deploy.yml@refs/heads/main",
               job_workflow_ref:
-                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+                "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
             }),
           ),
           repositories: repository,
@@ -813,7 +1195,7 @@ describe("action control plane", () => {
               workflow_ref:
                 "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
               job_workflow_ref:
-                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/heads/main",
+                "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/heads/main",
             }),
           ),
           repositories: repository,
@@ -842,7 +1224,7 @@ describe("action control plane", () => {
               workflow_ref:
                 "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
               job_workflow_ref:
-                "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+                "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
               runner_environment: "self-hosted",
             }),
           ),
@@ -1053,8 +1435,10 @@ describe("action control plane", () => {
   });
 
   it("returns conflict review runtime identity from the verified action session", async () => {
+    const conflictReviewRuntimeGate =
+      new ConfigurableConflictReviewRuntimeGate();
     const config = await getActionRuntimeConfig(
-      { sessionToken: "session" },
+      { sessionToken: "session", actionVersion: "v1" },
       {
         repositories: new InMemoryActionControlPlaneRepository(),
         sessions: new StaticSessionTokenService({
@@ -1068,10 +1452,19 @@ describe("action control plane", () => {
           baseSha: "b".repeat(40),
           configSnapshotId: "repository:7",
         }),
+        conflictReviewRuntimeGate,
         clock,
       },
     );
 
+    expect(conflictReviewRuntimeGate.calls).toEqual([
+      {
+        phase: "runtime_config",
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+      },
+    ]);
     expect(config.runtimeEnv).toMatchObject({
       REVIEW_ROUTER_REVIEW_KIND: "conflict-head",
       REVIEW_ROUTER_CONFLICT_DISPATCH_ID:
@@ -1081,6 +1474,167 @@ describe("action control plane", () => {
       REVIEW_ROUTER_CONFLICT_BASE_REF: "main",
       REVIEW_ROUTER_CONFLICT_BASE_SHA: "b".repeat(40),
     });
+    expect(config.conflictReview).toMatchObject({
+      protocolVersion: 1,
+      reviewKind: "conflict-head",
+      dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      checkout: {
+        mode: "exact_head_sha",
+        headSha: "a".repeat(40),
+        baseRef: "main",
+        baseSha: "b".repeat(40),
+        persistCredentials: false,
+      },
+      diff: {
+        mode: "expected_base_to_head",
+        baseSha: "b".repeat(40),
+        headSha: "a".repeat(40),
+      },
+      posting: {
+        mode: "disabled",
+        reason: "posting_proxy_not_enabled",
+      },
+    });
+    expect(JSON.stringify(config.runtimeEnv)).not.toMatch(
+      /nonce|posting|comment_token|github_token/i,
+    );
+    expect(JSON.stringify(config.conflictReview)).not.toMatch(
+      /nonce|token|secret/i,
+    );
+  });
+
+  it("advertises conflict posting proxy only when server posting is available", async () => {
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session", actionVersion: "v1" },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService({
+          ...sessionClaims,
+          eventName: "repository_dispatch",
+          reviewKind: "conflict-head",
+          conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+          pullRequestNumber: 7,
+          headSha: "a".repeat(40),
+          baseRef: "main",
+          baseSha: "b".repeat(40),
+          configSnapshotId: "repository:7",
+        }),
+        conflictReviewRuntimeGate: new ConfigurableConflictReviewRuntimeGate(),
+        conflictReviewPostingAvailable: true,
+        clock,
+      },
+    );
+
+    expect(config.conflictReview?.posting).toEqual({
+      mode: "proxy",
+      sessionEndpoint: "/api/action/v1/conflict-posting/session",
+      summaryEndpoint: "/api/action/v1/conflict-posting/summary",
+      statusEndpoint: "/api/action/v1/conflict-posting/status",
+      allowedOperations: ["summary_comment", "advisory_status"],
+      summaryMaxBytes: 60_000,
+      statusContext: "ReviewRouter conflict review",
+    });
+    expect(JSON.stringify(config.conflictReview?.posting)).not.toMatch(
+      /token|secret|github_token/i,
+    );
+  });
+
+  it("fails conflict runtime config when the runtime gate is disabled", async () => {
+    const conflictReviewRuntimeGate =
+      new ConfigurableConflictReviewRuntimeGate();
+    conflictReviewRuntimeGate.enabled = false;
+
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          conflictReviewRuntimeGate,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_runtime_disabled");
+
+    expect(conflictReviewRuntimeGate.calls).toEqual([
+      expect.objectContaining({ phase: "runtime_config" }),
+    ]);
+  });
+
+  it("rejects conflict runtime config without a pinned runtime version", async () => {
+    const conflictSession = new StaticSessionTokenService({
+      ...sessionClaims,
+      eventName: "repository_dispatch",
+      reviewKind: "conflict-head",
+      conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      configSnapshotId: "repository:7",
+    });
+
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: conflictSession,
+          conflictReviewRuntimeGate:
+            new ConfigurableConflictReviewRuntimeGate(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_runtime_version_required");
+
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session", actionVersion: "main" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: conflictSession,
+          conflictReviewRuntimeGate:
+            new ConfigurableConflictReviewRuntimeGate(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_runtime_version_unsupported:main");
+  });
+
+  it("rejects incomplete conflict session claims instead of returning blank runtime fields", async () => {
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session", actionVersion: "v1" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            configSnapshotId: "repository:7",
+          }),
+          clock,
+        },
+      ),
+    ).rejects.toThrow();
   });
 
   it("rejects conflict runtime config when the review config changed after exchange", async () => {
@@ -1089,7 +1643,7 @@ describe("action control plane", () => {
 
     await expect(
       getActionRuntimeConfig(
-        { sessionToken: "session" },
+        { sessionToken: "session", actionVersion: "v1" },
         {
           repositories,
           sessions: new StaticSessionTokenService({
@@ -1107,6 +1661,106 @@ describe("action control plane", () => {
         },
       ),
     ).rejects.toThrow("conflict_review_config_snapshot_mismatch");
+  });
+
+  it("rejects conflict runtime config for providers without runtime adapters", async () => {
+    const unsupportedProviderSets = [
+      {
+        expectedCode: "conflict_runtime_provider_unsupported:claude",
+        providers: [
+          {
+            kind: "claude",
+            authMode: "claude_code_oauth",
+            model: "sonnet",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+        ],
+      },
+      {
+        expectedCode: "conflict_runtime_provider_unsupported:openrouter",
+        providers: [
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth",
+            model: "gpt-5.5",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+          {
+            kind: "openrouter",
+            authMode: "openrouter_api_key",
+            model: "poolside/laguna-m.1:free",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+        ],
+      },
+      {
+        expectedCode: "conflict_runtime_provider_unsupported:multi_provider",
+        execution: {
+          providerLimit: 2,
+          providerMaxParallel: 2,
+          inlineMinAgreement: 2,
+        },
+        providers: [
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth",
+            model: "gpt-5.5",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+          {
+            kind: "codex",
+            authMode: "codex_openai_api_key",
+            model: "gpt-5.4",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+        ],
+      },
+    ] as const;
+
+    for (const providerSet of unsupportedProviderSets) {
+      const repositories = new InMemoryActionControlPlaneRepository();
+      repositories.runtimeConfig = parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        providers: providerSet.providers,
+        execution:
+          "execution" in providerSet
+            ? providerSet.execution
+            : safeDefaultReviewConfiguration.execution,
+      });
+
+      await expect(
+        getActionRuntimeConfig(
+          { sessionToken: "session", actionVersion: "v1" },
+          {
+            repositories,
+            sessions: new StaticSessionTokenService({
+              ...sessionClaims,
+              eventName: "repository_dispatch",
+              reviewKind: "conflict-head",
+              conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+              pullRequestNumber: 7,
+              headSha: "a".repeat(40),
+              baseRef: "main",
+              baseSha: "b".repeat(40),
+              configSnapshotId: "repository:7",
+            }),
+            conflictReviewRuntimeGate:
+              new ConfigurableConflictReviewRuntimeGate(),
+            clock,
+          },
+        ),
+      ).rejects.toThrow(providerSet.expectedCode);
+    }
   });
 
   it("returns multi-provider runtime config for the action", async () => {
@@ -1365,6 +2019,535 @@ describe("action control plane", () => {
     ).rejects.toThrow("conflict_review_posting_token_unavailable");
   });
 
+  it("keeps conflict posting capability fail-closed when the backing service is missing", async () => {
+    const conflictReviewRuntimeGate =
+      new ConfigurableConflictReviewRuntimeGate();
+
+    await expect(
+      requestConflictReviewPostingSession(
+        {
+          sessionToken: "session",
+          protocolVersion: 1,
+          manifestHash: "c".repeat(64),
+        },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          conflictReviewRuntimeGate,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_posting_session_unavailable");
+
+    expect(conflictReviewRuntimeGate.calls).toEqual([
+      expect.objectContaining({ phase: "posting_session" }),
+    ]);
+  });
+
+  it("issues a scoped conflict posting session with a separate token audience", async () => {
+    const conflictPostingSessions =
+      new InMemoryConflictPostingSessionRepository();
+    const postingSessions =
+      new JoseActionConflictReviewPostingSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      );
+    const conflictPrePostValidator = new ConfigurableConflictPrePostValidator();
+
+    const result = await requestConflictReviewPostingSession(
+      {
+        sessionToken: "session",
+        protocolVersion: 1,
+        manifestHash: "c".repeat(64),
+      },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService({
+          ...sessionClaims,
+          eventName: "repository_dispatch",
+          reviewKind: "conflict-head",
+          conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+          pullRequestNumber: 7,
+          headSha: "a".repeat(40),
+          baseRef: "main",
+          baseSha: "b".repeat(40),
+          configSnapshotId: "repository:7",
+        }),
+        conflictReviewRuntimeGate: new ConfigurableConflictReviewRuntimeGate(),
+        conflictPrePostValidator,
+        conflictPostingSessions,
+        postingSessions,
+        clock,
+      },
+    );
+
+    expect(result).toMatchObject({
+      protocolVersion: 1,
+      manifestHash: "c".repeat(64),
+      scope: {
+        dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+        pullRequestNumber: 7,
+        headSha: "a".repeat(40),
+        baseRef: "main",
+        baseSha: "b".repeat(40),
+        allowedOperations: ["summary_comment", "advisory_status"],
+      },
+    });
+    const claims = await postingSessions.verify({
+      token: result.postingSessionToken,
+      now: fixedNow,
+    });
+    expect(claims).toMatchObject({
+      purpose: "conflict-review-posting",
+      attemptId: "attempt_1",
+      manifestHash: "c".repeat(64),
+      operationScopeHash: "d".repeat(64),
+    });
+    await expect(
+      new JoseActionSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      ).verify({
+        token: result.postingSessionToken,
+        now: fixedNow,
+      }),
+    ).rejects.toThrow();
+    expect(JSON.stringify(result)).not.toMatch(/nonce|github_token|ghs_/i);
+    expect(conflictPrePostValidator.calls).toEqual([
+      {
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        pullRequestNumber: 7,
+        headSha: "a".repeat(40),
+        baseRef: "main",
+        baseSha: "b".repeat(40),
+      },
+    ]);
+  });
+
+  it("denies conflict posting session before issuing a token when pre-post validation fails", async () => {
+    const conflictPostingSessions =
+      new InMemoryConflictPostingSessionRepository();
+    const postingSessions =
+      new JoseActionConflictReviewPostingSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      );
+    const conflictPrePostValidator = new ConfigurableConflictPrePostValidator();
+    conflictPrePostValidator.error = new Error(
+      "conflict_posting_pr_head_mismatch",
+    );
+
+    await expect(
+      requestConflictReviewPostingSession(
+        {
+          sessionToken: "session",
+          protocolVersion: 1,
+          manifestHash: "c".repeat(64),
+        },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          conflictReviewRuntimeGate:
+            new ConfigurableConflictReviewRuntimeGate(),
+          conflictPrePostValidator,
+          conflictPostingSessions,
+          postingSessions,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_posting_pr_head_mismatch");
+
+    expect(conflictPrePostValidator.calls).toHaveLength(1);
+    expect(conflictPostingSessions.calls).toHaveLength(0);
+  });
+
+  it("posts conflict summary and advisory status through scoped proxy intents", async () => {
+    const conflictPostingSessions =
+      new InMemoryConflictPostingSessionRepository();
+    const postingSessions =
+      new JoseActionConflictReviewPostingSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      );
+    const conflictPostingGateway = new InMemoryConflictPostingGateway();
+    const conflictPrePostValidator = new ConfigurableConflictPrePostValidator();
+    const actionSession = {
+      ...sessionClaims,
+      eventName: "repository_dispatch" as const,
+      reviewKind: "conflict-head" as const,
+      conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      configSnapshotId: "repository:7",
+    };
+    const session = await requestConflictReviewPostingSession(
+      {
+        sessionToken: "session",
+        protocolVersion: 1,
+        manifestHash: "c".repeat(64),
+      },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService(actionSession),
+        conflictReviewRuntimeGate: new ConfigurableConflictReviewRuntimeGate(),
+        conflictPrePostValidator,
+        conflictPostingSessions,
+        postingSessions,
+        clock,
+      },
+    );
+
+    const summary = await postConflictReviewSummary(
+      {
+        postingSessionToken: session.postingSessionToken,
+        protocolVersion: 1,
+        summaryMarkdown: "Found 1 conflict-head issue.",
+      },
+      {
+        conflictPostingSessions,
+        postingSessions,
+        conflictPostingGateway,
+        conflictPrePostValidator,
+        clock,
+      },
+    );
+    const duplicateSummary = await postConflictReviewSummary(
+      {
+        postingSessionToken: session.postingSessionToken,
+        protocolVersion: 1,
+        summaryMarkdown: "Found 1 conflict-head issue.",
+      },
+      {
+        conflictPostingSessions,
+        postingSessions,
+        conflictPostingGateway,
+        conflictPrePostValidator,
+        clock,
+      },
+    );
+    const status = await postConflictReviewStatus(
+      {
+        postingSessionToken: session.postingSessionToken,
+        protocolVersion: 1,
+        state: "success",
+      },
+      {
+        conflictPostingSessions,
+        postingSessions,
+        conflictPostingGateway,
+        conflictPrePostValidator,
+        clock,
+      },
+    );
+
+    expect(summary.status).toBe("posted");
+    expect(duplicateSummary.status).toBe("already_posted");
+    expect(status.status).toBe("posted");
+    expect(conflictPostingGateway.summaries).toHaveLength(1);
+    expect(conflictPostingGateway.summaries[0]).toMatchObject({
+      repositoryFullName: "777genius/example",
+      pullRequestNumber: 7,
+    });
+    expect(conflictPostingGateway.summaries[0]?.body).toContain(
+      "Advisory review",
+    );
+    expect(conflictPostingGateway.summaries[0]?.body).toContain(
+      `Reviewed head: \`${"a".repeat(40)}\``,
+    );
+    expect(conflictPostingGateway.summaries[0]?.body).toContain(
+      "Base ref: `main`",
+    );
+    expect(conflictPostingGateway.summaries[0]?.body).toContain(
+      "reviewrouter:conflict-review:v1",
+    );
+    expect(conflictPostingGateway.statuses).toEqual([
+      expect.objectContaining({
+        repositoryFullName: "777genius/example",
+        headSha: "a".repeat(40),
+        context: "ReviewRouter conflict review",
+        state: "success",
+      }),
+    ]);
+    expect(conflictPrePostValidator.calls).toHaveLength(4);
+  });
+
+  it("repeats pre-post validation before summary and advisory status writes", async () => {
+    const conflictPostingSessions =
+      new InMemoryConflictPostingSessionRepository();
+    const postingSessions =
+      new JoseActionConflictReviewPostingSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      );
+    const conflictPrePostValidator = new ConfigurableConflictPrePostValidator();
+    const conflictPostingGateway = new InMemoryConflictPostingGateway();
+    const actionSession = {
+      ...sessionClaims,
+      eventName: "repository_dispatch" as const,
+      reviewKind: "conflict-head" as const,
+      conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      configSnapshotId: "repository:7",
+    };
+    const session = await requestConflictReviewPostingSession(
+      {
+        sessionToken: "session",
+        protocolVersion: 1,
+        manifestHash: "c".repeat(64),
+      },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService(actionSession),
+        conflictReviewRuntimeGate: new ConfigurableConflictReviewRuntimeGate(),
+        conflictPrePostValidator,
+        conflictPostingSessions,
+        postingSessions,
+        clock,
+      },
+    );
+
+    conflictPrePostValidator.error = new Error(
+      "conflict_posting_pr_head_mismatch",
+    );
+
+    await expect(
+      postConflictReviewSummary(
+        {
+          postingSessionToken: session.postingSessionToken,
+          protocolVersion: 1,
+          summaryMarkdown: "Found 1 conflict-head issue.",
+        },
+        {
+          conflictPostingSessions,
+          postingSessions,
+          conflictPostingGateway,
+          conflictPrePostValidator,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_posting_pr_head_mismatch");
+    await expect(
+      postConflictReviewStatus(
+        {
+          postingSessionToken: session.postingSessionToken,
+          protocolVersion: 1,
+          state: "success",
+        },
+        {
+          conflictPostingSessions,
+          postingSessions,
+          conflictPostingGateway,
+          conflictPrePostValidator,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_posting_pr_head_mismatch");
+
+    expect(conflictPostingGateway.summaries).toHaveLength(0);
+    expect(conflictPostingGateway.statuses).toHaveLength(0);
+    expect(conflictPostingSessions.calls).toHaveLength(1);
+  });
+
+  it("can recover an ambiguous conflict summary posting intent on retry", async () => {
+    const conflictPostingSessions =
+      new InMemoryConflictPostingSessionRepository();
+    const postingSessions =
+      new JoseActionConflictReviewPostingSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      );
+    const conflictPrePostValidator = new ConfigurableConflictPrePostValidator();
+    const actionSession = {
+      ...sessionClaims,
+      eventName: "repository_dispatch" as const,
+      reviewKind: "conflict-head" as const,
+      conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      configSnapshotId: "repository:7",
+    };
+    const session = await requestConflictReviewPostingSession(
+      {
+        sessionToken: "session",
+        protocolVersion: 1,
+        manifestHash: "c".repeat(64),
+      },
+      {
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions: new StaticSessionTokenService(actionSession),
+        conflictReviewRuntimeGate: new ConfigurableConflictReviewRuntimeGate(),
+        conflictPrePostValidator,
+        conflictPostingSessions,
+        postingSessions,
+        clock,
+      },
+    );
+    const request = {
+      postingSessionToken: session.postingSessionToken,
+      protocolVersion: 1 as const,
+      summaryMarkdown: "Found 1 conflict-head issue.",
+    };
+
+    await expect(
+      postConflictReviewSummary(request, {
+        conflictPostingSessions,
+        postingSessions,
+        conflictPostingGateway: new RejectingConflictPostingGateway(),
+        conflictPrePostValidator,
+        clock,
+      }),
+    ).rejects.toThrow("network_timeout_after_summary_write");
+    expect(
+      JSON.stringify([...conflictPostingSessions.intents.values()]),
+    ).toContain("token=[redacted]");
+    expect(
+      JSON.stringify([...conflictPostingSessions.intents.values()]),
+    ).not.toContain("ghs_secret");
+    expect(
+      JSON.stringify([...conflictPostingSessions.intents.values()]),
+    ).toContain("nonce=[redacted]");
+    expect(
+      JSON.stringify([...conflictPostingSessions.intents.values()]),
+    ).not.toContain("raw-dispatch-nonce");
+
+    const retryGateway = new InMemoryConflictPostingGateway();
+    await expect(
+      postConflictReviewSummary(request, {
+        conflictPostingSessions,
+        postingSessions,
+        conflictPostingGateway: retryGateway,
+        conflictPrePostValidator,
+        clock,
+      }),
+    ).resolves.toMatchObject({
+      protocolVersion: 1,
+      status: "posted",
+      githubExternalId: "summary_1",
+    });
+    expect(retryGateway.summaries).toHaveLength(1);
+  });
+
+  it("rejects model-controlled summary markers and required-review claims", async () => {
+    const postingSessions =
+      new JoseActionConflictReviewPostingSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      );
+    const token = await postingSessions.sign({
+      claims: {
+        purpose: "conflict-review-posting",
+        attemptId: "attempt_1",
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        githubRepositoryId: "123456",
+        githubInstallationId: "129500385",
+        repository: "777genius/example",
+        githubRunId: "1001",
+        githubRunAttempt: "1",
+        dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+        pullRequestNumber: 7,
+        headSha: "a".repeat(40),
+        baseRef: "main",
+        baseSha: "b".repeat(40),
+        configSnapshotId: "repository:7",
+        manifestHash: "c".repeat(64),
+        operationScopeHash: "d".repeat(64),
+        protocolVersion: 1,
+      },
+      expiresInSeconds: 60,
+      issuedAt: fixedNow,
+    });
+
+    await expect(
+      postConflictReviewSummary(
+        {
+          postingSessionToken: token.token,
+          protocolVersion: 1,
+          summaryMarkdown:
+            "<!-- reviewrouter:conflict-review:v1 --> merge result was reviewed",
+        },
+        {
+          conflictPostingSessions:
+            new InMemoryConflictPostingSessionRepository(),
+          postingSessions,
+          conflictPostingGateway: new InMemoryConflictPostingGateway(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_summary_marker_forbidden");
+  });
+
+  it("blocks conflict posting session before capability issuance when the runtime gate is disabled", async () => {
+    const conflictReviewRuntimeGate =
+      new ConfigurableConflictReviewRuntimeGate();
+    conflictReviewRuntimeGate.enabled = false;
+
+    await expect(
+      requestConflictReviewPostingSession(
+        {
+          sessionToken: "session",
+          protocolVersion: 1,
+          manifestHash: "c".repeat(64),
+        },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          conflictReviewRuntimeGate,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_runtime_disabled");
+  });
+
+  it("does not issue conflict posting sessions for normal action sessions", async () => {
+    await expect(
+      requestConflictReviewPostingSession(
+        {
+          sessionToken: "session",
+          protocolVersion: 1,
+          manifestHash: "c".repeat(64),
+        },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_review_session_required");
+  });
+
   it("checks action control plane entitlements before issuing branded comment tokens", async () => {
     const commentTokens = new InMemoryCommentTokenIssuer();
 
@@ -1550,6 +2733,13 @@ describe("action control plane", () => {
       assertSafeActionHealthReport({
         ...safeHealthReport(),
         safeErrorSummary: "refresh_token=rotating-oauth-value",
+      }),
+    ).toThrow("health_report_contains_secret_value");
+
+    expect(() =>
+      assertSafeActionHealthReport({
+        ...safeHealthReport(),
+        safeErrorSummary: "nonce=raw-dispatch-nonce",
       }),
     ).toThrow("health_report_contains_secret_value");
 
@@ -1781,6 +2971,7 @@ function githubOidcClaims(
 function conflictDispatch(): ActionConflictReviewDispatchPayload {
   return {
     protocolVersion: 1,
+    dispatchEventType: "reviewrouter_conflict_review",
     dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
     nonce: "n".repeat(40),
     repositoryId: "123456",

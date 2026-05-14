@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type {
   ActionConflictReviewDispatchPayload,
   ActionConflictReviewExchangeVerifierPort,
+  ActionConflictReviewPostingGatewayPort,
+  ActionConflictReviewPostingSessionRepositoryPort,
+  ActionConflictReviewPostingSessionScope,
+  ActionConflictReviewPrePostValidatorPort,
   ActionControlPlaneRepositoryPort,
   ActionEntitlementPolicyPort,
   ActionHealthReport,
@@ -17,6 +21,7 @@ import {
   actionHealthReportMaxBytes,
   defaultActionOidcAudience,
   githubActionsOidcIssuer,
+  JoseActionConflictReviewPostingSessionTokenService,
   JoseActionSessionTokenService,
   StaticActionRuntimeCompatibilityPolicy,
 } from "@reviewrouter/features-action-control-plane";
@@ -125,8 +130,18 @@ class CapturingRepositoryWebhookHandler implements GitHubRepositoryWebhookHandle
   }
 }
 
+type RuntimeReviewConfiguration = NonNullable<
+  Awaited<
+    ReturnType<
+      ActionControlPlaneRepositoryPort["findRuntimeReviewConfiguration"]
+    >
+  >
+>["config"];
+
 class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
   public readonly healthReports: ActionHealthReport[] = [];
+  public runtimeConfig: RuntimeReviewConfiguration | null = null;
+  public runtimeConfigVersion = 1;
 
   async findSelectedRepositoryByGithubId(
     githubRepositoryId: string,
@@ -147,6 +162,13 @@ class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
   }
 
   async findRuntimeReviewConfiguration() {
+    if (this.runtimeConfig) {
+      return {
+        source: "repository" as const,
+        version: this.runtimeConfigVersion,
+        config: this.runtimeConfig,
+      };
+    }
     return null;
   }
 
@@ -227,6 +249,200 @@ class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
         pullRequests: "write" as const,
         issues: "write" as const,
       },
+    };
+  }
+}
+
+class InMemoryConflictPostingSessionRepository implements ActionConflictReviewPostingSessionRepositoryPort {
+  public readonly issued: ActionConflictReviewPostingSessionScope[] = [];
+  public readonly intents = new Map<
+    string,
+    | {
+        readonly status: "reserved";
+        readonly intentId: string;
+        readonly operationKind: "summary_comment" | "advisory_status";
+      }
+    | {
+        readonly status: "completed";
+        readonly intentId: string;
+        readonly operationKind: "summary_comment" | "advisory_status";
+        readonly githubExternalId: string;
+        readonly githubUrl: string | null;
+      }
+    | {
+        readonly status: "pending";
+        readonly intentId: string;
+        readonly operationKind: "summary_comment" | "advisory_status";
+      }
+  >();
+
+  async issueConflictReviewPostingSession(input: {
+    readonly session: {
+      readonly workspaceId: string;
+      readonly repositoryId: string;
+      readonly githubRepositoryId: string;
+      readonly repository: string;
+      readonly githubRunId: string;
+      readonly githubRunAttempt: string;
+      readonly conflictDispatchId?: string;
+      readonly pullRequestNumber?: number;
+      readonly headSha?: string;
+      readonly baseRef?: string;
+      readonly baseSha?: string;
+      readonly configSnapshotId?: string;
+    };
+    readonly manifestHash: string;
+  }): Promise<ActionConflictReviewPostingSessionScope> {
+    if (
+      !input.session.conflictDispatchId ||
+      !input.session.pullRequestNumber ||
+      !input.session.headSha ||
+      !input.session.baseRef ||
+      !input.session.baseSha ||
+      !input.session.configSnapshotId
+    ) {
+      throw new Error("conflict_review_session_required");
+    }
+    const scope: ActionConflictReviewPostingSessionScope = {
+      purpose: "conflict-review-posting",
+      attemptId: `attempt:${input.session.conflictDispatchId}`,
+      workspaceId: input.session.workspaceId,
+      repositoryId: input.session.repositoryId,
+      githubRepositoryId: input.session.githubRepositoryId,
+      githubInstallationId: "129500385",
+      repository: input.session.repository,
+      githubRunId: input.session.githubRunId,
+      githubRunAttempt: input.session.githubRunAttempt,
+      dispatchId: input.session.conflictDispatchId,
+      pullRequestNumber: input.session.pullRequestNumber,
+      headSha: input.session.headSha,
+      baseRef: input.session.baseRef,
+      baseSha: input.session.baseSha,
+      configSnapshotId: input.session.configSnapshotId,
+      manifestHash: input.manifestHash,
+      operationScopeHash: "d".repeat(64),
+      protocolVersion: 1,
+    };
+    this.issued.push(scope);
+    return scope;
+  }
+
+  async reserveConflictReviewPostingIntent(input: {
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly operationFingerprint: string;
+  }) {
+    const existing = this.intents.get(input.operationFingerprint);
+    if (existing) {
+      return existing;
+    }
+    const intent = {
+      status: "reserved" as const,
+      intentId: `intent_${this.intents.size + 1}`,
+      operationKind: input.operationKind,
+    };
+    this.intents.set(input.operationFingerprint, intent);
+    return intent;
+  }
+
+  async commitConflictReviewPostingIntent(input: {
+    readonly intentId: string;
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly githubExternalId: string;
+    readonly githubUrl?: string | undefined;
+  }): Promise<void> {
+    const entry = [...this.intents.entries()].find(
+      ([, intent]) => intent.intentId === input.intentId,
+    );
+    if (!entry) {
+      throw new Error("conflict_review_posting_intent_missing");
+    }
+    this.intents.set(entry[0], {
+      status: "completed",
+      intentId: input.intentId,
+      operationKind: input.operationKind,
+      githubExternalId: input.githubExternalId,
+      githubUrl: input.githubUrl ?? null,
+    });
+  }
+
+  async markConflictReviewPostingIntentAmbiguous(input: {
+    readonly intentId: string;
+    readonly operationKind: "summary_comment" | "advisory_status";
+  }): Promise<void> {
+    const entry = [...this.intents.entries()].find(
+      ([, intent]) => intent.intentId === input.intentId,
+    );
+    if (entry) {
+      this.intents.set(entry[0], {
+        status: "pending",
+        intentId: input.intentId,
+        operationKind: input.operationKind,
+      });
+    }
+  }
+}
+
+class CapturingConflictPrePostValidator implements ActionConflictReviewPrePostValidatorPort {
+  public readonly calls: Array<{
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+  }> = [];
+
+  async assertConflictReviewPrePostState(
+    input: (typeof this.calls)[number],
+  ): Promise<void> {
+    this.calls.push(input);
+  }
+}
+
+class CapturingConflictPostingGateway implements ActionConflictReviewPostingGatewayPort {
+  public readonly summaries: Array<{
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly marker: string;
+    readonly body: string;
+  }> = [];
+  public readonly statuses: Array<{
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly context: string;
+    readonly state: "success" | "failure" | "error";
+    readonly description: string;
+  }> = [];
+
+  async upsertConflictReviewSummary(input: {
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly marker: string;
+    readonly body: string;
+  }) {
+    this.summaries.push(input);
+    return {
+      githubExternalId: "summary_1",
+      githubUrl: "https://github.com/777genius/example/pull/7#issuecomment-1",
+    };
+  }
+
+  async postConflictReviewAdvisoryStatus(input: {
+    readonly repositoryFullName: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly context: string;
+    readonly state: "success" | "failure" | "error";
+    readonly description: string;
+  }) {
+    this.statuses.push(input);
+    return {
+      githubExternalId: "status_1",
+      githubUrl: "https://github.com/777genius/example/pull/7/checks",
     };
   }
 }
@@ -679,6 +895,44 @@ describe("API app", () => {
     expect(deliveries.deliveries.size).toBe(0);
   });
 
+  it("ignores advisory commit status webhooks as non-review triggers", async () => {
+    const secret = "webhook-secret";
+    const deliveries = new InMemoryDeliveries();
+    const app = await createApiApp({
+      githubWebhookDependencies: {
+        webhookSecret: secret,
+        installations: new InMemoryInstallations(),
+        deliveries,
+        clock: fixedClock,
+      },
+    });
+    const payload = JSON.stringify({
+      context: "ReviewRouter conflict review",
+      sha: "a".repeat(40),
+      state: "success",
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-status",
+        "x-github-event": "status",
+        "x-hub-signature-256": signGitHubWebhookPayload(payload, secret),
+      },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      processed: false,
+      ignored: true,
+      eventName: "status",
+    });
+    expect(deliveries.deliveries.size).toBe(0);
+  });
+
   it("rejects unsupported GitHub webhook events before ignore when signature is invalid", async () => {
     const app = await createApiApp({
       githubWebhookDependencies: {
@@ -797,7 +1051,7 @@ describe("API app", () => {
           workflow_ref:
             "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
           job_workflow_ref:
-            "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@refs/tags/v1",
+            "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
         }),
         sessions: new JoseActionSessionTokenService(
           "0123456789abcdef0123456789abcdef",
@@ -815,6 +1069,7 @@ describe("API app", () => {
         conflictDispatch: {
           protocolVersion: 1,
           protocol_version: 1,
+          dispatch_event_type: "reviewrouter_conflict_review",
           dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
           dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174001",
           nonce: "n".repeat(40),
@@ -837,6 +1092,453 @@ describe("API app", () => {
       },
     });
     expect(conflictReviews.calls).toHaveLength(0);
+
+    const sameAliasResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "opaque-github-oidc-token",
+        conflictDispatch: {
+          protocol_version: 1,
+          dispatch_event_type: "reviewrouter_conflict_review",
+          dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+          dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174000",
+          nonce: "n".repeat(40),
+          repository_id: "123456",
+          pr_number: 7,
+          head_sha: "a".repeat(40),
+          base_ref: "main",
+          base_sha: "b".repeat(40),
+          fallback_version: 1,
+        },
+      },
+    });
+
+    expect(sameAliasResponse.statusCode).toBe(400);
+    expect(sameAliasResponse.json()).toEqual({
+      error: {
+        code: "invalid_action_request",
+        message: "Action control plane request is invalid.",
+        retryable: false,
+      },
+    });
+    expect(conflictReviews.calls).toHaveLength(0);
+
+    const unknownFieldResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "opaque-github-oidc-token",
+        conflictDispatch: {
+          protocol_version: 1,
+          dispatch_event_type: "reviewrouter_conflict_review",
+          dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174000",
+          nonce: "n".repeat(40),
+          repository_id: "123456",
+          pr_number: 7,
+          head_sha: "a".repeat(40),
+          base_ref: "main",
+          base_sha: "b".repeat(40),
+          fallback_version: 1,
+          providerConfig: { model: "unsafe" },
+        },
+      },
+    });
+
+    expect(unknownFieldResponse.statusCode).toBe(400);
+    expect(unknownFieldResponse.json()).toEqual({
+      error: {
+        code: "invalid_action_request",
+        message: "Action control plane request is invalid.",
+        retryable: false,
+      },
+    });
+    expect(conflictReviews.calls).toHaveLength(0);
+  });
+
+  it("exposes a conflict posting endpoint that validates session shape but fails closed", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+        commentTokens: new InMemoryCommentTokenIssuer(),
+        oidcVerifier: new StaticActionOidcVerifier({
+          event_name: "repository_dispatch",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+          job_workflow_ref:
+            "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
+        }),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "opaque-github-oidc-token",
+        conflictDispatch: {
+          protocol_version: 1,
+          dispatch_event_type: "reviewrouter_conflict_review",
+          dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174000",
+          nonce: "n".repeat(40),
+          repository_id: "123456",
+          pr_number: 7,
+          head_sha: "a".repeat(40),
+          base_ref: "main",
+          base_sha: "b".repeat(40),
+          fallback_version: 1,
+        },
+      },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const conflictSessionToken = exchange.json<{ sessionToken: string }>()
+      .sessionToken;
+
+    const genericCommentToken = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/comment-token",
+      headers: {
+        authorization: `Bearer ${conflictSessionToken}`,
+      },
+    });
+    expect(genericCommentToken.statusCode).toBe(503);
+    expect(genericCommentToken.json()).toEqual({
+      error: {
+        code: "conflict_review_posting_unavailable",
+        message: "Conflict review posting is not available for this runtime.",
+        retryable: false,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/conflict-posting/session",
+      headers: {
+        authorization: `Bearer ${conflictSessionToken}`,
+      },
+      payload: {
+        protocolVersion: 1,
+        manifestHash: "c".repeat(64),
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: {
+        code: "conflict_review_posting_unavailable",
+        message: "Conflict review posting is not available for this runtime.",
+        retryable: false,
+      },
+    });
+  });
+
+  it("serves conflict posting session, summary, and advisory status through scoped HTTP routes", async () => {
+    const conflictPostingSessions =
+      new InMemoryConflictPostingSessionRepository();
+    const postingSessions =
+      new JoseActionConflictReviewPostingSessionTokenService(
+        "0123456789abcdef0123456789abcdef",
+      );
+    const conflictPrePostValidator = new CapturingConflictPrePostValidator();
+    const conflictPostingGateway = new CapturingConflictPostingGateway();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+        conflictPostingSessions,
+        postingSessions,
+        conflictPrePostValidator,
+        conflictPostingGateway,
+        commentTokens: new InMemoryCommentTokenIssuer(),
+        oidcVerifier: new StaticActionOidcVerifier({
+          event_name: "repository_dispatch",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+          job_workflow_ref:
+            "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
+        }),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "opaque-github-oidc-token",
+        conflictDispatch: {
+          protocol_version: 1,
+          dispatch_event_type: "reviewrouter_conflict_review",
+          dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174000",
+          nonce: "n".repeat(40),
+          repository_id: "123456",
+          pr_number: 7,
+          head_sha: "a".repeat(40),
+          base_ref: "main",
+          base_sha: "b".repeat(40),
+          fallback_version: 1,
+        },
+      },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const conflictSessionToken = exchange.json<{ sessionToken: string }>()
+      .sessionToken;
+
+    const genericCommentToken = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/comment-token",
+      headers: { authorization: `Bearer ${conflictSessionToken}` },
+    });
+    expect(genericCommentToken.statusCode).toBe(503);
+
+    const postingSession = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/conflict-posting/session",
+      headers: { authorization: `Bearer ${conflictSessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        manifestHash: "c".repeat(64),
+      },
+    });
+    expect(postingSession.statusCode).toBe(200);
+    expect(postingSession.json()).toMatchObject({
+      protocolVersion: 1,
+      manifestHash: "c".repeat(64),
+      scope: {
+        dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+        pullRequestNumber: 7,
+        headSha: "a".repeat(40),
+        allowedOperations: ["summary_comment", "advisory_status"],
+      },
+    });
+    const postingSessionToken = postingSession.json<{
+      postingSessionToken: string;
+    }>().postingSessionToken;
+    await expect(
+      postingSessions.verify({
+        token: postingSessionToken,
+        now: fixedClock.now(),
+      }),
+    ).resolves.toMatchObject({
+      purpose: "conflict-review-posting",
+      dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+    });
+
+    const summary = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/conflict-posting/summary",
+      headers: { authorization: `Bearer ${postingSessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        summaryMarkdown: "Conflict-head review found one bounded issue.",
+      },
+    });
+    expect(summary.statusCode).toBe(200);
+    expect(summary.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "posted",
+      githubExternalId: "summary_1",
+    });
+
+    const duplicateSummary = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/conflict-posting/summary",
+      headers: { authorization: `Bearer ${postingSessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        summaryMarkdown: "Conflict-head review found one bounded issue.",
+      },
+    });
+    expect(duplicateSummary.statusCode).toBe(200);
+    expect(duplicateSummary.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "already_posted",
+      githubExternalId: "summary_1",
+    });
+
+    const status = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/conflict-posting/status",
+      headers: { authorization: `Bearer ${postingSessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        state: "success",
+      },
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "posted",
+      githubExternalId: "status_1",
+    });
+
+    expect(conflictPostingSessions.issued).toHaveLength(1);
+    expect(conflictPrePostValidator.calls).toHaveLength(4);
+    expect(conflictPostingGateway.summaries).toHaveLength(1);
+    expect(conflictPostingGateway.summaries[0]?.body).toContain(
+      "reviewrouter:conflict-review:v1",
+    );
+    expect(conflictPostingGateway.statuses).toEqual([
+      expect.objectContaining({
+        context: "ReviewRouter conflict review",
+        headSha: "a".repeat(40),
+        state: "success",
+      }),
+    ]);
+  });
+
+  it("returns a stable safe error for unsupported conflict runtime provider configs", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const claudeProvider = {
+      kind: "claude",
+      authMode: "claude_code_oauth",
+      model: "sonnet",
+      reasoningEffort: "medium",
+      agenticContext: true,
+      fastMode: false,
+    } as const;
+    repositories.runtimeConfig = {
+      schemaVersion: 2,
+      provider: claudeProvider,
+      providers: [claudeProvider],
+      execution: {
+        providerLimit: 1,
+        providerMaxParallel: 1,
+        inlineMinAgreement: 1,
+      },
+      blockingPolicy: { failOnSeverity: "critical" },
+      limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+    };
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+        oidcVerifier: new StaticActionOidcVerifier({
+          event_name: "repository_dispatch",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+          job_workflow_ref:
+            "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
+        }),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "opaque-github-oidc-token",
+        conflictDispatch: {
+          protocol_version: 1,
+          dispatch_event_type: "reviewrouter_conflict_review",
+          dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174000",
+          nonce: "n".repeat(40),
+          repository_id: "123456",
+          pr_number: 7,
+          head_sha: "a".repeat(40),
+          base_ref: "main",
+          base_sha: "b".repeat(40),
+          fallback_version: 1,
+        },
+      },
+    });
+    expect(exchange.statusCode).toBe(200);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/config",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+        "x-reviewrouter-action-version": "v1",
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: {
+        code: "conflict_runtime_provider_unsupported",
+        message:
+          "Conflict review runtime currently supports Codex-backed providers only.",
+        retryable: false,
+      },
+    });
+    expect(response.body).not.toContain("sonnet");
+    expect(response.body).not.toContain("claude_code_oauth");
+  });
+
+  it("returns a stable safe error for unsupported conflict runtime refs", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        conflictReviews: new InMemoryConflictReviewExchangeVerifier(),
+        oidcVerifier: new StaticActionOidcVerifier({
+          event_name: "repository_dispatch",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter.yml@refs/heads/main",
+          job_workflow_ref:
+            "777genius/review-router/.github/workflows/reviewrouter-conflict-reusable.yml@refs/tags/v1",
+        }),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: {
+        oidcToken: "opaque-github-oidc-token",
+        conflictDispatch: {
+          protocol_version: 1,
+          dispatch_event_type: "reviewrouter_conflict_review",
+          dispatch_id: "cr_123e4567-e89b-12d3-a456-426614174000",
+          nonce: "n".repeat(40),
+          repository_id: "123456",
+          pr_number: 7,
+          head_sha: "a".repeat(40),
+          base_ref: "main",
+          base_sha: "b".repeat(40),
+          fallback_version: 1,
+        },
+      },
+    });
+    expect(exchange.statusCode).toBe(200);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/config",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+        "x-reviewrouter-action-version": "main",
+      },
+    });
+
+    expect(response.statusCode).toBe(426);
+    expect(response.json()).toEqual({
+      error: {
+        code: "conflict_runtime_version_unsupported",
+        message: "Conflict review runtime ref is not supported for this run.",
+        retryable: false,
+      },
+    });
   });
 
   it("returns a safe error when App comment identity is unavailable", async () => {

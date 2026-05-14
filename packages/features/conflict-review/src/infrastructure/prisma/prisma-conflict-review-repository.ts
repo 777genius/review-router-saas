@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import {
   conflictReviewAttemptExchangeTtlMs,
@@ -208,6 +209,7 @@ export class PrismaConflictReviewRepository implements ConflictReviewRepositoryP
     };
     readonly dispatchPayload: {
       readonly protocolVersion: 1;
+      readonly dispatchEventType: typeof conflictReviewDispatchEventType;
       readonly dispatchId: string;
       readonly nonce: string;
       readonly repositoryId: string;
@@ -241,6 +243,9 @@ export class PrismaConflictReviewRepository implements ConflictReviewRepositoryP
       throw new Error("conflict_review_repository_mismatch");
     }
     if (attempt.dispatchEventType !== conflictReviewDispatchEventType) {
+      throw new Error("conflict_review_event_type_mismatch");
+    }
+    if (payload.dispatchEventType !== attempt.dispatchEventType) {
       throw new Error("conflict_review_event_type_mismatch");
     }
     if (
@@ -321,7 +326,390 @@ export class PrismaConflictReviewRepository implements ConflictReviewRepositoryP
       baseSha: attempt.baseSha,
     };
   }
+
+  async issueConflictReviewPostingSession(input: {
+    readonly session: {
+      readonly workspaceId: string;
+      readonly repositoryId: string;
+      readonly githubRepositoryId: string;
+      readonly repository: string;
+      readonly githubRunId: string;
+      readonly githubRunAttempt: string;
+      readonly reviewKind?: "normal" | "conflict-head";
+      readonly conflictDispatchId?: string;
+      readonly pullRequestNumber?: number;
+      readonly headSha?: string;
+      readonly baseRef?: string;
+      readonly baseSha?: string;
+      readonly configSnapshotId?: string;
+    };
+    readonly manifestHash: string;
+    readonly issuedAt: Date;
+  }): Promise<{
+    readonly purpose: "conflict-review-posting";
+    readonly attemptId: string;
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly githubRepositoryId: string;
+    readonly githubInstallationId: string;
+    readonly repository: string;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+    readonly dispatchId: string;
+    readonly pullRequestNumber: number;
+    readonly headSha: string;
+    readonly baseRef: string;
+    readonly baseSha: string;
+    readonly configSnapshotId: string;
+    readonly manifestHash: string;
+    readonly operationScopeHash: string;
+    readonly protocolVersion: 1;
+  }> {
+    const session = input.session;
+    if (
+      session.reviewKind !== "conflict-head" ||
+      !session.conflictDispatchId ||
+      !session.pullRequestNumber ||
+      !session.headSha ||
+      !session.baseRef ||
+      !session.baseSha ||
+      !session.configSnapshotId
+    ) {
+      throw new Error("conflict_review_session_required");
+    }
+    const attempt = await this.prisma.conflictReviewAttempt.findUnique({
+      where: { dispatchId: session.conflictDispatchId },
+    });
+    if (!attempt) {
+      throw new Error("conflict_review_attempt_not_found");
+    }
+    if (
+      attempt.workspaceId !== session.workspaceId ||
+      attempt.repositoryId !== session.repositoryId ||
+      attempt.githubRepositoryId.toString() !== session.githubRepositoryId
+    ) {
+      throw new Error("conflict_review_repository_mismatch");
+    }
+    if (
+      attempt.githubRunId !== session.githubRunId ||
+      attempt.githubRunAttempt !== session.githubRunAttempt
+    ) {
+      throw new Error("conflict_review_run_mismatch");
+    }
+    if (attempt.configSnapshotId !== session.configSnapshotId) {
+      throw new Error("conflict_review_config_snapshot_mismatch");
+    }
+    if (
+      attempt.pullRequestNumber !== session.pullRequestNumber ||
+      attempt.headSha.toLowerCase() !== session.headSha.toLowerCase() ||
+      attempt.baseRef !== session.baseRef ||
+      attempt.baseSha.toLowerCase() !== session.baseSha.toLowerCase()
+    ) {
+      throw new Error("conflict_review_payload_mismatch");
+    }
+    if (
+      attempt.postingManifestHash !== null &&
+      attempt.postingManifestHash !== input.manifestHash
+    ) {
+      throw new Error("conflict_review_posting_manifest_mismatch");
+    }
+    if (
+      !(postingSessionIssuableStatuses as readonly string[]).includes(
+        attempt.status,
+      )
+    ) {
+      throw new Error("conflict_review_attempt_not_active");
+    }
+
+    const nextStatus = ["started", "model_running"].includes(attempt.status)
+      ? "posting_started"
+      : attempt.status;
+    const updated = await this.prisma.conflictReviewAttempt.updateMany({
+      where: {
+        id: attempt.id,
+        status: { in: [...postingSessionIssuableStatuses] },
+        githubRunId: session.githubRunId,
+        githubRunAttempt: session.githubRunAttempt,
+        configSnapshotId: session.configSnapshotId,
+        OR: [
+          { postingManifestHash: null },
+          { postingManifestHash: input.manifestHash },
+        ],
+      },
+      data: {
+        status: nextStatus,
+        postingManifestHash: input.manifestHash,
+        version: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) {
+      throw new Error("conflict_review_posting_session_race");
+    }
+
+    return {
+      purpose: "conflict-review-posting",
+      attemptId: attempt.id,
+      workspaceId: attempt.workspaceId,
+      repositoryId: attempt.repositoryId,
+      githubRepositoryId: attempt.githubRepositoryId.toString(),
+      githubInstallationId: attempt.githubInstallationId.toString(),
+      repository: session.repository,
+      githubRunId: session.githubRunId,
+      githubRunAttempt: session.githubRunAttempt,
+      dispatchId: attempt.dispatchId,
+      pullRequestNumber: attempt.pullRequestNumber,
+      headSha: attempt.headSha,
+      baseRef: attempt.baseRef,
+      baseSha: attempt.baseSha,
+      configSnapshotId: session.configSnapshotId,
+      manifestHash: input.manifestHash,
+      operationScopeHash: conflictReviewPostingOperationScopeHash({
+        attemptId: attempt.id,
+        dispatchId: attempt.dispatchId,
+        githubRunId: session.githubRunId,
+        githubRunAttempt: session.githubRunAttempt,
+        manifestHash: input.manifestHash,
+        headSha: attempt.headSha,
+        baseRef: attempt.baseRef,
+        baseSha: attempt.baseSha,
+      }),
+      protocolVersion: 1,
+    };
+  }
+
+  async reserveConflictReviewPostingIntent(input: {
+    readonly scope: {
+      readonly attemptId: string;
+      readonly manifestHash: string;
+      readonly dispatchId: string;
+      readonly githubRunId: string;
+      readonly githubRunAttempt: string;
+    };
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly operationFingerprint: string;
+    readonly bodyHash: string;
+    readonly requestedAt: Date;
+  }): Promise<
+    | { readonly status: "reserved"; readonly intentId: string }
+    | {
+        readonly status: "completed";
+        readonly intentId: string;
+        readonly githubExternalId: string;
+        readonly githubUrl: string | null;
+      }
+    | { readonly status: "pending"; readonly intentId: string }
+  > {
+    await this.assertPostingScopeActive(input.scope);
+    try {
+      const created = await this.prisma.conflictReviewPostingIntent.create({
+        data: {
+          attemptId: input.scope.attemptId,
+          operationKind: input.operationKind,
+          operationFingerprint: input.operationFingerprint,
+          manifestHash: input.scope.manifestHash,
+          bodyHash: input.bodyHash,
+          createdAt: input.requestedAt,
+        },
+      });
+      return { status: "reserved", intentId: created.id };
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+      const existing = await this.prisma.conflictReviewPostingIntent.findUnique(
+        {
+          where: {
+            attemptId_operationKind_operationFingerprint: {
+              attemptId: input.scope.attemptId,
+              operationKind: input.operationKind,
+              operationFingerprint: input.operationFingerprint,
+            },
+          },
+        },
+      );
+      if (!existing) {
+        throw error;
+      }
+      if (
+        existing.status === "completed" &&
+        existing.githubExternalId !== null
+      ) {
+        return {
+          status: "completed",
+          intentId: existing.id,
+          githubExternalId: existing.githubExternalId,
+          githubUrl: existing.githubUrl,
+        };
+      }
+      if (existing.status === "ambiguous") {
+        const recovered =
+          await this.prisma.conflictReviewPostingIntent.updateMany({
+            where: {
+              id: existing.id,
+              attemptId: input.scope.attemptId,
+              operationKind: input.operationKind,
+              operationFingerprint: input.operationFingerprint,
+              manifestHash: input.scope.manifestHash,
+              status: "ambiguous",
+            },
+            data: {
+              status: "pending",
+              bodyHash: input.bodyHash,
+              safeErrorCode: null,
+              safeErrorSummary: null,
+              completedAt: null,
+            },
+          });
+        if (recovered.count === 1) {
+          return { status: "reserved", intentId: existing.id };
+        }
+      }
+      return { status: "pending", intentId: existing.id };
+    }
+  }
+
+  async commitConflictReviewPostingIntent(input: {
+    readonly scope: {
+      readonly attemptId: string;
+      readonly manifestHash: string;
+      readonly dispatchId: string;
+      readonly githubRunId: string;
+      readonly githubRunAttempt: string;
+    };
+    readonly intentId: string;
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly githubExternalId: string;
+    readonly githubUrl?: string | undefined;
+    readonly bodyHash: string;
+    readonly completedAt: Date;
+  }): Promise<void> {
+    await this.assertPostingScopeActive(input.scope);
+    const updated = await this.prisma.conflictReviewPostingIntent.updateMany({
+      where: {
+        id: input.intentId,
+        attemptId: input.scope.attemptId,
+        operationKind: input.operationKind,
+        manifestHash: input.scope.manifestHash,
+        status: "pending",
+      },
+      data: {
+        status: "completed",
+        githubExternalId: input.githubExternalId,
+        githubUrl: input.githubUrl ?? null,
+        bodyHash: input.bodyHash,
+        completedAt: input.completedAt,
+        safeErrorCode: null,
+        safeErrorSummary: null,
+      },
+    });
+    if (updated.count !== 1) {
+      throw new Error("conflict_review_posting_intent_commit_race");
+    }
+    await this.advancePostingStateAfterCommit({
+      attemptId: input.scope.attemptId,
+      operationKind: input.operationKind,
+      completedAt: input.completedAt,
+    });
+  }
+
+  async markConflictReviewPostingIntentAmbiguous(input: {
+    readonly scope: {
+      readonly attemptId: string;
+      readonly manifestHash: string;
+    };
+    readonly intentId: string;
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly safeErrorCode: string;
+    readonly safeErrorSummary: string;
+    readonly failedAt: Date;
+  }): Promise<void> {
+    await this.prisma.conflictReviewPostingIntent.updateMany({
+      where: {
+        id: input.intentId,
+        attemptId: input.scope.attemptId,
+        operationKind: input.operationKind,
+        manifestHash: input.scope.manifestHash,
+        status: "pending",
+      },
+      data: {
+        status: "ambiguous",
+        safeErrorCode: input.safeErrorCode,
+        safeErrorSummary: input.safeErrorSummary.slice(0, 500),
+        completedAt: input.failedAt,
+      },
+    });
+  }
+
+  private async assertPostingScopeActive(input: {
+    readonly attemptId: string;
+    readonly manifestHash: string;
+    readonly dispatchId: string;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+  }): Promise<void> {
+    const attempt = await this.prisma.conflictReviewAttempt.findUnique({
+      where: { id: input.attemptId },
+    });
+    if (!attempt) {
+      throw new Error("conflict_review_attempt_not_found");
+    }
+    if (
+      attempt.dispatchId !== input.dispatchId ||
+      attempt.githubRunId !== input.githubRunId ||
+      attempt.githubRunAttempt !== input.githubRunAttempt ||
+      attempt.postingManifestHash !== input.manifestHash
+    ) {
+      throw new Error("conflict_review_posting_scope_mismatch");
+    }
+    if (
+      !(postingIntentAllowedStatuses as readonly string[]).includes(
+        attempt.status,
+      )
+    ) {
+      throw new Error("conflict_review_attempt_not_active");
+    }
+  }
+
+  private async advancePostingStateAfterCommit(input: {
+    readonly attemptId: string;
+    readonly operationKind: "summary_comment" | "advisory_status";
+    readonly completedAt: Date;
+  }): Promise<void> {
+    const status =
+      input.operationKind === "summary_comment"
+        ? "summary_posted"
+        : "status_posted";
+    await this.prisma.conflictReviewAttempt.updateMany({
+      where: {
+        id: input.attemptId,
+        status: { in: [...postingIntentAllowedStatuses] },
+      },
+      data: {
+        status,
+        ...(status === "status_posted"
+          ? { completedAt: input.completedAt, normalReviewRecheckNeeded: true }
+          : {}),
+        version: { increment: 1 },
+      },
+    });
+  }
 }
+
+const postingSessionIssuableStatuses = [
+  "started",
+  "model_running",
+  "posting_started",
+  "summary_posted",
+  "inline_posting_completed",
+  "status_posted",
+] as const;
+
+const postingIntentAllowedStatuses = [
+  "posting_started",
+  "summary_posted",
+  "inline_posting_completed",
+  "status_posted",
+] as const;
 
 function toConflictReviewAttempt(record: {
   readonly id: string;
@@ -338,6 +726,8 @@ function toConflictReviewAttempt(record: {
   readonly dispatchNonceHash: string;
   readonly dispatchEventType: string;
   readonly status: string;
+  readonly version?: number;
+  readonly postingManifestHash?: string | null;
   readonly createdAt: Date;
 }): ConflictReviewAttempt {
   return {
@@ -355,8 +745,37 @@ function toConflictReviewAttempt(record: {
     dispatchNonceHash: record.dispatchNonceHash,
     dispatchEventType: conflictReviewDispatchEventType,
     status: record.status as ConflictReviewAttempt["status"],
+    version: record.version ?? 1,
+    postingManifestHash: record.postingManifestHash ?? null,
     createdAt: record.createdAt,
   };
+}
+
+function conflictReviewPostingOperationScopeHash(input: {
+  readonly attemptId: string;
+  readonly dispatchId: string;
+  readonly githubRunId: string;
+  readonly githubRunAttempt: string;
+  readonly manifestHash: string;
+  readonly headSha: string;
+  readonly baseRef: string;
+  readonly baseSha: string;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        attemptId: input.attemptId,
+        baseRef: input.baseRef,
+        baseSha: input.baseSha,
+        dispatchId: input.dispatchId,
+        githubRunAttempt: input.githubRunAttempt,
+        githubRunId: input.githubRunId,
+        headSha: input.headSha,
+        manifestHash: input.manifestHash,
+      }),
+      "utf8",
+    )
+    .digest("hex");
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

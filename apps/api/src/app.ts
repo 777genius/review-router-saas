@@ -3,6 +3,7 @@ import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
 import { registerApiDemoRoutes } from "@reviewrouter/features-api-demo";
 import {
   JoseActionSessionTokenService,
+  JoseActionConflictReviewPostingSessionTokenService,
   JoseGitHubActionsOidcTokenVerifier,
   HmacActionLedgerKey,
   PrismaActionControlPlaneRepository,
@@ -34,6 +35,7 @@ import {
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import {
+  isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   readGitHubAppPrivateKey,
 } from "@reviewrouter/platform-config";
@@ -46,6 +48,7 @@ import {
   CompositePullRequestWebhookHandler,
   CompositePushWebhookHandler,
 } from "./github/composite-github-webhook-handlers.js";
+import { OctokitConflictReviewPostingGateway } from "./github/octokit-conflict-review-posting-gateway.js";
 import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
@@ -127,13 +130,51 @@ export async function createApiApp(
           const githubAppPrivateKey = readGitHubAppPrivateKey();
           const conflictReviewFallbackEnabled =
             isConflictReviewFallbackEnabled();
+          const conflictPostingGatewayEnabled = Boolean(
+            conflictReviewFallbackEnabled &&
+            process.env.GITHUB_APP_ID &&
+            githubAppPrivateKey &&
+            process.env.GITHUB_APP_SLUG,
+          );
+          const conflictPostingGateway = conflictPostingGatewayEnabled
+            ? new OctokitConflictReviewPostingGateway({
+                appId: process.env.GITHUB_APP_ID,
+                privateKey: githubAppPrivateKey ?? undefined,
+                appSlug: process.env.GITHUB_APP_SLUG,
+              })
+            : undefined;
           const ledgerSecret =
             process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
             options.actionSessionSecret;
           return {
             repositories: new PrismaActionControlPlaneRepository(prisma),
             ...(conflictReviewFallbackEnabled
-              ? { conflictReviews: new PrismaConflictReviewRepository(prisma) }
+              ? {
+                  conflictReviews: new PrismaConflictReviewRepository(prisma),
+                }
+              : {}),
+            ...(conflictPostingGatewayEnabled
+              ? {
+                  conflictPostingSessions: new PrismaConflictReviewRepository(
+                    prisma,
+                  ),
+                }
+              : {}),
+            conflictReviewRuntimeGate: {
+              async assertConflictReviewRuntimeEnabled(input: {
+                readonly repositoryFullName: string;
+              }) {
+                if (
+                  !isConflictReviewFallbackAllowedForRepository(
+                    input.repositoryFullName,
+                  )
+                ) {
+                  throw new Error("conflict_review_runtime_disabled");
+                }
+              },
+            },
+            ...(conflictPostingGatewayEnabled
+              ? { conflictReviewPostingAvailable: true }
               : {}),
             entitlements: new PrismaActionEntitlementPolicy(prisma),
             rateLimits: new ActionRateLimitPolicy(
@@ -149,6 +190,14 @@ export async function createApiApp(
             sessions: new JoseActionSessionTokenService(
               options.actionSessionSecret,
             ),
+            ...(conflictPostingGatewayEnabled
+              ? {
+                  postingSessions:
+                    new JoseActionConflictReviewPostingSessionTokenService(
+                      options.actionSessionSecret,
+                    ),
+                }
+              : {}),
             ledgerKeys: new HmacActionLedgerKey(ledgerSecret),
             ...(process.env.GITHUB_APP_ID && githubAppPrivateKey
               ? {
@@ -156,6 +205,12 @@ export async function createApiApp(
                     appId: process.env.GITHUB_APP_ID,
                     privateKey: githubAppPrivateKey,
                   }),
+                  ...(conflictPostingGateway
+                    ? {
+                        conflictPostingGateway,
+                        conflictPrePostValidator: conflictPostingGateway,
+                      }
+                    : {}),
                 }
               : {}),
             oidcVerifier: new JoseGitHubActionsOidcTokenVerifier(),
@@ -197,6 +252,15 @@ function createDefaultGitHubWebhookDependencies(input: {
   readonly prisma: PrismaClient;
 }): RegisterGitHubWebhookRoutesDependencies {
   const conflictReviewFallbackEnabled = isConflictReviewFallbackEnabled();
+  const conflictReviewRolloutPolicy = {
+    isConflictReviewFallbackAllowed(input: {
+      readonly repositoryFullName: string;
+    }) {
+      return isConflictReviewFallbackAllowedForRepository(
+        input.repositoryFullName,
+      );
+    },
+  };
   const outbox = new PrismaOutboxEventRepository(input.prisma);
   return {
     webhookSecret: input.webhookSecret,
@@ -213,6 +277,7 @@ function createDefaultGitHubWebhookDependencies(input: {
         ? [
             new ConflictReviewPullRequestWebhookHandler({
               outbox,
+              rolloutPolicy: conflictReviewRolloutPolicy,
               clock: new SystemClock(),
             }),
           ]
@@ -223,6 +288,7 @@ function createDefaultGitHubWebhookDependencies(input: {
           pushes: new CompositePushWebhookHandler([
             new ConflictReviewPushWebhookHandler({
               outbox,
+              rolloutPolicy: conflictReviewRolloutPolicy,
               clock: new SystemClock(),
             }),
           ]),

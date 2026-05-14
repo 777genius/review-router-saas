@@ -1,0 +1,24 @@
+{
+  "name": "@reviewrouter/features-conflict-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    }
+  },
+  "bin": {
+    "reviewrouter-conflict-runtime": "./dist/interface/cli/reviewrouter-conflict-runtime.js"
+  },
+  "dependencies": {
+    "@reviewrouter/features-action-control-plane": "workspace:*",
+    "zod": "^4.4.2"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

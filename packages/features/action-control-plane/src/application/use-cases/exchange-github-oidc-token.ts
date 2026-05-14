@@ -12,6 +12,7 @@ import type {
   ActionConflictReviewDispatchPayload,
   ActionConflictReviewExchangeVerifierPort,
 } from "../ports/action-conflict-review-exchange-verifier-port.js";
+import type { ActionConflictReviewRuntimeGatePort } from "../ports/action-conflict-review-runtime-gate-port.js";
 import { runtimeReviewConfigurationSnapshotId } from "../ports/action-control-plane-repository-port.js";
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
@@ -27,6 +28,7 @@ export type ExchangeGitHubOidcTokenDependencies = {
   readonly rateLimits?: ActionRateLimitPolicyPort;
   readonly replayNonces?: ActionOidcReplayNonceStorePort;
   readonly conflictReviews?: ActionConflictReviewExchangeVerifierPort;
+  readonly conflictReviewRuntimeGate?: ActionConflictReviewRuntimeGatePort;
   readonly clock: Clock;
 };
 
@@ -75,6 +77,16 @@ export async function exchangeGitHubOidcToken(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
   });
+  if (claims.event_name === "repository_dispatch") {
+    await dependencies.conflictReviewRuntimeGate?.assertConflictReviewRuntimeEnabled(
+      {
+        phase: "session_exchange",
+        workspaceId: repository.workspaceId,
+        repositoryId: repository.repositoryId,
+        repositoryFullName: repository.fullName,
+      },
+    );
+  }
   const configSnapshotId =
     claims.event_name === "repository_dispatch"
       ? runtimeReviewConfigurationSnapshotId(

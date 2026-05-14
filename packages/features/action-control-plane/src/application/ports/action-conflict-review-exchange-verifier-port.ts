@@ -1,16 +1,8 @@
-import type { GitHubActionsOidcClaims } from "../../domain/action-control-plane.js";
-
-export type ActionConflictReviewDispatchPayload = {
-  readonly protocolVersion: 1;
-  readonly dispatchId: string;
-  readonly nonce: string;
-  readonly repositoryId: string;
-  readonly pullRequestNumber: number;
-  readonly headSha: string;
-  readonly baseRef: string;
-  readonly baseSha: string;
-  readonly fallbackVersion: 1;
-};
+import type {
+  ActionConflictReviewDispatchPayload,
+  GitHubActionsOidcClaims,
+} from "../../domain/action-control-plane.js";
+export type { ActionConflictReviewDispatchPayload } from "../../domain/action-control-plane.js";
 
 export type ActionConflictReviewExchange = {
   readonly reviewKind: "conflict-head";

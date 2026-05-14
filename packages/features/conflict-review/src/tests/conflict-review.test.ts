@@ -116,6 +116,7 @@ describe("conflict review", () => {
     expect(github.dispatches).toHaveLength(1);
     expect(github.dispatches[0]?.payload).toMatchObject({
       protocol_version: 1,
+      dispatch_event_type: conflictReviewDispatchEventType,
       repository_id: "123456",
       pr_number: 7,
       head_sha: pullRequestSnapshot().headSha,
@@ -123,6 +124,37 @@ describe("conflict review", () => {
       base_sha: pullRequestSnapshot().baseSha,
       fallback_version: conflictReviewFallbackVersion,
     });
+  });
+
+  it("skips detection before GitHub reads when repository rollout is disabled", async () => {
+    const repositories = new InMemoryConflictReviewRepository(repository);
+    const github = new InMemoryConflictReviewGithub();
+
+    const result = await processConflictReviewDetection(
+      {
+        source: "pull_request",
+        deliveryId: "delivery-1",
+        githubInstallationId: repository.githubInstallationId,
+        githubRepositoryId: repository.githubRepositoryId,
+        repositoryFullName: repository.fullName,
+        pullRequestNumber: 7,
+        action: "synchronize",
+      },
+      {
+        repositories,
+        github,
+        rolloutPolicy: { isConflictReviewFallbackAllowed: () => false },
+        clock,
+      },
+    );
+
+    expect(result).toEqual({
+      status: "ignored",
+      reason: "conflict_review_rollout_disabled",
+    });
+    expect(repositories.attempts).toHaveLength(0);
+    expect(github.pullRequestCalls).toHaveLength(0);
+    expect(github.dispatches).toHaveLength(0);
   });
 
   it("uses the signed webhook repository full name as fresh GitHub API coordinates", async () => {
@@ -415,6 +447,22 @@ describe("conflict review", () => {
       }),
     ).rejects.toThrow("conflict_review_run_attempt_stale");
 
+    await expect(
+      repositories.verifyConflictReviewExchange({
+        claims: {
+          repository_id: repository.githubRepositoryId,
+          run_id: "100",
+          run_attempt: "3",
+        },
+        dispatchPayload: {
+          ...dispatchPayload,
+          dispatchEventType: "wrong_dispatch_action" as never,
+        },
+        configSnapshotId: "repository:7",
+        exchangedAt: now,
+      }),
+    ).rejects.toThrow("conflict_review_event_type_mismatch");
+
     const expired = new InMemoryPrismaConflictReviewAttempt({
       createdAt: new Date(
         now.getTime() - conflictReviewAttemptExchangeTtlMs - 1,
@@ -470,6 +518,170 @@ describe("conflict review", () => {
 
     expect(prisma.record.status).toBe("started");
     expect(prisma.record.githubRunId).toBe("100");
+  });
+
+  it("issues conflict posting scopes only for the bound run and manifest", async () => {
+    const prisma = new InMemoryPrismaConflictReviewAttempt({
+      status: "started",
+      githubRunId: "100",
+      githubRunAttempt: "1",
+      configSnapshotId: "repository:7",
+    });
+    const repositories = new PrismaConflictReviewRepository(prisma.asPrisma());
+    const manifestHash = "c".repeat(64);
+
+    const scope = await repositories.issueConflictReviewPostingSession({
+      session: {
+        workspaceId: repository.workspaceId,
+        repositoryId: repository.repositoryId,
+        githubRepositoryId: repository.githubRepositoryId,
+        repository: repository.fullName,
+        githubRunId: "100",
+        githubRunAttempt: "1",
+        reviewKind: "conflict-head",
+        conflictDispatchId: prisma.record.dispatchId,
+        pullRequestNumber: 7,
+        headSha: "a".repeat(40),
+        baseRef: "main",
+        baseSha: "b".repeat(40),
+        configSnapshotId: "repository:7",
+      },
+      manifestHash,
+      issuedAt: now,
+    });
+
+    expect(scope).toMatchObject({
+      purpose: "conflict-review-posting",
+      attemptId: "attempt_1",
+      dispatchId: prisma.record.dispatchId,
+      manifestHash,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      protocolVersion: 1,
+    });
+    expect(scope.operationScopeHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(prisma.record.status).toBe("posting_started");
+    expect(prisma.record.postingManifestHash).toBe(manifestHash);
+    expect(prisma.record.version).toBe(2);
+
+    await expect(
+      repositories.issueConflictReviewPostingSession({
+        session: {
+          workspaceId: repository.workspaceId,
+          repositoryId: repository.repositoryId,
+          githubRepositoryId: repository.githubRepositoryId,
+          repository: repository.fullName,
+          githubRunId: "100",
+          githubRunAttempt: "1",
+          reviewKind: "conflict-head",
+          conflictDispatchId: prisma.record.dispatchId,
+          pullRequestNumber: 7,
+          headSha: "a".repeat(40),
+          baseRef: "main",
+          baseSha: "b".repeat(40),
+          configSnapshotId: "repository:7",
+        },
+        manifestHash: "d".repeat(64),
+        issuedAt: now,
+      }),
+    ).rejects.toThrow("conflict_review_posting_manifest_mismatch");
+  });
+
+  it("recovers ambiguous posting intents with the same idempotency key", async () => {
+    const manifestHash = "c".repeat(64);
+    const prisma = new InMemoryPrismaConflictReviewAttempt({
+      status: "posting_started",
+      githubRunId: "100",
+      githubRunAttempt: "1",
+      configSnapshotId: "repository:7",
+      postingManifestHash: manifestHash,
+    });
+    const repositories = new PrismaConflictReviewRepository(prisma.asPrisma());
+    const scope = {
+      purpose: "conflict-review-posting" as const,
+      attemptId: prisma.record.id,
+      workspaceId: repository.workspaceId,
+      repositoryId: repository.repositoryId,
+      githubRepositoryId: repository.githubRepositoryId,
+      githubInstallationId: repository.githubInstallationId,
+      repository: repository.fullName,
+      githubRunId: "100",
+      githubRunAttempt: "1",
+      dispatchId: prisma.record.dispatchId,
+      pullRequestNumber: 7,
+      headSha: "a".repeat(40),
+      baseRef: "main",
+      baseSha: "b".repeat(40),
+      configSnapshotId: "repository:7",
+      manifestHash,
+      operationScopeHash: "d".repeat(64),
+      protocolVersion: 1 as const,
+    };
+    const operationFingerprint = "e".repeat(64);
+
+    const reserved = await repositories.reserveConflictReviewPostingIntent({
+      scope,
+      operationKind: "summary_comment",
+      operationFingerprint,
+      bodyHash: "f".repeat(64),
+      requestedAt: now,
+    });
+    expect(reserved).toEqual({
+      status: "reserved",
+      intentId: "posting_intent_1",
+    });
+    await repositories.markConflictReviewPostingIntentAmbiguous({
+      scope,
+      intentId: "posting_intent_1",
+      operationKind: "summary_comment",
+      safeErrorCode: "conflict_summary_post_ambiguous",
+      safeErrorSummary: "timeout",
+      failedAt: now,
+    });
+    expect(prisma.postingIntents.get(operationFingerprint)?.status).toBe(
+      "ambiguous",
+    );
+
+    await expect(
+      repositories.reserveConflictReviewPostingIntent({
+        scope,
+        operationKind: "summary_comment",
+        operationFingerprint,
+        bodyHash: "f".repeat(64),
+        requestedAt: now,
+      }),
+    ).resolves.toEqual({
+      status: "reserved",
+      intentId: "posting_intent_1",
+    });
+    expect(prisma.postingIntents.get(operationFingerprint)?.status).toBe(
+      "pending",
+    );
+
+    await repositories.commitConflictReviewPostingIntent({
+      scope,
+      intentId: "posting_intent_1",
+      operationKind: "summary_comment",
+      githubExternalId: "summary_1",
+      githubUrl: "https://github.com/777genius/example/pull/7#issuecomment-1",
+      bodyHash: "f".repeat(64),
+      completedAt: now,
+    });
+    await expect(
+      repositories.reserveConflictReviewPostingIntent({
+        scope,
+        operationKind: "summary_comment",
+        operationFingerprint,
+        bodyHash: "f".repeat(64),
+        requestedAt: now,
+      }),
+    ).resolves.toEqual({
+      status: "completed",
+      intentId: "posting_intent_1",
+      githubExternalId: "summary_1",
+      githubUrl: "https://github.com/777genius/example/pull/7#issuecomment-1",
+    });
   });
 
   it("queues detection from PR and base push webhooks without dispatching in the HTTP request", async () => {
@@ -549,6 +761,46 @@ describe("conflict review", () => {
       "conflict_review.detection_requested",
       "conflict_review.detection_requested",
     ]);
+  });
+
+  it("skips webhook enqueue when repository rollout is disabled", async () => {
+    const outbox = new InMemoryOutbox();
+    const result = await requestConflictReviewDetectionFromPullRequestWebhook(
+      {
+        deliveryId: "delivery-pr",
+        eventName: "pull_request",
+        payloadHash: "hash",
+        payload: {
+          action: "synchronize",
+          installation: { id: 987654 },
+          repository: {
+            id: 123456,
+            name: "example",
+            full_name: "777genius/example",
+          },
+          pull_request: {
+            number: 7,
+            html_url: "https://github.com/777genius/example/pull/7",
+            state: "open",
+            merged: false,
+            base: { ref: "main" },
+            head: { ref: "feature" },
+          },
+        },
+      },
+      {
+        outbox,
+        rolloutPolicy: { isConflictReviewFallbackAllowed: () => false },
+        clock,
+      },
+    );
+
+    expect(result).toEqual({
+      processed: false,
+      queued: false,
+      reason: "conflict_review_rollout_disabled",
+    });
+    expect(outbox.events).toHaveLength(0);
   });
 });
 
@@ -631,6 +883,8 @@ class InMemoryConflictReviewRepository implements ConflictReviewRepositoryPort {
       ...attempt,
       id: `attempt_${this.attempts.length + 1}`,
       status: "recorded",
+      version: 1,
+      postingManifestHash: null,
     };
     this.attempts.push(created);
     return { created: true, attempt: created };
@@ -747,6 +1001,23 @@ class InMemoryConflictReviewGithub implements ConflictReviewGitHubGatewayPort {
 
 class InMemoryPrismaConflictReviewAttempt {
   public readonly nonce = "n".repeat(40);
+  public readonly postingIntents = new Map<
+    string,
+    {
+      id: string;
+      attemptId: string;
+      operationKind: string;
+      operationFingerprint: string;
+      manifestHash: string;
+      bodyHash: string;
+      status: "pending" | "completed" | "failed" | "ambiguous";
+      githubExternalId: string | null;
+      githubUrl: string | null;
+      safeErrorCode: string | null;
+      safeErrorSummary: string | null;
+      completedAt: Date | null;
+    }
+  >();
   public readonly record: {
     id: string;
     workspaceId: string;
@@ -762,10 +1033,12 @@ class InMemoryPrismaConflictReviewAttempt {
     dispatchNonceHash: string;
     dispatchEventType: string;
     status: string;
+    version: number;
     createdAt: Date;
     githubRunId: string | null;
     githubRunAttempt: string | null;
     configSnapshotId: string | null;
+    postingManifestHash: string | null;
   };
 
   constructor(
@@ -784,12 +1057,15 @@ class InMemoryPrismaConflictReviewAttempt {
       fallbackVersion: conflictReviewFallbackVersion,
       dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
       dispatchNonceHash: hashConflictReviewDispatchNonce(this.nonce),
-      dispatchEventType: conflictReviewDispatchEventType,
+      dispatchEventType:
+        conflictReviewDispatchEventType as typeof conflictReviewDispatchEventType,
       status: "dispatched",
+      version: 1,
       createdAt: now,
       githubRunId: null,
       githubRunAttempt: null,
       configSnapshotId: null,
+      postingManifestHash: null,
       ...overrides,
     };
   }
@@ -797,6 +1073,8 @@ class InMemoryPrismaConflictReviewAttempt {
   dispatchPayload() {
     return {
       protocolVersion: 1 as const,
+      dispatchEventType:
+        conflictReviewDispatchEventType as typeof conflictReviewDispatchEventType,
       dispatchId: this.record.dispatchId,
       nonce: this.nonce,
       repositoryId: this.record.githubRepositoryId.toString(),
@@ -811,22 +1089,24 @@ class InMemoryPrismaConflictReviewAttempt {
   asPrisma() {
     return {
       conflictReviewAttempt: {
-        findUnique: vi.fn(async (input: { where: { dispatchId: string } }) =>
-          input.where.dispatchId === this.record.dispatchId
-            ? this.record
-            : null,
+        findUnique: vi.fn(
+          async (input: { where: { dispatchId?: string; id?: string } }) =>
+            input.where.dispatchId === this.record.dispatchId ||
+            input.where.id === this.record.id
+              ? this.record
+              : null,
         ),
         updateMany: vi.fn(
           async (input: {
             where: {
               id: string;
-              status: string | { in: readonly string[] };
-              OR?: readonly ({ githubRunId: null } | { githubRunId: string })[];
+              status?: string | { in: readonly string[] };
+              githubRunId?: string;
+              githubRunAttempt?: string;
+              configSnapshotId?: string;
+              OR?: readonly Record<string, string | null>[];
               AND?: readonly {
-                OR: readonly (
-                  | { configSnapshotId: null }
-                  | { configSnapshotId: string }
-                )[];
+                OR: readonly Record<string, string | null>[];
               }[];
             };
             data: Partial<{
@@ -836,11 +1116,32 @@ class InMemoryPrismaConflictReviewAttempt {
               configSnapshotId: string;
               startedAt: Date;
               dispatchedAt: Date;
+              postingManifestHash: string;
+              version: { increment: number };
             }>;
           }) => {
             if (
               input.where.id !== this.record.id ||
-              !statusMatches(input.where.status, this.record.status)
+              (input.where.status !== undefined &&
+                !statusMatches(input.where.status, this.record.status))
+            ) {
+              return { count: 0 };
+            }
+            if (
+              input.where.githubRunId !== undefined &&
+              input.where.githubRunId !== this.record.githubRunId
+            ) {
+              return { count: 0 };
+            }
+            if (
+              input.where.githubRunAttempt !== undefined &&
+              input.where.githubRunAttempt !== this.record.githubRunAttempt
+            ) {
+              return { count: 0 };
+            }
+            if (
+              input.where.configSnapshotId !== undefined &&
+              input.where.configSnapshotId !== this.record.configSnapshotId
             ) {
               return { count: 0 };
             }
@@ -848,7 +1149,14 @@ class InMemoryPrismaConflictReviewAttempt {
               input.where.OR?.some((condition) =>
                 condition.githubRunId === null
                   ? this.record.githubRunId === null
-                  : condition.githubRunId === this.record.githubRunId,
+                  : condition.githubRunId !== undefined
+                    ? condition.githubRunId === this.record.githubRunId
+                    : condition.postingManifestHash === null
+                      ? this.record.postingManifestHash === null
+                      : condition.postingManifestHash !== undefined
+                        ? condition.postingManifestHash ===
+                          this.record.postingManifestHash
+                        : false,
               ) ?? true;
             if (!runMatches) {
               return { count: 0 };
@@ -875,6 +1183,134 @@ class InMemoryPrismaConflictReviewAttempt {
             }
             if (input.data.configSnapshotId !== undefined) {
               this.record.configSnapshotId = input.data.configSnapshotId;
+            }
+            if (input.data.postingManifestHash !== undefined) {
+              this.record.postingManifestHash = input.data.postingManifestHash;
+            }
+            if (input.data.version !== undefined) {
+              this.record.version += input.data.version.increment;
+            }
+            return { count: 1 };
+          },
+        ),
+      },
+      conflictReviewPostingIntent: {
+        create: vi.fn(
+          async (input: {
+            data: {
+              attemptId: string;
+              operationKind: string;
+              operationFingerprint: string;
+              manifestHash: string;
+              bodyHash: string;
+              createdAt: Date;
+            };
+          }) => {
+            if (this.postingIntents.has(input.data.operationFingerprint)) {
+              throw Object.assign(new Error("unique conflict"), {
+                code: "P2002",
+              });
+            }
+            const record = {
+              id: `posting_intent_${this.postingIntents.size + 1}`,
+              attemptId: input.data.attemptId,
+              operationKind: input.data.operationKind,
+              operationFingerprint: input.data.operationFingerprint,
+              manifestHash: input.data.manifestHash,
+              bodyHash: input.data.bodyHash,
+              status: "pending" as const,
+              githubExternalId: null,
+              githubUrl: null,
+              safeErrorCode: null,
+              safeErrorSummary: null,
+              completedAt: null,
+            };
+            this.postingIntents.set(input.data.operationFingerprint, record);
+            return record;
+          },
+        ),
+        findUnique: vi.fn(
+          async (input: {
+            where: {
+              attemptId_operationKind_operationFingerprint: {
+                attemptId: string;
+                operationKind: string;
+                operationFingerprint: string;
+              };
+            };
+          }) => {
+            const key =
+              input.where.attemptId_operationKind_operationFingerprint
+                .operationFingerprint;
+            const record = this.postingIntents.get(key);
+            if (
+              !record ||
+              record.attemptId !==
+                input.where.attemptId_operationKind_operationFingerprint
+                  .attemptId ||
+              record.operationKind !==
+                input.where.attemptId_operationKind_operationFingerprint
+                  .operationKind
+            ) {
+              return null;
+            }
+            return record;
+          },
+        ),
+        updateMany: vi.fn(
+          async (input: {
+            where: {
+              id: string;
+              attemptId: string;
+              operationKind: string;
+              operationFingerprint?: string;
+              manifestHash: string;
+              status: string;
+            };
+            data: Partial<{
+              status: "pending" | "completed" | "failed" | "ambiguous";
+              githubExternalId: string;
+              githubUrl: string | null;
+              bodyHash: string;
+              completedAt: Date | null;
+              safeErrorCode: string | null;
+              safeErrorSummary: string | null;
+            }>;
+          }) => {
+            const record = [...this.postingIntents.values()].find(
+              (candidate) =>
+                candidate.id === input.where.id &&
+                candidate.attemptId === input.where.attemptId &&
+                candidate.operationKind === input.where.operationKind &&
+                candidate.manifestHash === input.where.manifestHash &&
+                candidate.status === input.where.status &&
+                (input.where.operationFingerprint === undefined ||
+                  candidate.operationFingerprint ===
+                    input.where.operationFingerprint),
+            );
+            if (!record) {
+              return { count: 0 };
+            }
+            if (input.data.status !== undefined) {
+              record.status = input.data.status;
+            }
+            if (input.data.githubExternalId !== undefined) {
+              record.githubExternalId = input.data.githubExternalId;
+            }
+            if (input.data.githubUrl !== undefined) {
+              record.githubUrl = input.data.githubUrl;
+            }
+            if (input.data.bodyHash !== undefined) {
+              record.bodyHash = input.data.bodyHash;
+            }
+            if (input.data.completedAt !== undefined) {
+              record.completedAt = input.data.completedAt;
+            }
+            if (input.data.safeErrorCode !== undefined) {
+              record.safeErrorCode = input.data.safeErrorCode;
+            }
+            if (input.data.safeErrorSummary !== undefined) {
+              record.safeErrorSummary = input.data.safeErrorSummary;
             }
             return { count: 1 };
           },

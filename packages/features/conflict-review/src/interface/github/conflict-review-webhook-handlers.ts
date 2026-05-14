@@ -6,6 +6,7 @@ import type {
 } from "@reviewrouter/features-github-installations";
 import type { OutboxEventRepositoryPort } from "@reviewrouter/features-outbox";
 import type { Clock } from "@reviewrouter/shared";
+import type { ConflictReviewRolloutPolicyPort } from "../../application/ports/conflict-review-rollout-policy-port";
 import {
   requestConflictReviewDetectionFromPullRequestWebhook,
   requestConflictReviewDetectionFromPushWebhook,
@@ -15,6 +16,7 @@ export class ConflictReviewPullRequestWebhookHandler implements GitHubPullReques
   constructor(
     private readonly dependencies: {
       readonly outbox: OutboxEventRepositoryPort;
+      readonly rolloutPolicy?: ConflictReviewRolloutPolicyPort | undefined;
       readonly clock: Clock;
     },
   ) {}
@@ -33,6 +35,7 @@ export class ConflictReviewPushWebhookHandler implements GitHubPushWebhookHandle
   constructor(
     private readonly dependencies: {
       readonly outbox: OutboxEventRepositoryPort;
+      readonly rolloutPolicy?: ConflictReviewRolloutPolicyPort | undefined;
       readonly clock: Clock;
     },
   ) {}

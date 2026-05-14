@@ -230,6 +230,7 @@ describe("provisionReviewRouterWorkflow", () => {
         "      id-token: write",
       ].join("\n"),
     );
+    expect(reviewWorkflow).toContain("conflict_dispatch_event_type:");
     expect(reviewWorkflow).toContain("conflict_dispatch_id:");
   });
 

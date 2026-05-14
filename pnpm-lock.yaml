@@ -409,6 +409,15 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/features/conflict-runtime:
+    dependencies:
+      '@reviewrouter/features-action-control-plane':
+        specifier: workspace:*
+        version: link:../action-control-plane
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
   packages/features/entitlements:
     dependencies:
       '@prisma/client':

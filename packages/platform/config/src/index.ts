@@ -35,6 +35,7 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: z
     .enum(["0", "1"])
     .default("0"),
+  REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES: z.string().default(""),
   REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
@@ -85,6 +86,34 @@ export function isConflictReviewFallbackEnabled(
   return input.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK === "1";
 }
 
+export function isConflictReviewFallbackAllowedForRepository(
+  repositoryFullName: string,
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isConflictReviewFallbackEnabled(input)) {
+    return false;
+  }
+  const allowlist = parseConflictReviewFallbackRepositoryAllowlist(
+    input.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES,
+  );
+  const normalizedRepository = normalizeRepositoryFullName(repositoryFullName);
+  return allowlist.includes(normalizedRepository);
+}
+
+export function parseConflictReviewFallbackRepositoryAllowlist(
+  value: string | undefined,
+): readonly string[] {
+  const raw = value?.trim();
+  if (!raw) {
+    return [];
+  }
+  const repositories = raw
+    .split(/[\s,]+/)
+    .map((repository) => normalizeRepositoryFullName(repository))
+    .filter((repository) => repository.length > 0);
+  return [...new Set(repositories)];
+}
+
 export function isClaudeCodeProviderEnabled(
   input: NodeJS.ProcessEnv = process.env,
 ): boolean {
@@ -125,4 +154,18 @@ export function requireGitHubAppPrivateKey(
 
 function normalizePrivateKey(value: string): string {
   return value.includes("\\n") ? value.replaceAll("\\n", "\n") : value;
+}
+
+function normalizeRepositoryFullName(repositoryFullName: string): string {
+  const normalized = repositoryFullName.trim().toLowerCase();
+  if (
+    !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_.-]{1,100}$/.test(
+      normalized,
+    )
+  ) {
+    throw new Error(
+      "invalid_env:REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES",
+    );
+  }
+  return normalized;
 }

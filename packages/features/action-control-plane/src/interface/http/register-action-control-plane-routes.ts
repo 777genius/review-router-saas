@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import {
-  safeConflictReviewDispatchId,
-  safeGitHubBranchName,
-} from "@reviewrouter/shared";
 import { z } from "zod";
 import {
+  actionConflictReviewDispatchPayloadSchema,
+  conflictReviewPostingSessionPath,
+  conflictReviewPostingStatusPath,
+  conflictReviewPostingSummaryPath,
+  conflictReviewSummaryMaxBytes,
   actionHealthReportMaxBytes,
   defaultActionOidcAudience,
   type ActionRuntimeConfigResponse,
@@ -22,154 +23,64 @@ import {
   type IssueActionCommentTokenDependencies,
 } from "../../application/use-cases/issue-action-comment-token.js";
 import {
+  postConflictReviewStatus,
+  type PostConflictReviewStatusDependencies,
+} from "../../application/use-cases/post-conflict-review-status.js";
+import {
+  postConflictReviewSummary,
+  type PostConflictReviewSummaryDependencies,
+} from "../../application/use-cases/post-conflict-review-summary.js";
+import {
   recordActionHealthReport,
   type RecordActionHealthReportDependencies,
 } from "../../application/use-cases/record-action-health-report.js";
+import {
+  requestConflictReviewPostingSession,
+  type RequestConflictReviewPostingSessionDependencies,
+} from "../../application/use-cases/request-conflict-review-posting-session.js";
 import type { GitHubAppCommentTokenIssuerPort } from "../../application/ports/github-app-comment-token-issuer-port.js";
 
 export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
     GetActionRuntimeConfigDependencies &
+    RequestConflictReviewPostingSessionDependencies &
+    PostConflictReviewSummaryDependencies &
+    PostConflictReviewStatusDependencies &
     RecordActionHealthReportDependencies & {
       readonly commentTokens?: GitHubAppCommentTokenIssuerPort;
       readonly oidcAudience?: string;
       readonly controlPlaneEnabled?: boolean;
     };
 
-const conflictDispatchPayloadSchema = z
+const exchangeBodySchema = z
   .object({
-    protocolVersion: z.literal(1).optional(),
-    protocol_version: z.literal(1).optional(),
-    dispatchId: safeConflictReviewDispatchId.optional(),
-    dispatch_id: safeConflictReviewDispatchId.optional(),
-    nonce: z.string().min(32).max(160),
-    repositoryId: z
-      .string()
-      .regex(/^[0-9]+$/)
-      .optional(),
-    repository_id: z
-      .string()
-      .regex(/^[0-9]+$/)
-      .optional(),
-    pullRequestNumber: z.number().int().positive().optional(),
-    pr_number: z.number().int().positive().optional(),
-    headSha: z
-      .string()
-      .regex(/^[a-fA-F0-9]{40}$/)
-      .optional(),
-    head_sha: z
-      .string()
-      .regex(/^[a-fA-F0-9]{40}$/)
-      .optional(),
-    baseRef: safeGitHubBranchName.optional(),
-    base_ref: safeGitHubBranchName.optional(),
-    baseSha: z
-      .string()
-      .regex(/^[a-fA-F0-9]{40}$/)
-      .optional(),
-    base_sha: z
-      .string()
-      .regex(/^[a-fA-F0-9]{40}$/)
-      .optional(),
-    fallbackVersion: z.literal(1).optional(),
-    fallback_version: z.literal(1).optional(),
+    oidcToken: z.string().min(1),
+    audience: z.string().min(1).optional(),
+    conflictDispatch: actionConflictReviewDispatchPayloadSchema.optional(),
   })
-  .strict()
-  .transform((payload, context) => {
-    const normalized = {
-      protocolVersion: coalesceConflictDispatchAlias(
-        payload.protocolVersion,
-        payload.protocol_version,
-        "protocolVersion",
-        context,
-      ),
-      dispatchId: coalesceConflictDispatchAlias(
-        payload.dispatchId,
-        payload.dispatch_id,
-        "dispatchId",
-        context,
-      ),
-      nonce: payload.nonce,
-      repositoryId: coalesceConflictDispatchAlias(
-        payload.repositoryId,
-        payload.repository_id,
-        "repositoryId",
-        context,
-      ),
-      pullRequestNumber: coalesceConflictDispatchAlias(
-        payload.pullRequestNumber,
-        payload.pr_number,
-        "pullRequestNumber",
-        context,
-      ),
-      headSha: coalesceConflictDispatchAlias(
-        payload.headSha,
-        payload.head_sha,
-        "headSha",
-        context,
-      ),
-      baseRef: coalesceConflictDispatchAlias(
-        payload.baseRef,
-        payload.base_ref,
-        "baseRef",
-        context,
-      ),
-      baseSha: coalesceConflictDispatchAlias(
-        payload.baseSha,
-        payload.base_sha,
-        "baseSha",
-        context,
-      ),
-      fallbackVersion: coalesceConflictDispatchAlias(
-        payload.fallbackVersion,
-        payload.fallback_version,
-        "fallbackVersion",
-        context,
-      ),
-    };
-    for (const [key, value] of Object.entries(normalized)) {
-      if (value === undefined) {
-        context.addIssue({
-          code: "custom",
-          path: [key],
-          message: "required",
-        });
-      }
-    }
-    return normalized as {
-      readonly protocolVersion: 1;
-      readonly dispatchId: string;
-      readonly nonce: string;
-      readonly repositoryId: string;
-      readonly pullRequestNumber: number;
-      readonly headSha: string;
-      readonly baseRef: string;
-      readonly baseSha: string;
-      readonly fallbackVersion: 1;
-    };
-  });
+  .strict();
 
-function coalesceConflictDispatchAlias<T>(
-  primary: T | undefined,
-  alias: T | undefined,
-  path: string,
-  context: z.RefinementCtx,
-): T | undefined {
-  if (primary !== undefined && alias !== undefined && primary !== alias) {
-    context.addIssue({
-      code: "custom",
-      path: [path],
-      message: "conflicting_aliases",
-    });
-  }
-  return primary ?? alias;
-}
+const conflictPostingSessionBodySchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    manifestHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  })
+  .strict();
 
-const exchangeBodySchema = z.object({
-  oidcToken: z.string().min(1),
-  audience: z.string().min(1).optional(),
-  conflictDispatch: conflictDispatchPayloadSchema.optional(),
-});
+const conflictPostingSummaryBodySchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    summaryMarkdown: z.string().min(1).max(conflictReviewSummaryMaxBytes),
+  })
+  .strict();
+
+const conflictPostingStatusBodySchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    state: z.enum(["success", "failure", "error"]),
+    description: z.string().min(1).max(140).optional(),
+  })
+  .strict();
 
 type ActionErrorFormat = "legacy" | "v1";
 
@@ -288,12 +199,109 @@ export async function registerActionControlPlaneRoutes(
       }
     };
 
+  const createConflictPostingSessionHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = conflictPostingSessionBodySchema.parse(request.body);
+        const result = await requestConflictReviewPostingSession(
+          {
+            sessionToken: readBearerToken(request),
+            protocolVersion: body.protocolVersion,
+            manifestHash: body.manifestHash,
+          },
+          dependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createConflictPostingSummaryHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = conflictPostingSummaryBodySchema.parse(request.body);
+        const result = await postConflictReviewSummary(
+          {
+            postingSessionToken: readBearerToken(request),
+            protocolVersion: body.protocolVersion,
+            summaryMarkdown: body.summaryMarkdown,
+          },
+          dependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createConflictPostingStatusHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = conflictPostingStatusBodySchema.parse(request.body);
+        const result = await postConflictReviewStatus(
+          {
+            postingSessionToken: readBearerToken(request),
+            protocolVersion: body.protocolVersion,
+            state: body.state,
+            ...(body.description ? { description: body.description } : {}),
+          },
+          dependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
   app.post("/api/action/exchange-token", createExchangeHandler("legacy"));
   app.post("/api/action/v1/session/exchange", createExchangeHandler("v1"));
   app.get("/api/action/config", createConfigHandler("legacy"));
   app.get("/api/action/v1/config", createConfigHandler("v1"));
   app.post("/api/action/comment-token", createCommentTokenHandler("legacy"));
   app.post("/api/action/v1/comment-token", createCommentTokenHandler("v1"));
+  app.post(
+    conflictReviewPostingSessionPath,
+    { bodyLimit: 2_048 },
+    createConflictPostingSessionHandler("v1"),
+  );
+  app.post(
+    conflictReviewPostingSummaryPath,
+    { bodyLimit: conflictReviewSummaryMaxBytes + 8_192 },
+    createConflictPostingSummaryHandler("v1"),
+  );
+  app.post(
+    conflictReviewPostingStatusPath,
+    { bodyLimit: 4_096 },
+    createConflictPostingStatusHandler("v1"),
+  );
   app.post(
     "/api/action/health-report",
     { bodyLimit: actionHealthReportMaxBytes },
@@ -362,6 +370,40 @@ function sendActionErrorCode(
 
 function statusCodeForActionError(message: string): number {
   if (
+    message.includes("conflict_review_runtime_disabled") ||
+    message.includes("conflict_review_posting_session_unavailable") ||
+    message.includes("conflict_review_posting_token_unavailable")
+  ) {
+    return 503;
+  }
+  if (message.includes("conflict_runtime_provider_unsupported")) {
+    return 409;
+  }
+  if (
+    message.includes("conflict_runtime_version_required") ||
+    message.includes("conflict_runtime_version_unsupported")
+  ) {
+    return 426;
+  }
+  if (message.includes("conflict_review_posting_manifest_invalid")) {
+    return 400;
+  }
+  if (message.includes("conflict_posting_")) {
+    return 403;
+  }
+  if (message.includes("conflict_review_posting_intent_pending")) {
+    return 409;
+  }
+  if (
+    message.includes("conflict_review_summary_") ||
+    message.includes("conflict_review_status_")
+  ) {
+    return 400;
+  }
+  if (message.includes("conflict_review_")) {
+    return 403;
+  }
+  if (
     message.startsWith("oidc_jti_required") ||
     message.startsWith("oidc_replay_detected") ||
     message.includes("signature") ||
@@ -379,7 +421,6 @@ function statusCodeForActionError(message: string): number {
     message.includes("repository_not_selected") ||
     message.includes("installation_not_active") ||
     message.includes("workflow_ref_not_allowed") ||
-    message.includes("conflict_review_") ||
     message.includes("entitlement_denied") ||
     message.includes("mismatch")
   ) {
@@ -406,6 +447,39 @@ function safeActionErrorCode(message: string): string {
   }
   if (message.includes("workflow_ref_not_allowed")) {
     return "workflow_ref_not_allowed";
+  }
+  if (message.includes("conflict_review_runtime_disabled")) {
+    return "conflict_review_runtime_disabled";
+  }
+  if (message.includes("conflict_review_posting_session_unavailable")) {
+    return "conflict_review_posting_unavailable";
+  }
+  if (message.includes("conflict_review_posting_token_unavailable")) {
+    return "conflict_review_posting_unavailable";
+  }
+  if (message.includes("conflict_review_posting_manifest_invalid")) {
+    return "invalid_action_request";
+  }
+  if (message.includes("conflict_runtime_provider_unsupported")) {
+    return "conflict_runtime_provider_unsupported";
+  }
+  if (
+    message.includes("conflict_runtime_version_required") ||
+    message.includes("conflict_runtime_version_unsupported")
+  ) {
+    return "conflict_runtime_version_unsupported";
+  }
+  if (message.includes("conflict_posting_")) {
+    return "conflict_review_exchange_denied";
+  }
+  if (message.includes("conflict_review_posting_intent_pending")) {
+    return "conflict_review_posting_pending";
+  }
+  if (
+    message.includes("conflict_review_summary_") ||
+    message.includes("conflict_review_status_")
+  ) {
+    return "invalid_action_request";
   }
   if (message.includes("conflict_review_")) {
     return "conflict_review_exchange_denied";
@@ -459,8 +533,18 @@ function safeActionErrorMessage(code: string): string {
       return "GitHub App installation is not active for this repository.";
     case "workflow_ref_not_allowed":
       return "Workflow file is not allowed to fetch ReviewRouter runtime config.";
+    case "conflict_review_runtime_disabled":
+      return "Conflict review runtime is temporarily disabled.";
+    case "conflict_review_posting_unavailable":
+      return "Conflict review posting is not available for this runtime.";
+    case "conflict_review_posting_pending":
+      return "Conflict review posting is already in progress for this operation.";
     case "conflict_review_exchange_denied":
       return "Conflict review runtime config exchange was not allowed for this run.";
+    case "conflict_runtime_provider_unsupported":
+      return "Conflict review runtime currently supports Codex-backed providers only.";
+    case "conflict_runtime_version_unsupported":
+      return "Conflict review runtime ref is not supported for this run.";
     case "action_control_plane_entitlement_denied":
       return "Action control plane is not enabled for this workspace.";
     case "action_repository_mismatch":
@@ -487,6 +571,7 @@ function isRetryableActionError(code: string): boolean {
   return (
     code === "rate_limited" ||
     code === "action_control_plane_disabled" ||
-    code === "comment_token_unavailable"
+    code === "comment_token_unavailable" ||
+    code === "conflict_review_runtime_disabled"
   );
 }

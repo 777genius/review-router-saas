@@ -40,8 +40,12 @@ export const reusableReviewWorkflowPath =
   ".github/workflows/reviewrouter-reusable.yml";
 export const reusableInteractionWorkflowPath =
   ".github/workflows/reviewrouter-interaction-reusable.yml";
+export const reusableConflictReviewWorkflowPath =
+  ".github/workflows/reviewrouter-conflict-reusable.yml";
 export const conflictReviewDispatchEventType = "reviewrouter_conflict_review";
 export const conflictReviewKind = "conflict-head";
+const conflictSummaryIssueCommentSuppressionCondition =
+  "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))";
 
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
@@ -205,7 +209,7 @@ jobs:
   interaction:
     name: interaction
     runs-on: ubuntu-latest
-    if: \${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
+    if: \${{ ${conflictSummaryIssueCommentSuppressionCondition} }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
       REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
@@ -299,7 +303,7 @@ ${template.staticRuntimeEnvJsonBlock}
     permissions:
       contents: read
       id-token: write
-    uses: ${reusableWorkflowRuntimeRepository}/${reusableReviewWorkflowPath}@${template.runtimeRef}
+    uses: ${reusableWorkflowRuntimeRepository}/${reusableConflictReviewWorkflowPath}@${template.runtimeRef}
     with:
       runtime_ref: ${template.runtimeRef}
       api_url: ${JSON.stringify(options.apiUrl)}
@@ -308,18 +312,17 @@ ${template.staticRuntimeEnvJsonBlock}
 ${template.staticRuntimeEnvJsonBlock}
       pr_number: \${{ github.event.client_payload.pr_number }}
       review_kind: ${conflictReviewKind}
+      conflict_repository_id: \${{ github.event.client_payload.repository_id || '' }}
+      conflict_dispatch_event_type: \${{ github.event.client_payload.dispatch_event_type || '' }}
       conflict_dispatch_id: \${{ github.event.client_payload.dispatch_id || '' }}
       conflict_dispatch_nonce: \${{ github.event.client_payload.nonce || '' }}
       conflict_head_sha: \${{ github.event.client_payload.head_sha || '' }}
       conflict_base_ref: \${{ github.event.client_payload.base_ref || '' }}
       conflict_base_sha: \${{ github.event.client_payload.base_sha || '' }}
     secrets:
-      REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
       CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
       CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
-      CLAUDE_CODE_OAUTH_TOKEN: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
-      OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}`
+      OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}`
           : ""
       }
 `;
@@ -349,7 +352,7 @@ permissions:
 jobs:
   interaction:
     name: interaction
-    if: \${{ github.event_name != 'issue_comment' || github.event.issue.pull_request }}
+    if: \${{ ${conflictSummaryIssueCommentSuppressionCondition} }}
     uses: ${reusableWorkflowRuntimeRepository}/${reusableInteractionWorkflowPath}@${template.runtimeRef}
     with:
       runtime_ref: ${template.runtimeRef}
@@ -582,12 +585,15 @@ export function getWorkflowSetupContentMarkerGroups(input: {
 
   return baseMarkerGroups.map((markers) => [
     ...markers,
+    reusableConflictReviewWorkflowPath,
     "repository_dispatch:",
     `types: [${conflictReviewDispatchEventType}]`,
     "conflict-review:",
     "github.event_name == 'repository_dispatch'",
     `github.event.action == '${conflictReviewDispatchEventType}'`,
     `review_kind: ${conflictReviewKind}`,
+    "conflict_repository_id:",
+    "conflict_dispatch_event_type:",
     "conflict_dispatch_id:",
   ]);
 }
@@ -614,6 +620,9 @@ export function analyzeConflictReviewWorkflowCapability(input: {
   }
   if (!workflow.includes(reusableReviewWorkflowPath)) {
     return { supported: false, reason: "reusable_review_workflow_missing" };
+  }
+  if (!workflow.includes(reusableConflictReviewWorkflowPath)) {
+    return { supported: false, reason: "conflict_reusable_workflow_missing" };
   }
   if (!isCompactReusableCallerWorkflow(workflow)) {
     return {
@@ -670,7 +679,9 @@ export function analyzeConflictReviewWorkflowCapability(input: {
   if (
     ![
       "conflict_dispatch_id:",
+      "conflict_dispatch_event_type:",
       "conflict_dispatch_nonce:",
+      "conflict_repository_id:",
       "conflict_head_sha:",
       "conflict_base_ref:",
       "conflict_base_sha:",
@@ -691,10 +702,7 @@ function isCompactReusableCallerWorkflow(workflowYaml: string): boolean {
     return false;
   }
   const allJobUses = extractJobLevelUses(workflowYaml);
-  if (
-    allJobUses.length !== 2 ||
-    !allJobUses.every(isReviewRouterReusableReviewWorkflowUse)
-  ) {
+  if (allJobUses.length !== 2 || !hasExactReusableCallerJobs(allJobUses)) {
     return false;
   }
   return (
@@ -750,10 +758,14 @@ function extractReusableCallerRuntimeRefs(
   workflowYaml: string,
 ): readonly string[] {
   return extractJobLevelUses(workflowYaml)
-    .map((uses) =>
-      /^777genius\/review-router\/\.github\/workflows\/reviewrouter-reusable\.ya?ml@(\S+)$/i.exec(
-        uses,
-      ),
+    .map(
+      (uses) =>
+        /^777genius\/review-router\/\.github\/workflows\/reviewrouter-reusable\.ya?ml@(\S+)$/i.exec(
+          uses,
+        ) ??
+        /^777genius\/review-router\/\.github\/workflows\/reviewrouter-conflict-reusable\.ya?ml@(\S+)$/i.exec(
+          uses,
+        ),
     )
     .flatMap((match) => (match?.[1] ? [match[1]] : []));
 }
@@ -764,9 +776,18 @@ function extractJobLevelUses(workflowYaml: string): readonly string[] {
   );
 }
 
-function isReviewRouterReusableReviewWorkflowUse(uses: string): boolean {
-  return /^777genius\/review-router\/\.github\/workflows\/reviewrouter-reusable\.ya?ml@\S+$/i.test(
-    uses,
+function hasExactReusableCallerJobs(jobUses: readonly string[]): boolean {
+  return (
+    jobUses.some((uses) =>
+      /^777genius\/review-router\/\.github\/workflows\/reviewrouter-reusable\.ya?ml@\S+$/i.test(
+        uses,
+      ),
+    ) &&
+    jobUses.some((uses) =>
+      /^777genius\/review-router\/\.github\/workflows\/reviewrouter-conflict-reusable\.ya?ml@\S+$/i.test(
+        uses,
+      ),
+    )
   );
 }
 
@@ -985,7 +1006,13 @@ function assertSafeApiUrl(apiUrl: string): void {
   } catch {
     throw new Error("invalid_workflow_api_url");
   }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+  if (
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash
+  ) {
     throw new Error("invalid_workflow_api_url");
   }
   if (parsed.protocol === "https:") {
@@ -1002,7 +1029,8 @@ function isLocalhost(hostname: string): boolean {
   if (
     hostname === "localhost" ||
     hostname === "127.0.0.1" ||
-    hostname === "::1"
+    hostname === "::1" ||
+    hostname === "[::1]"
   ) {
     return true;
   }

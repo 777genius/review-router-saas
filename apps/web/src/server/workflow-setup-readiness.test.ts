@@ -109,12 +109,15 @@ describe("workflow setup readiness", () => {
     expect(probe.input?.expectedContentMarkerGroups).toEqual([
       [
         ".github/workflows/reviewrouter-reusable.yml",
+        ".github/workflows/reviewrouter-conflict-reusable.yml",
         "repository_dispatch:",
         "types: [reviewrouter_conflict_review]",
         "conflict-review:",
         "github.event_name == 'repository_dispatch'",
         "github.event.action == 'reviewrouter_conflict_review'",
         "review_kind: conflict-head",
+        "conflict_repository_id:",
+        "conflict_dispatch_event_type:",
         "conflict_dispatch_id:",
       ],
     ]);
@@ -142,12 +145,15 @@ describe("workflow setup readiness", () => {
       [
         ".github/workflows/reviewrouter-reusable.yml",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        ".github/workflows/reviewrouter-conflict-reusable.yml",
         "repository_dispatch:",
         "types: [reviewrouter_conflict_review]",
         "conflict-review:",
         "github.event_name == 'repository_dispatch'",
         "github.event.action == 'reviewrouter_conflict_review'",
         "review_kind: conflict-head",
+        "conflict_repository_id:",
+        "conflict_dispatch_event_type:",
         "conflict_dispatch_id:",
       ],
     ]);

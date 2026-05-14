@@ -11,6 +11,7 @@ import {
 } from "../../application/use-cases/process-conflict-review-detection";
 import type { ConflictReviewRepositoryPort } from "../../application/ports/conflict-review-repository-port";
 import type { ConflictReviewGitHubGatewayPort } from "../../application/ports/conflict-review-github-gateway-port";
+import type { ConflictReviewRolloutPolicyPort } from "../../application/ports/conflict-review-rollout-policy-port";
 import type { Clock } from "@reviewrouter/shared";
 
 const detectionPayloadSchema = z.discriminatedUnion("source", [
@@ -40,6 +41,7 @@ const detectionPayloadSchema = z.discriminatedUnion("source", [
 export function createConflictReviewDetectionRequestedHandler(dependencies: {
   readonly repositories: ConflictReviewRepositoryPort;
   readonly github: ConflictReviewGitHubGatewayPort;
+  readonly rolloutPolicy?: ConflictReviewRolloutPolicyPort | undefined;
   readonly clock: Clock;
   readonly logger?: {
     info(message: string, context?: Record<string, unknown>): void;
@@ -61,6 +63,7 @@ export function createConflictReviewDetectionRequestedHandler(dependencies: {
       const result = await processConflictReviewDetection(parsed.data, {
         repositories: dependencies.repositories,
         github: dependencies.github,
+        rolloutPolicy: dependencies.rolloutPolicy,
         clock: dependencies.clock,
       });
       logResult(result, dependencies.logger);

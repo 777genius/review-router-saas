@@ -32,10 +32,17 @@ export type ConflictReviewAttemptStatus =
   | "recorded"
   | "dispatched"
   | "started"
+  | "model_running"
+  | "posting_started"
+  | "summary_posted"
+  | "inline_posting_completed"
+  | "status_posted"
   | "completed"
   | "failed"
   | "skipped"
-  | "stale";
+  | "stale"
+  | "degraded"
+  | "dead_letter";
 
 export type ConflictReviewRepository = {
   readonly workspaceId: string;
@@ -92,11 +99,14 @@ export type NewConflictReviewAttempt = ConflictReviewAttemptIdentity & {
 export type ConflictReviewAttempt = NewConflictReviewAttempt & {
   readonly id: string;
   readonly status: ConflictReviewAttemptStatus;
+  readonly version: number;
+  readonly postingManifestHash: string | null;
 };
 
 export const conflictReviewDispatchPayloadSchema = z
   .object({
     protocol_version: z.literal(1),
+    dispatch_event_type: z.literal(conflictReviewDispatchEventType),
     dispatch_id: safeConflictReviewDispatchId,
     nonce: z.string().min(32).max(160),
     repository_id: z.string().regex(/^[0-9]+$/),
@@ -184,6 +194,7 @@ export function createConflictReviewDispatchIdentity(input: {
   const nonce = randomBytes(32).toString("base64url");
   const payload = conflictReviewDispatchPayloadSchema.parse({
     protocol_version: 1,
+    dispatch_event_type: conflictReviewDispatchEventType,
     dispatch_id: dispatchId,
     nonce,
     repository_id: input.githubRepositoryId,

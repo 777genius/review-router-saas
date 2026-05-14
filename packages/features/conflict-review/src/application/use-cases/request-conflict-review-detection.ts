@@ -3,6 +3,7 @@ import {
   enqueueOutboxEvent,
   type OutboxEventRepositoryPort,
 } from "@reviewrouter/features-outbox";
+import type { ConflictReviewRolloutPolicyPort } from "../ports/conflict-review-rollout-policy-port";
 import type {
   GitHubPullRequestWebhookEnvelope,
   GitHubPushWebhookEnvelope,
@@ -40,6 +41,7 @@ export async function requestConflictReviewDetectionFromPullRequestWebhook(
   envelope: GitHubPullRequestWebhookEnvelope,
   dependencies: {
     readonly outbox: OutboxEventRepositoryPort;
+    readonly rolloutPolicy?: ConflictReviewRolloutPolicyPort | undefined;
     readonly clock: Clock;
   },
 ): Promise<{
@@ -53,6 +55,18 @@ export async function requestConflictReviewDetectionFromPullRequestWebhook(
       processed: false,
       queued: false,
       reason: "pull_request_action_ignored",
+    };
+  }
+  if (
+    dependencies.rolloutPolicy &&
+    !(await dependencies.rolloutPolicy.isConflictReviewFallbackAllowed({
+      repositoryFullName: payload.repository.full_name,
+    }))
+  ) {
+    return {
+      processed: false,
+      queued: false,
+      reason: "conflict_review_rollout_disabled",
     };
   }
 
@@ -86,6 +100,7 @@ export async function requestConflictReviewDetectionFromPushWebhook(
   envelope: GitHubPushWebhookEnvelope,
   dependencies: {
     readonly outbox: OutboxEventRepositoryPort;
+    readonly rolloutPolicy?: ConflictReviewRolloutPolicyPort | undefined;
     readonly clock: Clock;
   },
 ): Promise<{
@@ -100,6 +115,18 @@ export async function requestConflictReviewDetectionFromPushWebhook(
   const branchRef = parseBranchRef(payload.ref);
   if (!branchRef) {
     return { processed: false, queued: false, reason: "push_not_branch" };
+  }
+  if (
+    dependencies.rolloutPolicy &&
+    !(await dependencies.rolloutPolicy.isConflictReviewFallbackAllowed({
+      repositoryFullName: payload.repository.full_name,
+    }))
+  ) {
+    return {
+      processed: false,
+      queued: false,
+      reason: "conflict_review_rollout_disabled",
+    };
   }
 
   const eventPayload: ConflictReviewDetectionRequestPayload = {

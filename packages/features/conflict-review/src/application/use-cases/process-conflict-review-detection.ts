@@ -10,6 +10,7 @@ import {
 } from "../../domain/conflict-review";
 import type { ConflictReviewGitHubGatewayPort } from "../ports/conflict-review-github-gateway-port";
 import type { ConflictReviewRepositoryPort } from "../ports/conflict-review-repository-port";
+import type { ConflictReviewRolloutPolicyPort } from "../ports/conflict-review-rollout-policy-port";
 import type { ConflictReviewDetectionRequestPayload } from "./request-conflict-review-detection";
 
 export type ProcessConflictReviewDetectionResult =
@@ -30,6 +31,7 @@ export async function processConflictReviewDetection(
   dependencies: {
     readonly repositories: ConflictReviewRepositoryPort;
     readonly github: ConflictReviewGitHubGatewayPort;
+    readonly rolloutPolicy?: ConflictReviewRolloutPolicyPort | undefined;
     readonly clock: Clock;
   },
 ): Promise<ProcessConflictReviewDetectionResult> {
@@ -45,6 +47,16 @@ export async function processConflictReviewDetection(
     storedRepository,
     payload.repositoryFullName,
   );
+  if (
+    dependencies.rolloutPolicy &&
+    !(await dependencies.rolloutPolicy.isConflictReviewFallbackAllowed({
+      workspaceId: repository.workspaceId,
+      repositoryId: repository.repositoryId,
+      repositoryFullName: repository.fullName,
+    }))
+  ) {
+    return { status: "ignored", reason: "conflict_review_rollout_disabled" };
+  }
 
   if (payload.source === "base_push") {
     return processBasePush(payload, repository, dependencies);
