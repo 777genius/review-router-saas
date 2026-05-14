@@ -76,27 +76,13 @@ export class CodexCliConflictProviderRunner implements ConflictRuntimeProviderRu
       const prompt = buildCodexConflictReviewPrompt(input);
       await this.runCommand({
         command: this.command,
-        args: [
-          "exec",
-          "--model",
+        args: buildCodexExecArgs({
           model,
-          "--sandbox",
-          "read-only",
-          "--ask-for-approval",
-          "never",
-          "--ephemeral",
-          "--ignore-user-config",
-          "--ignore-rules",
-          "--color",
-          "never",
-          "--cd",
-          this.workspace,
-          "--output-schema",
+          reasoningEffort: input.providerEnv.CODEX_REASONING_EFFORT,
           schemaFile,
-          "--output-last-message",
           outputFile,
-          "-",
-        ],
+          workspace: this.workspace,
+        }),
         cwd: this.workspace,
         env: commandEnv,
         stdin: prompt,
@@ -110,6 +96,45 @@ export class CodexCliConflictProviderRunner implements ConflictRuntimeProviderRu
       await rm(tempDir, { recursive: true, force: true });
     }
   }
+}
+
+function buildCodexExecArgs(input: {
+  readonly model: string;
+  readonly reasoningEffort?: string | undefined;
+  readonly schemaFile: string;
+  readonly outputFile: string;
+  readonly workspace: string;
+}): readonly string[] {
+  const args = [
+    "exec",
+    "--model",
+    input.model,
+    "--sandbox",
+    "read-only",
+    "--config",
+    'approval_policy="never"',
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--color",
+    "never",
+    "--cd",
+    input.workspace,
+    "--output-schema",
+    input.schemaFile,
+    "--output-last-message",
+    input.outputFile,
+    "-",
+  ];
+  if (input.reasoningEffort?.trim()) {
+    args.splice(
+      args.indexOf("--ephemeral"),
+      0,
+      "--config",
+      `model_reasoning_effort=${JSON.stringify(input.reasoningEffort.trim())}`,
+    );
+  }
+  return args;
 }
 
 function buildCodexConflictReviewPrompt(input: {

@@ -88,6 +88,7 @@ describe("CodexCliConflictProviderRunner", () => {
         providerEnv: {
           REVIEW_AUTH_MODE: "codex-oauth",
           CODEX_MODEL: "gpt-5.5",
+          CODEX_REASONING_EFFORT: "high",
           CODEX_AUTH_JSON: '{"auth_mode":"chatgpt"}',
           CODEX_CONFIG_TOML: "model = 'gpt-5.5'",
           OPENAI_API_KEY: "sk-provider",
@@ -105,8 +106,10 @@ describe("CodexCliConflictProviderRunner", () => {
           "exec",
           "--sandbox",
           "read-only",
-          "--ask-for-approval",
-          "never",
+          "--config",
+          'approval_policy="never"',
+          "--config",
+          'model_reasoning_effort="high"',
           "--ephemeral",
           "--ignore-user-config",
           "--ignore-rules",
@@ -114,6 +117,7 @@ describe("CodexCliConflictProviderRunner", () => {
           "--output-last-message",
         ]),
       );
+      expect(calls[0]?.args).not.toContain("--ask-for-approval");
       expect(calls[0]?.env).toMatchObject({
         CODEX_HOME: expect.stringContaining("reviewrouter-conflict-"),
         HOME: calls[0]?.env?.CODEX_HOME,
