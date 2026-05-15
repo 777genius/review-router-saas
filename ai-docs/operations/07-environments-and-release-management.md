@@ -29,7 +29,7 @@ pull request -> CI -> merge -> staging deploy -> smoke test -> production deploy
 Action:
 
 ```text
-merge -> release tag -> stable channel update after smoke
+merge -> release tag -> smoke release -> move v1 stable channel
 ```
 
 ## Stable, Release, Main Channels
@@ -40,14 +40,29 @@ release - pinned explicit tag selected by user
 main - live updates, opt-in only
 ```
 
-Public production SaaS-generated workflows should write explicit release tags by
-default. The UI may call this `stable`, but the workflow should not depend on a
-mutable stable tag unless the user explicitly chooses that behavior.
+Current production policy uses `v1` as a moving stable major channel. New setup
+PRs write `777genius/review-router@v1` and `runtime_ref: v1`; existing
+repositories on `@v1` receive compatible v1 fixes without a workflow PR.
+
+The `v1` channel must be moved only after a concrete `v1.0.x` release has passed
+smoke. Move it in both repositories together:
+
+```bash
+pnpm release:sync-major -- --version v1.0.37 --confirm
+```
+
+This updates:
+
+- `777genius/review-router@v1` for reusable workflow definitions
+- `777genius/review-router-saas@v1` for the trusted runtime checkout
+
+Pinned release mode remains the safer conservative option for customers who do
+not want automatic compatible updates.
 
 Local/private beta is the temporary exception: generated workflows default to
 `777genius/review-router@main` so smoke repositories receive runtime fixes
 immediately. Before public launch, change `REVIEW_ROUTER_ACTION_VERSION` to the
-vetted release tag and smoke that release.
+vetted stable channel or release tag and smoke that release.
 
 ## Rollback
 
@@ -58,6 +73,8 @@ Must support:
 - disable runtime config fetch through feature flag
 - mark bad action version as blocked
 - create workflow update PR to move customers off bad version if needed
+- if the bad version is on the moving stable channel, move `v1` back to the last
+  known-good `v1.0.x` in both repositories and then publish a fixed release
 
 ## Smoke Tests
 

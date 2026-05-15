@@ -18,7 +18,9 @@ ReviewRouter provisions CI workflows into customer repositories. A compromised d
 For ReviewRouter Action:
 
 - publish release tags intentionally
-- avoid force-moving release tags
+- never force-move immutable release tags such as `v1.0.37`
+- move mutable stable major tags such as `v1` only through the release runbook
+  after smoke evidence, and move the action/runtime tags together
 - keep `main` available for users who opt into live updates
 - default SaaS install should use stable/release channel unless user chooses main
 
