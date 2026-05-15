@@ -308,8 +308,6 @@ ${template.staticRuntimeEnvJsonBlock}
       runtime_ref: ${template.runtimeRef}
       api_url: ${JSON.stringify(options.apiUrl)}
       runtime_config_mode: ${options.runtimeConfigMode}
-      static_runtime_env_json: |-
-${template.staticRuntimeEnvJsonBlock}
       pr_number: \${{ github.event.client_payload.pr_number }}
       review_kind: ${conflictReviewKind}
       conflict_repository_id: \${{ github.event.client_payload.repository_id || '' }}

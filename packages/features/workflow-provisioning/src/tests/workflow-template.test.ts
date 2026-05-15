@@ -257,15 +257,17 @@ describe("renderReviewRouterWorkflow", () => {
     expect(conflictReviewJob).toContain("conflict_head_sha:");
     expect(conflictReviewJob).toContain("conflict_base_ref:");
     expect(conflictReviewJob).toContain("conflict_base_sha:");
-    expect(reviewWorkflow).toContain(
-      [
-        "static_runtime_env_json: |-",
-        "        {",
-        '          "REVIEW_AUTH_MODE": "codex-oauth",',
-        '          "CODEX_MODEL": "gpt-5.5"',
-        "        }",
-      ].join("\n"),
-    );
+    const staticRuntimeEnvJsonBlock = [
+      "static_runtime_env_json: |-",
+      "        {",
+      '          "REVIEW_AUTH_MODE": "codex-oauth",',
+      '          "CODEX_MODEL": "gpt-5.5"',
+      "        }",
+    ].join("\n");
+    expect(reviewJob).toContain(staticRuntimeEnvJsonBlock);
+    expect(conflictReviewJob).not.toContain("static_runtime_env_json:");
+    expect(conflictReviewJob).not.toContain('"REVIEW_AUTH_MODE"');
+    expect(conflictReviewJob).not.toContain('"CODEX_MODEL"');
     expect(reviewWorkflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
     );
