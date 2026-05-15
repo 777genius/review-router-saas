@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import {
-  BookOpen,
   CheckCircle2,
   CircleDotDashed,
   Cloud,
@@ -279,7 +278,8 @@ export default function GettingStartedPage(): React.ReactElement {
               </h2>
               <p className="mt-1 text-sm leading-6 text-slate-300">
                 If a setup PR was closed or its branch was deleted, recreate it
-                from the dashboard and merge the new PR before reseeding secrets.
+                from the dashboard and merge the new PR before reseeding
+                secrets.
               </p>
             </div>
             <div className="flex flex-wrap gap-3 sm:justify-end">
@@ -438,7 +438,10 @@ function SectionHeading({
           <Icon aria-hidden="true" className="size-5" />
         </div>
         <div className="min-w-0">
-          <h2 id={id} className="text-2xl font-semibold text-cyan-50 sm:text-3xl">
+          <h2
+            id={id}
+            className="text-2xl font-semibold text-cyan-50 sm:text-3xl"
+          >
             {title}
           </h2>
           <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
