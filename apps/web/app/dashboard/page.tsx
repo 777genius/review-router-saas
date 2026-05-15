@@ -1016,29 +1016,100 @@ function RepositoryAccessRefreshNotice({
   readonly workspaceKey: string;
   readonly selectedSection: DashboardSection;
 }): React.ReactElement {
+  const copy = repositoryAccessNoticeCopy(repositoryAccess.status);
+
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-200/10 bg-slate-950/60 p-4">
       <div className="min-w-0">
-        <Badge tone="accent">GitHub access</Badge>
-        <p className="mt-2 text-sm leading-6 text-slate-300">
-          Repository visibility comes from your GitHub App authorization and is
-          limited to repos where your GitHub role has write, maintain, or admin
-          access.
+        <Badge tone={copy.tone}>{copy.badge}</Badge>
+        <p className="mt-2 text-sm font-semibold leading-6 text-cyan-50">
+          {copy.title}
         </p>
+        <p className="mt-2 text-sm leading-6 text-slate-300">{copy.body}</p>
         <p className="mt-1 text-xs leading-5 text-slate-500">
           {repositoryAccess.checkedAt
             ? `Last checked ${repositoryAccess.checkedAt.toISOString()}`
             : "Access has not been cached yet."}
         </p>
       </div>
-      <RepositoryAccessRefreshForm
-        workspaceKey={workspaceKey}
-        section={selectedSection}
-        triggerLabel="Refresh GitHub access"
-        className="w-full sm:w-auto"
-      />
+      <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+        {copy.reconnect ? (
+          <GitHubSignInButton
+            callbackUrl={dashboardSectionHref(selectedSection, workspaceKey)}
+            variant="solid"
+            size="sm"
+            className="w-full rounded-xl sm:w-auto"
+          >
+            Reconnect GitHub
+          </GitHubSignInButton>
+        ) : null}
+        <RepositoryAccessRefreshForm
+          workspaceKey={workspaceKey}
+          section={selectedSection}
+          triggerLabel="Refresh GitHub access"
+          className="w-full sm:w-auto"
+        />
+      </div>
     </div>
   );
+}
+
+function repositoryAccessNoticeCopy(status: GitHubUserRepositoryAccessStatus): {
+  readonly badge: string;
+  readonly title: string;
+  readonly body: string;
+  readonly reconnect: boolean;
+  readonly tone: "accent" | "warning";
+} {
+  if (status === "token_missing") {
+    return {
+      badge: "GitHub reconnect required",
+      title: "Signed in, but repository discovery is not connected yet.",
+      body: "Reconnect GitHub once so ReviewRouter can discover installed organization repositories where your GitHub role has write, maintain, or admin access.",
+      reconnect: true,
+      tone: "warning",
+    };
+  }
+  if (
+    status === "token_revoked" ||
+    status === "token_expired" ||
+    status === "token_refresh_failed" ||
+    status === "token_decryption_failed"
+  ) {
+    return {
+      badge: "GitHub authorization expired",
+      title: "Reconnect GitHub to refresh repository access.",
+      body: "Your GitHub authorization is no longer usable for repository discovery. Reconnecting updates the token without asking for provider secrets.",
+      reconnect: true,
+      tone: "warning",
+    };
+  }
+  if (status === "token_encryption_misconfigured") {
+    return {
+      badge: "Configuration required",
+      title: "Repository discovery is not enabled yet.",
+      body: "Server token encryption is not configured, so repo-scoped discovery cannot store GitHub user tokens safely.",
+      reconnect: false,
+      tone: "warning",
+    };
+  }
+  if (status === "github_error") {
+    return {
+      badge: "GitHub access",
+      title: "GitHub repository access could not be refreshed.",
+      body: "Try refreshing access again shortly. Existing workspace access still works, but repo-scoped organizations may be missing until GitHub discovery succeeds.",
+      reconnect: false,
+      tone: "warning",
+    };
+  }
+
+  return {
+    badge: "GitHub access",
+    title: "Repository access is scoped by GitHub permissions.",
+    body: "Repository visibility comes from your GitHub App authorization and is limited to repos where your GitHub role has write, maintain, or admin access.",
+    reconnect: false,
+    tone: "accent",
+  };
 }
 
 function dashboardRepositoryAccessEmptyCopy(
@@ -1378,7 +1449,7 @@ function WorkspaceCard({
           workspaceHealth={workspaceHealth}
           activeConfig={activeConfig}
         />
-        {!hasWorkspaceWideAccess ? (
+        {!hasWorkspaceWideAccess || repositoryAccess.status !== "ready" ? (
           <RepositoryAccessRefreshNotice
             repositoryAccess={repositoryAccess}
             workspaceKey={workspaceKey}
