@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact semver tag to publish, for example v1.0.39
+        required: true
+        type: string
+      create_github_release:
+        description: Create a GitHub Release for the exact tag
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release target
+        id: release
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          ACTION_REPOSITORY: 777genius/review-router
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like v1.0.39"
+            exit 1
+          fi
+
+          MAJOR_TAG="${VERSION%%.*}"
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::release workflow must run from main, got $GITHUB_REF"
+            exit 1
+          fi
+
+          git fetch --force --tags origin main
+
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+            echo "::error::checked out commit must match origin/main"
+            exit 1
+          fi
+
+          if git rev-parse --quiet --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::local tag $VERSION already exists"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::remote tag $VERSION already exists"
+            exit 1
+          fi
+
+          LATEST_TAG="$(git tag -l "$MAJOR_TAG.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1)"
+          if [[ -n "$LATEST_TAG" ]]; then
+            HIGHEST_TAG="$(printf '%s\n%s\n' "$LATEST_TAG" "$VERSION" | sort -V | tail -n 1)"
+            if [[ "$HIGHEST_TAG" != "$VERSION" ]]; then
+              echo "::error::$VERSION is not newer than existing latest $LATEST_TAG"
+              exit 1
+            fi
+          fi
+
+          if ! git ls-remote --exit-code --tags "https://github.com/$ACTION_REPOSITORY.git" "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::$ACTION_REPOSITORY tag $VERSION must exist before releasing the SaaS runtime"
+            exit 1
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "major_tag=$MAJOR_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require successful CI on this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          CI_URL="$(
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow CI \
+              --branch main \
+              --limit 50 \
+              --json headSha,status,conclusion,url \
+              --jq ".[] | select(.headSha == \"$GITHUB_SHA\" and .status == \"completed\" and .conclusion == \"success\") | .url" \
+              | head -n 1
+          )"
+
+          if [[ -z "$CI_URL" ]]; then
+            echo "::error::CI must complete successfully on $GITHUB_SHA before release"
+            exit 1
+          fi
+
+          echo "Using CI gate: $CI_URL"
+
+      - name: Publish exact and stable tags
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          MAJOR_TAG: ${{ steps.release.outputs.major_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag "$VERSION" "$GITHUB_SHA"
+          git tag -f "$MAJOR_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"
+          git push --force origin "refs/tags/$MAJOR_TAG"
+
+      - name: Create GitHub Release
+        if: ${{ inputs.create_github_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "ReviewRouter SaaS Runtime $VERSION" \
+            --generate-notes \
+            --latest
+
+      - name: Summary
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          MAJOR_TAG: ${{ steps.release.outputs.major_tag }}
+        run: |
+          {
+            echo "Released $VERSION"
+            echo ""
+            echo "- Exact tag: $VERSION"
+            echo "- Stable tag: $MAJOR_TAG"
+            echo "- Target SHA: $GITHUB_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
