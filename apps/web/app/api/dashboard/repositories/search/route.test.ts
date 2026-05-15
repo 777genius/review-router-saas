@@ -68,6 +68,7 @@ describe("dashboard repository search route", () => {
       status: "ready",
       workspaceIds: ["workspace_1"],
       repositoryIds: new Set(["repo_allowed"]),
+      directConfigRepositoryIds: new Set<string>(),
       checkedAt: new Date("2026-05-12T10:00:00Z"),
     });
     mocks.repositoryConnectionFindMany.mockResolvedValue([
@@ -105,6 +106,7 @@ describe("dashboard repository search route", () => {
       status: "ready",
       workspaceIds: [],
       repositoryIds: new Set<string>(),
+      directConfigRepositoryIds: new Set<string>(),
       checkedAt: null,
     });
     mocks.repositoryConnectionFindMany.mockResolvedValue([

@@ -430,6 +430,7 @@ export function RepositoryPolicyOverrideDetails({
   configVersion,
   modelOptions,
   mutationsEnabled,
+  editDisabledReason,
   claudeCodeProviderEnabled = true,
   saveAction,
   clearAction,
@@ -441,6 +442,7 @@ export function RepositoryPolicyOverrideDetails({
   readonly configVersion: number;
   readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
+  readonly editDisabledReason?: string | undefined;
   readonly claudeCodeProviderEnabled?: boolean;
   readonly saveAction: DashboardFormAction;
   readonly clearAction: DashboardFormAction;
@@ -502,6 +504,11 @@ export function RepositoryPolicyOverrideDetails({
             }}
             submitLabel={repositoryConfig ? "Update override" : "Save override"}
           />
+          {!canEdit && editDisabledReason ? (
+            <p className="text-xs leading-5 text-amber-100/85">
+              {editDisabledReason}
+            </p>
+          ) : null}
           {repositoryConfig ? (
             <form action={clearAction}>
               <input type="hidden" name="workspaceId" value={workspaceId} />
@@ -528,6 +535,7 @@ export function RepositoryPolicyEditor({
   effectiveConfig,
   modelOptions,
   mutationsEnabled,
+  editDisabledReason,
   claudeCodeProviderEnabled = true,
   compact = false,
 }: {
@@ -537,6 +545,7 @@ export function RepositoryPolicyEditor({
   readonly effectiveConfig: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
+  readonly editDisabledReason?: string | undefined;
   readonly claudeCodeProviderEnabled?: boolean;
   readonly compact?: boolean;
 }): React.ReactElement {
@@ -619,6 +628,11 @@ export function RepositoryPolicyEditor({
               repositoryId: repository.id,
             }}
           />
+          {!canEdit && editDisabledReason ? (
+            <p className="text-xs leading-5 text-amber-100/85">
+              {editDisabledReason}
+            </p>
+          ) : null}
 
           {repositoryConfig ? (
             <form action={clearRepositorySettings}>

@@ -1,5 +1,9 @@
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
+  repositoryPermissionAllowsDirectConfig,
+  repositoryPermissionAllowsRepoManagement,
+} from "./dashboard-access-policy";
+import {
   getValidGitHubUserAccessToken,
   revokeGitHubUserAuthorization,
 } from "./github-user-authorization";
@@ -22,6 +26,7 @@ export type GitHubUserRepositoryAccessScope = {
   readonly status: GitHubUserRepositoryAccessStatus;
   readonly workspaceIds: readonly string[];
   readonly repositoryIds: ReadonlySet<string>;
+  readonly directConfigRepositoryIds: ReadonlySet<string>;
   readonly checkedAt: Date | null;
   readonly errorCode?: string;
 };
@@ -71,6 +76,7 @@ export async function listGitHubUserRepositoryAccess(input: {
       status: "ready",
       workspaceIds: cached.workspaceIds,
       repositoryIds: cached.repositoryIds,
+      directConfigRepositoryIds: cached.directConfigRepositoryIds,
       checkedAt: cached.checkedAt,
     };
   }
@@ -308,11 +314,7 @@ export async function updateRepositoryPermissionCacheFromLiveCheck(input: {
 export function repositoryPermissionAllowsDashboardMutation(
   permission: string | null,
 ): boolean {
-  return (
-    permission === "admin" ||
-    permission === "maintain" ||
-    permission === "write"
-  );
+  return repositoryPermissionAllowsRepoManagement({ permission });
 }
 
 function repositoryPermissionFromGitHub(
@@ -333,6 +335,7 @@ async function readFreshRepositoryPermissionCache(input: {
 }): Promise<{
   readonly workspaceIds: readonly string[];
   readonly repositoryIds: ReadonlySet<string>;
+  readonly directConfigRepositoryIds: ReadonlySet<string>;
   readonly checkedAt: Date | null;
 }> {
   const freshRows = await input.prisma.repositoryPermissionCache.findMany({
@@ -352,6 +355,8 @@ async function readFreshRepositoryPermissionCache(input: {
     select: {
       checkedAt: true,
       canManage: true,
+      permission: true,
+      roleName: true,
       repositoryId: true,
       repository: {
         select: {
@@ -363,11 +368,21 @@ async function readFreshRepositoryPermissionCache(input: {
   const checkedAt = freshRows[0]?.checkedAt ?? null;
   const manageableRows = freshRows.filter((row) => row.canManage);
   const repositoryIds = new Set(manageableRows.map((row) => row.repositoryId));
+  const directConfigRepositoryIds = new Set(
+    manageableRows
+      .filter((row) =>
+        repositoryPermissionAllowsDirectConfig({
+          permission: row.permission,
+          roleName: row.roleName,
+        }),
+      )
+      .map((row) => row.repositoryId),
+  );
   const workspaceIds = [
     ...new Set(manageableRows.map((row) => row.repository.workspaceId)),
   ];
 
-  return { workspaceIds, repositoryIds, checkedAt };
+  return { workspaceIds, repositoryIds, directConfigRepositoryIds, checkedAt };
 }
 
 async function listUserInstallations(input: {
@@ -426,9 +441,11 @@ async function fetchGitHubUserJson<T>(input: {
   url.searchParams.set("page", String(input.page));
 
   const response = await input.fetch(url, {
+    cache: "no-store",
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${input.accessToken}`,
+      "User-Agent": "ReviewRouter",
       "X-GitHub-Api-Version": githubApiVersion,
     },
   });
@@ -461,6 +478,7 @@ function emptyGitHubUserRepositoryAccess(input: {
     status: input.status,
     workspaceIds: [],
     repositoryIds: new Set<string>(),
+    directConfigRepositoryIds: new Set<string>(),
     checkedAt: null,
     ...(input.errorCode ? { errorCode: input.errorCode } : {}),
   };

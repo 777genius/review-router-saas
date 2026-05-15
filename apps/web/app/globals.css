@@ -6,6 +6,14 @@ html {
   color-scheme: dark;
   background: var(--rr-color-void);
   max-width: 100%;
+  scroll-padding-top: 14rem;
+  scroll-behavior: smooth;
+}
+
+@media (min-width: 768px) {
+  html {
+    scroll-padding-top: 7rem;
+  }
 }
 
 body {
@@ -60,6 +68,12 @@ body::after {
     rgba(0, 240, 255, 0.008) 2px,
     rgba(0, 240, 255, 0.008) 4px
   );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
 
 * {

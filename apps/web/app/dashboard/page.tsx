@@ -39,6 +39,7 @@ import {
   PrismaSupportDiagnosticsRepository,
 } from "@reviewrouter/features-support-diagnostics";
 import {
+  canDashboardActorConfigureRepository,
   canDashboardActorMutateRepository,
   createGitHubAppInstallationOctokit,
   getDashboardMutationStatus,
@@ -349,8 +350,9 @@ async function loadDashboardData(
           visibleInstallations.map(async (installation) => ({
             ...installation,
             githubInstallationId: installation.githubInstallationId.toString(),
-            organizationSecretPolicy:
-              await loadOrganizationSecretPolicy(installation),
+            organizationSecretPolicy: hasWorkspaceWideAccess
+              ? await loadOrganizationSecretPolicy(installation)
+              : null,
           })),
         );
 
@@ -479,6 +481,7 @@ type DashboardRepositoryAccessScope = {
   readonly status: GitHubUserRepositoryAccessStatus;
   readonly workspaceIds: readonly string[];
   readonly repositoryIds: ReadonlySet<string>;
+  readonly directConfigRepositoryIds: ReadonlySet<string>;
   readonly checkedAt: Date | null;
   readonly errorCode?: string;
 };
@@ -508,7 +511,7 @@ async function listDashboardRepositoryAccess(input: {
   const requestedRepositoryFullName = normalizeRequestedRepositoryFullName(
     input.requestedRepositoryFullName,
   );
-  if (discovered.status === "ready" && !requestedRepositoryFullName) {
+  if (discovered.status !== "ready" || !requestedRepositoryFullName) {
     return discovered;
   }
 
@@ -538,16 +541,28 @@ async function listDashboardRepositoryAccess(input: {
     : [];
   const candidates = dedupeRepositoryAccessCandidates(requestedCandidates);
   const allowed = await Promise.all(
-    candidates.map(async (repository) => ({
-      repository,
-      allowed: await canDashboardActorMutateRepository({
+    candidates.map(async (repository) => {
+      const allowed = await canDashboardActorMutateRepository({
         actor,
         repository,
-      }),
-    })),
+      });
+      const canConfigure = allowed
+        ? await canDashboardActorConfigureRepository({
+            actor,
+            repository,
+          })
+        : false;
+
+      return { repository, allowed, canConfigure };
+    }),
   );
   const repositoryIds = new Set<string>(
     discovered.status === "ready" ? [...discovered.repositoryIds] : [],
+  );
+  const directConfigRepositoryIds = new Set<string>(
+    discovered.status === "ready"
+      ? [...discovered.directConfigRepositoryIds]
+      : [],
   );
   const workspaceIds = new Set<string>(
     discovered.status === "ready" ? discovered.workspaceIds : [],
@@ -557,12 +572,16 @@ async function listDashboardRepositoryAccess(input: {
     if (!item.allowed) continue;
     repositoryIds.add(item.repository.id);
     workspaceIds.add(item.repository.workspaceId);
+    if (item.canConfigure) {
+      directConfigRepositoryIds.add(item.repository.id);
+    }
   }
 
   return {
     status: discovered.status,
     workspaceIds: [...workspaceIds],
     repositoryIds,
+    directConfigRepositoryIds,
     checkedAt: discovered.checkedAt,
     ...(discovered.errorCode ? { errorCode: discovered.errorCode } : {}),
   };
@@ -585,6 +604,7 @@ function emptyDashboardRepositoryAccess(
     status,
     workspaceIds: [],
     repositoryIds: new Set<string>(),
+    directConfigRepositoryIds: new Set<string>(),
     checkedAt: null,
   };
 }
@@ -1117,6 +1137,9 @@ function WorkspaceSwitcher({
       label: workspace.workspace.name,
       avatarUrl: workspaceAvatarUrl(workspace.workspace, fallbackUser),
       repositoryCount: workspace.repositoryCount,
+      ...(workspace.hasWorkspaceWideAccess
+        ? {}
+        : { statusLabel: "Repo access" }),
       href: dashboardSectionHref(selectedSection, workspaceKey),
     };
   });
@@ -1298,6 +1321,7 @@ function WorkspaceCard({
       ? buildProviderSecretGuidanceSet({
           repositoryFullName: selectedRepository.fullName,
           installation: selectedInstallation,
+          allowOrganizationSecrets: hasWorkspaceWideAccess,
         })
       : null;
   const workspaceHealth = summarizeWorkspaceSetupReadiness({
@@ -1321,6 +1345,7 @@ function WorkspaceCard({
         repositoryVisibility={selectedRepository.visibility}
         installation={selectedInstallation}
         guidanceSet={providerGuidanceSet}
+        allowOrganizationSecrets={hasWorkspaceWideAccess}
         claudeCodeProviderEnabled={claudeCodeProviderEnabled}
         triggerLabel="Enable review"
         triggerVariant="solid"
@@ -1381,6 +1406,11 @@ function WorkspaceCard({
               selectedRepositoryFullName={selectedRepository?.fullName ?? null}
               providerSecretCheckFailedRepositoryFullName={
                 providerSecretCheckFailedRepositoryFullName || null
+              }
+              directConfigRepositoryIds={
+                hasWorkspaceWideAccess
+                  ? null
+                  : repositoryAccess.directConfigRepositoryIds
               }
             />
           </>
@@ -1566,7 +1596,7 @@ function WorkspaceCard({
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
                   {hasWorkspaceWideAccess
                     ? "Workspace defaults apply to every repository unless a repository override is saved."
-                    : "You can edit provider, model, reasoning, and gate settings for repositories where your GitHub role has write, maintain, or admin access."}
+                    : "Direct provider, model, reasoning, and gate edits require maintain or admin access on that repository."}
                 </p>
               </div>
               <span className="font-mono text-xs uppercase tracking-[0.16em] text-slate-400">
@@ -1635,7 +1665,7 @@ function WorkspaceCard({
                           </svg>
                         </>
                       ) : (
-                        "Ready to edit"
+                        "Repository access"
                       )}
                     </span>
                   </div>
@@ -1658,6 +1688,11 @@ function WorkspaceCard({
                       repositoryConfig?.config ?? activeConfig;
                     const configVersion =
                       repositoryConfig?.version ?? activeConfigVersion;
+                    const canEditRepositorySettings =
+                      hasWorkspaceWideAccess ||
+                      repositoryAccess.directConfigRepositoryIds.has(
+                        repository.id,
+                      );
 
                     return (
                       <RepositoryPolicyOverrideDetails
@@ -1669,7 +1704,14 @@ function WorkspaceCard({
                         configVersion={configVersion}
                         modelOptions={modelOptions}
                         claudeCodeProviderEnabled={claudeCodeProviderEnabled}
-                        mutationsEnabled={mutationsEnabled}
+                        mutationsEnabled={
+                          mutationsEnabled && canEditRepositorySettings
+                        }
+                        editDisabledReason={
+                          canEditRepositorySettings
+                            ? undefined
+                            : "Maintain or admin access is required to change repo settings directly."
+                        }
                         saveAction={saveRepositoryReviewConfigAction}
                         clearAction={clearRepositoryReviewConfigAction}
                       />
@@ -2108,6 +2150,7 @@ function RepositoryTable({
   searchFilter,
   selectedRepositoryFullName,
   providerSecretCheckFailedRepositoryFullName,
+  directConfigRepositoryIds,
 }: {
   readonly workspace: DashboardWorkspace;
   readonly repositories: DashboardWorkspaceData["repositories"];
@@ -2124,6 +2167,7 @@ function RepositoryTable({
   readonly searchFilter: RepositorySearchFilter;
   readonly selectedRepositoryFullName: string | null;
   readonly providerSecretCheckFailedRepositoryFullName: string | null;
+  readonly directConfigRepositoryIds: ReadonlySet<string> | null;
 }): React.ReactElement {
   if (repositories.length === 0) {
     return (
@@ -2304,6 +2348,9 @@ function RepositoryTable({
             const repositoryConfig =
               repositoryConfigById.get(repository.id) ?? null;
             const effectiveConfig = repositoryConfig?.config ?? activeConfig;
+            const canEditRepositorySettings =
+              directConfigRepositoryIds === null ||
+              directConfigRepositoryIds.has(repository.id);
             const repositoryUrl = githubRepositoryUrl(repository.fullName);
             const setupDisclosureId = `repo-setup-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
             const isSelectedRepository =
@@ -2389,6 +2436,9 @@ function RepositoryTable({
                       workflowCurrent={workflowCurrent}
                       mutationsEnabled={mutationsEnabled}
                       claudeCodeProviderEnabled={claudeCodeProviderEnabled}
+                      allowOrganizationSecrets={
+                        directConfigRepositoryIds === null
+                      }
                       currentStep={setupProgressStep}
                     />
                   </div>
@@ -2401,7 +2451,14 @@ function RepositoryTable({
                     effectiveConfig={effectiveConfig}
                     modelOptions={modelOptions}
                     claudeCodeProviderEnabled={claudeCodeProviderEnabled}
-                    mutationsEnabled={mutationsEnabled}
+                    mutationsEnabled={
+                      mutationsEnabled && canEditRepositorySettings
+                    }
+                    editDisabledReason={
+                      canEditRepositorySettings
+                        ? undefined
+                        : "Maintain or admin access is required to change repo settings directly."
+                    }
                   />
                 ) : null}
               </div>
@@ -2510,6 +2567,7 @@ function RepositorySetupProgressPanel({
   workflowCurrent,
   mutationsEnabled,
   claudeCodeProviderEnabled,
+  allowOrganizationSecrets,
   currentStep,
 }: {
   readonly workspace: DashboardWorkspace;
@@ -2519,6 +2577,7 @@ function RepositorySetupProgressPanel({
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
   readonly claudeCodeProviderEnabled: boolean;
+  readonly allowOrganizationSecrets: boolean;
   readonly currentStep: 1 | 2 | 3 | 4;
 }): React.ReactElement {
   const canManage =
@@ -2534,6 +2593,7 @@ function RepositorySetupProgressPanel({
       setupStatus={repository.setupStatus}
       disabled={!canManage}
       claudeCodeProviderEnabled={claudeCodeProviderEnabled}
+      allowOrganizationSecrets={allowOrganizationSecrets}
       triggerVariant="outline"
       triggerClassName="min-h-11 w-full min-w-0 rounded-lg px-3 sm:w-auto sm:min-w-[9.5rem] sm:px-5"
     />
@@ -2574,6 +2634,7 @@ function RepositoryProviderSecretsAction({
   setupStatus,
   disabled,
   claudeCodeProviderEnabled,
+  allowOrganizationSecrets,
   triggerVariant,
   triggerClassName,
 }: {
@@ -2582,6 +2643,7 @@ function RepositoryProviderSecretsAction({
   readonly setupStatus: string;
   readonly disabled: boolean;
   readonly claudeCodeProviderEnabled: boolean;
+  readonly allowOrganizationSecrets: boolean;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
   readonly triggerClassName?: string;
 }): React.ReactElement | null {
@@ -2603,7 +2665,9 @@ function RepositoryProviderSecretsAction({
       guidanceSet={buildProviderSecretGuidanceSet({
         repositoryFullName: repository.fullName,
         installation,
+        allowOrganizationSecrets,
       })}
+      allowOrganizationSecrets={allowOrganizationSecrets}
       claudeCodeProviderEnabled={claudeCodeProviderEnabled}
       disabled={disabled}
       triggerLabel="Enable review"
@@ -2627,6 +2691,7 @@ function RepositoryProviderSecretsDialog({
   repositoryVisibility,
   installation,
   guidanceSet,
+  allowOrganizationSecrets,
   claudeCodeProviderEnabled,
   triggerLabel,
   triggerVariant = "outline",
@@ -2640,6 +2705,7 @@ function RepositoryProviderSecretsDialog({
   readonly repositoryVisibility: string;
   readonly installation: DashboardInstallation;
   readonly guidanceSet: ProviderSecretGuidanceSet;
+  readonly allowOrganizationSecrets: boolean;
   readonly claudeCodeProviderEnabled: boolean;
   readonly triggerLabel: string;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
@@ -2648,9 +2714,12 @@ function RepositoryProviderSecretsDialog({
   readonly disabled?: boolean;
 }): React.ReactElement {
   const organizationLogin =
-    installation.accountType === "Organization"
+    allowOrganizationSecrets && installation.accountType === "Organization"
       ? installation.accountLogin
       : null;
+  const organizationSecretPolicy = allowOrganizationSecrets
+    ? installation.organizationSecretPolicy
+    : null;
 
   return (
     <ProviderSecretSetupDialog
@@ -2659,7 +2728,7 @@ function RepositoryProviderSecretsDialog({
       repositoryFullName={repositoryFullName}
       repositoryVisibility={repositoryVisibility}
       organizationLogin={organizationLogin}
-      organizationSecretPolicy={installation.organizationSecretPolicy}
+      organizationSecretPolicy={organizationSecretPolicy}
       guidanceSet={guidanceSet}
       claudeCodeProviderEnabled={claudeCodeProviderEnabled}
       triggerLabel={triggerLabel}
@@ -2686,12 +2755,14 @@ function findInstallationForRepository(
 function buildProviderSecretGuidanceSet({
   repositoryFullName,
   installation,
+  allowOrganizationSecrets,
 }: {
   readonly repositoryFullName: string;
   readonly installation: DashboardInstallation;
+  readonly allowOrganizationSecrets: boolean;
 }): ProviderSecretGuidanceSet {
   const organizationLogin =
-    installation.accountType === "Organization"
+    allowOrganizationSecrets && installation.accountType === "Organization"
       ? installation.accountLogin
       : null;
 
@@ -3413,6 +3484,8 @@ function dashboardErrorText(error: string): string {
       return "Your GitHub user is not an owner/admin for this workspace.";
     case "repository_mutation_forbidden":
       return "Your GitHub user needs write, maintain, or admin access on this repository to change repository-level ReviewRouter settings.";
+    case "repository_config_mutation_forbidden":
+      return "Your GitHub user needs maintain or admin access on this repository to change ReviewRouter runtime settings directly.";
     case "operation_already_running":
       return "Another setup or sync operation is already running. Try again shortly.";
     case "rate_limited":
@@ -3443,6 +3516,8 @@ function dashboardErrorText(error: string): string {
       return "The organization Actions secret exists, but it is not available to this repository. Add this repository to the selected-repository secret access, then try again.";
     case "provider_secret_check_permission_required":
       return "ReviewRouter needs GitHub App Secrets: read for repository secrets, or Organization secrets: read for organization secrets, to verify Actions secret metadata. Approve the App permission update, then try again.";
+    case "organization_secret_scope_forbidden":
+      return "Organization secret setup requires workspace owner/admin access. Use a repository secret for repo-scoped setup.";
     case "entitlement_denied":
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
     case "workflow_provisioning_disabled":

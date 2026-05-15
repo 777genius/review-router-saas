@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { Database, ExternalLink, KeyRound, ShieldCheck } from "lucide-react";
-import { Badge, LinkButton } from "@reviewrouter/ui";
+import { Database, KeyRound, ShieldCheck } from "lucide-react";
 import { LoadingLinkButton } from "./loading-link-button";
 import { GitHubAppInstallPermissionDialog } from "./github-app-install-permission-dialog";
+import { CompareSection } from "./compare-section";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -245,47 +245,7 @@ export default async function HomePage(): Promise<React.ReactElement> {
         </span>
       </section>
 
-      <section className="mx-auto w-[calc(100%-2rem)] max-w-7xl rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/72 p-6 shadow-[0_20px_90px_-58px_rgba(0,240,255,0.7)] sm:w-[calc(100%-3rem)] sm:p-8">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-          <div className="min-w-0">
-            <Badge tone="accent">Privacy boundary</Badge>
-            <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
-              ReviewRouter helps configure reviews. We do not store your code.
-            </h2>
-            <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-300 sm:text-base sm:leading-7">
-              ReviewRouter stores installation metadata, model settings, health,
-              and audit state for complex private codebases. It does not store
-              code, PR diffs, prompts, model responses, Codex OAuth files, or
-              provider API keys.
-            </p>
-            <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-300 sm:text-base sm:leading-7">
-              ReviewRouter is open source, so you can inspect the code and
-              workflow setup on GitHub.
-            </p>
-          </div>
-          <div className="grid gap-3 sm:flex lg:justify-end">
-            <LinkButton href="/security" variant="outline" size="lg">
-              Security model
-            </LinkButton>
-            <LinkButton href="/getting-started" variant="outline" size="lg">
-              Setup guide
-            </LinkButton>
-            <LinkButton href="/compare" variant="outline" size="lg">
-              Compare
-            </LinkButton>
-            <LinkButton
-              href={reviewRouterGitHubRepoUrl}
-              variant="outline"
-              size="lg"
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              <ExternalLink aria-hidden="true" className="h-5 w-5" />
-              GitHub
-            </LinkButton>
-          </div>
-        </div>
-      </section>
+      <CompareSection />
     </main>
   );
 }

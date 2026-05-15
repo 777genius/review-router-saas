@@ -14,6 +14,7 @@ import {
   reviewRouterWebUrl,
 } from "./public-urls";
 import {
+  defaultSocialImage,
   defaultSeoDescription,
   defaultSeoTitle,
   seoKeywords,
@@ -62,20 +63,13 @@ export const metadata: Metadata = {
     url: "/",
     siteName,
     type: "website",
-    images: [
-      {
-        url: "/opengraph-image",
-        width: 1200,
-        height: 630,
-        alt: "ReviewRouter privacy-first AI code review control plane",
-      },
-    ],
+    images: [defaultSocialImage],
   },
   twitter: {
     card: "summary_large_image",
     title: defaultSeoTitle,
     description: defaultSeoDescription,
-    images: ["/opengraph-image"],
+    images: [defaultSocialImage.url],
   },
 };
 
@@ -100,7 +94,7 @@ const jetBrainsMono = JetBrains_Mono({
 
 const footerResourceLinks = [
   { href: "/support", label: "Support" },
-  { href: "/compare", label: "Compare" },
+  { href: "/#compare", label: "Compare" },
   { href: "/fair-use", label: "Fair use" },
 ] as const;
 
@@ -127,21 +121,51 @@ export default async function RootLayout({
         >
           Skip to content
         </a>
-        <header className="sticky top-0 z-40 border-b border-cyan-300/[0.08] bg-[#0a0a0f]/90 backdrop-blur-xl">
-          <div className="mx-auto flex min-h-16 w-full min-w-0 max-w-6xl flex-col gap-3 px-4 py-4 sm:px-6 md:flex-row md:items-center md:justify-between md:py-0">
-            <a href="/" className="group flex min-w-0 items-center gap-3">
-              <LogoMark size="sm" />
+        <header className="sticky top-0 z-40 border-b border-cyan-300/[0.1] bg-[#04070d]/90 shadow-[0_18px_60px_-42px_rgba(0,240,255,0.7)] backdrop-blur-xl">
+          <div
+            aria-hidden="true"
+            className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-cyan-200/55 to-transparent"
+          />
+          <div className="mx-auto grid min-h-20 w-full min-w-0 max-w-7xl gap-3 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(240px,auto)_minmax(0,1fr)_auto] lg:items-center lg:py-0">
+            <a
+              href="/"
+              className="group flex min-w-0 items-center gap-3 rounded-2xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+            >
+              <LogoMark
+                size="sm"
+                className="shadow-[0_0_34px_-10px_rgba(0,240,255,0.9)]"
+              />
               <span className="min-w-0">
-                <span className="block font-mono text-sm font-semibold tracking-[0.18em] text-cyan-100">
+                <span className="block font-mono text-base font-semibold tracking-[0.16em] text-cyan-50">
                   ReviewRouter
                 </span>
-                <span className="block text-xs text-[#8892b0]">
-                  Reviews run in customer CI
+                <span className="block text-xs text-slate-500">
+                  Private AI review control plane
                 </span>
               </span>
             </a>
-            <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center md:justify-end">
+            <div className="relative min-w-0 lg:justify-self-center">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute left-1/2 top-1/2 hidden h-px w-[min(38rem,52vw)] -translate-x-1/2 bg-gradient-to-r from-transparent via-cyan-300/15 to-transparent lg:block"
+              />
               <PrimaryNav signedIn={profile.signedIn} />
+            </div>
+            <div className="flex min-w-0 items-center gap-3 lg:justify-end">
+              <div className="hidden items-center gap-3 border-r border-cyan-200/10 pr-3 xl:flex">
+                <span className="relative grid h-9 w-9 place-items-center rounded-xl border border-lime-300/20 bg-lime-300/[0.07] text-lime-300">
+                  <ShieldCheck aria-hidden="true" className="size-4" />
+                  <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-lime-300 shadow-[0_0_12px_rgba(190,242,100,0.8)]" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block font-mono text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-lime-200">
+                    Secure
+                  </span>
+                  <span className="block text-xs text-slate-500">
+                    Systems operational
+                  </span>
+                </span>
+              </div>
               <HeaderProfileMenu
                 githubLogin={profile.githubLogin}
                 githubAvatarUrl={profile.githubAvatarUrl}

@@ -102,14 +102,15 @@ export default async function Image(): Promise<ImageResponse> {
           display: "flex",
           gap: 18,
           color: "#bef264",
-          fontSize: 24,
+          fontSize: 22,
           fontWeight: 700,
           letterSpacing: 0,
         }}
       >
+        <span>Free</span>
         <span>Code stays in CI</span>
-        <span>Codex</span>
-        <span>Claude</span>
+        <span>Codex Subscription</span>
+        <span>Claude Subscription</span>
         <span>OpenAI</span>
         <span>OpenRouter</span>
       </div>

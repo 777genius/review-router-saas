@@ -26,6 +26,8 @@ describe("GitHub user repository access", () => {
     const cacheRows: {
       checkedAt: Date;
       canManage: boolean;
+      permission: string | null;
+      roleName: string | null;
       repositoryId: string;
       repository: { workspaceId: string };
     }[] = [];
@@ -35,10 +37,14 @@ describe("GitHub user repository access", () => {
           (row: {
             checkedAt: Date;
             canManage: boolean;
+            permission?: string | null;
+            roleName?: string | null;
             repositoryId: string;
           }) => ({
             checkedAt: row.checkedAt,
             canManage: row.canManage,
+            permission: row.permission ?? null,
+            roleName: row.roleName ?? null,
             repositoryId: row.repositoryId,
             repository: { workspaceId: "workspace_1" },
           }),
@@ -121,6 +127,7 @@ describe("GitHub user repository access", () => {
 
     expect(result.status).toBe("ready");
     expect([...result.repositoryIds]).toEqual(["repo_1"]);
+    expect([...result.directConfigRepositoryIds]).toEqual([]);
     expect(result.workspaceIds).toEqual(["workspace_1"]);
     expect(createMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -144,12 +151,16 @@ describe("GitHub user repository access", () => {
     const cacheRows: {
       checkedAt: Date;
       canManage: boolean;
+      permission: string | null;
+      roleName: string | null;
       repositoryId: string;
       repository: { workspaceId: string };
     }[] = [
       {
         checkedAt: new Date("2026-05-12T10:00:00Z"),
         canManage: true,
+        permission: "maintain",
+        roleName: null,
         repositoryId: "repo_old",
         repository: { workspaceId: "workspace_1" },
       },
@@ -160,10 +171,14 @@ describe("GitHub user repository access", () => {
           (row: {
             checkedAt: Date;
             canManage: boolean;
+            permission?: string | null;
+            roleName?: string | null;
             repositoryId: string;
           }) => ({
             checkedAt: row.checkedAt,
             canManage: row.canManage,
+            permission: row.permission ?? null,
+            roleName: row.roleName ?? null,
             repositoryId: row.repositoryId,
             repository: { workspaceId: "workspace_1" },
           }),
@@ -254,6 +269,7 @@ describe("GitHub user repository access", () => {
     });
 
     expect([...refreshed.repositoryIds]).toEqual(["repo_new"]);
+    expect([...refreshed.directConfigRepositoryIds]).toEqual(["repo_new"]);
     expect(createMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: [

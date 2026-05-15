@@ -24,6 +24,7 @@ export async function provisionRepositoryReviewRouterWorkflow(
     readonly provisioning: WorkflowProvisioningRepositoryPort;
     readonly auditLog?: AuditLogRepositoryPort;
     readonly enabled?: boolean;
+    readonly auditMetadata?: Readonly<Record<string, unknown>>;
   },
 ) {
   const target = await dependencies.targets.findWorkflowProvisioningTarget(
@@ -71,6 +72,9 @@ export async function provisionRepositoryReviewRouterWorkflow(
         ? {}
         : { enabled: dependencies.enabled }),
       ...(input.actor ? { actor: input.actor } : {}),
+      ...(dependencies.auditMetadata
+        ? { auditMetadata: dependencies.auditMetadata }
+        : {}),
     },
   );
 }

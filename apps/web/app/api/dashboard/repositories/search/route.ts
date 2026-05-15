@@ -55,6 +55,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           status: "ready" as const,
           workspaceIds: [],
           repositoryIds: new Set<string>(),
+          directConfigRepositoryIds: new Set<string>(),
           checkedAt: null,
         };
   const visibleWorkspaceIds = mergeWorkspaceIds(

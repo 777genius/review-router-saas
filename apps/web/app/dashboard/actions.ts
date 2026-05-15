@@ -58,8 +58,11 @@ import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup"
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import {
   assertDashboardMutationAllowed,
+  assertDashboardRepositoryConfigMutationAllowed,
   assertDashboardRepositoryMutationAllowed,
   createGitHubAppInstallationOctokit,
+  createGitHubUserOctokit,
+  dashboardMutationAccessAuditMetadata,
   getDashboardSignedInActor,
   getDashboardWorkspaceScope,
 } from "../../src/server/dashboard-mutations";
@@ -274,6 +277,7 @@ export async function checkProviderRepositorySecretClientAction(
       octokit,
       repository,
       secretNames,
+      allowOrganizationSecrets: actor.accessSource?.source !== "repo_manager",
     });
   } catch (error) {
     const status = providerSecretAvailabilityStatusForError(error);
@@ -369,6 +373,7 @@ async function createSetupPullRequestMutation(
             reason: "workflow_already_current",
             actionVersion: actionRef,
             workflowPath: defaultWorkflowPath,
+            ...dashboardMutationAccessAuditMetadata(actor),
           },
         },
         { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -380,6 +385,10 @@ async function createSetupPullRequestMutation(
         section: "repositories",
       };
     } else {
+      const setupOctokit =
+        actor.accessSource?.source === "repo_manager"
+          ? await createGitHubUserOctokit(actor)
+          : octokit;
       const pullRequest = await new PostgresLeaseLock(prisma).withLock(
         `repo:${repositoryId}:workflow-provision`,
         5 * 60_000,
@@ -397,10 +406,11 @@ async function createSetupPullRequestMutation(
             },
             {
               targets: new PrismaWorkflowProvisioningTarget(prisma),
-              setupGateway: new OctokitWorkflowSetupGateway(octokit),
+              setupGateway: new OctokitWorkflowSetupGateway(setupOctokit),
               provisioning: new PrismaWorkflowProvisioningRepository(prisma),
               auditLog: new PrismaAuditLogRepository(prisma),
               enabled: isWorkflowProvisioningEnabled(),
+              auditMetadata: dashboardMutationAccessAuditMetadata(actor),
             },
           ),
       );
@@ -565,6 +575,7 @@ async function confirmSetupPullRequestMergedMutation(
           repository: repository.fullName,
           source: setupPullRequestMerged ? "github_pull_request" : "workflow",
           pullRequestNumber,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -621,6 +632,12 @@ async function confirmProviderSecretSetupMutation(
       workspaceId,
       resourceId: repositoryId,
     });
+    if (
+      actor.accessSource?.source === "repo_manager" &&
+      secretScope !== "repository"
+    ) {
+      throw new Error("organization_secret_scope_forbidden");
+    }
     if (confirmationMode === "verified") {
       const octokit = await createGitHubAppInstallationOctokit(
         repository.installation.githubInstallationId.toString(),
@@ -670,6 +687,7 @@ async function confirmProviderSecretSetupMutation(
           confirmationMode,
           credentialScope: secretScope,
           requiredCredentialCount: secretNames.length,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -841,6 +859,7 @@ export async function saveWorkspaceReviewConfigAction(
           authMode: saved.config.provider.authMode,
           model: saved.config.provider.model,
           failOnSeverity: saved.config.blockingPolicy.failOnSeverity,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -889,7 +908,7 @@ async function saveRepositoryReviewConfigMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardRepositoryMutationAllowed(
+    const actor = await assertDashboardRepositoryConfigMutationAllowed(
       workspaceId,
       repository,
     );
@@ -929,6 +948,7 @@ async function saveRepositoryReviewConfigMutation(
           authMode: saved.config.provider.authMode,
           model: saved.config.provider.model,
           failOnSeverity: saved.config.blockingPolicy.failOnSeverity,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -980,7 +1000,7 @@ async function clearRepositoryReviewConfigMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardRepositoryMutationAllowed(
+    const actor = await assertDashboardRepositoryConfigMutationAllowed(
       workspaceId,
       repository,
     );
@@ -1012,6 +1032,7 @@ async function clearRepositoryReviewConfigMutation(
         metadata: {
           repository: repository.fullName,
           cleared,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -1176,6 +1197,7 @@ async function checkProviderSecretAvailability(input: {
   >;
   readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
   readonly secretNames: readonly string[];
+  readonly allowOrganizationSecrets?: boolean;
 }): Promise<{
   readonly status:
     | "available_repository"
@@ -1197,6 +1219,10 @@ async function checkProviderSecretAvailability(input: {
       const status = providerSecretAvailabilityStatusForError(error);
       if (status === "permission_required") return { status };
       if (status !== "missing") return { status: "unknown" };
+    }
+
+    if (input.allowOrganizationSecrets === false) {
+      return { status: "missing" };
     }
 
     return await checkOrganizationProviderSecretAvailability({
@@ -1802,6 +1828,15 @@ function safeDashboardErrorCode(error: unknown): string {
   if (message.startsWith("rate_limit_exceeded:")) {
     return "rate_limited";
   }
+  if (message.startsWith("github_user_token_request_failed:401")) {
+    return "repository_access_token_revoked";
+  }
+  if (
+    message.startsWith("github_user_token_request_failed:403") ||
+    message.startsWith("github_user_token_request_failed:404")
+  ) {
+    return "repository_mutation_forbidden";
+  }
   if (
     message.startsWith("missing_form_value:") ||
     message.startsWith("invalid_form_number:") ||
@@ -1825,6 +1860,7 @@ function safeDashboardErrorCode(error: unknown): string {
       "installation_not_found",
       "repository_not_found",
       "repository_mutation_forbidden",
+      "repository_config_mutation_forbidden",
       "repository_not_selected",
       "repository_archived",
       "installation_not_active",
@@ -1835,6 +1871,7 @@ function safeDashboardErrorCode(error: unknown): string {
       "provider_secret_not_found",
       "provider_secret_not_available_to_repository",
       "provider_secret_check_permission_required",
+      "organization_secret_scope_forbidden",
       "workflow_provisioning_disabled",
       "org_ruleset_requires_organization_installation",
       "org_ruleset_no_selected_repositories",
