@@ -9,6 +9,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import {
   RepositorySetupDisclosureToggle,
+  RepositorySetupReadyGate,
   RepositorySetupRowDisclosureController,
 } from "./repository-setup-optimistic-status";
 import {
@@ -72,6 +73,33 @@ describe("RepositorySetupDisclosureToggle", () => {
 
     await waitFor(() => {
       expect(screen.getByText("3/4")).toBeTruthy();
+    });
+  });
+});
+
+describe("RepositorySetupReadyGate", () => {
+  it("shows ready-only children when provider setup is confirmed", async () => {
+    render(
+      <RepositorySetupReadyGate repositoryId="repo_1" currentStep={3}>
+        <button type="button">Edit settings</button>
+      </RepositorySetupReadyGate>,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Edit settings" }),
+    ).toBeNull();
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Edit settings" }),
+      ).toBeTruthy();
     });
   });
 });

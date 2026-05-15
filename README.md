@@ -113,17 +113,10 @@ The DB gate includes migration smoke, backup/restore smoke, webhook lifecycle,
 outbox recovery, rate limits, distributed locks, runtime config, and support
 diagnostics.
 
-## Release Tags
+## Release And Git Flow
 
-The generated reusable workflows use the same ref for the Action workflow and
-the SaaS conflict runtime checkout. For exact pinned releases, publish the
-Action runtime tag in `777genius/review-router` first, then publish the matching
-SaaS runtime tag here.
-
-Use the `Release` workflow instead of moving `v1` locally. It validates the
-requested `v1.0.x` tag, requires a successful `CI` run on the exact commit,
-checks that the matching Action tag already exists, creates the exact tag, moves
-the stable `v1` tag, and creates the GitHub Release.
+Release process, `v1` tag handling, and daily git flow are documented in
+[`ai-docs/operations/07-environments-and-release-management.md`](./ai-docs/operations/07-environments-and-release-management.md).
 
 Real GitHub smoke helpers require a disposable GitHub App installation and
 selected test repository:

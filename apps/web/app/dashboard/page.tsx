@@ -98,6 +98,7 @@ import {
 } from "./repository-live-search";
 import {
   RepositorySetupDisclosureToggle,
+  RepositorySetupReadyGate,
   RepositorySetupRowDisclosureController,
 } from "./repository-setup-optimistic-status";
 import { RepositorySetupProgressPanel as RepositorySetupProgressPanelClient } from "./repository-setup-progress-panel";
@@ -2514,7 +2515,10 @@ function RepositoryTable({
                     />
                   </div>
                 </div>
-                {setupProgressStep === 4 ? (
+                <RepositorySetupReadyGate
+                  repositoryId={repository.id}
+                  currentStep={setupProgressStep}
+                >
                   <RepositoryPolicyEditor
                     workspaceId={workspace.id}
                     repository={repository}
@@ -2531,7 +2535,7 @@ function RepositoryTable({
                         : "Maintain or admin access is required to change repo settings directly."
                     }
                   />
-                ) : null}
+                </RepositorySetupReadyGate>
               </div>
             );
           },

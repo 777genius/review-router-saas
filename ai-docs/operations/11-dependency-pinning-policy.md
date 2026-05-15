@@ -82,11 +82,9 @@ latest vetted compatible `v1.0.x` release in both ReviewRouter repositories:
 - `777genius/review-router@v1` - customer workflow/reusable workflow entrypoint
 - `777genius/review-router-saas@v1` - trusted runtime checkout used by reusable workflows
 
-Move `v1` with:
-
-```bash
-pnpm release:sync-major -- --version v1.0.37 --confirm
-```
+Move `v1` only through the release workflows documented in
+[`07-environments-and-release-management.md`](./07-environments-and-release-management.md).
 
 Do not move `v1` for breaking workflow input changes, protocol breaks, or
-un-smoked runtime changes. Cut a fixed `v1.0.x` first, smoke it, then move `v1`.
+un-smoked runtime changes. Cut a fixed `v1.0.x` first, smoke it, then let the
+release workflow move `v1`.
