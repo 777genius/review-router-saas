@@ -31,7 +31,7 @@ const seedScriptUrl = resolveCodexSeedScriptUrl();
 
 const codexRepoCommand = `curl -fsSL ${seedScriptUrl} | bash -s -- --confirm-write --scope repo --repo owner/repo`;
 
-const codexOrgCommand = `curl -fsSL ${seedScriptUrl} | bash -s -- --confirm-write --scope org --org acme --visibility selected --repos api,web`;
+const codexOrgCommand = `curl -fsSL ${seedScriptUrl} | bash -s -- --confirm-write --scope org --org acme --visibility selected --repos repo-a,repo-b`;
 
 const claudeCommand = `claude setup-token
 gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo owner/repo --app actions`;
