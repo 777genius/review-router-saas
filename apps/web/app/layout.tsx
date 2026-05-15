@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
+import { unstable_rethrow } from "next/navigation";
 import { getServerSession } from "next-auth";
 import { GitBranch, LifeBuoy, Mail, ShieldCheck } from "lucide-react";
 import { AppToaster } from "./app-toaster";
@@ -306,7 +307,8 @@ async function loadHeaderProfile(): Promise<{
       githubLogin: session?.user?.githubLogin ?? null,
       githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
     };
-  } catch {
+  } catch (error) {
+    unstable_rethrow(error);
     return { signedIn: false, githubLogin: null, githubAvatarUrl: null };
   }
 }
