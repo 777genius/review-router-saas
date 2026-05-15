@@ -456,6 +456,7 @@ class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
       expiresAt: new Date("2026-05-03T13:00:00.000Z"),
       repository: input.repositoryFullName,
       permissions: {
+        contents: "read" as const,
         pullRequests: "write" as const,
         issues: "write" as const,
       },
@@ -2012,6 +2013,7 @@ describe("action control plane", () => {
       expiresAt: "2026-05-03T13:00:00.000Z",
       repository: "777genius/example",
       permissions: {
+        contents: "read",
         pullRequests: "write",
         issues: "write",
       },

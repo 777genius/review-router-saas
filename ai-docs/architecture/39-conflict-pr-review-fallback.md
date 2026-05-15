@@ -1035,7 +1035,10 @@ A single commit status is enough to attach conflict review state to the PR head 
 Checks add another object lifecycle and webhook surface area.
 ```
 
-Current ReviewRouter OIDC comment tokens are scoped to pull requests and issues.
+Current normal ReviewRouter OIDC runtime/comment tokens are repository-scoped
+and include `contents: read`, `pull_requests: write`, and `issues: write`.
+`contents: read` is required because the stable action runtime uses the same
+token to fetch private PR raw diffs before posting with the App identity.
 For conflict fallback, extend that contract deliberately to include the single
 allowed status/check context. If that is not available in v1, workflow
 `GITHUB_TOKEN` posting is an acceptable fallback only with job-level write

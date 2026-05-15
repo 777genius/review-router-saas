@@ -452,6 +452,7 @@ export const actionCommentTokenResponseSchema = z.object({
   expiresAt: z.string().datetime(),
   repository: z.string().min(1),
   permissions: z.object({
+    contents: z.literal("read"),
     pullRequests: z.literal("write"),
     issues: z.literal("write"),
   }),
