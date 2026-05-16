@@ -85,9 +85,7 @@ describe("RepositorySetupReadyGate", () => {
       </RepositorySetupReadyGate>,
     );
 
-    expect(
-      screen.queryByRole("button", { name: "Edit settings" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit settings" })).toBeNull();
 
     window.dispatchEvent(
       providerSetupConfirmedEvent({
