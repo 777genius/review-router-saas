@@ -238,6 +238,16 @@ Expected target state:
 8. bot comments do not trigger a new interaction run
 9. PR author/member denial is either verified with a second non-maintainer actor or covered by `pnpm spike:memory:e2e`
 
+Latest production evidence, 2026-05-16:
+
+- disposable repo PR: <https://github.com/777genius/review-router-saas-e2e/pull/4>
+- marker: `rr-memory-smoke-1778965736933`
+- direct save run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973002113>
+- natural-language suggestion run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973014137>
+- suggestion confirmation run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973027526>
+- forget/delete run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973034902>
+- final smoke status: `passed`
+
 The smoke runner is intentionally opt-in because it posts PR comments and
 triggers GitHub Actions. Use `REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1`
 to validate repository/workflow readiness without posting comments. The

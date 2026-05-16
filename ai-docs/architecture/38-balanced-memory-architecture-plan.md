@@ -2,9 +2,9 @@
 
 Дата: 2026-05-12
 
-Статус: beta candidate, local release proof passed, external GitHub memory smoke pending
+Статус: beta-ready v1 released, local proof passed, real GitHub memory smoke passed, production deployed
 
-Ветка: `feat/balanced-memory`
+Merged via PR #2 and PR #3 into SaaS `main`; action runtime released through action repo PR #6 and PR #7.
 
 ## Решение
 
@@ -133,7 +133,8 @@
   - `node --check scripts/run-github-memory-smoke.mjs` - passed;
   - `bash -n scripts/check-beta-readiness.sh` - passed;
   - guard check without `REVIEW_ROUTER_GITHUB_MEMORY_E2E=1` stops before GitHub side effects - passed;
-  - preflight on `777genius/review-router-saas-e2e` PR #4 currently fails with `github_memory_e2e_interaction_workflow_missing_on_default_branch`, because the disposable repo default branch does not contain `.github/workflows/reviewrouter-interaction.yml`.
+  - preflight on `777genius/review-router-saas-e2e` PR #4 passed after adding `.github/workflows/reviewrouter-interaction.yml` on the disposable repo default branch;
+  - full real GitHub memory smoke on PR #4 passed with marker `rr-memory-smoke-1778965736933`, proving `/rr remember repo`, natural-language suggestion, `/rr remember mem_suggestion_*`, `/rr forget mem_*` and bot-loop guard through production GitHub Actions and production SaaS endpoints.
 - Beta-ready v1 finish proof, 2026-05-16:
   - SaaS/control-plane after merge with `origin/main`: `pnpm format:check` - passed;
   - SaaS/control-plane after merge with `origin/main`: `pnpm typecheck` - passed for 29 packages plus `tsconfig.spikes.json`;
@@ -150,6 +151,20 @@
   - action runtime: `npm run build:action` - passed and regenerated `dist/index.js`;
   - action runtime: changed TS/workflow Prettier check and `git diff --check` - passed;
   - action runtime: full `npm run format:check` still fails on 138 pre-existing formatting-debt files, including legacy `action.yml` quote style, so it is tracked as a non-blocking repository hygiene issue, not a memory regression.
+- Real GitHub memory smoke evidence, 2026-05-16:
+  - disposable repo PR: <https://github.com/777genius/review-router-saas-e2e/pull/4>;
+  - direct save run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973002113>;
+  - natural-language suggestion run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973014137>;
+  - suggestion confirmation run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973027526>;
+  - forget/delete run: <https://github.com/777genius/review-router-saas-e2e/actions/runs/25973034902>;
+  - final smoke output: `status: passed`, `directMemoryId: mem_03fb1d4d-1d03-4bf4-920c-686fc63d8e25`, `suggestionId: mem_suggestion_4f37daaf-c330-4855-bcba-1f7e8a447d2a`, `confirmedMemoryId: mem_2629dbc5-f807-4196-aa20-54cb423f80b4`.
+- Production deployment evidence, 2026-05-16:
+  - action repo `v1` and `v1.0.47` point to `c7146af585ecfe89c1b4948ffb98adb9119195ed`;
+  - action release workflow <https://github.com/777genius/review-router/actions/runs/25972665885> passed;
+  - SaaS main `94e7df085d936ab2e2613c5b5a93cf22f06638cf` is live on Render web/api/worker;
+  - `REVIEW_ROUTER_PUBLIC_WEB_URL=https://reviewrouter.site pnpm hosted:web:check` - passed;
+  - `REVIEW_ROUTER_API_URL=https://api.reviewrouter.site pnpm hosted:api-demo:check` - passed;
+  - unauthenticated `GET https://api.reviewrouter.site/api/action/v1/memory` returns `401 missing_action_session_token`, proving the production route exists and stays session-protected.
 - Action runtime memory integration implemented on `feat/balanced-memory-runtime`:
   - review runtime fetches scoped memory bundle through `ControlPlaneMemoryClient` and injects it as low-priority prompt context;
   - runtime sends only sanitized PR metadata as `safeRetrievalQuery`, never raw diff/code/comment text;
@@ -160,22 +175,7 @@
 
 Current beta blocker:
 
-- Real GitHub memory smoke is not passed yet. Local SaaS and action-runtime
-  implementation is complete, and the smoke script now fetches large runtime
-  files through GitHub raw content so `dist/index.js` above 1 MB can be
-  inspected correctly. The disposable repo must still have
-  `.github/workflows/reviewrouter-interaction.yml` on its default branch and
-  must reference a pushed memory-capable action runtime commit. Hosted API must
-  expose `/api/action/v1/memory*` endpoints before a true GitHub Actions memory
-  smoke can pass; the current public API health check is OK, but
-  `/api/action/v1/memory` still returns 404 until the SaaS memory release is
-  deployed. The last safe preflight was:
-  `REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1 REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=4 pnpm spike:github-memory:e2e`
-  and it stopped before side effects with
-  `github_memory_e2e_interaction_workflow_missing_on_default_branch`.
-  Local fresh-DB E2E proves the SaaS memory control plane and privacy
-  boundaries; the remaining open gate is the external GitHub Actions smoke
-  against `777genius/review-router-saas-e2e` after workflow/runtime rollout.
+- None for Balanced Memory beta-ready v1. pgvector/semantic embeddings, import workflows and richer bundle-ranking optimizations remain Phase 8 follow-up work, not release gates.
 
 ## Quality Bar
 
