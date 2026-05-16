@@ -2,8 +2,8 @@
 
 Date: 2026-05-16
 
-Status: beta release evidence. Local SaaS/action proof is complete; the only
-open gate is the external GitHub memory smoke against the disposable repo.
+Status: beta-ready v1 release evidence. Local SaaS/action proof, real GitHub
+memory smoke and production deployment checks are complete.
 
 ## Scope
 
@@ -26,7 +26,7 @@ pgvector, semantic embeddings or import workflows blocking for v1 beta.
 | Audit/diagnostics body leak                | Audit, usage telemetry and support diagnostics store ids, hashes, counts, statuses and versions only.                                                                                                         | `support-diagnostics-e2e.ts`; `memory-flow-e2e.ts`; audit assertions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Passed locally             |
 | UI misoperation                            | Dashboard follows saved design references, compact badges are non-button labels, destructive actions use dialogs, mobile table overflow is contained.                                                         | Updated screenshots in `tmp/design-verification/memory/*`; `pnpm web:ui-audit` with memory routes; panel tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Passed locally             |
 | Bot loop and thread storms                 | Interaction workflow ignores bot comments and SaaS/action-side throttling protects discussion path.                                                                                                           | Real GitHub discussion E2E on PR #5; run `25716486487`; rate-limit tests.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Passed for discussion path |
-| Real GitHub memory path                    | Disposable repo should prove human `/rr remember` comment, memory candidate/command submission, confirmation, bundle visibility and deletion through GitHub Actions.                                          | `pnpm spike:github-memory:e2e` runner. Preflight verifies default-branch interaction workflow, bot guard, issue-comment trigger, and memory-capable workflow/runtime contract before posting. The runner now reads large runtime files through GitHub raw content, so `dist/index.js` above 1 MB is checked correctly. Local action runtime on `feat/balanced-memory-runtime` implements memory bundle/candidate/command wiring and passed full Jest/typecheck/lint/build. Latest safe preflight still fails before side effects because `777genius/review-router-saas-e2e` default branch lacks `.github/workflows/reviewrouter-interaction.yml`; hosted `https://api.reviewrouter.site/api/action/v1/memory` also returns 404 until SaaS memory is deployed. | External smoke blocker     |
+| Real GitHub memory path                    | Disposable repo proves human `/rr remember` comment, memory candidate/command submission, confirmation, deletion and bot-loop guard through GitHub Actions.                                                  | `pnpm spike:github-memory:e2e` passed on `777genius/review-router-saas-e2e` PR #4 with marker `rr-memory-smoke-1778965736933`. Evidence runs: direct save `25973002113`, natural-language suggestion `25973014137`, suggestion confirmation `25973027526`, forget/delete `25973034902`. Production memory route exists and is auth-protected: unauthenticated `GET https://api.reviewrouter.site/api/action/v1/memory` returns `401 missing_action_session_token`.                                                                                                                                                                                                                                                                                                  | Passed on real GitHub path |
 
 ## Current Evidence Commands
 
@@ -44,7 +44,6 @@ REVIEW_ROUTER_UI_AUDIT_BASE_URL=http://localhost:3000 \
   REVIEW_ROUTER_UI_AUDIT_VIEWPORTS='mobile:390x844:mobile,tablet:900x1100,desktop:1440x1000' \
   pnpm web:ui-audit
 REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 \
-  REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1 \
   REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=4 \
   pnpm spike:github-memory:e2e
 ```
@@ -61,8 +60,6 @@ git diff --check
 
 ## Release Decision
 
-Balanced Memory is locally hardened enough for merge into the feature branch and
-beta-candidate review. The remaining release gate is operational: push/reference
-the memory-capable action runtime, deploy the SaaS memory endpoints, add the
-interaction workflow to `777genius/review-router-saas-e2e` default branch, then
-run the real GitHub memory smoke with side effects enabled.
+Balanced Memory is beta-ready v1. The local proof, action-runtime proof, real
+GitHub memory smoke and production hosted checks have passed. Vector search,
+semantic embeddings and import workflows remain non-blocking follow-up work.
