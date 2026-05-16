@@ -59,6 +59,15 @@ describe("provider model catalog", () => {
             output_modalities: ["text"],
           },
         },
+        {
+          id: "openai/gpt-5.3-codex",
+          name: "OpenAI: GPT-5.3 Codex",
+          pricing: { prompt: "0.000001", completion: "0.000008" },
+          architecture: {
+            input_modalities: ["text"],
+            output_modalities: ["text"],
+          },
+        },
       ],
     });
     const adapter = new OpenRouterModelCatalogAdapter({
@@ -70,7 +79,7 @@ describe("provider model catalog", () => {
       now: () => 1,
     });
 
-    expect(models[0]?.id).toBe("poolside/laguna-m.1:free");
+    expect(models[0]?.id).toBe("openai/gpt-5.3-codex");
     expect(models.at(-1)?.id).toBe("openrouter/router-owned");
     expect(adapter).toBeInstanceOf(OpenRouterModelCatalogAdapter);
   });

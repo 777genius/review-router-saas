@@ -70,6 +70,34 @@ describe("provider runtime plan", () => {
     expect(plan.requiredCliTools).toEqual(["claude"]);
   });
 
+  it("keeps OpenRouter as the public provider while planning Codex agent runtime", () => {
+    const plan = buildProviderRuntimePlan({
+      ...baseInput,
+      providers: [
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "openai/gpt-5.3-codex",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+      ],
+    });
+
+    expect(plan.runtimeEnv).toMatchObject({
+      REVIEW_AUTH_MODE: "openrouter-api",
+      REVIEW_PROVIDERS: "openrouter/openai/gpt-5.3-codex",
+      SYNTHESIS_MODEL: "openrouter/openai/gpt-5.3-codex",
+      CODEX_REASONING_EFFORT: "medium",
+      CODEX_AGENTIC_CONTEXT: "true",
+      CODEX_FAST_MODE: "false",
+    });
+    expect(plan.runtimeEnv).not.toHaveProperty("CODEX_MODEL");
+    expect(plan.requiredSecretNames).toEqual(["OPENROUTER_API_KEY"]);
+    expect(plan.requiredCliTools).toEqual(["codex"]);
+  });
+
   it("deduplicates mixed provider requirements while preserving provider order", () => {
     const plan = buildProviderRuntimePlan({
       ...baseInput,

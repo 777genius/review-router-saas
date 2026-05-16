@@ -1,5 +1,6 @@
 import {
   cliToolsForProvider,
+  getProviderCatalogEntry,
   getProviderAuthModeMetadata,
   providerAuthModeBelongsToKind,
   type ProviderAuthMode,
@@ -85,9 +86,15 @@ export function buildProviderRuntimePlan(
   const codexProvider = providers.find((provider) => provider.kind === "codex");
   if (codexProvider) {
     runtimeEnv.CODEX_MODEL = codexProvider.model;
-    runtimeEnv.CODEX_REASONING_EFFORT = codexProvider.reasoningEffort;
-    runtimeEnv.CODEX_AGENTIC_CONTEXT = String(codexProvider.agenticContext);
-    runtimeEnv.CODEX_FAST_MODE = String(codexProvider.fastMode);
+  }
+
+  const codexBackedProvider = providers.find(isCodexBackedProvider);
+  if (codexBackedProvider) {
+    runtimeEnv.CODEX_REASONING_EFFORT = codexBackedProvider.reasoningEffort;
+    runtimeEnv.CODEX_AGENTIC_CONTEXT = String(
+      codexBackedProvider.agenticContext,
+    );
+    runtimeEnv.CODEX_FAST_MODE = String(codexBackedProvider.fastMode);
   }
 
   const claudeProvider = providers.find(
@@ -112,8 +119,11 @@ export function buildProviderRuntimePlan(
 export function toRuntimeProviderId(
   provider: RuntimePlanProviderConfiguration,
 ): string {
-  validateRuntimePlanProvider(provider);
-  return `${provider.kind}/${provider.model.trim()}`;
+  const validatedProvider = validateRuntimePlanProvider(provider);
+  const runtimePrefix = getProviderCatalogEntry(
+    validatedProvider.kind,
+  ).runtimeProviderPrefix;
+  return `${runtimePrefix}/${validatedProvider.model}`;
 }
 
 export function assertRuntimeEnvIsNonSecret(
@@ -153,6 +163,17 @@ function validateRuntimePlanProvider(
     ...provider,
     model: provider.model.trim(),
   };
+}
+
+function isCodexBackedProvider(
+  provider: RuntimePlanProviderConfiguration,
+): boolean {
+  return (
+    provider.kind === "openrouter" ||
+    getProviderCatalogEntry(provider.kind).runtimeProviderPrefix.startsWith(
+      "codex",
+    )
+  );
 }
 
 function uniqueStable<T>(values: readonly T[]): readonly T[] {

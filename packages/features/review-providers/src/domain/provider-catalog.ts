@@ -22,6 +22,7 @@ export type RuntimeAuthMode =
   | "openrouter-api";
 
 export type ProviderCliTool = "codex" | "claude";
+export type RuntimeProviderPrefix = "codex" | "claude" | "openrouter";
 
 export type ProviderCapability =
   | "static_model_catalog"
@@ -44,7 +45,7 @@ export type ProviderCatalogEntry = {
   readonly authModes: readonly ProviderAuthMode[];
   readonly defaultAuthMode: ProviderAuthMode;
   readonly defaultModel: string;
-  readonly runtimeProviderPrefix: ProviderKind;
+  readonly runtimeProviderPrefix: RuntimeProviderPrefix;
   readonly capabilities: readonly ProviderCapability[];
 };
 
@@ -88,7 +89,7 @@ const providerCatalog = {
     label: "OpenRouter",
     authModes: ["openrouter_api_key"],
     defaultAuthMode: "openrouter_api_key",
-    defaultModel: "poolside/laguna-m.1:free",
+    defaultModel: "openai/gpt-5.3-codex",
     runtimeProviderPrefix: "openrouter",
     capabilities: ["dynamic_model_catalog", "api_key"],
   },
@@ -215,7 +216,7 @@ export function cliToolsForProvider(
     case "claude":
       return ["claude"];
     case "openrouter":
-      return [];
+      return ["codex"];
   }
 }
 

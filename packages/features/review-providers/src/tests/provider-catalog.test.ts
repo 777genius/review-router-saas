@@ -3,6 +3,7 @@ import {
   allProviderAuthModeMetadata,
   allProviderCatalogEntries,
   assertProviderAuthModeBelongsToKind,
+  cliToolsForProvider,
   fromProviderSetupKind,
   getDefaultProviderConfigForAuthMode,
   getProviderCatalogEntry,
@@ -89,5 +90,17 @@ describe("provider catalog", () => {
       "static_model_catalog",
       "subscription_oauth",
     ]);
+    expect(getDefaultProviderConfigForAuthMode("openrouter_api_key")).toEqual({
+      kind: "openrouter",
+      authMode: "openrouter_api_key",
+      model: "openai/gpt-5.3-codex",
+      reasoningEffort: "medium",
+      agenticContext: true,
+      fastMode: false,
+    });
+    expect(getProviderCatalogEntry("openrouter").runtimeProviderPrefix).toBe(
+      "openrouter",
+    );
+    expect(cliToolsForProvider("openrouter")).toEqual(["codex"]);
   });
 });

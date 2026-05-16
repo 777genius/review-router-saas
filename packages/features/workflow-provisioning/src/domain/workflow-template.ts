@@ -97,13 +97,13 @@ jobs:
           echo "ReviewRouter skipped this fork pull request because secret-backed provider execution is disabled by default."
 
       - name: Setup Node.js for Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         uses: actions/setup-node@v6
         with:
           node-version: "24"
 
       - name: Install Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
         run: npm install -g @openai/codex@0.125.0
 
@@ -416,13 +416,13 @@ jobs:
           echo "ReviewRouter skipped this fork pull request because secret-backed provider execution is disabled by default."
 
       - name: Setup Node.js for Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         uses: actions/setup-node@v6
         with:
           node-version: "24"
 
       - name: Install Codex CLI
-        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
+        if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
         run: npm install -g @openai/codex@0.125.0
 
@@ -518,8 +518,19 @@ export function analyzeWorkflowProviderCompatibility(input: {
     }
   }
 
+  if (input.providerKind === "openrouter") {
+    if (!input.workflowYaml.includes("OPENROUTER_API_KEY")) {
+      missingRequirements.push("secret_pass_through");
+    }
+    if (
+      workflowStyle === "explicit" &&
+      !input.workflowYaml.includes("Install Codex CLI")
+    ) {
+      missingRequirements.push("cli_install_step");
+    }
+  }
+
   if (
-    input.providerKind !== "openrouter" &&
     workflowStyle === "explicit" &&
     !input.workflowYaml.includes("Skip fork pull requests")
   ) {
@@ -553,8 +564,12 @@ export function getWorkflowProviderContentMarkerGroups(input: {
           "Skip fork pull requests",
         ],
       ];
-    case "codex":
     case "openrouter":
+      return [
+        [reusableReviewWorkflowPath, "OPENROUTER_API_KEY"],
+        ["Install Codex CLI", "OPENROUTER_API_KEY", "Skip fork pull requests"],
+      ];
+    case "codex":
       return [];
   }
 }

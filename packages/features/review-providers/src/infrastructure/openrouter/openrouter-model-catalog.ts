@@ -38,10 +38,13 @@ const openRouterModelsUrl = "https://openrouter.ai/api/v1/models";
 const cacheTtlMs = 30 * 60 * 1000;
 const fetchTimeoutMs = 4000;
 
+const recommendedCodexAgentOpenRouterModelIds = [
+  "openai/gpt-5.3-codex",
+] as const;
+
 const recommendedFreeOpenRouterModelIds = [
   "poolside/laguna-m.1:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
-  "inclusionai/ring-2.6-1t:free",
   "openai/gpt-oss-120b:free",
   "openrouter/owl-alpha",
 ] as const;
@@ -51,6 +54,15 @@ const supportedOpenRouterOwnedModelIds = new Set<string>([
 ]);
 
 const fallbackOpenRouterCatalog: readonly OpenRouterCatalogModel[] = [
+  {
+    id: "openai/gpt-5.3-codex",
+    name: "OpenAI: GPT-5.3 Codex",
+    contextTokens: null,
+    promptUsdPer1M: null,
+    completionUsdPer1M: null,
+    isFree: false,
+    supportsReviewText: true,
+  },
   {
     id: "poolside/laguna-m.1:free",
     name: "Poolside: Laguna M.1 (free)",
@@ -63,15 +75,6 @@ const fallbackOpenRouterCatalog: readonly OpenRouterCatalogModel[] = [
   {
     id: "nvidia/nemotron-3-super-120b-a12b:free",
     name: "NVIDIA: Nemotron 3 Super (free)",
-    contextTokens: 262144,
-    promptUsdPer1M: 0,
-    completionUsdPer1M: 0,
-    isFree: true,
-    supportsReviewText: true,
-  },
-  {
-    id: "inclusionai/ring-2.6-1t:free",
-    name: "inclusionAI: Ring-2.6-1T (free)",
     contextTokens: 262144,
     promptUsdPer1M: 0,
     completionUsdPer1M: 0,
@@ -254,6 +257,19 @@ function compareOpenRouterCatalogModels(
     return leftUnsupported ? 1 : -1;
   }
 
+  const leftCodexAgentRank = getRecommendedCodexAgentOpenRouterModelRank(left);
+  const rightCodexAgentRank =
+    getRecommendedCodexAgentOpenRouterModelRank(right);
+  if (leftCodexAgentRank !== rightCodexAgentRank) {
+    if (leftCodexAgentRank === null) {
+      return 1;
+    }
+    if (rightCodexAgentRank === null) {
+      return -1;
+    }
+    return leftCodexAgentRank - rightCodexAgentRank;
+  }
+
   const leftRecommendedRank = getRecommendedFreeOpenRouterModelRank(left);
   const rightRecommendedRank = getRecommendedFreeOpenRouterModelRank(right);
   if (leftRecommendedRank !== rightRecommendedRank) {
@@ -332,6 +348,19 @@ function getUnsupportedReason(model: OpenRouterCatalogModel): string | null {
 
 function isUnsupportedOpenRouterModel(model: OpenRouterCatalogModel): boolean {
   return getUnsupportedReason(model) !== null;
+}
+
+function getRecommendedCodexAgentOpenRouterModelRank(
+  model: OpenRouterCatalogModel,
+): number | null {
+  if (isUnsupportedOpenRouterModel(model)) {
+    return null;
+  }
+
+  const index = recommendedCodexAgentOpenRouterModelIds.indexOf(
+    model.id as (typeof recommendedCodexAgentOpenRouterModelIds)[number],
+  );
+  return index === -1 ? null : index;
 }
 
 function getRecommendedFreeOpenRouterModelRank(

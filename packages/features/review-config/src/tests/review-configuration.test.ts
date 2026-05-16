@@ -85,6 +85,8 @@ describe("review configuration", () => {
       SYNTHESIS_MODEL: "openrouter/poolside/laguna-m.1:free",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
+      CODEX_REASONING_EFFORT: "medium",
+      CODEX_AGENTIC_CONTEXT: "true",
     });
     expect(env).not.toHaveProperty("CODEX_MODEL");
     expect(Object.keys(env).join("\n")).not.toContain("SECRET");

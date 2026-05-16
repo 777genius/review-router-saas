@@ -68,6 +68,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("uses: actions/setup-node@v6");
     expect(workflow).toContain('node-version: "24"');
     expect(workflow).toContain("npm install -g @openai/codex@0.125.0");
+    expect(workflow).toContain("env.OPENROUTER_API_KEY_PRESENT == '1'");
     expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
     expect(workflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
@@ -421,7 +422,50 @@ describe("renderReviewRouterWorkflow", () => {
     });
   });
 
-  it("exports Claude workflow marker groups for readiness probes", () => {
+  it("detects OpenRouter workflow compatibility for generated and old workflows", () => {
+    const reusableWorkflow =
+      renderReviewRouterReusableWorkflow(workflowOptions);
+    const explicitWorkflow = renderReviewRouterWorkflow({
+      ...workflowOptions,
+      workflowStyle: "explicit",
+      conflictReviewFallbackEnabled: false,
+    });
+
+    expect(
+      analyzeWorkflowProviderCompatibility({
+        workflowYaml: reusableWorkflow,
+        providerKind: "openrouter",
+        workflowStyle: "reusable",
+      }),
+    ).toEqual({
+      providerKind: "openrouter",
+      supported: true,
+      missingRequirements: [],
+    });
+    expect(
+      analyzeWorkflowProviderCompatibility({
+        workflowYaml: explicitWorkflow,
+        providerKind: "openrouter",
+        workflowStyle: "explicit",
+      }),
+    ).toEqual({
+      providerKind: "openrouter",
+      supported: true,
+      missingRequirements: [],
+    });
+    expect(
+      analyzeWorkflowProviderCompatibility({
+        workflowYaml: explicitWorkflow.replace("Install Codex CLI", ""),
+        providerKind: "openrouter",
+        workflowStyle: "explicit",
+      }),
+    ).toMatchObject({
+      supported: false,
+      missingRequirements: ["cli_install_step"],
+    });
+  });
+
+  it("exports provider workflow marker groups for readiness probes", () => {
     expect(
       getWorkflowProviderContentMarkerGroups({ providerKind: "claude" }),
     ).toEqual([
@@ -434,6 +478,12 @@ describe("renderReviewRouterWorkflow", () => {
         "CLAUDE_CODE_OAUTH_TOKEN",
         "Skip fork pull requests",
       ],
+    ]);
+    expect(
+      getWorkflowProviderContentMarkerGroups({ providerKind: "openrouter" }),
+    ).toEqual([
+      [".github/workflows/reviewrouter-reusable.yml", "OPENROUTER_API_KEY"],
+      ["Install Codex CLI", "OPENROUTER_API_KEY", "Skip fork pull requests"],
     ]);
     expect(
       getWorkflowProviderContentMarkerGroups({ providerKind: "codex" }),
