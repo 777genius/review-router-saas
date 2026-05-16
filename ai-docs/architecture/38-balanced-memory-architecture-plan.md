@@ -2,7 +2,7 @@
 
 Дата: 2026-05-12
 
-Статус: beta candidate hardening, external GitHub memory smoke pending
+Статус: beta candidate, local release proof passed, external GitHub memory smoke pending
 
 Ветка: `feat/balanced-memory`
 
@@ -134,15 +134,41 @@
   - `bash -n scripts/check-beta-readiness.sh` - passed;
   - guard check without `REVIEW_ROUTER_GITHUB_MEMORY_E2E=1` stops before GitHub side effects - passed;
   - preflight on `777genius/review-router-saas-e2e` PR #4 currently fails with `github_memory_e2e_interaction_workflow_missing_on_default_branch`, because the disposable repo default branch does not contain `.github/workflows/reviewrouter-interaction.yml`.
+- Beta-ready v1 finish proof, 2026-05-16:
+  - SaaS/control-plane: `pnpm format:check` - passed;
+  - SaaS/control-plane: `pnpm typecheck` - passed for 26 packages plus `tsconfig.spikes.json`;
+  - SaaS/control-plane: `pnpm test` - 65 files, 375 tests passed;
+  - SaaS/control-plane: `pnpm lint` - passed;
+  - SaaS/control-plane: `pnpm architecture:check` - passed for 134 domain/application files;
+  - SaaS/control-plane: `pnpm build` - 26 build tasks passed, then ESM import rewrite passed;
+  - SaaS/control-plane: `pnpm spike:memory:e2e` - passed with fresh temporary Postgres DB, marker `1778960890332`, canonical bundle/search/disable/prune/usage assertions;
+  - action runtime worktree `feat/balanced-memory-runtime`: `npm test -- --runInBand` - 111 suites passed, 1344 tests passed, 2 skipped;
+  - action runtime: `npm run typecheck` - passed;
+  - action runtime: `npm run lint` - passed with 0 errors and existing warning debt only;
+  - action runtime: `npm run build:action` - passed and regenerated `dist/index.js`;
+  - action runtime: changed TS/workflow Prettier check and `git diff --check` - passed;
+  - action runtime: full `npm run format:check` still fails on 138 pre-existing formatting-debt files, including legacy `action.yml` quote style, so it is tracked as a non-blocking repository hygiene issue, not a memory regression.
+- Action runtime memory integration implemented on `feat/balanced-memory-runtime`:
+  - review runtime fetches scoped memory bundle through `ControlPlaneMemoryClient` and injects it as low-priority prompt context;
+  - runtime sends only sanitized PR metadata as `safeRetrievalQuery`, never raw diff/code/comment text;
+  - interaction runtime handles `/rr remember repo|workspace`, natural-language remember, `mem_suggestion_*` confirmation, reject, disable and forget through memory ports;
+  - bot comments are ignored before command/memory/discussion handling;
+  - issue-comment PR context is verified through GitHub before memory commands run;
+  - fork PRs do not receive secret-backed memory automation.
 
 Current beta blocker:
 
-- Real GitHub memory smoke is not passed yet. The disposable repo must have the
-  interaction workflow on its default branch, and the external action runtime
-  must submit normalized memory candidates/commands to
-  `/api/action/v1/memory-candidates` and `/api/action/v1/memory-commands`.
-  Local fresh-DB E2E already proves the SaaS memory control plane and privacy
-  boundaries, but the GitHub Actions integration gate remains open.
+- Real GitHub memory smoke is not passed yet. Local SaaS and action-runtime
+  implementation is complete, but the disposable repo must have
+  `.github/workflows/reviewrouter-interaction.yml` on its default branch and
+  must reference a pushed memory-capable action runtime commit. The last safe
+  preflight was:
+  `REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1 REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=4 pnpm spike:github-memory:e2e`
+  and it stopped before side effects with
+  `github_memory_e2e_interaction_workflow_missing_on_default_branch`.
+  Local fresh-DB E2E proves the SaaS memory control plane and privacy
+  boundaries; the remaining open gate is the external GitHub Actions smoke
+  against `777genius/review-router-saas-e2e` after workflow/runtime rollout.
 
 ## Quality Bar
 

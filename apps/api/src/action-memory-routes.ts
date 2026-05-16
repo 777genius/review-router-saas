@@ -21,15 +21,17 @@ import {
   rejectMemorySuggestion,
   type MemoryActor,
   type MemoryMutationResult,
+  type MemorySearchIndexPort,
   type MemorySource,
   type MemoryUseCaseDependencies,
 } from "@reviewrouter/features-memory";
-import type { Clock } from "@reviewrouter/shared";
+import { looksLikeCodeOrDiff, type Clock } from "@reviewrouter/shared";
 
 export type RegisterActionMemoryRoutesDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
   readonly sessions: ActionSessionTokenServicePort;
   readonly memory: MemoryUseCaseDependencies;
+  readonly memorySearchIndex?: MemorySearchIndexPort;
   readonly entitlements?: ActionEntitlementPolicyPort;
   readonly clock: Clock;
   readonly controlPlaneEnabled?: boolean;
@@ -163,17 +165,22 @@ export async function registerActionMemoryRoutes(
 
     try {
       const session = await resolveActionMemorySession(request, dependencies);
+      const safeRetrievalQuery = readSafeMemoryRetrievalQuery(request);
 
       const bundle = await buildActionMemoryBundle(
         {
           workspaceId: session.workspaceId,
           repositoryId: session.repositoryId,
           userId: null,
+          ...(safeRetrievalQuery ? { safeRetrievalQuery } : {}),
           policy: { includeUserPrefs: false },
         },
         {
           memoryItems: dependencies.memory.memoryItems,
           memoryPolicyConfig: dependencies.memory.memoryPolicyConfig,
+          ...(dependencies.memorySearchIndex
+            ? { memorySearchIndex: dependencies.memorySearchIndex }
+            : {}),
         },
       );
       await recordActionMemoryBundleUsage(
@@ -326,6 +333,38 @@ function readBearerToken(request: FastifyRequest): string {
     throw new Error("invalid_action_session_token");
   }
   return match[1];
+}
+
+function readSafeMemoryRetrievalQuery(request: FastifyRequest): string | null {
+  const raw =
+    readQueryStringValue(request, "safeRetrievalQuery") ??
+    readQueryStringValue(request, "q");
+  if (!raw) return null;
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length > 500) return null;
+  if (looksUnsafeForSaasRetrievalQuery(normalized)) return null;
+  return normalized;
+}
+
+function readQueryStringValue(
+  request: FastifyRequest,
+  key: string,
+): string | null {
+  const query = request.query;
+  if (!query || typeof query !== "object") return null;
+  const value = (query as Record<string, unknown>)[key];
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+  return null;
+}
+
+function looksUnsafeForSaasRetrievalQuery(value: string): boolean {
+  if (looksLikeCodeOrDiff(value)) return true;
+  return (
+    /(?:diff --git|@@\s+-\d+|\+\+\+\s|---\s)/.test(value) ||
+    /(?:BEGIN|END)\s+(?:RSA|OPENSSH|PRIVATE)\s+KEY/i.test(value) ||
+    /(?:gh[pousr]_|github_pat_|sk-[A-Za-z0-9_-]{16,})/.test(value)
+  );
 }
 
 function assertMemoryInteractionEvent(

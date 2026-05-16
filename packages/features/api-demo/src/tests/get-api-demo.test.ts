@@ -146,6 +146,25 @@ describe("getApiDemo", () => {
         },
       },
     });
+    expect(paths["/api/action/v1/memory"]).toMatchObject({
+      get: {
+        security: [{ reviewRouterActionSession: [] }],
+        parameters: expect.arrayContaining([
+          expect.objectContaining({
+            name: "safeRetrievalQuery",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 500 },
+          }),
+          expect.objectContaining({
+            name: "q",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 500 },
+          }),
+        ]),
+      },
+    });
     expect(paths["/api/action/v1/memory-candidates"]).toMatchObject({
       post: {
         security: [{ reviewRouterActionSession: [] }],

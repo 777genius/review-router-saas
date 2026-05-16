@@ -34,6 +34,7 @@ import {
   EntitlementMemoryQuotaPolicy,
   PrismaMemoryItemRepository,
   PrismaMemoryPermission,
+  PrismaMemorySearchIndex,
   PrismaMemorySuggestionRepository,
   PrismaMemoryTransaction,
   PrismaMemoryUsageEventRepository,
@@ -212,6 +213,7 @@ export async function createApiApp(
             memoryTransaction: new PrismaMemoryTransaction(prisma),
             clock: actionControlPlaneDependencies.clock,
           },
+          memorySearchIndex: new PrismaMemorySearchIndex(prisma),
           ...(actionControlPlaneDependencies.entitlements
             ? { entitlements: actionControlPlaneDependencies.entitlements }
             : {}),

@@ -32,6 +32,9 @@ import type {
   MemoryOutboxPort,
   MemoryPermissionDecision,
   MemoryPermissionPort,
+  MemorySearchIndexInput,
+  MemorySearchIndexPort,
+  MemorySearchIndexResult,
   MemorySuggestionRepositoryPort,
   MemorySuggestionSnapshot,
   MemoryTransactionPort,
@@ -702,6 +705,31 @@ class CapturingMemoryUsageEvents implements MemoryUsageEventPort {
       recordedCount += 1;
     }
     return { recordedCount, duplicateCount };
+  }
+}
+
+class CapturingMemorySearchIndex implements MemorySearchIndexPort {
+  public readonly inputs: MemorySearchIndexInput[] = [];
+
+  constructor(private readonly results: readonly MemorySearchIndexResult[]) {}
+
+  async supports(): ReturnType<MemorySearchIndexPort["supports"]> {
+    return { capabilities: ["lexical"] };
+  }
+
+  async search(
+    input: MemorySearchIndexInput,
+  ): Promise<readonly MemorySearchIndexResult[]> {
+    this.inputs.push(input);
+    return this.results;
+  }
+
+  async upsertDocument(): Promise<void> {
+    return undefined;
+  }
+
+  async deleteDocument(): Promise<void> {
+    return undefined;
   }
 }
 
@@ -1576,6 +1604,152 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("uses a safe action memory retrieval query when the runtime provides one", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_repo",
+        body: "Prefer guard clauses in service methods.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+      actionMemorySnapshot({
+        id: "mem_browser",
+        body: "Run dashboard memory changes through browser layout checks.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+    ]);
+    const actionMemory = createActionMemoryDependencies({ memoryItems });
+    const searchIndex = new CapturingMemorySearchIndex([
+      {
+        memoryItemId: "mem_browser",
+        scope: "repository",
+        score: 10,
+        scoreParts: {
+          lexicalScore: 1,
+          semanticScore: 0,
+          recencyScore: 0,
+          scopeScore: 0,
+          riskPenalty: 0,
+        },
+        explanationCode: "lexical_match",
+      },
+    ]);
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        memorySearchIndex: searchIndex,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory?safeRetrievalQuery=browser%20layout",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      memoryVersion: 1,
+      items: [
+        {
+          id: "mem_browser",
+          scope: "repository",
+          body: "Run dashboard memory changes through browser layout checks.",
+        },
+      ],
+    });
+    expect(searchIndex.inputs).toEqual([
+      expect.objectContaining({
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        safeQuery: "browser layout",
+        includeUserPrefs: false,
+      }),
+    ]);
+    expect(actionMemory.usageEvents.events).toHaveLength(1);
+    expect(actionMemory.usageEvents.events[0]).toMatchObject({
+      memoryItemId: "mem_browser",
+      metadata: { bundleItemCount: 1 },
+    });
+  });
+
+  it("ignores unsafe action memory retrieval queries and falls back to canonical bundle", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_repo",
+        body: "Prefer guard clauses in service methods.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+    ]);
+    const actionMemory = createActionMemoryDependencies({ memoryItems });
+    const searchIndex = new CapturingMemorySearchIndex([]);
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        memorySearchIndex: searchIndex,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory?safeRetrievalQuery=diff%20--git%20a%2Fx%20b%2Fx",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      items: [{ id: "mem_repo" }],
+      degraded: false,
+    });
+    expect(searchIndex.inputs).toEqual([]);
   });
 
   it("accepts natural-language memory candidates from interaction workflows as suggestions", async () => {
