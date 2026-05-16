@@ -508,6 +508,7 @@ function requireCommand(command) {
 function gh(args, options = {}) {
   const output = execFileSync("gh", args, {
     encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
     stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
   });
   return typeof output === "string" ? output.trim() : "";
