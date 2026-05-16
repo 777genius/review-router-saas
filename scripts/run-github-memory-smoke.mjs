@@ -404,9 +404,7 @@ async function waitForBotCommentContaining({
       const comments = listPrComments();
       return comments.find((comment) => {
         const created = Date.parse(comment.createdAt) >= Date.parse(after);
-        const bot = /(?:github-actions|reviewrouter)\[?bot\]?/i.test(
-          comment.author?.login ?? "",
-        );
+        const bot = isReviewRouterBotLogin(comment.author?.login ?? "");
         const matches = allowAnyValue
           ? values.some((value) => comment.body.includes(value))
           : values.every((value) => comment.body.includes(value));
@@ -439,7 +437,7 @@ async function assertNoBotLoopAfter({ after }) {
   const botRuns = runs.filter(
     (run) =>
       Date.parse(run.createdAt) > Date.parse(after) &&
-      /(?:github-actions|reviewrouter)\[?bot\]?/i.test(run.actor?.login ?? ""),
+      isReviewRouterBotLogin(run.actor?.login ?? ""),
   );
   if (botRuns.length > 0) {
     fail(
@@ -450,6 +448,12 @@ async function assertNoBotLoopAfter({ after }) {
       },
     );
   }
+}
+
+function isReviewRouterBotLogin(login) {
+  return /^(?:github-actions(?:\[bot\])?|reviewrouter(?:\[bot\])?|review-router-ai)$/i.test(
+    login,
+  );
 }
 
 function listPrComments() {
