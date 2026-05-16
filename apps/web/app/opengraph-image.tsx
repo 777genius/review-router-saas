@@ -1,4 +1,6 @@
 import { ImageResponse } from "next/og";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { defaultSeoDescription, siteName } from "./seo";
 
 export const alt = "ReviewRouter privacy-first AI code review in CI";
@@ -10,7 +12,13 @@ export const size = {
 
 export const contentType = "image/png";
 
-export default function Image(): ImageResponse {
+export default async function Image(): Promise<ImageResponse> {
+  const logoData = await readFile(
+    join(process.cwd(), "public/review-router-icon.png"),
+    "base64",
+  );
+  const logoSrc = `data:image/png;base64,${logoData}`;
+
   return new ImageResponse(
     <div
       style={{
@@ -38,17 +46,27 @@ export default function Image(): ImageResponse {
       >
         <div
           style={{
-            width: 64,
-            height: 64,
+            width: 88,
+            height: 88,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            borderRadius: 18,
+            borderRadius: 24,
             border: "2px solid rgba(103,232,249,0.55)",
-            background: "rgba(103,232,249,0.12)",
+            background: "rgba(255,255,255,0.05)",
+            boxShadow: "0 0 32px rgba(0,240,255,0.18)",
+            overflow: "hidden",
           }}
         >
-          RR
+          <img
+            src={logoSrc}
+            alt=""
+            width={82}
+            height={82}
+            style={{
+              objectFit: "contain",
+            }}
+          />
         </div>
         <div>{siteName}</div>
       </div>
@@ -64,7 +82,7 @@ export default function Image(): ImageResponse {
             letterSpacing: 0,
           }}
         >
-          Privacy-first AI code review in your CI
+          Free privacy-first AI code review in your CI
         </div>
         <div
           style={{
@@ -84,13 +102,15 @@ export default function Image(): ImageResponse {
           display: "flex",
           gap: 18,
           color: "#bef264",
-          fontSize: 24,
+          fontSize: 22,
           fontWeight: 700,
           letterSpacing: 0,
         }}
       >
-        <span>No code custody</span>
-        <span>Codex</span>
+        <span>Free</span>
+        <span>Code stays in CI</span>
+        <span>Codex Subscription</span>
+        <span>Claude Subscription</span>
         <span>OpenAI</span>
         <span>OpenRouter</span>
       </div>

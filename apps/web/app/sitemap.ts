@@ -6,6 +6,7 @@ const publicRoutes = [
   { path: "/getting-started", priority: 0.9 },
   { path: "/security", priority: 0.85 },
   { path: "/privacy", priority: 0.8 },
+  { path: "/compare", priority: 0.78 },
   { path: "/support", priority: 0.6 },
   { path: "/terms", priority: 0.45 },
   { path: "/fair-use", priority: 0.45 },

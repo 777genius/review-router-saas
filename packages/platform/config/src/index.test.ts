@@ -3,8 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  isConflictReviewFallbackAllowedForRepository,
+  isConflictReviewFallbackEnabled,
+  isClaudeCodeProviderEnabled,
   isWorkflowProvisioningEnabled,
   loadRuntimeEnv,
+  parseConflictReviewFallbackRepositoryAllowlist,
   readGitHubAppPrivateKey,
   requireGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
@@ -55,6 +59,83 @@ describe("platform config", () => {
       isWorkflowProvisioningEnabled({
         REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
         REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+  });
+
+  it("enables conflict review fallback by default and keeps an explicit rollback flag", () => {
+    expect(isConflictReviewFallbackEnabled({} as NodeJS.ProcessEnv)).toBe(true);
+    expect(
+      isConflictReviewFallbackEnabled({
+        REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isConflictReviewFallbackEnabled({
+        REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+  });
+
+  it("allows conflict review fallback for all repositories by default and supports a restrictive allowlist", () => {
+    const enabledEnv = {
+      REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
+      REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES:
+        "777genius/example, Other-Org/Repo.Name",
+    } as NodeJS.ProcessEnv;
+
+    expect(
+      parseConflictReviewFallbackRepositoryAllowlist(
+        enabledEnv.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES,
+      ),
+    ).toEqual(["777genius/example", "other-org/repo.name"]);
+    expect(
+      isConflictReviewFallbackAllowedForRepository(
+        "777genius/example",
+        enabledEnv,
+      ),
+    ).toBe(true);
+    expect(
+      isConflictReviewFallbackAllowedForRepository(
+        "777genius/not-enabled",
+        enabledEnv,
+      ),
+    ).toBe(false);
+    expect(
+      isConflictReviewFallbackAllowedForRepository("777genius/not-enabled", {
+        REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
+        REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES: "",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isConflictReviewFallbackAllowedForRepository(
+        "777genius/not-enabled",
+        {} as NodeJS.ProcessEnv,
+      ),
+    ).toBe(true);
+    expect(
+      isConflictReviewFallbackAllowedForRepository("777genius/example", {
+        ...enabledEnv,
+        REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+    expect(() =>
+      parseConflictReviewFallbackRepositoryAllowlist("../bad/repo"),
+    ).toThrow(
+      "invalid_env:REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES",
+    );
+  });
+
+  it("enables Claude Code provider UI by default and keeps an explicit rollback switch", () => {
+    expect(isClaudeCodeProviderEnabled({} as NodeJS.ProcessEnv)).toBe(true);
+    expect(
+      isClaudeCodeProviderEnabled({
+        REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: "1",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(
+      isClaudeCodeProviderEnabled({
+        REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: "0",
       } as NodeJS.ProcessEnv),
     ).toBe(false);
   });

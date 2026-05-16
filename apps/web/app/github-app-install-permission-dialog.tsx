@@ -49,7 +49,7 @@ const sensitivePermissionRows: readonly PermissionRow[] = [
   {
     title: "Secrets: read",
     badge: "Cannot read secret values",
-    body: "GitHub returns metadata only: secret name, timestamps, visibility, and selected repository access. ReviewRouter checks that CODEX_AUTH_JSON, OPENAI_API_KEY, or OPENROUTER_API_KEY exists.",
+    body: "GitHub returns metadata only: secret name, timestamps, visibility, and selected repository access. ReviewRouter checks that CODEX_AUTH_JSON, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, or OPENROUTER_API_KEY exists.",
     docs: [
       {
         label: "GitHub Docs: Get a repository secret",
@@ -72,6 +72,12 @@ const sensitivePermissionRows: readonly PermissionRow[] = [
         href: githubSecretPermissionDocs.organizationSecretRepositories,
       },
     ],
+    icon: <Building2 aria-hidden="true" className="h-7 w-7" />,
+  },
+  {
+    title: "Organization plan: read",
+    badge: "Plan name only",
+    body: "Used to choose the right secret setup path for private organization repositories. ReviewRouter checks whether org-level Actions secrets are supported for the selected repository.",
     icon: <Building2 aria-hidden="true" className="h-7 w-7" />,
   },
 ] as const;

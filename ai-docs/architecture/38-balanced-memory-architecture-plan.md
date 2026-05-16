@@ -30,7 +30,7 @@
 
 - создан bounded context `@reviewrouter/features-memory`;
 - domain/application отделены от Prisma, Fastify, Next.js и React;
-- добавлены canonical store models и migration `000012_memory_core`;
+- добавлены canonical store models и migration `000015_memory_core`;
 - реализованы repository/workspace/user_prefs scopes, safety policy, explicit/model/ambiguous intent policy;
 - реализованы use cases: direct remember, propose suggestion, confirm/reject suggestion, disable/delete item, dashboard lists, action bundle;
 - добавлены Prisma adapters, transaction adapter, outbox/audit adapters, crypto id generator;
@@ -67,11 +67,11 @@
 - runtime retrieval теперь принимает lexical/full-text/semantic-vector/hybrid search capabilities, но всё равно rehydrates каждый hit через canonical active scoped storage; unit tests инжектят cross-workspace, cross-repository, wrong-user, disabled, deleted и missing ids и доказывают, что stale/vector candidates не становятся authority.
 - добавлен реальный `spike:memory:e2e`: runner сам создаёт временную Postgres DB, применяет fresh migrations, поднимает настоящий Fastify HTTP listener и проверяет OIDC exchange, admin/member permission boundary, forbidden raw payload guard, direct memory save, model suggestion confirmation, runtime bundle, usage dedupe, disable exclusion, cross-workspace object-id denial, review-event mutation denial и tenant isolation.
 - pending suggestions получили retention transition: `expirePendingMemorySuggestions` переводит просроченные pending suggestions в `expired` через domain state machine, repository port и safe audit metadata.
-- worker получил lock-protected pending suggestion expiry maintenance: отдельный across-workspaces use case, bounded workspace/per-workspace batches, Prisma adapter method, global expiry index `000013_memory_suggestion_expiry_index` и fresh DB E2E, который доказывает, что expired suggestion больше нельзя подтвердить и audit не содержит body.
+- worker получил lock-protected pending suggestion expiry maintenance: отдельный across-workspaces use case, bounded workspace/per-workspace batches, Prisma adapter method, global expiry index `000016_memory_suggestion_expiry_index` и fresh DB E2E, который доказывает, что expired suggestion больше нельзя подтвердить и audit не содержит body.
 - confirmed memory items получили TTL expiry transition: `expireActiveMemoryItems` переводит только active items с истёкшим `expiresAt` в `expired`, очищает index version, ставит index delete outbox, пишет audit/outbox только с ids/hash metadata, а worker запускает это под отдельным lock и batch limits.
-- Prisma получил dedicated expiry index `000014_memory_item_expiry_index`; fresh DB E2E проверяет, что TTL-expired confirmed memory больше не попадает в runtime bundle, но body сохраняется до отдельной delete-retention фазы.
+- Prisma получил dedicated expiry index `000017_memory_item_expiry_index`; fresh DB E2E проверяет, что TTL-expired confirmed memory больше не попадает в runtime bundle, но body сохраняется до отдельной delete-retention фазы.
 - terminal memory retention теперь закрыт отдельным `pruneTerminalMemoryItems`: application use case удаляет только `expired/deleted` rows старше cutoff через repository port, audit пишет только counts/ids/cutoff, Prisma adapter делает guarded `DELETE` по `workspaceId + ids + terminal status + updatedAt < cutoff`.
-- worker получил lock-protected terminal memory prune maintenance с 30-day default retention, bounded workspace/per-workspace batches, interval guard, lock-contention handling и dedicated index `000015_memory_terminal_prune_index`; fresh DB E2E проверяет hard-delete для TTL-expired и soft-deleted items без body leak в audit.
+- worker получил lock-protected terminal memory prune maintenance с 30-day default retention, bounded workspace/per-workspace batches, interval guard, lock-contention handling и dedicated index `000018_memory_terminal_prune_index`; fresh DB E2E проверяет hard-delete для TTL-expired и soft-deleted items без body leak в audit.
 - support diagnostics теперь включает memory health counts по workspace: item statuses/scopes/index states, suggestion statuses и usage event count; Prisma adapter выбирает только enum/count metadata без body/source, audit access metadata пишет только safe counts.
 - dashboard diagnostics panel показывает compact Memory metric рядом с repository/provider/outbox/action metrics, не раскрывая memory body или source excerpts.
 - workspace memory export закрыт application use case `exportMemoryItems`: workspace-admin authority через permission port, canonical repository export port, JSON manifest с checksum/counts, active/disabled/expired items only, no deleted rows, no embeddings, no raw source excerpts/source hashes.
@@ -115,8 +115,8 @@
 - `pnpm spike:memory:e2e` with workspace export, deleted-row exclusion, source excerpt exclusion and export audit assertions - passed;
 - targeted export budget tests cover row-limit and byte-limit rejection without audit body leakage;
 - `pnpm vitest run apps/web/app/privacy/page.test.tsx` verifies public Balanced Memory privacy and retention copy;
-- `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000013_memory_suggestion_expiry_index`, включая edited-source supersede assertion - passed;
-- `pnpm spike:memory:e2e` с fresh `prisma migrate deploy` включая `000015_memory_terminal_prune_index`, terminal prune assertion и runtime bundle после prune - passed;
+- `pnpm spike:memory:e2e` с автоматической временной Postgres DB и fresh `prisma migrate deploy` включая migration `000016_memory_suggestion_expiry_index`, включая edited-source supersede assertion - passed;
+- `pnpm spike:memory:e2e` с fresh `prisma migrate deploy` включая `000018_memory_terminal_prune_index`, terminal prune assertion и runtime bundle после prune - passed;
 - targeted builds/tests: `@reviewrouter/features-memory`, `@reviewrouter/api`, `@reviewrouter/features-api-demo` - passed.
 - action runtime checks for discussion wiring: `npm run build`, `npm run typecheck`, `npm run lint` - 0 errors, existing warnings only, `npm test -- --runInBand` - 100 suites, 1184 tests passed.
 - memory UI screenshot QA теперь закрыт через env-gated preview route `/dashboard/memory-preview`, который использует только synthetic fixtures и не ослабляет production dashboard auth/privacy path:
@@ -135,13 +135,15 @@
   - guard check without `REVIEW_ROUTER_GITHUB_MEMORY_E2E=1` stops before GitHub side effects - passed;
   - preflight on `777genius/review-router-saas-e2e` PR #4 currently fails with `github_memory_e2e_interaction_workflow_missing_on_default_branch`, because the disposable repo default branch does not contain `.github/workflows/reviewrouter-interaction.yml`.
 - Beta-ready v1 finish proof, 2026-05-16:
-  - SaaS/control-plane: `pnpm format:check` - passed;
-  - SaaS/control-plane: `pnpm typecheck` - passed for 26 packages plus `tsconfig.spikes.json`;
-  - SaaS/control-plane: `pnpm test` - 65 files, 375 tests passed;
-  - SaaS/control-plane: `pnpm lint` - passed;
-  - SaaS/control-plane: `pnpm architecture:check` - passed for 134 domain/application files;
-  - SaaS/control-plane: `pnpm build` - 26 build tasks passed, then ESM import rewrite passed;
-  - SaaS/control-plane: `pnpm spike:memory:e2e` - passed with fresh temporary Postgres DB, marker `1778960890332`, canonical bundle/search/disable/prune/usage assertions;
+  - SaaS/control-plane after merge with `origin/main`: `pnpm format:check` - passed;
+  - SaaS/control-plane after merge with `origin/main`: `pnpm typecheck` - passed for 29 packages plus `tsconfig.spikes.json`;
+  - SaaS/control-plane after merge with `origin/main`: `pnpm test` - 97 files, 602 tests passed;
+  - SaaS/control-plane after merge with `origin/main`: `pnpm lint` - passed;
+  - SaaS/control-plane after merge with `origin/main`: `pnpm architecture:check` - passed for 158 domain/application files;
+  - SaaS/control-plane after merge with `origin/main`: `pnpm build` - 29 build tasks passed, then ESM import rewrite passed;
+  - SaaS/control-plane after merge with `origin/main`: `pnpm spike:memory:e2e` - passed with fresh temporary Postgres DB, marker `1778961973538`, canonical bundle/search/disable/prune/usage assertions;
+  - SaaS/control-plane after merge with `origin/main`: memory preview UI audit passed for 24 pages at `390x844`, `900x1100`, `1440x1000`; artifacts: `tmp/design-verification/memory-post-merge`;
+  - SaaS/control-plane after merge with `origin/main`: `git diff --check` - passed;
   - action runtime worktree `feat/balanced-memory-runtime`: `npm test -- --runInBand` - 111 suites passed, 1344 tests passed, 2 skipped;
   - action runtime: `npm run typecheck` - passed;
   - action runtime: `npm run lint` - passed with 0 errors and existing warning debt only;
@@ -159,10 +161,15 @@
 Current beta blocker:
 
 - Real GitHub memory smoke is not passed yet. Local SaaS and action-runtime
-  implementation is complete, but the disposable repo must have
+  implementation is complete, and the smoke script now fetches large runtime
+  files through GitHub raw content so `dist/index.js` above 1 MB can be
+  inspected correctly. The disposable repo must still have
   `.github/workflows/reviewrouter-interaction.yml` on its default branch and
-  must reference a pushed memory-capable action runtime commit. The last safe
-  preflight was:
+  must reference a pushed memory-capable action runtime commit. Hosted API must
+  expose `/api/action/v1/memory*` endpoints before a true GitHub Actions memory
+  smoke can pass; the current public API health check is OK, but
+  `/api/action/v1/memory` still returns 404 until the SaaS memory release is
+  deployed. The last safe preflight was:
   `REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1 REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=4 pnpm spike:github-memory:e2e`
   and it stopped before side effects with
   `github_memory_e2e_interaction_workflow_missing_on_default_branch`.

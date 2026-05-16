@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   Check,
   CheckCircle2,
+  CircleAlert,
   Globe2,
   ListFilter,
   LockKeyhole,
@@ -17,13 +18,14 @@ export type RepositorySearchFilter =
   | "private"
   | "public"
   | "needs_setup"
+  | "needs_attention"
   | "ready";
 
 export type RepositorySearchIndexItem = {
   readonly id: string;
   readonly searchText: string;
   readonly visibility: string;
-  readonly needsSetup: boolean;
+  readonly readiness: "ready" | "needs_setup" | "needs_attention";
 };
 
 const repositoryFilterOptions = [
@@ -31,6 +33,7 @@ const repositoryFilterOptions = [
   { value: "private", label: "Private", icon: LockKeyhole },
   { value: "public", label: "Public", icon: Globe2 },
   { value: "needs_setup", label: "Needs setup", icon: Wrench },
+  { value: "needs_attention", label: "Needs attention", icon: CircleAlert },
   { value: "ready", label: "Ready", icon: CheckCircle2 },
 ] as const;
 
@@ -136,37 +139,76 @@ export function RepositoryLiveSearch({
         Find repository
       </p>
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(20rem,1fr)_auto] xl:items-center">
-        <label className="relative block min-w-0">
-          <span className="sr-only">Find repository</span>
-          <Search
-            aria-hidden="true"
-            className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
-            strokeWidth={2}
-          />
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => {
-              const nextQuery = event.target.value;
-              setQuery(nextQuery);
-              updateLocalMatches(nextQuery, activeFilter);
-            }}
-            placeholder="repo, branch, setup status..."
-            className="h-11 w-full rounded-xl border border-cyan-300/45 bg-slate-950/70 pl-10 pr-3 text-sm font-medium text-cyan-50 shadow-[0_0_44px_-34px_rgba(103,232,249,0.95),inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition placeholder:text-slate-600 hover:border-cyan-300/70 focus:border-cyan-200 focus:ring-2 focus:ring-cyan-300/20 2xl:pr-14"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          <span
-            aria-hidden="true"
-            className="absolute right-3 top-1/2 hidden -translate-y-1/2 rounded-md border border-cyan-200/12 bg-cyan-200/[0.035] px-1.5 py-0.5 font-mono text-[0.65rem] font-semibold text-slate-500 2xl:inline-flex"
-          >
-            ⌘ K
-          </span>
-        </label>
+      <div className="grid gap-3 xl:grid-cols-[minmax(20rem,1fr)_auto] xl:items-start">
+        <div className="grid min-w-0 gap-2">
+          <label className="relative block min-w-0">
+            <span className="sr-only">Find repository</span>
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
+              strokeWidth={2}
+            />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => {
+                const nextQuery = event.target.value;
+                setQuery(nextQuery);
+                updateLocalMatches(nextQuery, activeFilter);
+              }}
+              placeholder="repo, branch, setup status..."
+              className="h-11 w-full rounded-xl border border-cyan-300/45 bg-slate-950/70 pl-10 pr-3 text-sm font-medium text-cyan-50 shadow-[0_0_44px_-34px_rgba(103,232,249,0.95),inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition placeholder:text-slate-600 hover:border-cyan-300/70 focus:border-cyan-200 focus:ring-2 focus:ring-cyan-300/20 2xl:pr-14"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <span
+              aria-hidden="true"
+              className="absolute right-3 top-1/2 hidden -translate-y-1/2 rounded-md border border-cyan-200/12 bg-cyan-200/[0.035] px-1.5 py-0.5 font-mono text-[0.65rem] font-semibold text-slate-500 2xl:inline-flex"
+            >
+              ⌘ K
+            </span>
+          </label>
+
+          {helperText || hasActiveFilter ? (
+            <div className="flex flex-wrap items-center gap-3 px-1">
+              {helperText ? (
+                <p
+                  className={[
+                    "text-xs font-medium leading-5",
+                    "text-slate-500",
+                  ].join(" ")}
+                  aria-live="polite"
+                >
+                  {helperText}
+                </p>
+              ) : null}
+              {hasActiveFilter ? (
+                <>
+                  {helperText ? (
+                    <span
+                      aria-hidden="true"
+                      className="hidden h-3.5 w-px bg-slate-700/75 sm:block"
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery("");
+                      setActiveFilter("all");
+                      updateLocalMatches("", "all");
+                    }}
+                    className="inline-flex text-xs font-semibold text-cyan-200 transition hover:text-cyan-50"
+                  >
+                    Clear
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
 
         <div
-          className="grid items-stretch gap-1 rounded-xl border border-slate-700/70 bg-slate-950/55 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:h-11 sm:grid-cols-5"
+          className="grid items-stretch gap-1 rounded-xl border border-slate-700/70 bg-slate-950/55 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] sm:grid-cols-3 2xl:h-11 2xl:grid-cols-6"
           role="group"
           aria-label="Repository filters"
         >
@@ -184,7 +226,7 @@ export function RepositoryLiveSearch({
                   updateLocalMatches(normalizedQuery, option.value);
                 }}
                 className={[
-                  "relative flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-cyan-200 sm:min-h-0 sm:h-full",
+                  "relative flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold transition duration-200 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-cyan-200 2xl:min-h-0 2xl:h-full",
                   selected
                     ? "bg-cyan-300/[0.08] text-cyan-100 ring-1 ring-inset ring-cyan-300/70 shadow-[0_0_45px_-32px_rgba(103,232,249,0.95)]"
                     : "text-slate-500 hover:bg-cyan-300/[0.035] hover:text-slate-300",
@@ -213,43 +255,6 @@ export function RepositoryLiveSearch({
           })}
         </div>
       </div>
-
-      {helperText || hasActiveFilter ? (
-        <div className="mt-3 flex flex-wrap items-center justify-end gap-4">
-          {helperText ? (
-            <p
-              className={[
-                "text-xs font-medium leading-5",
-                "text-slate-500",
-              ].join(" ")}
-              aria-live="polite"
-            >
-              {helperText}
-            </p>
-          ) : null}
-          {hasActiveFilter ? (
-            <>
-              {helperText ? (
-                <span
-                  aria-hidden="true"
-                  className="hidden h-3.5 w-px bg-slate-700/75 sm:block"
-                />
-              ) : null}
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery("");
-                  setActiveFilter("all");
-                  updateLocalMatches("", "all");
-                }}
-                className="inline-flex text-xs font-semibold text-cyan-200 transition hover:text-cyan-50"
-              >
-                Clear
-              </button>
-            </>
-          ) : null}
-        </div>
-      ) : null}
 
       {hasActiveFilter && !isSearchLoading && matchingCount === 0 ? (
         <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.055] p-3">
@@ -323,6 +328,8 @@ function repositoryFilterResultLabel(filter: RepositorySearchFilter): string {
       return "public repositories";
     case "needs_setup":
       return "repositories need setup";
+    case "needs_attention":
+      return "repositories need attention";
     case "ready":
       return "ready repositories";
     case "all":
@@ -355,9 +362,11 @@ function repositoryMatchesFilter(
     case "public":
       return item.visibility === "public";
     case "needs_setup":
-      return item.needsSetup;
+      return item.readiness === "needs_setup";
+    case "needs_attention":
+      return item.readiness === "needs_attention";
     case "ready":
-      return !item.needsSetup;
+      return item.readiness === "ready";
     case "all":
       return true;
   }
@@ -436,6 +445,9 @@ function appendFilterParams(
   }
   if (filter === "needs_setup") {
     params.set("setup", "needed");
+  }
+  if (filter === "needs_attention") {
+    params.set("setup", "attention");
   }
   if (filter === "ready") {
     params.set("setup", "ready");

@@ -24,6 +24,11 @@ class FakeRequester {
         readonly html_url: string;
         readonly number: number;
       }[])[];
+      readonly closedPullRequestResponses?: readonly (readonly {
+        readonly html_url: string;
+        readonly number: number;
+        readonly merged_at?: string | null;
+      }[])[];
       readonly postPullRequest?: {
         readonly html_url: string;
         readonly number: number;
@@ -73,7 +78,10 @@ class FakeRequester {
     }
     if (route === "GET /repos/{owner}/{repo}/pulls") {
       return {
-        data: this.nextPullRequestResponse(),
+        data:
+          parameters?.state === "closed"
+            ? this.nextClosedPullRequestResponse()
+            : this.nextPullRequestResponse(),
       };
     }
     if (route === "POST /repos/{owner}/{repo}/pulls") {
@@ -132,6 +140,14 @@ class FakeRequester {
     const index = Math.min(this.pullReadCount, responses.length - 1);
     this.pullReadCount += 1;
     return responses[index] ?? [];
+  }
+
+  private nextClosedPullRequestResponse(): readonly {
+    readonly html_url: string;
+    readonly number: number;
+    readonly merged_at?: string | null;
+  }[] {
+    return this.options.closedPullRequestResponses?.[0] ?? [];
   }
 }
 
@@ -199,6 +215,80 @@ describe("OctokitWorkflowSetupGateway", () => {
     );
   });
 
+  it("reopens a closed setup pull request before creating a new one", async () => {
+    const requester = new FakeRequester(primaryWorkflow.content, {
+      pullRequestResponses: [[]],
+      closedPullRequestResponses: [
+        [
+          {
+            html_url: "https://github.com/777genius/example/pull/14",
+            number: 14,
+          },
+        ],
+      ],
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({
+      number: 14,
+      url: "https://github.com/777genius/example/pull/14",
+    });
+
+    expect(
+      requester.calls.map((call) => [call.route, call.parameters?.state]),
+    ).toContainEqual(["GET /repos/{owner}/{repo}/pulls", "closed"]);
+    expect(
+      requester.calls.find(
+        (call) =>
+          call.route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      )?.parameters,
+    ).toMatchObject({
+      pull_number: 14,
+      state: "open",
+      title: "chore: add ReviewRouter workflow",
+      base: "main",
+    });
+    expect(requester.calls.map((call) => call.route)).not.toContain(
+      "POST /repos/{owner}/{repo}/pulls",
+    );
+  });
+
+  it("does not try to reopen an already merged setup pull request", async () => {
+    const requester = new FakeRequester(primaryWorkflow.content, {
+      pullRequestResponses: [[]],
+      closedPullRequestResponses: [
+        [
+          {
+            html_url: "https://github.com/777genius/example/pull/14",
+            number: 14,
+            merged_at: "2026-05-13T12:00:00Z",
+          },
+        ],
+      ],
+      postPullRequest: {
+        html_url: "https://github.com/777genius/example/pull/15",
+        number: 15,
+      },
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({
+      number: 15,
+      url: "https://github.com/777genius/example/pull/15",
+    });
+
+    expect(requester.calls.map((call) => call.route)).toContain(
+      "POST /repos/{owner}/{repo}/pulls",
+    );
+    expect(requester.calls.map((call) => call.route)).not.toContain(
+      "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+    );
+  });
+
   it("re-reads workflow content once when GitHub reports a write conflict", async () => {
     const requester = new FakeRequester([null, primaryWorkflow.content], {
       failPutOnceStatus: 409,
@@ -245,7 +335,9 @@ describe("OctokitWorkflowSetupGateway", () => {
 
     expect(
       requester.calls.filter(
-        (call) => call.route === "GET /repos/{owner}/{repo}/pulls",
+        (call) =>
+          call.route === "GET /repos/{owner}/{repo}/pulls" &&
+          call.parameters?.state === "open",
       ),
     ).toHaveLength(2);
     expect(

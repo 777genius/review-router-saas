@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HeaderProfileMenu } from "./header-profile-menu";
 
 vi.mock("next-auth/react", () => ({
@@ -8,8 +8,19 @@ vi.mock("next-auth/react", () => ({
   signOut: vi.fn(() => Promise.resolve()),
 }));
 
+beforeEach(() => {
+  class MockResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  vi.stubGlobal("ResizeObserver", MockResizeObserver);
+});
+
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 describe("HeaderProfileMenu", () => {
@@ -33,16 +44,15 @@ describe("HeaderProfileMenu", () => {
 
     expect(profileButton.getAttribute("aria-expanded")).toBe("false");
 
-    fireEvent.click(profileButton);
+    fireEvent.pointerDown(profileButton);
 
-    expect(screen.getByRole("menu", { name: "Profile menu" })).toBeTruthy();
     expect(
-      screen.getByRole("button", {
-        name: "Close profile menu for 777genius",
+      screen.getByRole("menu", {
+        name: "Open profile menu for 777genius",
       }),
     ).toBeTruthy();
     expect(profileButton.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getAllByText("777genius")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
   });
 });

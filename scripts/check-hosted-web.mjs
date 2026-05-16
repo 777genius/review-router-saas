@@ -24,9 +24,11 @@ assertIncludes(dashboard.html, "ReviewRouter", "dashboard missing product");
 assertIncludesAny(
   dashboard.html,
   [
-    "AI code review that stays inside your CI",
+    "Free privacy-first",
     "Manage repository review rollout",
     "ReviewRouter is a metadata control plane",
+    "ReviewRouter is an open-source metadata control plane",
+    "Metadata control plane for CI-native AI review",
   ],
   "dashboard missing landing or workspace hero",
 );
@@ -74,9 +76,13 @@ const installUrls = uniqueMatches(
   /https:\/\/github\.com\/apps\/[^"'\\\s]+\/installations\/new/g,
 );
 if (installUrls.length === 0) {
-  assertIncludes(
+  assertIncludesAny(
     dashboard.html,
-    "ReviewRouter is a metadata control plane",
+    [
+      "ReviewRouter is a metadata control plane",
+      "ReviewRouter is an open-source metadata control plane",
+      "Metadata control plane for CI-native AI review",
+    ],
     "dashboard without install URL must render signed-out metadata shell",
   );
 }
@@ -150,9 +156,11 @@ const setupPrDashboardNotice = await fetchHtml(
 assertIncludesAny(
   setupPrDashboardNotice.html,
   [
-    "AI code review that stays inside your CI",
+    "Free privacy-first",
     "Manage repository review rollout",
     "ReviewRouter is a metadata control plane",
+    "ReviewRouter is an open-source metadata control plane",
+    "Metadata control plane for CI-native AI review",
   ],
   "dashboard setup PR notice should render landing or dashboard",
 );
@@ -166,9 +174,11 @@ const syncDashboardNotice = await fetchHtml("/dashboard?notice=sync_requested");
 assertIncludesAny(
   syncDashboardNotice.html,
   [
-    "AI code review that stays inside your CI",
+    "Free privacy-first",
     "Manage repository review rollout",
     "ReviewRouter is a metadata control plane",
+    "ReviewRouter is an open-source metadata control plane",
+    "Metadata control plane for CI-native AI review",
   ],
   "dashboard sync notice should render landing or dashboard",
 );

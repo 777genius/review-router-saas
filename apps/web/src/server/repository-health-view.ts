@@ -81,7 +81,7 @@ export function describeRepositoryHealth(
         label: "Provider setup needed",
         summary: fallbackSummary,
         nextAction:
-          "Seed Codex OAuth or API-key secrets directly into GitHub Actions.",
+          "Seed Codex, Claude Code, OpenAI, or OpenRouter secrets directly into GitHub Actions.",
         blocksReview: true,
       };
     case "provider_unhealthy":
@@ -90,7 +90,7 @@ export function describeRepositoryHealth(
         label: "Provider unhealthy",
         summary: fallbackSummary,
         nextAction:
-          "Open the latest Actions run and reseed credentials if Codex/API auth failed.",
+          "Open the latest Actions run and reseed credentials if provider auth failed.",
         blocksReview: true,
       };
     case "provider_report_stale":

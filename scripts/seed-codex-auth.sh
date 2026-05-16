@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Seed Codex ChatGPT OAuth auth into GitHub Actions secrets without sending it to ReviewRouter SaaS.
 # Usage examples:
-#   curl -fsSL https://reviewrouter.site/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
-#   REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=my-org REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash scripts/seed-codex-auth.sh
+#   curl -fsSL https://reviewrouter.site/install/codex | bash -s -- --confirm-write --repo owner/repo
+#   bash scripts/seed-codex-auth.sh --confirm-write --scope org --org my-org --visibility selected --repos repo-a,repo-b
 
 set -Eeuo pipefail
 
@@ -10,6 +10,7 @@ PRODUCT_NAME="ReviewRouter"
 TARGET_REPO="${REVIEW_ROUTER_REPO:-}"
 SECRET_SCOPE="${REVIEW_ROUTER_SECRET_SCOPE:-repo}"
 ORG_NAME="${REVIEW_ROUTER_ORG:-}"
+ORG_SECRET_VISIBILITY="${REVIEW_ROUTER_ORG_SECRET_VISIBILITY:-selected}"
 ORG_SELECTED_REPOS="${REVIEW_ROUTER_ORG_SECRET_REPOS:-}"
 INCLUDE_CODEX_CONFIG="${REVIEW_ROUTER_INCLUDE_CODEX_CONFIG:-0}"
 DRY_RUN="${REVIEW_ROUTER_DRY_RUN:-0}"
@@ -53,7 +54,8 @@ Options:
   --repo owner/repo         Target repository for repo-scoped secrets.
   --scope repo|org          Secret scope. Defaults to repo.
   --org org                 Organization for org selected-repository secrets.
-  --repos repo-a,repo-b     Selected repositories for org-scoped secrets.
+  --visibility scope        Org secret visibility: selected, private, or all. Defaults to selected.
+  --repos repo-a,repo-b     Selected repositories for org-scoped selected visibility.
   --include-config          Also write CODEX_CONFIG_TOML.
   --codex-home path         Codex home containing auth.json or accounts/registry.json.
   --auth-file path          Explicit Codex auth JSON path.
@@ -105,6 +107,11 @@ parse_args() {
         shift
         require_arg "--org" "${1:-}"
         ORG_NAME="$1"
+        ;;
+      --visibility)
+        shift
+        require_arg "--visibility" "${1:-}"
+        ORG_SECRET_VISIBILITY="$1"
         ;;
       --repos|--selected-repos)
         shift
@@ -205,6 +212,15 @@ normalize_secret_scope() {
   esac
 }
 
+normalize_org_secret_visibility() {
+  case "$ORG_SECRET_VISIBILITY" in
+    selected|select|repo|repos|repositories) ORG_SECRET_VISIBILITY="selected" ;;
+    private|private-repos|private_repositories) ORG_SECRET_VISIBILITY="private" ;;
+    all|all-repos|all_repositories) ORG_SECRET_VISIBILITY="all" ;;
+    *) fatal "REVIEW_ROUTER_ORG_SECRET_VISIBILITY must be selected, private, or all. Got: $ORG_SECRET_VISIBILITY" ;;
+  esac
+}
+
 detect_repo() {
   if [ -n "$TARGET_REPO" ]; then
     validate_repo "$TARGET_REPO"
@@ -229,7 +245,7 @@ detect_repo() {
     fi
   fi
 
-  fatal "Could not detect repository. Set REVIEW_ROUTER_REPO=owner/repo."
+  fatal "Could not detect repository. Pass --repo owner/repo or set REVIEW_ROUTER_REPO=owner/repo."
 }
 
 normalize_org_repos() {
@@ -239,6 +255,10 @@ normalize_org_repos() {
     else
       fatal "Set REVIEW_ROUTER_ORG for org-level secrets."
     fi
+  fi
+
+  if [ "$ORG_SECRET_VISIBILITY" != "selected" ]; then
+    return
   fi
 
   if [ -z "$ORG_SELECTED_REPOS" ]; then
@@ -469,7 +489,11 @@ store_secret_from_file() {
 
   if is_true "$DRY_RUN"; then
     if [ "$SECRET_SCOPE" = "org" ]; then
-      log "[dry-run] gh secret set $name --org $ORG_NAME --repos $ORG_SELECTED_REPOS --app actions < $file_path"
+      if [ "$ORG_SECRET_VISIBILITY" = "selected" ]; then
+        log "[dry-run] gh secret set $name --org $ORG_NAME --repos $ORG_SELECTED_REPOS --app actions < $file_path"
+      else
+        log "[dry-run] gh secret set $name --org $ORG_NAME --visibility $ORG_SECRET_VISIBILITY --app actions < $file_path"
+      fi
     else
       log "[dry-run] gh secret set $name --repo $TARGET_REPO < $file_path"
     fi
@@ -477,8 +501,13 @@ store_secret_from_file() {
   fi
 
   if [ "$SECRET_SCOPE" = "org" ]; then
-    gh secret set "$name" --org "$ORG_NAME" --repos "$ORG_SELECTED_REPOS" --app actions < "$file_path" >/dev/null
-    ok "Stored org selected-repo secret $name for $ORG_NAME repos: $ORG_SELECTED_REPOS"
+    if [ "$ORG_SECRET_VISIBILITY" = "selected" ]; then
+      gh secret set "$name" --org "$ORG_NAME" --repos "$ORG_SELECTED_REPOS" --app actions < "$file_path" >/dev/null
+      ok "Stored org selected-repo secret $name for $ORG_NAME repos: $ORG_SELECTED_REPOS"
+    else
+      gh secret set "$name" --org "$ORG_NAME" --visibility "$ORG_SECRET_VISIBILITY" --app actions < "$file_path" >/dev/null
+      ok "Stored org secret $name for $ORG_NAME visibility: $ORG_SECRET_VISIBILITY"
+    fi
   else
     gh secret set "$name" --repo "$TARGET_REPO" < "$file_path" >/dev/null
     ok "Stored repo secret $name for $TARGET_REPO"
@@ -493,7 +522,11 @@ print_completion_summary() {
     ok "ReviewRouter is ready to use Codex OAuth for this target."
   fi
   if [ "$SECRET_SCOPE" = "org" ]; then
-    info "Ready target: org $ORG_NAME selected repos: $ORG_SELECTED_REPOS"
+    if [ "$ORG_SECRET_VISIBILITY" = "selected" ]; then
+      info "Ready target: org $ORG_NAME selected repos: $ORG_SELECTED_REPOS"
+    else
+      info "Ready target: org $ORG_NAME visibility: $ORG_SECRET_VISIBILITY"
+    fi
   else
     info "Ready target: repo $TARGET_REPO"
   fi
@@ -517,6 +550,7 @@ main() {
   log "${PRODUCT_NAME} Codex OAuth secret seeding"
   require_cmd gh
   normalize_secret_scope
+  normalize_org_secret_visibility
   detect_repo
   if [ "$SECRET_SCOPE" = "org" ]; then
     normalize_org_repos
@@ -529,7 +563,11 @@ main() {
 
   info "Target repo: $TARGET_REPO"
   if [ "$SECRET_SCOPE" = "org" ]; then
-    info "Secret scope: org $ORG_NAME, selected repos: $ORG_SELECTED_REPOS"
+    if [ "$ORG_SECRET_VISIBILITY" = "selected" ]; then
+      info "Secret scope: org $ORG_NAME, selected repos: $ORG_SELECTED_REPOS"
+    else
+      info "Secret scope: org $ORG_NAME, visibility: $ORG_SECRET_VISIBILITY"
+    fi
   else
     info "Secret scope: repo $TARGET_REPO"
   fi

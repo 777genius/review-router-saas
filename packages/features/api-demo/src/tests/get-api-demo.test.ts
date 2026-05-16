@@ -30,6 +30,12 @@ describe("getApiDemo", () => {
     expect(demo.executionModel.controlPlaneDoesNotStore).toContain(
       "Codex OAuth auth.json",
     );
+    expect(demo.executionModel.controlPlaneDoesNotStore).toContain(
+      "Claude Code OAuth token",
+    );
+    expect(demo.providers.map((provider) => provider.id)).toContain(
+      "claude_code_oauth",
+    );
     expect(demo.providers.every((provider) => !provider.sentToSaas)).toBe(true);
     expect(demo.links.dashboard).toBe("https://web.example.com/dashboard");
     expect(demo.links.openapi).toBe("https://api.example.com/openapi.json");

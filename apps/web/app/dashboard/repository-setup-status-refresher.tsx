@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { confirmSetupPullRequestMergedClientAction } from "./actions";
+import { setupPullRequestMergedEvent } from "./repository-setup-optimistic-events";
 
 export function RepositorySetupStatusRefresher({
   enabled,
@@ -56,6 +57,11 @@ export function RepositorySetupStatusRefresher({
         void confirmSetupPullRequestMergedClientAction(formData)
           .then(({ params }) => {
             if (params.notice === "setup_pr_merged") {
+              window.dispatchEvent(
+                setupPullRequestMergedEvent({ repositoryId }),
+              );
+              router.refresh();
+            } else if (isRecoverableSetupPullRequestError(params.error)) {
               router.refresh();
             }
           })
@@ -86,4 +92,10 @@ export function RepositorySetupStatusRefresher({
   ]);
 
   return null;
+}
+
+function isRecoverableSetupPullRequestError(
+  value: string | undefined,
+): boolean {
+  return value === "setup_pr_closed" || value === "setup_pr_branch_deleted";
 }

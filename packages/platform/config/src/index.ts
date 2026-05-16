@@ -32,6 +32,11 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS: z.string().default(""),
   REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: z.enum(["0", "1"]).default("0"),
   REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: z
+    .enum(["0", "1"])
+    .default("1"),
+  REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES: z.string().default(""),
+  REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high", "xhigh"])
@@ -75,6 +80,50 @@ export function isWorkflowProvisioningEnabled(
   return input.REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING === "1";
 }
 
+export function isConflictReviewFallbackEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const value = input.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK?.trim();
+  return value === undefined || value === "" || value === "1";
+}
+
+export function isConflictReviewFallbackAllowedForRepository(
+  repositoryFullName: string,
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isConflictReviewFallbackEnabled(input)) {
+    return false;
+  }
+  const allowlist = parseConflictReviewFallbackRepositoryAllowlist(
+    input.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES,
+  );
+  if (allowlist.length === 0) {
+    return true;
+  }
+  const normalizedRepository = normalizeRepositoryFullName(repositoryFullName);
+  return allowlist.includes(normalizedRepository);
+}
+
+export function parseConflictReviewFallbackRepositoryAllowlist(
+  value: string | undefined,
+): readonly string[] {
+  const raw = value?.trim();
+  if (!raw) {
+    return [];
+  }
+  const repositories = raw
+    .split(/[\s,]+/)
+    .map((repository) => normalizeRepositoryFullName(repository))
+    .filter((repository) => repository.length > 0);
+  return [...new Set(repositories)];
+}
+
+export function isClaudeCodeProviderEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER !== "0";
+}
+
 export type GitHubAppPrivateKeyEnv = {
   readonly GITHUB_APP_PRIVATE_KEY?: string | undefined;
   readonly GITHUB_APP_PRIVATE_KEY_FILE?: string | undefined;
@@ -109,4 +158,18 @@ export function requireGitHubAppPrivateKey(
 
 function normalizePrivateKey(value: string): string {
   return value.includes("\\n") ? value.replaceAll("\\n", "\n") : value;
+}
+
+function normalizeRepositoryFullName(repositoryFullName: string): string {
+  const normalized = repositoryFullName.trim().toLowerCase();
+  if (
+    !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_.-]{1,100}$/.test(
+      normalized,
+    )
+  ) {
+    throw new Error(
+      "invalid_env:REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES",
+    );
+  }
+  return normalized;
 }

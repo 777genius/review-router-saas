@@ -64,4 +64,113 @@ describe("workflow setup readiness", () => {
       }),
     ).resolves.toBe(false);
   });
+
+  it("requires Claude workflow capability markers when checking Claude readiness", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        { ...readinessInput, providerKind: "claude" },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
+
+    expect(probe.input?.expectedContentMarkerGroups).toEqual([
+      [
+        ".github/workflows/reviewrouter-reusable.yml",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+      ],
+      [
+        "Install Claude Code CLI",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "Skip fork pull requests",
+      ],
+    ]);
+  });
+
+  it("requires conflict fallback markers before skipping setup when fallback rollout is enabled", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        { ...readinessInput, conflictReviewFallbackEnabled: true },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
+
+    expect(probe.input?.expectedContentMarkerGroups).toEqual([
+      [
+        ".github/workflows/reviewrouter-reusable.yml",
+        ".github/workflows/reviewrouter-conflict-reusable.yml",
+        "repository_dispatch:",
+        "types: [reviewrouter_conflict_review]",
+        "conflict-review:",
+        "github.event_name == 'repository_dispatch'",
+        "github.event.action == 'reviewrouter_conflict_review'",
+        "review_kind: conflict-head",
+        "conflict_repository_id:",
+        "conflict_dispatch_event_type:",
+        "conflict_dispatch_id:",
+      ],
+    ]);
+  });
+
+  it("requires both Claude and conflict markers when both capabilities are needed", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: false,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        {
+          ...readinessInput,
+          providerKind: "claude",
+          conflictReviewFallbackEnabled: true,
+        },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(false);
+
+    expect(probe.input?.expectedContentMarkerGroups).toEqual([
+      [
+        ".github/workflows/reviewrouter-reusable.yml",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        ".github/workflows/reviewrouter-conflict-reusable.yml",
+        "repository_dispatch:",
+        "types: [reviewrouter_conflict_review]",
+        "conflict-review:",
+        "github.event_name == 'repository_dispatch'",
+        "github.event.action == 'reviewrouter_conflict_review'",
+        "review_kind: conflict-head",
+        "conflict_repository_id:",
+        "conflict_dispatch_event_type:",
+        "conflict_dispatch_id:",
+      ],
+    ]);
+  });
+
+  it("requires a workflow update when a current action ref lacks Claude markers", async () => {
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        { ...readinessInput, providerKind: "claude" },
+        {
+          workflowProbe: new CapturingWorkflowProbe({
+            status: "present",
+            expectedActionRefFound: true,
+            expectedContentMarkersFound: false,
+          }),
+        },
+      ),
+    ).resolves.toBe(false);
+  });
 });

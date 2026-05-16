@@ -8,12 +8,28 @@ import type {
   ReviewConfiguration,
   ReviewProviderConfiguration,
 } from "@reviewrouter/features-review-config";
+import {
+  getDefaultProviderConfigForAuthMode,
+  getProviderAuthModeMetadata,
+  providerKindForAuthMode,
+  type ProviderAuthMode,
+  type ProviderKind,
+  type ReviewModelOption,
+} from "@reviewrouter/features-review-providers";
 import { FormSubmitButton } from "../form-submit-button";
 import {
-  checkOpenRouterRepositorySecretClientAction,
+  checkProviderRepositorySecretClientAction,
   clearRepositoryReviewConfigClientAction,
   saveRepositoryReviewConfigClientAction,
 } from "./actions";
+import {
+  checkProviderSecretStatusWithCache,
+  clearProviderSecretStatusCacheForTest,
+  type ProviderSecretAvailabilityStatus,
+} from "./provider-secret-status-cache";
+import { ProviderAuthLogoFrame } from "./provider-auth-logo";
+
+export { clearProviderSecretStatusCacheForTest };
 
 type DashboardFormAction = (formData: FormData) => void | Promise<void>;
 
@@ -34,32 +50,57 @@ type RepositorySecretCheckTarget = {
   readonly repositoryId: string;
 };
 
-type ReviewModelOption = {
-  readonly value: string;
-  readonly label: string;
-  readonly provider: "codex" | "openrouter";
-  readonly description?: string;
-  readonly badge?: "FREE RECOMMENDED" | "FREE" | "PAID" | "Unsupported";
-  readonly disabled?: boolean;
-};
+type ProviderSecretStatus = "checking" | ProviderSecretAvailabilityStatus;
 
-const providerAuthOptions = [
-  {
-    value: "codex_subscription_oauth",
+const providerAuthModeOrder = [
+  "codex_subscription_oauth",
+  "codex_openai_api_key",
+  "claude_code_oauth",
+  "openrouter_api_key",
+] as const satisfies readonly ProviderAuthMode[];
+
+const providerAuthOptionCopyByAuthMode = {
+  codex_subscription_oauth: {
     label: "Codex OAuth",
     description: "Uses the user's Codex subscription in GitHub Actions.",
   },
-  {
-    value: "codex_openai_api_key",
+  codex_openai_api_key: {
     label: "Codex API key",
     description: "Uses OPENAI_API_KEY from GitHub Actions secrets.",
   },
-  {
-    value: "openrouter_api_key",
+  claude_code_oauth: {
+    label: "Claude Code subscription",
+    description: "Uses CLAUDE_CODE_OAUTH_TOKEN from GitHub Actions secrets.",
+  },
+  openrouter_api_key: {
     label: "OpenRouter API key",
     description: "Uses OPENROUTER_API_KEY from GitHub Actions secrets.",
   },
-] as const;
+} as const satisfies Record<
+  ProviderAuthMode,
+  { readonly label: string; readonly description: string }
+>;
+
+function buildProviderAuthOptions(input: {
+  readonly claudeCodeProviderEnabled: boolean;
+  readonly providers: readonly ReviewProviderConfiguration[];
+}): readonly DashboardSelectOption[] {
+  const selectedAuthModes = new Set(
+    input.providers.map((provider) => provider.authMode),
+  );
+  return providerAuthModeOrder
+    .filter(
+      (authMode) =>
+        authMode !== "claude_code_oauth" ||
+        input.claudeCodeProviderEnabled ||
+        selectedAuthModes.has(authMode),
+    )
+    .map((authMode) => ({
+      value: authMode,
+      providerAuthMode: authMode,
+      ...providerAuthOptionCopyByAuthMode[authMode],
+    }));
+}
 
 const reasoningEffortOptions = [
   { value: "low", label: "Low", description: "Faster and cheaper." },
@@ -95,11 +136,12 @@ type DashboardSelectOption = {
   readonly value: string;
   readonly label: string;
   readonly description?: string;
+  readonly providerAuthMode?: ProviderAuthMode;
 };
 
 const fieldHelp = {
   providerAuthMode:
-    "Where the review action gets model credentials. Codex OAuth uses the connected Codex subscription; API-key modes use GitHub Actions secrets.",
+    "Where the review action gets model credentials. Subscription modes use GitHub Actions secrets seeded from the provider CLI; API-key modes use provider API keys.",
   model:
     "Model passed to the review runtime. Pick a known model or type a custom model name.",
   reasoningEffort:
@@ -121,37 +163,76 @@ const fieldHelp = {
     "Number of providers that should agree before an inline finding is treated as agreed.",
 } as const;
 
-const defaultCodexProvider = {
-  kind: "codex",
-  authMode: "codex_subscription_oauth",
-  model: "gpt-5.5",
-  reasoningEffort: "medium",
-  agenticContext: true,
-  fastMode: false,
-} satisfies ReviewProviderConfiguration;
+const defaultCodexProvider = getDefaultProviderConfigForAuthMode(
+  "codex_subscription_oauth",
+) satisfies ReviewProviderConfiguration;
 
-const OPENROUTER_API_KEYS_URL = "https://openrouter.ai/workspaces/default/keys";
+const secretCopyByAuthMode = {
+  codex_subscription_oauth: {
+    label: "Codex OAuth",
+    description:
+      "Codex OAuth uses CODEX_AUTH_JSON from GitHub Actions secrets.",
+    commandSuffix: "< ~/.codex/auth.json",
+    recovery:
+      "Run the Codex OAuth setup command from the setup panel, or seed auth.json from a trusted machine.",
+  },
+  codex_openai_api_key: {
+    label: "Codex API key",
+    description:
+      "Codex API-key mode uses OPENAI_API_KEY from GitHub Actions secrets.",
+    commandSuffix: "",
+    recovery: "Create an OpenAI API key, then store it as a GitHub secret.",
+  },
+  claude_code_oauth: {
+    label: "Claude Code subscription",
+    description:
+      "Claude Code subscription mode uses CLAUDE_CODE_OAUTH_TOKEN from GitHub Actions secrets.",
+    commandSuffix: "--app actions",
+    recovery:
+      "Run claude setup-token on a trusted machine, then store only the printed token value.",
+  },
+  openrouter_api_key: {
+    label: "OpenRouter API key",
+    description:
+      "OpenRouter providers use OPENROUTER_API_KEY from GitHub Actions secrets.",
+    commandSuffix: "",
+    recovery: "Create an OpenRouter API key, then store it as a GitHub secret.",
+  },
+} as const satisfies Record<
+  ProviderAuthMode,
+  {
+    readonly label: string;
+    readonly description: string;
+    readonly commandSuffix: string;
+    readonly recovery: string;
+  }
+>;
 
-function OpenRouterSecretNotice({
+function ProviderSecretNotice({
+  authMode,
   repositoryFullName,
   secretCheckTarget,
+  sharedProviderCount = 1,
 }: {
+  readonly authMode: ReviewProviderConfiguration["authMode"];
   readonly repositoryFullName?: string | undefined;
   readonly secretCheckTarget?: RepositorySecretCheckTarget | undefined;
+  readonly sharedProviderCount?: number;
 }): React.ReactElement {
-  const [secretStatus, setSecretStatus] = useState<
-    | "checking"
-    | "available_repository"
-    | "available_organization"
-    | "missing"
-    | "permission_required"
-    | "unknown"
-  >(secretCheckTarget ? "checking" : "missing");
+  const [secretStatus, setSecretStatus] = useState<ProviderSecretStatus>(
+    secretCheckTarget ? "checking" : "missing",
+  );
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const metadata = getSecretMetadata(authMode);
   const command = repositoryFullName
-    ? `gh secret set OPENROUTER_API_KEY --repo ${repositoryFullName}`
-    : "gh secret set OPENROUTER_API_KEY --repo <owner>/<repo>";
+    ? `gh secret set ${metadata.secretName} --repo ${repositoryFullName}${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`
+    : `gh secret set ${metadata.secretName} --repo <owner>/<repo>${metadata.commandSuffix ? ` ${metadata.commandSuffix}` : ""}`;
   const secretWorkspaceId = secretCheckTarget?.workspaceId;
   const secretRepositoryId = secretCheckTarget?.repositoryId;
+  const sharedProviderCopy =
+    sharedProviderCount > 1
+      ? `Checked once for ${sharedProviderCount} providers using ${metadata.label}.`
+      : null;
 
   useEffect(() => {
     if (!secretWorkspaceId || !secretRepositoryId) {
@@ -163,9 +244,18 @@ function OpenRouterSecretNotice({
     const formData = new FormData();
     formData.set("workspaceId", secretWorkspaceId);
     formData.set("repositoryId", secretRepositoryId);
+    formData.set("providerKind", metadata.providerKind);
+    formData.set("authMode", authMode);
     setSecretStatus("checking");
 
-    void checkOpenRouterRepositorySecretClientAction(formData)
+    void checkProviderSecretStatusWithCache({
+      authMode,
+      check: checkProviderRepositorySecretClientAction,
+      formData,
+      forceRefresh: refreshVersion > 0,
+      repositoryId: secretRepositoryId,
+      workspaceId: secretWorkspaceId,
+    })
       .then((result) => {
         if (!cancelled) setSecretStatus(result.status);
       })
@@ -176,7 +266,38 @@ function OpenRouterSecretNotice({
     return () => {
       cancelled = true;
     };
-  }, [secretRepositoryId, secretWorkspaceId]);
+  }, [
+    authMode,
+    metadata.providerKind,
+    refreshVersion,
+    secretRepositoryId,
+    secretWorkspaceId,
+  ]);
+
+  if (secretStatus === "checking") {
+    return (
+      <div
+        role="status"
+        className="rounded-xl border border-cyan-300/25 bg-cyan-300/[0.045] p-3 text-xs leading-5 text-cyan-100"
+      >
+        <p className="inline-flex items-center gap-2 font-semibold text-cyan-50">
+          <span
+            aria-hidden="true"
+            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent"
+          />
+          Checking GitHub Actions secret metadata...
+        </p>
+        <p className="mt-1 text-cyan-100/80">
+          ReviewRouter is checking whether{" "}
+          <code className="font-mono">{metadata.secretName}</code> is available
+          for the selected {metadata.label} provider.
+        </p>
+        {sharedProviderCopy ? (
+          <p className="mt-1 text-cyan-100/70">{sharedProviderCopy}</p>
+        ) : null}
+      </div>
+    );
+  }
 
   if (
     secretStatus === "available_repository" ||
@@ -188,14 +309,21 @@ function OpenRouterSecretNotice({
         className="rounded-xl border border-emerald-300/30 bg-emerald-300/[0.07] p-3 text-xs leading-5 text-emerald-100"
       >
         <p className="font-semibold text-emerald-50">
-          <code className="font-mono">OPENROUTER_API_KEY</code>{" "}
+          <code className="font-mono">{metadata.secretName}</code>{" "}
           {secretStatus === "available_repository"
             ? "is set in this repository's GitHub Actions secrets."
             : "is available to this repository from organization GitHub Actions secrets."}
         </p>
         <p className="mt-1 text-emerald-100/85">
-          OpenRouter providers can use this secret in CI.
+          {metadata.label} can use this secret in CI.
         </p>
+        {sharedProviderCopy ? (
+          <p className="mt-1 text-emerald-100/75">{sharedProviderCopy}</p>
+        ) : null}
+        <SecretRefreshButton
+          busy={false}
+          onRefresh={() => setRefreshVersion((value) => value + 1)}
+        />
       </div>
     );
   }
@@ -206,18 +334,18 @@ function OpenRouterSecretNotice({
       className="rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-xs leading-5 text-amber-100"
     >
       <p className="font-semibold text-amber-50">
-        {secretStatus === "checking" ? (
+        {secretStatus === "not_available_to_repository" ? (
           <>
-            Checking whether{" "}
-            <code className="font-mono">OPENROUTER_API_KEY</code> is available
-            to this repository...
+            An organization{" "}
+            <code className="font-mono">{metadata.secretName}</code> secret
+            exists, but this repository is not selected for access.
           </>
         ) : (
           <>
-            OpenRouter requires{" "}
-            <code className="font-mono">OPENROUTER_API_KEY</code> in{" "}
-            {repositoryFullName ? "this repository's" : "the repository"} GitHub
-            Actions secrets.
+            {metadata.description} Add{" "}
+            <code className="font-mono">{metadata.secretName}</code> as a
+            repository secret or an organization secret available to this
+            repository.
           </>
         )}
       </p>
@@ -228,23 +356,174 @@ function OpenRouterSecretNotice({
         </p>
       ) : null}
       <p className="mt-1 text-amber-100/85">
-        Set it from a terminal opened in the repository directory:
+        Set a repository secret from any terminal where GitHub CLI is
+        authenticated. The command targets this repository with{" "}
+        <code className="font-mono">--repo</code>:
       </p>
+      {sharedProviderCopy ? (
+        <p className="mt-1 text-amber-100/80">{sharedProviderCopy}</p>
+      ) : null}
       <pre className="mt-1.5 overflow-x-auto rounded-md bg-slate-950/80 px-2.5 py-1.5 font-mono text-[11px] leading-5 text-amber-50">
         {command}
       </pre>
       <p className="mt-1.5 text-amber-100/85">
-        Get a key at{" "}
-        <a
-          href={OPENROUTER_API_KEYS_URL}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="font-semibold text-amber-50 underline-offset-4 hover:underline"
-        >
-          openrouter.ai/workspaces/default/keys
-        </a>
-        . Without this secret, OpenRouter providers will fail in CI.
+        {metadata.recovery} Without this secret, this provider will fail in CI.
       </p>
+      {secretStatus === "not_available_to_repository" ? (
+        <p className="mt-1.5 text-amber-100/85">
+          Alternatively, ask an organization owner to open the organization
+          Actions secret and add this repository under Repository access.
+        </p>
+      ) : null}
+      <SecretRefreshButton
+        busy={false}
+        onRefresh={() => setRefreshVersion((value) => value + 1)}
+      />
+    </div>
+  );
+}
+
+function getSecretMetadata(authMode: ProviderAuthMode): {
+  readonly providerKind: ProviderKind;
+  readonly secretName: string;
+  readonly label: string;
+  readonly description: string;
+  readonly commandSuffix: string;
+  readonly recovery: string;
+} {
+  const authMetadata = getProviderAuthModeMetadata(authMode);
+  const secretName = authMetadata.secretNames[0];
+  if (!secretName) {
+    throw new Error(`missing_provider_secret_name:${authMode}`);
+  }
+  return {
+    providerKind: authMetadata.providerKind,
+    secretName,
+    ...secretCopyByAuthMode[authMode],
+  };
+}
+
+function SecretRefreshButton({
+  busy,
+  onRefresh,
+}: {
+  readonly busy: boolean;
+  readonly onRefresh: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={onRefresh}
+      className="mt-2 inline-flex min-h-8 items-center rounded-lg border border-current/25 px-2.5 py-1 text-xs font-semibold transition hover:bg-white/[0.06] disabled:cursor-wait disabled:opacity-60"
+    >
+      Refresh secret status
+    </button>
+  );
+}
+
+export function RepositoryPolicyOverrideDetails({
+  workspaceId,
+  repository,
+  repositoryConfig,
+  effectiveConfig,
+  configVersion,
+  modelOptions,
+  mutationsEnabled,
+  editDisabledReason,
+  claudeCodeProviderEnabled = true,
+  saveAction,
+  clearAction,
+}: {
+  readonly workspaceId: string;
+  readonly repository: RepositoryPolicyEditorRepository;
+  readonly repositoryConfig: RepositoryPolicyEditorConfig;
+  readonly effectiveConfig: ReviewConfiguration;
+  readonly configVersion: number;
+  readonly modelOptions: readonly ReviewModelOption[];
+  readonly mutationsEnabled: boolean;
+  readonly editDisabledReason?: string | undefined;
+  readonly claudeCodeProviderEnabled?: boolean;
+  readonly saveAction: DashboardFormAction;
+  readonly clearAction: DashboardFormAction;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const panelId = `repo-review-config-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const canEdit =
+    mutationsEnabled && repository.selected && !repository.archived;
+
+  return (
+    <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((value) => !value)}
+        className="w-full cursor-pointer rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300/40"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-semibold text-cyan-50">
+              {repository.fullName}
+            </p>
+            <p className="text-xs text-slate-400">
+              {repositoryConfig
+                ? `Repository override / v${configVersion}`
+                : `Inherits workspace default / v${configVersion}`}
+            </p>
+          </div>
+          <span
+            className={[
+              "rounded-full border px-3 py-1 font-mono text-xs font-semibold uppercase tracking-[0.16em]",
+              repositoryConfig
+                ? "border-amber-300/40 bg-amber-300/[0.08] text-amber-100"
+                : "border-emerald-300/30 bg-emerald-300/[0.07] text-emerald-100",
+            ].join(" ")}
+          >
+            {repositoryConfig ? "override" : "inherits"}
+          </span>
+        </div>
+      </button>
+
+      {open ? (
+        <div id={panelId} className="mt-4 space-y-3">
+          <ReviewConfigForm
+            action={saveAction}
+            config={effectiveConfig}
+            modelOptions={modelOptions}
+            claudeCodeProviderEnabled={claudeCodeProviderEnabled}
+            hiddenFields={[
+              { name: "workspaceId", value: workspaceId },
+              { name: "repositoryId", value: repository.id },
+            ]}
+            mutationsEnabled={canEdit}
+            repositoryFullName={repository.fullName}
+            repositorySecretCheckTarget={{
+              workspaceId,
+              repositoryId: repository.id,
+            }}
+            submitLabel={repositoryConfig ? "Update override" : "Save override"}
+          />
+          {!canEdit && editDisabledReason ? (
+            <p className="text-xs leading-5 text-amber-100/85">
+              {editDisabledReason}
+            </p>
+          ) : null}
+          {repositoryConfig ? (
+            <form action={clearAction}>
+              <input type="hidden" name="workspaceId" value={workspaceId} />
+              <input type="hidden" name="repositoryId" value={repository.id} />
+              <FormSubmitButton
+                variant="outline"
+                size="sm"
+                disabled={!canEdit}
+                idleLabel="Inherit workspace default"
+                pendingLabel="Saving..."
+              />
+            </form>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -256,6 +535,8 @@ export function RepositoryPolicyEditor({
   effectiveConfig,
   modelOptions,
   mutationsEnabled,
+  editDisabledReason,
+  claudeCodeProviderEnabled = true,
   compact = false,
 }: {
   readonly workspaceId: string;
@@ -264,6 +545,8 @@ export function RepositoryPolicyEditor({
   readonly effectiveConfig: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
+  readonly editDisabledReason?: string | undefined;
+  readonly claudeCodeProviderEnabled?: boolean;
   readonly compact?: boolean;
 }): React.ReactElement {
   const router = useRouter();
@@ -290,14 +573,20 @@ export function RepositoryPolicyEditor({
   }
 
   return (
-    <div className={compact ? "grid gap-3" : "w-full"}>
+    <div
+      className={
+        compact
+          ? "grid gap-3 justify-items-end"
+          : "grid w-full justify-items-end"
+      }
+    >
       <button
         type="button"
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => setOpen((value) => !value)}
         className={[
-          "flex w-full min-w-0 cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200",
+          "inline-flex max-w-full min-w-0 cursor-pointer list-none items-center justify-between gap-3 rounded-2xl border border-cyan-300/25 px-4 py-3 text-xs font-semibold text-cyan-100 transition duration-200 ease-out hover:-translate-y-0.5 hover:border-cyan-300/50 hover:bg-cyan-300/[0.06] hover:saturate-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-200",
           compact ? "px-3 sm:px-4" : "",
         ].join(" ")}
       >
@@ -316,7 +605,7 @@ export function RepositoryPolicyEditor({
         <div
           id={panelId}
           className={[
-            "mt-4 grid gap-4 px-1 pb-1 sm:px-2",
+            "mt-4 grid w-full justify-self-stretch gap-4 px-1 pb-1 sm:px-2",
             compact ? "col-span-full w-full flex-[1_0_100%]" : "",
           ].join(" ")}
         >
@@ -324,6 +613,7 @@ export function RepositoryPolicyEditor({
             action={saveRepositorySettings}
             config={effectiveConfig}
             modelOptions={modelOptions}
+            claudeCodeProviderEnabled={claudeCodeProviderEnabled}
             hiddenFields={[
               { name: "workspaceId", value: workspaceId },
               { name: "repositoryId", value: repository.id },
@@ -338,6 +628,11 @@ export function RepositoryPolicyEditor({
               repositoryId: repository.id,
             }}
           />
+          {!canEdit && editDisabledReason ? (
+            <p className="text-xs leading-5 text-amber-100/85">
+              {editDisabledReason}
+            </p>
+          ) : null}
 
           {repositoryConfig ? (
             <form action={clearRepositorySettings}>
@@ -401,6 +696,7 @@ export function ReviewConfigForm({
   action,
   config,
   modelOptions,
+  claudeCodeProviderEnabled = true,
   hiddenFields,
   mutationsEnabled,
   submitLabel,
@@ -410,6 +706,7 @@ export function ReviewConfigForm({
   readonly action: DashboardFormAction;
   readonly config: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
+  readonly claudeCodeProviderEnabled?: boolean;
   readonly hiddenFields: readonly {
     readonly name: string;
     readonly value: string;
@@ -430,16 +727,34 @@ export function ReviewConfigForm({
   const [inlineMinAgreement, setInlineMinAgreement] = useState(
     Math.min(config.execution.inlineMinAgreement, initialProviders.length),
   );
+  const providerAuthOptions = useMemo(
+    () =>
+      buildProviderAuthOptions({
+        claudeCodeProviderEnabled,
+        providers,
+      }),
+    [claudeCodeProviderEnabled, providers],
+  );
 
   const modelOptionsByProvider = useMemo(
-    () => ({
+    (): Record<ProviderKind, readonly ReviewModelOption[]> => ({
       codex: modelOptions.filter((option) => option.provider === "codex"),
+      claude: modelOptions.filter((option) => option.provider === "claude"),
       openrouter: modelOptions.filter(
         (option) => option.provider === "openrouter",
       ),
     }),
     [modelOptions],
   );
+  const providerSecretUsageCounts = useMemo(() => {
+    const counts = new Map<ReviewProviderConfiguration["authMode"], number>();
+
+    for (const provider of providers) {
+      counts.set(provider.authMode, (counts.get(provider.authMode) ?? 0) + 1);
+    }
+
+    return counts;
+  }, [providers]);
 
   function updateProvider(
     index: number,
@@ -495,7 +810,8 @@ export function ReviewConfigForm({
     index: number,
     authMode: ReviewProviderConfiguration["authMode"],
   ): void {
-    const kind = authMode === "openrouter_api_key" ? "openrouter" : "codex";
+    const kind = providerKindForAuthMode(authMode);
+    const defaultProvider = getDefaultProviderConfigForAuthMode(authMode);
     const nextOptions = modelOptionsByProvider[kind];
     updateProvider(index, (provider) => ({
       ...provider,
@@ -507,7 +823,19 @@ export function ReviewConfigForm({
         )?.value ??
         firstSelectableModel(nextOptions)?.value ??
         nextOptions[0]?.value ??
-        provider.model,
+        defaultProvider.model,
+      reasoningEffort:
+        kind === "codex" && provider.kind === "codex"
+          ? provider.reasoningEffort
+          : defaultProvider.reasoningEffort,
+      agenticContext:
+        kind === "codex" && provider.kind === "codex"
+          ? provider.agenticContext
+          : defaultProvider.agenticContext,
+      fastMode:
+        kind === "codex" && provider.kind === "codex"
+          ? provider.fastMode
+          : defaultProvider.fastMode,
     }));
   }
 
@@ -547,10 +875,19 @@ export function ReviewConfigForm({
           <div className="grid gap-4">
             {providers.map((provider, index) => {
               const providerOptions = modelOptionsByProvider[provider.kind];
+              const firstProviderWithAuthModeIndex = providers.findIndex(
+                (candidate) => candidate.authMode === provider.authMode,
+              );
+              const showProviderSecretNotice =
+                repositorySecretCheckTarget &&
+                firstProviderWithAuthModeIndex === index;
+
               return (
                 <div
                   key={`${index}:${provider.authMode}`}
-                  className="grid gap-5 rounded-xl border border-cyan-200/20 bg-slate-950/45 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] md:p-5"
+                  className={`grid gap-5 ${
+                    index > 0 ? "border-t border-cyan-200/10 pt-6" : ""
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
@@ -667,10 +1004,14 @@ export function ReviewConfigForm({
                       </>
                     )}
                   </div>
-                  {provider.kind === "openrouter" ? (
-                    <OpenRouterSecretNotice
+                  {showProviderSecretNotice ? (
+                    <ProviderSecretNotice
+                      authMode={provider.authMode}
                       repositoryFullName={repositoryFullName}
                       secretCheckTarget={repositorySecretCheckTarget}
+                      sharedProviderCount={
+                        providerSecretUsageCounts.get(provider.authMode) ?? 1
+                      }
                     />
                   ) : null}
                 </div>
@@ -886,8 +1227,15 @@ function DashboardSelectField({
           ].join(" ")}
         >
           <RadixSelect.Value>
-            <span className="min-w-0 truncate">
-              {selectedOption?.label ?? currentValue}
+            <span className="flex min-w-0 items-center gap-2">
+              {selectedOption?.providerAuthMode ? (
+                <ProviderAuthLogoFrame
+                  authMode={selectedOption.providerAuthMode}
+                />
+              ) : null}
+              <span className="min-w-0 truncate">
+                {selectedOption?.label ?? currentValue}
+              </span>
             </span>
           </RadixSelect.Value>
           <RadixSelect.Icon className="grid h-7 w-7 shrink-0 place-items-center text-cyan-100/80">
@@ -907,11 +1255,14 @@ function DashboardSelectField({
                   key={option.value}
                   value={option.value}
                   textValue={option.label}
-                  className="flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-sm text-slate-300 outline-none transition data-[highlighted]:bg-cyan-300/[0.08] data-[highlighted]:text-cyan-50 data-[state=checked]:bg-cyan-300/[0.1] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                  className="group flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2 text-sm text-slate-300 outline-none transition data-[highlighted]:bg-cyan-300/[0.08] data-[highlighted]:text-cyan-50 data-[state=checked]:bg-cyan-300/[0.1] data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
                 >
                   <RadixSelect.ItemIndicator className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-emerald-300">
                     ✓
                   </RadixSelect.ItemIndicator>
+                  {option.providerAuthMode ? (
+                    <ProviderAuthLogoFrame authMode={option.providerAuthMode} />
+                  ) : null}
                   <RadixSelect.ItemText>
                     <span className="block font-semibold">{option.label}</span>
                     {option.description ? (

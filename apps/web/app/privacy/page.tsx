@@ -24,7 +24,7 @@ const collectedMetadata = [
 const notCollectedByDefault = [
   "repository source code",
   "pull request diffs, prompts, or model responses",
-  "Codex auth.json, refresh tokens, OpenAI API keys, or OpenRouter keys",
+  "Codex auth.json, Claude Code OAuth tokens, OpenAI API keys, or OpenRouter keys",
   "raw GitHub webhook payload bodies after normalization",
   "raw memory source comments, embeddings, or deleted memory bodies in exports",
 ] as const;
@@ -63,6 +63,21 @@ const memoryLifecycleRows = [
   ],
 ] as const;
 
+const privacyBoundary = [
+  {
+    title: "Code path",
+    body: "The repository checkout and review prompt are created inside the customer's GitHub Actions job, not inside ReviewRouter cloud.",
+  },
+  {
+    title: "Model path",
+    body: "When AI review runs, the action calls the provider selected by the customer using credentials controlled by the customer.",
+  },
+  {
+    title: "Control path",
+    body: "ReviewRouter cloud keeps setup metadata, policy, audit, and health state so teams can operate reviews across many repositories.",
+  },
+] as const;
+
 export default function PrivacyPage(): React.ReactElement {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-8 px-6 py-12">
@@ -70,11 +85,12 @@ export default function PrivacyPage(): React.ReactElement {
         <div className="space-y-5">
           <Badge tone="accent">Privacy</Badge>
           <h1 className="max-w-3xl text-5xl font-semibold tracking-tight text-cyan-50 md:text-7xl">
-            Metadata control plane, not code custody.
+            Your code stays in your CI.
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-slate-300">
-            ReviewRouter is designed as a metadata control plane. It keeps
-            setup, model settings, health, and audit state in SaaS while
+            ReviewRouter is designed for complex private codebases where code
+            review needs central policy without centralizing source code. The
+            SaaS keeps setup, model settings, health, and audit state while
             repository code, provider credentials, and review execution stay in
             customer GitHub Actions by default.
           </p>
@@ -98,10 +114,20 @@ export default function PrivacyPage(): React.ReactElement {
           </h2>
           <p className="text-sm leading-6 text-slate-300">
             ReviewRouter SaaS stores metadata needed for setup, config, health,
-            audit, and support diagnostics. Provider credentials and review
-            workloads stay in GitHub Actions or a trusted customer runner.
+            audit, and support diagnostics. Source code, PR diffs, prompts,
+            model responses, provider credentials, and review workloads stay out
+            of ReviewRouter cloud by default.
           </p>
         </Card>
+      </section>
+
+      <section className="grid gap-4 md:grid-cols-3">
+        {privacyBoundary.map((item) => (
+          <Card key={item.title} className="space-y-3 border-lime-300/20">
+            <Badge tone="success">{item.title}</Badge>
+            <p className="text-sm leading-6 text-slate-300">{item.body}</p>
+          </Card>
+        ))}
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">

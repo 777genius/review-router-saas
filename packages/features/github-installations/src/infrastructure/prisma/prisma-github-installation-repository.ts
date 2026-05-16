@@ -59,6 +59,12 @@ export class PrismaGitHubInstallationRepository implements GitHubInstallationRep
           status: snapshot.status,
         },
       });
+
+      await tx.repositoryPermissionCache.deleteMany({
+        where: {
+          githubInstallationId: BigInt(snapshot.githubInstallationId),
+        },
+      });
     });
   }
 
@@ -79,6 +85,9 @@ export class PrismaGitHubInstallationRepository implements GitHubInstallationRep
       await tx.repositoryConnection.updateMany({
         where: { installationId: installation.id },
         data: { selected: false },
+      });
+      await tx.repositoryPermissionCache.deleteMany({
+        where: { githubInstallationId: BigInt(githubInstallationId) },
       });
     });
   }

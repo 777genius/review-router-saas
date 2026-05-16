@@ -4,6 +4,11 @@ import {
   PrismaActionOidcReplayNonceStore,
   pruneExpiredActionOidcReplayNonces,
 } from "@reviewrouter/features-action-control-plane";
+import {
+  OctokitConflictReviewGitHubGateway,
+  PrismaConflictReviewRepository,
+} from "@reviewrouter/features-conflict-review";
+import { createConflictReviewDetectionRequestedHandler } from "@reviewrouter/features-conflict-review/outbox";
 import { PrismaAuditLogRepository } from "@reviewrouter/features-audit-log";
 import {
   OctokitOrgRulesetSetupGateway,
@@ -35,6 +40,8 @@ import {
 import { createInstallationSyncRequestedHandler } from "@reviewrouter/features-repositories/outbox";
 import { createPrismaClient } from "@reviewrouter/platform-db";
 import {
+  isConflictReviewFallbackAllowedForRepository,
+  isConflictReviewFallbackEnabled,
   readGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
@@ -165,7 +172,7 @@ function createOutboxHandlers(
     return memoryHandlers;
   }
 
-  return [
+  const handlers: OutboxHandler[] = [
     ...memoryHandlers,
     createInstallationSyncRequestedHandler({
       github: new OctokitGitHubRepositorySource({
@@ -194,6 +201,30 @@ function createOutboxHandlers(
       runtimeConfigMode: "oidc",
     }),
   ];
+  if (isConflictReviewFallbackEnabled()) {
+    const conflictReviewRolloutPolicy = {
+      isConflictReviewFallbackAllowed(input: {
+        readonly repositoryFullName: string;
+      }) {
+        return isConflictReviewFallbackAllowedForRepository(
+          input.repositoryFullName,
+        );
+      },
+    };
+    handlers.push(
+      createConflictReviewDetectionRequestedHandler({
+        repositories: new PrismaConflictReviewRepository(prisma),
+        github: new OctokitConflictReviewGitHubGateway({
+          appId,
+          privateKey,
+        }),
+        rolloutPolicy: conflictReviewRolloutPolicy,
+        clock,
+        logger,
+      }),
+    );
+  }
+  return handlers;
 }
 
 function createOrgRulesetSetupGatewayFactory(input: {

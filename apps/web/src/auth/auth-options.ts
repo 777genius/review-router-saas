@@ -7,6 +7,7 @@ import {
   PrismaWorkspaceMembershipRepository,
 } from "@reviewrouter/features-auth";
 import { getPrisma } from "../server/prisma";
+import { saveGitHubUserAuthorizationFromAccount } from "../server/github-user-authorization";
 import { readOptionalAuthEnv } from "./auth-env";
 
 export const authOptions: NextAuthOptions = {
@@ -32,9 +33,17 @@ export const authOptions: NextAuthOptions = {
       if (message.account?.provider !== "github") return;
       const prisma = getPrisma();
 
-      await linkGitHubIdentity(parseNextAuthGitHubProfile(message.profile), {
-        users: new PrismaUserRepository(prisma),
-        memberships: new PrismaWorkspaceMembershipRepository(prisma),
+      const principal = await linkGitHubIdentity(
+        parseNextAuthGitHubProfile(message.profile),
+        {
+          users: new PrismaUserRepository(prisma),
+          memberships: new PrismaWorkspaceMembershipRepository(prisma),
+        },
+      );
+      await saveGitHubUserAuthorizationFromAccount({
+        prisma,
+        principal,
+        account: message.account,
       });
     },
   },

@@ -21,6 +21,31 @@ try {
     "provider API key in SaaS env should fail",
   );
 
+  const forbiddenClaudeOAuthEnv = join(tempDir, "forbidden-claude-oauth.env");
+  writeFileSync(
+    forbiddenClaudeOAuthEnv,
+    `${hostedEnv()}\nCLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-example"\n`,
+  );
+  expectStatus(
+    forbiddenClaudeOAuthEnv,
+    1,
+    "Claude Code OAuth token in SaaS env should fail",
+  );
+
+  const forbiddenClaudeAuthTokenEnv = join(
+    tempDir,
+    "forbidden-claude-auth-token.env",
+  );
+  writeFileSync(
+    forbiddenClaudeAuthTokenEnv,
+    `${hostedEnv()}\nANTHROPIC_AUTH_TOKEN="sk-ant-oat01-example"\n`,
+  );
+  expectStatus(
+    forbiddenClaudeAuthTokenEnv,
+    1,
+    "Anthropic auth token in SaaS env should fail",
+  );
+
   const localhostEnv = join(tempDir, "localhost.env");
   writeFileSync(
     localhostEnv,
@@ -70,6 +95,8 @@ function hostedEnv(overrides = {}) {
     GITHUB_APP_CLIENT_ID: "Iv23liHostedSmokeAppClient",
     GITHUB_APP_CLIENT_SECRET: "github-app-client-secret-0123456789abcdef",
     GITHUB_APP_SLUG: "reviewrouter-hosted-smoke",
+    REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY:
+      "token-encryption-secret-0123456789abcdef0123456789abcdef",
     GITHUB_APP_PRIVATE_KEY:
       "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
     GITHUB_WEBHOOK_SECRET: "webhook-secret-0123456789abcdef",

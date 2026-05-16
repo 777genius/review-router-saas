@@ -160,6 +160,11 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       return this.updateSetupPullRequestMetadata(input, existing);
     }
 
+    const closed = await this.findClosedSetupPullRequest(input);
+    if (closed) {
+      return this.reopenSetupPullRequest(input, closed);
+    }
+
     try {
       const { data } = await this.octokit.request(
         "POST /repos/{owner}/{repo}/pulls",
@@ -180,6 +185,10 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       const racedPullRequest = await this.findOpenSetupPullRequest(input);
       if (racedPullRequest) {
         return this.updateSetupPullRequestMetadata(input, racedPullRequest);
+      }
+      const closedPullRequest = await this.findClosedSetupPullRequest(input);
+      if (closedPullRequest) {
+        return this.reopenSetupPullRequest(input, closedPullRequest);
       }
       throw error;
     }
@@ -203,6 +212,25 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
     return parsePullRequest(data);
   }
 
+  private async reopenSetupPullRequest(
+    input: WorkflowSetupGatewayInput,
+    pullRequest: GitHubPullRequest,
+  ): Promise<GitHubPullRequest> {
+    const { data } = await this.octokit.request(
+      "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner: input.owner,
+        repo: input.repo,
+        pull_number: pullRequest.number,
+        title: setupPullRequestTitle,
+        base: input.baseBranch,
+        body: setupPullRequestBody,
+        state: "open",
+      },
+    );
+    return parsePullRequest(data);
+  }
+
   private async findOpenSetupPullRequest(
     input: WorkflowSetupGatewayInput,
   ): Promise<GitHubPullRequest | null> {
@@ -217,11 +245,37 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
     );
     return Array.isArray(data) && data[0] ? parsePullRequest(data[0]) : null;
   }
+
+  private async findClosedSetupPullRequest(
+    input: WorkflowSetupGatewayInput,
+  ): Promise<GitHubPullRequest | null> {
+    const { data } = await this.octokit.request(
+      "GET /repos/{owner}/{repo}/pulls",
+      {
+        owner: input.owner,
+        repo: input.repo,
+        head: `${input.owner}:${input.setupBranch}`,
+        state: "closed",
+      },
+    );
+    if (!Array.isArray(data)) {
+      return null;
+    }
+
+    for (const item of data) {
+      const pullRequest = parsePullRequest(item);
+      if (pullRequest.mergedAt === null) {
+        return pullRequest;
+      }
+    }
+    return null;
+  }
 }
 
 type GitHubPullRequest = {
   readonly html_url: string;
   readonly number: number;
+  readonly mergedAt: string | null;
 };
 
 const setupPullRequestTitle = "chore: add ReviewRouter workflow";
@@ -292,6 +346,7 @@ function parsePullRequest(data: unknown): GitHubPullRequest {
   const pullRequest = data as {
     readonly html_url?: unknown;
     readonly number?: unknown;
+    readonly merged_at?: unknown;
   };
   if (
     typeof pullRequest.html_url !== "string" ||
@@ -302,6 +357,8 @@ function parsePullRequest(data: unknown): GitHubPullRequest {
   return {
     html_url: pullRequest.html_url,
     number: pullRequest.number,
+    mergedAt:
+      typeof pullRequest.merged_at === "string" ? pullRequest.merged_at : null,
   };
 }
 

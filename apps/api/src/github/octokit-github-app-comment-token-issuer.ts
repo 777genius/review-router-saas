@@ -9,6 +9,7 @@ type InstallationTokenResponse = {
   readonly token?: unknown;
   readonly expires_at?: unknown;
   readonly permissions?: {
+    readonly contents?: unknown;
     readonly pull_requests?: unknown;
     readonly issues?: unknown;
   };
@@ -36,6 +37,7 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
         installation_id: Number(input.githubInstallationId),
         repository_ids: [Number(input.githubRepositoryId)],
         permissions: {
+          contents: "read",
           pull_requests: "write",
           issues: "write",
         },
@@ -54,6 +56,7 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
       throw new Error("comment_token_invalid_response");
     }
     if (
+      data.permissions?.contents !== "read" ||
       data.permissions?.pull_requests !== "write" ||
       data.permissions?.issues !== "write"
     ) {
@@ -65,6 +68,7 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
       expiresAt,
       repository: input.repositoryFullName,
       permissions: {
+        contents: "read",
         pullRequests: "write",
         issues: "write",
       },

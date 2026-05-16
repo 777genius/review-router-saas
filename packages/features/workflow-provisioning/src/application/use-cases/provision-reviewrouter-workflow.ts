@@ -20,6 +20,7 @@ export type ProvisionReviewRouterWorkflowDependencies = {
   readonly auditLog?: AuditLogRepositoryPort;
   readonly enabled?: boolean;
   readonly actor?: string;
+  readonly auditMetadata?: Readonly<Record<string, unknown>>;
 };
 
 export async function provisionReviewRouterWorkflow(
@@ -47,7 +48,10 @@ export async function provisionReviewRouterWorkflow(
           action: "workflow.setup_pr_blocked",
           targetType: "repository",
           targetId: plan.repositoryId,
-          metadata: { reason: "workflow_provisioning_disabled" },
+          metadata: {
+            reason: "workflow_provisioning_disabled",
+            ...(dependencies.auditMetadata ?? {}),
+          },
         },
         { auditLog: dependencies.auditLog },
       );
@@ -60,6 +64,7 @@ export async function provisionReviewRouterWorkflow(
     apiUrl: plan.apiUrl,
     runtimeConfigMode: plan.runtimeConfigMode,
     workflowStyle: plan.workflowStyle,
+    conflictReviewFallbackEnabled: plan.conflictReviewFallbackEnabled === true,
     staticRuntimeEnv:
       plan.staticRuntimeEnv ??
       mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
@@ -100,6 +105,7 @@ export async function provisionReviewRouterWorkflow(
             workflowStyle: plan.workflowStyle,
             actionVersion: plan.actionRef,
             pullRequestUrl: pullRequest.url,
+            ...(dependencies.auditMetadata ?? {}),
           },
         },
         { auditLog: dependencies.auditLog },
@@ -134,6 +140,7 @@ export async function provisionReviewRouterWorkflow(
             workflowStyle: plan.workflowStyle,
             actionVersion: plan.actionRef,
             errorSummary: message.slice(0, 500),
+            ...(dependencies.auditMetadata ?? {}),
           },
         },
         { auditLog: dependencies.auditLog },
@@ -150,10 +157,12 @@ function safeWorkflowProvisioningErrorSummary(error: unknown): string {
       "invalid_workflow_action_ref",
       "invalid_reusable_workflow_action_ref",
       "invalid_reusable_workflow_runtime_ref",
+      "invalid_conflict_review_reusable_workflow_runtime_ref",
       "invalid_workflow_api_url",
       "invalid_workflow_env_key",
       "invalid_workflow_env_value",
       "workflow_provisioning_disabled",
+      "conflict_review_explicit_workflow_unsupported",
     ].includes(message)
   ) {
     return message;

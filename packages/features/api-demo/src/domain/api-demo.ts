@@ -9,7 +9,11 @@ export type ApiDemoEndpoint = {
 };
 
 export type ApiDemoProvider = {
-  readonly id: "codex_oauth" | "codex_api_key" | "openrouter_api_key";
+  readonly id:
+    | "codex_oauth"
+    | "codex_api_key"
+    | "claude_code_oauth"
+    | "openrouter_api_key";
   readonly label: string;
   readonly secretLocation: "github_actions_secret";
   readonly sentToSaas: false;
@@ -107,7 +111,7 @@ export function buildApiDemoIndex(input: {
       openapi: `${input.apiUrl}/openapi.json`,
       apiDocs: `${input.apiUrl}/docs`,
       dashboard: `${input.webUrl}/dashboard`,
-      docs: "https://github.com/777genius/review-router-saas",
+      docs: "https://github.com/777genius/review-router",
     },
   };
 }
@@ -143,6 +147,7 @@ export function buildApiDemoDocument(input: {
         "pull request diffs",
         "model prompts or responses by default",
         "Codex OAuth auth.json",
+        "Claude Code OAuth token",
         "provider API keys",
       ],
     },
@@ -162,6 +167,12 @@ export function buildApiDemoDocument(input: {
       {
         id: "codex_api_key",
         label: "Codex/OpenAI API key mode",
+        secretLocation: "github_actions_secret",
+        sentToSaas: false,
+      },
+      {
+        id: "claude_code_oauth",
+        label: "Claude Code subscription OAuth",
         secretLocation: "github_actions_secret",
         sentToSaas: false,
       },
@@ -269,7 +280,7 @@ export function buildApiDemoDocument(input: {
         order: 2,
         title: "Choose provider credentials",
         description:
-          "Store Codex OAuth, OpenAI API key, or OpenRouter API key in GitHub Actions secrets. The hosted control plane does not receive those credentials.",
+          "Store Codex OAuth, Claude Code OAuth, OpenAI API key, or OpenRouter API key in GitHub Actions secrets. The hosted control plane does not receive those credentials.",
       },
       {
         order: 3,
@@ -317,7 +328,7 @@ export function buildApiDemoDocument(input: {
       {
         topic: "Provider credentials",
         guarantee:
-          "Codex OAuth auth.json and provider API keys remain GitHub Actions secrets owned by the target repository or organization.",
+          "Codex OAuth auth.json, Claude Code OAuth tokens, and provider API keys remain GitHub Actions secrets owned by the target repository or organization.",
       },
       {
         topic: "Runtime access",
@@ -346,7 +357,7 @@ export function buildApiDemoDocument(input: {
     links: {
       dashboard: `${input.webUrl}/dashboard`,
       gettingStarted: `${input.webUrl}/getting-started`,
-      docs: "https://github.com/777genius/review-router-saas",
+      docs: "https://github.com/777genius/review-router",
       openapi: `${input.apiUrl}/openapi.json`,
       apiDocs: `${input.apiUrl}/docs`,
       demoMarkdown: `${input.apiUrl}/demo.md`,

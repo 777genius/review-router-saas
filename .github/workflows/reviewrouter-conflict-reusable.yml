@@ -1,0 +1,150 @@
+name: ReviewRouter Conflict Runtime
+
+on:
+  workflow_call:
+    inputs:
+      runtime_ref:
+        required: true
+        type: string
+      api_url:
+        required: true
+        type: string
+      runtime_config_mode:
+        required: true
+        type: string
+      static_runtime_env_json:
+        required: false
+        type: string
+        default: "{}"
+      pr_number:
+        required: true
+        type: string
+      review_kind:
+        required: true
+        type: string
+      conflict_repository_id:
+        required: true
+        type: string
+      conflict_dispatch_event_type:
+        required: true
+        type: string
+      conflict_dispatch_id:
+        required: true
+        type: string
+      conflict_dispatch_nonce:
+        required: true
+        type: string
+      conflict_head_sha:
+        required: true
+        type: string
+      conflict_base_ref:
+        required: true
+        type: string
+      conflict_base_sha:
+        required: true
+        type: string
+    secrets:
+      CODEX_AUTH_JSON:
+        required: false
+      CODEX_CONFIG_TOML:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+
+permissions: {}
+
+jobs:
+  conflict-review:
+    name: conflict review
+    if: ${{ inputs.review_kind == 'conflict-head' && inputs.runtime_config_mode == 'oidc' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      REVIEWROUTER_API_URL: ${{ inputs.api_url }}
+      REVIEWROUTER_ACTION_VERSION: ${{ inputs.runtime_ref }}
+      REVIEWROUTER_OIDC_AUDIENCE: reviewrouter
+      REVIEW_ROUTER_TARGET_WORKSPACE: ${{ github.workspace }}/reviewrouter-target
+      INPUT_STATIC_RUNTIME_ENV_JSON: ${{ inputs.static_runtime_env_json }}
+      INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+      INPUT_CONFLICT_REPOSITORY_ID: ${{ inputs.conflict_repository_id }}
+      INPUT_CONFLICT_DISPATCH_EVENT_TYPE: ${{ inputs.conflict_dispatch_event_type }}
+      INPUT_CONFLICT_DISPATCH_ID: ${{ inputs.conflict_dispatch_id }}
+      INPUT_CONFLICT_DISPATCH_NONCE: ${{ inputs.conflict_dispatch_nonce }}
+      INPUT_CONFLICT_HEAD_SHA: ${{ inputs.conflict_head_sha }}
+      INPUT_CONFLICT_BASE_REF: ${{ inputs.conflict_base_ref }}
+      INPUT_CONFLICT_BASE_SHA: ${{ inputs.conflict_base_sha }}
+      CODEX_AUTH_JSON_PRESENT: ${{ secrets.CODEX_AUTH_JSON != '' && '1' || '0' }}
+      OPENAI_API_KEY_PRESENT: ${{ secrets.OPENAI_API_KEY != '' && '1' || '0' }}
+    steps:
+      - name: Validate conflict runtime ref
+        shell: bash
+        env:
+          REVIEWROUTER_RUNTIME_REF: ${{ inputs.runtime_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REVIEWROUTER_RUNTIME_REF" =~ ^(v1(\.[0-9]+\.[0-9]+)?|[a-fA-F0-9]{40})$ ]]; then
+            echo "::error::runtime_ref must be a v1 release tag or full commit SHA for conflict runtime"
+            exit 1
+          fi
+
+      - name: Checkout trusted ReviewRouter runtime
+        uses: actions/checkout@v6
+        with:
+          repository: 777genius/review-router-saas
+          ref: ${{ inputs.runtime_ref }}
+          path: .reviewrouter-runtime
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Build conflict runtime
+        shell: bash
+        working-directory: .reviewrouter-runtime
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm --filter @reviewrouter/platform-db db:generate
+          pnpm --filter @reviewrouter/features-conflict-runtime... build
+          node scripts/rewrite-dist-esm-imports.mjs
+
+      - name: Preflight conflict runtime before PR checkout
+        shell: bash
+        working-directory: .reviewrouter-runtime
+        env:
+          REVIEW_ROUTER_CONFLICT_SESSION_FILE: ${{ runner.temp }}/reviewrouter-conflict/session.json
+        run: |
+          set -euo pipefail
+          node --conditions=production packages/features/conflict-runtime/dist/interface/cli/reviewrouter-conflict-runtime.js preflight
+
+      - name: Checkout exact conflict head
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.conflict_head_sha }}
+          fetch-depth: 0
+          path: reviewrouter-target
+          persist-credentials: false
+
+      - name: Install Codex CLI
+        if: ${{ env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' }}
+        shell: bash
+        run: npm install -g @openai/codex@0.125.0
+
+      - name: Run conflict review runtime
+        shell: bash
+        working-directory: .reviewrouter-runtime
+        env:
+          REVIEW_ROUTER_CONFLICT_SESSION_FILE: ${{ runner.temp }}/reviewrouter-conflict/session.json
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_CONFIG_TOML: ${{ secrets.CODEX_CONFIG_TOML }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          node --conditions=production packages/features/conflict-runtime/dist/interface/cli/reviewrouter-conflict-runtime.js run

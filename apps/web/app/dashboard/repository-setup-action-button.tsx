@@ -90,7 +90,9 @@ export function RepositorySetupActionButton({
             <span>
               {setupStatus === "setup_pr_open"
                 ? "Updating setup PR..."
-                : "Creating setup PR..."}
+                : setupStatus === "needs_attention"
+                  ? "Recreating setup PR..."
+                  : "Creating setup PR..."}
             </span>
           </span>
         ) : workflowCurrent ? (
@@ -218,9 +220,9 @@ function SetupPrIcon(): ReactElement {
 }
 
 function setupPrButtonLabel(setupStatus: string): string {
-  return setupStatus === "setup_pr_open"
-    ? "Update setup PR"
-    : "Create setup PR";
+  if (setupStatus === "setup_pr_open") return "Update setup PR";
+  if (setupStatus === "needs_attention") return "Recreate setup PR";
+  return "Create setup PR";
 }
 
 function buildDashboardMutationUrl(params: Record<string, string>): string {

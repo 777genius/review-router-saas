@@ -34,10 +34,14 @@ const requiredPermissions = {
   issues: "write",
   secrets: "read",
   organization_secrets: "read",
+  organization_plan: "read",
   statuses: "write",
   metadata: "read",
 };
-const organizationOnlyPermissions = new Set(["organization_secrets"]);
+const organizationOnlyPermissions = new Set([
+  "organization_secrets",
+  "organization_plan",
+]);
 const requiredWebhookEvents = [
   "check_run",
   "issue_comment",

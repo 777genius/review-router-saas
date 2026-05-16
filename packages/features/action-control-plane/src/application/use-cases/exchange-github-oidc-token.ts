@@ -8,6 +8,12 @@ import {
   type GitHubActionsOidcClaims,
 } from "../../domain/action-control-plane.js";
 import type { ActionOidcReplayNonceStorePort } from "../ports/action-oidc-replay-nonce-store-port.js";
+import type {
+  ActionConflictReviewDispatchPayload,
+  ActionConflictReviewExchangeVerifierPort,
+} from "../ports/action-conflict-review-exchange-verifier-port.js";
+import type { ActionConflictReviewRuntimeGatePort } from "../ports/action-conflict-review-runtime-gate-port.js";
+import { runtimeReviewConfigurationSnapshotId } from "../ports/action-control-plane-repository-port.js";
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
 import type { ActionRateLimitPolicyPort } from "../ports/action-rate-limit-policy-port.js";
@@ -21,11 +27,17 @@ export type ExchangeGitHubOidcTokenDependencies = {
   readonly entitlements?: ActionEntitlementPolicyPort;
   readonly rateLimits?: ActionRateLimitPolicyPort;
   readonly replayNonces?: ActionOidcReplayNonceStorePort;
+  readonly conflictReviews?: ActionConflictReviewExchangeVerifierPort;
+  readonly conflictReviewRuntimeGate?: ActionConflictReviewRuntimeGatePort;
   readonly clock: Clock;
 };
 
 export async function exchangeGitHubOidcToken(
-  input: { readonly oidcToken: string; readonly audience: string },
+  input: {
+    readonly oidcToken: string;
+    readonly audience: string;
+    readonly conflictDispatchPayload?: ActionConflictReviewDispatchPayload;
+  },
   dependencies: ExchangeGitHubOidcTokenDependencies,
 ): Promise<{
   readonly protocolVersion: 1;
@@ -47,18 +59,17 @@ export async function exchangeGitHubOidcToken(
   }
 
   validateOidcClaimsAgainstRepository({ claims, repository });
-  await dependencies.entitlements?.assertActionControlPlaneAllowed({
-    workspaceId: repository.workspaceId,
-    repositoryId: repository.repositoryId,
-    repositoryFullName: repository.fullName,
-  });
   const issuedAt = dependencies.clock.now();
   await consumeOidcReplayNonceIfConfigured({
     claims,
     issuedAt,
     replayNonces: dependencies.replayNonces,
   });
-
+  await dependencies.entitlements?.assertActionControlPlaneAllowed({
+    workspaceId: repository.workspaceId,
+    repositoryId: repository.repositoryId,
+    repositoryFullName: repository.fullName,
+  });
   await dependencies.rateLimits?.assertOidcExchangeAllowed({
     workspaceId: repository.workspaceId,
     repositoryId: repository.repositoryId,
@@ -67,6 +78,32 @@ export async function exchangeGitHubOidcToken(
     githubActorLogin: claims.actor,
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
+  });
+  if (claims.event_name === "repository_dispatch") {
+    await dependencies.conflictReviewRuntimeGate?.assertConflictReviewRuntimeEnabled(
+      {
+        phase: "session_exchange",
+        workspaceId: repository.workspaceId,
+        repositoryId: repository.repositoryId,
+        repositoryFullName: repository.fullName,
+      },
+    );
+  }
+  const configSnapshotId =
+    claims.event_name === "repository_dispatch"
+      ? runtimeReviewConfigurationSnapshotId(
+          await dependencies.repositories.findRuntimeReviewConfiguration({
+            workspaceId: repository.workspaceId,
+            repositoryId: repository.repositoryId,
+          }),
+        )
+      : undefined;
+  const conflictReview = await verifyConflictReviewExchangeIfNeeded({
+    claims,
+    conflictDispatchPayload: input.conflictDispatchPayload,
+    conflictReviews: dependencies.conflictReviews,
+    configSnapshotId,
+    exchangedAt: issuedAt,
   });
 
   const sessionClaims: ActionSessionClaims = {
@@ -78,6 +115,17 @@ export async function exchangeGitHubOidcToken(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     eventName: claims.event_name,
+    ...(conflictReview
+      ? {
+          reviewKind: conflictReview.reviewKind,
+          conflictDispatchId: conflictReview.dispatchId,
+          pullRequestNumber: conflictReview.pullRequestNumber,
+          headSha: conflictReview.headSha,
+          baseRef: conflictReview.baseRef,
+          baseSha: conflictReview.baseSha,
+          configSnapshotId: configSnapshotId!,
+        }
+      : {}),
     protocolVersion: 1,
   };
 
@@ -93,6 +141,40 @@ export async function exchangeGitHubOidcToken(
     expiresAt: session.expiresAt.toISOString(),
     repository: repository.fullName,
   };
+}
+
+async function verifyConflictReviewExchangeIfNeeded(input: {
+  readonly claims: GitHubActionsOidcClaims;
+  readonly conflictDispatchPayload:
+    | ActionConflictReviewDispatchPayload
+    | undefined;
+  readonly conflictReviews:
+    | ActionConflictReviewExchangeVerifierPort
+    | undefined;
+  readonly configSnapshotId: string | undefined;
+  readonly exchangedAt: Date;
+}) {
+  if (input.claims.event_name !== "repository_dispatch") {
+    if (input.conflictDispatchPayload) {
+      throw new Error("conflict_review_payload_not_allowed");
+    }
+    return null;
+  }
+  if (!input.conflictDispatchPayload) {
+    throw new Error("conflict_review_payload_required");
+  }
+  if (!input.conflictReviews) {
+    throw new Error("conflict_review_exchange_unavailable");
+  }
+  if (!input.configSnapshotId) {
+    throw new Error("conflict_review_config_snapshot_required");
+  }
+  return input.conflictReviews.verifyConflictReviewExchange({
+    claims: input.claims,
+    dispatchPayload: input.conflictDispatchPayload,
+    configSnapshotId: input.configSnapshotId,
+    exchangedAt: input.exchangedAt,
+  });
 }
 
 async function consumeOidcReplayNonceIfConfigured(input: {

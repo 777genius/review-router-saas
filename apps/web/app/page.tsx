@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import { Badge, LinkButton } from "@reviewrouter/ui";
+import { Database, KeyRound, ShieldCheck } from "lucide-react";
 import { LoadingLinkButton } from "./loading-link-button";
 import { GitHubAppInstallPermissionDialog } from "./github-app-install-permission-dialog";
+import { CompareSection } from "./compare-section";
 import {
   getDashboardMutationStatus,
   getDashboardWorkspaceScope,
@@ -17,7 +18,7 @@ import {
 } from "./seo";
 
 export const metadata: Metadata = createPublicPageMetadata({
-  title: "Privacy-first AI code review in CI",
+  title: "Free privacy-first AI code review in CI",
   description: defaultSeoDescription,
   path: "/",
 });
@@ -26,28 +27,48 @@ const setupSteps = [
   {
     title: "Install GitHub App",
     body: "Choose one repository, selected repositories, or an organization. ReviewRouter syncs metadata, not source code.",
-    badge: "Step 1",
+    badge: "STEP 1",
+    number: "1",
+    className: "setup-blueprint__step--one",
+    nodeClassName: "setup-blueprint__node--one",
   },
   {
     title: "Merge setup PR",
     body: "A compact reusable workflow is added through a pull request, so your repository controls what runs in CI.",
-    badge: "Step 2",
+    badge: "STEP 2",
+    number: "2",
+    className: "setup-blueprint__step--two",
+    nodeClassName: "setup-blueprint__node--two",
   },
   {
     title: "Connect provider",
-    body: "Run one local command to seed Codex OAuth or API keys directly into GitHub Actions secrets.",
-    badge: "Step 3",
+    body: "Run one local command to seed Codex OAuth, Claude Code OAuth, or API keys directly into GitHub Actions secrets.",
+    badge: "STEP 3",
+    number: "3",
+    className: "setup-blueprint__step--three",
+    nodeClassName: "setup-blueprint__node--three",
   },
 ] as const;
 
-const supportBadges = [
-  "Privacy-first",
-  "Codex OAuth",
-  "OpenAI API key",
-  "OpenRouter",
-  "No code custody",
-  "Personal repos",
-  "Organizations",
+const setupSignals = [
+  {
+    title: "Data access",
+    body: "Metadata only",
+    className: "setup-blueprint__signal--data",
+    icon: Database,
+  },
+  {
+    title: "Repo owned",
+    body: "You control CI",
+    className: "setup-blueprint__signal--repo",
+    icon: ShieldCheck,
+  },
+  {
+    title: "Secrets synced",
+    body: "Stored in GitHub Actions secrets",
+    className: "setup-blueprint__signal--secrets",
+    icon: KeyRound,
+  },
 ] as const;
 
 const structuredData = {
@@ -105,129 +126,346 @@ export default async function HomePage(): Promise<React.ReactElement> {
   const primaryLabel = hasConnectedApp
     ? "Open dashboard"
     : "Install GitHub App";
-  const secondaryHref =
-    hasConnectedApp && appInstallUrl ? appInstallUrl : "/getting-started";
-  const secondaryLabel =
-    hasConnectedApp && appInstallUrl ? "Manage App access" : "See setup steps";
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 md:py-10">
+    <main className="home-shell flex min-h-screen w-full flex-col gap-8 overflow-hidden pb-8 md:pb-10">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
-      <section className="relative px-1 py-8 sm:px-4 sm:py-10 lg:px-8">
-        <div className="relative mx-auto flex max-w-5xl flex-col items-center text-center">
-          <div className="pointer-events-none absolute left-1/2 top-0 h-72 w-72 -translate-x-1/2 rounded-full bg-cyan-300/12 blur-3xl" />
-          <div className="pointer-events-none absolute right-4 top-44 h-56 w-56 rounded-full bg-fuchsia-400/10 blur-3xl" />
-          <Badge tone="success">Setup in 5 minutes</Badge>
-          <h1 className="mt-6 max-w-5xl text-4xl font-extrabold leading-[0.98] text-cyan-50 [overflow-wrap:anywhere] sm:text-6xl md:text-7xl">
-            Privacy-first AI code review that stays inside your CI
+      <section
+        aria-labelledby="setup-blueprint-title"
+        className="setup-blueprint mx-auto w-full"
+      >
+        <BlueprintLines />
+
+        <div className="setup-blueprint__intro">
+          <p className="setup-blueprint__eyebrow">ReviewRouter Setup ///</p>
+          <h1 id="setup-blueprint-title">
+            Free privacy-first
+            <br />
+            AI code review
+            <br />
+            that stays inside your CI
           </h1>
-          <p className="mt-5 max-w-3xl text-base leading-7 text-slate-300 [overflow-wrap:anywhere] sm:text-xl sm:leading-8">
-            Install the GitHub App, merge one compact workflow PR, then connect
-            Codex, OpenAI, or OpenRouter directly to GitHub Actions secrets.
-            Code, PR diffs, prompts, and provider credentials stay out of the
-            SaaS by default.
+          <span aria-hidden="true" className="setup-blueprint__intro-rule" />
+          <p>
+            Connect your repository, add the workflow, and enable secure access
+            for free.
           </p>
-
-          <div className="mt-7 grid w-full max-w-xl gap-3 sm:flex sm:justify-center">
-            {!hasConnectedApp && appInstallUrl ? (
-              <GitHubAppInstallPermissionDialog
-                href={appInstallUrl}
-                size="lg"
-                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
-              >
-                {primaryLabel}
-              </GitHubAppInstallPermissionDialog>
-            ) : (
-              <LoadingLinkButton
-                href={primaryHref}
-                size="lg"
-                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
-                pendingLabel={
-                  hasConnectedApp ? "Opening dashboard..." : "Opening setup..."
-                }
-              >
-                {primaryLabel}
-              </LoadingLinkButton>
-            )}
-            {hasConnectedApp && appInstallUrl ? (
-              <GitHubAppInstallPermissionDialog
-                href={appInstallUrl}
-                variant="outline"
-                size="lg"
-                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
-                continueLabel="Continue to GitHub App access"
-              >
-                {secondaryLabel}
-              </GitHubAppInstallPermissionDialog>
-            ) : (
-              <LoadingLinkButton
-                href={secondaryHref}
-                variant="outline"
-                size="lg"
-                className="min-h-14 w-full rounded-2xl px-8 text-base sm:w-auto"
-                pendingLabel="Opening guide..."
-              >
-                {secondaryLabel}
-              </LoadingLinkButton>
-            )}
-          </div>
-
-          <div className="mt-6 flex max-w-3xl flex-wrap justify-center gap-2 text-sm text-slate-400">
-            {supportBadges.map((badge) => (
-              <span
-                key={badge}
-                className="rounded-full border border-cyan-200/10 bg-cyan-300/[0.045] px-3 py-1.5"
-              >
-                {badge}
-              </span>
-            ))}
-          </div>
-
-          <div className="mt-9 grid w-full gap-4 md:grid-cols-3">
-            {setupSteps.map((item) => (
-              <div
-                key={item.title}
-                className="group min-h-56 rounded-[2rem] border border-white/10 bg-white/[0.035] p-6 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.035)] transition hover:-translate-y-1 hover:border-cyan-200/25 hover:bg-cyan-300/[0.055] sm:p-7"
-              >
-                <Badge tone="neutral">{item.badge}</Badge>
-                <h2 className="mt-6 text-2xl font-semibold text-cyan-50">
-                  {item.title}
-                </h2>
-                <p className="mt-4 text-base leading-7 text-slate-300">
-                  {item.body}
-                </p>
-              </div>
-            ))}
-          </div>
         </div>
-      </section>
 
-      <section className="rounded-[2rem] border border-cyan-300/[0.12] bg-[#0a0a0f]/72 p-6 shadow-[0_20px_90px_-58px_rgba(0,240,255,0.7)] sm:p-8">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-          <div className="min-w-0">
-            <Badge tone="accent">Privacy boundary</Badge>
-            <h2 className="mt-4 text-2xl font-semibold text-cyan-50">
-              Control plane for AI PR review. No code custody by default.
-            </h2>
-            <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-300 sm:text-base sm:leading-7">
-              ReviewRouter stores installation metadata, model settings, health,
-              and audit state. It does not store code, PR diffs, prompts, Codex
-              OAuth files, or provider API keys.
+        {setupSteps.map((item) => (
+          <div
+            className={`setup-blueprint__node ${item.nodeClassName}`}
+            key={item.number}
+          >
+            <span>{item.number}</span>
+          </div>
+        ))}
+
+        {setupSteps.map((item) => (
+          <article
+            className={`setup-blueprint__step ${item.className}`}
+            key={item.title}
+          >
+            <p className="setup-blueprint__step-label">
+              {item.badge}
+              <span aria-hidden="true" />
             </p>
-          </div>
-          <div className="grid gap-3 sm:flex lg:justify-end">
-            <LinkButton href="/security" variant="outline" size="lg">
-              Security model
-            </LinkButton>
-            <LinkButton href="/getting-started" variant="outline" size="lg">
-              Setup guide
-            </LinkButton>
-          </div>
+            <h2>{item.title}</h2>
+            <p>{item.body}</p>
+          </article>
+        ))}
+
+        <div className="setup-blueprint__mobile-steps">
+          {setupSteps.map((item) => (
+            <article className="setup-blueprint__mobile-step" key={item.title}>
+              <div
+                className={`setup-blueprint__mobile-node setup-blueprint__mobile-node--${item.number}`}
+              >
+                <span>{item.number}</span>
+              </div>
+              <div>
+                <p className="setup-blueprint__step-label">
+                  {item.badge}
+                  <span aria-hidden="true" />
+                </p>
+                <h2>{item.title}</h2>
+                <p>{item.body}</p>
+              </div>
+            </article>
+          ))}
         </div>
+
+        {setupSignals.map((signal) => {
+          const Icon = signal.icon;
+
+          return (
+            <div
+              className={`setup-blueprint__signal ${signal.className}`}
+              key={signal.title}
+            >
+              <Icon aria-hidden="true" size={28} strokeWidth={1.65} />
+              <span>
+                <strong>{signal.title}</strong>
+                <small>{signal.body}</small>
+              </span>
+            </div>
+          );
+        })}
+
+        <div className="setup-blueprint__cta">
+          {!hasConnectedApp && appInstallUrl ? (
+            <GitHubAppInstallPermissionDialog
+              href={appInstallUrl}
+              size="lg"
+              className="home-install-cta setup-blueprint__install-cta"
+            >
+              {primaryLabel}
+            </GitHubAppInstallPermissionDialog>
+          ) : (
+            <LoadingLinkButton
+              href={primaryHref}
+              size="lg"
+              className="home-install-cta setup-blueprint__install-cta"
+              pendingLabel={
+                hasConnectedApp ? "Opening dashboard..." : "Opening setup..."
+              }
+            >
+              {primaryLabel}
+            </LoadingLinkButton>
+          )}
+        </div>
+
+        <span aria-hidden="true" className="setup-blueprint__version">
+          RR
+          <br />
+          v1.0
+        </span>
       </section>
+
+      <CompareSection />
     </main>
+  );
+}
+
+function BlueprintLines(): React.ReactElement {
+  return (
+    <svg
+      aria-hidden="true"
+      className="setup-blueprint__lines"
+      fill="none"
+      preserveAspectRatio="none"
+      viewBox="0 0 2058 764"
+    >
+      <defs>
+        <pattern
+          id="setup-blueprint-dots"
+          width="24"
+          height="24"
+          patternUnits="userSpaceOnUse"
+        >
+          <circle cx="2" cy="2" fill="rgba(103, 232, 249, 0.34)" r="1.15" />
+        </pattern>
+        <linearGradient
+          id="setup-blueprint-cyan"
+          x1="30"
+          x2="1450"
+          y1="500"
+          y2="180"
+        >
+          <stop stopColor="#63dfff" stopOpacity="0.56" />
+          <stop offset="0.52" stopColor="#6bdfff" stopOpacity="0.98" />
+          <stop offset="1" stopColor="#9cebff" stopOpacity="0.78" />
+        </linearGradient>
+        <linearGradient
+          id="setup-blueprint-lime"
+          x1="1465"
+          x2="1955"
+          y1="190"
+          y2="92"
+        >
+          <stop stopColor="#6bdfff" stopOpacity="0.78" />
+          <stop offset="1" stopColor="#9cebff" stopOpacity="0.9" />
+        </linearGradient>
+        <filter
+          id="setup-blueprint-glow"
+          x="-20%"
+          y="-80%"
+          width="140%"
+          height="260%"
+        >
+          <feGaussianBlur stdDeviation="2.4" />
+        </filter>
+        <marker
+          id="setup-blueprint-arrow"
+          markerHeight="12"
+          markerWidth="14"
+          orient="auto"
+          refX="11"
+          refY="6"
+        >
+          <path d="M0 0 12 6 0 12 3 6Z" fill="#73ddff" />
+        </marker>
+        <marker
+          id="setup-blueprint-arrow-lime"
+          markerHeight="12"
+          markerWidth="14"
+          orient="auto"
+          refX="11"
+          refY="6"
+        >
+          <path d="M0 0 12 6 0 12 3 6Z" fill="#73ddff" />
+        </marker>
+      </defs>
+
+      <rect
+        fill="url(#setup-blueprint-dots)"
+        height="78"
+        opacity="0.22"
+        width="660"
+        x="698"
+        y="62"
+      />
+      <rect
+        fill="url(#setup-blueprint-dots)"
+        height="320"
+        opacity="0.14"
+        width="452"
+        x="1434"
+        y="58"
+      />
+      <rect
+        fill="url(#setup-blueprint-dots)"
+        height="88"
+        opacity="0.12"
+        width="1020"
+        x="816"
+        y="574"
+      />
+
+      <path
+        d="M35 25V684L91 660H545L584 635"
+        stroke="rgba(148, 163, 184, 0.34)"
+        strokeWidth="2"
+      />
+      <path
+        d="M1998 49V742"
+        stroke="rgba(148, 163, 184, 0.35)"
+        strokeWidth="2"
+      />
+      <path
+        d="M23 37H58M35 25V50"
+        stroke="rgba(203, 213, 225, 0.72)"
+        strokeWidth="2"
+      />
+      <path
+        d="M1987 470H2012M1999 457V483"
+        stroke="rgba(203, 213, 225, 0.48)"
+        strokeWidth="2"
+      />
+      <circle
+        cx="35"
+        cy="37"
+        r="4"
+        stroke="rgba(203, 213, 225, 0.75)"
+        strokeWidth="2"
+      />
+      <circle cx="35" cy="428" r="3" fill="rgba(203, 213, 225, 0.7)" />
+
+      <path
+        className="setup-blueprint__trace-glow"
+        d="M32 497 199 450 329 376H652L710 354 840 324 969 248H1244L1338 210 1465 191"
+        stroke="#dfff67"
+        strokeOpacity="0.35"
+        strokeWidth="6"
+        filter="url(#setup-blueprint-glow)"
+      />
+      <path
+        className="setup-blueprint__trace setup-blueprint__trace--cyan"
+        d="M32 497 199 450 329 376H652L710 354 840 324 969 248H1244L1338 210 1465 191"
+        markerEnd="url(#setup-blueprint-arrow)"
+        stroke="url(#setup-blueprint-cyan)"
+        strokeWidth="2.4"
+      />
+      <path
+        className="setup-blueprint__trace setup-blueprint__trace--lime"
+        d="M1338 210 1465 191 1658 92H1934"
+        markerEnd="url(#setup-blueprint-arrow-lime)"
+        stroke="url(#setup-blueprint-lime)"
+        strokeWidth="2.4"
+      />
+      <path
+        d="M199 490V660M840 365V532M1465 235V402"
+        stroke="#66dfff"
+        strokeOpacity="0.9"
+        strokeWidth="2.2"
+      />
+      <path
+        d="M1465 235V402"
+        stroke="#66dfff"
+        strokeOpacity="0.55"
+        strokeWidth="2.2"
+      />
+
+      <path
+        d="M91 660H545L869 532H1154L1465 402H1860"
+        stroke="rgba(226, 232, 240, 0.78)"
+        strokeWidth="2"
+      />
+      <path
+        d="M228 635H584L632 660H545M743 533H1195L1204 503M1492 374H1860L1849 398H1465"
+        stroke="rgba(103, 232, 249, 0.18)"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M710 354 772 287H1007M1272 531 1465 134 1840 135 1998 92 1860 402"
+        stroke="rgba(103, 232, 249, 0.11)"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M1418 430H1856M1489 374H1860M1148 139H1330M1468 82H1710M1710 82 1732 60H1934"
+        stroke="rgba(148, 163, 184, 0.16)"
+        strokeWidth="1.5"
+      />
+      <path
+        className="setup-blueprint__scan-lines"
+        d="M28 710H119M530 310H696M1004 552H1168M1465 458H1834"
+        stroke="rgba(103, 232, 249, 0.13)"
+        strokeDasharray="4 10"
+        strokeWidth="1.4"
+      />
+
+      <circle
+        className="setup-blueprint__anchor"
+        cx="199"
+        cy="660"
+        r="8"
+        stroke="#61ddff"
+        strokeWidth="3"
+      />
+      <circle
+        className="setup-blueprint__anchor"
+        cx="840"
+        cy="532"
+        r="8"
+        stroke="#61ddff"
+        strokeWidth="3"
+      />
+      <circle
+        className="setup-blueprint__anchor setup-blueprint__anchor--lime"
+        cx="1465"
+        cy="402"
+        r="8"
+        stroke="#61ddff"
+        strokeWidth="3"
+      />
+      <path
+        d="M201 660H223M842 532H865M1467 402H1490"
+        stroke="rgba(226, 232, 240, 0.56)"
+        strokeWidth="1.5"
+      />
+    </svg>
   );
 }

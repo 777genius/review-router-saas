@@ -122,6 +122,12 @@ describe("provisionReviewRouterWorkflow", () => {
       "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).not.toContain(
+      "repository_dispatch:",
+    );
+    expect(files.get(".github/workflows/reviewrouter.yml")).not.toContain(
+      "conflict_dispatch_id:",
+    );
+    expect(files.get(".github/workflows/reviewrouter.yml")).not.toContain(
       "pull_request_review_comment:",
     );
     expect(
@@ -185,6 +191,47 @@ describe("provisionReviewRouterWorkflow", () => {
     expect(auditLog.events).toContainEqual(
       expect.objectContaining({ action: "workflow.setup_pr_blocked" }),
     );
+  });
+
+  it("adds conflict fallback workflow surface only when the rollout flag is passed", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+
+    await provisionReviewRouterWorkflow(
+      {
+        workspaceId: "workspace-1",
+        repositoryId: "repo-1",
+        owner: "777genius",
+        name: "example",
+        defaultBranch: "main",
+        actionRef: "777genius/review-router@v1",
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+        conflictReviewFallbackEnabled: true,
+      },
+      { setupGateway: gateway, provisioning },
+    );
+
+    const reviewWorkflow = gateway.input?.workflowFiles.find(
+      (file) => file.path === ".github/workflows/reviewrouter.yml",
+    )?.content;
+    expect(reviewWorkflow).toContain("repository_dispatch:");
+    expect(reviewWorkflow).toContain("conflict-review:");
+    expect(reviewWorkflow).toContain(
+      "if: ${{ github.event_name != 'repository_dispatch' }}",
+    );
+    expect(reviewWorkflow).toContain(
+      "github.event_name == 'repository_dispatch' && github.event.action == 'reviewrouter_conflict_review'",
+    );
+    expect(reviewWorkflow).toContain(
+      [
+        "    permissions:",
+        "      contents: read",
+        "      id-token: write",
+      ].join("\n"),
+    );
+    expect(reviewWorkflow).toContain("conflict_dispatch_event_type:");
+    expect(reviewWorkflow).toContain("conflict_dispatch_id:");
   });
 
   it("persists safe GitHub failure summaries without raw adapter details", async () => {

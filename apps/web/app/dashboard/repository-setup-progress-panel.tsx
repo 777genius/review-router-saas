@@ -8,6 +8,13 @@ import {
   RepositorySetupActionButton,
   RepositorySetupMergedButton,
 } from "./repository-setup-action-button";
+import {
+  providerSetupConfirmedEventName,
+  setupPullRequestMergedEvent,
+  setupPullRequestMergedEventName,
+  type ProviderSetupConfirmedEventDetail,
+  type SetupPullRequestMergedEventDetail,
+} from "./repository-setup-optimistic-events";
 
 type SetupStep = 1 | 2 | 3 | 4;
 
@@ -20,6 +27,8 @@ type SetupToast = {
   readonly actionLabel?: string;
 };
 
+type SetupIssue = "setup_pr_closed" | "setup_pr_branch_deleted";
+
 export function RepositorySetupProgressPanel({
   workspaceId,
   repositoryId,
@@ -28,6 +37,7 @@ export function RepositorySetupProgressPanel({
   archived,
   initialSetupStatus,
   initialSetupPullRequestUrl,
+  initialSetupIssue,
   workflowCurrent,
   mutationsEnabled,
   initialStep,
@@ -40,6 +50,7 @@ export function RepositorySetupProgressPanel({
   readonly archived: boolean;
   readonly initialSetupStatus: string;
   readonly initialSetupPullRequestUrl: string | null;
+  readonly initialSetupIssue?: string | null;
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
   readonly initialStep: SetupStep;
@@ -50,6 +61,9 @@ export function RepositorySetupProgressPanel({
   const [setupPullRequestUrl, setSetupPullRequestUrl] = useState(
     initialSetupPullRequestUrl,
   );
+  const [setupIssue, setSetupIssue] = useState<SetupIssue | null>(
+    normalizeSetupIssue(initialSetupIssue),
+  );
   const [currentStep, setCurrentStep] = useState(initialStep);
   const [toast, setToast] = useState<SetupToast | null>(null);
   const canManage = mutationsEnabled && selected && !archived;
@@ -57,21 +71,75 @@ export function RepositorySetupProgressPanel({
   useEffect(() => {
     setSetupStatus(initialSetupStatus);
     setSetupPullRequestUrl(initialSetupPullRequestUrl);
+    setSetupIssue(normalizeSetupIssue(initialSetupIssue));
     setCurrentStep(initialStep);
     if (initialStep > 2) {
       setToast((current) =>
         current?.errorCode === "setup_pr_not_merged" ? null : current,
       );
     }
-  }, [initialSetupPullRequestUrl, initialSetupStatus, initialStep]);
+  }, [
+    initialSetupIssue,
+    initialSetupPullRequestUrl,
+    initialSetupStatus,
+    initialStep,
+  ]);
+
+  useEffect(() => {
+    function handleSetupPullRequestMerged(event: Event): void {
+      const detail = (event as CustomEvent<SetupPullRequestMergedEventDetail>)
+        .detail;
+      if (detail?.repositoryId !== repositoryId) return;
+
+      setSetupStatus("configured");
+      setSetupIssue(null);
+      setCurrentStep((current) => (current < 3 ? 3 : current));
+    }
+
+    function handleProviderSetupConfirmed(event: Event): void {
+      const detail = (event as CustomEvent<ProviderSetupConfirmedEventDetail>)
+        .detail;
+      if (detail?.repositoryId !== repositoryId) return;
+
+      setSetupStatus("configured");
+      setSetupIssue(null);
+      setCurrentStep(4);
+    }
+
+    window.addEventListener(
+      setupPullRequestMergedEventName,
+      handleSetupPullRequestMerged,
+    );
+    window.addEventListener(
+      providerSetupConfirmedEventName,
+      handleProviderSetupConfirmed,
+    );
+    return () => {
+      window.removeEventListener(
+        setupPullRequestMergedEventName,
+        handleSetupPullRequestMerged,
+      );
+      window.removeEventListener(
+        providerSetupConfirmedEventName,
+        handleProviderSetupConfirmed,
+      );
+    };
+  }, [repositoryId]);
 
   const handleSetupMutation = (params: Record<string, string>) => {
     updateBrowserUrl(params);
 
     if (params.error) {
+      const issue = normalizeSetupIssue(params.error);
+      if (issue) {
+        setSetupStatus("needs_attention");
+        setSetupIssue(issue);
+        setCurrentStep(1);
+        router.refresh();
+      }
       setToast({
         tone: "danger",
-        title: "Action needs attention",
+        title: issue ? "Setup PR needs recovery" : "Action needs attention",
         body: dashboardErrorText(params.error),
         errorCode: params.error,
       });
@@ -82,6 +150,7 @@ export function RepositorySetupProgressPanel({
       const pullRequestUrl = params.pr || setupPullRequestUrl || undefined;
       setSetupStatus("setup_pr_open");
       setSetupPullRequestUrl(pullRequestUrl ?? null);
+      setSetupIssue(null);
       setCurrentStep(2);
       setToast({
         tone: "success",
@@ -96,6 +165,7 @@ export function RepositorySetupProgressPanel({
 
     if (params.notice === "workflow_already_current") {
       setSetupStatus("configured");
+      setSetupIssue(null);
       setCurrentStep(3);
       router.refresh();
       setToast({
@@ -113,9 +183,16 @@ export function RepositorySetupProgressPanel({
     updateBrowserUrl(params);
 
     if (params.error) {
+      const issue = normalizeSetupIssue(params.error);
+      if (issue) {
+        setSetupStatus("needs_attention");
+        setSetupIssue(issue);
+        setCurrentStep(1);
+        router.refresh();
+      }
       setToast({
         tone: "danger",
-        title: "Action needs attention",
+        title: issue ? "Setup PR needs recovery" : "Action needs attention",
         body: dashboardErrorText(params.error),
         errorCode: params.error,
       });
@@ -124,7 +201,9 @@ export function RepositorySetupProgressPanel({
 
     if (params.notice === "setup_pr_merged") {
       setSetupStatus("configured");
+      setSetupIssue(null);
       setCurrentStep(3);
+      window.dispatchEvent(setupPullRequestMergedEvent({ repositoryId }));
       router.refresh();
       setToast({
         tone: "success",
@@ -143,6 +222,7 @@ export function RepositorySetupProgressPanel({
     archived,
     setupStatus,
     setupPullRequestUrl,
+    setupIssue,
     workflowCurrent,
     mutationsEnabled,
     currentStep,
@@ -208,6 +288,7 @@ function buildSetupSteps({
   archived,
   setupStatus,
   setupPullRequestUrl,
+  setupIssue,
   workflowCurrent,
   mutationsEnabled,
   currentStep,
@@ -221,6 +302,7 @@ function buildSetupSteps({
   readonly archived: boolean;
   readonly setupStatus: string;
   readonly setupPullRequestUrl: string | null;
+  readonly setupIssue: SetupIssue | null;
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
   readonly currentStep: SetupStep;
@@ -266,10 +348,10 @@ function buildSetupSteps({
         onComplete={onMergeComplete}
       />
     ) : null;
-  const reviewAction =
-    currentStep === 3 && enableReviewAction ? (
-      enableReviewAction
-    ) : currentStep < 4 ? (
+  const shouldRenderProviderAction =
+    Boolean(enableReviewAction) && currentStep >= 3;
+  const lockedReviewAction =
+    currentStep < 4 ? (
       <Button
         type="button"
         variant="outline"
@@ -281,12 +363,21 @@ function buildSetupSteps({
         <SetupProgressLockIcon />
       </Button>
     ) : null;
+  const reviewAction = shouldRenderProviderAction
+    ? enableReviewAction
+    : lockedReviewAction;
+
+  const setupPrHelper = setupIssue
+    ? setupIssueHelperText(setupIssue)
+    : currentStep > 1
+      ? "Setup PR exists."
+      : "Add the workflow by PR.";
 
   return [
     {
       number: 1,
-      title: "Create setup PR",
-      helper: currentStep > 1 ? "Setup PR exists." : "Add the workflow by PR.",
+      title: setupIssue ? "Recover setup PR" : "Create setup PR",
+      helper: setupPrHelper,
       action: setupPrAction,
     },
     {
@@ -482,9 +573,30 @@ function dashboardErrorText(error: string): string {
   switch (error) {
     case "setup_pr_not_merged":
       return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
+    case "setup_pr_closed":
+      return "The saved setup PR was closed before it was merged. Recreate the setup PR, then merge the new one.";
+    case "setup_pr_branch_deleted":
+      return "The saved setup PR branch was deleted, so GitHub cannot merge that PR anymore. Recreate the setup PR to continue.";
     case "dashboard_action_failed":
       return "The dashboard action failed. Retry once, then inspect server logs if it repeats.";
     default:
       return "The dashboard action could not be completed.";
+  }
+}
+
+function normalizeSetupIssue(
+  value: string | null | undefined,
+): SetupIssue | null {
+  return value === "setup_pr_closed" || value === "setup_pr_branch_deleted"
+    ? value
+    : null;
+}
+
+function setupIssueHelperText(issue: SetupIssue): string {
+  switch (issue) {
+    case "setup_pr_closed":
+      return "Previous setup PR was closed. Recreate it.";
+    case "setup_pr_branch_deleted":
+      return "Setup PR branch was deleted. Recreate it.";
   }
 }

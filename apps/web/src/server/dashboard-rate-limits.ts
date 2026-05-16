@@ -34,6 +34,10 @@ const dashboardMutationLimits = {
     limit: 3,
     windowMs: hour,
   },
+  repositoryAccessRefresh: {
+    limit: 10,
+    windowMs: 15 * minute,
+  },
 } as const;
 
 export class DashboardRateLimitPolicy {
@@ -102,13 +106,25 @@ export class DashboardRateLimitPolicy {
     });
   }
 
+  async assertRepositoryAccessRefreshAllowed(input: {
+    readonly userId: string;
+  }): Promise<void> {
+    await this.assertOperationAllowed({
+      operation: "repository_access_refresh",
+      workspaceId: `user:${input.userId}`,
+      resourceId: "github",
+      ...dashboardMutationLimits.repositoryAccessRefresh,
+    });
+  }
+
   private async assertOperationAllowed(input: {
     readonly operation:
       | "installation_sync"
       | "workflow_setup_pr"
       | "review_config_save"
       | "outbox_retry"
-      | "org_ruleset_provisioning";
+      | "org_ruleset_provisioning"
+      | "repository_access_refresh";
     readonly workspaceId: string;
     readonly resourceId: string;
     readonly limit: number;

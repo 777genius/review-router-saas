@@ -9,6 +9,7 @@ export type RepositoryWorkflowProbeInput = {
   readonly defaultBranch: string;
   readonly workflowPath: string;
   readonly expectedActionRef: string;
+  readonly expectedContentMarkerGroups?: readonly (readonly string[])[];
 };
 
 export interface RepositoryWorkflowProbePort {

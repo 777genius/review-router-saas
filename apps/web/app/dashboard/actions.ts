@@ -27,6 +27,7 @@ import {
   clearReviewConfiguration,
   PrismaReviewConfigurationRepository,
   resolveReviewRuntimeEnv,
+  type ResolvedReviewRuntimeEnv,
   saveReviewConfiguration,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
@@ -41,8 +42,18 @@ import {
   type MemoryMutationResult,
   type MemoryScope,
 } from "@reviewrouter/features-memory";
+import {
+  getProviderSecretNames,
+  providerAuthModeBelongsToKind,
+  providerAuthModeSchema,
+  providerKindForAuthMode,
+  providerKindSchema,
+  type ProviderAuthMode,
+  type ProviderKind,
+} from "@reviewrouter/features-review-providers";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
+  isConflictReviewFallbackAllowedForRepository,
   isWorkflowProvisioningEnabled,
   resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
@@ -54,17 +65,26 @@ import {
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
 } from "@reviewrouter/features-workflow-provisioning";
+import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import {
   assertDashboardMutationAllowed,
+  assertDashboardRepositoryConfigMutationAllowed,
+  assertDashboardRepositoryMutationAllowed,
   createGitHubAppInstallationOctokit,
+  createGitHubUserOctokit,
+  dashboardMutationAccessAuditMetadata,
+  getDashboardSignedInActor,
+  getDashboardWorkspaceScope,
 } from "../../src/server/dashboard-mutations";
 import {
   createDashboardMemoryDependencies,
   resolveDashboardMemoryActor,
 } from "../../src/server/dashboard-memory";
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
+import { refreshGitHubUserRepositoryAccess } from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
+import { inspectSetupPullRequestStatus } from "../../src/server/setup-pull-request-status";
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
 import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-readiness";
 
@@ -147,6 +167,47 @@ export async function requestInstallationSyncAction(
   revalidatePath("/dashboard");
   revalidatePath("/setup");
   redirectAfterMutation(formData, params);
+}
+
+export async function refreshRepositoryAccessAction(
+  formData: FormData,
+): Promise<never> {
+  const prisma = getPrisma();
+  let params: Record<string, string>;
+
+  try {
+    const actor = await getDashboardSignedInActor();
+    if (!actor) {
+      throw new Error("dashboard_mutation_requires_sign_in");
+    }
+    await createDashboardRateLimitPolicy(
+      prisma,
+    ).assertRepositoryAccessRefreshAllowed({ userId: actor.userId });
+    const workspaceScope = await getDashboardWorkspaceScope();
+    const result = await refreshGitHubUserRepositoryAccess({
+      prisma,
+      actor,
+      excludedWorkspaceIds:
+        workspaceScope.kind === "workspace_ids"
+          ? workspaceScope.workspaceIds
+          : [],
+    });
+    if (result.status !== "ready") {
+      throw new Error(`repository_access_${result.status}`);
+    }
+
+    params = { notice: "repository_access_refreshed" };
+  } catch (error) {
+    params = { error: safeDashboardErrorCode(error) };
+  }
+
+  const workspace = readOptionalFormString(formData, "workspace");
+  const section = readOptionalFormString(formData, "section");
+  if (workspace) params.workspace = workspace;
+  if (section) params.section = section;
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
 }
 
 export async function createSetupPullRequestAction(
@@ -240,12 +301,13 @@ export async function deleteMemoryItemAction(
   redirectAfterMutation(formData, params);
 }
 
-export async function checkOpenRouterRepositorySecretClientAction(
+export async function checkProviderRepositorySecretClientAction(
   formData: FormData,
 ): Promise<{
   readonly status:
     | "available_repository"
     | "available_organization"
+    | "not_available_to_repository"
     | "missing"
     | "permission_required"
     | "unknown";
@@ -253,6 +315,8 @@ export async function checkOpenRouterRepositorySecretClientAction(
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const repositoryId = readFormString(formData, "repositoryId");
+  const providerSetup = readProviderSetupSelection(formData);
+  const secretNames = providerSecretNamesForAuthMode(providerSetup.authMode);
 
   try {
     const repository = await loadRepositoryForWorkspace({
@@ -260,7 +324,10 @@ export async function checkOpenRouterRepositorySecretClientAction(
       workspaceId,
       repositoryId,
     });
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -273,18 +340,15 @@ export async function checkOpenRouterRepositorySecretClientAction(
     );
     await assertRepositoryVisibleToGitHubApp({ octokit, repository });
 
-    return await checkOpenRouterSecretAvailability({
+    return await checkProviderSecretAvailability({
       octokit,
       repository,
+      secretNames,
+      allowOrganizationSecrets: actor.accessSource?.source !== "repo_manager",
     });
   } catch (error) {
-    const failedState = providerSetupStateForSecretCheckError(error);
-    if (failedState === "missing" || failedState === "stale_or_invalid") {
-      return { status: "missing" };
-    }
-    if (failedState === "unknown") {
-      return { status: "permission_required" };
-    }
+    const status = providerSecretAvailabilityStatusForError(error);
+    if (status) return { status };
 
     return { status: "unknown" };
   }
@@ -304,6 +368,7 @@ async function createSetupPullRequestMutation(
       where: { id: repositoryId },
       select: {
         workspaceId: true,
+        githubRepositoryId: true,
         owner: true,
         name: true,
         fullName: true,
@@ -317,7 +382,10 @@ async function createSetupPullRequestMutation(
       throw new Error("repository_not_found");
     }
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -332,6 +400,16 @@ async function createSetupPullRequestMutation(
       repository.installation.githubInstallationId.toString(),
     );
     const actionRef = resolveReviewRouterActionRef();
+    const resolvedRuntime = await loadResolvedReviewRuntime({
+      prisma,
+      workspaceId,
+      repositoryId,
+    });
+    const workflowProviderKind = workflowReadinessProviderKind(
+      resolvedRuntime.config,
+    );
+    const conflictReviewFallbackAllowed =
+      isConflictReviewFallbackAllowedForRepository(repository.fullName);
     const workflowReady = await isWorkflowSetupAlreadyCurrent(
       {
         githubInstallationId:
@@ -340,6 +418,8 @@ async function createSetupPullRequestMutation(
         name: repository.name,
         defaultBranch: repository.defaultBranch,
         actionRef,
+        conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
+        ...(workflowProviderKind ? { providerKind: workflowProviderKind } : {}),
       },
       {
         workflowProbe: new OctokitRepositoryWorkflowProbe({
@@ -360,6 +440,7 @@ async function createSetupPullRequestMutation(
             reason: "workflow_already_current",
             actionVersion: actionRef,
             workflowPath: defaultWorkflowPath,
+            ...dashboardMutationAccessAuditMetadata(actor),
           },
         },
         { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -371,12 +452,10 @@ async function createSetupPullRequestMutation(
         section: "repositories",
       };
     } else {
-      const staticRuntimeEnv = await loadStaticRuntimeEnv({
-        prisma,
-        workspaceId,
-        repositoryId,
-      });
-
+      const setupOctokit =
+        actor.accessSource?.source === "repo_manager"
+          ? await createGitHubUserOctokit(actor)
+          : octokit;
       const pullRequest = await new PostgresLeaseLock(prisma).withLock(
         `repo:${repositoryId}:workflow-provision`,
         5 * 60_000,
@@ -387,16 +466,18 @@ async function createSetupPullRequestMutation(
               actionRef,
               apiUrl: resolveWorkflowPublicApiUrl(),
               runtimeConfigMode: "oidc",
-              staticRuntimeEnv,
+              staticRuntimeEnv: resolvedRuntime.runtimeEnv,
               workflowStyle,
+              conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
               actor: actor.actor,
             },
             {
               targets: new PrismaWorkflowProvisioningTarget(prisma),
-              setupGateway: new OctokitWorkflowSetupGateway(octokit),
+              setupGateway: new OctokitWorkflowSetupGateway(setupOctokit),
               provisioning: new PrismaWorkflowProvisioningRepository(prisma),
               auditLog: new PrismaAuditLogRepository(prisma),
               enabled: isWorkflowProvisioningEnabled(),
+              auditMetadata: dashboardMutationAccessAuditMetadata(actor),
             },
           ),
       );
@@ -434,6 +515,7 @@ async function confirmSetupPullRequestMergedMutation(
       select: {
         id: true,
         workspaceId: true,
+        githubRepositoryId: true,
         owner: true,
         name: true,
         fullName: true,
@@ -459,7 +541,10 @@ async function confirmSetupPullRequestMergedMutation(
     }
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -474,8 +559,8 @@ async function confirmSetupPullRequestMergedMutation(
     const pullRequestNumber = pullRequestNumberFromUrl(
       setupProvisioning?.pullRequestUrl ?? "",
     );
-    const setupPullRequestMerged = pullRequestNumber
-      ? await checkSetupPullRequestMerged(
+    const setupPullRequestStatus = pullRequestNumber
+      ? await inspectSetupPullRequestStatus(
           {
             owner: repository.owner,
             name: repository.name,
@@ -484,7 +569,19 @@ async function confirmSetupPullRequestMergedMutation(
           },
           octokit,
         )
-      : false;
+      : null;
+    const setupPullRequestMerged = setupPullRequestStatus === "merged";
+    const workflowProviderKind = setupPullRequestMerged
+      ? undefined
+      : workflowReadinessProviderKind(
+          (
+            await loadResolvedReviewRuntime({
+              prisma,
+              workspaceId,
+              repositoryId,
+            })
+          ).config,
+        );
     const workflowReady = setupPullRequestMerged
       ? true
       : await isWorkflowSetupAlreadyCurrent(
@@ -495,6 +592,9 @@ async function confirmSetupPullRequestMergedMutation(
             name: repository.name,
             defaultBranch: repository.defaultBranch,
             actionRef: resolveReviewRouterActionRef(),
+            ...(workflowProviderKind
+              ? { providerKind: workflowProviderKind }
+              : {}),
           },
           {
             workflowProbe: new OctokitRepositoryWorkflowProbe({
@@ -504,6 +604,24 @@ async function confirmSetupPullRequestMergedMutation(
         );
 
     if (!setupPullRequestMerged && !workflowReady) {
+      if (
+        setupPullRequestStatus === "closed" ||
+        setupPullRequestStatus === "branch_deleted"
+      ) {
+        const reason =
+          setupPullRequestStatus === "closed"
+            ? "setup_pr_closed"
+            : "setup_pr_branch_deleted";
+        await markRepositoryWorkflowSetupNeedsAttention({
+          prisma,
+          repositoryId,
+          setupBranch: setupProvisioning?.branch ?? null,
+          pullRequestNumber,
+          reason,
+        });
+        throw new Error(reason);
+      }
+
       throw new Error("setup_pr_not_merged");
     }
 
@@ -524,6 +642,7 @@ async function confirmSetupPullRequestMergedMutation(
           repository: repository.fullName,
           source: setupPullRequestMerged ? "github_pull_request" : "workflow",
           pullRequestNumber,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -566,7 +685,10 @@ async function confirmProviderSecretSetupMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -577,6 +699,12 @@ async function confirmProviderSecretSetupMutation(
       workspaceId,
       resourceId: repositoryId,
     });
+    if (
+      actor.accessSource?.source === "repo_manager" &&
+      secretScope !== "repository"
+    ) {
+      throw new Error("organization_secret_scope_forbidden");
+    }
     if (confirmationMode === "verified") {
       const octokit = await createGitHubAppInstallationOctokit(
         repository.installation.githubInstallationId.toString(),
@@ -626,6 +754,7 @@ async function confirmProviderSecretSetupMutation(
           confirmationMode,
           credentialScope: secretScope,
           requiredCredentialCount: secretNames.length,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -960,6 +1089,10 @@ export async function enableOrgRulesetWorkflowAction(
 
     const octokit =
       await createGitHubAppInstallationOctokit(githubInstallationId);
+    await assertOrgRulesetOrganizationPlanAllowed({
+      octokit,
+      organizationLogin: installation.accountLogin,
+    });
     const scope = readFormString(formData, "scope") as OrgRulesetScope;
     const enforcement = readFormString(
       formData,
@@ -1048,6 +1181,7 @@ export async function saveWorkspaceReviewConfigAction(
           authMode: saved.config.provider.authMode,
           model: saved.config.provider.model,
           failOnSeverity: saved.config.blockingPolicy.failOnSeverity,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -1096,7 +1230,10 @@ async function saveRepositoryReviewConfigMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryConfigMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -1133,6 +1270,7 @@ async function saveRepositoryReviewConfigMutation(
           authMode: saved.config.provider.authMode,
           model: saved.config.provider.model,
           failOnSeverity: saved.config.blockingPolicy.failOnSeverity,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -1184,7 +1322,10 @@ async function clearRepositoryReviewConfigMutation(
     });
     assertRepositoryConfigMutable(repository);
 
-    const actor = await assertDashboardMutationAllowed(workspaceId);
+    const actor = await assertDashboardRepositoryConfigMutationAllowed(
+      workspaceId,
+      repository,
+    );
     await assertDashboardEntitlement({
       prisma,
       workspaceId,
@@ -1213,6 +1354,7 @@ async function clearRepositoryReviewConfigMutation(
         metadata: {
           repository: repository.fullName,
           cleared,
+          ...dashboardMutationAccessAuditMetadata(actor),
         },
       },
       { auditLog: new PrismaAuditLogRepository(prisma) },
@@ -1421,7 +1563,7 @@ async function verifyProviderSecrets(input: {
   >;
   readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
   readonly secretNames: readonly string[];
-  readonly secretScope: "repository" | "organization_selected_repositories";
+  readonly secretScope: ProviderSecretScope;
 }): Promise<void> {
   for (const secretName of input.secretNames) {
     if (input.secretScope === "repository") {
@@ -1440,45 +1582,73 @@ async function verifyProviderSecrets(input: {
   }
 }
 
-async function checkOpenRouterSecretAvailability(input: {
+async function checkProviderSecretAvailability(input: {
   readonly octokit: Awaited<
     ReturnType<typeof createGitHubAppInstallationOctokit>
   >;
   readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+  readonly secretNames: readonly string[];
+  readonly allowOrganizationSecrets?: boolean;
 }): Promise<{
   readonly status:
     | "available_repository"
     | "available_organization"
+    | "not_available_to_repository"
+    | "missing"
+    | "permission_required"
+    | "unknown";
+}> {
+  for (const secretName of input.secretNames) {
+    try {
+      await verifyRepositorySecret({
+        octokit: input.octokit,
+        repository: input.repository,
+        secretName,
+      });
+      continue;
+    } catch (error) {
+      const status = providerSecretAvailabilityStatusForError(error);
+      if (status === "permission_required") return { status };
+      if (status !== "missing") return { status: "unknown" };
+    }
+
+    if (input.allowOrganizationSecrets === false) {
+      return { status: "missing" };
+    }
+
+    return await checkOrganizationProviderSecretAvailability({
+      ...input,
+      secretName,
+    });
+  }
+
+  return { status: "available_repository" };
+}
+
+async function checkOrganizationProviderSecretAvailability(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly repository: Awaited<ReturnType<typeof loadRepositoryForWorkspace>>;
+  readonly secretName: string;
+}): Promise<{
+  readonly status:
+    | "available_organization"
+    | "not_available_to_repository"
     | "missing"
     | "permission_required"
     | "unknown";
 }> {
   try {
-    await verifyRepositorySecret({
-      octokit: input.octokit,
-      repository: input.repository,
-      secretName: "OPENROUTER_API_KEY",
-    });
-    return { status: "available_repository" };
-  } catch (error) {
-    const state = providerSetupStateForSecretCheckError(error);
-    if (state === "unknown") return { status: "permission_required" };
-    if (state !== "missing") return { status: "unknown" };
-  }
-
-  try {
     await verifyOrganizationSecret({
       octokit: input.octokit,
       repository: input.repository,
-      secretName: "OPENROUTER_API_KEY",
+      secretName: input.secretName,
     });
     return { status: "available_organization" };
   } catch (error) {
-    const state = providerSetupStateForSecretCheckError(error);
-    if (state === "unknown") return { status: "permission_required" };
-    if (state === "missing" || state === "stale_or_invalid") {
-      return { status: "missing" };
-    }
+    const status = providerSecretAvailabilityStatusForError(error);
+    if (status) return { status };
 
     return { status: "unknown" };
   }
@@ -1503,6 +1673,35 @@ async function assertRepositoryVisibleToGitHubApp(input: {
       });
     }
 
+    throw error;
+  }
+}
+
+async function assertOrgRulesetOrganizationPlanAllowed(input: {
+  readonly octokit: Awaited<
+    ReturnType<typeof createGitHubAppInstallationOctokit>
+  >;
+  readonly organizationLogin: string;
+}): Promise<void> {
+  try {
+    const response = await input.octokit.request("GET /orgs/{org}", {
+      org: input.organizationLogin,
+    });
+    const planName = readGitHubOrganizationPlanName(
+      (response.data as { readonly plan?: unknown }).plan,
+    );
+    if (planName === "free") {
+      throw new Error("org_rulesets_not_supported");
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "org_rulesets_not_supported"
+    ) {
+      throw error;
+    }
+    const status = githubApiStatus(error);
+    if (status === 401 || status === 403) return;
     throw error;
   }
 }
@@ -1630,6 +1829,20 @@ function githubApiStatus(error: unknown): number | null {
   return null;
 }
 
+function readGitHubOrganizationPlanName(value: unknown): string | null {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "name" in value &&
+    typeof value.name === "string" &&
+    value.name.trim().length > 0
+  ) {
+    return value.name.trim().toLowerCase();
+  }
+
+  return null;
+}
+
 function toRepositoryIdRecords(
   value: unknown,
 ): readonly { readonly id: string }[] {
@@ -1675,13 +1888,13 @@ function assertRepositoryConfigMutable(input: {
   }
 }
 
-async function loadStaticRuntimeEnv(input: {
+async function loadResolvedReviewRuntime(input: {
   readonly prisma: PrismaClient;
   readonly workspaceId: string;
   readonly repositoryId: string;
-}): Promise<Record<string, string>> {
+}): Promise<ResolvedReviewRuntimeEnv> {
   const configurations = new PrismaReviewConfigurationRepository(input.prisma);
-  const resolved = await resolveReviewRuntimeEnv(
+  return resolveReviewRuntimeEnv(
     {
       scope: "repository",
       workspaceId: input.workspaceId,
@@ -1689,40 +1902,14 @@ async function loadStaticRuntimeEnv(input: {
     },
     { configurations },
   );
-  return resolved.runtimeEnv;
 }
 
-async function checkSetupPullRequestMerged(
-  input: {
-    readonly owner: string;
-    readonly name: string;
-    readonly pullRequestNumber: number;
-    readonly setupBranch: string | null;
-  },
-  octokit: Awaited<ReturnType<typeof createGitHubAppInstallationOctokit>>,
-): Promise<boolean> {
-  try {
-    const response = await octokit.request(
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
-      {
-        owner: input.owner,
-        repo: input.name,
-        pull_number: input.pullRequestNumber,
-      },
-    );
-    const pullRequest = response.data as {
-      readonly merged?: unknown;
-      readonly head?: { readonly ref?: unknown };
-    };
-
-    if (input.setupBranch && pullRequest.head?.ref !== input.setupBranch) {
-      return false;
-    }
-
-    return pullRequest.merged === true;
-  } catch {
-    return false;
-  }
+function workflowReadinessProviderKind(
+  config: ReviewConfiguration,
+): ProviderKind | undefined {
+  return config.providers.some((provider) => provider.kind === "claude")
+    ? "claude"
+    : undefined;
 }
 
 async function markRepositoryWorkflowConfigured(input: {
@@ -1769,6 +1956,51 @@ async function markRepositoryWorkflowConfigured(input: {
   ]);
 }
 
+async function markRepositoryWorkflowSetupNeedsAttention(input: {
+  readonly prisma: PrismaClient;
+  readonly repositoryId: string;
+  readonly setupBranch: string | null;
+  readonly pullRequestNumber: number | null;
+  readonly reason: "setup_pr_closed" | "setup_pr_branch_deleted";
+}): Promise<void> {
+  const provisioningWhere =
+    input.setupBranch || input.pullRequestNumber
+      ? {
+          repositoryId: input.repositoryId,
+          status: "setup_pr_open" as const,
+          OR: [
+            ...(input.setupBranch ? [{ branch: input.setupBranch }] : []),
+            ...(input.pullRequestNumber
+              ? [
+                  {
+                    pullRequestUrl: {
+                      endsWith: `/pull/${input.pullRequestNumber}`,
+                    },
+                  },
+                ]
+              : []),
+          ],
+        }
+      : {
+          repositoryId: input.repositoryId,
+          status: "setup_pr_open" as const,
+        };
+
+  await input.prisma.$transaction([
+    input.prisma.workflowProvisioning.updateMany({
+      where: provisioningWhere,
+      data: {
+        status: "failed",
+        errorMessage: input.reason,
+      },
+    }),
+    input.prisma.repositoryConnection.update({
+      where: { id: input.repositoryId },
+      data: { setupStatus: "needs_attention" },
+    }),
+  ]);
+}
+
 function pullRequestNumberFromUrl(url: string): number | null {
   const match = /\/pull\/(\d+)(?:$|[?#])/.exec(url);
   if (!match) return null;
@@ -1779,14 +2011,17 @@ function pullRequestNumberFromUrl(url: string): number | null {
 
 function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
   const providerCount = readFormNumber(formData, "providerCount");
+  if (!Number.isInteger(providerCount) || providerCount < 1) {
+    throw new Error("invalid_form_value:providerCount");
+  }
   const providers = Array.from({ length: providerCount }, (_, index) => {
-    const authMode = readFormString(
+    const authMode = readProviderAuthMode(
       formData,
       `providerAuthMode.${index}`,
-    ) as ReviewConfiguration["provider"]["authMode"];
+    );
 
     return {
-      kind: authMode === "openrouter_api_key" ? "openrouter" : "codex",
+      kind: providerKindForAuthMode(authMode),
       authMode,
       model: readFormString(formData, `providerModel.${index}`),
       reasoningEffort: readFormString(
@@ -1891,42 +2126,53 @@ function readMemoryScopeValue(value: string): MemoryScope {
   throw new Error("invalid_form_value:memoryScope");
 }
 
+function readProviderAuthMode(
+  formData: FormData,
+  key: string,
+): ProviderAuthMode {
+  const authMode = providerAuthModeSchema.safeParse(
+    readFormString(formData, key),
+  );
+  if (!authMode.success) {
+    throw new Error(`invalid_form_value:${key}`);
+  }
+  return authMode.data;
+}
+
 function readWorkflowStyle(formData: FormData): "reusable" | "explicit" {
   const value = formData.get("workflowStyle");
   return value === "explicit" ? "explicit" : "reusable";
 }
 
 function readProviderSetupSelection(formData: FormData): {
-  readonly providerKind: "codex" | "openrouter";
-  readonly authMode:
-    | "codex_subscription_oauth"
-    | "codex_openai_api_key"
-    | "openrouter_api_key";
+  readonly providerKind: ProviderKind;
+  readonly authMode: ProviderAuthMode;
 } {
-  const providerKind = readFormString(formData, "providerKind");
-  const authMode = readFormString(formData, "authMode");
+  const providerKind = providerKindSchema.safeParse(
+    readFormString(formData, "providerKind"),
+  );
+  const authMode = providerAuthModeSchema.safeParse(
+    readFormString(formData, "authMode"),
+  );
 
   if (
-    providerKind === "codex" &&
-    (authMode === "codex_subscription_oauth" ||
-      authMode === "codex_openai_api_key")
+    providerKind.success &&
+    authMode.success &&
+    providerAuthModeBelongsToKind(authMode.data, providerKind.data)
   ) {
-    return { providerKind, authMode };
-  }
-  if (providerKind === "openrouter" && authMode === "openrouter_api_key") {
-    return { providerKind, authMode };
+    return { providerKind: providerKind.data, authMode: authMode.data };
   }
 
   throw new Error("invalid_form_value:providerSetup");
 }
 
-function readProviderSecretScope(
-  formData: FormData,
-): "repository" | "organization_selected_repositories" {
+function readProviderSecretScope(formData: FormData): ProviderSecretScope {
   const value = readFormString(formData, "secretScope");
   if (
     value === "repository" ||
-    value === "organization_selected_repositories"
+    value === "organization_selected_repositories" ||
+    value === "organization_private_repositories" ||
+    value === "organization_all_repositories"
   ) {
     return value;
   }
@@ -1945,19 +2191,9 @@ function readProviderSetupConfirmationMode(
 }
 
 function providerSecretNamesForAuthMode(
-  authMode:
-    | "codex_subscription_oauth"
-    | "codex_openai_api_key"
-    | "openrouter_api_key",
+  authMode: ProviderAuthMode,
 ): readonly string[] {
-  switch (authMode) {
-    case "codex_subscription_oauth":
-      return ["CODEX_AUTH_JSON"];
-    case "codex_openai_api_key":
-      return ["OPENAI_API_KEY"];
-    case "openrouter_api_key":
-      return ["OPENROUTER_API_KEY"];
-  }
+  return getProviderSecretNames(authMode);
 }
 
 function providerSetupStateForSecretCheckError(
@@ -1974,6 +2210,24 @@ function providerSetupStateForSecretCheckError(
       return "unknown";
     case "repository_not_visible_to_github_app":
       return "unknown";
+    default:
+      return null;
+  }
+}
+
+function providerSecretAvailabilityStatusForError(
+  error: unknown,
+): "not_available_to_repository" | "missing" | "permission_required" | null {
+  if (!(error instanceof Error)) return null;
+
+  switch (error.message) {
+    case "provider_secret_not_found":
+      return "missing";
+    case "provider_secret_not_available_to_repository":
+      return "not_available_to_repository";
+    case "provider_secret_check_permission_required":
+    case "repository_not_visible_to_github_app":
+      return "permission_required";
     default:
       return null;
   }
@@ -2020,6 +2274,15 @@ function safeDashboardErrorCode(error: unknown): string {
   if (message.startsWith("rate_limit_exceeded:")) {
     return "rate_limited";
   }
+  if (message.startsWith("github_user_token_request_failed:401")) {
+    return "repository_access_token_revoked";
+  }
+  if (
+    message.startsWith("github_user_token_request_failed:403") ||
+    message.startsWith("github_user_token_request_failed:404")
+  ) {
+    return "repository_mutation_forbidden";
+  }
   if (
     message.startsWith("missing_form_value:") ||
     message.startsWith("invalid_form_number:") ||
@@ -2030,23 +2293,42 @@ function safeDashboardErrorCode(error: unknown): string {
   }
   if (
     [
+      "repository_access_token_missing",
+      "repository_access_token_revoked",
+      "repository_access_token_expired",
+      "repository_access_token_refresh_failed",
+      "repository_access_token_decryption_failed",
+      "repository_access_token_encryption_misconfigured",
+      "repository_access_github_error",
       "dashboard_mutations_disabled",
       "dashboard_auth_misconfigured",
       "dashboard_mutation_requires_sign_in",
       "installation_not_found",
       "repository_not_found",
+      "repository_mutation_forbidden",
+      "repository_config_mutation_forbidden",
       "repository_not_selected",
       "repository_archived",
       "installation_not_active",
       "setup_pr_not_merged",
+      "setup_pr_closed",
+      "setup_pr_branch_deleted",
       "repository_not_visible_to_github_app",
       "provider_secret_not_found",
       "provider_secret_not_available_to_repository",
       "provider_secret_check_permission_required",
+      "organization_secret_scope_forbidden",
       "workflow_provisioning_disabled",
       "org_ruleset_requires_organization_installation",
       "org_ruleset_no_selected_repositories",
       "org_ruleset_all_repositories_requires_all_access",
+      "org_ruleset_source_repository_invalid",
+      "org_ruleset_source_repository_wrong_owner",
+      "org_ruleset_source_repository_not_installed",
+      "org_ruleset_source_repository_archived",
+      "org_ruleset_source_repository_not_writable",
+      "org_ruleset_source_repository_branch_blocked",
+      "org_ruleset_source_repository_actions_access_required",
       "org_admin_permission_required",
       "org_rulesets_not_supported",
       "org_ruleset_permission_update_pending",

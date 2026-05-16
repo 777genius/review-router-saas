@@ -5,9 +5,9 @@ import { enqueueOutboxEvent } from "@reviewrouter/features-outbox";
 import { defaultRequiredWorkflowPath } from "@reviewrouter/features-workflow-provisioning";
 import {
   assertOrganizationRulesetTarget,
-  chooseDefaultSourceRepository,
   createOrgRulesetProvisioningRequest,
   defaultOrgRulesetSourceBranch,
+  resolveOrgRulesetSourceRepository,
   resolveOrgRulesetTargetSelection,
   type OrgRulesetEnforcement,
   type OrgRulesetScope,
@@ -20,6 +20,7 @@ export type RequestOrgRulesetProvisioningInput = {
   readonly githubInstallationId: string;
   readonly scope: OrgRulesetScope;
   readonly enforcement: OrgRulesetEnforcement;
+  readonly sourceRepositoryFullName?: string;
   readonly targetRepositoryIds?: readonly string[];
   readonly actor: string;
   readonly requestedAt: Date;
@@ -68,10 +69,17 @@ export async function requestOrgRulesetProvisioning(
     throw new Error(probe.safeErrorCode);
   }
 
-  const sourceRepository = chooseDefaultSourceRepository(target);
+  const sourceRepository = resolveOrgRulesetSourceRepository({
+    target,
+    ...(input.sourceRepositoryFullName
+      ? { sourceRepositoryFullName: input.sourceRepositoryFullName }
+      : {}),
+  });
   const targetSelection = resolveOrgRulesetTargetSelection({
     scope: input.scope,
     repositories: target.repositories,
+    excludedRepositoryIds: [sourceRepository.githubRepositoryId],
+    excludedRepositoryNames: [sourceRepository.name],
     ...(input.targetRepositoryIds
       ? { selectedRepositoryIds: input.targetRepositoryIds }
       : {}),
@@ -81,6 +89,11 @@ export async function requestOrgRulesetProvisioning(
       ? targetSelection.repositoryIds
       : target.repositories
           .filter((repository) => repository.selected && !repository.archived)
+          .filter(
+            (repository) =>
+              repository.githubRepositoryId !==
+              sourceRepository.githubRepositoryId,
+          )
           .map((repository) => repository.githubRepositoryId);
   const sourceWorkflowRef = `refs/heads/${sourceRepository.defaultBranch || defaultOrgRulesetSourceBranch}`;
   const request = createOrgRulesetProvisioningRequest({

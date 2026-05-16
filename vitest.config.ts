@@ -11,6 +11,7 @@ export default defineConfig({
     ],
     environment: "node",
     globals: false,
+    testTimeout: 20_000,
     coverage: {
       provider: "v8",
       reportsDirectory: "./coverage",

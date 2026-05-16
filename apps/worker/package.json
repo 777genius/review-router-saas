@@ -6,6 +6,7 @@
   "dependencies": {
     "@reviewrouter/features-action-control-plane": "workspace:*",
     "@reviewrouter/features-audit-log": "workspace:*",
+    "@reviewrouter/features-conflict-review": "workspace:*",
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",

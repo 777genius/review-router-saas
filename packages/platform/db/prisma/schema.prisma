@@ -13,19 +13,20 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members           WorkspaceMember[]
-  installations     GitHubInstallation[]
-  repositories      RepositoryConnection[]
-  provisioning      WorkflowProvisioning[]
-  orgRulesets       OrgRulesetProvisioning[]
-  reviewConfigs     ReviewConfiguration[]
-  providerSetup     ProviderSetupState[]
-  actionHealth      ActionRunHealthReport[]
-  auditEvents       AuditEvent[]
-  entitlement       WorkspaceEntitlement?
-  memoryItems       MemoryItem[]
-  memorySuggestions MemorySuggestion[]
-  memoryUsageEvents MemoryUsageEvent[]
+  members                WorkspaceMember[]
+  installations          GitHubInstallation[]
+  repositories           RepositoryConnection[]
+  provisioning           WorkflowProvisioning[]
+  orgRulesets            OrgRulesetProvisioning[]
+  reviewConfigs          ReviewConfiguration[]
+  providerSetup          ProviderSetupState[]
+  actionHealth           ActionRunHealthReport[]
+  conflictReviewAttempts ConflictReviewAttempt[]
+  auditEvents            AuditEvent[]
+  entitlement            WorkspaceEntitlement?
+  memoryItems            MemoryItem[]
+  memorySuggestions      MemorySuggestion[]
+  memoryUsageEvents      MemoryUsageEvent[]
 }
 
 model User {
@@ -37,11 +38,34 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  memberships       WorkspaceMember[]
-  memoryItems       MemoryItem[]
-  memorySuggestions MemorySuggestion[]
+  memberships                WorkspaceMember[]
+  githubAuthorizations       GitHubUserAuthorization[]
+  repositoryPermissionCaches RepositoryPermissionCache[]
+  memoryItems                MemoryItem[]
+  memorySuggestions          MemorySuggestion[]
 
   @@index([githubLogin])
+}
+
+model GitHubUserAuthorization {
+  id                    String    @id @default(cuid())
+  userId                String
+  githubUserId          BigInt
+  appSlug               String
+  encryptedAccessToken  String
+  encryptedRefreshToken String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  revokedAt             DateTime?
+  lastErrorCode         String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, appSlug])
+  @@index([githubUserId])
+  @@index([revokedAt])
 }
 
 model WorkspaceMember {
@@ -98,21 +122,45 @@ model RepositoryConnection {
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
 
-  workspace         Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation      GitHubInstallation       @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  provisioning      WorkflowProvisioning[]
-  reviewConfigs     ReviewConfiguration[]
-  providerSetup     ProviderSetupState[]
-  actionHealth      ActionRunHealthReport[]
-  rulesetSources    OrgRulesetProvisioning[] @relation("OrgRulesetSourceRepository")
-  memoryItems       MemoryItem[]
-  memorySuggestions MemorySuggestion[]
-  memoryUsageEvents MemoryUsageEvent[]
+  workspace              Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation           GitHubInstallation          @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  provisioning           WorkflowProvisioning[]
+  reviewConfigs          ReviewConfiguration[]
+  providerSetup          ProviderSetupState[]
+  actionHealth           ActionRunHealthReport[]
+  conflictReviewAttempts ConflictReviewAttempt[]
+  rulesetSources         OrgRulesetProvisioning[]    @relation("OrgRulesetSourceRepository")
+  permissionCache        RepositoryPermissionCache[]
+  memoryItems            MemoryItem[]
+  memorySuggestions      MemorySuggestion[]
+  memoryUsageEvents      MemoryUsageEvent[]
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
   @@index([workspaceId, setupStatus])
   @@index([workspaceId, selected, fullName])
+}
+
+model RepositoryPermissionCache {
+  id                   String   @id @default(cuid())
+  userId               String
+  repositoryId         String
+  githubInstallationId BigInt
+  permission           String?
+  roleName             String?
+  canManage            Boolean
+  checkedAt            DateTime
+  expiresAt            DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, repositoryId])
+  @@index([userId, canManage, expiresAt])
+  @@index([repositoryId])
+  @@index([githubInstallationId])
 }
 
 model ReviewConfiguration {
@@ -223,6 +271,68 @@ model ActionRunHealthReport {
 
   @@unique([repositoryId, githubRunId, githubRunAttempt])
   @@index([workspaceId, receivedAt])
+}
+
+model ConflictReviewAttempt {
+  id                        String                      @id @default(cuid())
+  workspaceId               String
+  repositoryId              String
+  githubRepositoryId        BigInt
+  githubInstallationId      BigInt
+  pullRequestNumber         Int
+  headSha                   String
+  baseRef                   String
+  baseSha                   String
+  fallbackVersion           Int
+  dispatchId                String                      @unique
+  dispatchNonceHash         String
+  dispatchEventType         String
+  status                    ConflictReviewAttemptStatus @default(recorded)
+  version                   Int                         @default(1)
+  githubRunId               String?
+  githubRunAttempt          String?
+  configSnapshotId          String?
+  postingManifestHash       String?
+  safeErrorCode             String?
+  safeErrorSummary          String?
+  normalReviewRecheckNeeded Boolean                     @default(false)
+  createdAt                 DateTime                    @default(now())
+  updatedAt                 DateTime                    @updatedAt
+  dispatchedAt              DateTime?
+  startedAt                 DateTime?
+  completedAt               DateTime?
+
+  workspace      Workspace                     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository     RepositoryConnection          @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  postingIntents ConflictReviewPostingIntent[]
+
+  @@unique([repositoryId, pullRequestNumber, headSha, baseRef, baseSha, fallbackVersion])
+  @@index([workspaceId, status])
+  @@index([repositoryId, pullRequestNumber, status])
+  @@index([githubRepositoryId, pullRequestNumber, headSha])
+  @@index([dispatchId, status])
+}
+
+model ConflictReviewPostingIntent {
+  id                   String                            @id @default(cuid())
+  attemptId            String
+  operationKind        String
+  operationFingerprint String
+  manifestHash         String
+  status               ConflictReviewPostingIntentStatus @default(pending)
+  githubExternalId     String?
+  githubUrl            String?
+  bodyHash             String?
+  safeErrorCode        String?
+  safeErrorSummary     String?
+  createdAt            DateTime                          @default(now())
+  updatedAt            DateTime                          @updatedAt
+  completedAt          DateTime?
+
+  attempt ConflictReviewAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, operationKind, operationFingerprint])
+  @@index([attemptId, status])
 }
 
 model WorkflowProvisioning {
@@ -624,4 +734,28 @@ enum MemorySuggestionStatus {
   blocked
   expired
   superseded
+}
+
+enum ConflictReviewAttemptStatus {
+  recorded
+  dispatched
+  started
+  model_running
+  posting_started
+  summary_posted
+  inline_posting_completed
+  status_posted
+  completed
+  failed
+  skipped
+  stale
+  degraded
+  dead_letter
+}
+
+enum ConflictReviewPostingIntentStatus {
+  pending
+  completed
+  failed
+  ambiguous
 }

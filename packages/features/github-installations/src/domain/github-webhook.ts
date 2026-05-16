@@ -61,6 +61,14 @@ const pullRequestRepositorySchema = z
   })
   .passthrough();
 
+const pushRepositorySchema = z
+  .object({
+    id: z.number().int().positive(),
+    name: z.string().min(1),
+    full_name: z.string().min(1),
+  })
+  .passthrough();
+
 const repositoryOwnerSchema = z
   .object({
     login: z.string().min(1),
@@ -107,6 +115,18 @@ export type GitHubPullRequestWebhookPayload = z.infer<
   typeof githubPullRequestWebhookPayloadSchema
 >;
 
+export const githubPushWebhookPayloadSchema = z.object({
+  ref: z.string().min(1),
+  deleted: z.boolean().default(false),
+  installation: installationReferenceSchema,
+  repository: pushRepositorySchema,
+  sender: senderSchema.optional(),
+});
+
+export type GitHubPushWebhookPayload = z.infer<
+  typeof githubPushWebhookPayloadSchema
+>;
+
 export const githubRepositoryWebhookPayloadSchema = z.object({
   action: z.string().min(1),
   installation: installationReferenceSchema,
@@ -116,6 +136,15 @@ export const githubRepositoryWebhookPayloadSchema = z.object({
 
 export type GitHubRepositoryWebhookPayload = z.infer<
   typeof githubRepositoryWebhookPayloadSchema
+>;
+
+export const githubAppAuthorizationWebhookPayloadSchema = z.object({
+  action: z.literal("revoked"),
+  sender: senderSchema,
+});
+
+export type GitHubAppAuthorizationWebhookPayload = z.infer<
+  typeof githubAppAuthorizationWebhookPayloadSchema
 >;
 
 export type GitHubWebhookEnvelope = {
@@ -132,6 +161,13 @@ export type GitHubPullRequestWebhookEnvelope = {
   readonly payload: GitHubPullRequestWebhookPayload;
 };
 
+export type GitHubPushWebhookEnvelope = {
+  readonly deliveryId: string;
+  readonly eventName: "push";
+  readonly payloadHash?: string;
+  readonly payload: GitHubPushWebhookPayload;
+};
+
 export type GitHubRepositoryWebhookEnvelope = {
   readonly deliveryId: string;
   readonly eventName: "repository";
@@ -139,9 +175,22 @@ export type GitHubRepositoryWebhookEnvelope = {
   readonly payload: GitHubRepositoryWebhookPayload;
 };
 
+export type GitHubAppAuthorizationWebhookEnvelope = {
+  readonly deliveryId: string;
+  readonly eventName: "github_app_authorization";
+  readonly payloadHash?: string;
+  readonly payload: GitHubAppAuthorizationWebhookPayload;
+};
+
 export type GitHubPullRequestWebhookHandlerPort = {
   handleGitHubPullRequestWebhook(
     envelope: GitHubPullRequestWebhookEnvelope,
+  ): Promise<Record<string, unknown>>;
+};
+
+export type GitHubPushWebhookHandlerPort = {
+  handleGitHubPushWebhook(
+    envelope: GitHubPushWebhookEnvelope,
   ): Promise<Record<string, unknown>>;
 };
 
@@ -151,10 +200,18 @@ export type GitHubRepositoryWebhookHandlerPort = {
   ): Promise<Record<string, unknown>>;
 };
 
+export type GitHubAppAuthorizationWebhookHandlerPort = {
+  handleGitHubAppAuthorizationWebhook(
+    envelope: GitHubAppAuthorizationWebhookEnvelope,
+  ): Promise<Record<string, unknown>>;
+};
+
 export const supportedGitHubInstallationWebhookEvents = [
+  "github_app_authorization",
   "installation",
   "installation_repositories",
   "pull_request",
+  "push",
   "repository",
 ] as const;
 

@@ -1,8 +1,16 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   parseReviewConfiguration,
+  type ReviewProviderConfiguration,
   safeDefaultReviewConfiguration,
 } from "@reviewrouter/features-review-config";
+import {
+  getProviderCatalogEntry,
+  providerAuthModeSchema,
+  providerKindForAuthMode,
+  providerKindSchema,
+  type ProviderAuthMode,
+} from "@reviewrouter/features-review-providers";
 import type {
   ActionHealthReport,
   ActionRepositoryContext,
@@ -34,6 +42,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
               where: { status: "configured" },
               select: {
                 scope: true,
+                sourceGithubRepositoryId: true,
                 sourceRepositoryFullName: true,
                 sourceWorkflowPath: true,
                 sourceWorkflowRef: true,
@@ -73,10 +82,13 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       trustedWorkflowRefs: [
         ...repository.workspace.orgRulesets
           .filter((ruleset) => {
-            if (ruleset.scope === "all_repositories") return true;
-            return parseTargetRepositoryIds(
-              ruleset.targetRepositoryIds,
-            ).includes(repository.githubRepositoryId.toString());
+            return orgRulesetTargetsRepository({
+              scope: ruleset.scope,
+              sourceGithubRepositoryId:
+                ruleset.sourceGithubRepositoryId?.toString() ?? null,
+              targetRepositoryIds: ruleset.targetRepositoryIds,
+              githubRepositoryId: repository.githubRepositoryId.toString(),
+            });
           })
           .flatMap((ruleset) => {
             if (!ruleset.sourceRepositoryFullName) return [];
@@ -97,6 +109,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     const repositoryConfig = await this.findLatestConfigVersion({
       workspaceId: input.workspaceId,
       targetKey: `repo:${input.repositoryId}`,
+      source: "repository",
     });
     if (repositoryConfig) {
       return repositoryConfig;
@@ -105,6 +118,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     return this.findLatestConfigVersion({
       workspaceId: input.workspaceId,
       targetKey: "workspace:default",
+      source: "workspace",
     });
   }
 
@@ -204,6 +218,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
   private async findLatestConfigVersion(input: {
     readonly workspaceId: string;
     readonly targetKey: string;
+    readonly source: "repository" | "workspace";
   }): Promise<RuntimeReviewConfigurationRecord | null> {
     const configuration = await this.prisma.reviewConfiguration.findUnique({
       where: {
@@ -252,26 +267,11 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
     }
 
     const providers = version.providers.length
-      ? version.providers.map((provider) => ({
-          kind: toProviderKind(provider.providerKind),
-          authMode: toAuthMode(provider.providerAuthMode),
-          model: provider.model,
-          reasoningEffort: toReasoningEffort(provider.reasoningEffort),
-          agenticContext: provider.agenticContext,
-          fastMode: provider.fastMode,
-        }))
-      : [
-          {
-            kind: toProviderKind(version.providerKind),
-            authMode: toAuthMode(version.providerAuthMode),
-            model: version.model,
-            reasoningEffort: toReasoningEffort(version.reasoningEffort),
-            agenticContext: version.agenticContext,
-            fastMode: version.fastMode,
-          },
-        ];
+      ? version.providers.map(toReviewProviderConfiguration)
+      : [toReviewProviderConfiguration(version)];
 
     return {
+      source: input.source,
       version: version.version,
       config: parseReviewConfiguration({
         schemaVersion: 2,
@@ -294,6 +294,21 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       }),
     };
   }
+}
+
+export function orgRulesetTargetsRepository(input: {
+  readonly scope: string;
+  readonly sourceGithubRepositoryId: string | null;
+  readonly targetRepositoryIds: unknown;
+  readonly githubRepositoryId: string;
+}): boolean {
+  if (input.sourceGithubRepositoryId === input.githubRepositoryId) {
+    return false;
+  }
+  if (input.scope === "all_repositories") return true;
+  return parseTargetRepositoryIds(input.targetRepositoryIds).includes(
+    input.githubRepositoryId,
+  );
 }
 
 function parseTargetRepositoryIds(value: unknown): readonly string[] {
@@ -342,19 +357,43 @@ function extractReviewRouterRuntimeGitRef(
   return null;
 }
 
-function toAuthMode(value: string) {
-  switch (value) {
-    case "codex_openai_api_key":
-    case "openrouter_api_key":
-    case "codex_subscription_oauth":
-      return value;
-    default:
-      return "codex_subscription_oauth";
-  }
+function toReviewProviderConfiguration(input: {
+  readonly providerKind: string;
+  readonly providerAuthMode: string;
+  readonly model: string;
+  readonly reasoningEffort: string;
+  readonly agenticContext: boolean;
+  readonly fastMode: boolean;
+}): ReviewProviderConfiguration {
+  const authMode = toProviderAuthMode({
+    providerAuthMode: input.providerAuthMode,
+    providerKind: input.providerKind,
+  });
+  return {
+    kind: providerKindForAuthMode(authMode),
+    authMode,
+    model: input.model,
+    reasoningEffort: toReasoningEffort(input.reasoningEffort),
+    agenticContext: input.agenticContext,
+    fastMode: input.fastMode,
+  };
 }
 
-function toProviderKind(value: string) {
-  return value === "openrouter" ? "openrouter" : "codex";
+function toProviderAuthMode(input: {
+  readonly providerAuthMode: string;
+  readonly providerKind: string;
+}): ProviderAuthMode {
+  const authMode = providerAuthModeSchema.safeParse(input.providerAuthMode);
+  if (authMode.success) {
+    return authMode.data;
+  }
+
+  const kind = providerKindSchema.safeParse(input.providerKind);
+  if (kind.success) {
+    return getProviderCatalogEntry(kind.data).defaultAuthMode;
+  }
+
+  return safeDefaultReviewConfiguration.provider.authMode;
 }
 
 function toReasoningEffort(value: string) {

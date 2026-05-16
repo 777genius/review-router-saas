@@ -313,15 +313,12 @@ function fetchGithubFile({ owner, name, path, ref }) {
     .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/");
-  const response = ghJson([
+  return gh([
     "api",
+    "-H",
+    "Accept: application/vnd.github.raw",
     `repos/${owner}/${name}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
   ]);
-  const content = response?.content;
-  if (typeof content !== "string" || content.length === 0) {
-    throw new Error("github_file_content_missing");
-  }
-  return Buffer.from(content, "base64").toString("utf8");
 }
 
 async function postPrComment(body) {

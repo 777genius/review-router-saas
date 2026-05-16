@@ -4,16 +4,29 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const repoCodexCommandFragment =
-  "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash";
+  "/install/codex | bash -s -- --confirm-write --scope repo --repo owner/repo";
 const orgCodexCommandFragment =
-  "/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_SECRET_SCOPE=org REVIEW_ROUTER_ORG=acme REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b bash";
+  "/install/codex | bash -s -- --confirm-write --scope org --org acme --visibility selected --repos repo-a,repo-b";
 const commonTexts = ["ReviewRouter", "Security", "Support"];
+const landingHeroText = "Free privacy-first";
 
 const pages = [
-  ["/", ["AI code review that stays inside your CI", "Install GitHub App"]],
+  [
+    "/",
+    [
+      landingHeroText,
+      "AI code review",
+      "that stays inside your CI",
+      "Install GitHub App",
+    ],
+  ],
   [
     "/auth/signin",
-    ["Sign in to ReviewRouter", "Continue with GitHub", "No secret custody"],
+    [
+      "Sign in to ReviewRouter",
+      "Continue with GitHub",
+      "No secrets stored here",
+    ],
   ],
   [
     "/auth/signin?error=OAuthCallback",
@@ -32,7 +45,7 @@ const pages = [
   ],
   [
     "/security",
-    ["Designed to avoid code and secret custody", repoCodexCommandFragment],
+    ["Code and secrets stay under your control", repoCodexCommandFragment],
   ],
   ["/fair-use", ["Fair use"]],
   ["/disconnect", ["Disconnect"]],
@@ -150,7 +163,7 @@ try {
     assertIncludesAny(
       dashboardPostInstallHtml,
       [
-        "AI code review that stays inside your CI",
+        landingHeroText,
         "Finish ReviewRouter setup",
         "Manage repository review rollout",
         "ReviewRouter is a metadata control plane",
@@ -193,7 +206,7 @@ try {
     assertIncludesAny(
       dashboardCleanHtml,
       [
-        "AI code review that stays inside your CI",
+        landingHeroText,
         "Manage repository review rollout",
         "ReviewRouter is a metadata control plane",
       ],
@@ -308,7 +321,7 @@ try {
   assertIncludesAny(
     setupPrDashboardHtml,
     [
-      "AI code review that stays inside your CI",
+      landingHeroText,
       "Manage repository review rollout",
       "ReviewRouter is a metadata control plane",
     ],
@@ -332,7 +345,7 @@ try {
   assertIncludesAny(
     syncDashboardHtml,
     [
-      "AI code review that stays inside your CI",
+      landingHeroText,
       "Manage repository review rollout",
       "ReviewRouter is a metadata control plane",
     ],

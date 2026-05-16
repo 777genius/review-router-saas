@@ -45,6 +45,17 @@ const target: OrgRulesetProvisioningTarget = {
       visibility: "private",
     },
     {
+      id: "repo_source",
+      githubRepositoryId: "1999",
+      owner: "agent-teams-ai",
+      name: "reviewrouter-workflows",
+      fullName: "agent-teams-ai/reviewrouter-workflows",
+      defaultBranch: "main",
+      selected: true,
+      archived: false,
+      visibility: "private",
+    },
+    {
       id: "repo_2",
       githubRepositoryId: "1002",
       owner: "agent-teams-ai",
@@ -110,12 +121,19 @@ describe("org ruleset provisioning", () => {
         path: ".github/workflows/reviewrouter-required.yml",
         ref: "refs/heads/main",
       },
-      targetSelection: { scope: "all_repositories" },
+      targetSelection: {
+        scope: "all_repositories",
+        excludeRepositoryNames: ["reviewrouter-workflows"],
+      },
     });
 
     expect(payload.conditions).toEqual({
       ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] },
-      repository_name: { include: ["~ALL"], exclude: [], protected: false },
+      repository_name: {
+        include: ["~ALL"],
+        exclude: ["reviewrouter-workflows"],
+        protected: false,
+      },
     });
   });
 
@@ -200,7 +218,7 @@ describe("org ruleset provisioning", () => {
     expect(result.status).toBe("queued");
     expect(provisioning.record).toMatchObject({
       githubInstallationId: target.githubInstallationId,
-      sourceRepositoryFullName: "agent-teams-ai/alpha",
+      sourceRepositoryFullName: "agent-teams-ai/reviewrouter-workflows",
       targetRepositoryIds: ["1001", "1002"],
     });
     expect(outbox.events).toEqual([
@@ -209,6 +227,34 @@ describe("org ruleset provisioning", () => {
         payload: { provisioningId: result.provisioningId },
       }),
     ]);
+  });
+
+  it("requires the dedicated source repository to be visible to the App", async () => {
+    const provisioning = new InMemoryOrgRulesetProvisioningRepository({
+      ...target,
+      repositories: target.repositories.filter(
+        (repository) => repository.name !== "reviewrouter-workflows",
+      ),
+    });
+
+    await expect(
+      requestOrgRulesetProvisioning(
+        {
+          workspaceId: target.workspaceId,
+          githubInstallationId: target.githubInstallationId,
+          scope: "selected_repositories",
+          enforcement: "evaluate",
+          actor: "777genius",
+          requestedAt,
+        },
+        {
+          provisioning,
+          setupGateway: new StaticOrgRulesetSetupGateway({ ok: true }),
+          outbox: new InMemoryOutbox(),
+        },
+      ),
+    ).rejects.toThrow("org_ruleset_source_repository_not_installed");
+    expect(provisioning.record).toBeNull();
   });
 
   it("requires all-repositories App access before queueing all-repositories rulesets", async () => {
@@ -232,6 +278,35 @@ describe("org ruleset provisioning", () => {
       ),
     ).rejects.toThrow("org_ruleset_all_repositories_requires_all_access");
     expect(provisioning.record).toBeNull();
+  });
+
+  it("excludes the dedicated source repository from all-repositories rulesets", async () => {
+    const provisioning = new InMemoryOrgRulesetProvisioningRepository({
+      ...target,
+      repositorySelection: "all",
+    });
+    const outbox = new InMemoryOutbox();
+
+    await requestOrgRulesetProvisioning(
+      {
+        workspaceId: target.workspaceId,
+        githubInstallationId: target.githubInstallationId,
+        scope: "all_repositories",
+        enforcement: "active",
+        actor: "777genius",
+        requestedAt,
+      },
+      {
+        provisioning,
+        setupGateway: new StaticOrgRulesetSetupGateway({ ok: true }),
+        outbox,
+      },
+    );
+
+    expect(provisioning.record).toMatchObject({
+      sourceRepositoryFullName: "agent-teams-ai/reviewrouter-workflows",
+      targetRepositoryIds: ["1001", "1002"],
+    });
   });
 
   it("writes the central workflow and ruleset idempotently from the worker", async () => {
@@ -261,7 +336,7 @@ describe("org ruleset provisioning", () => {
     expect(gateway.workflowWrites).toEqual([
       expect.objectContaining({
         owner: "agent-teams-ai",
-        repo: "alpha",
+        repo: "reviewrouter-workflows",
         path: ".github/workflows/reviewrouter-required.yml",
       }),
     ]);
@@ -276,6 +351,37 @@ describe("org ruleset provisioning", () => {
       sourceWorkflowSha: "source-sha",
     });
   });
+
+  it("keeps all-repositories worker payload from targeting the source repository", async () => {
+    const provisioning = new InMemoryOrgRulesetProvisioningRepository(target);
+    const queued = await provisioning.upsertRequested(
+      createRequest({ scope: "all_repositories" }),
+    );
+    const gateway = new StaticOrgRulesetSetupGateway({ ok: true });
+
+    await provisionOrgRulesetRequiredWorkflow(
+      {
+        provisioningId: queued.id,
+        actionRef: "777genius/review-router@main",
+        apiUrl: "https://api.reviewrouter.site",
+        runtimeConfigMode: "oidc",
+        attemptedAt: requestedAt,
+      },
+      { provisioning, setupGateway: gateway },
+    );
+
+    expect(gateway.rulesetWrites).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          conditions: expect.objectContaining({
+            repository_name: expect.objectContaining({
+              exclude: ["reviewrouter-workflows"],
+            }),
+          }),
+        }),
+      }),
+    ]);
+  });
 });
 
 function createRequest(input: {
@@ -286,9 +392,9 @@ function createRequest(input: {
     installationId: target.installationId,
     githubInstallationId: target.githubInstallationId,
     organizationLogin: target.organizationLogin,
-    sourceRepositoryId: "repo_1",
-    sourceGithubRepositoryId: "1001",
-    sourceRepositoryFullName: "agent-teams-ai/alpha",
+    sourceRepositoryId: "repo_source",
+    sourceGithubRepositoryId: "1999",
+    sourceRepositoryFullName: "agent-teams-ai/reviewrouter-workflows",
     sourceWorkflowPath: ".github/workflows/reviewrouter-required.yml",
     sourceWorkflowRef: "refs/heads/main",
     scope: input.scope,

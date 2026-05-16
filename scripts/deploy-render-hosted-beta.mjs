@@ -151,7 +151,7 @@ function serviceDetails({ type, startCommand, healthCheckPath }) {
   const details = {
     envSpecificDetails: {
       buildCommand:
-        "corepack enable && corepack prepare pnpm@10.33.0 --activate && pnpm install --frozen-lockfile && pnpm db:generate && pnpm build",
+        "pnpm --version && pnpm install --frozen-lockfile && pnpm db:generate && pnpm build",
       startCommand,
     },
     maxShutdownDelaySeconds: type === "background_worker" ? 120 : 60,
@@ -200,11 +200,18 @@ function buildServiceEnv({
     REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE: "0",
     REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "0",
     REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "1",
+    REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK:
+      env.REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK ?? "1",
     REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "1",
+    REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES:
+      env.REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES ?? "",
     REVIEW_ROUTER_MAX_REPOSITORIES_PER_SYNC: "250",
     REVIEW_ROUTER_OUTBOX_BATCH_SIZE: "25",
     REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS: "900000",
     REVIEW_ROUTER_PUBLIC_API_URL: apiUrl,
+    REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY:
+      env.REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY ??
+      crypto.randomBytes(32).toString("base64url"),
     REVIEW_ROUTER_WEB_URL: webUrl,
     REVIEW_ROUTER_WORKER_BUSY_MS: "250",
     REVIEW_ROUTER_WORKER_ERROR_MS: "5000",

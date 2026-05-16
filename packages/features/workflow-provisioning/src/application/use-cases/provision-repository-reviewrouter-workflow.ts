@@ -12,6 +12,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly runtimeConfigMode: "oidc" | "static";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
+  readonly conflictReviewFallbackEnabled?: boolean;
   readonly actor?: string;
 };
 
@@ -23,6 +24,7 @@ export async function provisionRepositoryReviewRouterWorkflow(
     readonly provisioning: WorkflowProvisioningRepositoryPort;
     readonly auditLog?: AuditLogRepositoryPort;
     readonly enabled?: boolean;
+    readonly auditMetadata?: Readonly<Record<string, unknown>>;
   },
 ) {
   const target = await dependencies.targets.findWorkflowProvisioningTarget(
@@ -53,6 +55,11 @@ export async function provisionRepositoryReviewRouterWorkflow(
       apiUrl: input.apiUrl,
       runtimeConfigMode: input.runtimeConfigMode,
       ...(input.workflowStyle ? { workflowStyle: input.workflowStyle } : {}),
+      ...(input.conflictReviewFallbackEnabled === undefined
+        ? {}
+        : {
+            conflictReviewFallbackEnabled: input.conflictReviewFallbackEnabled,
+          }),
       ...(input.staticRuntimeEnv
         ? { staticRuntimeEnv: input.staticRuntimeEnv }
         : {}),
@@ -65,6 +72,9 @@ export async function provisionRepositoryReviewRouterWorkflow(
         ? {}
         : { enabled: dependencies.enabled }),
       ...(input.actor ? { actor: input.actor } : {}),
+      ...(dependencies.auditMetadata
+        ? { auditMetadata: dependencies.auditMetadata }
+        : {}),
     },
   );
 }

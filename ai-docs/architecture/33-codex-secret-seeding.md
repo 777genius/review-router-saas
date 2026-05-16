@@ -29,17 +29,14 @@ scripts/seed-codex-auth.sh
 Future hosted command:
 
 ```bash
-curl -fsSL https://reviewrouter.site/install/codex | REVIEW_ROUTER_CONFIRM_WRITE=1 REVIEW_ROUTER_REPO=owner/repo bash
+curl -fsSL https://reviewrouter.site/install/codex | bash -s -- --confirm-write --scope repo --repo owner/repo
 ```
 
 ## Repo Secret Flow
 
 ```bash
 curl -fsSL https://reviewrouter.site/install/codex | \
-  REVIEW_ROUTER_CONFIRM_WRITE=1 \
-  REVIEW_ROUTER_REPO=owner/repo \
-  REVIEW_ROUTER_SECRET_SCOPE=repo \
-  bash
+  bash -s -- --confirm-write --scope repo --repo owner/repo
 ```
 
 Legacy-only direct command:
@@ -73,11 +70,7 @@ bash scripts/seed-codex-auth.sh --dry-run --repo owner/repo --stale-days 7
 
 ```bash
 curl -fsSL https://reviewrouter.site/install/codex | \
-  REVIEW_ROUTER_CONFIRM_WRITE=1 \
-  REVIEW_ROUTER_SECRET_SCOPE=org \
-  REVIEW_ROUTER_ORG=my-org \
-  REVIEW_ROUTER_ORG_SECRET_REPOS=repo-a,repo-b \
-  bash
+  bash -s -- --confirm-write --scope org --org my-org --visibility selected --repos repo-a,repo-b
 ```
 
 Legacy-only direct command:
@@ -97,9 +90,10 @@ The selected-repositories scope is important. Do not use organization `visibilit
 Dashboard and setup pages must show the exact selected repositories before displaying the command. For organization installs the recommended command should default to:
 
 ```text
-REVIEW_ROUTER_SECRET_SCOPE=org
-REVIEW_ROUTER_ORG=<org>
-REVIEW_ROUTER_ORG_SECRET_REPOS=<selected repo names>
+--scope org
+--org <org>
+--visibility selected
+--repos <selected repo names>
 ```
 
 This prevents accidental all-organization secret exposure.

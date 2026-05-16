@@ -105,6 +105,16 @@ assert(
   "demo must state Codex OAuth auth is not stored",
 );
 assert(
+  demo.executionModel?.controlPlaneDoesNotStore?.includes(
+    "Claude Code OAuth token",
+  ),
+  "demo must state Claude Code OAuth token is not stored",
+);
+assert(
+  demo.providers?.some((provider) => provider.id === "claude_code_oauth"),
+  "demo must list Claude Code OAuth provider support",
+);
+assert(
   demo.providers?.every((provider) => provider.sentToSaas === false),
   "demo provider secrets must not be sent to SaaS",
 );

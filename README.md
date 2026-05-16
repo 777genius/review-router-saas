@@ -1,6 +1,7 @@
 # ReviewRouter
 
 ReviewRouter is a local-beta SaaS control plane for AI pull request review.
+It is open source: https://github.com/777genius/review-router.
 
 The product does not run customer review workloads in the cloud by default.
 Customer code, diffs, provider secrets, and Codex OAuth files stay inside the
@@ -17,8 +18,8 @@ Implemented local-beta baseline:
 - workflow setup PR provisioning
 - GitHub Actions OIDC action session exchange
 - versioned workspace default and repository override review config
-- Codex OAuth, Codex API-key, and OpenRouter setup guidance without secret
-  custody
+- Codex OAuth, Claude Code OAuth, OpenAI API-key, and OpenRouter setup guidance
+  without sending secrets to ReviewRouter
 - safe action health reports and repo-health rollups
 - audit log, entitlements, outbox, worker loop, rate limits, and DB-backed
   smoke checks
@@ -31,7 +32,6 @@ Not production-complete yet:
 - payments
 - enterprise SSO
 - production support/admin tooling
-- release automation for the separate `777genius/review-router` Action runtime
 
 ## Start Here
 
@@ -112,6 +112,11 @@ REVIEW_ROUTER_BETA_CHECK_DB_E2E=1 pnpm beta:check
 The DB gate includes migration smoke, backup/restore smoke, webhook lifecycle,
 outbox recovery, rate limits, distributed locks, runtime config, and support
 diagnostics.
+
+## Release And Git Flow
+
+Release process, `v1` tag handling, and daily git flow are documented in
+[`ai-docs/operations/07-environments-and-release-management.md`](./ai-docs/operations/07-environments-and-release-management.md).
 
 Real GitHub smoke helpers require a disposable GitHub App installation and
 selected test repository:

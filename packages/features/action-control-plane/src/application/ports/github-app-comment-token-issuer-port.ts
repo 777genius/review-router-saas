@@ -9,6 +9,7 @@ export type IssuedGitHubAppCommentToken = {
   readonly expiresAt: Date;
   readonly repository: string;
   readonly permissions: {
+    readonly contents: "read";
     readonly pullRequests: "write";
     readonly issues: "write";
   };
