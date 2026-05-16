@@ -1,0 +1,268 @@
+import type { Prisma } from "@prisma/client";
+import type {
+  MemorySuggestionDashboardRepositoryCursor,
+  MemorySuggestionRepositoryPort,
+} from "../../application/ports/memory-suggestion-repository-port";
+import type { MemoryScope } from "../../domain/memory-scope-policy";
+import {
+  MemorySuggestion,
+  type MemorySuggestionSnapshot,
+  type MemorySuggestionStatus,
+} from "../../domain/memory-suggestion";
+import { memoryActorRef, type MemoryActor } from "../../domain/memory-actor";
+import { memoryError } from "../../domain/memory-errors";
+import {
+  isPrismaUniqueConstraintError,
+  type MemoryPrismaClient,
+  toMemorySuggestionSnapshot,
+  toPrismaJson,
+} from "./prisma-memory-mappers";
+
+export class PrismaMemorySuggestionRepository implements MemorySuggestionRepositoryPort {
+  constructor(private readonly prisma: MemoryPrismaClient) {}
+
+  async save(suggestion: MemorySuggestion): Promise<void> {
+    const snapshot = suggestion.snapshot();
+    try {
+      await this.prisma.memorySuggestion.upsert({
+        where: { id: snapshot.id },
+        create: toMemorySuggestionCreateInput(snapshot),
+        update: toMemorySuggestionUpdateInput(snapshot),
+      });
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        throw memoryError("memory_duplicate");
+      }
+      throw error;
+    }
+  }
+
+  async findById(input: {
+    readonly workspaceId: string;
+    readonly suggestionId: string;
+  }): Promise<MemorySuggestionSnapshot | null> {
+    const record = await this.prisma.memorySuggestion.findFirst({
+      where: {
+        id: input.suggestionId,
+        workspaceId: input.workspaceId,
+      },
+    });
+    return record ? toMemorySuggestionSnapshot(record) : null;
+  }
+
+  async findPendingByDedupeKey(input: {
+    readonly workspaceId: string;
+    readonly dedupeKey: string;
+  }): Promise<MemorySuggestionSnapshot | null> {
+    const record = await this.prisma.memorySuggestion.findFirst({
+      where: {
+        workspaceId: input.workspaceId,
+        dedupeKey: input.dedupeKey,
+        status: "pending",
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    return record ? toMemorySuggestionSnapshot(record) : null;
+  }
+
+  async countPendingForWorkspace(input: {
+    readonly workspaceId: string;
+    readonly notExpiredAt?: Date;
+  }): Promise<number> {
+    return this.prisma.memorySuggestion.count({
+      where: {
+        workspaceId: input.workspaceId,
+        status: "pending",
+        ...(input.notExpiredAt
+          ? { expiresAt: { gt: input.notExpiredAt } }
+          : {}),
+      },
+    });
+  }
+
+  async supersedePendingBySource(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemoryScope;
+    readonly sourceType: MemorySuggestionSnapshot["source"]["type"];
+    readonly sourceId: string;
+    readonly createdByActor: MemoryActor;
+    readonly replacementSuggestionId: string;
+    readonly excludeSuggestionId: string;
+    readonly supersededAt: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const records = await this.prisma.memorySuggestion.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        repositoryId: input.repositoryId,
+        userId: input.userId,
+        suggestedScope: input.scope,
+        status: "pending",
+        createdByActor: memoryActorRef(input.createdByActor),
+        id: { not: input.excludeSuggestionId },
+        AND: [
+          { source: { path: ["type"], equals: input.sourceType } },
+          { source: { path: ["sourceId"], equals: input.sourceId } },
+        ],
+      },
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      take: input.limit,
+    });
+
+    const superseded: MemorySuggestionSnapshot[] = [];
+    for (const record of records) {
+      const previous = toMemorySuggestionSnapshot(record);
+      const next = MemorySuggestion.fromSnapshot(previous)
+        .supersede({
+          actor: input.createdByActor,
+          replacementSuggestionId: input.replacementSuggestionId,
+          now: input.supersededAt,
+        })
+        .snapshot();
+      const result = await this.prisma.memorySuggestion.updateMany({
+        where: {
+          id: previous.id,
+          workspaceId: input.workspaceId,
+          status: "pending",
+          version: previous.version,
+        },
+        data: {
+          status: next.status,
+          relatedSuggestionId: next.relatedSuggestionId,
+          resolvedAt: next.resolvedAt,
+          resolvedBy: next.resolvedBy,
+          resolutionReason: next.resolutionReason,
+          updatedAt: next.updatedAt,
+          version: next.version,
+        },
+      });
+      if (result.count === 1) {
+        superseded.push(next);
+      }
+    }
+
+    return superseded;
+  }
+
+  async listForDashboard(input: {
+    readonly workspaceId: string;
+    readonly repositoryId?: string | null;
+    readonly scope?: MemoryScope;
+    readonly statuses: readonly MemorySuggestionStatus[];
+    readonly limit: number;
+    readonly cursor?: MemorySuggestionDashboardRepositoryCursor;
+    readonly notExpiredAt?: Date;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const record = await this.prisma.memorySuggestion.findMany({
+      where: toDashboardWhere(input),
+      orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
+      take: input.limit,
+    });
+    return record.map(toMemorySuggestionSnapshot);
+  }
+
+  async listExpiredPending(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const record = await this.prisma.memorySuggestion.findMany({
+      where: {
+        workspaceId: input.workspaceId,
+        status: "pending",
+        expiresAt: { lte: input.expiredAtOrBefore },
+      },
+      orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+      take: input.limit,
+    });
+    return record.map(toMemorySuggestionSnapshot);
+  }
+
+  async listWorkspaceIdsWithExpiredPending(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    const records = await this.prisma.memorySuggestion.findMany({
+      where: {
+        status: "pending",
+        expiresAt: { lte: input.expiredAtOrBefore },
+      },
+      select: { workspaceId: true },
+      distinct: ["workspaceId"],
+      orderBy: [{ workspaceId: "asc" }],
+      take: input.limit,
+    });
+    return records.map((record) => record.workspaceId);
+  }
+}
+
+function toDashboardWhere(input: {
+  readonly workspaceId: string;
+  readonly repositoryId?: string | null;
+  readonly scope?: MemoryScope;
+  readonly statuses: readonly MemorySuggestionStatus[];
+  readonly cursor?: MemorySuggestionDashboardRepositoryCursor;
+  readonly notExpiredAt?: Date;
+}): Prisma.MemorySuggestionWhereInput {
+  return {
+    workspaceId: input.workspaceId,
+    ...(input.repositoryId !== undefined
+      ? { repositoryId: input.repositoryId }
+      : {}),
+    ...(input.scope ? { suggestedScope: input.scope } : {}),
+    status: { in: [...input.statuses] },
+    ...(input.notExpiredAt ? { expiresAt: { gt: input.notExpiredAt } } : {}),
+    ...(input.cursor
+      ? {
+          OR: [
+            { updatedAt: { lt: input.cursor.updatedAt } },
+            {
+              updatedAt: input.cursor.updatedAt,
+              id: { gt: input.cursor.id },
+            },
+          ],
+        }
+      : {}),
+  };
+}
+
+function toMemorySuggestionCreateInput(
+  suggestion: MemorySuggestionSnapshot,
+): Prisma.MemorySuggestionUncheckedCreateInput {
+  return {
+    id: suggestion.id,
+    schemaVersion: suggestion.schemaVersion,
+    workspaceId: suggestion.workspaceId,
+    repositoryId: suggestion.repositoryId,
+    userId: suggestion.userId,
+    suggestedScope: suggestion.suggestedScope,
+    suggestedBody: suggestion.suggestedBody,
+    suggestedBodyVersion: suggestion.suggestedBodyVersion,
+    suggestedBodyHash: suggestion.suggestedBodyHash,
+    reason: suggestion.reason,
+    source: toPrismaJson(suggestion.source),
+    safetyReport: toPrismaJson(suggestion.safetyReport),
+    policyVersion: suggestion.policyVersion,
+    safetyPolicyVersion: suggestion.safetyPolicyVersion,
+    status: suggestion.status,
+    createdByActor: suggestion.createdByActor,
+    expiresAt: suggestion.expiresAt,
+    dedupeKey: suggestion.dedupeKey,
+    relatedMemoryItemId: suggestion.relatedMemoryItemId,
+    relatedSuggestionId: suggestion.relatedSuggestionId,
+    createdAt: suggestion.createdAt,
+    updatedAt: suggestion.updatedAt,
+    resolvedAt: suggestion.resolvedAt,
+    resolvedBy: suggestion.resolvedBy,
+    resolutionReason: suggestion.resolutionReason,
+    version: suggestion.version,
+  };
+}
+
+function toMemorySuggestionUpdateInput(
+  suggestion: MemorySuggestionSnapshot,
+): Prisma.MemorySuggestionUncheckedUpdateInput {
+  return toMemorySuggestionCreateInput(suggestion);
+}

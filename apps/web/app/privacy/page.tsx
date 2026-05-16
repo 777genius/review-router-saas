@@ -18,6 +18,7 @@ const collectedMetadata = [
   "workspace, installation, repository, and selected-repository metadata",
   "workflow setup PR URLs, action refs, config versions, and safe health summaries",
   "audit events for setup, config, support diagnostics, and operational actions",
+  "user-confirmed Balanced Memory snippets and safe memory metadata when Memory is enabled",
 ] as const;
 
 const notCollectedByDefault = [
@@ -25,6 +26,41 @@ const notCollectedByDefault = [
   "pull request diffs, prompts, or model responses",
   "Codex auth.json, Claude Code OAuth tokens, OpenAI API keys, or OpenRouter keys",
   "raw GitHub webhook payload bodies after normalization",
+  "raw memory source comments, embeddings, or deleted memory bodies in exports",
+] as const;
+
+const memoryPrivacyControls = [
+  {
+    title: "Confirmation required",
+    body: "Repository and workspace memory is saved only after an authorized maintainer, repository admin, or workspace admin confirms it.",
+  },
+  {
+    title: "Distilled text only",
+    body: "Memory stores short confirmed guidance, preferences, or project facts. Raw code, diffs, prompt text, model output, and secrets are rejected before storage.",
+  },
+  {
+    title: "Scoped retrieval",
+    body: "Repository memory is scoped to that repository. Workspace memory stays inside the workspace. User preference memory is limited to safe response preferences.",
+  },
+  {
+    title: "Admin export",
+    body: "Workspace memory export is admin-only, audited, size bounded, and excludes deleted rows, embeddings, raw source excerpts, and source hashes.",
+  },
+] as const;
+
+const memoryLifecycleRows = [
+  ["Pending suggestions", "expire if not confirmed", "not used at runtime"],
+  [
+    "Active memory",
+    "kept until disabled, deleted, or TTL-expired",
+    "retrievable when scope policy allows",
+  ],
+  ["Disabled memory", "kept for admin inspection", "not used at runtime"],
+  [
+    "Deleted memory",
+    "redacted immediately, then pruned after retention",
+    "not used at runtime",
+  ],
 ] as const;
 
 const privacyBoundary = [
@@ -134,9 +170,10 @@ export default function PrivacyPage(): React.ReactElement {
         <Card className="space-y-3">
           <Badge tone="warning">Retention</Badge>
           <p className="text-sm leading-6 text-slate-300">
-            Beta metadata is retained only for setup, audit, support, and health
-            operations. A published retention window belongs in the production
-            legal package.
+            Beta metadata is retained for setup, audit, support, and health
+            operations. Balanced Memory usage telemetry is pruned on a bounded
+            retention schedule, and deleted memory is removed from runtime
+            retrieval immediately before later hard-delete maintenance.
           </p>
         </Card>
         <Card className="space-y-3">
@@ -159,6 +196,80 @@ export default function PrivacyPage(): React.ReactElement {
             Hosted beta uses the production hosting, database, and GitHub
             integration stack. A formal subprocessor list belongs in the
             production legal package.
+          </p>
+        </Card>
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+        <Card className="space-y-4 border-cyan-300/20">
+          <Badge tone="accent">Balanced Memory</Badge>
+          <h2 className="text-2xl font-semibold text-cyan-50">
+            Memory is confirmed knowledge, not conversation custody.
+          </h2>
+          <p className="text-sm leading-6 text-slate-300">
+            When Memory is enabled, ReviewRouter may store short distilled
+            snippets that a user explicitly asks to remember or that a model
+            suggests for maintainer approval. Raw discussion threads, repository
+            code, pull request diffs, prompts, model responses, and provider
+            credentials are outside the Memory storage boundary.
+          </p>
+          <div className="grid gap-3">
+            {memoryPrivacyControls.map((control) => (
+              <div
+                key={control.title}
+                className="rounded-xl border border-cyan-200/10 bg-cyan-300/5 p-3"
+              >
+                <h3 className="text-sm font-semibold text-cyan-50">
+                  {control.title}
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  {control.body}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="space-y-4">
+          <Badge tone="warning">Memory lifecycle</Badge>
+          <h2 className="text-2xl font-semibold text-cyan-50">
+            Runtime access stops before hard delete.
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[620px] border-collapse text-left text-sm">
+              <thead className="text-cyan-100">
+                <tr>
+                  <th className="border-b border-cyan-200/15 px-3 py-2">
+                    Object
+                  </th>
+                  <th className="border-b border-cyan-200/15 px-3 py-2">
+                    Retention behavior
+                  </th>
+                  <th className="border-b border-cyan-200/15 px-3 py-2">
+                    Runtime exposure
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-300">
+                {memoryLifecycleRows.map(([object, retention, runtime]) => (
+                  <tr key={object}>
+                    <td className="border-b border-cyan-200/10 px-3 py-3 text-cyan-50">
+                      {object}
+                    </td>
+                    <td className="border-b border-cyan-200/10 px-3 py-3">
+                      {retention}
+                    </td>
+                    <td className="border-b border-cyan-200/10 px-3 py-3">
+                      {runtime}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs leading-5 text-slate-400">
+            Workspace admins can export active, disabled, and expired memory as
+            JSON. Deleted memory is excluded from export and runtime retrieval.
           </p>
         </Card>
       </section>

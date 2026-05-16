@@ -8,6 +8,7 @@ build/
 !.env.example
 .DS_Store
 coverage/
+tmp/
 .local-secrets/
 *.pem
 *.private-key.pem

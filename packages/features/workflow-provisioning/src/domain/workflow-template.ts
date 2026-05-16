@@ -44,8 +44,15 @@ export const reusableConflictReviewWorkflowPath =
   ".github/workflows/reviewrouter-conflict-reusable.yml";
 export const conflictReviewDispatchEventType = "reviewrouter_conflict_review";
 export const conflictReviewKind = "conflict-head";
-const conflictSummaryIssueCommentSuppressionCondition =
-  "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))";
+const reviewMemoryRuntimeEnvBlock = `
+      REVIEW_ROUTER_MEMORY_ENABLED: "true"
+      REVIEW_ROUTER_MEMORY_PROTOCOL_VERSION: "1"
+      REVIEW_ROUTER_MEMORY_BUNDLE_ENDPOINT: "/api/action/v1/memory"`;
+const interactionMemoryRuntimeEnvBlock = `${reviewMemoryRuntimeEnvBlock}
+      REVIEW_ROUTER_MEMORY_CANDIDATE_ENDPOINT: "/api/action/v1/memory-candidates"
+      REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"`;
+const interactionJobGuardExpression =
+  "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')";
 
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
@@ -83,7 +90,7 @@ jobs:
       CODEX_AUTH_JSON_PRESENT: \${{ secrets.CODEX_AUTH_JSON != '' && '1' || '0' }}
       OPENAI_API_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' && '1' || '0' }}
       OPENROUTER_API_KEY_PRESENT: \${{ secrets.OPENROUTER_API_KEY != '' && '1' || '0' }}
-      CLAUDE_CODE_OAUTH_TOKEN_PRESENT: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}
+      CLAUDE_CODE_OAUTH_TOKEN_PRESENT: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}${reviewMemoryRuntimeEnvBlock}
     steps:
       - name: Checkout pull request code
         uses: actions/checkout@v6
@@ -209,7 +216,7 @@ jobs:
   interaction:
     name: interaction
     runs-on: ubuntu-latest
-    if: \${{ ${conflictSummaryIssueCommentSuppressionCondition} }}
+    if: \${{ ${interactionJobGuardExpression} }}
     env:
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
       REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
@@ -217,13 +224,68 @@ jobs:
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
       REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
-      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"
+      CODEX_AUTH_JSON_PRESENT: \${{ secrets.CODEX_AUTH_JSON != '' && '1' || '0' }}
+      OPENAI_API_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' && '1' || '0' }}
+      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"${interactionMemoryRuntimeEnvBlock}
     steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
         id: preflight
         uses: ${options.actionRef}
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"
+          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+
+      - name: Setup Node.js for Codex discussion replies
+        if: \${{ steps.preflight.outputs.needs_discussion == 'true' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Codex CLI for discussion replies
+        if: \${{ steps.preflight.outputs.needs_discussion == 'true' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
+        shell: bash
+        run: npm install -g @openai/codex@0.125.0
+
+      - name: Restore Codex subscription auth for discussion replies
+        if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+        run: |
+          set -euo pipefail
+          if [ -z "\${CODEX_AUTH_JSON:-}" ]; then
+            echo "::error::CODEX_AUTH_JSON secret is missing. reseed auth.json from a trusted machine or switch this repository to OpenAI API-key mode."
+            exit 1
+          fi
+          node - <<'NODE'
+          const payload = process.env.CODEX_AUTH_JSON || '';
+          const fail = (message) => {
+            console.error('::error::' + message);
+            process.exit(1);
+          };
+          let auth;
+          try {
+            auth = JSON.parse(payload);
+          } catch (error) {
+            fail('CODEX_AUTH_JSON is not valid JSON. reseed auth.json from a trusted machine. ' + error.message);
+          }
+          if (auth.auth_mode !== 'chatgpt') {
+            fail('CODEX_AUTH_JSON auth_mode must be chatgpt. reseed auth.json with Codex CLI subscription login or switch this repo to OpenAI API-key mode.');
+          }
+          if (!auth.tokens || typeof auth.tokens.refresh_token !== 'string' || auth.tokens.refresh_token.length === 0) {
+            fail('CODEX_AUTH_JSON tokens.refresh_token is missing. Run codex login on a trusted machine and reseed auth.json.');
+          }
+          NODE
+          export CODEX_HOME="\${CODEX_HOME:-$HOME/.codex}"
+          mkdir -p "$CODEX_HOME"
+          chmod 700 "$CODEX_HOME"
+          printf '%s' "$CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"
+          chmod 600 "$CODEX_HOME/auth.json"
+          if [ -n "\${CODEX_CONFIG_TOML:-}" ]; then
+            printf '%s' "$CODEX_CONFIG_TOML" > "$CODEX_HOME/config.toml"
+            chmod 600 "$CODEX_HOME/config.toml"
+          fi
 
       - name: Run ReviewRouter interaction
         if: \${{ steps.preflight.outputs.should_run == 'true' }}
@@ -231,6 +293,13 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
+          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+          REVIEW_ROUTER_DISCUSSION_MAX_PER_PR: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
+          REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
+          REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
+          CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
+          CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
+          OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
 `;
 }
 
@@ -350,15 +419,24 @@ permissions:
 jobs:
   interaction:
     name: interaction
-    if: \${{ ${conflictSummaryIssueCommentSuppressionCondition} }}
+    if: \${{ ${interactionJobGuardExpression} }}
     uses: ${reusableWorkflowRuntimeRepository}/${reusableInteractionWorkflowPath}@${template.runtimeRef}
     with:
       runtime_ref: ${template.runtimeRef}
       api_url: ${JSON.stringify(options.apiUrl)}
       runtime_config_mode: ${options.runtimeConfigMode}
       review_workflow_file: reviewrouter.yml
+      discussion_mode: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+      discussion_model: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
+      discussion_reasoning_effort: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
+      discussion_max_per_pr: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
+      discussion_max_per_thread: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
+      discussion_timeout_seconds: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
     secrets:
       REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
+      CODEX_AUTH_JSON: \${{ secrets.CODEX_AUTH_JSON }}
+      CODEX_CONFIG_TOML: \${{ secrets.CODEX_CONFIG_TOML }}
+      OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
 `;
 }
 
@@ -395,7 +473,7 @@ jobs:
       CODEX_AUTH_JSON_PRESENT: \${{ secrets.CODEX_AUTH_JSON != '' && '1' || '0' }}
       OPENAI_API_KEY_PRESENT: \${{ secrets.OPENAI_API_KEY != '' && '1' || '0' }}
       OPENROUTER_API_KEY_PRESENT: \${{ secrets.OPENROUTER_API_KEY != '' && '1' || '0' }}
-      CLAUDE_CODE_OAUTH_TOKEN_PRESENT: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}
+      CLAUDE_CODE_OAUTH_TOKEN_PRESENT: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' && '1' || '0' }}${reviewMemoryRuntimeEnvBlock}
     steps:
       - name: Pass merge queue check
         if: \${{ github.event_name == 'merge_group' }}

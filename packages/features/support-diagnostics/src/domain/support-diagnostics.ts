@@ -33,6 +33,13 @@ export type SupportDiagnosticsInput = {
     readonly status: string;
     readonly type: string;
   }[];
+  readonly memory: {
+    readonly itemStatusCounts: Record<string, number>;
+    readonly itemScopeCounts: Record<string, number>;
+    readonly itemIndexStateCounts: Record<string, number>;
+    readonly suggestionStatusCounts: Record<string, number>;
+    readonly usageEventCount: number;
+  };
   readonly recentAuditActions: readonly string[];
 };
 
@@ -70,6 +77,35 @@ export type SupportDiagnosticsSnapshot = {
     readonly pending: number;
     readonly processing: number;
     readonly deadLetter: number;
+  };
+  readonly memoryCounts: {
+    readonly items: {
+      readonly total: number;
+      readonly active: number;
+      readonly disabled: number;
+      readonly expired: number;
+      readonly deleted: number;
+    };
+    readonly scopes: {
+      readonly repository: number;
+      readonly workspace: number;
+      readonly userPrefs: number;
+    };
+    readonly index: {
+      readonly pending: number;
+      readonly indexed: number;
+      readonly failed: number;
+      readonly deleted: number;
+    };
+    readonly suggestions: {
+      readonly pending: number;
+      readonly confirmed: number;
+      readonly rejected: number;
+      readonly blocked: number;
+      readonly expired: number;
+      readonly superseded: number;
+    };
+    readonly usageEvents: number;
   };
   readonly recentAuditActions: readonly string[];
 };
@@ -161,8 +197,47 @@ export function summarizeSupportDiagnostics(
       deadLetter: input.outbox.filter((event) => event.status === "dead_letter")
         .length,
     },
+    memoryCounts: summarizeMemoryCounts(input.memory),
     recentAuditActions: input.recentAuditActions.slice(0, 10),
   };
+}
+
+function summarizeMemoryCounts(
+  memory: SupportDiagnosticsInput["memory"],
+): SupportDiagnosticsSnapshot["memoryCounts"] {
+  return {
+    items: {
+      total: sumCounts(memory.itemStatusCounts),
+      active: memory.itemStatusCounts.active ?? 0,
+      disabled: memory.itemStatusCounts.disabled ?? 0,
+      expired: memory.itemStatusCounts.expired ?? 0,
+      deleted: memory.itemStatusCounts.deleted ?? 0,
+    },
+    scopes: {
+      repository: memory.itemScopeCounts.repository ?? 0,
+      workspace: memory.itemScopeCounts.workspace ?? 0,
+      userPrefs: memory.itemScopeCounts.user_prefs ?? 0,
+    },
+    index: {
+      pending: memory.itemIndexStateCounts.index_pending ?? 0,
+      indexed: memory.itemIndexStateCounts.indexed ?? 0,
+      failed: memory.itemIndexStateCounts.index_failed ?? 0,
+      deleted: memory.itemIndexStateCounts.index_deleted ?? 0,
+    },
+    suggestions: {
+      pending: memory.suggestionStatusCounts.pending ?? 0,
+      confirmed: memory.suggestionStatusCounts.confirmed ?? 0,
+      rejected: memory.suggestionStatusCounts.rejected ?? 0,
+      blocked: memory.suggestionStatusCounts.blocked ?? 0,
+      expired: memory.suggestionStatusCounts.expired ?? 0,
+      superseded: memory.suggestionStatusCounts.superseded ?? 0,
+    },
+    usageEvents: memory.usageEventCount,
+  };
+}
+
+function sumCounts(counts: Record<string, number>): number {
+  return Object.values(counts).reduce((total, value) => total + value, 0);
 }
 
 function sumNullable(values: readonly (number | null)[]): number {

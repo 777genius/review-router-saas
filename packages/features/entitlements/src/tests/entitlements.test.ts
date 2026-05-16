@@ -39,6 +39,10 @@ describe("entitlements", () => {
     expect(freeBetaEntitlement("workspace_1").limits).toEqual({
       maxRepositories: freeBetaLimits.maxRepositories,
       maxWorkspacesPerUser: freeBetaLimits.maxWorkspacesPerUser,
+      maxActiveMemoryItemsPerWorkspace:
+        freeBetaLimits.maxActiveMemoryItemsPerWorkspace,
+      maxPendingMemorySuggestionsPerWorkspace:
+        freeBetaLimits.maxPendingMemorySuggestionsPerWorkspace,
     });
     expect(freeBetaLimits.setupPrAttemptsPerRepositoryPerHour).toBeGreaterThan(
       0,
@@ -59,6 +63,16 @@ describe("entitlements", () => {
         {
           workspaceId: "workspace_1",
           feature: "workflow_provisioning",
+          actor: "system:test",
+        },
+        { entitlements },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertWorkspaceFeatureEntitlement(
+        {
+          workspaceId: "workspace_1",
+          feature: "balanced_memory",
           actor: "system:test",
         },
         { entitlements },

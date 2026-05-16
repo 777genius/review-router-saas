@@ -22,6 +22,39 @@ workflow_dispatch:
 
 Manual dispatch can support trusted maintainer reruns.
 
+## Interaction Workflow Guard
+
+Interaction workflows for `/rr` commands, discussion replies, and memory
+commands must fail closed before allocating a runner for comments that cannot
+produce useful work.
+
+Required generated job guard:
+
+```yaml
+if: ${{ github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot') }}
+```
+
+Reason:
+
+- issue comments outside pull requests do not have review context;
+- bot comments must not recursively trigger ReviewRouter replies;
+- `workflow_dispatch` remains available for trusted manual debugging.
+
+Do not use a broad GitHub Actions `concurrency` group for all interaction
+events. GitHub only keeps one running and one pending job per group, so a burst
+can cancel older pending jobs and drop legitimate `/rr skip`, `/rr remember`, or
+maintenance commands. Prefer runtime-level idempotency, per-thread reply
+markers, per-PR/thread caps, and SaaS OIDC rate limits.
+
+AI discussion replies use the same privacy boundary as review execution. The
+generated caller workflow passes `CODEX_AUTH_JSON`, `CODEX_CONFIG_TOML`, or
+`OPENAI_API_KEY` directly from the customer's GitHub Actions secrets to the
+ReviewRouter runtime workflow. Model and reasoning selection are passed as
+non-secret workflow variables, so the runtime contract stays explicit without
+moving prompts or credentials into SaaS. ReviewRouter SaaS stores only
+configuration intent and safe metadata; it must not receive provider
+credentials, prompts, raw thread text, model responses, code, or diffs.
+
 ## Default Permissions
 
 ```yaml

@@ -72,6 +72,14 @@ function toLimits(
       typeof candidate.maxWorkspacesPerUser === "number"
         ? candidate.maxWorkspacesPerUser
         : fallback.maxWorkspacesPerUser,
+    maxActiveMemoryItemsPerWorkspace:
+      typeof candidate.maxActiveMemoryItemsPerWorkspace === "number"
+        ? candidate.maxActiveMemoryItemsPerWorkspace
+        : fallback.maxActiveMemoryItemsPerWorkspace,
+    maxPendingMemorySuggestionsPerWorkspace:
+      typeof candidate.maxPendingMemorySuggestionsPerWorkspace === "number"
+        ? candidate.maxPendingMemorySuggestionsPerWorkspace
+        : fallback.maxPendingMemorySuggestionsPerWorkspace,
   };
 }
 

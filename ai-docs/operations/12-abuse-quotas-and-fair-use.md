@@ -29,6 +29,7 @@ Limits can be generous, but they must exist.
 - per-installation sync queue
 - per-repo provisioning lock
 - OIDC exchange rate limit keyed by repo/run/IP
+- extra interaction OIDC rate limits keyed by repo and actor to absorb comment storms before action sessions are issued
 - health report size limit
 - dashboard mutation rate limit
 
@@ -37,6 +38,7 @@ Limits can be generous, but they must exist.
 - `features-rate-limits` owns fixed-window rate-limit domain logic and application ports.
 - `PrismaRateLimitStore` uses a DB-backed bucket table so limits work across multiple API instances.
 - Action control-plane checks rate limits before issuing GitHub Actions OIDC sessions and before accepting action health reports.
+- Interaction OIDC exchanges use both actor and repository buckets in addition to the existing run-attempt bucket.
 - Action route errors map rate-limit denials to HTTP `429` with safe public error code `rate_limited`.
 - Dashboard mutations use the same DB-backed rate-limit package for manual installation syncs, setup PR creation, review config saves, and dead-letter retries.
 - Dashboard rate-limit denials are mapped to a safe `rate_limited` UI error without exposing bucket keys.

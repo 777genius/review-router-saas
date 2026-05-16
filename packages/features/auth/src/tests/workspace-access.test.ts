@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceAccessRepositoryPort } from "../application/ports/workspace-access-repository-port";
+import { assertWorkspaceAdminAllowed } from "../application/use-cases/assert-workspace-admin-allowed";
 import { assertWorkspaceMutationAllowed } from "../application/use-cases/assert-workspace-mutation-allowed";
 import { listVisibleWorkspaceScope } from "../application/use-cases/list-visible-workspace-scope";
 import type { WorkspaceAccessRole } from "../domain/workspace-access";
-import { canMutateWorkspace } from "../domain/workspace-access";
+import {
+  canAdminWorkspace,
+  canMutateWorkspace,
+} from "../domain/workspace-access";
 
 class StaticWorkspaceAccess implements WorkspaceAccessRepositoryPort {
   constructor(
@@ -43,6 +47,37 @@ describe("workspace access policy", () => {
         localAdminGithubLogins: ["777genius"],
       }),
     ).toEqual({ allowed: true, reason: "local_admin_override" });
+
+    expect(
+      canAdminWorkspace({
+        role: "admin",
+        githubLogin: "maintainer",
+      }),
+    ).toEqual({ allowed: true, reason: "allowed" });
+  });
+
+  it("checks workspace admin access independently from mutation workflows", async () => {
+    await expect(
+      assertWorkspaceAdminAllowed(
+        {
+          workspaceId: "workspace_1",
+          githubUserId: "123",
+          githubLogin: "maintainer",
+        },
+        { workspaceAccess: new StaticWorkspaceAccess("admin") },
+      ),
+    ).resolves.toMatchObject({ allowed: true });
+
+    await expect(
+      assertWorkspaceAdminAllowed(
+        {
+          workspaceId: "workspace_1",
+          githubUserId: "456",
+          githubLogin: "member",
+        },
+        { workspaceAccess: new StaticWorkspaceAccess("member") },
+      ),
+    ).rejects.toThrow("workspace_admin_forbidden:insufficient_role");
   });
 
   it("blocks members and users without workspace membership", async () => {

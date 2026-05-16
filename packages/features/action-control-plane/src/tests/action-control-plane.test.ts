@@ -83,6 +83,7 @@ const sessionClaims: ActionSessionClaims = {
   repositoryId: "repo_1",
   githubRepositoryId: "123456",
   repository: "777genius/example",
+  githubActorLogin: "777genius",
   githubRunId: "1001",
   githubRunAttempt: "1",
   eventName: "pull_request",
@@ -514,6 +515,8 @@ class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
     readonly workspaceId: string;
     readonly repositoryId: string;
     readonly repositoryFullName: string;
+    readonly eventName: string;
+    readonly githubActorLogin: string | null;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
   }> = [];
@@ -529,6 +532,8 @@ class DenyingActionRateLimits implements ActionRateLimitPolicyPort {
     readonly workspaceId: string;
     readonly repositoryId: string;
     readonly repositoryFullName: string;
+    readonly eventName: string;
+    readonly githubActorLogin: string | null;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
   }): Promise<void> {
@@ -599,6 +604,7 @@ describe("action control plane", () => {
     expect(sessions.signedClaims).toMatchObject({
       workspaceId: "workspace_1",
       repositoryId: "repo_1",
+      githubActorLogin: "777genius",
       githubRunId: "1001",
       protocolVersion: 1,
     });
@@ -1366,6 +1372,8 @@ describe("action control plane", () => {
         workspaceId: "workspace_1",
         repositoryId: "repo_1",
         repositoryFullName: "777genius/example",
+        eventName: "pull_request",
+        githubActorLogin: "777genius",
         githubRunId: "1001",
         githubRunAttempt: "1",
       },

@@ -99,6 +99,11 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain('REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"');
     expect(workflow).toContain('REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"');
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain('REVIEW_ROUTER_MEMORY_ENABLED: "true"');
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_BUNDLE_ENDPOINT: "/api/action/v1/memory"',
+    );
+    expect(workflow).not.toContain("REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT");
     expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');
     expect(workflow).toContain('CODEX_MODEL: "gpt-5.5"');
   });
@@ -111,7 +116,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("issue_comment:");
     expect(workflow).toContain("types: [created, edited]");
     expect(workflow).toContain(
-      "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))",
+      "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')",
     );
     expect(workflow).not.toContain("pull_request:\n");
     expect(workflow).not.toContain("pull_request_target");
@@ -120,19 +125,45 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("pull-requests: write");
     expect(workflow).toContain("issues: write");
     expect(workflow).toContain("id-token: write");
-    expect(workflow).not.toContain("github.event.comment.user.type != 'Bot'");
+    expect(workflow).toContain("github.event.comment.user.type != 'Bot'");
     expect(workflow).not.toContain(
       "startsWith(github.event.comment.body, '/rr ')",
     );
     expect(workflow).toContain("Preflight ReviewRouter interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
+    expect(workflow).toContain(
+      "REVIEW_ROUTER_DISCUSSION_MODE: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
+    );
+    expect(workflow).toContain(
+      "steps.preflight.outputs.needs_discussion == 'true'",
+    );
+    expect(workflow).toContain("Install Codex CLI for discussion replies");
+    expect(workflow).toContain(
+      "Restore Codex subscription auth for discussion replies",
+    );
+    expect(workflow).toContain("CODEX_AUTH_JSON_PRESENT");
+    expect(workflow).toContain("OPENAI_API_KEY_PRESENT");
     expect(workflow).toContain("steps.preflight.outputs.should_run == 'true'");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
+    expect(workflow).toContain(
+      "CODEX_MODEL: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
+    );
+    expect(workflow).toContain(
+      "CODEX_REASONING_EFFORT: ${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}",
+    );
     expect(workflow).not.toContain("REVIEW_ROUTER_THREAD_RESOLVE_TOKEN");
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter.yml"',
     );
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain('REVIEW_ROUTER_MEMORY_ENABLED: "true"');
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_CANDIDATE_ENDPOINT: "/api/action/v1/memory-candidates"',
+    );
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"',
+    );
   });
 
   it("returns both workflow files for setup PR provisioning", () => {
@@ -160,11 +191,23 @@ describe("renderReviewRouterWorkflow", () => {
       "review_workflow_file: reviewrouter.yml",
     );
     expect(interactionWorkflow?.content).toContain(
+      "discussion_mode: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
+    );
+    expect(interactionWorkflow?.content).toContain(
+      "discussion_model: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
+    );
+    expect(interactionWorkflow?.content).toContain(
+      "discussion_reasoning_effort: ${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}",
+    );
+    expect(interactionWorkflow?.content).toContain(
+      "discussion_max_per_pr: ${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}",
+    );
+    expect(interactionWorkflow?.content).toContain(
       "pull_request_review_comment:",
     );
     expect(interactionWorkflow?.content).toContain("issue_comment:");
     expect(interactionWorkflow?.content).toContain(
-      "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))",
+      "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')",
     );
   });
 
@@ -294,7 +337,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflow).toContain("issue_comment:");
     expect(interactionWorkflow).toContain("types: [created, edited]");
     expect(interactionWorkflow).toContain(
-      "github.event_name != 'issue_comment' || (github.event.issue.pull_request && !(contains(github.event.comment.body, 'reviewrouter:conflict-review:v1') && github.event.comment.user.type == 'Bot'))",
+      "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')",
     );
     expect(interactionWorkflow).toContain("actions: write");
     expect(interactionWorkflow).toContain(
@@ -302,6 +345,15 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(interactionWorkflow).toContain(
       "REVIEW_ROUTER_LEDGER_KEY: ${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}",
+    );
+    expect(interactionWorkflow).toContain(
+      "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
+    );
+    expect(interactionWorkflow).toContain(
+      "CODEX_CONFIG_TOML: ${{ secrets.CODEX_CONFIG_TOML }}",
+    );
+    expect(interactionWorkflow).toContain(
+      "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
     );
     expect(interactionWorkflow).not.toContain("pull_request_target");
   });
@@ -356,6 +408,9 @@ describe("renderReviewRouterWorkflow", () => {
       "github.event_name != 'merge_group' && (github.event_name != 'pull_request'",
     );
     expect(workflow).toContain('REVIEWROUTER_COMMENT_TOKEN_MODE: "app-oidc"');
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_MEMORY_BUNDLE_ENDPOINT: "/api/action/v1/memory"',
+    );
     expect(workflow).toContain(
       "CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}",
     );

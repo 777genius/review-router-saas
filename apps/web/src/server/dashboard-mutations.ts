@@ -1,6 +1,7 @@
 import { App } from "@octokit/app";
 import { getServerSession } from "next-auth";
 import {
+  assertWorkspaceAdminAllowed,
   assertWorkspaceMutationAllowed,
   listVisibleWorkspaceScope,
   PrismaWorkspaceAccessRepository,
@@ -26,6 +27,8 @@ export type DashboardMutationActor = {
   readonly accessSource?: DashboardMutationAccessSource;
 };
 
+export type DashboardWorkspaceAdminActor = DashboardMutationActor;
+
 export type DashboardMutationAccessSource =
   | { readonly source: "workspace_admin" }
   | {
@@ -38,6 +41,7 @@ export type DashboardMutationAccessSource =
 export type DashboardMutationStatus = {
   readonly enabled: boolean;
   readonly signedIn: boolean;
+  readonly githubUserId: string | null;
   readonly githubLogin: string | null;
   readonly githubAvatarUrl: string | null;
   readonly reason: "ready" | "disabled" | "signed_out" | "auth_misconfigured";
@@ -59,6 +63,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
     return {
       enabled: false,
       signedIn: false,
+      githubUserId: null,
       githubLogin: null,
       githubAvatarUrl: null,
       reason: "auth_misconfigured",
@@ -73,6 +78,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
     return {
       enabled: false,
       signedIn,
+      githubUserId: session?.user?.githubUserId ?? null,
       githubLogin: session?.user?.githubLogin ?? null,
       githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
       reason: "disabled",
@@ -82,6 +88,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
     return {
       enabled: false,
       signedIn: false,
+      githubUserId: null,
       githubLogin: null,
       githubAvatarUrl: null,
       reason: "signed_out",
@@ -91,6 +98,7 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
   return {
     enabled: true,
     signedIn: true,
+    githubUserId: session?.user?.githubUserId ?? null,
     githubLogin: session?.user?.githubLogin ?? null,
     githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
     reason: "ready",
@@ -473,6 +481,50 @@ function githubApiStatus(error: unknown): number | null {
   }
 
   return null;
+}
+
+export async function assertDashboardWorkspaceAdminAllowed(
+  workspaceId: string,
+): Promise<DashboardWorkspaceAdminActor> {
+  if (!getAuthEnvironmentStatus().configured) {
+    throw new Error("dashboard_auth_misconfigured");
+  }
+
+  const session = await getServerSession(authOptions);
+  const githubUserId = session?.user?.githubUserId;
+  const githubLogin = session?.user?.githubLogin;
+  if (!githubUserId || !githubLogin) {
+    throw new Error("dashboard_admin_requires_sign_in");
+  }
+
+  const user = await getPrisma().user.findUnique({
+    where: { githubUserId: BigInt(githubUserId) },
+    select: { id: true },
+  });
+  if (!user) {
+    throw new Error("dashboard_admin_requires_sign_in");
+  }
+
+  await assertWorkspaceAdminAllowed(
+    {
+      workspaceId,
+      githubUserId,
+      githubLogin,
+      localAdminGithubLogins: readCsvEnv(
+        "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
+      ),
+    },
+    {
+      workspaceAccess: new PrismaWorkspaceAccessRepository(getPrisma()),
+    },
+  );
+
+  return {
+    userId: user.id,
+    githubUserId,
+    githubLogin,
+    actor: `user:${githubLogin}`,
+  };
 }
 
 export async function getDashboardWorkspaceScope(): Promise<DashboardWorkspaceScope> {

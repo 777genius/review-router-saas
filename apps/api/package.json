@@ -10,6 +10,7 @@
     "@reviewrouter/features-entitlements": "workspace:*",
     "@reviewrouter/features-auth": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
+    "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-system-health": "workspace:*",

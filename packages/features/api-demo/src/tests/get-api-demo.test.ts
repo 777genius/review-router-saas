@@ -104,6 +104,15 @@ describe("getApiDemo", () => {
     expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
       "/api/action/v1/session/exchange",
     );
+    expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
+      "/api/action/v1/memory",
+    );
+    expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
+      "/api/action/v1/memory-candidates",
+    );
+    expect(Object.keys(openapi.paths as Record<string, unknown>)).toContain(
+      "/api/action/v1/memory-commands",
+    );
     expect(openapi).toMatchObject({
       components: {
         schemas: {
@@ -116,6 +125,11 @@ describe("getApiDemo", () => {
           },
           ApiIndex: {},
           ReadyResponse: {},
+          ActionMemoryBundle: {},
+          ActionMemoryCandidateRequest: {},
+          ActionMemoryCommandRequest: {},
+          ActionMemoryCommandResponse: {},
+          ActionMemoryMutationResponse: {},
         },
       },
     });
@@ -132,6 +146,64 @@ describe("getApiDemo", () => {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ApiDemo" },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(paths["/api/action/v1/memory"]).toMatchObject({
+      get: {
+        security: [{ reviewRouterActionSession: [] }],
+        parameters: expect.arrayContaining([
+          expect.objectContaining({
+            name: "safeRetrievalQuery",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 500 },
+          }),
+          expect.objectContaining({
+            name: "q",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 500 },
+          }),
+        ]),
+      },
+    });
+    expect(paths["/api/action/v1/memory-candidates"]).toMatchObject({
+      post: {
+        security: [{ reviewRouterActionSession: [] }],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/ActionMemoryCandidateRequest",
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(paths["/api/action/v1/memory-commands"]).toMatchObject({
+      post: {
+        security: [{ reviewRouterActionSession: [] }],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                $ref: "#/components/schemas/ActionMemoryCommandRequest",
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/ActionMemoryCommandResponse",
+                },
               },
             },
           },

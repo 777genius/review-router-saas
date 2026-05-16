@@ -35,6 +35,19 @@ import {
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import {
+  CryptoMemoryIdGenerator,
+  EntitlementMemoryPolicyConfig,
+  EntitlementMemoryQuotaPolicy,
+  PrismaMemoryItemRepository,
+  PrismaMemoryPermission,
+  PrismaMemorySearchIndex,
+  PrismaMemorySuggestionRepository,
+  PrismaMemoryTransaction,
+  PrismaMemoryUsageEventRepository,
+  readMemoryServiceEnabled,
+} from "@reviewrouter/features-memory";
+import { PrismaEntitlementRepository } from "@reviewrouter/features-entitlements";
+import {
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   readGitHubAppPrivateKey,
@@ -55,15 +68,21 @@ import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-gith
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
+import {
+  registerActionMemoryRoutes,
+  type RegisterActionMemoryRoutesDependencies,
+} from "./action-memory-routes.js";
 import { appRouter } from "./trpc.js";
 
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
   readonly githubWebhookDependencies?: RegisterGitHubWebhookRoutesDependencies;
   readonly actionControlPlaneDependencies?: RegisterActionControlPlaneRoutesDependencies;
+  readonly actionMemoryDependencies?: RegisterActionMemoryRoutesDependencies;
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
   readonly actionControlPlaneEnabled?: boolean;
+  readonly memoryServiceEnabled?: boolean;
   readonly healthDependencies?: readonly HealthDependencyPort[];
   readonly prisma?: PrismaClient;
 };
@@ -230,6 +249,51 @@ export async function createApiApp(
 
   if (actionControlPlaneDependencies) {
     await registerActionControlPlaneRoutes(app, actionControlPlaneDependencies);
+  }
+
+  const actionMemoryDependencies =
+    options.actionMemoryDependencies ??
+    (actionControlPlaneDependencies && prisma
+      ? {
+          repositories: actionControlPlaneDependencies.repositories,
+          sessions: actionControlPlaneDependencies.sessions,
+          memory: {
+            memoryItems: new PrismaMemoryItemRepository(prisma),
+            memorySuggestions: new PrismaMemorySuggestionRepository(prisma),
+            memoryPermissions: new PrismaMemoryPermission(prisma, {
+              localAdminGithubLogins: parseCommaSeparatedEnv(
+                process.env.REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS,
+              ),
+            }),
+            memoryPolicyConfig: new EntitlementMemoryPolicyConfig(
+              new PrismaEntitlementRepository(prisma),
+              {
+                serviceEnabled:
+                  options.memoryServiceEnabled ??
+                  readMemoryServiceEnabled(process.env),
+              },
+            ),
+            memoryUsageEvents: new PrismaMemoryUsageEventRepository(prisma),
+            memoryQuotaPolicy: new EntitlementMemoryQuotaPolicy(
+              new PrismaEntitlementRepository(prisma),
+            ),
+            memoryIds: new CryptoMemoryIdGenerator(),
+            memoryTransaction: new PrismaMemoryTransaction(prisma),
+            clock: actionControlPlaneDependencies.clock,
+          },
+          memorySearchIndex: new PrismaMemorySearchIndex(prisma),
+          ...(actionControlPlaneDependencies.entitlements
+            ? { entitlements: actionControlPlaneDependencies.entitlements }
+            : {}),
+          clock: actionControlPlaneDependencies.clock,
+          ...(options.actionControlPlaneEnabled === false
+            ? { controlPlaneEnabled: false }
+            : {}),
+        }
+      : undefined);
+
+  if (actionMemoryDependencies) {
+    await registerActionMemoryRoutes(app, actionMemoryDependencies);
   }
 
   app.register(fastifyTRPCPlugin, {

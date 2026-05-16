@@ -26,6 +26,40 @@ import {
   StaticActionRuntimeCompatibilityPolicy,
 } from "@reviewrouter/features-action-control-plane";
 import type {
+  MarkActiveMemoryItemsUsedInput,
+  MarkActiveMemoryItemsUsedResult,
+  MemoryActor,
+  MemoryAuditEvent,
+  MemoryAuditPort,
+  MemoryIdGeneratorPort,
+  MemoryItem,
+  MemoryItemRepositoryPort,
+  MemoryItemSnapshot,
+  MemoryOutboxEvent,
+  MemoryOutboxPort,
+  MemoryPermissionDecision,
+  MemoryPermissionPort,
+  MemorySearchIndexInput,
+  MemorySearchIndexPort,
+  MemorySearchIndexResult,
+  MemorySuggestionRepositoryPort,
+  MemorySuggestionSnapshot,
+  MemoryTransactionPort,
+  MemoryTransactionalPorts,
+  MemoryUsageEventInput,
+  MemoryUsageEventPort,
+  MemoryUseCaseDependencies,
+} from "@reviewrouter/features-memory";
+import {
+  createDashboardMemorySource,
+  createMemoryBodyHash,
+  deletedMemoryBodyPlaceholder,
+  evaluateMemorySafety,
+  memoryActorRef,
+  MemorySuggestion,
+  StaticMemoryPolicyConfig,
+} from "@reviewrouter/features-memory";
+import type {
   GitHubInstallationRepositoryPort,
   GitHubInstallationSnapshot,
   GitHubPullRequestWebhookEnvelope,
@@ -176,6 +210,560 @@ class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
     readonly report: ActionHealthReport;
   }): Promise<void> {
     this.healthReports.push(input.report);
+  }
+}
+
+class InMemoryActionMemoryItems implements MemoryItemRepositoryPort {
+  public readonly snapshots = new Map<string, MemoryItemSnapshot>();
+
+  constructor(snapshots: readonly MemoryItemSnapshot[] = []) {
+    for (const snapshot of snapshots) {
+      this.snapshots.set(snapshot.id, snapshot);
+    }
+  }
+
+  async save(item: MemoryItem): Promise<void> {
+    const snapshot = item.snapshot();
+    this.snapshots.set(snapshot.id, snapshot);
+  }
+
+  async findById(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+  }): Promise<MemoryItemSnapshot | null> {
+    const snapshot = this.snapshots.get(input.itemId);
+    return snapshot?.workspaceId === input.workspaceId ? snapshot : null;
+  }
+
+  async findActiveByBodyHash(input: {
+    readonly workspaceId: string;
+    readonly scope: MemoryItemSnapshot["scope"];
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly bodyHash: string;
+  }): Promise<MemoryItemSnapshot | null> {
+    return (
+      this.values().find(
+        (item) =>
+          item.workspaceId === input.workspaceId &&
+          item.status === "active" &&
+          item.scope === input.scope &&
+          item.repositoryId === input.repositoryId &&
+          item.userId === input.userId &&
+          item.bodyHash === input.bodyHash,
+      ) ?? null
+    );
+  }
+
+  async countActiveForWorkspace(input: {
+    readonly workspaceId: string;
+  }): Promise<number> {
+    return this.values().filter(
+      (item) =>
+        item.workspaceId === input.workspaceId && item.status === "active",
+    ).length;
+  }
+
+  async listActiveForBundle(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly userId: string | null;
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    return this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.scope === "workspace" ||
+          (item.scope === "repository" &&
+            item.repositoryId === input.repositoryId) ||
+          (item.scope === "user_prefs" && item.userId === input.userId),
+      )
+      .slice(0, input.limit);
+  }
+
+  async listActiveByIdsForBundle(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly userId: string | null;
+    readonly itemIds: readonly string[];
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    const itemIds = new Set(input.itemIds);
+    return this.values()
+      .filter((item) => itemIds.has(item.id))
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.scope === "workspace" ||
+          (item.scope === "repository" &&
+            item.repositoryId === input.repositoryId) ||
+          (item.scope === "user_prefs" && item.userId === input.userId),
+      )
+      .sort(
+        (left, right) =>
+          input.itemIds.indexOf(left.id) - input.itemIds.indexOf(right.id),
+      )
+      .slice(0, input.limit);
+  }
+
+  async listForDashboard(input: {
+    readonly workspaceId: string;
+    readonly repositoryId?: string | null;
+    readonly scope?: MemoryItemSnapshot["scope"];
+    readonly statuses: readonly MemoryItemSnapshot["status"][];
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    return this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => input.statuses.includes(item.status))
+      .filter((item) =>
+        input.repositoryId === undefined
+          ? true
+          : item.repositoryId === input.repositoryId,
+      )
+      .filter((item) => (input.scope ? item.scope === input.scope : true))
+      .slice(0, input.limit);
+  }
+
+  async listForExport(input: {
+    readonly workspaceId: string;
+    readonly statuses: readonly Exclude<
+      MemoryItemSnapshot["status"],
+      "deleted"
+    >[];
+    readonly limit: number;
+  }) {
+    const exportable = this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) =>
+        (input.statuses as readonly MemoryItemSnapshot["status"][]).includes(
+          item.status,
+        ),
+      );
+    return {
+      items: exportable.slice(0, input.limit),
+      totalMatchingCount: exportable.length,
+      excludedDeletedCount: this.values().filter(
+        (item) =>
+          item.workspaceId === input.workspaceId && item.status === "deleted",
+      ).length,
+    };
+  }
+
+  async listExpiredActive(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemoryItemSnapshot[]> {
+    return this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.expiresAt !== null && item.expiresAt <= input.expiredAtOrBefore,
+      )
+      .slice(0, input.limit);
+  }
+
+  async listWorkspaceIdsWithExpiredActive(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        this.values()
+          .filter((item) => item.status === "active")
+          .filter(
+            (item) =>
+              item.expiresAt !== null &&
+              item.expiresAt <= input.expiredAtOrBefore,
+          )
+          .map((item) => item.workspaceId),
+      ),
+    ].slice(0, input.limit);
+  }
+
+  async listPrunableTerminal(input: {
+    readonly workspaceId: string;
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }) {
+    return this.values()
+      .filter((item) => item.workspaceId === input.workspaceId)
+      .filter((item) => item.status === "expired" || item.status === "deleted")
+      .filter((item) => item.updatedAt < input.updatedBefore)
+      .slice(0, input.limit)
+      .map((item) => ({
+        id: item.id,
+        workspaceId: item.workspaceId,
+        repositoryId: item.repositoryId,
+        status: item.status as "expired" | "deleted",
+        updatedAt: item.updatedAt,
+      }));
+  }
+
+  async listWorkspaceIdsWithPrunableTerminal(input: {
+    readonly updatedBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        this.values()
+          .filter(
+            (item) => item.status === "expired" || item.status === "deleted",
+          )
+          .filter((item) => item.updatedAt < input.updatedBefore)
+          .map((item) => item.workspaceId),
+      ),
+    ].slice(0, input.limit);
+  }
+
+  async pruneTerminal(input: {
+    readonly workspaceId: string;
+    readonly itemIds: readonly string[];
+    readonly updatedBefore: Date;
+  }): Promise<{
+    readonly deletedCount: number;
+    readonly deletedIds: string[];
+  }> {
+    const itemIds = new Set(input.itemIds);
+    const deletedIds: string[] = [];
+    for (const [id, item] of this.snapshots.entries()) {
+      if (
+        item.workspaceId !== input.workspaceId ||
+        !itemIds.has(id) ||
+        (item.status !== "expired" && item.status !== "deleted") ||
+        item.updatedAt >= input.updatedBefore
+      ) {
+        continue;
+      }
+      this.snapshots.delete(id);
+      deletedIds.push(id);
+    }
+    return { deletedCount: deletedIds.length, deletedIds };
+  }
+
+  async markActiveItemsUsed(
+    input: MarkActiveMemoryItemsUsedInput,
+  ): Promise<MarkActiveMemoryItemsUsedResult> {
+    const itemIds = new Set(input.itemIds);
+    let updatedCount = 0;
+    for (const [id, item] of this.snapshots.entries()) {
+      if (
+        item.workspaceId !== input.workspaceId ||
+        item.status !== "active" ||
+        !itemIds.has(id)
+      ) {
+        continue;
+      }
+      this.snapshots.set(id, { ...item, lastUsedAt: input.usedAt });
+      updatedCount += 1;
+    }
+    return { updatedCount };
+  }
+
+  async markIndexingSucceeded(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+    readonly bodyHash: string;
+    readonly bodyVersion: number;
+  }): Promise<{ readonly updatedCount: number }> {
+    const item = this.snapshots.get(input.itemId);
+    if (
+      !item ||
+      item.workspaceId !== input.workspaceId ||
+      item.status !== "active" ||
+      item.bodyHash !== input.bodyHash ||
+      item.bodyVersion !== input.bodyVersion
+    ) {
+      return { updatedCount: 0 };
+    }
+    this.snapshots.set(input.itemId, {
+      ...item,
+      indexState: "indexed",
+      indexVersion: input.bodyVersion,
+    });
+    return { updatedCount: 1 };
+  }
+
+  async markIndexingDeleted(input: {
+    readonly workspaceId: string;
+    readonly itemId: string;
+  }): Promise<{ readonly updatedCount: number }> {
+    const item = this.snapshots.get(input.itemId);
+    if (
+      !item ||
+      item.workspaceId !== input.workspaceId ||
+      item.status === "active"
+    ) {
+      return { updatedCount: 0 };
+    }
+    this.snapshots.set(input.itemId, {
+      ...item,
+      indexState: "index_deleted",
+      indexVersion: null,
+    });
+    return { updatedCount: 1 };
+  }
+
+  values(): MemoryItemSnapshot[] {
+    return Array.from(this.snapshots.values());
+  }
+}
+
+class InMemoryMemorySuggestions implements MemorySuggestionRepositoryPort {
+  public readonly snapshots = new Map<string, MemorySuggestionSnapshot>();
+
+  async save(suggestion: MemorySuggestion): Promise<void> {
+    const snapshot = suggestion.snapshot();
+    this.snapshots.set(snapshot.id, snapshot);
+  }
+
+  async findById(input: {
+    readonly workspaceId: string;
+    readonly suggestionId: string;
+  }): Promise<MemorySuggestionSnapshot | null> {
+    const snapshot = this.snapshots.get(input.suggestionId);
+    return snapshot?.workspaceId === input.workspaceId ? snapshot : null;
+  }
+
+  async findPendingByDedupeKey(input: {
+    readonly workspaceId: string;
+    readonly dedupeKey: string;
+  }): Promise<MemorySuggestionSnapshot | null> {
+    return (
+      this.values().find(
+        (suggestion) =>
+          suggestion.workspaceId === input.workspaceId &&
+          suggestion.status === "pending" &&
+          suggestion.dedupeKey === input.dedupeKey,
+      ) ?? null
+    );
+  }
+
+  async countPendingForWorkspace(input: {
+    readonly workspaceId: string;
+    readonly notExpiredAt?: Date;
+  }): Promise<number> {
+    return this.values().filter(
+      (suggestion) =>
+        suggestion.workspaceId === input.workspaceId &&
+        suggestion.status === "pending" &&
+        (!input.notExpiredAt || suggestion.expiresAt > input.notExpiredAt),
+    ).length;
+  }
+
+  async supersedePendingBySource(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemorySuggestionSnapshot["suggestedScope"];
+    readonly sourceType: MemorySuggestionSnapshot["source"]["type"];
+    readonly sourceId: string;
+    readonly createdByActor: MemoryActor;
+    readonly replacementSuggestionId: string;
+    readonly excludeSuggestionId: string;
+    readonly supersededAt: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    const superseded: MemorySuggestionSnapshot[] = [];
+    for (const suggestion of this.values()
+      .filter(
+        (candidate) =>
+          candidate.workspaceId === input.workspaceId &&
+          candidate.repositoryId === input.repositoryId &&
+          candidate.userId === input.userId &&
+          candidate.suggestedScope === input.scope &&
+          candidate.source.type === input.sourceType &&
+          candidate.source.sourceId === input.sourceId &&
+          candidate.createdByActor === memoryActorRef(input.createdByActor) &&
+          candidate.status === "pending" &&
+          candidate.id !== input.excludeSuggestionId,
+      )
+      .slice(0, input.limit)) {
+      const next = MemorySuggestion.fromSnapshot(suggestion)
+        .supersede({
+          actor: input.createdByActor,
+          replacementSuggestionId: input.replacementSuggestionId,
+          now: input.supersededAt,
+        })
+        .snapshot();
+      this.snapshots.set(next.id, next);
+      superseded.push(next);
+    }
+    return superseded;
+  }
+
+  async listForDashboard(input: {
+    readonly workspaceId: string;
+    readonly repositoryId?: string | null;
+    readonly scope?: MemorySuggestionSnapshot["suggestedScope"];
+    readonly statuses: readonly MemorySuggestionSnapshot["status"][];
+    readonly limit: number;
+    readonly notExpiredAt?: Date;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    return this.values()
+      .filter((suggestion) => suggestion.workspaceId === input.workspaceId)
+      .filter((suggestion) => input.statuses.includes(suggestion.status))
+      .filter((suggestion) =>
+        input.repositoryId === undefined
+          ? true
+          : suggestion.repositoryId === input.repositoryId,
+      )
+      .filter((suggestion) =>
+        input.scope ? suggestion.suggestedScope === input.scope : true,
+      )
+      .filter((suggestion) =>
+        input.notExpiredAt ? suggestion.expiresAt > input.notExpiredAt : true,
+      )
+      .slice(0, input.limit);
+  }
+
+  async listExpiredPending(input: {
+    readonly workspaceId: string;
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly MemorySuggestionSnapshot[]> {
+    return this.values()
+      .filter((suggestion) => suggestion.workspaceId === input.workspaceId)
+      .filter((suggestion) => suggestion.status === "pending")
+      .filter((suggestion) => suggestion.expiresAt <= input.expiredAtOrBefore)
+      .sort((left, right) => {
+        const expiresAtDelta =
+          left.expiresAt.getTime() - right.expiresAt.getTime();
+        if (expiresAtDelta !== 0) return expiresAtDelta;
+        return left.id.localeCompare(right.id);
+      })
+      .slice(0, input.limit);
+  }
+
+  async listWorkspaceIdsWithExpiredPending(input: {
+    readonly expiredAtOrBefore: Date;
+    readonly limit: number;
+  }): Promise<readonly string[]> {
+    const workspaceIds = new Set<string>();
+    for (const suggestion of this.values().sort((left, right) =>
+      left.workspaceId.localeCompare(right.workspaceId),
+    )) {
+      if (
+        suggestion.status === "pending" &&
+        suggestion.expiresAt <= input.expiredAtOrBefore
+      ) {
+        workspaceIds.add(suggestion.workspaceId);
+      }
+      if (workspaceIds.size >= input.limit) break;
+    }
+    return [...workspaceIds];
+  }
+
+  values(): MemorySuggestionSnapshot[] {
+    return Array.from(this.snapshots.values());
+  }
+}
+
+class AllowingMemoryPermissions implements MemoryPermissionPort {
+  public readonly calls: Array<{
+    readonly workspaceId: string;
+    readonly repositoryId: string | null;
+    readonly userId: string | null;
+    readonly scope: MemoryItemSnapshot["scope"];
+    readonly actor: MemoryActor;
+  }> = [];
+
+  async canConfirmMemory(
+    input: Parameters<MemoryPermissionPort["canConfirmMemory"]>[0],
+  ): Promise<MemoryPermissionDecision> {
+    this.calls.push(input);
+    return { allowed: true };
+  }
+}
+
+class IncrementingMemoryIds implements MemoryIdGeneratorPort {
+  private next = 1;
+
+  newId(prefix: "mem" | "mem_suggestion" | "mem_usage"): string {
+    return `${prefix}_test_${this.next++}`;
+  }
+}
+
+class CapturingMemoryAudit implements MemoryAuditPort {
+  public readonly events: MemoryAuditEvent[] = [];
+
+  async record(event: MemoryAuditEvent): Promise<void> {
+    this.events.push(event);
+  }
+}
+
+class CapturingMemoryOutbox implements MemoryOutboxPort {
+  public readonly events: MemoryOutboxEvent[] = [];
+
+  async enqueue(
+    event: MemoryOutboxEvent,
+  ): Promise<{ readonly created: boolean }> {
+    this.events.push(event);
+    return { created: true };
+  }
+}
+
+class CapturingMemoryUsageEvents implements MemoryUsageEventPort {
+  public readonly events: MemoryUsageEventInput[] = [];
+  private readonly dedupeKeys = new Set<string>();
+
+  async recordMany(
+    events: readonly MemoryUsageEventInput[],
+  ): ReturnType<MemoryUsageEventPort["recordMany"]> {
+    let recordedCount = 0;
+    let duplicateCount = 0;
+    for (const event of events) {
+      if (event.dedupeKey && this.dedupeKeys.has(event.dedupeKey)) {
+        duplicateCount += 1;
+        continue;
+      }
+      if (event.dedupeKey) {
+        this.dedupeKeys.add(event.dedupeKey);
+      }
+      this.events.push(event);
+      recordedCount += 1;
+    }
+    return { recordedCount, duplicateCount };
+  }
+}
+
+class CapturingMemorySearchIndex implements MemorySearchIndexPort {
+  public readonly inputs: MemorySearchIndexInput[] = [];
+
+  constructor(private readonly results: readonly MemorySearchIndexResult[]) {}
+
+  async supports(): ReturnType<MemorySearchIndexPort["supports"]> {
+    return { capabilities: ["lexical"] };
+  }
+
+  async search(
+    input: MemorySearchIndexInput,
+  ): Promise<readonly MemorySearchIndexResult[]> {
+    this.inputs.push(input);
+    return this.results;
+  }
+
+  async upsertDocument(): Promise<void> {
+    return undefined;
+  }
+
+  async deleteDocument(): Promise<void> {
+    return undefined;
+  }
+}
+
+class SameObjectMemoryTransaction implements MemoryTransactionPort {
+  constructor(private readonly ports: MemoryTransactionalPorts) {}
+
+  async run<T>(
+    work: (ports: MemoryTransactionalPorts) => Promise<T>,
+  ): Promise<T> {
+    return work(this.ports);
   }
 }
 
@@ -470,6 +1058,144 @@ const fixedClock: Clock = {
   now: () => new Date("2026-05-03T12:00:00.000Z"),
 };
 
+function createActionMemoryDependencies(
+  input: {
+    readonly memoryItems?: InMemoryActionMemoryItems;
+    readonly memorySuggestions?: InMemoryMemorySuggestions;
+    readonly permissions?: MemoryPermissionPort;
+  } = {},
+): {
+  readonly memory: MemoryUseCaseDependencies;
+  readonly memoryItems: InMemoryActionMemoryItems;
+  readonly memorySuggestions: InMemoryMemorySuggestions;
+  readonly permissions: MemoryPermissionPort;
+  readonly audit: CapturingMemoryAudit;
+  readonly outbox: CapturingMemoryOutbox;
+  readonly usageEvents: CapturingMemoryUsageEvents;
+} {
+  const memoryItems = input.memoryItems ?? new InMemoryActionMemoryItems();
+  const memorySuggestions =
+    input.memorySuggestions ?? new InMemoryMemorySuggestions();
+  const permissions = input.permissions ?? new AllowingMemoryPermissions();
+  const audit = new CapturingMemoryAudit();
+  const outbox = new CapturingMemoryOutbox();
+  const usageEvents = new CapturingMemoryUsageEvents();
+  return {
+    memory: {
+      memoryItems,
+      memorySuggestions,
+      memoryPermissions: permissions,
+      memoryPolicyConfig: new StaticMemoryPolicyConfig(),
+      memoryUsageEvents: usageEvents,
+      memoryIds: new IncrementingMemoryIds(),
+      memoryTransaction: new SameObjectMemoryTransaction({
+        memoryItems,
+        memorySuggestions,
+        memoryAudit: audit,
+        memoryOutbox: outbox,
+      }),
+      clock: fixedClock,
+    },
+    memoryItems,
+    memorySuggestions,
+    permissions,
+    audit,
+    outbox,
+    usageEvents,
+  };
+}
+
+function actionMemorySnapshot(
+  overrides: Partial<MemoryItemSnapshot>,
+): MemoryItemSnapshot {
+  const body = overrides.body ?? "Prefer guard clauses in service methods.";
+  const now = fixedClock.now();
+  return {
+    id: overrides.id ?? "mem_1",
+    schemaVersion: 1,
+    workspaceId: overrides.workspaceId ?? "workspace_1",
+    repositoryId: overrides.repositoryId ?? "repo_1",
+    userId: overrides.userId ?? null,
+    scope: overrides.scope ?? "repository",
+    status: overrides.status ?? "active",
+    body,
+    bodyVersion: overrides.bodyVersion ?? 1,
+    bodyHash: overrides.bodyHash ?? createMemoryBodyHash(body),
+    tags: overrides.tags ?? [],
+    riskLevel: overrides.riskLevel ?? "low",
+    confidence: overrides.confidence ?? 0.92,
+    source:
+      overrides.source ??
+      createDashboardMemorySource({ actorLogin: "maintainer" }),
+    policyVersion: overrides.policyVersion ?? 1,
+    safetyPolicyVersion: overrides.safetyPolicyVersion ?? 1,
+    createdBy: overrides.createdBy ?? "github_user:user_1",
+    confirmedBy: overrides.confirmedBy ?? "github_user:user_1",
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now,
+    lastUsedAt: overrides.lastUsedAt ?? null,
+    expiresAt: overrides.expiresAt ?? null,
+    version: overrides.version ?? 1,
+    visibility: overrides.visibility ?? "repository_runtime",
+    originSuggestionId: overrides.originSuggestionId ?? null,
+    indexState: overrides.indexState ?? "indexed",
+    indexVersion: overrides.indexVersion ?? 1,
+  };
+}
+
+function actionMemorySuggestionSnapshot(
+  overrides: Partial<MemorySuggestionSnapshot>,
+): MemorySuggestionSnapshot {
+  const suggestedBody =
+    overrides.suggestedBody ?? "Prefer small cohesive pull requests.";
+  const suggestedScope = overrides.suggestedScope ?? "repository";
+  const now = fixedClock.now();
+  const suggestedBodyHash =
+    overrides.suggestedBodyHash ?? createMemoryBodyHash(suggestedBody);
+  return {
+    id: overrides.id ?? "mem_suggestion_1",
+    schemaVersion: 1,
+    workspaceId: overrides.workspaceId ?? "workspace_1",
+    repositoryId:
+      overrides.repositoryId ??
+      (suggestedScope === "repository" ? "repo_1" : null),
+    userId: overrides.userId ?? null,
+    suggestedScope,
+    suggestedBody,
+    suggestedBodyVersion: overrides.suggestedBodyVersion ?? 1,
+    suggestedBodyHash,
+    reason: overrides.reason ?? "explicit_natural_language",
+    source:
+      overrides.source ??
+      createDashboardMemorySource({ actorLogin: "777genius" }),
+    safetyReport:
+      overrides.safetyReport ??
+      evaluateMemorySafety({
+        body: suggestedBody,
+        scope: suggestedScope,
+        redactedSourceExcerpt: null,
+      }),
+    policyVersion: overrides.policyVersion ?? 1,
+    safetyPolicyVersion: overrides.safetyPolicyVersion ?? 1,
+    status: overrides.status ?? "pending",
+    createdByActor:
+      overrides.createdByActor ?? "github_user:github-login:777genius",
+    expiresAt:
+      overrides.expiresAt ?? new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+    dedupeKey:
+      overrides.dedupeKey ??
+      `memory:${overrides.workspaceId ?? "workspace_1"}:${suggestedScope}:${suggestedBodyHash}`,
+    relatedMemoryItemId: overrides.relatedMemoryItemId ?? null,
+    relatedSuggestionId: overrides.relatedSuggestionId ?? null,
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now,
+    resolvedAt: overrides.resolvedAt ?? null,
+    resolvedBy: overrides.resolvedBy ?? null,
+    resolutionReason: overrides.resolutionReason ?? null,
+    version: overrides.version ?? 1,
+  };
+}
+
 const expectedApiUrl = (
   process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
   process.env.REVIEW_ROUTER_API_URL ??
@@ -606,6 +1332,11 @@ describe("API app", () => {
           ApiDemo: {},
           ApiIndex: {},
           ReadyResponse: {},
+          ActionMemoryBundle: {},
+          ActionMemoryCandidateRequest: {},
+          ActionMemoryCommandRequest: {},
+          ActionMemoryCommandResponse: {},
+          ActionMemoryMutationResponse: {},
         },
       },
       paths: {
@@ -613,6 +1344,9 @@ describe("API app", () => {
         "/demo.md": {},
         "/docs": {},
         "/api/action/v1/session/exchange": {},
+        "/api/action/v1/memory": {},
+        "/api/action/v1/memory-candidates": {},
+        "/api/action/v1/memory-commands": {},
       },
     });
   });
@@ -963,16 +1697,45 @@ describe("API app", () => {
   it("serves action OIDC exchange, config fetch, and safe health report", async () => {
     const repositories = new InMemoryActionRepositories();
     const commentTokens = new InMemoryCommentTokenIssuer();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_repo",
+        body: "Prefer guard clauses in service methods.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+      actionMemorySnapshot({
+        id: "mem_workspace",
+        body: "Use Prisma migrations for schema changes.",
+        scope: "workspace",
+        repositoryId: null,
+        visibility: "workspace_runtime",
+      }),
+      actionMemorySnapshot({
+        id: "mem_other_repo",
+        body: "Other repository memory.",
+        scope: "repository",
+        repositoryId: "repo_other",
+      }),
+    ]);
+    const actionMemory = createActionMemoryDependencies({ memoryItems });
     const app = await createApiApp({
       actionControlPlaneDependencies: {
         repositories,
         commentTokens,
         oidcVerifier: new StaticActionOidcVerifier(),
-        sessions: new JoseActionSessionTokenService(
-          "0123456789abcdef0123456789abcdef",
-        ),
+        sessions,
         clock: fixedClock,
         oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
       },
     });
 
@@ -999,6 +1762,86 @@ describe("API app", () => {
       provider: { model: "gpt-5.5" },
       runtimeEnv: { REVIEW_AUTH_MODE: "codex-oauth" },
     });
+
+    const memory = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+    });
+    expect(memory.statusCode).toBe(200);
+    expect(memory.json()).toMatchObject({
+      protocolVersion: 1,
+      memoryVersion: 1,
+      items: [
+        {
+          id: "mem_repo",
+          scope: "repository",
+          body: "Prefer guard clauses in service methods.",
+        },
+        {
+          id: "mem_workspace",
+          scope: "workspace",
+          body: "Use Prisma migrations for schema changes.",
+        },
+      ],
+    });
+    expect(actionMemory.usageEvents.events).toHaveLength(2);
+    expect(actionMemory.usageEvents.events).toEqual([
+      expect.objectContaining({
+        id: "mem_usage_test_1",
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        memoryItemId: "mem_repo",
+        eventType: "action_bundle_exposed",
+        bundleVersion: 1,
+        metadata: {
+          scope: "repository",
+          bundleItemCount: 2,
+          githubRunId: "1001",
+          githubRunAttempt: "1",
+          eventName: "pull_request",
+        },
+      }),
+      expect.objectContaining({
+        id: "mem_usage_test_2",
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        memoryItemId: "mem_workspace",
+        eventType: "action_bundle_exposed",
+        bundleVersion: 1,
+        metadata: {
+          scope: "workspace",
+          bundleItemCount: 2,
+          githubRunId: "1001",
+          githubRunAttempt: "1",
+          eventName: "pull_request",
+        },
+      }),
+    ]);
+    expect(
+      actionMemory.usageEvents.events.map((event) => event.dedupeKey),
+    ).toEqual([
+      expect.stringMatching(/^mem_usage:[a-f0-9]{64}$/),
+      expect.stringMatching(/^mem_usage:[a-f0-9]{64}$/),
+    ]);
+    expect(JSON.stringify(actionMemory.usageEvents.events)).not.toContain(
+      "guard clauses",
+    );
+    expect(memoryItems.snapshots.get("mem_repo")?.lastUsedAt).toEqual(
+      fixedClock.now(),
+    );
+    expect(memoryItems.snapshots.get("mem_workspace")?.lastUsedAt).toEqual(
+      fixedClock.now(),
+    );
+    expect(memoryItems.snapshots.get("mem_other_repo")?.lastUsedAt).toBeNull();
+
+    const repeatedMemory = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+    });
+    expect(repeatedMemory.statusCode).toBe(200);
+    expect(actionMemory.usageEvents.events).toHaveLength(2);
 
     const commentToken = await app.inject({
       method: "POST",
@@ -1040,6 +1883,650 @@ describe("API app", () => {
 
     expect(health.statusCode).toBe(200);
     expect(repositories.healthReports).toHaveLength(1);
+  });
+
+  it("uses a safe action memory retrieval query when the runtime provides one", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_repo",
+        body: "Prefer guard clauses in service methods.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+      actionMemorySnapshot({
+        id: "mem_browser",
+        body: "Run dashboard memory changes through browser layout checks.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+    ]);
+    const actionMemory = createActionMemoryDependencies({ memoryItems });
+    const searchIndex = new CapturingMemorySearchIndex([
+      {
+        memoryItemId: "mem_browser",
+        scope: "repository",
+        score: 10,
+        scoreParts: {
+          lexicalScore: 1,
+          semanticScore: 0,
+          recencyScore: 0,
+          scopeScore: 0,
+          riskPenalty: 0,
+        },
+        explanationCode: "lexical_match",
+      },
+    ]);
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        memorySearchIndex: searchIndex,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory?safeRetrievalQuery=browser%20layout",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      memoryVersion: 1,
+      items: [
+        {
+          id: "mem_browser",
+          scope: "repository",
+          body: "Run dashboard memory changes through browser layout checks.",
+        },
+      ],
+    });
+    expect(searchIndex.inputs).toEqual([
+      expect.objectContaining({
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        userId: null,
+        safeQuery: "browser layout",
+        includeUserPrefs: false,
+      }),
+    ]);
+    expect(actionMemory.usageEvents.events).toHaveLength(1);
+    expect(actionMemory.usageEvents.events[0]).toMatchObject({
+      memoryItemId: "mem_browser",
+      metadata: { bundleItemCount: 1 },
+    });
+  });
+
+  it("ignores unsafe action memory retrieval queries and falls back to canonical bundle", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_repo",
+        body: "Prefer guard clauses in service methods.",
+        scope: "repository",
+        repositoryId: "repo_1",
+      }),
+    ]);
+    const actionMemory = createActionMemoryDependencies({ memoryItems });
+    const searchIndex = new CapturingMemorySearchIndex([]);
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        memorySearchIndex: searchIndex,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/action/v1/memory?safeRetrievalQuery=diff%20--git%20a%2Fx%20b%2Fx",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      items: [{ id: "mem_repo" }],
+      degraded: false,
+    });
+    expect(searchIndex.inputs).toEqual([]);
+  });
+
+  it("accepts natural-language memory candidates from interaction workflows as suggestions", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:issue_comment",
+          event_name: "issue_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const session = exchange.json<{ sessionToken: string }>();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_natural_language",
+        requestedScope: "repository",
+        candidateBody: "Prefer small cohesive pull requests.",
+        sourceTextHash:
+          "d5ebe75097ed1ac4cdd7ed02a75ed252b07b729f1639adc519c88418a1f08d71",
+        extractionMethod: "explicit_natural_language",
+        extractionVersion: 1,
+        source: {
+          sourceId: "issue_comment:12345",
+          githubCommentId: "12345",
+          githubPullRequestNumber: 17,
+          url: "https://github.com/777genius/example/pull/17#issuecomment-12345",
+          redactedExcerpt: "/reviewrouter remember: prefer small PRs",
+          sourceHash:
+            "d5ebe75097ed1ac4cdd7ed02a75ed252b07b729f1639adc519c88418a1f08d71",
+          sourceVisibility: "private",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "created",
+      id: "mem_suggestion_test_1",
+      version: 1,
+    });
+    expect(actionMemory.memorySuggestions.values()).toEqual([
+      expect.objectContaining({
+        id: "mem_suggestion_test_1",
+        suggestedScope: "repository",
+        suggestedBody: "Prefer small cohesive pull requests.",
+        status: "pending",
+        createdByActor: "github_user:github-login:777genius",
+        source: expect.objectContaining({
+          type: "pr_comment",
+          sourceId: "issue_comment:12345",
+          githubCommentId: "12345",
+          githubPullRequestNumber: 17,
+          actorLogin: "777genius",
+        }),
+      }),
+    ]);
+    expect(actionMemory.audit.events).toEqual([
+      expect.objectContaining({
+        action: "memory.suggestion.created",
+        targetId: "mem_suggestion_test_1",
+      }),
+    ]);
+    expect(actionMemory.outbox.events).toHaveLength(1);
+  });
+
+  it("stores explicit memory commands from interaction workflows when the actor is allowed", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:pull_request_review_comment",
+          event_name: "pull_request_review_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const session = exchange.json<{ sessionToken: string }>();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_command",
+        requestedScope: "repository",
+        candidateBody: "Prefer guard clauses before nested conditionals.",
+        extractionMethod: "explicit_command",
+        extractionVersion: 1,
+        source: {
+          sourceId: "review_comment:98765",
+          githubCommentId: "98765",
+          githubPullRequestNumber: 18,
+          redactedExcerpt: "/reviewrouter save memory: prefer guard clauses",
+          sourceVisibility: "private",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "created",
+      id: "mem_test_1",
+      version: 1,
+    });
+    expect(actionMemory.memoryItems.values()).toEqual([
+      expect.objectContaining({
+        id: "mem_test_1",
+        scope: "repository",
+        body: "Prefer guard clauses before nested conditionals.",
+        createdBy: "github_user:github-login:777genius",
+        confirmedBy: "github_user:github-login:777genius",
+        source: expect.objectContaining({
+          type: "review_comment",
+          sourceId: "review_comment:98765",
+          actorLogin: "777genius",
+        }),
+      }),
+    ]);
+    expect(actionMemory.permissions).toBeInstanceOf(AllowingMemoryPermissions);
+    expect(
+      (actionMemory.permissions as AllowingMemoryPermissions).calls,
+    ).toEqual([
+      expect.objectContaining({
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        scope: "repository",
+        actor: expect.objectContaining({ login: "777genius" }),
+      }),
+    ]);
+  });
+
+  it("rejects raw memory payload fields before persistence", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:issue_comment",
+          event_name: "issue_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const session = exchange.json<{ sessionToken: string }>();
+    const candidateResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_natural_language",
+        requestedScope: "repository",
+        candidateBody: "Prefer small cohesive pull requests.",
+        extractionMethod: "explicit_natural_language",
+        extractionVersion: 1,
+        rawCommentBody:
+          "/rr remember repo Prefer small cohesive pull requests.",
+        source: {
+          sourceId: "issue_comment:12345",
+          sourceVisibility: "private",
+        },
+      },
+    });
+    const commandResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-commands",
+      headers: { authorization: `Bearer ${session.sessionToken}` },
+      payload: {
+        protocolVersion: 1,
+        commands: [
+          {
+            kind: "confirm_suggestion",
+            suggestionId: "mem_suggestion_1",
+            rawCommand: "/rr remember mem_suggestion_1",
+          },
+        ],
+      },
+    });
+
+    for (const response of [candidateResponse, commandResponse]) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: {
+          code: "forbidden_action_memory_raw_field",
+          message:
+            "Action memory payload must not include raw conversation, code, diff, prompt, or model response fields.",
+          retryable: false,
+        },
+      });
+    }
+    expect(actionMemory.memorySuggestions.values()).toEqual([]);
+    expect(actionMemory.memoryItems.values()).toEqual([]);
+  });
+
+  it("executes normalized memory management commands from interaction workflows", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const memoryItems = new InMemoryActionMemoryItems([
+      actionMemorySnapshot({
+        id: "mem_disable",
+        body: "Disable this temporary review convention.",
+      }),
+      actionMemorySnapshot({
+        id: "mem_forget",
+        body: "Forget this stale review convention.",
+      }),
+    ]);
+    const memorySuggestions = new InMemoryMemorySuggestions();
+    memorySuggestions.snapshots.set(
+      "mem_suggestion_confirm",
+      actionMemorySuggestionSnapshot({
+        id: "mem_suggestion_confirm",
+        suggestedBody: "Prefer adapters over direct SDK imports in use cases.",
+      }),
+    );
+    memorySuggestions.snapshots.set(
+      "mem_suggestion_reject",
+      actionMemorySuggestionSnapshot({
+        id: "mem_suggestion_reject",
+        suggestedBody: "Always use one huge service class.",
+      }),
+    );
+    const actionMemory = createActionMemoryDependencies({
+      memoryItems,
+      memorySuggestions,
+    });
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier({
+          sub: "repo:777genius/example:issue_comment",
+          event_name: "issue_comment",
+          workflow_ref:
+            "777genius/example/.github/workflows/reviewrouter-interaction.yml@refs/heads/main",
+        }),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-commands",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+      payload: {
+        protocolVersion: 1,
+        commands: [
+          {
+            kind: "confirm_suggestion",
+            suggestionId: "mem_suggestion_confirm",
+          },
+          {
+            kind: "reject_suggestion",
+            suggestionId: "mem_suggestion_reject",
+            reason: "bad_architecture",
+          },
+          { kind: "disable_memory", memoryItemId: "mem_disable" },
+          { kind: "forget_memory", memoryItemId: "mem_forget" },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      results: [
+        {
+          kind: "confirm_suggestion",
+          status: "created",
+          id: "mem_test_1",
+          version: 1,
+        },
+        {
+          kind: "reject_suggestion",
+          status: "updated",
+          id: "mem_suggestion_reject",
+          version: 2,
+        },
+        {
+          kind: "disable_memory",
+          status: "updated",
+          id: "mem_disable",
+          version: 2,
+        },
+        {
+          kind: "forget_memory",
+          status: "updated",
+          id: "mem_forget",
+          version: 2,
+        },
+      ],
+    });
+    expect(actionMemory.memoryItems.snapshots.get("mem_test_1")).toMatchObject({
+      scope: "repository",
+      body: "Prefer adapters over direct SDK imports in use cases.",
+      originSuggestionId: "mem_suggestion_confirm",
+    });
+    expect(
+      actionMemory.memorySuggestions.snapshots.get("mem_suggestion_confirm"),
+    ).toMatchObject({ status: "confirmed", relatedMemoryItemId: "mem_test_1" });
+    expect(
+      actionMemory.memorySuggestions.snapshots.get("mem_suggestion_reject"),
+    ).toMatchObject({
+      status: "rejected",
+      resolutionReason: "bad_architecture",
+    });
+    expect(actionMemory.memoryItems.snapshots.get("mem_disable")).toMatchObject(
+      {
+        status: "disabled",
+      },
+    );
+    expect(actionMemory.memoryItems.snapshots.get("mem_forget")).toMatchObject({
+      status: "deleted",
+      body: deletedMemoryBodyPlaceholder,
+      source: { type: "system_migration", sourceId: "deleted" },
+    });
+    expect(actionMemory.audit.events.map((event) => event.action)).toEqual([
+      "memory.suggestion.confirmed",
+      "memory.suggestion.rejected",
+      "memory.item.disabled",
+      "memory.item.deleted",
+    ]);
+  });
+
+  it("rejects memory candidate submission outside interaction workflows", async () => {
+    const repositories = new InMemoryActionRepositories();
+    const sessions = new JoseActionSessionTokenService(
+      "0123456789abcdef0123456789abcdef",
+    );
+    const actionMemory = createActionMemoryDependencies();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories,
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions,
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      actionMemoryDependencies: {
+        repositories,
+        sessions,
+        memory: actionMemory.memory,
+        clock: fixedClock,
+      },
+    });
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-candidates",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+      payload: {
+        protocolVersion: 1,
+        intent: "explicit_natural_language",
+        requestedScope: "repository",
+        candidateBody: "Prefer small cohesive pull requests.",
+        extractionMethod: "explicit_natural_language",
+        extractionVersion: 1,
+        source: {
+          sourceId: "pull_request:17",
+          sourceVisibility: "private",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({
+      error: {
+        code: "memory_interaction_event_required",
+        message:
+          "Memory updates can only be submitted from interaction workflows.",
+        retryable: false,
+      },
+    });
+    const commandResponse = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/memory-commands",
+      headers: {
+        authorization: `Bearer ${exchange.json<{ sessionToken: string }>().sessionToken}`,
+      },
+      payload: {
+        protocolVersion: 1,
+        commands: [
+          {
+            kind: "confirm_suggestion",
+            suggestionId: "mem_suggestion_1",
+          },
+        ],
+      },
+    });
+    expect(commandResponse.statusCode).toBe(403);
+    expect(commandResponse.json()).toEqual({
+      error: {
+        code: "memory_interaction_event_required",
+        message:
+          "Memory updates can only be submitted from interaction workflows.",
+        retryable: false,
+      },
+    });
+    expect(actionMemory.memorySuggestions.values()).toEqual([]);
+    expect(actionMemory.memoryItems.values()).toEqual([]);
   });
 
   it("rejects ambiguous conflict dispatch aliases at the HTTP boundary", async () => {

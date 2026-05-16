@@ -96,6 +96,7 @@ export type ActionSessionClaims = {
   readonly repositoryId: string;
   readonly githubRepositoryId: string;
   readonly repository: string;
+  readonly githubActorLogin: string | null;
   readonly githubRunId: string;
   readonly githubRunAttempt: string;
   readonly eventName: (typeof allowedActionEvents)[number];

@@ -73,6 +73,13 @@ const supportInput = {
     { status: "pending", type: "installation.sync_requested" },
     { status: "dead_letter", type: "installation.sync_requested" },
   ],
+  memory: {
+    itemStatusCounts: { active: 2, disabled: 1, expired: 1 },
+    itemScopeCounts: { repository: 2, workspace: 1, user_prefs: 1 },
+    itemIndexStateCounts: { indexed: 1, index_pending: 1, index_deleted: 2 },
+    suggestionStatusCounts: { pending: 1, expired: 1, superseded: 1 },
+    usageEventCount: 7,
+  },
   recentAuditActions: ["review_config.saved", "workflow.setup_pr_opened"],
 };
 
@@ -112,8 +119,35 @@ describe("support diagnostics", () => {
         pending: 1,
         deadLetter: 1,
       },
+      memoryCounts: {
+        items: {
+          total: 4,
+          active: 2,
+          disabled: 1,
+          expired: 1,
+          deleted: 0,
+        },
+        scopes: {
+          repository: 2,
+          workspace: 1,
+          userPrefs: 1,
+        },
+        index: {
+          pending: 1,
+          indexed: 1,
+          failed: 0,
+          deleted: 2,
+        },
+        suggestions: {
+          pending: 1,
+          expired: 1,
+          superseded: 1,
+        },
+        usageEvents: 7,
+      },
     });
     expect(JSON.stringify(snapshot)).not.toContain("CODEX_AUTH_JSON");
+    expect(JSON.stringify(snapshot)).not.toContain("Prefer guard clauses");
   });
 
   it("audits local support diagnostics access with safe counts only", async () => {
@@ -144,6 +178,9 @@ describe("support diagnostics", () => {
           outboxDeadLetter: 1,
           providerUnhealthy: 1,
           actionReports: 2,
+          memoryItems: 4,
+          activeMemoryItems: 2,
+          pendingMemorySuggestions: 1,
         },
       }),
     ]);

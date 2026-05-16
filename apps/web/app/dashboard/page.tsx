@@ -35,6 +35,21 @@ import {
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
 import {
+  listMemoryItemsForDashboard,
+  listMemorySuggestionsForDashboard,
+  EntitlementMemoryPolicyConfig,
+  EntitlementMemoryQuotaPolicy,
+  PrismaMemoryPermission,
+  PrismaMemoryItemRepository,
+  PrismaMemorySuggestionRepository,
+  readMemoryServiceEnabled,
+  simulateMemoryPolicyDecision,
+  type MemoryActor,
+  type MemoryDashboardItemDto,
+  type MemoryDashboardSuggestionDto,
+  type MemoryPolicySimulationDecision,
+} from "@reviewrouter/features-memory";
+import {
   getWorkspaceSupportDiagnostics,
   PrismaSupportDiagnosticsRepository,
 } from "@reviewrouter/features-support-diagnostics";
@@ -108,6 +123,11 @@ import {
   ReviewConfigForm,
 } from "./repository-policy-editor";
 import { RepositorySetupStatusRefresher } from "./repository-setup-status-refresher";
+import {
+  MemoryManagementPanel,
+  type MemoryManagementMode,
+  type MemoryManagementModeLinks,
+} from "./memory-management-panel";
 import { createNoIndexPageMetadata } from "../seo";
 
 export const dynamic = "force-dynamic";
@@ -152,6 +172,10 @@ async function loadDashboardData(
     readonly actor: string;
     readonly reason: "local_admin_override" | "workspace_admin";
   },
+  currentActor?: {
+    readonly githubUserId: string;
+    readonly githubLogin: string;
+  } | null,
 ) {
   if (scope.kind === "none" && repositoryAccess.workspaceIds.length === 0) {
     return [];
@@ -207,6 +231,18 @@ async function loadDashboardData(
   const outboxStore = new PrismaOutboxEventRepository(prisma);
   const diagnosticsStore = new PrismaSupportDiagnosticsRepository(prisma);
   const orgRulesetStore = new PrismaOrgRulesetProvisioningRepository(prisma);
+  const memoryItemStore = new PrismaMemoryItemRepository(prisma);
+  const memorySuggestionStore = new PrismaMemorySuggestionRepository(prisma);
+  const memoryPermission = new PrismaMemoryPermission(prisma, {
+    localAdminGithubLogins: readCsvEnv(
+      "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
+    ),
+  });
+  const memoryQuotaPolicy = new EntitlementMemoryQuotaPolicy(entitlementStore);
+  const memoryPolicyConfig = new EntitlementMemoryPolicyConfig(
+    entitlementStore,
+    { serviceEnabled: readMemoryServiceEnabled(process.env) },
+  );
 
   const dashboardData = await Promise.all(
     workspaces.map(
@@ -243,6 +279,12 @@ async function loadDashboardData(
         orgRuleset: Awaited<
           ReturnType<typeof orgRulesetStore.findByWorkspaceId>
         > | null;
+        memoryItems: readonly MemoryDashboardItemDto[];
+        memorySuggestions: readonly MemoryDashboardSuggestionDto[];
+        memoryWritesEnabled: boolean;
+        memoryPolicySimulation:
+          | readonly MemoryPolicySimulationDecision[]
+          | null;
       }> => {
         const repositories = await repositoryStore.listWorkspaceRepositories(
           workspace.id,
@@ -356,6 +398,31 @@ async function loadDashboardData(
               : null,
           })),
         );
+        const [memoryItems, memorySuggestions, memoryPolicy] =
+          await Promise.all([
+            listMemoryItemsForDashboard(
+              { workspaceId: workspace.id, limit: 25 },
+              { memoryItems: memoryItemStore },
+            ),
+            listMemorySuggestionsForDashboard(
+              { workspaceId: workspace.id, limit: 25 },
+              {
+                memorySuggestions: memorySuggestionStore,
+                clock: { now: () => new Date() },
+              },
+            ),
+            memoryPolicyConfig.getPolicy({ workspaceId: workspace.id }),
+          ]);
+        const memoryPolicySimulation = await buildMemoryPolicySimulation({
+          workspaceId: workspace.id,
+          repositories,
+          actor: currentActor ?? null,
+          memoryPolicyConfig,
+          memoryPermission,
+          memoryItemStore,
+          memorySuggestionStore,
+          memoryQuotaPolicy,
+        });
 
         return {
           hasWorkspaceWideAccess,
@@ -379,12 +446,121 @@ async function loadDashboardData(
           outboxFailures,
           supportDiagnostics,
           orgRuleset,
+          memoryItems: memoryItems.items,
+          memorySuggestions: memorySuggestions.suggestions,
+          memoryWritesEnabled: memoryPolicy.memoryEnabled,
+          memoryPolicySimulation,
         };
       },
     ),
   );
 
   return dashboardData.sort(compareDashboardWorkspaces);
+}
+
+async function buildMemoryPolicySimulation(input: {
+  readonly workspaceId: string;
+  readonly repositories: readonly {
+    readonly id: string;
+    readonly selected: boolean;
+    readonly archived: boolean;
+  }[];
+  readonly actor: {
+    readonly githubUserId: string;
+    readonly githubLogin: string;
+  } | null;
+  readonly memoryPolicyConfig: EntitlementMemoryPolicyConfig;
+  readonly memoryPermission: PrismaMemoryPermission;
+  readonly memoryItemStore: PrismaMemoryItemRepository;
+  readonly memorySuggestionStore: PrismaMemorySuggestionRepository;
+  readonly memoryQuotaPolicy: EntitlementMemoryQuotaPolicy;
+}): Promise<readonly MemoryPolicySimulationDecision[] | null> {
+  if (!input.actor) return null;
+
+  const actor: MemoryActor = {
+    kind: "github_user",
+    id: `github:${input.actor.githubUserId}`,
+    githubUserId: input.actor.githubUserId,
+    login: input.actor.githubLogin,
+  };
+  const adminDecision = await input.memoryPermission.canConfirmMemory({
+    workspaceId: input.workspaceId,
+    repositoryId: null,
+    userId: null,
+    scope: "workspace",
+    actor,
+  });
+  if (!adminDecision.allowed) return null;
+
+  const repository =
+    input.repositories.find(
+      (candidate) => candidate.selected && !candidate.archived,
+    ) ??
+    input.repositories.find((candidate) => !candidate.archived) ??
+    null;
+  const now = new Date();
+  const dependencies = {
+    memoryPolicyConfig: input.memoryPolicyConfig,
+    memoryPermissions: input.memoryPermission,
+    memoryItems: input.memoryItemStore,
+    memorySuggestions: input.memorySuggestionStore,
+    memoryQuotaPolicy: input.memoryQuotaPolicy,
+  };
+
+  return Promise.all([
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: null,
+        userId: null,
+        scope: "workspace",
+        actor,
+        action: "direct_save",
+        safetyFixture: "safe_project_rule",
+        now,
+      },
+      dependencies,
+    ),
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: repository?.id ?? null,
+        userId: null,
+        scope: "repository",
+        actor,
+        action: "direct_save",
+        safetyFixture: "safe_project_rule",
+        now,
+      },
+      dependencies,
+    ),
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: repository?.id ?? null,
+        userId: null,
+        scope: "repository",
+        actor,
+        action: "propose_suggestion",
+        safetyFixture: "prompt_injection",
+        now,
+      },
+      dependencies,
+    ),
+    simulateMemoryPolicyDecision(
+      {
+        workspaceId: input.workspaceId,
+        repositoryId: null,
+        userId: actor.id,
+        scope: "user_prefs",
+        actor,
+        action: "direct_save",
+        safetyFixture: "safe_user_preference",
+        now,
+      },
+      dependencies,
+    ),
+  ]);
 }
 
 async function loadOrganizationSecretPolicy(input: {
@@ -756,7 +932,12 @@ type DashboardPageProps = {
   >;
 };
 
-type DashboardSection = "repositories" | "setup" | "policy" | "diagnostics";
+type DashboardSection =
+  | "repositories"
+  | "memory"
+  | "setup"
+  | "policy"
+  | "diagnostics";
 
 const dashboardSectionMeta: Record<
   DashboardSection,
@@ -773,6 +954,13 @@ const dashboardSectionMeta: Record<
     description:
       "Create setup PRs, confirm runtime health, and see what needs attention before reviews run.",
     navDescription: "Setup PRs and health",
+  },
+  memory: {
+    eyebrow: "Memory management",
+    title: "Memory",
+    description:
+      "Confirm suggested memories, manage approved knowledge, and keep runtime context scoped to this workspace.",
+    navDescription: "Suggestions and knowledge",
   },
   setup: {
     eyebrow: "Connection",
@@ -831,7 +1019,17 @@ export default async function DashboardPage({
         }
       : undefined;
   const [dashboardData, modelOptions] = await Promise.all([
-    loadDashboardData(workspaceScope, repositoryAccess, supportAudit),
+    loadDashboardData(
+      workspaceScope,
+      repositoryAccess,
+      supportAudit,
+      mutationStatus.githubUserId && mutationStatus.githubLogin
+        ? {
+            githubUserId: mutationStatus.githubUserId,
+            githubLogin: mutationStatus.githubLogin,
+          }
+        : null,
+    ),
     getReviewModelOptions(),
   ]);
   const workspaces = filterVisibleDashboardWorkspaces(dashboardData);
@@ -1290,14 +1488,14 @@ function DashboardSectionNav({
     readonly label: string;
     readonly description: string;
     readonly href: string;
-  }[] = (["repositories", "setup", "policy", "diagnostics"] as const).map(
-    (section) => ({
-      section,
-      label: dashboardSectionMeta[section].title,
-      description: dashboardSectionMeta[section].navDescription,
-      href: dashboardSectionHref(section, workspaceKey),
-    }),
-  );
+  }[] = (
+    ["repositories", "memory", "setup", "policy", "diagnostics"] as const
+  ).map((section) => ({
+    section,
+    label: dashboardSectionMeta[section].title,
+    description: dashboardSectionMeta[section].navDescription,
+    href: dashboardSectionHref(section, workspaceKey),
+  }));
 
   return (
     <aside className="p-4 lg:p-5">
@@ -1368,6 +1566,10 @@ function WorkspaceCard({
     outboxFailures,
     supportDiagnostics,
     orgRuleset,
+    memoryItems,
+    memorySuggestions,
+    memoryWritesEnabled,
+    memoryPolicySimulation,
   } = data;
   const activeConfig =
     data.reviewConfig?.config ?? safeDefaultReviewConfiguration;
@@ -1379,6 +1581,7 @@ function WorkspaceCard({
       : null;
   const repositorySearchQuery = readParam(params.q);
   const repositorySearchFilter = readRepositorySearchFilter(params);
+  const selectedMemoryMode = resolveMemoryManagementMode(params);
   const requestedRepository = requestedRepositoryFullName
     ? repositories.find(
         (repository) => repository.fullName === requestedRepositoryFullName,
@@ -1486,6 +1689,20 @@ function WorkspaceCard({
               }
             />
           </>
+        ) : null}
+
+        {selectedSection === "memory" ? (
+          <MemoryManagementPanel
+            workspace={workspace}
+            repositories={repositories}
+            memoryItems={memoryItems}
+            memorySuggestions={memorySuggestions}
+            mutationsEnabled={mutationsEnabled}
+            memoryWritesEnabled={memoryWritesEnabled}
+            policySimulation={memoryPolicySimulation}
+            mode={selectedMemoryMode}
+            modeLinks={dashboardMemoryModeLinks(workspaceKey)}
+          />
         ) : null}
 
         {selectedSection === "setup" ? (
@@ -1832,7 +2049,7 @@ function WorkspaceCard({
                     metadata only / no code, diffs, prompts, or secrets
                   </span>
                 </div>
-                <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-5">
+                <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-6">
                   <SupportMetric
                     label="Repositories"
                     value={`${supportDiagnostics.repositoryCounts.selected}/${supportDiagnostics.repositoryCounts.total}`}
@@ -1857,6 +2074,11 @@ function WorkspaceCard({
                     label="Action runs"
                     value={`${supportDiagnostics.actionRunCounts.repositoriesWithReports} reports`}
                     hint={`${supportDiagnostics.actionRunCounts.criticalFindings} critical / ${supportDiagnostics.actionRunCounts.inlineComments} inline`}
+                  />
+                  <SupportMetric
+                    label="Memory"
+                    value={`${supportDiagnostics.memoryCounts.items.active}/${supportDiagnostics.memoryCounts.items.total} active`}
+                    hint={`${supportDiagnostics.memoryCounts.suggestions.pending} pending / ${supportDiagnostics.memoryCounts.index.pending} indexing`}
                   />
                 </div>
                 {supportDiagnostics.recentAuditActions.length > 0 ? (
@@ -1996,9 +2218,11 @@ function DashboardSectionHeader({
       ? `${repositoryCount} synced repositories`
       : selectedSection === "policy"
         ? `${activeConfig.provider.model} / ${activeConfig.provider.reasoningEffort}`
-        : selectedSection === "setup"
-          ? "App connection"
-          : "Metadata only";
+        : selectedSection === "memory"
+          ? "Confirm before use"
+          : selectedSection === "setup"
+            ? "App connection"
+            : "Metadata only";
 
   return (
     <section className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/62 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -3341,6 +3565,23 @@ function resolveDashboardSection(
   }
   if (
     [
+      "memory_saved",
+      "memory_suggestion_confirmed",
+      "memory_suggestion_rejected",
+      "memory_disabled",
+      "memory_deleted",
+      "memory_duplicate",
+      "memory_already_confirmed",
+      "memory_already_rejected",
+      "memory_already_disabled",
+      "memory_already_deleted",
+      "memory_noop",
+    ].includes(notice)
+  ) {
+    return "memory";
+  }
+  if (
+    [
       "review_config_saved",
       "repository_review_config_saved",
       "repository_review_config_cleared",
@@ -3349,12 +3590,15 @@ function resolveDashboardSection(
     return "policy";
   }
   if (notice.startsWith("outbox_retry_")) return "diagnostics";
+  if (isMemoryError(readParam(params.error))) return "memory";
   if (readParam(params.error)) return "setup";
   return "repositories";
 }
 
 function isDashboardSection(value: string): value is DashboardSection {
-  return ["repositories", "setup", "policy", "diagnostics"].includes(value);
+  return ["repositories", "memory", "setup", "policy", "diagnostics"].includes(
+    value,
+  );
 }
 
 function dashboardSectionHref(
@@ -3362,6 +3606,43 @@ function dashboardSectionHref(
   workspaceKey?: string,
 ): string {
   const query = new URLSearchParams({ section });
+  if (workspaceKey) query.set("workspace", workspaceKey);
+  return `/dashboard?${query.toString()}#dashboard-section-content`;
+}
+
+function resolveMemoryManagementMode(
+  params: Record<string, string | string[] | undefined>,
+): MemoryManagementMode {
+  const explicit = readParam(params.memory_mode);
+  if (
+    explicit === "knowledge" ||
+    explicit === "suggestions" ||
+    explicit === "table"
+  ) {
+    return explicit;
+  }
+  if (readParam(params.status) === "pending") return "suggestions";
+  return "knowledge";
+}
+
+function dashboardMemoryModeLinks(
+  workspaceKey?: string,
+): MemoryManagementModeLinks {
+  return {
+    knowledge: dashboardMemoryModeHref("knowledge", workspaceKey),
+    suggestions: dashboardMemoryModeHref("suggestions", workspaceKey),
+    table: dashboardMemoryModeHref("table", workspaceKey),
+  };
+}
+
+function dashboardMemoryModeHref(
+  mode: MemoryManagementMode,
+  workspaceKey?: string,
+): string {
+  const query = new URLSearchParams({
+    section: "memory",
+    memory_mode: mode,
+  });
   if (workspaceKey) query.set("workspace", workspaceKey);
   return `/dashboard?${query.toString()}#dashboard-section-content`;
 }
@@ -3404,6 +3685,25 @@ function dashboardNoticeText(notice: string, repository: string): string {
       return repository
         ? `${repository} now inherits the workspace review configuration.`
         : "Repository override was cleared.";
+    case "memory_saved":
+      return "Memory was saved after policy and safety checks.";
+    case "memory_suggestion_confirmed":
+      return "Suggested memory was confirmed and queued for retrieval indexing.";
+    case "memory_suggestion_rejected":
+      return "Suggested memory was rejected and will not be used in runtime context.";
+    case "memory_disabled":
+      return "Memory was disabled and queued for removal from retrieval.";
+    case "memory_deleted":
+      return "Memory was deleted and queued for removal from retrieval.";
+    case "memory_duplicate":
+      return "A matching active memory already exists, so nothing was changed.";
+    case "memory_already_confirmed":
+    case "memory_already_rejected":
+    case "memory_already_disabled":
+    case "memory_already_deleted":
+      return "Memory state was already up to date.";
+    case "memory_noop":
+      return "No memory change was needed.";
     case "outbox_retry_queued":
       return "Failed background event was queued for retry. Refresh in a few seconds after background processing catches up.";
     case "outbox_retry_not_found":
@@ -3438,6 +3738,24 @@ function dashboardNoticeTitle(notice: string): string {
     case "repository_review_config_saved":
     case "repository_review_config_cleared":
       return "Model settings saved";
+    case "memory_saved":
+      return "Memory saved";
+    case "memory_suggestion_confirmed":
+      return "Suggestion approved";
+    case "memory_suggestion_rejected":
+      return "Suggestion rejected";
+    case "memory_disabled":
+      return "Memory disabled";
+    case "memory_deleted":
+      return "Memory deleted";
+    case "memory_duplicate":
+      return "Duplicate skipped";
+    case "memory_already_confirmed":
+    case "memory_already_rejected":
+    case "memory_already_disabled":
+    case "memory_already_deleted":
+    case "memory_noop":
+      return "Memory unchanged";
     case "outbox_retry_queued":
     case "outbox_retry_not_found":
     case "outbox_retry_not_dead_letter":
@@ -3459,9 +3777,20 @@ function dashboardNoticeTone(
     case "review_config_saved":
     case "repository_review_config_saved":
     case "repository_review_config_cleared":
+    case "memory_saved":
+    case "memory_suggestion_confirmed":
+    case "memory_suggestion_rejected":
+    case "memory_disabled":
+    case "memory_deleted":
     case "repository_access_refreshed":
       return "success";
     case "sync_already_requested":
+    case "memory_duplicate":
+    case "memory_already_confirmed":
+    case "memory_already_rejected":
+    case "memory_already_disabled":
+    case "memory_already_deleted":
+    case "memory_noop":
       return "accent";
     case "outbox_retry_not_found":
     case "outbox_retry_not_dead_letter":
@@ -3478,6 +3807,28 @@ function isProviderSecretCheckError(error: string): boolean {
     error === "provider_secret_not_available_to_repository" ||
     error === "provider_secret_check_permission_required"
   );
+}
+
+function isMemoryError(error: string): boolean {
+  return [
+    "contains_code_block",
+    "contains_diff_hunk",
+    "contains_large_stacktrace",
+    "contains_prompt_injection",
+    "contains_secret_like_text",
+    "memory_active_item_quota_exceeded",
+    "memory_disabled",
+    "memory_not_found",
+    "memory_pending_suggestion_quota_exceeded",
+    "memory_safety_blocked",
+    "not_repository_maintainer",
+    "not_user_owner",
+    "not_workspace_admin",
+    "permission_service_unavailable",
+    "repository_unavailable",
+    "too_long",
+    "unsafe_for_user_prefs",
+  ].includes(error);
 }
 
 function isSetupRecoveryIssue(value: string | null | undefined): boolean {
@@ -3625,9 +3976,48 @@ function dashboardErrorText(error: string): string {
       return "GitHub rejected the ruleset permission probe. An organization owner may still need to approve the App permission update.";
     case "github_org_ruleset_validation_failed":
       return "GitHub rejected the ruleset payload. Evaluate mode requires GitHub Enterprise; switch to Active or use per-repository setup PR fallback.";
+    case "not_repository_maintainer":
+      return "Only repository maintainers or workspace admins can confirm repository memory.";
+    case "not_workspace_admin":
+      return "Only workspace admins can change workspace memory.";
+    case "not_user_owner":
+      return "User preference memory can only be changed by that user.";
+    case "repository_unavailable":
+      return "This repository is not available for memory changes. It may be archived, unselected, or outside the workspace.";
+    case "memory_active_item_quota_exceeded":
+      return "Workspace memory quota is full. Disable or delete older memory before saving or confirming new memory.";
+    case "memory_disabled":
+      return "Balanced Memory is disabled for this workspace or environment. Existing memory can still be reviewed and removed by authorized admins.";
+    case "memory_pending_suggestion_quota_exceeded":
+      return "Workspace pending memory suggestion quota is full. Confirm, reject, or let expired suggestions clear before saving more suggestions.";
+    case "memory_not_found":
+      return "Memory was not found in this workspace.";
+    case "contains_secret_like_text":
+      return "Memory was blocked because it looks like it contains a secret.";
+    case "contains_code_block":
+    case "contains_diff_hunk":
+      return "Memory was blocked because code or diffs must not be stored.";
+    case "contains_large_stacktrace":
+      return "Memory was blocked because stack traces must not be stored as memory.";
+    case "contains_prompt_injection":
+      return "Memory was blocked because it looks like prompt-injection text.";
+    case "too_long":
+      return "Memory is too long. Save a short distilled preference or rule instead.";
+    case "unsafe_for_user_prefs":
+      return "User preference memory can only store safe response preferences, not repository-specific facts.";
+    case "permission_service_unavailable":
+    case "memory_safety_blocked":
+      return "Memory policy blocked this change. Refresh and try again with a safer distilled memory.";
     default:
       return "GitHub operation failed. Check audit events or server logs for the safe error code.";
   }
+}
+
+function readCsvEnv(name: string): readonly string[] {
+  return (process.env[name] ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function buildInstallationSettingsUrl(

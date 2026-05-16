@@ -199,6 +199,30 @@ REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
 
 Use after action runtime, generated workflow, provider setup, review config, or review output behavior changes.
 
+### Real GitHub Memory E2E
+
+```bash
+REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 \
+  REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1 \
+  REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=4 \
+  pnpm spike:github-memory:e2e
+```
+
+Use after Balanced Memory, interaction workflow, action runtime discussion, or
+memory endpoint changes. The preflight must pass before enabling side effects.
+It verifies the disposable repo default branch has
+`.github/workflows/reviewrouter-interaction.yml`, the workflow ignores bot
+comments, issue comments are enabled, and the referenced runtime exposes memory
+candidate/command endpoints.
+
+For the full side-effect smoke, remove
+`REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1` only after:
+
+- the SaaS memory API is deployed and `/api/action/v1/memory*` is available on the public API URL;
+- the disposable repo `777genius/review-router-saas-e2e` default branch has the interaction workflow;
+- the workflow references a pushed memory-capable action runtime ref;
+- no secrets or raw Codex auth are printed into logs or docs.
+
 ### GitHub App Credential Smoke
 
 Create a production or staging GitHub App with the manifest helper:

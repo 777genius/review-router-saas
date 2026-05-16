@@ -1,0 +1,28 @@
+{
+  "name": "@reviewrouter/features-memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    },
+    "./outbox": {
+      "types": "./src/infrastructure/outbox/memory-index-outbox-handlers.ts",
+      "production": "./dist/infrastructure/outbox/memory-index-outbox-handlers.js",
+      "default": "./src/infrastructure/outbox/memory-index-outbox-handlers.ts"
+    }
+  },
+  "dependencies": {
+    "@prisma/client": "^7.8.0",
+    "@reviewrouter/features-entitlements": "workspace:*",
+    "@reviewrouter/features-outbox": "workspace:*",
+    "@reviewrouter/shared": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

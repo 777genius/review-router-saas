@@ -27,6 +27,14 @@ Allowed metadata:
 - audit events
 - entitlements
 
+Balanced Memory exception:
+
+- ReviewRouter may store user-approved distilled memory bodies and pending memory suggestion bodies.
+- Memory input must be a bounded distilled fact/preference, not raw code, diffs, prompts, model responses, or conversation threads.
+- Action memory endpoints reject raw payload fields and store only candidate body plus safe metadata.
+- Memory audit, outbox, and usage telemetry must not contain memory body, source text, prompts, model output, code, or diffs.
+- `forget/delete` removes the memory from runtime bundles immediately, deletes the search-index document, and tombstones the stored body/source for the item and its confirmed origin suggestion.
+
 ## Retention Defaults
 
 Initial defaults:
@@ -36,6 +44,8 @@ Audit events: 180 days during beta, configurable later
 Webhook deliveries: 30 days
 Job execution records: 30 days
 Health reports: 90 days
+Memory usage telemetry: 180 days
+Pending memory suggestions: 14 days for repository/workspace, 30 days for user_prefs
 Config versions: retained while workspace exists
 Deleted workspace data: hard-delete async within 30 days unless legal hold later
 ```

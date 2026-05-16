@@ -188,3 +188,91 @@ Recovery:
 
 Do not manually edit payload JSON in production. If payload migration is needed,
 ship an explicit versioned migration or a new handler version.
+
+## Balanced Memory Operational Checks
+
+Use this after changing memory storage, dashboard memory actions, interaction
+commands, export, retention, diagnostics, or workflow memory wiring.
+
+Local verification:
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm lint
+pnpm architecture:check
+pnpm spike:memory:e2e
+```
+
+Expected result:
+
+1. migrations apply to a fresh temporary Postgres database
+2. action session OIDC exchange succeeds
+3. maintainer/admin memory writes succeed and member/author writes fail closed
+4. raw code, diffs, prompts, model output, and raw conversations are rejected
+5. confirmed repository/workspace memory appears in the scoped action bundle
+6. disabled, expired, deleted, cross-repository, and cross-workspace memory does not appear in the bundle
+7. delete redacts memory body/source and confirmed origin suggestion body/source
+8. export includes active, disabled, and expired memory only
+9. export excludes deleted rows, embeddings, raw source excerpts, and source hashes
+10. audit, outbox, usage telemetry, and diagnostics contain ids, hashes, counts, status, and versions only
+11. workspace flag `balanced_memory=false` returns an empty degraded runtime bundle and `memory_disabled` for new writes
+
+Real GitHub memory smoke:
+
+```bash
+REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 \
+  REVIEW_ROUTER_GITHUB_MEMORY_E2E_PR=<open-disposable-pr-number> \
+  pnpm spike:github-memory:e2e
+```
+
+Expected target state:
+
+1. use existing disposable repository `777genius/review-router-saas-e2e`
+2. do not create a new GitHub repository unless isolation is explicitly required
+3. the disposable repository default branch contains `.github/workflows/reviewrouter-interaction.yml`
+4. `/rr remember repo <marker>` creates a confirmed repository memory item
+5. natural-language remember creates a pending suggestion, and `/rr remember mem_suggestion_*` confirms it
+6. the confirmed item appears in a later scoped action memory bundle
+7. `/rr forget mem_*` removes it from future bundles
+8. bot comments do not trigger a new interaction run
+9. PR author/member denial is either verified with a second non-maintainer actor or covered by `pnpm spike:memory:e2e`
+
+The smoke runner is intentionally opt-in because it posts PR comments and
+triggers GitHub Actions. Use `REVIEW_ROUTER_GITHUB_MEMORY_E2E_PREFLIGHT_ONLY=1`
+to validate repository/workflow readiness without posting comments. The
+preflight also rejects stale workflows/runtimes that do not expose the memory
+candidate and command endpoints, so it fails before side effects if the action
+runtime has not been updated.
+
+Emergency disable:
+
+1. set `REVIEW_ROUTER_MEMORY_ENABLED=0|false|off` or `REVIEW_ROUTER_DISABLE_MEMORY=1|true|on` on API and web services
+2. restart services so `MemoryPolicyConfigPort` composition picks up the flag
+3. verify action memory bundle responses are empty/degraded and new writes return `memory_disabled`
+4. keep dashboard delete/disable/export available for authorized cleanup of existing memory
+5. unset the flag only after `pnpm spike:memory:e2e` and production smoke checks pass
+
+If memory bundle requests fail:
+
+1. review continues without memory because memory bundle fetch is non-blocking
+2. check action session validity, workspace id, repository id, and memory feature entitlement
+3. inspect support diagnostics counts, not memory bodies
+4. confirm search index degradation falls back to canonical storage
+5. check worker logs for safe memory outbox handler summaries
+
+If export returns `memory_export_too_large`:
+
+1. do not increase sync response size in the dashboard route
+2. use the JSON manifest counts to estimate scope only when available
+3. build or enable an async admin export workflow with expiring storage before supporting larger exports
+4. keep deleted rows, embeddings, raw source excerpts, and source hashes excluded
+5. audit only export id, counts, checksum, format, and safe status metadata
+
+If a user requests deletion:
+
+1. disable runtime exposure immediately through dashboard delete or the normalized interaction command
+2. verify deleted memory no longer appears in action bundles
+3. verify source/body redaction on the canonical memory item and linked confirmed suggestion
+4. let terminal retention prune hard-delete old deleted/expired rows
+5. do not paste memory body, source comments, code, diffs, prompts, or model output into support tickets

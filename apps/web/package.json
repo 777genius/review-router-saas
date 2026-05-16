@@ -12,6 +12,7 @@
     "@reviewrouter/features-auth": "workspace:*",
     "@reviewrouter/features-entitlements": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
+    "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-provider-setup": "workspace:*",

@@ -26,6 +26,14 @@ const freeLimits = [
     `${freeBetaLimits.reviewConfigSavesPerWorkspacePerHour} per workspace per hour`,
   ],
   [
+    "Active memory items",
+    `${freeBetaLimits.maxActiveMemoryItemsPerWorkspace} per workspace`,
+  ],
+  [
+    "Pending memory suggestions",
+    `${freeBetaLimits.maxPendingMemorySuggestionsPerWorkspace} per workspace`,
+  ],
+  [
     "Action OIDC exchange and health reports",
     "DB-backed per repository/run limits",
   ],
