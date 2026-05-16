@@ -155,7 +155,7 @@ async function main() {
     eventName: "issue_comment",
     after: forgetComment.createdAt,
   });
-  await waitForBotCommentContaining({
+  const forgetBotComment = await waitForBotCommentContaining({
     after: forgetComment.createdAt,
     values: [confirmedMemoryId, "deleted"],
     allowAnyValue: true,
@@ -166,6 +166,7 @@ async function main() {
       directBotComment.createdAt,
       suggestionBotComment.createdAt,
       confirmBotComment.createdAt,
+      forgetBotComment.createdAt,
     ]),
   });
 
@@ -360,13 +361,14 @@ async function waitForInteractionRun({ eventName, after }) {
       "--limit",
       "20",
       "--json",
-      "databaseId,workflowName,event,status,conclusion,createdAt,url,actor",
+      "databaseId,workflowName,event,status,conclusion,createdAt,url",
     ]);
     const candidates = runs
       .filter(
         (run) =>
           run.event === eventName &&
-          Date.parse(run.createdAt) >= Date.parse(after),
+          Date.parse(run.createdAt) >= Date.parse(after) &&
+          run.conclusion !== "skipped",
       )
       .sort(
         (left, right) =>
@@ -387,7 +389,7 @@ async function waitForInteractionRun({ eventName, after }) {
     id: run.databaseId,
     url: run.url,
     event: run.event,
-    actor: run.actor?.login ?? null,
+    actor: null,
     createdAt: run.createdAt,
   });
   return run;
@@ -432,19 +434,19 @@ async function assertNoBotLoopAfter({ after }) {
     "--limit",
     "20",
     "--json",
-    "databaseId,event,createdAt,url,actor",
+    "databaseId,event,status,conclusion,createdAt,url",
   ]);
-  const botRuns = runs.filter(
+  const nonSkippedRuns = runs.filter(
     (run) =>
       Date.parse(run.createdAt) > Date.parse(after) &&
-      isReviewRouterBotLogin(run.actor?.login ?? ""),
+      (run.status !== "completed" || run.conclusion !== "skipped"),
   );
-  if (botRuns.length > 0) {
+  if (nonSkippedRuns.length > 0) {
     fail(
       "github_memory_e2e_bot_loop_detected",
-      "Bot-authored comments triggered interaction runs.",
+      "Bot-authored comments triggered non-skipped interaction runs.",
       {
-        runUrls: botRuns.map((run) => run.url),
+        runUrls: nonSkippedRuns.map((run) => run.url),
       },
     );
   }
