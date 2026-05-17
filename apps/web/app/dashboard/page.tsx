@@ -128,6 +128,7 @@ import {
   type MemoryManagementMode,
   type MemoryManagementModeLinks,
 } from "./memory-management-panel";
+import { DashboardCollapsibleShell } from "./dashboard-collapsible-shell";
 import { createNoIndexPageMetadata } from "../seo";
 
 export const dynamic = "force-dynamic";
@@ -1630,16 +1631,23 @@ function WorkspaceCard({
     ) : null;
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
-      <DashboardSectionNav
-        workspace={workspace}
-        repositoryCount={repositoryCount}
-        workspaceHealth={workspaceHealth}
-        selectedSection={selectedSection}
-        workspaceKey={workspaceKey}
-        fallbackUser={fallbackUser}
-      />
-      <div id="dashboard-section-content" className="space-y-5 scroll-mt-28">
+    <DashboardCollapsibleShell
+      defaultCollapsed={selectedSection === "memory"}
+      nav={
+        <DashboardSectionNav
+          workspace={workspace}
+          repositoryCount={repositoryCount}
+          workspaceHealth={workspaceHealth}
+          selectedSection={selectedSection}
+          workspaceKey={workspaceKey}
+          fallbackUser={fallbackUser}
+        />
+      }
+    >
+      <div
+        id="dashboard-section-content"
+        className="min-w-0 space-y-5 scroll-mt-28"
+      >
         <DashboardInstallRequestToast
           request={buildPendingOrganizationInstallRequest(params)}
         />
@@ -2197,7 +2205,7 @@ function WorkspaceCard({
           </>
         ) : null}
       </div>
-    </div>
+    </DashboardCollapsibleShell>
   );
 }
 

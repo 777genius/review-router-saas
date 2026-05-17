@@ -82,15 +82,15 @@ export function MemoryManagementPanel({
     <section
       data-testid="memory-management-panel"
       className={[
-        "grid gap-4",
+        "grid min-w-0 items-start gap-4",
         mode === "table"
-          ? "xl:grid-cols-[14rem_minmax(0,1fr)]"
-          : "xl:grid-cols-[14rem_minmax(0,1fr)_20rem]",
+          ? "xl:grid-cols-[minmax(0,280px)_minmax(0,1fr)]"
+          : "xl:grid-cols-[minmax(0,280px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,280px)_minmax(0,1fr)_minmax(0,360px)]",
       ].join(" ")}
     >
       <aside
         data-testid="memory-scope-rail"
-        className="min-w-0 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+        className="min-w-0 overflow-hidden rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
       >
         <p className="font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
           Repositories
@@ -98,6 +98,7 @@ export function MemoryManagementPanel({
         <label className="mt-3 block">
           <span className="sr-only">Search repositories</span>
           <input
+            id="memory-repository-search"
             readOnly
             value=""
             placeholder="Search repositories..."
@@ -223,7 +224,7 @@ export function MemoryManagementPanel({
         <aside
           id="memory-policy-panel"
           data-testid="memory-policy-panel"
-          className="scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4"
+          className="min-w-0 overflow-hidden scroll-mt-28 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4 xl:col-span-2 2xl:col-span-1"
         >
           <div className="grid gap-4">
             <div>
@@ -317,9 +318,10 @@ function MemoryBadge({
   return (
     <Badge
       size="xs"
-      className={["self-center cursor-default select-none", className].join(
-        " ",
-      )}
+      className={[
+        "max-w-full self-center cursor-default select-none px-[7px] py-[3px] text-[10px] leading-none tracking-[0.08em]",
+        className,
+      ].join(" ")}
       {...props}
     />
   );
@@ -419,8 +421,8 @@ function MemoryKnowledgeToolbar({
   readonly totalCount: number;
 }): React.ReactElement {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
-      <div>
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-4">
+      <div className="min-w-0">
         <h2 className="text-2xl font-semibold tracking-normal text-cyan-50">
           All scopes
         </h2>
@@ -725,7 +727,7 @@ function MemoryModeTabs({
   return (
     <div
       data-testid="memory-mode-tabs"
-      className="grid gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-3 md:grid-cols-3"
+      className="grid min-w-0 gap-3 rounded-[1.25rem] border border-cyan-200/10 bg-slate-950/60 p-3 md:grid-cols-3"
     >
       <MemoryModeTab
         label="Knowledge"
@@ -761,7 +763,7 @@ function MemoryModeTab({
   readonly href?: string | undefined;
 }): React.ReactElement {
   const className = [
-    "flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm font-semibold",
+    "flex min-h-12 min-w-0 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm font-semibold",
     selected
       ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-100 shadow-[inset_0_-2px_0_rgba(110,231,183,0.75)]"
       : "border-cyan-200/10 bg-cyan-300/[0.035] text-slate-400",
@@ -769,7 +771,7 @@ function MemoryModeTab({
   const content = (
     <>
       <span>{label}</span>
-      <span className="rounded-full border border-cyan-200/10 bg-slate-950 px-2 py-0.5 font-mono text-xs text-cyan-100">
+      <span className="min-w-6 shrink-0 rounded-full border border-cyan-200/10 bg-slate-950 px-2 py-0.5 text-center font-mono text-[11px] leading-none text-cyan-100">
         {count}
       </span>
     </>
@@ -852,14 +854,14 @@ function MemoryScopeFilterRow({
   return (
     <div
       className={[
-        "flex items-center justify-between gap-3 rounded-xl border px-3 py-2",
+        "flex min-w-0 items-center justify-between gap-3 overflow-hidden rounded-xl border px-3 py-2",
         selected
           ? "border-emerald-300/25 bg-emerald-300/10"
           : "border-cyan-200/10 bg-cyan-300/[0.04]",
       ].join(" ")}
     >
       <span className="min-w-0 truncate text-slate-300">{label}</span>
-      <span className="font-mono text-xs font-semibold text-cyan-100">
+      <span className="shrink-0 font-mono text-[11px] font-semibold leading-none text-cyan-100">
         {count}
       </span>
     </div>
