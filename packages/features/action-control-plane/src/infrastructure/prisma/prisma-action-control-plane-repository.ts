@@ -255,6 +255,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
                 reasoningEffort: true,
                 agenticContext: true,
                 fastMode: true,
+                requiredHealthy: true,
               },
             },
           },
@@ -364,6 +365,7 @@ function toReviewProviderConfiguration(input: {
   readonly reasoningEffort: string;
   readonly agenticContext: boolean;
   readonly fastMode: boolean;
+  readonly requiredHealthy?: boolean;
 }): ReviewProviderConfiguration {
   const authMode = toProviderAuthMode({
     providerAuthMode: input.providerAuthMode,
@@ -376,6 +378,7 @@ function toReviewProviderConfiguration(input: {
     reasoningEffort: toReasoningEffort(input.reasoningEffort),
     agenticContext: input.agenticContext,
     fastMode: input.fastMode,
+    requiredHealthy: input.requiredHealthy === true,
   };
 }
 

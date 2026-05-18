@@ -87,6 +87,14 @@ describe("ReviewConfigForm", () => {
       (screen.getAllByRole("textbox", { name: "Model" })[1] as HTMLInputElement)
         .value,
     ).toBe("poolside/laguna-m.1:free");
+    expect(
+      (screen.getAllByRole("checkbox", { name: "Required healthy" })[0] as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(
+      (screen.getAllByRole("checkbox", { name: "Required healthy" })[1] as HTMLInputElement)
+        .checked,
+    ).toBe(false);
     expect(screen.getAllByText("FREE RECOMMENDED").length).toBeGreaterThan(0);
     expect(
       (
@@ -95,6 +103,26 @@ describe("ReviewConfigForm", () => {
         })[1] as HTMLButtonElement
       ).disabled,
     ).toBe(false);
+  });
+
+  it("keeps one provider marked as required healthy", () => {
+    renderReviewConfigForm();
+
+    const requiredToggle = screen.getByRole("checkbox", {
+      name: "Required healthy",
+    }) as HTMLInputElement;
+
+    expect(requiredToggle.checked).toBe(true);
+    fireEvent.click(requiredToggle);
+    expect(requiredToggle.checked).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]!);
+
+    expect(
+      (screen.getByRole("checkbox", { name: "Required healthy" }) as HTMLInputElement)
+        .checked,
+    ).toBe(true);
   });
 
   it("filters model options by selected provider", () => {
@@ -556,6 +584,7 @@ function openRouterReviewConfiguration(): ReviewConfiguration {
     reasoningEffort: "medium",
     agenticContext: true,
     fastMode: false,
+    requiredHealthy: true,
   };
 
   return {
@@ -573,10 +602,12 @@ function duplicateOpenRouterReviewConfiguration(): ReviewConfiguration {
     reasoningEffort: "medium",
     agenticContext: true,
     fastMode: false,
+    requiredHealthy: true,
   };
   const secondOpenRouterProvider: ReviewProviderConfiguration = {
     ...firstOpenRouterProvider,
     model: "anthropic/claude-sonnet-4.5",
+    requiredHealthy: false,
   };
 
   return {
@@ -596,6 +627,7 @@ function codexReviewConfiguration(
     reasoningEffort: "medium",
     agenticContext: true,
     fastMode: false,
+    requiredHealthy: true,
   };
 
   return {
@@ -613,6 +645,7 @@ function claudeReviewConfiguration(): ReviewConfiguration {
     reasoningEffort: "medium",
     agenticContext: true,
     fastMode: false,
+    requiredHealthy: true,
   };
 
   return {

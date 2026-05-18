@@ -55,6 +55,7 @@ describe("review configuration", () => {
       CODEX_AGENTIC_CONTEXT: "true",
       CODEX_FAST_MODE: "false",
       REVIEW_PROVIDERS: "codex/gpt-5.5",
+      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
       SYNTHESIS_MODEL: "codex/gpt-5.5",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
@@ -82,6 +83,7 @@ describe("review configuration", () => {
     expect(env).toMatchObject({
       REVIEW_AUTH_MODE: "openrouter-api",
       REVIEW_PROVIDERS: "openrouter/poolside/laguna-m.1:free",
+      REQUIRED_HEALTHY_PROVIDERS: "openrouter/poolside/laguna-m.1:free",
       SYNTHESIS_MODEL: "openrouter/poolside/laguna-m.1:free",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
@@ -109,6 +111,7 @@ describe("review configuration", () => {
     expect(env).toMatchObject({
       REVIEW_AUTH_MODE: "claude-oauth",
       REVIEW_PROVIDERS: "claude/sonnet",
+      REQUIRED_HEALTHY_PROVIDERS: "claude/sonnet",
       SYNTHESIS_MODEL: "claude/sonnet",
       CLAUDE_MODEL: "sonnet",
       PROVIDER_LIMIT: "1",
@@ -154,13 +157,39 @@ describe("review configuration", () => {
     expect(config).toMatchObject({
       schemaVersion: 2,
       provider: { model: "gpt-5.4" },
-      providers: [{ model: "gpt-5.4" }],
+      providers: [{ model: "gpt-5.4", requiredHealthy: true }],
       execution: {
         providerLimit: 1,
         providerMaxParallel: 1,
         inlineMinAgreement: 1,
       },
     });
+  });
+
+  it("normalizes all-false required health flags to first provider", () => {
+    const config = parseReviewConfiguration({
+      schemaVersion: 2,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth",
+          model: "gpt-5.5",
+          requiredHealthy: false,
+        },
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "poolside/laguna-m.1:free",
+          requiredHealthy: false,
+        },
+      ],
+      blockingPolicy: { failOnSeverity: "critical" },
+      limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+    });
+
+    expect(config.providers.map((provider) => provider.requiredHealthy)).toEqual(
+      [true, false],
+    );
   });
 
   it("maps mixed provider config to parallel runtime env", () => {
@@ -196,6 +225,7 @@ describe("review configuration", () => {
     expect(env).toMatchObject({
       REVIEW_AUTH_MODE: "codex-oauth",
       REVIEW_PROVIDERS: "codex/gpt-5.5,openrouter/poolside/laguna-m.1:free",
+      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
       SYNTHESIS_MODEL: "codex/gpt-5.5",
       CODEX_MODEL: "gpt-5.5",
       CODEX_REASONING_EFFORT: "high",
@@ -269,6 +299,7 @@ describe("review configuration", () => {
       reasoningEffort: string;
       agenticContext: boolean;
       fastMode: boolean;
+      requiredHealthy: boolean;
     };
     type VersionRow = {
       version: number;
@@ -397,6 +428,9 @@ describe("review configuration", () => {
       "gpt-5.5",
       "poolside/laguna-m.1:free",
     ]);
+    expect(
+      versions[0]?.providers.map((provider) => provider.requiredHealthy),
+    ).toEqual([true, false]);
   });
 
   it("resolves repository config before workspace default and safe default", async () => {

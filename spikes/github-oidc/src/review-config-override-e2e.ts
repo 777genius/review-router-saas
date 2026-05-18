@@ -113,6 +113,7 @@ try {
       reasoningEffort: "medium" as const,
       agenticContext: true,
       fastMode: false,
+      requiredHealthy: false,
     },
   ];
   const workspaceConfig = await saveReviewConfiguration(

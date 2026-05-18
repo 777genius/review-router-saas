@@ -1473,6 +1473,7 @@ describe("action control plane", () => {
       providers: [
         {
           model: "gpt-5.5",
+          requiredHealthy: true,
           secretBackedProviderEnabled: true,
         },
       ],
@@ -1485,6 +1486,7 @@ describe("action control plane", () => {
         REVIEW_AUTH_MODE: "codex-oauth",
         CODEX_MODEL: "gpt-5.5",
         CODEX_FAST_MODE: "false",
+        REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
@@ -1861,6 +1863,9 @@ describe("action control plane", () => {
       "gpt-5.5",
       "poolside/laguna-m.1:free",
     ]);
+    expect(config.providers.map((provider) => provider.requiredHealthy)).toEqual(
+      [true, false],
+    );
     expect(config.execution).toEqual({
       providerLimit: 2,
       providerMaxParallel: 2,
@@ -1868,6 +1873,7 @@ describe("action control plane", () => {
     });
     expect(config.runtimeEnv).toMatchObject({
       REVIEW_PROVIDERS: "codex/gpt-5.5,openrouter/poolside/laguna-m.1:free",
+      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
       PROVIDER_LIMIT: "2",
       PROVIDER_MAX_PARALLEL: "2",
       INLINE_MIN_AGREEMENT: "2",
@@ -1911,6 +1917,7 @@ describe("action control plane", () => {
     expect(config.runtimeEnv).toMatchObject({
       REVIEW_AUTH_MODE: "claude-oauth",
       REVIEW_PROVIDERS: "claude/sonnet",
+      REQUIRED_HEALTHY_PROVIDERS: "claude/sonnet",
       SYNTHESIS_MODEL: "claude/sonnet",
       CLAUDE_MODEL: "sonnet",
     });

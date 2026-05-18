@@ -2895,6 +2895,7 @@ describe("API app", () => {
       reasoningEffort: "medium",
       agenticContext: true,
       fastMode: false,
+      requiredHealthy: true,
     } as const;
     repositories.runtimeConfig = {
       schemaVersion: 2,

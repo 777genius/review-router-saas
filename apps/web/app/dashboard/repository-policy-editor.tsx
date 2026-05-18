@@ -161,11 +161,14 @@ const fieldHelp = {
     "Maximum number of selected providers ReviewRouter may run at the same time.",
   inlineMinAgreement:
     "Number of providers that should agree before an inline finding is treated as agreed.",
+  requiredHealthy:
+    "Required providers must pass health checks and return valid review output. They do not need to produce findings.",
 } as const;
 
-const defaultCodexProvider = getDefaultProviderConfigForAuthMode(
-  "codex_subscription_oauth",
-) satisfies ReviewProviderConfiguration;
+const defaultCodexProvider = {
+  ...getDefaultProviderConfigForAuthMode("codex_subscription_oauth"),
+  requiredHealthy: true,
+} satisfies ReviewProviderConfiguration;
 
 const secretCopyByAuthMode = {
   codex_subscription_oauth: {
@@ -718,8 +721,9 @@ export function ReviewConfigForm({
     | RepositorySecretCheckTarget
     | undefined;
 }): React.ReactElement {
-  const initialProviders =
-    config.providers.length > 0 ? [...config.providers] : [config.provider];
+  const initialProviders = ensureAtLeastOneRequiredProvider(
+    config.providers.length > 0 ? [...config.providers] : [config.provider],
+  );
   const [providers, setProviders] = useState(initialProviders);
   const [providerMaxParallel, setProviderMaxParallel] = useState(
     Math.min(config.execution.providerMaxParallel, initialProviders.length),
@@ -782,8 +786,9 @@ export function ReviewConfigForm({
             reasoningEffort: "medium",
             agenticContext: true,
             fastMode: false,
+            requiredHealthy: false,
           }
-        : defaultCodexProvider;
+        : { ...defaultCodexProvider, requiredHealthy: false };
       const next = [...current, nextProvider];
       setProviderMaxParallel((value) =>
         Math.min(Math.max(value, 2), next.length),
@@ -802,7 +807,7 @@ export function ReviewConfigForm({
       );
       setProviderMaxParallel((value) => Math.min(value, next.length));
       setInlineMinAgreement((value) => Math.min(value, next.length));
-      return next;
+      return ensureAtLeastOneRequiredProvider(next);
     });
   }
 
@@ -875,6 +880,9 @@ export function ReviewConfigForm({
           <div className="grid gap-4">
             {providers.map((provider, index) => {
               const providerOptions = modelOptionsByProvider[provider.kind];
+              const requiredProviderCount = providers.filter(
+                (candidate) => candidate.requiredHealthy,
+              ).length;
               const firstProviderWithAuthModeIndex = providers.findIndex(
                 (candidate) => candidate.authMode === provider.authMode,
               );
@@ -938,6 +946,20 @@ export function ReviewConfigForm({
                           model: value,
                         }))
                       }
+                    />
+                    <DashboardSwitchField
+                      name={`providerRequiredHealthy.${index}`}
+                      label="Required healthy"
+                      helpText={fieldHelp.requiredHealthy}
+                      checked={provider.requiredHealthy}
+                      disabled={!mutationsEnabled}
+                      onCheckedChange={(checked) => {
+                        if (!checked && requiredProviderCount <= 1) return;
+                        updateProvider(index, (current) => ({
+                          ...current,
+                          requiredHealthy: checked,
+                        }));
+                      }}
                     />
                     {provider.kind === "codex" ? (
                       <>
@@ -1085,6 +1107,19 @@ function firstSelectableModel(
   options: readonly ReviewModelOption[],
 ): ReviewModelOption | undefined {
   return options.find((option) => !option.disabled) ?? options[0];
+}
+
+function ensureAtLeastOneRequiredProvider(
+  providers: readonly ReviewProviderConfiguration[],
+): ReviewProviderConfiguration[] {
+  if (providers.some((provider) => provider.requiredHealthy)) {
+    return [...providers];
+  }
+
+  return providers.map((provider, index) => ({
+    ...provider,
+    requiredHealthy: index === 0,
+  }));
 }
 
 function DashboardFieldLabel({
@@ -1310,6 +1345,7 @@ function DashboardSwitchField({
             className="peer sr-only"
             type="checkbox"
             name={name}
+            aria-label={label}
             value="true"
             checked={checked}
             disabled={disabled}

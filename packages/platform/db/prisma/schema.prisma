@@ -215,6 +215,7 @@ model ReviewConfigurationVersionProvider {
   reasoningEffort        String
   agenticContext         Boolean @default(true)
   fastMode               Boolean @default(false)
+  requiredHealthy        Boolean @default(false)
 
   configurationVersion ReviewConfigurationVersion @relation(fields: [configurationVersionId], references: [id], onDelete: Cascade)
 

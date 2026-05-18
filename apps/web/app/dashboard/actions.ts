@@ -2033,6 +2033,9 @@ function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
         `providerAgenticContext.${index}`,
       ),
       fastMode: readFormBoolean(formData, `providerFastMode.${index}`),
+      requiredHealthy:
+        readOptionalFormBoolean(formData, `providerRequiredHealthy.${index}`) ??
+        (index === 0),
     } satisfies ReviewConfiguration["provider"];
   });
 
@@ -2249,6 +2252,17 @@ function readFormBoolean(formData: FormData, key: string): boolean {
   if (value === "false") {
     return false;
   }
+  throw new Error(`invalid_form_boolean:${key}`);
+}
+
+function readOptionalFormBoolean(
+  formData: FormData,
+  key: string,
+): boolean | undefined {
+  const value = readOptionalFormString(formData, key);
+  if (value === null) return undefined;
+  if (value === "true") return true;
+  if (value === "false") return false;
   throw new Error(`invalid_form_boolean:${key}`);
 }
 

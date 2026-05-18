@@ -64,6 +64,7 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
                   reasoningEffort: "medium",
                   agenticContext: true,
                   fastMode: false,
+                  requiredHealthy: true,
                 },
               ],
             },
@@ -84,5 +85,6 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
       model: "sonnet",
     });
     expect(record?.config.providers).toHaveLength(1);
+    expect(record?.config.providers[0]?.requiredHealthy).toBe(true);
   });
 });

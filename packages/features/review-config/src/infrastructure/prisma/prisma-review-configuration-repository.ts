@@ -105,6 +105,7 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
               reasoningEffort: provider.reasoningEffort,
               agenticContext: provider.agenticContext,
               fastMode: provider.fastMode,
+              requiredHealthy: provider.requiredHealthy,
             })),
           },
         },
@@ -151,6 +152,7 @@ const versionSelect = {
       reasoningEffort: true,
       agenticContext: true,
       fastMode: true,
+      requiredHealthy: true,
     },
   },
 } as const;
@@ -177,6 +179,7 @@ type VersionRecord = {
     readonly reasoningEffort: string;
     readonly agenticContext: boolean;
     readonly fastMode: boolean;
+    readonly requiredHealthy: boolean;
   }[];
 };
 
@@ -195,6 +198,7 @@ function toPersistedConfiguration(
             reasoningEffort: provider.reasoningEffort,
             agenticContext: provider.agenticContext,
             fastMode: provider.fastMode,
+            requiredHealthy: provider.requiredHealthy,
           }))
         : [
             {
@@ -204,6 +208,7 @@ function toPersistedConfiguration(
               reasoningEffort: version.reasoningEffort,
               agenticContext: version.agenticContext,
               fastMode: version.fastMode,
+              requiredHealthy: true,
             },
           ],
       provider: {
@@ -213,6 +218,7 @@ function toPersistedConfiguration(
         reasoningEffort: version.reasoningEffort,
         agenticContext: version.agenticContext,
         fastMode: version.fastMode,
+        requiredHealthy: true,
       },
       execution: {
         providerLimit: version.providerLimit,

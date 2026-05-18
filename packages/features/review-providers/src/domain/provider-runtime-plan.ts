@@ -18,6 +18,7 @@ export type RuntimePlanProviderConfiguration = {
   readonly reasoningEffort: RuntimePlanReasoningEffort;
   readonly agenticContext: boolean;
   readonly fastMode: boolean;
+  readonly requiredHealthy?: boolean;
 };
 
 export type RuntimePlanExecutionConfiguration = {
@@ -58,6 +59,9 @@ export function buildProviderRuntimePlan(
 ): ProviderRuntimePlan {
   const providers = normalizeRuntimePlanProviders(input);
   const providerIds = providers.map(toRuntimeProviderId);
+  const requiredProviderIds = providers
+    .filter((provider) => provider.requiredHealthy)
+    .map(toRuntimeProviderId);
   const requiredSecretNames = uniqueStable(
     providers.flatMap(
       (provider) => getProviderAuthModeMetadata(provider.authMode).secretNames,
@@ -72,6 +76,7 @@ export function buildProviderRuntimePlan(
     REVIEWROUTER_CONFIG_SCHEMA_VERSION: String(input.schemaVersion),
     REVIEW_AUTH_MODE: primaryAuth.runtimeAuthMode,
     REVIEW_PROVIDERS: providerIds.join(","),
+    REQUIRED_HEALTHY_PROVIDERS: requiredProviderIds.join(","),
     SYNTHESIS_MODEL: providerIds[0]!,
     PROVIDER_LIMIT: String(providers.length),
     PROVIDER_MAX_PARALLEL: String(
@@ -147,7 +152,15 @@ function normalizeRuntimePlanProviders(
   if (!providers.length) {
     throw new Error("provider_runtime_plan_requires_provider");
   }
-  return providers.map(validateRuntimePlanProvider);
+  const validatedProviders = providers.map(validateRuntimePlanProvider);
+  if (validatedProviders.some((provider) => provider.requiredHealthy)) {
+    return validatedProviders;
+  }
+
+  return validatedProviders.map((provider, index) => ({
+    ...provider,
+    requiredHealthy: index === 0,
+  }));
 }
 
 function validateRuntimePlanProvider(
@@ -162,6 +175,7 @@ function validateRuntimePlanProvider(
   return {
     ...provider,
     model: provider.model.trim(),
+    requiredHealthy: provider.requiredHealthy === true,
   };
 }
 

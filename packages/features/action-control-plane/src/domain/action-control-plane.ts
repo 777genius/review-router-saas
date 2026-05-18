@@ -289,6 +289,7 @@ const actionRuntimeProviderSchema = z
     reasoningEffort: z.enum(["low", "medium", "high", "xhigh"]),
     agenticContext: z.boolean(),
     fastMode: z.boolean(),
+    requiredHealthy: z.boolean().default(false),
     secretBackedProviderEnabled: z.boolean(),
   })
   .superRefine((provider, context) => {

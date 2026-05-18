@@ -134,6 +134,7 @@ export async function getActionRuntimeConfig(
     reasoningEffort: provider.reasoningEffort,
     agenticContext: provider.agenticContext,
     fastMode: provider.fastMode,
+    requiredHealthy: provider.requiredHealthy,
     secretBackedProviderEnabled: true,
   }));
 

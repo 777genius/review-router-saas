@@ -24,6 +24,7 @@ describe("provider runtime plan", () => {
           reasoningEffort: "medium",
           agenticContext: true,
           fastMode: false,
+          requiredHealthy: true,
         },
       ],
     });
@@ -35,6 +36,7 @@ describe("provider runtime plan", () => {
       CODEX_AGENTIC_CONTEXT: "true",
       CODEX_FAST_MODE: "false",
       REVIEW_PROVIDERS: "codex/gpt-5.5",
+      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
       SYNTHESIS_MODEL: "codex/gpt-5.5",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
@@ -42,6 +44,37 @@ describe("provider runtime plan", () => {
     });
     expect(plan.requiredSecretNames).toEqual(["CODEX_AUTH_JSON"]);
     expect(plan.requiredCliTools).toEqual(["codex"]);
+  });
+
+  it("emits only required healthy provider ids", () => {
+    const plan = buildProviderRuntimePlan({
+      ...baseInput,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth",
+          model: "gpt-5.5",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+          requiredHealthy: true,
+        },
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "openai/gpt-oss-120b:free",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+          requiredHealthy: false,
+        },
+      ],
+    });
+
+    expect(plan.runtimeEnv.REVIEW_PROVIDERS).toBe(
+      "codex/gpt-5.5,openrouter/openai/gpt-oss-120b:free",
+    );
+    expect(plan.runtimeEnv.REQUIRED_HEALTHY_PROVIDERS).toBe("codex/gpt-5.5");
   });
 
   it("builds Claude runtime env without Codex env", () => {
@@ -62,6 +95,7 @@ describe("provider runtime plan", () => {
     expect(plan.runtimeEnv).toMatchObject({
       REVIEW_AUTH_MODE: "claude-oauth",
       REVIEW_PROVIDERS: "claude/sonnet",
+      REQUIRED_HEALTHY_PROVIDERS: "claude/sonnet",
       SYNTHESIS_MODEL: "claude/sonnet",
       CLAUDE_MODEL: "sonnet",
     });
@@ -88,6 +122,7 @@ describe("provider runtime plan", () => {
     expect(plan.runtimeEnv).toMatchObject({
       REVIEW_AUTH_MODE: "openrouter-api",
       REVIEW_PROVIDERS: "openrouter/openai/gpt-5.3-codex",
+      REQUIRED_HEALTHY_PROVIDERS: "openrouter/openai/gpt-5.3-codex",
       SYNTHESIS_MODEL: "openrouter/openai/gpt-5.3-codex",
       CODEX_REASONING_EFFORT: "medium",
       CODEX_AGENTIC_CONTEXT: "true",
@@ -146,6 +181,35 @@ describe("provider runtime plan", () => {
     expect(plan.requiredCliTools).toEqual(["codex", "claude"]);
     expect(plan.runtimeEnv.PROVIDER_MAX_PARALLEL).toBe("3");
     expect(plan.runtimeEnv.INLINE_MIN_AGREEMENT).toBe("2");
+    expect(plan.runtimeEnv.REQUIRED_HEALTHY_PROVIDERS).toBe("codex/gpt-5.5");
+  });
+
+  it("normalizes all-false required health flags to the first provider", () => {
+    const plan = buildProviderRuntimePlan({
+      ...baseInput,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth",
+          model: "gpt-5.5",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+          requiredHealthy: false,
+        },
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "poolside/laguna-m.1:free",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+          requiredHealthy: false,
+        },
+      ],
+    });
+
+    expect(plan.runtimeEnv.REQUIRED_HEALTHY_PROVIDERS).toBe("codex/gpt-5.5");
   });
 
   it("fails closed for invalid provider/auth pairs and secret-shaped env values", () => {

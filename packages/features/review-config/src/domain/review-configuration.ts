@@ -15,6 +15,7 @@ export const reviewProviderConfigurationSchema = z
       .default("medium"),
     agenticContext: z.boolean().default(true),
     fastMode: z.boolean().default(false),
+    requiredHealthy: z.boolean().default(false),
   })
   .superRefine((provider, context) => {
     if (!providerAuthModeBelongsToKind(provider.authMode, provider.kind)) {
@@ -107,8 +108,9 @@ function normalizeReviewConfiguration(
     | z.infer<typeof reviewConfigurationV1Schema>
     | z.infer<typeof reviewConfigurationV2Schema>,
 ): ReviewConfiguration {
-  const providers =
+  const parsedProviders =
     input.schemaVersion === 1 ? [input.provider] : [...input.providers];
+  const providers = ensureRequiredHealthyProvider(parsedProviders);
   const provider = providers[0]!;
   const execution =
     input.schemaVersion === 1
@@ -132,6 +134,19 @@ function normalizeReviewConfiguration(
     blockingPolicy: input.blockingPolicy,
     limits: input.limits,
   };
+}
+
+function ensureRequiredHealthyProvider(
+  providers: readonly ReviewProviderConfiguration[],
+): readonly ReviewProviderConfiguration[] {
+  if (providers.some((provider) => provider.requiredHealthy)) {
+    return providers;
+  }
+
+  return providers.map((provider, index) => ({
+    ...provider,
+    requiredHealthy: index === 0,
+  }));
 }
 
 function clamp(value: number | undefined, min: number, max: number): number {
