@@ -175,11 +175,20 @@ export function RepositoryLiveSearch({
                 <p
                   className={[
                     "text-xs font-medium leading-5",
-                    "text-slate-500",
+                    isSearchLoading
+                      ? "inline-flex items-center gap-2 rounded-full border border-cyan-300/35 bg-cyan-300/[0.08] px-3 py-1.5 font-semibold text-cyan-100 shadow-[0_0_38px_-28px_rgba(103,232,249,0.95)]"
+                      : "text-slate-500",
                   ].join(" ")}
                   aria-live="polite"
+                  aria-atomic="true"
                 >
-                  {helperText}
+                  {isSearchLoading ? (
+                    <span
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent"
+                    />
+                  ) : null}
+                  <span>{helperText}</span>
                 </p>
               ) : null}
               {hasActiveFilter ? (
@@ -294,9 +303,9 @@ function useRepositorySearchHelperText({
 }): string {
   return useMemo(() => {
     if (isSearchLoading && (hasActiveQuery || activeFilter !== "all")) {
-      return `${matchingCount} ${repositoryFilterResultLabel(activeFilter)}. Updating results...`;
+      return `${matchingCount} ${repositoryFilterResultLabel(activeFilter)}. Loading updated results...`;
     }
-    if (isSearchLoading) return "Updating repositories...";
+    if (isSearchLoading) return "Loading updated repositories...";
     if (hasActiveQuery || activeFilter !== "all") {
       const label = repositoryFilterResultLabel(activeFilter);
       if (matchingCount > rowLimit) {
@@ -398,11 +407,11 @@ function applyRepositorySearchLoading(loading: boolean): void {
   );
 
   if (results) {
-    results.hidden = false;
+    results.hidden = loading;
     results.setAttribute("aria-busy", loading ? "true" : "false");
   }
   if (loader) {
-    loader.hidden = true;
+    loader.hidden = !loading;
   }
 }
 

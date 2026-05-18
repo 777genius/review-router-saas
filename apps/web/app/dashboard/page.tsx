@@ -2024,11 +2024,19 @@ function WorkspaceCard({
         repositories.some(
           (repository) => repository.visibility === "public",
         ) ? (
-          <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
-            Public repository warning: fork pull requests are skipped by default
-            for secret-backed providers. Maintainers can add a trusted rerun
-            flow later, but v1 keeps provider secrets out of untrusted fork code
-            paths.
+          <div className="rounded-xl border border-cyan-200/10 bg-slate-950/50 p-4 text-sm leading-6 text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge tone="neutral">Public repo default</Badge>
+              <span className="font-mono text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                Fork PR protection
+              </span>
+            </div>
+            <p>
+              Fork pull request reviews are skipped by default when a
+              secret-backed provider is used. This keeps provider secrets out of
+              untrusted fork code paths; maintainers can add a trusted rerun
+              flow later.
+            </p>
           </div>
         ) : null}
 
@@ -2611,28 +2619,37 @@ function RepositoryTable({
       <div
         data-repository-search-loader
         hidden
-        className="border-t border-cyan-200/10 px-3 py-5 text-slate-200 lg:px-6 lg:py-6"
+        role="status"
+        aria-live="polite"
+        aria-label="Loading updated repository results"
+        className="border-t border-cyan-200/10 bg-cyan-300/[0.025] px-3 py-5 text-slate-200 lg:px-6 lg:py-6"
       >
         <div className="grid gap-4">
-          <p className="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-cyan-100">
-            Searching repositories
+          <p className="inline-flex w-fit items-center gap-2 rounded-full border border-cyan-300/25 bg-cyan-300/[0.075] px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-cyan-100 shadow-[0_0_38px_-30px_rgba(103,232,249,0.95)]">
+            <span
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent"
+            />
+            Loading updated results
           </p>
-          {Array.from({ length: 4 }, (_, index) => (
-            <div
-              key={index}
-              className="grid gap-3 border-t border-cyan-200/10 py-5 first:border-t-0 first:pt-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
-            >
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className="h-8 w-80 max-w-full animate-pulse rounded-full bg-slate-700/45" />
-                <span className="h-8 w-16 animate-pulse rounded-full bg-slate-800/55" />
+          <div aria-hidden="true" className="grid gap-4">
+            {Array.from({ length: 4 }, (_, index) => (
+              <div
+                key={index}
+                className="grid gap-3 border-t border-cyan-200/10 py-5 first:border-t-0 first:pt-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+              >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="h-8 w-80 max-w-full animate-pulse rounded-full bg-cyan-100/12" />
+                  <span className="h-8 w-16 animate-pulse rounded-full bg-slate-700/45" />
+                </div>
+                <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                  <span className="h-8 w-28 animate-pulse rounded-full bg-slate-700/45" />
+                  <span className="h-8 w-20 animate-pulse rounded-full bg-slate-800/55" />
+                  <span className="h-9 w-40 animate-pulse rounded-xl bg-slate-800/55" />
+                </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                <span className="h-8 w-28 animate-pulse rounded-full bg-slate-800/55" />
-                <span className="h-8 w-20 animate-pulse rounded-full bg-slate-800/55" />
-                <span className="h-9 w-40 animate-pulse rounded-xl bg-slate-800/55" />
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
 
