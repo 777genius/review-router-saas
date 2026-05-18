@@ -187,9 +187,9 @@ describe("review configuration", () => {
       limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
     });
 
-    expect(config.providers.map((provider) => provider.requiredHealthy)).toEqual(
-      [true, false],
-    );
+    expect(
+      config.providers.map((provider) => provider.requiredHealthy),
+    ).toEqual([true, false]);
   });
 
   it("maps mixed provider config to parallel runtime env", () => {

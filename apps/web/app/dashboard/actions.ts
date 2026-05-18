@@ -2035,7 +2035,7 @@ function readReviewConfigurationForm(formData: FormData): ReviewConfiguration {
       fastMode: readFormBoolean(formData, `providerFastMode.${index}`),
       requiredHealthy:
         readOptionalFormBoolean(formData, `providerRequiredHealthy.${index}`) ??
-        (index === 0),
+        index === 0,
     } satisfies ReviewConfiguration["provider"];
   });
 

@@ -88,12 +88,18 @@ describe("ReviewConfigForm", () => {
         .value,
     ).toBe("poolside/laguna-m.1:free");
     expect(
-      (screen.getAllByRole("checkbox", { name: "Required healthy" })[0] as HTMLInputElement)
-        .checked,
+      (
+        screen.getAllByRole("checkbox", {
+          name: "Required healthy",
+        })[0] as HTMLInputElement
+      ).checked,
     ).toBe(true);
     expect(
-      (screen.getAllByRole("checkbox", { name: "Required healthy" })[1] as HTMLInputElement)
-        .checked,
+      (
+        screen.getAllByRole("checkbox", {
+          name: "Required healthy",
+        })[1] as HTMLInputElement
+      ).checked,
     ).toBe(false);
     expect(screen.getAllByText("FREE RECOMMENDED").length).toBeGreaterThan(0);
     expect(
@@ -120,8 +126,11 @@ describe("ReviewConfigForm", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]!);
 
     expect(
-      (screen.getByRole("checkbox", { name: "Required healthy" }) as HTMLInputElement)
-        .checked,
+      (
+        screen.getByRole("checkbox", {
+          name: "Required healthy",
+        }) as HTMLInputElement
+      ).checked,
     ).toBe(true);
   });
 

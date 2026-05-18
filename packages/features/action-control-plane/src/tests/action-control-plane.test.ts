@@ -1863,9 +1863,9 @@ describe("action control plane", () => {
       "gpt-5.5",
       "poolside/laguna-m.1:free",
     ]);
-    expect(config.providers.map((provider) => provider.requiredHealthy)).toEqual(
-      [true, false],
-    );
+    expect(
+      config.providers.map((provider) => provider.requiredHealthy),
+    ).toEqual([true, false]);
     expect(config.execution).toEqual({
       providerLimit: 2,
       providerMaxParallel: 2,
