@@ -588,6 +588,18 @@ function dashboardErrorText(error: string): string {
       return "The saved setup PR branch was deleted, so GitHub cannot merge that PR anymore. Recreate the setup PR to continue.";
     case "dashboard_action_failed":
       return "The dashboard action failed. Retry once, then inspect server logs if it repeats.";
+    case "github_operation_forbidden":
+      return "GitHub refused the setup PR update. Check GitHub App Contents, Workflows, and Pull requests write permissions, then retry.";
+    case "github_operation_not_found":
+      return "GitHub could not find the repository or setup branch. Sync the installation, confirm repository access, then retry.";
+    case "github_operation_conflict":
+      return "GitHub reported a write conflict while updating the setup PR. Retry once after the current GitHub operation settles.";
+    case "github_validation_failed":
+      return "GitHub rejected the setup PR update. Check whether the setup PR can be reopened, or delete the setup branch and retry.";
+    case "github_service_unavailable":
+      return "GitHub is temporarily unavailable for this setup action. Retry after GitHub recovers.";
+    case "github_operation_failed":
+      return "GitHub did not complete the setup PR action. Check audit events or server logs for the safe error code.";
     default:
       return "The dashboard action could not be completed.";
   }

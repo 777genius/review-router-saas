@@ -3963,6 +3963,18 @@ function dashboardErrorText(error: string): string {
       return "The dashboard could not complete this action. Refresh and try again.";
     case "server_misconfigured":
       return "Server setup is incomplete. Check GitHub App credentials and the public ReviewRouter API URL.";
+    case "github_operation_forbidden":
+      return "GitHub refused this dashboard action. Check GitHub App permissions and branch protection, then retry.";
+    case "github_operation_not_found":
+      return "GitHub could not find the repository, branch, or pull request needed for this action. Sync repositories and confirm App access, then retry.";
+    case "github_operation_conflict":
+      return "GitHub reported a write conflict. Retry once after the current repository operation settles.";
+    case "github_validation_failed":
+      return "GitHub rejected the request. Check whether the pull request can be reopened or whether branch protection blocks the update.";
+    case "github_service_unavailable":
+      return "GitHub is temporarily unavailable for this action. Retry after GitHub recovers.";
+    case "github_operation_failed":
+      return "GitHub operation failed. Check audit events or server logs for the safe error code.";
     case "repository_not_selected":
       return "This repository is no longer selected for the GitHub App installation.";
     case "repository_archived":

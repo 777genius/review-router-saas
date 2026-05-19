@@ -51,6 +51,19 @@ class FakeRequester {
       return { data: { object: { sha: `${branch}-sha` } } };
     }
     if (route === "POST /repos/{owner}/{repo}/git/refs") {
+      const branch = String(parameters?.ref ?? "").replace(
+        /^refs\/heads\//,
+        "",
+      );
+      const existingBranches = this.options.existingBranches ?? ["main"];
+      if (existingBranches.includes(branch)) {
+        throw Object.assign(new Error("reference already exists"), {
+          status: 422,
+        });
+      }
+      return { data: {} };
+    }
+    if (route === "PATCH /repos/{owner}/{repo}/git/refs/{ref}") {
       return { data: {} };
     }
     if (route === "GET /repos/{owner}/{repo}/contents/{path}") {
@@ -253,6 +266,88 @@ describe("OctokitWorkflowSetupGateway", () => {
     expect(requester.calls.map((call) => call.route)).not.toContain(
       "POST /repos/{owner}/{repo}/pulls",
     );
+  });
+
+  it("resets a stale setup branch before reopening a closed setup pull request", async () => {
+    const requester = new FakeRequester(null, {
+      existingBranches: ["main", "reviewrouter/setup"],
+      pullRequestResponses: [[]],
+      closedPullRequestResponses: [
+        [
+          {
+            html_url: "https://github.com/777genius/example/pull/14",
+            number: 14,
+          },
+        ],
+      ],
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({
+      number: 14,
+      url: "https://github.com/777genius/example/pull/14",
+    });
+
+    const resetCall = requester.calls.find(
+      (call) => call.route === "PATCH /repos/{owner}/{repo}/git/refs/{ref}",
+    );
+    expect(resetCall?.parameters).toMatchObject({
+      ref: "heads/reviewrouter/setup",
+      sha: "main-sha",
+      force: true,
+    });
+    expect(
+      requester.calls.findIndex(
+        (call) => call.route === "PATCH /repos/{owner}/{repo}/git/refs/{ref}",
+      ),
+    ).toBeLessThan(
+      requester.calls.findIndex(
+        (call) => call.route === "PUT /repos/{owner}/{repo}/contents/{path}",
+      ),
+    );
+    expect(
+      requester.calls.find(
+        (call) =>
+          call.route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      )?.parameters,
+    ).toMatchObject({
+      pull_number: 14,
+      state: "open",
+    });
+  });
+
+  it("keeps an existing setup branch when an open setup pull request exists", async () => {
+    const requester = new FakeRequester(null, {
+      existingBranches: ["main", "reviewrouter/setup"],
+      pullRequestResponses: [
+        [
+          {
+            html_url: "https://github.com/777genius/example/pull/10",
+            number: 10,
+          },
+        ],
+      ],
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({ number: 10 });
+
+    expect(requester.calls.map((call) => call.route)).not.toContain(
+      "PATCH /repos/{owner}/{repo}/git/refs/{ref}",
+    );
+    expect(
+      requester.calls.find(
+        (call) =>
+          call.route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}",
+      )?.parameters,
+    ).toMatchObject({
+      pull_number: 10,
+      title: "chore: add ReviewRouter workflow",
+    });
   });
 
   it("does not try to reopen an already merged setup pull request", async () => {

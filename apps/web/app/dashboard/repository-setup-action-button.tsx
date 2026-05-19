@@ -316,6 +316,18 @@ function setupActionErrorText(error: string): string {
       return "The saved setup PR was closed before it was merged. Recreate the setup PR, then merge the new one.";
     case "setup_pr_branch_deleted":
       return "The saved setup PR branch was deleted. Recreate the setup PR to continue.";
+    case "github_operation_forbidden":
+      return "GitHub refused the setup PR update. Check GitHub App Contents, Workflows, and Pull requests write permissions, then retry.";
+    case "github_operation_not_found":
+      return "GitHub could not find the repository or setup branch. Sync the installation, confirm repository access, then retry.";
+    case "github_operation_conflict":
+      return "GitHub reported a write conflict while updating the setup PR. Retry once after the current GitHub operation settles.";
+    case "github_validation_failed":
+      return "GitHub rejected the setup PR update. Check whether the setup PR can be reopened, or delete the setup branch and retry.";
+    case "github_service_unavailable":
+      return "GitHub is temporarily unavailable for this setup action. Retry after GitHub recovers.";
+    case "github_operation_failed":
+      return "GitHub did not complete the setup PR action. Check audit events or server logs for the safe error code.";
     case "rate_limited":
       return "Too many dashboard requests for this repository. Wait a bit before retrying.";
     case "repository_not_selected":

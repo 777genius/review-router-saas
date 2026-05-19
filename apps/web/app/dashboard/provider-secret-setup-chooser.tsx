@@ -585,6 +585,16 @@ function providerSetupSubmitErrorText(error: string): string {
   switch (error) {
     case "dashboard_action_failed":
       return "The dashboard action failed. Retry once; if it repeats, keep this dialog open and check server logs.";
+    case "github_operation_forbidden":
+      return "GitHub refused the verification request. Check GitHub App secret and repository permissions, then retry.";
+    case "github_operation_not_found":
+      return "GitHub could not find the repository or secret metadata. Sync repositories and confirm App access, then retry.";
+    case "github_operation_conflict":
+      return "GitHub reported a conflict while verifying provider setup. Retry once after the current operation settles.";
+    case "github_validation_failed":
+      return "GitHub rejected the provider setup verification request. Reopen the dialog and try again.";
+    case "github_service_unavailable":
+      return "GitHub is temporarily unavailable for provider setup verification. Retry after GitHub recovers.";
     case "github_operation_failed":
       return "GitHub did not complete the verification request. Retry once; if the secret exists in GitHub, use manual confirmation after a verification warning.";
     case "invalid_form":

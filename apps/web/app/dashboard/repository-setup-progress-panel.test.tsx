@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   cleanup,
   fireEvent,
@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
 import { confirmSetupPullRequestMergedClientAction } from "./actions";
@@ -19,6 +20,13 @@ import {
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    custom: vi.fn(),
+    dismiss: vi.fn(),
+  },
 }));
 
 vi.mock("./actions", () => ({
@@ -256,7 +264,12 @@ describe("RepositorySetupProgressPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "I merged it" }));
+    const mergeForm = screen
+      .getByRole("button", { name: "I merged it" })
+      .closest("form");
+    expect(mergeForm).toBeTruthy();
+
+    mergeForm!.requestSubmit();
 
     expect(
       await screen.findByText("Setup PR branch was deleted. Recreate it."),
@@ -264,6 +277,51 @@ describe("RepositorySetupProgressPanel", () => {
     expect(
       screen.getByRole("button", { name: /Recreate setup PR/i }),
     ).toBeTruthy();
+  });
+
+  it("shows a specific GitHub permission error for setup actions", async () => {
+    vi.mocked(confirmSetupPullRequestMergedClientAction).mockResolvedValueOnce({
+      params: {
+        error: "github_operation_forbidden",
+        workspace: "workspace_1",
+        section: "repositories",
+      },
+    });
+
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="setup_pr_open"
+        initialSetupPullRequestUrl="https://github.com/777genius/example/pull/1"
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={2}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "I merged it" }));
+
+    await waitFor(() => {
+      expect(toast.custom).toHaveBeenCalled();
+    });
+
+    const renderCustomToast = vi.mocked(toast.custom).mock.calls.at(-1)?.[0] as
+      | ((id: string | number) => ReactNode)
+      | undefined;
+    expect(renderCustomToast).toBeTruthy();
+
+    render(<>{renderCustomToast!("setup-action-toast")}</>);
+    expect(
+      screen.getByText(/GitHub refused the setup PR update/i),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText("The dashboard action could not be completed."),
+    ).toBeNull();
   });
 });
 

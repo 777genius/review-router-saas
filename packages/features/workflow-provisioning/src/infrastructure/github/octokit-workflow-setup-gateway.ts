@@ -35,6 +35,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       },
     );
     const sha = parseGitRefSha(ref);
+    let existingOpenPullRequest: GitHubPullRequest | null | undefined;
 
     try {
       await this.octokit.request("POST /repos/{owner}/{repo}/git/refs", {
@@ -45,16 +46,26 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       });
     } catch (error: unknown) {
       if (getErrorStatus(error) !== 422) throw error;
+      existingOpenPullRequest = await this.findOpenSetupPullRequest({
+        ...input,
+        baseBranch,
+      });
+      if (!existingOpenPullRequest) {
+        await this.resetSetupBranch(input, sha);
+      }
     }
 
     for (const file of input.workflowFiles) {
       await this.createOrUpdateWorkflowFile(input, file);
     }
 
-    const pullRequest = await this.getOrCreateSetupPullRequest({
-      ...input,
-      baseBranch,
-    });
+    const pullRequest = await this.getOrCreateSetupPullRequest(
+      {
+        ...input,
+        baseBranch,
+      },
+      existingOpenPullRequest,
+    );
 
     return {
       url: pullRequest.html_url,
@@ -152,10 +163,27 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
     }
   }
 
+  private async resetSetupBranch(
+    input: WorkflowSetupGatewayInput,
+    sha: string,
+  ): Promise<void> {
+    await this.octokit.request("PATCH /repos/{owner}/{repo}/git/refs/{ref}", {
+      owner: input.owner,
+      repo: input.repo,
+      ref: `heads/${input.setupBranch}`,
+      sha,
+      force: true,
+    });
+  }
+
   private async getOrCreateSetupPullRequest(
     input: WorkflowSetupGatewayInput,
+    preloadedOpenPullRequest?: GitHubPullRequest | null,
   ): Promise<GitHubPullRequest> {
-    const existing = await this.findOpenSetupPullRequest(input);
+    const existing =
+      preloadedOpenPullRequest === undefined
+        ? await this.findOpenSetupPullRequest(input)
+        : preloadedOpenPullRequest;
     if (existing) {
       return this.updateSetupPullRequestMetadata(input, existing);
     }

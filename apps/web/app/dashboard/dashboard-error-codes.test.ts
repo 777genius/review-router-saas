@@ -1,0 +1,36 @@
+import { describe, expect, it } from "vitest";
+import { safeDashboardErrorCode } from "./dashboard-error-codes";
+
+describe("safeDashboardErrorCode", () => {
+  it.each([
+    ["github_api_error:403", "github_operation_forbidden"],
+    ["github_api_error:404", "github_operation_not_found"],
+    ["github_api_error:409", "github_operation_conflict"],
+    ["github_api_error:422", "github_validation_failed"],
+    ["github_api_error:503", "github_service_unavailable"],
+    ["github_api_error:418", "github_operation_failed"],
+  ])("maps stored GitHub API summary %s to %s", (message, expectedCode) => {
+    expect(safeDashboardErrorCode(new Error(message))).toBe(expectedCode);
+  });
+
+  it.each([
+    [403, "github_operation_forbidden"],
+    [404, "github_operation_not_found"],
+    [409, "github_operation_conflict"],
+    [422, "github_validation_failed"],
+    [502, "github_service_unavailable"],
+  ])("maps live GitHub HTTP status %s to %s", (status, expectedCode) => {
+    const error = Object.assign(new Error("GitHub request failed"), { status });
+
+    expect(safeDashboardErrorCode(error)).toBe(expectedCode);
+  });
+
+  it("keeps existing safe dashboard codes unchanged", () => {
+    expect(safeDashboardErrorCode(new Error("setup_pr_branch_deleted"))).toBe(
+      "setup_pr_branch_deleted",
+    );
+    expect(safeDashboardErrorCode(new Error("rate_limit_exceeded:setup"))).toBe(
+      "rate_limited",
+    );
+  });
+});
