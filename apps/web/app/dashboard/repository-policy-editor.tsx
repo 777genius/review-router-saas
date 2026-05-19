@@ -1,7 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useMemo, useState, type FocusEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  useTransition,
+  type FocusEvent,
+} from "react";
 import * as RadixSelect from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type {
@@ -711,6 +718,7 @@ function useReviewConfigActionToast(): {
   ) => Promise<void>;
 } {
   const router = useRouter();
+  const [, startTransition] = useTransition();
   const [toast, setToast] = useState<ReviewConfigActionToast | null>(null);
 
   return {
@@ -735,7 +743,7 @@ function useReviewConfigActionToast(): {
         ...reviewConfigActionToast(params),
         key: (current?.key ?? 0) + 1,
       }));
-      router.refresh();
+      startTransition(() => router.refresh());
     },
   };
 }

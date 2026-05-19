@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ActionToast } from "../action-toast";
 
@@ -21,14 +21,17 @@ export function DashboardActionForm({
   action,
   fallbackParams,
   className,
+  refresh = true,
   children,
 }: {
   readonly action: DashboardActionFormAction;
   readonly fallbackParams: Record<string, string>;
   readonly className?: string;
+  readonly refresh?: boolean;
   readonly children: ReactNode;
 }): React.ReactElement {
   const router = useRouter();
+  const [, startTransition] = useTransition();
   const [toast, setToast] = useState<DashboardActionToast | null>(null);
 
   async function submit(formData: FormData): Promise<void> {
@@ -44,7 +47,9 @@ export function DashboardActionForm({
       ...dashboardActionToast(params),
       key: (current?.key ?? 0) + 1,
     }));
-    router.refresh();
+    if (refresh) {
+      startTransition(() => router.refresh());
+    }
   }
 
   return (

@@ -1844,6 +1844,7 @@ function WorkspaceCard({
                             workspace: workspace.id,
                             section: "repositories",
                           }}
+                          refresh={false}
                         >
                           <input
                             type="hidden"
