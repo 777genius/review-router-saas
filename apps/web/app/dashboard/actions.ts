@@ -91,6 +91,24 @@ import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-r
 export async function requestInstallationSyncAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await requestInstallationSyncMutation(formData);
+
+  revalidatePath("/dashboard");
+  revalidatePath("/setup");
+  redirectAfterMutation(formData, params);
+}
+
+export async function requestInstallationSyncClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await requestInstallationSyncMutation(formData);
+
+  return { params };
+}
+
+async function requestInstallationSyncMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   const githubInstallationId = readFormString(formData, "githubInstallationId");
   const workspaceId = readFormString(formData, "workspaceId");
@@ -164,14 +182,29 @@ export async function requestInstallationSyncAction(
     };
   }
 
-  revalidatePath("/dashboard");
-  revalidatePath("/setup");
-  redirectAfterMutation(formData, params);
+  return params;
 }
 
 export async function refreshRepositoryAccessAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await refreshRepositoryAccessMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function refreshRepositoryAccessClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await refreshRepositoryAccessMutation(formData);
+
+  return { params };
+}
+
+async function refreshRepositoryAccessMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   let params: Record<string, string>;
 
@@ -206,8 +239,7 @@ export async function refreshRepositoryAccessAction(
   if (workspace) params.workspace = workspace;
   if (section) params.section = section;
 
-  revalidatePath("/dashboard");
-  redirectWithParams(params);
+  return params;
 }
 
 export async function createSetupPullRequestAction(
@@ -225,8 +257,6 @@ export async function createSetupPullRequestClientAction(
 ): Promise<{ readonly params: Record<string, string> }> {
   const params = await createSetupPullRequestMutation(formData);
 
-  revalidatePath("/dashboard");
-  revalidatePath("/setup");
   return { params };
 }
 
@@ -235,8 +265,6 @@ export async function confirmSetupPullRequestMergedClientAction(
 ): Promise<{ readonly params: Record<string, string> }> {
   const params = await confirmSetupPullRequestMergedMutation(formData);
 
-  revalidatePath("/dashboard");
-  revalidatePath("/setup");
   return { params };
 }
 
@@ -245,7 +273,6 @@ export async function confirmProviderSecretSetupClientAction(
 ): Promise<{ readonly params: Record<string, string> }> {
   const params = await confirmProviderSecretSetupMutation(formData);
 
-  revalidatePath("/dashboard");
   return { params };
 }
 
@@ -258,6 +285,14 @@ export async function createMemoryItemAction(
   redirectAfterMutation(formData, params);
 }
 
+export async function createMemoryItemClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await createMemoryItemMutation(formData);
+
+  return { params };
+}
+
 export async function confirmMemorySuggestionAction(
   formData: FormData,
 ): Promise<never> {
@@ -265,6 +300,14 @@ export async function confirmMemorySuggestionAction(
 
   revalidatePath("/dashboard");
   redirectAfterMutation(formData, params);
+}
+
+export async function confirmMemorySuggestionClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await confirmMemorySuggestionMutation(formData);
+
+  return { params };
 }
 
 export async function rejectMemorySuggestionAction(
@@ -276,11 +319,27 @@ export async function rejectMemorySuggestionAction(
   redirectAfterMutation(formData, params);
 }
 
+export async function rejectMemorySuggestionClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await rejectMemorySuggestionMutation(formData);
+
+  return { params };
+}
+
 export async function editMemoryItemAction(formData: FormData): Promise<never> {
   const params = await editMemoryItemMutation(formData);
 
   revalidatePath("/dashboard");
   redirectAfterMutation(formData, params);
+}
+
+export async function editMemoryItemClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await editMemoryItemMutation(formData);
+
+  return { params };
 }
 
 export async function disableMemoryItemAction(
@@ -292,6 +351,14 @@ export async function disableMemoryItemAction(
   redirectAfterMutation(formData, params);
 }
 
+export async function disableMemoryItemClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await disableMemoryItemMutation(formData);
+
+  return { params };
+}
+
 export async function deleteMemoryItemAction(
   formData: FormData,
 ): Promise<never> {
@@ -299,6 +366,14 @@ export async function deleteMemoryItemAction(
 
   revalidatePath("/dashboard");
   redirectAfterMutation(formData, params);
+}
+
+export async function deleteMemoryItemClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await deleteMemoryItemMutation(formData);
+
+  return { params };
 }
 
 export async function checkProviderRepositorySecretClientAction(
@@ -1050,6 +1125,23 @@ async function deleteMemoryItemMutation(
 export async function enableOrgRulesetWorkflowAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await enableOrgRulesetWorkflowMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function enableOrgRulesetWorkflowClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await enableOrgRulesetWorkflowMutation(formData);
+
+  return { params };
+}
+
+async function enableOrgRulesetWorkflowMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const githubInstallationId = readFormString(formData, "githubInstallationId");
@@ -1134,13 +1226,29 @@ export async function enableOrgRulesetWorkflowAction(
     };
   }
 
-  revalidatePath("/dashboard");
-  redirectWithParams(params);
+  return params;
 }
 
 export async function saveWorkspaceReviewConfigAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await saveWorkspaceReviewConfigMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function saveWorkspaceReviewConfigClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await saveWorkspaceReviewConfigMutation(formData);
+
+  return { params };
+}
+
+async function saveWorkspaceReviewConfigMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   let params: Record<string, string>;
@@ -1187,13 +1295,21 @@ export async function saveWorkspaceReviewConfigAction(
       { auditLog: new PrismaAuditLogRepository(prisma) },
     );
 
-    params = { notice: "review_config_saved", version: String(saved.version) };
+    params = {
+      notice: "review_config_saved",
+      version: String(saved.version),
+      workspace: workspaceId,
+      section: "policy",
+    };
   } catch (error) {
-    params = { error: safeDashboardErrorCode(error) };
+    params = {
+      error: safeDashboardErrorCode(error),
+      workspace: workspaceId,
+      section: "policy",
+    };
   }
 
-  revalidatePath("/dashboard");
-  redirectWithParams(params);
+  return params;
 }
 
 export async function saveRepositoryReviewConfigAction(
@@ -1210,7 +1326,6 @@ export async function saveRepositoryReviewConfigClientAction(
 ): Promise<{ readonly params: Record<string, string> }> {
   const params = await saveRepositoryReviewConfigMutation(formData);
 
-  revalidatePath("/dashboard");
   return { params };
 }
 
@@ -1302,7 +1417,6 @@ export async function clearRepositoryReviewConfigClientAction(
 ): Promise<{ readonly params: Record<string, string> }> {
   const params = await clearRepositoryReviewConfigMutation(formData);
 
-  revalidatePath("/dashboard");
   return { params };
 }
 
@@ -1374,6 +1488,23 @@ async function clearRepositoryReviewConfigMutation(
 export async function retryOutboxEventAction(
   formData: FormData,
 ): Promise<never> {
+  const params = await retryOutboxEventMutation(formData);
+
+  revalidatePath("/dashboard");
+  redirectWithParams(params);
+}
+
+export async function retryOutboxEventClientAction(
+  formData: FormData,
+): Promise<{ readonly params: Record<string, string> }> {
+  const params = await retryOutboxEventMutation(formData);
+
+  return { params };
+}
+
+async function retryOutboxEventMutation(
+  formData: FormData,
+): Promise<Record<string, string>> {
   const prisma = getPrisma();
   const workspaceId = readFormString(formData, "workspaceId");
   const eventId = readFormString(formData, "eventId");
@@ -1424,8 +1555,7 @@ export async function retryOutboxEventAction(
     params = { error: safeDashboardErrorCode(error) };
   }
 
-  revalidatePath("/dashboard");
-  redirectWithParams(params);
+  return params;
 }
 
 async function assertDashboardEntitlement(input: {

@@ -17,10 +17,12 @@ import {
   type ReviewModelOption,
 } from "@reviewrouter/features-review-providers";
 import { FormSubmitButton } from "../form-submit-button";
+import { ActionToast } from "../action-toast";
 import {
   checkProviderRepositorySecretClientAction,
   clearRepositoryReviewConfigClientAction,
   saveRepositoryReviewConfigClientAction,
+  saveWorkspaceReviewConfigClientAction,
 } from "./actions";
 import {
   checkProviderSecretStatusWithCache,
@@ -51,6 +53,16 @@ type RepositorySecretCheckTarget = {
 };
 
 type ProviderSecretStatus = "checking" | ProviderSecretAvailabilityStatus;
+type ReviewConfigActionParams = Record<string, string>;
+type ReviewConfigActionResult = {
+  readonly params: ReviewConfigActionParams;
+};
+type ReviewConfigActionToast = {
+  readonly key: number;
+  readonly tone: "success" | "warning" | "danger" | "accent";
+  readonly title: string;
+  readonly body: string;
+};
 
 const providerAuthModeOrder = [
   "codex_subscription_oauth",
@@ -435,8 +447,6 @@ export function RepositoryPolicyOverrideDetails({
   mutationsEnabled,
   editDisabledReason,
   claudeCodeProviderEnabled = true,
-  saveAction,
-  clearAction,
 }: {
   readonly workspaceId: string;
   readonly repository: RepositoryPolicyEditorRepository;
@@ -447,87 +457,117 @@ export function RepositoryPolicyOverrideDetails({
   readonly mutationsEnabled: boolean;
   readonly editDisabledReason?: string | undefined;
   readonly claudeCodeProviderEnabled?: boolean;
-  readonly saveAction: DashboardFormAction;
-  readonly clearAction: DashboardFormAction;
 }): React.ReactElement {
+  const reviewConfigAction = useReviewConfigActionToast();
   const [open, setOpen] = useState(false);
   const panelId = `repo-review-config-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const canEdit =
     mutationsEnabled && repository.selected && !repository.archived;
 
-  return (
-    <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={() => setOpen((value) => !value)}
-        className="w-full cursor-pointer rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300/40"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <p className="text-sm font-semibold text-cyan-50">
-              {repository.fullName}
-            </p>
-            <p className="text-xs text-slate-400">
-              {repositoryConfig
-                ? `Repository override / v${configVersion}`
-                : `Inherits workspace default / v${configVersion}`}
-            </p>
-          </div>
-          <span
-            className={[
-              "rounded-full border px-3 py-1 font-mono text-xs font-semibold uppercase tracking-[0.16em]",
-              repositoryConfig
-                ? "border-amber-300/40 bg-amber-300/[0.08] text-amber-100"
-                : "border-emerald-300/30 bg-emerald-300/[0.07] text-emerald-100",
-            ].join(" ")}
-          >
-            {repositoryConfig ? "override" : "inherits"}
-          </span>
-        </div>
-      </button>
+  async function saveRepositoryOverride(formData: FormData): Promise<void> {
+    await reviewConfigAction.run(
+      () => saveRepositoryReviewConfigClientAction(formData),
+      {
+        error: "dashboard_action_failed",
+        workspace: workspaceId,
+        section: "policy",
+      },
+    );
+  }
 
-      {open ? (
-        <div id={panelId} className="mt-4 space-y-3">
-          <ReviewConfigForm
-            action={saveAction}
-            config={effectiveConfig}
-            modelOptions={modelOptions}
-            claudeCodeProviderEnabled={claudeCodeProviderEnabled}
-            hiddenFields={[
-              { name: "workspaceId", value: workspaceId },
-              { name: "repositoryId", value: repository.id },
-            ]}
-            mutationsEnabled={canEdit}
-            repositoryFullName={repository.fullName}
-            repositorySecretCheckTarget={{
-              workspaceId,
-              repositoryId: repository.id,
-            }}
-            submitLabel={repositoryConfig ? "Update override" : "Save override"}
-          />
-          {!canEdit && editDisabledReason ? (
-            <p className="text-xs leading-5 text-amber-100/85">
-              {editDisabledReason}
-            </p>
-          ) : null}
-          {repositoryConfig ? (
-            <form action={clearAction}>
-              <input type="hidden" name="workspaceId" value={workspaceId} />
-              <input type="hidden" name="repositoryId" value={repository.id} />
-              <FormSubmitButton
-                variant="outline"
-                size="sm"
-                disabled={!canEdit}
-                idleLabel="Inherit workspace default"
-                pendingLabel="Saving..."
-              />
-            </form>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+  async function clearRepositoryOverride(formData: FormData): Promise<void> {
+    await reviewConfigAction.run(
+      () => clearRepositoryReviewConfigClientAction(formData),
+      {
+        error: "dashboard_action_failed",
+        workspace: workspaceId,
+        section: "policy",
+      },
+    );
+  }
+
+  return (
+    <>
+      {reviewConfigAction.toast}
+      <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((value) => !value)}
+          className="w-full cursor-pointer rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-300/40"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold text-cyan-50">
+                {repository.fullName}
+              </p>
+              <p className="text-xs text-slate-400">
+                {repositoryConfig
+                  ? `Repository override / v${configVersion}`
+                  : `Inherits workspace default / v${configVersion}`}
+              </p>
+            </div>
+            <span
+              className={[
+                "rounded-full border px-3 py-1 font-mono text-xs font-semibold uppercase tracking-[0.16em]",
+                repositoryConfig
+                  ? "border-amber-300/40 bg-amber-300/[0.08] text-amber-100"
+                  : "border-emerald-300/30 bg-emerald-300/[0.07] text-emerald-100",
+              ].join(" ")}
+            >
+              {repositoryConfig ? "override" : "inherits"}
+            </span>
+          </div>
+        </button>
+
+        {open ? (
+          <div id={panelId} className="mt-4 space-y-3">
+            <ReviewConfigForm
+              action={saveRepositoryOverride}
+              config={effectiveConfig}
+              modelOptions={modelOptions}
+              claudeCodeProviderEnabled={claudeCodeProviderEnabled}
+              hiddenFields={[
+                { name: "workspaceId", value: workspaceId },
+                { name: "repositoryId", value: repository.id },
+              ]}
+              mutationsEnabled={canEdit}
+              repositoryFullName={repository.fullName}
+              repositorySecretCheckTarget={{
+                workspaceId,
+                repositoryId: repository.id,
+              }}
+              submitLabel={
+                repositoryConfig ? "Update override" : "Save override"
+              }
+            />
+            {!canEdit && editDisabledReason ? (
+              <p className="text-xs leading-5 text-amber-100/85">
+                {editDisabledReason}
+              </p>
+            ) : null}
+            {repositoryConfig ? (
+              <form action={clearRepositoryOverride}>
+                <input type="hidden" name="workspaceId" value={workspaceId} />
+                <input
+                  type="hidden"
+                  name="repositoryId"
+                  value={repository.id}
+                />
+                <FormSubmitButton
+                  variant="outline"
+                  size="sm"
+                  disabled={!canEdit}
+                  idleLabel="Inherit workspace default"
+                  pendingLabel="Saving..."
+                />
+              </form>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </>
   );
 }
 
@@ -552,7 +592,7 @@ export function RepositoryPolicyEditor({
   readonly claudeCodeProviderEnabled?: boolean;
   readonly compact?: boolean;
 }): React.ReactElement {
-  const router = useRouter();
+  const reviewConfigAction = useReviewConfigActionToast();
   const [open, setOpen] = useState(false);
   const canEdit =
     mutationsEnabled && repository.selected && !repository.archived;
@@ -560,18 +600,24 @@ export function RepositoryPolicyEditor({
   const panelId = `repo-settings-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 
   async function saveRepositorySettings(formData: FormData): Promise<void> {
-    await runRepositorySettingsAction(
+    await reviewConfigAction.run(
       () => saveRepositoryReviewConfigClientAction(formData),
-      router,
-      workspaceId,
+      {
+        error: "dashboard_action_failed",
+        workspace: workspaceId,
+        section: "repositories",
+      },
     );
   }
 
   async function clearRepositorySettings(formData: FormData): Promise<void> {
-    await runRepositorySettingsAction(
+    await reviewConfigAction.run(
       () => clearRepositoryReviewConfigClientAction(formData),
-      router,
-      workspaceId,
+      {
+        error: "dashboard_action_failed",
+        workspace: workspaceId,
+        section: "repositories",
+      },
     );
   }
 
@@ -583,6 +629,7 @@ export function RepositoryPolicyEditor({
           : "grid w-full justify-items-end"
       }
     >
+      {reviewConfigAction.toast}
       <button
         type="button"
         aria-expanded={open}
@@ -656,43 +703,182 @@ export function RepositoryPolicyEditor({
   );
 }
 
-async function runRepositorySettingsAction(
-  action: () => Promise<{ readonly params: Record<string, string> }>,
-  router: ReturnType<typeof useRouter>,
-  workspaceId: string,
-): Promise<void> {
-  try {
-    const { params } = await action();
-    router.replace(buildDashboardMutationUrl(params), { scroll: false });
-  } catch {
-    router.replace(
-      buildDashboardMutationUrl({
-        error: "dashboard_action_failed",
-        workspace: workspaceId,
-        section: "repositories",
-      }),
-      { scroll: false },
-    );
-  }
+function useReviewConfigActionToast(): {
+  readonly toast: React.ReactElement | null;
+  readonly run: (
+    action: () => Promise<ReviewConfigActionResult>,
+    fallbackParams: ReviewConfigActionParams,
+  ) => Promise<void>;
+} {
+  const router = useRouter();
+  const [toast, setToast] = useState<ReviewConfigActionToast | null>(null);
 
-  router.refresh();
+  return {
+    toast: toast ? (
+      <ActionToast
+        key={toast.key}
+        tone={toast.tone}
+        title={toast.title}
+        body={toast.body}
+      />
+    ) : null,
+    run: async (action, fallbackParams) => {
+      let params: ReviewConfigActionParams;
+      try {
+        ({ params } = await action());
+      } catch {
+        params = fallbackParams;
+      }
+
+      replaceDashboardContextUrl(params);
+      setToast((current) => ({
+        ...reviewConfigActionToast(params),
+        key: (current?.key ?? 0) + 1,
+      }));
+      router.refresh();
+    },
+  };
 }
 
-function buildDashboardMutationUrl(params: Record<string, string>): string {
-  const search = new URLSearchParams(window.location.search);
+function replaceDashboardContextUrl(params: ReviewConfigActionParams): void {
+  const url = new URL(window.location.href);
+  let changed = false;
 
-  search.delete("notice");
-  search.delete("error");
-  search.delete("pr");
-  search.delete("version");
-
-  for (const [key, value] of Object.entries(params)) {
-    if (value) {
-      search.set(key, value);
+  for (const key of ["notice", "error", "pr", "version"]) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
     }
   }
 
-  return `/dashboard?${search.toString()}`;
+  for (const key of ["workspace", "section"] as const) {
+    const value = params[key];
+    if (value && url.searchParams.get(key) !== value) {
+      url.searchParams.set(key, value);
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+
+  const search = url.searchParams.toString();
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${url.pathname}${search ? `?${search}` : ""}${url.hash}`,
+  );
+}
+
+function reviewConfigActionToast(
+  params: ReviewConfigActionParams,
+): Omit<ReviewConfigActionToast, "key"> {
+  if (params.error) {
+    return {
+      tone: "danger",
+      title: "Action needs attention",
+      body: reviewConfigActionErrorText(params.error),
+    };
+  }
+
+  switch (params.notice) {
+    case "review_config_saved":
+      return {
+        tone: "success",
+        title: "Model settings saved",
+        body: "Review configuration was saved. Future action runs can fetch it through OIDC.",
+      };
+    case "repository_review_config_saved":
+      return {
+        tone: "success",
+        title: "Model settings saved",
+        body: params.repository
+          ? `Repository review configuration was saved for ${params.repository}.`
+          : "Repository review configuration was saved.",
+      };
+    case "repository_review_config_cleared":
+      return {
+        tone: "success",
+        title: "Model settings saved",
+        body: params.repository
+          ? `${params.repository} now inherits the workspace review configuration.`
+          : "Repository override was cleared.",
+      };
+    default:
+      return {
+        tone: "success",
+        title: "Action complete",
+        body: "Dashboard settings were saved.",
+      };
+  }
+}
+
+function reviewConfigActionErrorText(error: string): string {
+  switch (error) {
+    case "dashboard_action_failed":
+      return "The dashboard could not complete this action. Refresh and try again.";
+    case "dashboard_mutation_requires_sign_in":
+      return "Sign in with GitHub before changing repository setup.";
+    case "workspace_mutation_forbidden":
+      return "Your GitHub user is not an owner/admin for this workspace.";
+    case "repository_config_mutation_forbidden":
+      return "Your GitHub user needs maintain or admin access on this repository to change ReviewRouter runtime settings directly.";
+    case "repository_mutation_forbidden":
+      return "Your GitHub user needs write, maintain, or admin access on this repository to change repository-level ReviewRouter settings.";
+    case "repository_not_selected":
+      return "This repository is no longer selected for the GitHub App installation.";
+    case "repository_archived":
+      return "Archived repositories cannot be changed.";
+    case "rate_limited":
+      return "Too many dashboard requests for this resource. Wait a bit before retrying.";
+    case "invalid_form":
+      return "The submitted form is invalid. Refresh the dashboard and try again.";
+    case "entitlement_denied":
+      return "This workspace plan does not allow that action. Check the plan status or feature flags.";
+    default:
+      return "The dashboard could not save these settings. Retry once, then check server logs if it repeats.";
+  }
+}
+
+export function WorkspaceReviewConfigForm({
+  workspaceId,
+  config,
+  modelOptions,
+  claudeCodeProviderEnabled = true,
+  mutationsEnabled,
+}: {
+  readonly workspaceId: string;
+  readonly config: ReviewConfiguration;
+  readonly modelOptions: readonly ReviewModelOption[];
+  readonly claudeCodeProviderEnabled?: boolean;
+  readonly mutationsEnabled: boolean;
+}): React.ReactElement {
+  const reviewConfigAction = useReviewConfigActionToast();
+
+  async function saveWorkspaceSettings(formData: FormData): Promise<void> {
+    await reviewConfigAction.run(
+      () => saveWorkspaceReviewConfigClientAction(formData),
+      {
+        error: "dashboard_action_failed",
+        workspace: workspaceId,
+        section: "policy",
+      },
+    );
+  }
+
+  return (
+    <>
+      {reviewConfigAction.toast}
+      <ReviewConfigForm
+        action={saveWorkspaceSettings}
+        config={config}
+        modelOptions={modelOptions}
+        claudeCodeProviderEnabled={claudeCodeProviderEnabled}
+        hiddenFields={[{ name: "workspaceId", value: workspaceId }]}
+        mutationsEnabled={mutationsEnabled}
+        submitLabel="Save workspace default"
+      />
+    </>
+  );
 }
 
 export function ReviewConfigForm({

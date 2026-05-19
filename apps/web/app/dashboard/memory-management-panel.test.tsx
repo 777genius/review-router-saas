@@ -18,13 +18,21 @@ import {
   type MemoryManagementNotice,
 } from "./memory-management-panel";
 
+const routerMock = vi.hoisted(() => ({
+  refresh: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => routerMock,
+}));
+
 vi.mock("./actions", () => ({
-  confirmMemorySuggestionAction: vi.fn(),
-  createMemoryItemAction: vi.fn(),
-  deleteMemoryItemAction: vi.fn(),
-  disableMemoryItemAction: vi.fn(),
-  editMemoryItemAction: vi.fn(),
-  rejectMemorySuggestionAction: vi.fn(),
+  confirmMemorySuggestionClientAction: vi.fn(),
+  createMemoryItemClientAction: vi.fn(),
+  deleteMemoryItemClientAction: vi.fn(),
+  disableMemoryItemClientAction: vi.fn(),
+  editMemoryItemClientAction: vi.fn(),
+  rejectMemorySuggestionClientAction: vi.fn(),
 }));
 
 afterEach(() => {

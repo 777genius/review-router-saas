@@ -13,17 +13,32 @@ import {
   type ReviewConfiguration,
   type ReviewProviderConfiguration,
 } from "@reviewrouter/features-review-config";
-import { checkProviderRepositorySecretClientAction } from "./actions";
+import {
+  checkProviderRepositorySecretClientAction,
+  clearRepositoryReviewConfigClientAction,
+  saveRepositoryReviewConfigClientAction,
+  saveWorkspaceReviewConfigClientAction,
+} from "./actions";
 import {
   clearProviderSecretStatusCacheForTest,
   ReviewConfigForm,
   RepositoryPolicyOverrideDetails,
 } from "./repository-policy-editor";
 
+const routerMock = vi.hoisted(() => ({
+  refresh: vi.fn(),
+  replace: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => routerMock,
+}));
+
 vi.mock("./actions", () => ({
   checkProviderRepositorySecretClientAction: vi.fn(),
   clearRepositoryReviewConfigClientAction: vi.fn(),
   saveRepositoryReviewConfigClientAction: vi.fn(),
+  saveWorkspaceReviewConfigClientAction: vi.fn(),
 }));
 
 const modelOptions = [
@@ -64,6 +79,9 @@ const modelOptions = [
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.mocked(clearRepositoryReviewConfigClientAction).mockReset();
+  vi.mocked(saveRepositoryReviewConfigClientAction).mockReset();
+  vi.mocked(saveWorkspaceReviewConfigClientAction).mockReset();
   clearProviderSecretStatusCacheForTest();
   cleanup();
 });
@@ -579,8 +597,6 @@ function renderRepositoryPolicyOverrideDetails(input?: {
       configVersion={repositoryConfig?.version ?? 6}
       modelOptions={modelOptions}
       mutationsEnabled={true}
-      saveAction={() => undefined}
-      clearAction={() => undefined}
     />,
   );
 }

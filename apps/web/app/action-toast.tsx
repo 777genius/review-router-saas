@@ -14,6 +14,8 @@ type ActionToastProps = {
   readonly secondaryAction?: ReactNode | undefined;
   readonly autoOpenUrl?: string | undefined;
   readonly storageKey?: string | undefined;
+  readonly clearUrlSearchParams?: readonly string[] | undefined;
+  readonly setUrlSearchParams?: Record<string, string | undefined> | undefined;
 };
 
 const toneClassNames: Record<ActionToastTone, string> = {
@@ -32,6 +34,8 @@ export function ActionToast({
   secondaryAction,
   autoOpenUrl,
   storageKey,
+  clearUrlSearchParams,
+  setUrlSearchParams,
 }: ActionToastProps): null {
   const toastId = useMemo(
     () => `action-toast:${tone}|${title}|${body}|${actionUrl ?? ""}`,
@@ -93,7 +97,22 @@ export function ActionToast({
       ),
       secondaryAction ? { id: toastId, duration: Infinity } : { id: toastId },
     );
-  }, [toastId, tone, title, body, actionUrl, actionLabel, secondaryAction]);
+
+    cleanCurrentUrlSearchParams({
+      clear: clearUrlSearchParams,
+      set: setUrlSearchParams,
+    });
+  }, [
+    toastId,
+    tone,
+    title,
+    body,
+    actionUrl,
+    actionLabel,
+    secondaryAction,
+    clearUrlSearchParams,
+    setUrlSearchParams,
+  ]);
 
   useEffect(() => {
     if (!autoOpenUrl) return;
@@ -109,4 +128,43 @@ export function ActionToast({
   }, [autoOpenStorageKey, autoOpenUrl]);
 
   return null;
+}
+
+function cleanCurrentUrlSearchParams(input: {
+  readonly clear?: readonly string[] | undefined;
+  readonly set?: Record<string, string | undefined> | undefined;
+}): void {
+  if (
+    (!input.clear || input.clear.length === 0) &&
+    (!input.set || Object.keys(input.set).length === 0)
+  ) {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  let changed = false;
+
+  for (const key of input.clear ?? []) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+
+  for (const [key, value] of Object.entries(input.set ?? {})) {
+    if (!value) continue;
+    if (url.searchParams.get(key) !== value) {
+      url.searchParams.set(key, value);
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+
+  const search = url.searchParams.toString();
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${url.pathname}${search ? `?${search}` : ""}${url.hash}`,
+  );
 }

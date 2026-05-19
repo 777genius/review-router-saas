@@ -36,6 +36,13 @@ type SetupInstallation = NonNullable<
   Awaited<ReturnType<typeof loadSetupInstallation>>
 >;
 
+const setupResultToastSearchParams = [
+  "notice",
+  "error",
+  "repository",
+  "pr",
+] as const;
+
 function readParam(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value[0] ?? "";
   return value ?? "";
@@ -144,6 +151,7 @@ export default async function SetupPage({
               ? `reviewrouter:setup-pr:${resultNotice.prUrl}`
               : undefined
           }
+          clearUrlSearchParams={setupResultToastSearchParams}
         />
       ) : null}
 

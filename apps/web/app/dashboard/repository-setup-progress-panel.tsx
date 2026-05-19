@@ -127,7 +127,7 @@ export function RepositorySetupProgressPanel({
   }, [repositoryId]);
 
   const handleSetupMutation = (params: Record<string, string>) => {
-    updateBrowserUrl(params);
+    clearTransientDashboardUrlParams("repositories");
 
     if (params.error) {
       const issue = normalizeSetupIssue(params.error);
@@ -180,7 +180,7 @@ export function RepositorySetupProgressPanel({
   };
 
   const handleMergeMutation = (params: Record<string, string>) => {
-    updateBrowserUrl(params);
+    clearTransientDashboardUrlParams("repositories");
 
     if (params.error) {
       const issue = normalizeSetupIssue(params.error);
@@ -538,20 +538,29 @@ function SetupProgressLockIcon(): React.ReactElement {
   );
 }
 
-function updateBrowserUrl(params: Record<string, string>): void {
-  const search = new URLSearchParams(window.location.search);
-  search.delete("notice");
-  search.delete("error");
-  search.delete("pr");
+function clearTransientDashboardUrlParams(section: string): void {
+  const url = new URL(window.location.href);
+  let changed = false;
 
-  for (const [key, value] of Object.entries(params)) {
-    if (value) search.set(key, value);
+  for (const key of ["notice", "error", "pr"]) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
   }
 
+  if (url.searchParams.get("section") !== section) {
+    url.searchParams.set("section", section);
+    changed = true;
+  }
+
+  if (!changed) return;
+
+  const search = url.searchParams.toString();
   window.history.replaceState(
     window.history.state,
     "",
-    `/dashboard?${search.toString()}${window.location.hash}`,
+    `${url.pathname}${search ? `?${search}` : ""}${url.hash}`,
   );
 }
 

@@ -1,12 +1,22 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useTransition, type ReactElement } from "react";
+import { useState, useTransition, type ReactElement } from "react";
 import { Button } from "@reviewrouter/ui";
+import { ActionToast } from "../action-toast";
 import {
   confirmSetupPullRequestMergedClientAction,
   createSetupPullRequestClientAction,
 } from "./actions";
+
+type SetupActionToast = {
+  readonly key: number;
+  readonly tone: "success" | "warning" | "danger" | "accent";
+  readonly title: string;
+  readonly body: string;
+  readonly actionUrl?: string;
+  readonly actionLabel?: string;
+};
 
 export function RepositorySetupActionButton({
   workspaceId,
@@ -31,8 +41,18 @@ export function RepositorySetupActionButton({
 }): ReactElement {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [toast, setToast] = useState<SetupActionToast | null>(null);
   const disabled =
     !mutationsEnabled || !selected || archived || workflowCurrent || isPending;
+
+  function completeWithoutUrl(params: Record<string, string>): void {
+    setToast((current) => ({
+      ...setupActionToast(params),
+      key: (current?.key ?? 0) + 1,
+    }));
+    cleanDashboardActionUrl("repositories");
+    router.refresh();
+  }
 
   return (
     <form
@@ -44,32 +64,34 @@ export function RepositorySetupActionButton({
                 onComplete(params);
                 return;
               }
-              router.replace(buildDashboardMutationUrl(params), {
-                scroll: false,
-              });
+              completeWithoutUrl(params);
             })
             .catch(() => {
+              const fallbackParams = {
+                error: "dashboard_action_failed",
+                workspace: workspaceId,
+                section: "repositories",
+              };
               if (onComplete) {
-                onComplete({
-                  error: "dashboard_action_failed",
-                  workspace: workspaceId,
-                  section: "repositories",
-                });
+                onComplete(fallbackParams);
                 return;
               }
-              router.replace(
-                buildDashboardMutationUrl({
-                  error: "dashboard_action_failed",
-                  workspace: workspaceId,
-                  section: "repositories",
-                }),
-                { scroll: false },
-              );
+              completeWithoutUrl(fallbackParams);
             });
         });
       }}
       className="min-w-0"
     >
+      {toast ? (
+        <ActionToast
+          key={toast.key}
+          tone={toast.tone}
+          title={toast.title}
+          body={toast.body}
+          actionUrl={toast.actionUrl}
+          actionLabel={toast.actionLabel}
+        />
+      ) : null}
       <input type="hidden" name="workspaceId" value={workspaceId} />
       <input type="hidden" name="repositoryId" value={repositoryId} />
       <input type="hidden" name="workflowStyle" value="reusable" />
@@ -125,7 +147,17 @@ export function RepositorySetupMergedButton({
 }): ReactElement {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [toast, setToast] = useState<SetupActionToast | null>(null);
   const disabled = !mutationsEnabled || !selected || archived || isPending;
+
+  function completeWithoutUrl(params: Record<string, string>): void {
+    setToast((current) => ({
+      ...setupActionToast(params),
+      key: (current?.key ?? 0) + 1,
+    }));
+    cleanDashboardActionUrl("repositories");
+    router.refresh();
+  }
 
   return (
     <form
@@ -137,32 +169,34 @@ export function RepositorySetupMergedButton({
                 onComplete(params);
                 return;
               }
-              router.replace(buildDashboardMutationUrl(params), {
-                scroll: false,
-              });
+              completeWithoutUrl(params);
             })
             .catch(() => {
+              const fallbackParams = {
+                error: "dashboard_action_failed",
+                workspace: workspaceId,
+                section: "repositories",
+              };
               if (onComplete) {
-                onComplete({
-                  error: "dashboard_action_failed",
-                  workspace: workspaceId,
-                  section: "repositories",
-                });
+                onComplete(fallbackParams);
                 return;
               }
-              router.replace(
-                buildDashboardMutationUrl({
-                  error: "dashboard_action_failed",
-                  workspace: workspaceId,
-                  section: "repositories",
-                }),
-                { scroll: false },
-              );
+              completeWithoutUrl(fallbackParams);
             });
         });
       }}
       className="min-w-0"
     >
+      {toast ? (
+        <ActionToast
+          key={toast.key}
+          tone={toast.tone}
+          title={toast.title}
+          body={toast.body}
+          actionUrl={toast.actionUrl}
+          actionLabel={toast.actionLabel}
+        />
+      ) : null}
       <input type="hidden" name="workspaceId" value={workspaceId} />
       <input type="hidden" name="repositoryId" value={repositoryId} />
       <Button
@@ -225,18 +259,96 @@ function setupPrButtonLabel(setupStatus: string): string {
   return "Create setup PR";
 }
 
-function buildDashboardMutationUrl(params: Record<string, string>): string {
-  const search = new URLSearchParams(window.location.search);
+function setupActionToast(
+  params: Record<string, string>,
+): Omit<SetupActionToast, "key"> {
+  if (params.error) {
+    return {
+      tone: "danger",
+      title: "Action needs attention",
+      body: setupActionErrorText(params.error),
+    };
+  }
 
-  search.delete("notice");
-  search.delete("error");
-  search.delete("pr");
+  switch (params.notice) {
+    case "setup_pr_ready":
+      return {
+        tone: "success",
+        title: "Setup PR ready",
+        body: params.repository
+          ? `Setup PR is ready for ${params.repository}.`
+          : "Setup PR is ready.",
+        ...(params.pr ? { actionUrl: params.pr } : {}),
+        ...(params.pr ? { actionLabel: "Open setup PR" } : {}),
+      };
+    case "setup_pr_merged":
+      return {
+        tone: "success",
+        title: "Setup PR merged",
+        body: params.repository
+          ? `Setup PR merge was confirmed for ${params.repository}.`
+          : "Setup PR merge was confirmed.",
+      };
+    case "workflow_already_current":
+      return {
+        tone: "success",
+        title: "Workflow installed",
+        body: params.repository
+          ? `ReviewRouter workflow is already current for ${params.repository}.`
+          : "ReviewRouter workflow is already current.",
+      };
+    default:
+      return {
+        tone: "success",
+        title: "Action complete",
+        body: "Repository setup was updated.",
+      };
+  }
+}
 
-  for (const [key, value] of Object.entries(params)) {
-    if (value) {
-      search.set(key, value);
+function setupActionErrorText(error: string): string {
+  switch (error) {
+    case "dashboard_action_failed":
+      return "The dashboard action failed. Retry once, then inspect server logs if it repeats.";
+    case "setup_pr_not_merged":
+      return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds.";
+    case "setup_pr_closed":
+      return "The saved setup PR was closed before it was merged. Recreate the setup PR, then merge the new one.";
+    case "setup_pr_branch_deleted":
+      return "The saved setup PR branch was deleted. Recreate the setup PR to continue.";
+    case "rate_limited":
+      return "Too many dashboard requests for this repository. Wait a bit before retrying.";
+    case "repository_not_selected":
+      return "This repository is no longer selected for the GitHub App installation.";
+    case "repository_archived":
+      return "Archived repositories cannot be provisioned.";
+    default:
+      return "The dashboard action could not be completed.";
+  }
+}
+
+function cleanDashboardActionUrl(section: string): void {
+  const url = new URL(window.location.href);
+  let changed = false;
+
+  for (const key of ["notice", "error", "pr"]) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
     }
   }
 
-  return `/dashboard?${search.toString()}${window.location.hash}`;
+  if (url.searchParams.get("section") !== section) {
+    url.searchParams.set("section", section);
+    changed = true;
+  }
+
+  if (!changed) return;
+
+  const search = url.searchParams.toString();
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${url.pathname}${search ? `?${search}` : ""}${url.hash}`,
+  );
 }

@@ -33,4 +33,31 @@ describe("ActionToast", () => {
       );
     });
   });
+
+  it("removes transient search params without a router navigation", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?notice=review_config_saved&version=9&workspace=workspace_1",
+    );
+
+    render(
+      <ActionToast
+        tone="success"
+        title="Model settings saved"
+        body="Review configuration was saved."
+        clearUrlSearchParams={["notice", "version"]}
+        setUrlSearchParams={{ section: "policy" }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(toast.custom).toHaveBeenCalled();
+    });
+
+    expect(window.location.pathname).toBe("/dashboard");
+    expect(window.location.search).toBe(
+      "?workspace=workspace_1&section=policy",
+    );
+  });
 });

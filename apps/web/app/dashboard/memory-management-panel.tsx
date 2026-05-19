@@ -19,16 +19,20 @@ import type {
 } from "@reviewrouter/features-memory";
 import { FormSubmitButton } from "../form-submit-button";
 import {
+  DashboardActionForm,
+  type DashboardActionFormAction,
+} from "./dashboard-action-form";
+import {
   buildMemoryDashboardViewModel,
   type MemoryDashboardRepositoryOption,
 } from "../../src/features/memory/application/memory-dashboard-view-model";
 import {
-  confirmMemorySuggestionAction,
-  createMemoryItemAction,
-  deleteMemoryItemAction,
-  disableMemoryItemAction,
-  editMemoryItemAction,
-  rejectMemorySuggestionAction,
+  confirmMemorySuggestionClientAction,
+  createMemoryItemClientAction,
+  deleteMemoryItemClientAction,
+  disableMemoryItemClientAction,
+  editMemoryItemClientAction,
+  rejectMemorySuggestionClientAction,
 } from "./actions";
 
 export type MemoryManagementWorkspace = {
@@ -355,7 +359,11 @@ function MemoryAddMemoryForm({
         </div>
         <MemoryBadge tone="neutral">{totalCount} total</MemoryBadge>
       </div>
-      <form action={createMemoryItemAction} className="mt-4 grid gap-3">
+      <DashboardActionForm
+        action={createMemoryItemClientAction}
+        fallbackParams={memoryFallbackParams(workspaceId)}
+        className="mt-4 grid gap-3"
+      >
         <input type="hidden" name="workspaceId" value={workspaceId} />
         <div className="grid gap-3 md:grid-cols-[12rem_minmax(0,1fr)]">
           <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
@@ -408,7 +416,7 @@ function MemoryAddMemoryForm({
             pendingLabel="Saving..."
           />
         </div>
-      </form>
+      </DashboardActionForm>
     </div>
   );
 }
@@ -823,6 +831,14 @@ function MemoryNoticeStack({
   );
 }
 
+function memoryFallbackParams(workspaceId: string): Record<string, string> {
+  return {
+    error: "dashboard_action_failed",
+    workspace: workspaceId,
+    section: "memory",
+  };
+}
+
 function MemoryReadOnlyBanner(): React.ReactElement {
   return (
     <div className="rounded-[1.25rem] border border-amber-300/25 bg-amber-300/10 p-4 text-sm leading-6 text-amber-100">
@@ -903,7 +919,10 @@ function MemorySuggestionRow({
         </p>
       </div>
       <div className="grid content-start gap-2">
-        <form action={confirmMemorySuggestionAction}>
+        <DashboardActionForm
+          action={confirmMemorySuggestionClientAction}
+          fallbackParams={memoryFallbackParams(workspaceId)}
+        >
           <input type="hidden" name="workspaceId" value={workspaceId} />
           <input type="hidden" name="suggestionId" value={suggestion.id} />
           <FormSubmitButton
@@ -914,13 +933,16 @@ function MemorySuggestionRow({
             idleLabel="Approve"
             pendingLabel="Approving..."
           />
-        </form>
+        </DashboardActionForm>
         <MemorySuggestionEditConfirmDialog
           workspaceId={workspaceId}
           suggestion={suggestion}
           disabled={!confirmationEnabled || suggestion.isExpired}
         />
-        <form action={rejectMemorySuggestionAction}>
+        <DashboardActionForm
+          action={rejectMemorySuggestionClientAction}
+          fallbackParams={memoryFallbackParams(workspaceId)}
+        >
           <input type="hidden" name="workspaceId" value={workspaceId} />
           <input type="hidden" name="suggestionId" value={suggestion.id} />
           <input type="hidden" name="reason" value="dashboard_reject" />
@@ -932,7 +954,7 @@ function MemorySuggestionRow({
             idleLabel="Reject"
             pendingLabel="Rejecting..."
           />
-        </form>
+        </DashboardActionForm>
       </div>
     </div>
   );
@@ -980,8 +1002,9 @@ function MemorySuggestionEditConfirmDialog({
             Confirmation uses the edited text only after permission, safety,
             scope and duplicate checks run again.
           </DialogDescription>
-          <form
-            action={confirmMemorySuggestionAction}
+          <DashboardActionForm
+            action={confirmMemorySuggestionClientAction}
+            fallbackParams={memoryFallbackParams(workspaceId)}
             className="mt-5 grid gap-4"
           >
             <input type="hidden" name="workspaceId" value={workspaceId} />
@@ -1030,7 +1053,7 @@ function MemorySuggestionEditConfirmDialog({
                 pendingLabel="Approving..."
               />
             </div>
-          </form>
+          </DashboardActionForm>
         </DialogPopup>
       </DialogPortal>
     </DialogRoot>
@@ -1106,7 +1129,7 @@ function MemoryItemActionGroup({
         disabled={!editable}
       />
       <MemoryDangerActionDialog
-        action={disableMemoryItemAction}
+        action={disableMemoryItemClientAction}
         workspaceId={workspaceId}
         memoryItemId={item.id}
         expectedVersion={item.version}
@@ -1118,7 +1141,7 @@ function MemoryItemActionGroup({
         confirmLabel="Disable memory"
       />
       <MemoryDangerActionDialog
-        action={deleteMemoryItemAction}
+        action={deleteMemoryItemClientAction}
         workspaceId={workspaceId}
         memoryItemId={item.id}
         expectedVersion={item.version}
@@ -1180,7 +1203,11 @@ function MemoryEditActionDialog({
             Updates re-run safety checks and replace the current distilled
             memory text. Previous full body text is not stored in audit.
           </DialogDescription>
-          <form action={editMemoryItemAction} className="mt-5 grid gap-4">
+          <DashboardActionForm
+            action={editMemoryItemClientAction}
+            fallbackParams={memoryFallbackParams(workspaceId)}
+            className="mt-5 grid gap-4"
+          >
             <input type="hidden" name="workspaceId" value={workspaceId} />
             <input type="hidden" name="memoryItemId" value={item.id} />
             <input type="hidden" name="expectedVersion" value={item.version} />
@@ -1214,7 +1241,7 @@ function MemoryEditActionDialog({
                 pendingLabel="Saving..."
               />
             </div>
-          </form>
+          </DashboardActionForm>
         </DialogPopup>
       </DialogPortal>
     </DialogRoot>
@@ -1233,7 +1260,7 @@ function MemoryDangerActionDialog({
   description,
   confirmLabel,
 }: {
-  readonly action: (formData: FormData) => Promise<never>;
+  readonly action: DashboardActionFormAction;
   readonly workspaceId: string;
   readonly memoryItemId: string;
   readonly expectedVersion: number;
@@ -1281,7 +1308,11 @@ function MemoryDangerActionDialog({
           <DialogDescription className="mt-2 text-sm leading-6 text-slate-300">
             {description}
           </DialogDescription>
-          <form action={action} className="mt-5 grid gap-4">
+          <DashboardActionForm
+            action={action}
+            fallbackParams={memoryFallbackParams(workspaceId)}
+            className="mt-5 grid gap-4"
+          >
             <input type="hidden" name="workspaceId" value={workspaceId} />
             <input type="hidden" name="memoryItemId" value={memoryItemId} />
             <input
@@ -1309,7 +1340,7 @@ function MemoryDangerActionDialog({
                 pendingLabel={pendingLabel}
               />
             </div>
-          </form>
+          </DashboardActionForm>
         </DialogPopup>
       </DialogPortal>
     </DialogRoot>

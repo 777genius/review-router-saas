@@ -68,13 +68,10 @@ import {
 } from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
 import {
-  clearRepositoryReviewConfigAction,
-  refreshRepositoryAccessAction,
-  requestInstallationSyncAction,
-  retryOutboxEventAction,
-  enableOrgRulesetWorkflowAction,
-  saveRepositoryReviewConfigAction,
-  saveWorkspaceReviewConfigAction,
+  refreshRepositoryAccessClientAction,
+  requestInstallationSyncClientAction,
+  retryOutboxEventClientAction,
+  enableOrgRulesetWorkflowClientAction,
 } from "./actions";
 import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url";
 import {
@@ -120,7 +117,7 @@ import { RepositorySetupProgressPanel as RepositorySetupProgressPanelClient } fr
 import {
   RepositoryPolicyEditor,
   RepositoryPolicyOverrideDetails,
-  ReviewConfigForm,
+  WorkspaceReviewConfigForm,
 } from "./repository-policy-editor";
 import { RepositorySetupStatusRefresher } from "./repository-setup-status-refresher";
 import {
@@ -129,6 +126,7 @@ import {
   type MemoryManagementModeLinks,
 } from "./memory-management-panel";
 import { DashboardCollapsibleShell } from "./dashboard-collapsible-shell";
+import { DashboardActionForm } from "./dashboard-action-form";
 import { createNoIndexPageMetadata } from "../seo";
 
 export const dynamic = "force-dynamic";
@@ -1191,7 +1189,14 @@ function RepositoryAccessRefreshForm({
   readonly className?: string;
 }): React.ReactElement {
   return (
-    <form action={refreshRepositoryAccessAction}>
+    <DashboardActionForm
+      action={refreshRepositoryAccessClientAction}
+      fallbackParams={{
+        error: "dashboard_action_failed",
+        ...(workspaceKey ? { workspace: workspaceKey } : {}),
+        ...(section ? { section } : {}),
+      }}
+    >
       {workspaceKey ? (
         <input type="hidden" name="workspace" value={workspaceKey} />
       ) : null}
@@ -1203,7 +1208,7 @@ function RepositoryAccessRefreshForm({
         idleLabel={triggerLabel}
         pendingLabel="Refreshing..."
       />
-    </form>
+    </DashboardActionForm>
   );
 }
 
@@ -1832,7 +1837,14 @@ function WorkspaceCard({
                         </div>
                       )}
                       {hasWorkspaceWideAccess ? (
-                        <form action={requestInstallationSyncAction}>
+                        <DashboardActionForm
+                          action={requestInstallationSyncClientAction}
+                          fallbackParams={{
+                            error: "dashboard_action_failed",
+                            workspace: workspace.id,
+                            section: "repositories",
+                          }}
+                        >
                           <input
                             type="hidden"
                             name="workspaceId"
@@ -1854,7 +1866,7 @@ function WorkspaceCard({
                             idleLabel="Refresh repos"
                             pendingLabel="Refreshing..."
                           />
-                        </form>
+                        </DashboardActionForm>
                       ) : (
                         <p className="rounded-xl border border-cyan-200/10 bg-slate-950/55 p-3 text-xs leading-5 text-slate-400">
                           You can manage repositories where your GitHub role has
@@ -1908,14 +1920,12 @@ function WorkspaceCard({
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                   <Badge tone="accent">Workspace default</Badge>
                 </div>
-                <ReviewConfigForm
-                  action={saveWorkspaceReviewConfigAction}
+                <WorkspaceReviewConfigForm
+                  workspaceId={workspace.id}
                   config={activeConfig}
                   modelOptions={modelOptions}
                   claudeCodeProviderEnabled={claudeCodeProviderEnabled}
-                  hiddenFields={[{ name: "workspaceId", value: workspace.id }]}
                   mutationsEnabled={mutationsEnabled}
-                  submitLabel="Save workspace default"
                 />
               </div>
             ) : null}
@@ -2009,8 +2019,6 @@ function WorkspaceCard({
                             ? undefined
                             : "Maintain or admin access is required to change repo settings directly."
                         }
-                        saveAction={saveRepositoryReviewConfigAction}
-                        clearAction={clearRepositoryReviewConfigAction}
                       />
                     );
                   })}
@@ -2151,8 +2159,13 @@ function WorkspaceCard({
                               Updated {event.updatedAt.toISOString()}
                             </p>
                           </div>
-                          <form
-                            action={retryOutboxEventAction}
+                          <DashboardActionForm
+                            action={retryOutboxEventClientAction}
+                            fallbackParams={{
+                              error: "dashboard_action_failed",
+                              workspace: workspace.id,
+                              section: "diagnostics",
+                            }}
                             className="self-center"
                           >
                             <input
@@ -2175,7 +2188,7 @@ function WorkspaceCard({
                               idleLabel="Retry"
                               pendingLabel="Retrying..."
                             />
-                          </form>
+                          </DashboardActionForm>
                         </div>
                       ))}
                     </div>
@@ -3281,8 +3294,13 @@ function OrgRulesetAdvancedCard({
 
         {rulesetsUnavailableByPlan ? null : (
           <div className="rounded-2xl border border-amber-200/10 bg-slate-950/55 p-4">
-            <form
-              action={enableOrgRulesetWorkflowAction}
+            <DashboardActionForm
+              action={enableOrgRulesetWorkflowClientAction}
+              fallbackParams={{
+                error: "dashboard_action_failed",
+                workspace: workspace.id,
+                section: "setup",
+              }}
               className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-[minmax(0,18rem)_minmax(0,18rem)_auto] 2xl:items-end"
             >
               <input type="hidden" name="workspaceId" value={workspace.id} />
@@ -3346,7 +3364,7 @@ function OrgRulesetAdvancedCard({
                   pendingLabel="Checking permission..."
                 />
               </div>
-            </form>
+            </DashboardActionForm>
 
             <div className="mt-4 flex flex-wrap gap-2 border-t border-amber-200/10 pt-4">
               {permissionMissing && permissionApprovalUrl ? (
@@ -3404,47 +3422,26 @@ function WorkspaceActionNotice({
   readonly params: Record<string, string | string[] | undefined>;
   readonly orgRuleset: DashboardWorkspaceData["orgRuleset"];
 }): React.ReactElement | null {
-  const notice = readParam(params.notice);
   const rawError = readParam(params.error);
   const error =
     rawError === "org_admin_permission_required" &&
     orgRuleset?.safeErrorCode === "org_rulesets_not_supported"
       ? "org_rulesets_not_supported"
       : rawError;
-  if (!notice && !error) return null;
-  if (
-    !error &&
-    [
-      "setup_pr_ready",
-      "setup_pr_merged",
-      "provider_setup_confirmed",
-      "review_config_saved",
-      "repository_review_config_saved",
-      "repository_review_config_cleared",
-    ].includes(notice)
-  ) {
-    return null;
-  }
+  if (!error) return null;
 
   const pullRequestUrl = safeGitHubDashboardLink(readParam(params.pr));
-  const tone = error ? "danger" : "success";
-  const title = error ? "Action failed" : dashboardNoticeTitle(notice);
-  const body = error
-    ? dashboardErrorText(error)
-    : dashboardNoticeText(notice, readParam(params.repository));
 
   return (
     <div
       className={[
         "rounded-2xl border p-4 text-sm leading-6",
-        error
-          ? "border-red-300/25 bg-red-300/10 text-red-50"
-          : "border-lime-300/25 bg-lime-300/10 text-lime-50",
+        "border-red-300/25 bg-red-300/10 text-red-50",
       ].join(" ")}
     >
       <div className="grid gap-3 md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center">
-        <Badge tone={tone}>{title}</Badge>
-        <p>{body}</p>
+        <Badge tone="danger">Action failed</Badge>
+        <p>{dashboardErrorText(error)}</p>
         {pullRequestUrl ? (
           <LinkButton
             href={pullRequestUrl}
@@ -3521,6 +3518,19 @@ function copyQueryParam(
   if (value) query.set(key, value);
 }
 
+const dashboardNoticeToastSearchParams = [
+  "notice",
+  "version",
+  "pr",
+  "error",
+] as const;
+const dashboardErrorToastSearchParams = [
+  "error",
+  "notice",
+  "version",
+  "pr",
+] as const;
+
 function DashboardActionToast({
   params,
   secondaryAction,
@@ -3532,6 +3542,7 @@ function DashboardActionToast({
   const error = readParam(params.error);
   const repository = readParam(params.repository);
   const prUrl = safeGitHubDashboardLink(readParam(params.pr)) ?? undefined;
+  const selectedSection = resolveDashboardSection(params);
 
   if (error) {
     return (
@@ -3539,6 +3550,8 @@ function DashboardActionToast({
         tone="danger"
         title="Action needs attention"
         body={dashboardErrorText(error)}
+        clearUrlSearchParams={dashboardErrorToastSearchParams}
+        setUrlSearchParams={{ section: selectedSection }}
       />
     );
   }
@@ -3560,6 +3573,8 @@ function DashboardActionToast({
           ? `reviewrouter:dashboard-setup-pr:${autoOpenSetupPr}`
           : undefined
       }
+      clearUrlSearchParams={dashboardNoticeToastSearchParams}
+      setUrlSearchParams={{ section: selectedSection }}
     />
   );
 }
