@@ -561,7 +561,7 @@ function PermissionTable(): React.ReactElement {
                         href={doc.href}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex min-h-10 items-center gap-1.5 text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 hover:text-cyan-50"
+                        className="inline-flex min-h-11 items-center gap-1.5 text-cyan-200 underline decoration-cyan-300/40 underline-offset-4 hover:text-cyan-50"
                       >
                         {doc.label}
                         <ExternalLink aria-hidden="true" className="size-3.5" />

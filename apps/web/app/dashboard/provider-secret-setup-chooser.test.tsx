@@ -429,6 +429,51 @@ describe("ProviderSecretSetupChooser", () => {
       expect.objectContaining({ method: "POST" }),
     );
   });
+
+  it("shows a retryable setup command error instead of a provider-save error", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        setupCommandErrorResponse("codex_rotating_installer_missing"),
+      )
+      .mockResolvedValueOnce(
+        setupCommandResponse({
+          command: "set -euo pipefail\n# retry nonce command",
+          expiresAt: "2026-05-25T12:15:00.000Z",
+          providerInstanceId: "codex-rotating:123456",
+          secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(
+      await screen.findByText(/could not load the Codex installer/i),
+    ).toBeTruthy();
+    expect(pageText()).not.toContain("could not save provider setup");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "I ran this script",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry setup command" }),
+    );
+
+    expect(await screen.findByText(/retry nonce command/i)).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("ProviderSecretSetupDialog", () => {
@@ -556,6 +601,13 @@ function setupCommandResponse(body: {
   return {
     ok: true,
     json: async () => body,
+  } as Response;
+}
+
+function setupCommandErrorResponse(error: string): Response {
+  return {
+    ok: false,
+    json: async () => ({ error }),
   } as Response;
 }
 

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const DEFAULT_HOSTED_WEB_URL = "https://reviewrouter.site";
@@ -43,8 +43,11 @@ export function resolveCodexRotatingSeedScriptDescriptor(
   );
   return {
     url: `${baseUrl}/install/codex-rotating`,
-    version: env.REVIEW_ROUTER_ACTION_VERSION?.trim() || "dev",
-    sha256: hashLocalRotatingInstaller(),
+    version:
+      resolvePinnedActionSha(env.REVIEW_ROUTER_ACTION_REF) ||
+      env.REVIEW_ROUTER_ACTION_VERSION?.trim() ||
+      "dev",
+    sha256: hashLocalRotatingInstaller(env),
   };
 }
 
@@ -57,9 +60,38 @@ export function resolveCodexRotatingInstallRedirect(
   return `https://raw.githubusercontent.com/777genius/review-router/${ref}/scripts/seed-codex-rotating-auth.sh`;
 }
 
-function hashLocalRotatingInstaller(): string {
-  const script = readFileSync(join(process.cwd(), SCRIPT_PATH));
+function hashLocalRotatingInstaller(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): string {
+  const scriptPath = resolveLocalRotatingInstallerPath(env, cwd);
+  const script = readFileSync(scriptPath);
   return createHash("sha256").update(script).digest("hex");
+}
+
+function resolveLocalRotatingInstallerPath(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): string {
+  const candidates = [
+    env.REVIEW_ROUTER_CODEX_ROTATING_INSTALLER_PATH?.trim(),
+    join(cwd, SCRIPT_PATH),
+    join(cwd, "..", SCRIPT_PATH),
+    join(cwd, "..", "..", SCRIPT_PATH),
+    join(cwd, "..", "..", "..", SCRIPT_PATH),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  const scriptPath = candidates.find((candidate) => existsSync(candidate));
+  if (!scriptPath) {
+    throw new Error("codex_rotating_installer_missing");
+  }
+  return scriptPath;
+}
+
+function resolvePinnedActionSha(value: string | undefined): string | null {
+  const match = value?.trim().match(/@([a-f0-9]{40})$/i);
+  const sha = match?.[1];
+  return sha ? sha.toLowerCase() : null;
 }
 
 function assertSha256(value: string): void {

@@ -91,7 +91,7 @@ export async function POST(request: Request): Promise<
     });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "unknown_error" },
+      { error: codexRotatingSetupCommandErrorCode(error) },
       { status: 400 },
     );
   }
@@ -103,4 +103,35 @@ function readFormValue(formData: FormData, name: string): string {
     throw new Error("invalid_form");
   }
   return value.trim();
+}
+
+function codexRotatingSetupCommandErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown_error";
+  if (message.startsWith("rate_limit_exceeded:")) {
+    return "rate_limited";
+  }
+  if (
+    [
+      "repository_not_found",
+      "repository_not_selected",
+      "repository_archived",
+      "installation_not_active",
+      "repository_mutation_forbidden",
+      "workspace_mutation_forbidden",
+      "codex_rotating_not_enabled",
+      "codex_rotating_installer_missing",
+      "codex_rotating_installer_descriptor_incomplete",
+      "invalid_codex_rotating_installer_sha256",
+      "invalid_review_router_web_url",
+    ].includes(message)
+  ) {
+    return message;
+  }
+  if (
+    message.startsWith("missing_env:") ||
+    message.startsWith("invalid_env:")
+  ) {
+    return "server_misconfigured";
+  }
+  return "dashboard_action_failed";
 }

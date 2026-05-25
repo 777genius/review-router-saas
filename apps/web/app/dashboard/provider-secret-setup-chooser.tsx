@@ -121,6 +121,7 @@ export function ProviderSecretSetupChooser({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [rotatingSetupCommand, setRotatingSetupCommand] =
     useState<RotatingSetupCommandState>({ status: "idle" });
+  const [setupCommandRefreshKey, setSetupCommandRefreshKey] = useState(0);
   const [confirmedProviderModes, setConfirmedProviderModes] = useState<
     Partial<Record<ProviderChoice, "verified" | "manual">>
   >({});
@@ -192,6 +193,7 @@ export function ProviderSecretSetupChooser({
   }, [
     repositoryFullName,
     repositoryId,
+    setupCommandRefreshKey,
     shouldFetchRotatingSetupCommand,
     workspaceId,
   ]);
@@ -480,9 +482,27 @@ export function ProviderSecretSetupChooser({
           </p>
         ) : shouldFetchRotatingSetupCommand &&
           rotatingSetupCommand.status === "error" ? (
-          <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[0.08] p-3 text-sm text-red-100">
-            {providerSetupSubmitErrorText(rotatingSetupCommand.error)}
-          </p>
+          <div className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[0.08] p-3 text-sm leading-6 text-red-100">
+            <p>{rotatingSetupCommandErrorText(rotatingSetupCommand.error)}</p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="min-h-10 rounded-xl px-4"
+                onClick={() => {
+                  setVerificationError(null);
+                  setSubmitError(null);
+                  setSetupCommandRefreshKey((value) => value + 1);
+                }}
+              >
+                Retry setup command
+              </Button>
+              <span className="text-xs text-red-100/70">
+                Error code: {rotatingSetupCommand.error}
+              </span>
+            </div>
+          </div>
         ) : activeCommand ? (
           <CodeBlock
             code={activeCommand.command}
@@ -740,6 +760,35 @@ function providerSetupSubmitErrorText(error: string): string {
       return "Rotating Codex OAuth is not enabled for this ReviewRouter deployment.";
     default:
       return "The dashboard could not save provider setup. Retry once, then check server logs if it repeats.";
+  }
+}
+
+function rotatingSetupCommandErrorText(error: string): string {
+  switch (error) {
+    case "codex_rotating_not_enabled":
+      return "Codex OAuth rotating is not enabled for this ReviewRouter deployment.";
+    case "repository_not_found":
+    case "repository_not_selected":
+      return "ReviewRouter cannot create a Codex setup command because this repository is not selected. Sync repositories, then reopen this dialog.";
+    case "repository_archived":
+      return "ReviewRouter cannot create a Codex setup command for an archived repository.";
+    case "installation_not_active":
+      return "ReviewRouter cannot create a Codex setup command because the GitHub App installation is not active. Reinstall or reconnect the GitHub App.";
+    case "repository_mutation_forbidden":
+    case "workspace_mutation_forbidden":
+      return "Your GitHub user needs repository write, maintain, or admin access to create this setup command.";
+    case "rate_limited":
+      return "Too many setup command requests for this repository. Wait a bit, then retry.";
+    case "codex_rotating_installer_missing":
+    case "codex_rotating_installer_descriptor_incomplete":
+    case "invalid_codex_rotating_installer_sha256":
+    case "invalid_review_router_web_url":
+    case "server_misconfigured":
+      return "ReviewRouter could not load the Codex installer configuration. This is a deployment issue, not something to fix in GitHub.";
+    case "dashboard_action_failed":
+      return "ReviewRouter could not create the short-lived Codex setup command. Retry once; if it repeats, reopen the dialog after the next deploy.";
+    default:
+      return "ReviewRouter could not create the short-lived Codex setup command. Retry once; if it repeats, send this error code to support.";
   }
 }
 

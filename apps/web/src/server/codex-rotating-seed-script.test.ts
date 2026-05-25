@@ -56,6 +56,33 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     expect(descriptor.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("finds the local installer when Next.js runs from the web app directory", () => {
+    const repoRoot = process.cwd();
+    const expectedSha256 = createHash("sha256")
+      .update(
+        readFileSync(join(repoRoot, "scripts/seed-codex-rotating-auth.sh")),
+      )
+      .digest("hex");
+
+    try {
+      process.chdir(join(repoRoot, "apps/web"));
+      expect(
+        resolveCodexRotatingSeedScriptDescriptor({
+          REVIEW_ROUTER_WEB_URL: "http://localhost:3000",
+          REVIEW_ROUTER_ACTION_REF:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          NODE_ENV: "production",
+        }),
+      ).toMatchObject({
+        url: "http://localhost:3000/install/codex-rotating",
+        version: "0123456789abcdef0123456789abcdef01234567",
+        sha256: expectedSha256,
+      });
+    } finally {
+      process.chdir(repoRoot);
+    }
+  });
+
   it("redirects curl clients to the action-pinned raw rotating installer", () => {
     expect(
       resolveCodexRotatingInstallRedirect({
