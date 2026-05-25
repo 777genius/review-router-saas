@@ -33,14 +33,7 @@ export function resolveCodexRotatingSeedScriptDescriptor(
     };
   }
 
-  const baseUrl = normalizeWebUrl(
-    env.REVIEW_ROUTER_PUBLIC_WEB_URL?.trim() ||
-      env.REVIEW_ROUTER_WEB_URL?.trim() ||
-      env.NEXTAUTH_URL?.trim() ||
-      (env.NODE_ENV === "production"
-        ? DEFAULT_HOSTED_WEB_URL
-        : DEFAULT_LOCAL_WEB_URL),
-  );
+  const baseUrl = resolveCodexRotatingPublicWebUrl(env);
   return {
     url: `${baseUrl}/install/codex-rotating`,
     version:
@@ -51,6 +44,21 @@ export function resolveCodexRotatingSeedScriptDescriptor(
   };
 }
 
+export function resolveCodexRotatingPublicWebUrl(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const requestedWebUrl =
+    env.REVIEW_ROUTER_PUBLIC_WEB_URL?.trim() ||
+    env.REVIEW_ROUTER_WEB_URL?.trim() ||
+    env.NEXTAUTH_URL?.trim() ||
+    defaultWebUrlForEnvironment(env);
+  const safeWebUrl =
+    env.NODE_ENV === "production" && isLocalWebUrl(requestedWebUrl)
+      ? DEFAULT_HOSTED_WEB_URL
+      : requestedWebUrl;
+  return normalizeWebUrl(safeWebUrl);
+}
+
 export function resolveCodexRotatingInstallRedirect(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -58,6 +66,12 @@ export function resolveCodexRotatingInstallRedirect(
   const pinnedSha = actionRef?.match(/@([a-f0-9]{40})$/i)?.[1];
   const ref = pinnedSha ?? "main";
   return `https://raw.githubusercontent.com/777genius/review-router/${ref}/scripts/seed-codex-rotating-auth.sh`;
+}
+
+function defaultWebUrlForEnvironment(env: NodeJS.ProcessEnv): string {
+  return env.NODE_ENV === "production"
+    ? DEFAULT_HOSTED_WEB_URL
+    : DEFAULT_LOCAL_WEB_URL;
 }
 
 function hashLocalRotatingInstaller(
@@ -114,6 +128,15 @@ function normalizeWebUrl(value: string): string {
     throw new Error("invalid_review_router_web_url");
   }
   return parsed.toString().replace(/\/$/, "");
+}
+
+function isLocalWebUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 function isLocalDevelopmentUrl(parsed: URL): boolean {

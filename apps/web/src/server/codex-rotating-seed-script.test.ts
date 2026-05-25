@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveCodexRotatingInstallRedirect,
+  resolveCodexRotatingPublicWebUrl,
   resolveCodexRotatingSeedScriptDescriptor,
 } from "./codex-rotating-seed-script";
 
@@ -68,13 +69,13 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
       process.chdir(join(repoRoot, "apps/web"));
       expect(
         resolveCodexRotatingSeedScriptDescriptor({
-          REVIEW_ROUTER_WEB_URL: "http://localhost:3000",
+          REVIEW_ROUTER_WEB_URL: "https://reviewrouter.site",
           REVIEW_ROUTER_ACTION_REF:
             "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
           NODE_ENV: "production",
         }),
       ).toMatchObject({
-        url: "http://localhost:3000/install/codex-rotating",
+        url: "https://reviewrouter.site/install/codex-rotating",
         version: "0123456789abcdef0123456789abcdef01234567",
         sha256: expectedSha256,
       });
@@ -92,6 +93,39 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     ).toBe(
       "https://raw.githubusercontent.com/777genius/review-router/0123456789abcdef0123456789abcdef01234567/scripts/seed-codex-rotating-auth.sh",
     );
+  });
+
+  it("uses the hosted web URL for production setup callbacks", () => {
+    expect(
+      resolveCodexRotatingPublicWebUrl({
+        NODE_ENV: "production",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe("https://reviewrouter.site");
+    expect(
+      resolveCodexRotatingPublicWebUrl({
+        NODE_ENV: "production",
+        REVIEW_ROUTER_WEB_URL: "https://reviewrouter.site/",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe("https://reviewrouter.site");
+  });
+
+  it("does not expose localhost from production web URL mistakes", () => {
+    expect(
+      resolveCodexRotatingPublicWebUrl({
+        NODE_ENV: "production",
+        REVIEW_ROUTER_WEB_URL: "https://localhost:10000",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe("https://reviewrouter.site");
+    expect(
+      resolveCodexRotatingSeedScriptDescriptor({
+        NODE_ENV: "production",
+        REVIEW_ROUTER_WEB_URL: "https://localhost:10000",
+        REVIEW_ROUTER_ACTION_VERSION: "dev-test",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toMatchObject({
+      url: "https://reviewrouter.site/install/codex-rotating",
+      version: "dev-test",
+    });
   });
 
   it("installer fails closed when its own SHA256 does not match the setup descriptor", () => {

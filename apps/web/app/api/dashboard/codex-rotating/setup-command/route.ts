@@ -3,7 +3,10 @@ import { isCodexRotatingOAuthAllowedForRepository } from "@reviewrouter/platform
 import { assertDashboardRepositoryMutationAllowed } from "../../../../../src/server/dashboard-mutations";
 import { createDashboardRateLimitPolicy } from "../../../../../src/server/dashboard-rate-limits";
 import { getPrisma } from "../../../../../src/server/prisma";
-import { resolveCodexRotatingSeedScriptDescriptor } from "../../../../../src/server/codex-rotating-seed-script";
+import {
+  resolveCodexRotatingPublicWebUrl,
+  resolveCodexRotatingSeedScriptDescriptor,
+} from "../../../../../src/server/codex-rotating-seed-script";
 import { issueCodexRotatingSetupCommand } from "../../../../../src/server/codex-rotating-setup-manifest";
 import { codexRotatingSecretName } from "@reviewrouter/features-provider-setup";
 
@@ -62,7 +65,7 @@ export async function POST(request: Request): Promise<
       resourceId: `codex-rotating-setup:${repositoryId}`,
     });
 
-    const baseUrl = new URL(request.url);
+    const baseUrl = resolveCodexRotatingPublicWebUrl();
     const setupManifestUrl = new URL(
       "/api/codex-rotating/setup-manifest",
       baseUrl,
