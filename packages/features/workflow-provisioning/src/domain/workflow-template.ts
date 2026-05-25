@@ -1,5 +1,6 @@
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  codexRotatingSecretName,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -326,6 +327,99 @@ jobs:
           CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
 `;
+}
+
+export function renderCodexRotatingInteractionWorkflow(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  assertCodexRotatingFullShaActionRef(options.actionRef);
+  const template = prepareWorkflowTemplate(options);
+
+  return `name: ReviewRouter Interaction
+
+on:
+  pull_request_review_comment:
+    types: [created, edited]
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  interaction:
+    name: interaction
+    runs-on: ubuntu-24.04
+    if: \${{ ${interactionJobGuardExpression} }}
+    env:
+      REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
+      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
+      REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
+      REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
+      REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
+      CODEX_AUTH_JSON_PRESENT: \${{ secrets.${codexRotatingSecretName} != '' && '1' || '0' }}
+      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"
+    steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
+        id: preflight
+        uses: ${options.actionRef}
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          REVIEW_ROUTER_MODE: "interaction-preflight"
+          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+
+      - name: Setup Node.js for Codex discussion replies
+        if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Codex CLI for discussion replies
+        if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
+        shell: bash
+        run: npm install -g @openai/codex@0.125.0
+
+      - name: Restore Codex subscription auth for discussion replies
+        if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
+        shell: bash
+        env:
+          CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}
+        run: |
+          set -euo pipefail
+          if [ -z "\${CODEX_AUTH_JSON:-}" ]; then
+            echo "::error::${codexRotatingSecretName} secret is missing. Re-run ReviewRouter Codex setup."
+            exit 1
+          fi
+          export CODEX_HOME="\${CODEX_HOME:-$HOME/.codex}"
+          mkdir -p "$CODEX_HOME"
+          chmod 700 "$CODEX_HOME"
+          printf '%s' "$CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"
+          chmod 600 "$CODEX_HOME/auth.json"
+
+      - name: Run ReviewRouter interaction
+        if: \${{ steps.preflight.outputs.should_run == 'true' }}
+        uses: ${options.actionRef}
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          REVIEW_ROUTER_MODE: "interaction"
+          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+          REVIEW_ROUTER_DISCUSSION_MAX_PER_PR: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
+          REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
+          REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
+          CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
+          CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
+`;
+}
+
+function assertCodexRotatingFullShaActionRef(actionRef: string): void {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(actionRef)) {
+    throw new Error("codex_rotating_action_ref_must_be_full_sha");
+  }
 }
 
 export function renderReviewRouterReusableWorkflow(
@@ -1031,6 +1125,14 @@ export function renderReviewRouterWorkflowFiles(
         operation: "delete",
         markerGroups:
           getLegacyReviewRouterInteractionWorkflowDeletionMarkerGroups(),
+      },
+      {
+        path: defaultInteractionWorkflowPath,
+        content: renderCodexRotatingInteractionWorkflow({
+          actionRef: options.actionRef,
+          apiUrl: options.apiUrl,
+          runtimeConfigMode: options.runtimeConfigMode,
+        }),
       },
     ];
   }

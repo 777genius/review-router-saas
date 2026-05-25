@@ -266,15 +266,28 @@ describe("provisionReviewRouterWorkflow", () => {
     const codexWorkflow = workflowFiles.find(
       (file) => file.path === ".github/workflows/reviewrouter-codex.yml",
     );
-    expect(workflowFiles).toHaveLength(3);
+    const interactionWorkflows = workflowFiles.filter(
+      (file) => file.path === ".github/workflows/reviewrouter-interaction.yml",
+    );
+    const interactionWorkflow = interactionWorkflows.find(
+      (file) => file.operation !== "delete",
+    );
+    expect(workflowFiles).toHaveLength(4);
     expect(codexWorkflow).toMatchObject({
       path: ".github/workflows/reviewrouter-codex.yml",
     });
     expect(codexWorkflow?.operation).not.toBe("delete");
+    expect(interactionWorkflows).toHaveLength(2);
+    expect(interactionWorkflows[0]).toMatchObject({
+      path: ".github/workflows/reviewrouter-interaction.yml",
+      operation: "delete",
+    });
+    expect(interactionWorkflow).toBeTruthy();
     const codexWorkflowContent =
       codexWorkflow && codexWorkflow.operation !== "delete"
         ? codexWorkflow.content
         : "";
+    const interactionWorkflowContent = interactionWorkflow?.content ?? "";
     expect(codexWorkflowContent).toContain("name: ReviewRouter Codex OAuth");
     expect(codexWorkflowContent).toContain("permissions: {}\n\njobs:");
     expect(codexWorkflowContent).toContain(`uses: ${actionRef}`);
@@ -286,6 +299,19 @@ describe("provisionReviewRouterWorkflow", () => {
     );
     expect(codexWorkflowContent).not.toContain("actions/checkout");
     expect(codexWorkflowContent).not.toContain("workflow_dispatch:");
+    expect(interactionWorkflowContent).toContain(
+      "name: ReviewRouter Interaction",
+    );
+    expect(interactionWorkflowContent).toContain(
+      "pull_request_review_comment:",
+    );
+    expect(interactionWorkflowContent).toContain("issue_comment:");
+    expect(interactionWorkflowContent).toContain("runs-on: ubuntu-24.04");
+    expect(interactionWorkflowContent).toContain(`uses: ${actionRef}`);
+    expect(interactionWorkflowContent).toContain(
+      "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
+    );
+    expect(interactionWorkflowContent).not.toContain("secrets.CODEX_AUTH_JSON");
     expect(workflowFiles).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

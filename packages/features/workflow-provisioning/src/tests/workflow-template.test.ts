@@ -16,6 +16,7 @@ import {
   renderReviewRouterWorkflow,
   renderReviewRouterWorkflowFiles,
   renderCodexRotatingAdvisoryWorkflow,
+  renderCodexRotatingInteractionWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "../domain/workflow-template";
 import {
@@ -92,8 +93,9 @@ describe("renderReviewRouterWorkflow", () => {
       codexRotatingProviderInstanceId: "codex-rotating:123456",
     });
 
-    expect(files).toHaveLength(3);
+    expect(files).toHaveLength(4);
     const codexWorkflow = files[0];
+    const interactionWorkflow = files[3];
     expect(codexWorkflow?.path).toBe(defaultCodexRotatingWorkflowPath);
     expect(codexWorkflow?.operation).not.toBe("delete");
     expect(files[1]).toMatchObject({
@@ -104,9 +106,15 @@ describe("renderReviewRouterWorkflow", () => {
       path: ".github/workflows/reviewrouter-interaction.yml",
       operation: "delete",
     });
+    expect(interactionWorkflow?.path).toBe(defaultInteractionWorkflowPath);
+    expect(interactionWorkflow?.operation).not.toBe("delete");
     const codexWorkflowContent =
       codexWorkflow && codexWorkflow.operation !== "delete"
         ? codexWorkflow.content
+        : "";
+    const interactionWorkflowContent =
+      interactionWorkflow && interactionWorkflow.operation !== "delete"
+        ? interactionWorkflow.content
         : "";
     expect(codexWorkflowContent).toContain("name: ReviewRouter Codex OAuth");
     expect(codexWorkflowContent).toContain(
@@ -118,6 +126,50 @@ describe("renderReviewRouterWorkflow", () => {
       valid: true,
       errors: [],
     });
+    expect(interactionWorkflowContent).toContain(
+      "name: ReviewRouter Interaction",
+    );
+    expect(interactionWorkflowContent).toContain(
+      "pull_request_review_comment:",
+    );
+    expect(interactionWorkflowContent).toContain("issue_comment:");
+    expect(interactionWorkflowContent).toContain("runs-on: ubuntu-24.04");
+    expect(interactionWorkflowContent).toContain(
+      "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
+    );
+    expect(interactionWorkflowContent).toContain(
+      'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
+    );
+    expect(interactionWorkflowContent).not.toContain("secrets.CODEX_AUTH_JSON");
+    expect(interactionWorkflowContent).not.toContain("OPENAI_API_KEY");
+  });
+
+  it("renders the dedicated rotating Codex interaction workflow", () => {
+    const workflow = renderCodexRotatingInteractionWorkflow({
+      actionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      apiUrl: "https://reviewrouter.site",
+      runtimeConfigMode: "oidc",
+    });
+
+    expect(workflow).toContain("name: ReviewRouter Interaction");
+    expect(workflow).toContain("pull_request_review_comment:");
+    expect(workflow).toContain("issue_comment:");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toContain("runs-on: ubuntu-24.04");
+    expect(workflow).toContain(
+      "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
+    );
+    expect(workflow).toContain(
+      "CODEX_AUTH_JSON: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    );
+    expect(workflow).toContain(
+      'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
+    );
+    expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
+    expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).not.toContain("secrets.CODEX_AUTH_JSON");
+    expect(workflow).not.toContain("OPENAI_API_KEY");
   });
 
   it("exports readiness markers for the dedicated rotating Codex workflow", () => {
