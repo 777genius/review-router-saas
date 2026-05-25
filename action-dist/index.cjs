@@ -32,6 +32,7 @@ var github_action_exports = {};
 __export(github_action_exports, {
   assertSupportedRunnerEnvironment: () => assertSupportedRunnerEnvironment,
   buildCodexCommand: () => buildCodexCommand,
+  deleteStaleCodexRotatingSummaryComments: () => deleteStaleCodexRotatingSummaryComments,
   postPullRequestComment: () => postPullRequestComment,
   readActionAuthJson: () => readActionAuthJson,
   readActionInputs: () => readActionInputs,
@@ -18335,6 +18336,13 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           }
         });
         mask(io, commentToken.token);
+        await deleteStaleCodexRotatingSummaryComments({
+          fetchImpl,
+          token: commentToken.token,
+          owner: event.owner,
+          repo: event.repo,
+          issueNumber: event.number
+        });
         const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
         try {
           await fullReviewRuntimeRunner({
@@ -19098,6 +19106,47 @@ async function postPullRequestComment(input) {
     throw new Error("github_comment_post_failed");
   }
 }
+async function deleteStaleCodexRotatingSummaryComments(input) {
+  const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
+  const commentsResponse = await input.fetchImpl(
+    `${commentsUrl}?per_page=100`,
+    {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${input.token}`,
+        "x-github-api-version": "2022-11-28"
+      }
+    }
+  );
+  if (!commentsResponse.ok) {
+    throw new Error("github_stale_comment_lookup_failed");
+  }
+  const comments = await commentsResponse.json();
+  if (!Array.isArray(comments)) {
+    throw new Error("github_stale_comment_lookup_invalid");
+  }
+  const staleComments = comments.filter(
+    (comment) => typeof comment === "object" && comment !== null && typeof comment.id === "number" && typeof comment.body === "string" && comment.body.startsWith(
+      "<!-- reviewrouter:codex-oauth-rotating"
+    )
+  );
+  for (const comment of staleComments) {
+    const deleteResponse = await input.fetchImpl(
+      `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/comments/${comment.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${input.token}`,
+          "x-github-api-version": "2022-11-28"
+        }
+      }
+    );
+    if (!deleteResponse.ok) {
+      throw new Error("github_stale_comment_delete_failed");
+    }
+  }
+}
 function buildCodexChildEnv(sourceEnv, home, codexHome) {
   return {
     ...pruneCodexRotatingChildEnv(sourceEnv),
@@ -19309,6 +19358,7 @@ if (process.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1" || process.env.G
 0 && (module.exports = {
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
+  deleteStaleCodexRotatingSummaryComments,
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,

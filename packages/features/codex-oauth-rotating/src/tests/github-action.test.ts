@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
+  deleteStaleCodexRotatingSummaryComments,
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,
@@ -522,6 +523,48 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(bodies[0]).toContain("New review");
   });
 
+  it("deletes stale static rotating summary comments before full runtime review", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      methods.push(`${init?.method ?? "GET"} ${href}`);
+      if (href.endsWith("/issues/118/comments?per_page=100")) {
+        return jsonResponse([
+          {
+            id: 123,
+            body: "<!-- reviewrouter:codex-oauth-rotating head=0123456789abcdef0123456789abcdef01234567 -->\nOld static review",
+          },
+          {
+            id: 456,
+            body: "# ReviewRouter\n\nCurrent full runtime summary",
+          },
+        ]);
+      }
+      if (href.endsWith("/issues/comments/123")) {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+
+    await deleteStaleCodexRotatingSummaryComments({
+      fetchImpl,
+      token: "ghs_comment_token",
+      owner: "777genius",
+      repo: "agent-teams-ai",
+      issueNumber: 118,
+    });
+
+    expect(methods).toContain(
+      "GET https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100",
+    );
+    expect(methods).toContain(
+      "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/123",
+    );
+    expect(methods).not.toContain(
+      "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/456",
+    );
+  });
+
   it("runs the local action E2E without sending plaintext auth to SaaS or child runtime env", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-e2e-"));
     const binDir = join(tempDir, "bin");
@@ -740,6 +783,23 @@ describe("Codex rotating GitHub Action runtime", () => {
           repository: "777genius/agent-teams-ai",
         });
       }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100"
+      ) {
+        return jsonResponse([
+          {
+            id: 123,
+            body: "<!-- reviewrouter:codex-oauth-rotating head=old -->\nOld static review",
+          },
+        ]);
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/123"
+      ) {
+        return new Response(null, { status: 204 });
+      }
       throw new Error(`unexpected_fetch:${href}`);
     }) as unknown as typeof fetch;
 
@@ -787,8 +847,15 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(serializedRequests).not.toContain("initial-refresh-token");
       expect(serializedRequests).not.toContain("refreshed-refresh-token");
       expect(
-        invokedUrls.some((url) => url.includes("/issues/118/comments")),
+        invokedUrls.some(
+          (url) =>
+            url ===
+            "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments",
+        ),
       ).toBe(false);
+      expect(invokedUrls).toContain(
+        "https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/123",
+      );
       const reviewEnv = JSON.parse(
         readFileSync(codexReviewEnvLog, "utf8"),
       ) as Record<string, unknown>;

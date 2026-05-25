@@ -324,6 +324,13 @@ export async function runCodexRotatingGitHubAction(
           },
         });
         mask(io, commentToken.token);
+        await deleteStaleCodexRotatingSummaryComments({
+          fetchImpl,
+          token: commentToken.token,
+          owner: event.owner,
+          repo: event.repo,
+          issueNumber: event.number,
+        });
 
         const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
         try {
@@ -1371,6 +1378,59 @@ export async function postPullRequestComment(input: {
   });
   if (!createResponse.ok) {
     throw new Error("github_comment_post_failed");
+  }
+}
+
+export async function deleteStaleCodexRotatingSummaryComments(input: {
+  readonly fetchImpl: FetchLike;
+  readonly token: string;
+  readonly owner: string;
+  readonly repo: string;
+  readonly issueNumber: number;
+}): Promise<void> {
+  const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
+  const commentsResponse = await input.fetchImpl(
+    `${commentsUrl}?per_page=100`,
+    {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${input.token}`,
+        "x-github-api-version": "2022-11-28",
+      },
+    },
+  );
+  if (!commentsResponse.ok) {
+    throw new Error("github_stale_comment_lookup_failed");
+  }
+  const comments = (await commentsResponse.json()) as unknown;
+  if (!Array.isArray(comments)) {
+    throw new Error("github_stale_comment_lookup_invalid");
+  }
+  const staleComments = comments.filter(
+    (comment): comment is GitHubIssueCommentResponse =>
+      typeof comment === "object" &&
+      comment !== null &&
+      typeof (comment as GitHubIssueCommentResponse).id === "number" &&
+      typeof (comment as GitHubIssueCommentResponse).body === "string" &&
+      (comment as GitHubIssueCommentResponse).body!.startsWith(
+        "<!-- reviewrouter:codex-oauth-rotating",
+      ),
+  );
+  for (const comment of staleComments) {
+    const deleteResponse = await input.fetchImpl(
+      `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/comments/${comment.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${input.token}`,
+          "x-github-api-version": "2022-11-28",
+        },
+      },
+    );
+    if (!deleteResponse.ok) {
+      throw new Error("github_stale_comment_delete_failed");
+    }
   }
 }
 
