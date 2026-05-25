@@ -30,7 +30,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       "utf8",
     );
 
-    expect(actionYml).toContain("using: node20");
+    expect(actionYml).toContain("using: node24");
     expect(actionYml).toContain("main: action-dist/index.cjs");
     expect(actionSource).toContain('process.env.GITHUB_ACTIONS === "true"');
     expect(actionSource).not.toContain("process.env.GITHUB_ACTION_PATH");

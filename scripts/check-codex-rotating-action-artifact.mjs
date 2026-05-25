@@ -49,7 +49,7 @@ const requireBinary =
 const actionYml = readFileSync(actionYmlPath, "utf8");
 const bundle = readFileSync(bundlePath, "utf8");
 
-assertIncludes(actionYml, "using: node20", "action.yml must use node20");
+assertIncludes(actionYml, "using: node24", "action.yml must use node24");
 assertIncludes(
   actionYml,
   "main: action-dist/index.cjs",
