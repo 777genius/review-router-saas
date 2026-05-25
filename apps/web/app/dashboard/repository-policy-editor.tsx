@@ -347,7 +347,9 @@ function ProviderSecretNotice({
             : "is available to this repository from organization GitHub Actions secrets."}
         </p>
         <p className="mt-1 text-emerald-100/85">
-          {metadata.label} can use this secret in CI.
+          {authMode === "codex_subscription_oauth_rotating"
+            ? "GitHub-hosted ReviewRouter runs refresh this Codex session before review and write the rotated secret back automatically."
+            : `${metadata.label} can use this secret in CI.`}
         </p>
         {sharedProviderCopy ? (
           <p className="mt-1 text-emerald-100/75">{sharedProviderCopy}</p>

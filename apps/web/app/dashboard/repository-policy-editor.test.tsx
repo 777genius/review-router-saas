@@ -262,6 +262,34 @@ describe("ReviewConfigForm", () => {
     expect(screen.queryByText(/OpenRouter requires/i)).toBeNull();
   });
 
+  it("explains that Codex rotating secrets are refreshed and written back by CI", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "available_repository",
+    });
+
+    renderReviewConfigForm({
+      config: codexReviewConfiguration("codex_subscription_oauth_rotating"),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      const status = screen.getByRole("status");
+      expect(status.textContent).toContain(
+        "REVIEWROUTER_CODEX_AUTH_JSON is set in this repository's GitHub Actions secrets",
+      );
+      expect(status.textContent).toContain(
+        "GitHub-hosted ReviewRouter runs refresh this Codex session before review and write the rotated secret back automatically",
+      );
+      expect(status.textContent).not.toContain(
+        "Codex OAuth with refresh can use this secret in CI",
+      );
+    });
+  });
+
   it.each(["codex_subscription_oauth", "codex_openai_api_key"] as const)(
     "migrates legacy Codex auth mode %s to rotating OAuth in the form",
     async (authMode) => {
@@ -635,7 +663,10 @@ function duplicateOpenRouterReviewConfiguration(): ReviewConfiguration {
 }
 
 function codexReviewConfiguration(
-  authMode: "codex_subscription_oauth" | "codex_openai_api_key",
+  authMode:
+    | "codex_subscription_oauth"
+    | "codex_subscription_oauth_rotating"
+    | "codex_openai_api_key",
 ): ReviewConfiguration {
   const codexProvider: ReviewProviderConfiguration = {
     kind: "codex",
