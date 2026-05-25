@@ -3161,7 +3161,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
             })));
           }
         }
-
+        
         if (${id}.value === undefined) {
           if (${k2} in input) {
             newResult[${k2}] = undefined;
@@ -3169,7 +3169,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         } else {
           newResult[${k2}] = ${id}.value;
         }
-
+        
       `);
       } else if (!isOptionalIn) {
         doc.write(`
@@ -3206,7 +3206,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
             path: iss.path ? [${k2}, ...iss.path] : [${k2}]
           })));
         }
-
+        
         if (${id}.value === undefined) {
           if (${k2} in input) {
             newResult[${k2}] = undefined;
@@ -3214,7 +3214,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         } else {
           newResult[${k2}] = ${id}.value;
         }
-
+        
       `);
       }
     }
@@ -18191,7 +18191,6 @@ var bundledCodexVersion = "0.125.0";
 var bundledCodexPackageName = ["@openai", "codex"].join("/");
 var bundledCodexArchiveName = "codex-linux-x64.tgz";
 var bundledCodexBinaryPathInArchive = "package/vendor/x86_64-unknown-linux-musl/codex/codex";
-var maxDiffBytes = 18e4;
 var maxCommentBytes = 6e4;
 var maxCapturedProcessOutputBytes = 256e3;
 var maxProxyRequestBodyBytes = 2e6;
@@ -18205,6 +18204,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   const env = runtime.env ?? process.env;
   const io = runtime.io ?? { stdout: process.stdout, stderr: process.stderr };
   const fetchImpl = runtime.fetchImpl ?? fetch;
+  const fullReviewRuntimeRunner = runtime.fullReviewRuntimeRunner ?? runFullReviewRouterRuntime;
   const inputs = readActionInputs(env);
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
@@ -18216,8 +18216,8 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
     fetchImpl,
     audience: defaultOidcAudience
   });
-  clearOidcRequestEnv(env);
   mask(io, oidcToken);
+  clearOidcRequestEnv(env);
   const prelease = await postJson({
     fetchImpl,
     url: `${inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
@@ -18273,7 +18273,6 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
     try {
       const tempHome = await makeTempDirectory("reviewrouter-home-");
       const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
-      let reviewBody = "";
       try {
         await writeCodexAuthSnapshot(tempCodexHome, authJson);
         await runCodexBootstrap({
@@ -18326,16 +18325,29 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           event,
           checkoutToken: checkout.token
         });
+        const commentToken = await postJson({
+          fetchImpl,
+          url: `${inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+          body: {
+            leaseId: prelease.leaseId,
+            providerInstanceId: inputs.providerInstanceId,
+            authCleared: true
+          }
+        });
+        mask(io, commentToken.token);
         const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
         try {
-          reviewBody = await runStaticCodexReview({
+          await fullReviewRuntimeRunner({
             inputs,
             codexBinaryPath,
             env,
             workspace,
             tempHome: reviewHome,
             tempCodexHome,
-            event
+            event,
+            commentToken: commentToken.token,
+            runtimeConfigVersion: finalize2.runtimeConfigVersion,
+            runtimeEnv: finalize2.runtimeEnv
           });
         } finally {
           await removeTree(reviewHome);
@@ -18345,35 +18357,13 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
         await removeTree(tempCodexHome);
         await removeTree(tempHome);
       }
-      const commentMarker = buildReviewCommentMarker(event.headSha);
-      const comment = sanitizeReviewComment(reviewBody, {
-        marker: commentMarker
-      });
-      const commentToken = await postJson({
-        fetchImpl,
-        url: `${inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
-        body: {
-          leaseId: prelease.leaseId,
-          providerInstanceId: inputs.providerInstanceId,
-          authCleared: true
-        }
-      });
-      mask(io, commentToken.token);
-      await postPullRequestComment({
-        fetchImpl,
-        token: commentToken.token,
-        owner: event.owner,
-        repo: event.repo,
-        issueNumber: event.number,
-        marker: commentMarker,
-        body: comment
-      });
       notice(io, "ReviewRouter Codex OAuth review completed.");
     } finally {
       await removeTree(workspace);
     }
   } finally {
     clearActionAuthEnv(env);
+    clearOidcRequestEnv(env);
   }
 }
 function readActionInputs(env) {
@@ -18977,53 +18967,81 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input) {
     throw new Error("checkout_persisted_credentials_detected");
   }
 }
-async function runStaticCodexReview(input) {
-  const diff = await runCapture({
-    command: "git",
-    args: [
-      "diff",
-      "--no-ext-diff",
-      "--unified=80",
-      input.event.baseSha,
-      input.event.headSha
-    ],
-    cwd: input.workspace,
-    env: buildCodexChildEnv(input.env, input.tempHome, input.tempCodexHome),
-    timeoutMs: 6e4
-  });
-  const reviewOutputFile = (0, import_node_path.join)(input.workspace, ".reviewrouter-review.md");
-  const command = buildCodexCommand({
-    codexBinaryPath: input.codexBinaryPath,
-    mode: "review",
-    cwd: input.workspace,
-    outputFile: reviewOutputFile
-  });
+async function runFullReviewRouterRuntime(input) {
+  const actionPath = resolveGitHubActionPath(input.env);
+  const runtimePath = (0, import_node_path.join)(actionPath, "dist", "index.js");
+  await (0, import_promises.access)(runtimePath, import_node_fs.constants.R_OK);
+  const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
+    await (0, import_promises.symlink)(input.codexBinaryPath, (0, import_node_path.join)(codexBinDir, "codex"));
     await runProcess({
-      ...command,
-      stdin: buildReviewPrompt(limitUtf8(diff.stdout, maxDiffBytes)),
-      env: buildReviewCodexChildEnv(
-        input.env,
-        input.tempHome,
-        input.tempCodexHome
-      ),
-      timeoutMs: 20 * 60 * 1e3
+      command: process.execPath,
+      args: [runtimePath],
+      cwd: input.workspace,
+      env: buildFullReviewRuntimeEnv({
+        sourceEnv: input.env,
+        inputs: input.inputs,
+        event: input.event,
+        tempHome: input.tempHome,
+        tempCodexHome: input.tempCodexHome,
+        codexBinDir,
+        commentToken: input.commentToken,
+        runtimeConfigVersion: input.runtimeConfigVersion,
+        runtimeEnv: input.runtimeEnv
+      }),
+      timeoutMs: 30 * 60 * 1e3
     });
   } catch (error51) {
-    const partialReview = await readReviewOutputIfPresent(reviewOutputFile);
-    if (partialReview.trim().length > 0) {
-      return partialReview;
-    }
     throw classifyPostWritebackCodexFailure(error51);
+  } finally {
+    await removeTree(codexBinDir);
   }
-  return (0, import_promises.readFile)(reviewOutputFile, "utf8");
 }
-async function readReviewOutputIfPresent(path) {
-  try {
-    return await (0, import_promises.readFile)(path, "utf8");
-  } catch {
-    return "";
+function buildFullReviewRuntimeEnv(input) {
+  const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
+  const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
+  const reviewAuthMode = runtimeEnv.REVIEW_AUTH_MODE === codexRotatingRuntimeAuthMode ? "codex-oauth" : runtimeEnv.REVIEW_AUTH_MODE ?? "codex-oauth";
+  return {
+    ...inherited,
+    ...runtimeEnv,
+    HOME: input.tempHome,
+    CODEX_HOME: input.tempCodexHome,
+    CI: "true",
+    PATH: `${input.codexBinDir}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
+    GITHUB_TOKEN: input.commentToken,
+    PR_NUMBER: String(input.event.number),
+    REVIEW_AUTH_MODE: reviewAuthMode,
+    REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
+    REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
+    REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
+    REVIEWROUTER_API_URL: input.inputs.apiUrl,
+    REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion)
+  };
+}
+function normalizeFullReviewRuntimeEnv(runtimeEnv) {
+  const normalized = {};
+  for (const [key, value] of Object.entries(runtimeEnv)) {
+    if (!isSafeFullReviewRuntimeEnvKey(key)) {
+      throw new Error(`unsafe_runtime_env_key:${safeEnvKeyLabel(key)}`);
+    }
+    if (typeof value !== "string") {
+      throw new Error(`unsafe_runtime_env_value:${safeEnvKeyLabel(key)}`);
+    }
+    normalized[key] = value;
   }
+  return normalized;
+}
+function isSafeFullReviewRuntimeEnvKey(key) {
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+    return false;
+  }
+  if (key === "TARGET_TOKENS_PER_BATCH") {
+    return true;
+  }
+  return !/(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)/.test(key);
+}
+function safeEnvKeyLabel(key) {
+  return /^[A-Z_][A-Z0-9_]{0,80}$/.test(key) ? key : "<invalid-env-key>";
 }
 async function postPullRequestComment(input) {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
@@ -19080,35 +19098,9 @@ async function postPullRequestComment(input) {
     throw new Error("github_comment_post_failed");
   }
 }
-function buildReviewCommentMarker(headSha) {
-  if (!/^[a-f0-9]{40}$/i.test(headSha)) {
-    throw new Error("invalid_review_comment_head_sha");
-  }
-  return `<!-- reviewrouter:codex-oauth-rotating head=${headSha.toLowerCase()} -->`;
-}
-function buildReviewPrompt(diff) {
-  return [
-    "You are ReviewRouter running an advisory private-beta Codex OAuth review.",
-    "Review only the diff below. Do not run tests, install packages, modify files, browse the web, or use network tools.",
-    "Return a concise Markdown PR comment with concrete bugs and risks. If there are no issues, say that no blocking issues were found.",
-    "Do not include secrets, tokens, raw auth JSON, or hidden environment values.",
-    "",
-    "```diff",
-    diff,
-    "```"
-  ].join("\n");
-}
 function buildCodexChildEnv(sourceEnv, home, codexHome) {
   return {
     ...pruneCodexRotatingChildEnv(sourceEnv),
-    HOME: home,
-    CODEX_HOME: codexHome,
-    CI: "true"
-  };
-}
-function buildReviewCodexChildEnv(sourceEnv, home, codexHome) {
-  return {
-    PATH: sourceEnv.PATH ?? process.env.PATH ?? "",
     HOME: home,
     CODEX_HOME: codexHome,
     CI: "true"
@@ -19231,36 +19223,6 @@ async function removeTree(path) {
     force: true,
     maxRetries: 5,
     retryDelay: 250
-  });
-}
-function runCapture(input) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    const child = (0, import_node_child_process.spawn)(input.command, input.args, {
-      cwd: input.cwd,
-      env: input.env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("process_timeout"));
-    }, input.timeoutMs);
-    child.stdout.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-    child.stderr.on("data", () => void 0);
-    child.on("error", (error51) => {
-      clearTimeout(timer);
-      reject(error51);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve({ stdout: Buffer.concat(chunks).toString("utf8") });
-      } else {
-        reject(
-          new Error(`process_failed:${input.command}:${code ?? "signal"}`)
-        );
-      }
-    });
   });
 }
 async function makeTempDirectory(prefix) {

@@ -14,6 +14,7 @@ import {
   realpath,
   stat,
   statfs,
+  symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +61,7 @@ type ActionRuntime = {
   readonly fetchImpl: FetchLike;
   readonly io: ActionIO;
   readonly localProviderProxyFactory: LocalProviderProxyFactory;
+  readonly fullReviewRuntimeRunner: FullReviewRuntimeRunner;
 };
 
 type ActionInputs = {
@@ -90,6 +92,8 @@ type FinalizeResponse =
       readonly repositoryOwner: string;
       readonly repositoryName: string;
       readonly publicKeyReadToken: string;
+      readonly runtimeConfigVersion: number;
+      readonly runtimeEnv: Record<string, string>;
     }
   | {
       readonly status: "stale_queued_secret";
@@ -136,6 +140,19 @@ type LocalProviderProxyFactory = (input: {
   readonly upstreamResponsesUrl: string;
 }) => Promise<LocalProviderProxy>;
 
+type FullReviewRuntimeRunner = (input: {
+  readonly inputs: ActionInputs;
+  readonly codexBinaryPath: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly workspace: string;
+  readonly tempHome: string;
+  readonly tempCodexHome: string;
+  readonly event: PullRequestEvent;
+  readonly commentToken: string;
+  readonly runtimeConfigVersion: number;
+  readonly runtimeEnv: Record<string, string>;
+}) => Promise<void>;
+
 type CodexBinaryManifest = {
   readonly protocolVersion: 1;
   readonly packageName: string;
@@ -161,6 +178,8 @@ export async function runCodexRotatingGitHubAction(
   const env = runtime.env ?? process.env;
   const io = runtime.io ?? { stdout: process.stdout, stderr: process.stderr };
   const fetchImpl = runtime.fetchImpl ?? fetch;
+  const fullReviewRuntimeRunner =
+    runtime.fullReviewRuntimeRunner ?? runFullReviewRouterRuntime;
   const inputs = readActionInputs(env);
 
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
@@ -174,8 +193,8 @@ export async function runCodexRotatingGitHubAction(
     fetchImpl,
     audience: defaultOidcAudience,
   });
-  clearOidcRequestEnv(env);
   mask(io, oidcToken);
+  clearOidcRequestEnv(env);
 
   const prelease = await postJson<PreleaseResponse>({
     fetchImpl,
@@ -238,7 +257,6 @@ export async function runCodexRotatingGitHubAction(
     try {
       const tempHome = await makeTempDirectory("reviewrouter-home-");
       const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
-      let reviewBody = "";
       try {
         await writeCodexAuthSnapshot(tempCodexHome, authJson);
         await runCodexBootstrap({
@@ -296,9 +314,20 @@ export async function runCodexRotatingGitHubAction(
           checkoutToken: checkout.token,
         });
 
+        const commentToken = await postJson<CommentTokenResponse>({
+          fetchImpl,
+          url: `${inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+          body: {
+            leaseId: prelease.leaseId,
+            providerInstanceId: inputs.providerInstanceId,
+            authCleared: true,
+          },
+        });
+        mask(io, commentToken.token);
+
         const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
         try {
-          reviewBody = await runStaticCodexReview({
+          await fullReviewRuntimeRunner({
             inputs,
             codexBinaryPath,
             env,
@@ -306,6 +335,9 @@ export async function runCodexRotatingGitHubAction(
             tempHome: reviewHome,
             tempCodexHome,
             event,
+            commentToken: commentToken.token,
+            runtimeConfigVersion: finalize.runtimeConfigVersion,
+            runtimeEnv: finalize.runtimeEnv,
           });
         } finally {
           await removeTree(reviewHome);
@@ -315,36 +347,13 @@ export async function runCodexRotatingGitHubAction(
         await removeTree(tempCodexHome);
         await removeTree(tempHome);
       }
-
-      const commentMarker = buildReviewCommentMarker(event.headSha);
-      const comment = sanitizeReviewComment(reviewBody, {
-        marker: commentMarker,
-      });
-      const commentToken = await postJson<CommentTokenResponse>({
-        fetchImpl,
-        url: `${inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
-        body: {
-          leaseId: prelease.leaseId,
-          providerInstanceId: inputs.providerInstanceId,
-          authCleared: true,
-        },
-      });
-      mask(io, commentToken.token);
-      await postPullRequestComment({
-        fetchImpl,
-        token: commentToken.token,
-        owner: event.owner,
-        repo: event.repo,
-        issueNumber: event.number,
-        marker: commentMarker,
-        body: comment,
-      });
       notice(io, "ReviewRouter Codex OAuth review completed.");
     } finally {
       await removeTree(workspace);
     }
   } finally {
     clearActionAuthEnv(env);
+    clearOidcRequestEnv(env);
   }
 }
 
@@ -1127,6 +1136,114 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input: {
   ) {
     throw new Error("checkout_persisted_credentials_detected");
   }
+}
+
+async function runFullReviewRouterRuntime(input: {
+  readonly inputs: ActionInputs;
+  readonly codexBinaryPath: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly workspace: string;
+  readonly tempHome: string;
+  readonly tempCodexHome: string;
+  readonly event: PullRequestEvent;
+  readonly commentToken: string;
+  readonly runtimeConfigVersion: number;
+  readonly runtimeEnv: Record<string, string>;
+}): Promise<void> {
+  const actionPath = resolveGitHubActionPath(input.env);
+  const runtimePath = join(actionPath, "dist", "index.js");
+  await access(runtimePath, fsConstants.R_OK);
+
+  const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
+  try {
+    await symlink(input.codexBinaryPath, join(codexBinDir, "codex"));
+    await runProcess({
+      command: process.execPath,
+      args: [runtimePath],
+      cwd: input.workspace,
+      env: buildFullReviewRuntimeEnv({
+        sourceEnv: input.env,
+        inputs: input.inputs,
+        event: input.event,
+        tempHome: input.tempHome,
+        tempCodexHome: input.tempCodexHome,
+        codexBinDir,
+        commentToken: input.commentToken,
+        runtimeConfigVersion: input.runtimeConfigVersion,
+        runtimeEnv: input.runtimeEnv,
+      }),
+      timeoutMs: 30 * 60 * 1000,
+    });
+  } catch (error) {
+    throw classifyPostWritebackCodexFailure(error);
+  } finally {
+    await removeTree(codexBinDir);
+  }
+}
+
+function buildFullReviewRuntimeEnv(input: {
+  readonly sourceEnv: NodeJS.ProcessEnv;
+  readonly inputs: ActionInputs;
+  readonly event: PullRequestEvent;
+  readonly tempHome: string;
+  readonly tempCodexHome: string;
+  readonly codexBinDir: string;
+  readonly commentToken: string;
+  readonly runtimeConfigVersion: number;
+  readonly runtimeEnv: Record<string, string>;
+}): Record<string, string> {
+  const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
+  const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
+  const reviewAuthMode =
+    runtimeEnv.REVIEW_AUTH_MODE === codexRotatingRuntimeAuthMode
+      ? "codex-oauth"
+      : (runtimeEnv.REVIEW_AUTH_MODE ?? "codex-oauth");
+  return {
+    ...inherited,
+    ...runtimeEnv,
+    HOME: input.tempHome,
+    CODEX_HOME: input.tempCodexHome,
+    CI: "true",
+    PATH: `${input.codexBinDir}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
+    GITHUB_TOKEN: input.commentToken,
+    PR_NUMBER: String(input.event.number),
+    REVIEW_AUTH_MODE: reviewAuthMode,
+    REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
+    REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
+    REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
+    REVIEWROUTER_API_URL: input.inputs.apiUrl,
+    REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
+  };
+}
+
+function normalizeFullReviewRuntimeEnv(
+  runtimeEnv: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(runtimeEnv)) {
+    if (!isSafeFullReviewRuntimeEnvKey(key)) {
+      throw new Error(`unsafe_runtime_env_key:${safeEnvKeyLabel(key)}`);
+    }
+    if (typeof value !== "string") {
+      throw new Error(`unsafe_runtime_env_value:${safeEnvKeyLabel(key)}`);
+    }
+    normalized[key] = value;
+  }
+  return normalized;
+}
+
+function isSafeFullReviewRuntimeEnvKey(key: string): boolean {
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+    return false;
+  }
+  if (key === "TARGET_TOKENS_PER_BATCH") {
+    return true;
+  }
+  return !/(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)/.test(key);
+}
+
+function safeEnvKeyLabel(key: string): string {
+  return /^[A-Z_][A-Z0-9_]{0,80}$/.test(key) ? key : "<invalid-env-key>";
 }
 
 async function runStaticCodexReview(input: {

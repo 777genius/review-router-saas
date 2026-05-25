@@ -162,6 +162,10 @@ describe("Codex rotating OAuth action control plane", () => {
       repositoryOwner: "777genius",
       repositoryName: "agent-teams-ai",
       publicKeyReadToken: "ghs_public_key_read_token",
+      runtimeConfigVersion: 1,
+      runtimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth-rotating",
+      },
     });
 
     await expect(

@@ -522,7 +522,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(bodies[0]).toContain("New review");
   });
 
-  it("runs the local action E2E without sending plaintext auth to SaaS or GitHub comments", async () => {
+  it("runs the local action E2E without sending plaintext auth to SaaS or child runtime env", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-e2e-"));
     const binDir = join(tempDir, "bin");
     const eventPath = join(tempDir, "event.json");
@@ -534,10 +534,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       "codex",
     );
     const fakeGit = join(binDir, "git");
+    const fakeFullRuntime = join(tempDir, "dist", "index.js");
     const gitEnvLog = join(tempDir, "git-env.log");
     const codexReviewEnvLog = join(tempDir, "codex-review-env.log");
-    const commentBodies: string[] = [];
     const requestBodies: string[] = [];
+    const invokedUrls: string[] = [];
     const refreshedAuthJson = JSON.stringify({
       auth_mode: "chatgpt",
       tokens: {
@@ -550,6 +551,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     await mkdir(join(tempDir, "action-dist", "codex", "linux-x64"), {
       recursive: true,
     });
+    await mkdir(join(tempDir, "dist"), { recursive: true });
     await writeFile(
       eventPath,
       JSON.stringify({
@@ -636,11 +638,45 @@ describe("Codex rotating GitHub Action runtime", () => {
       ].join("\n"),
       { mode: 0o700 },
     );
+    await writeFile(
+      fakeFullRuntime,
+      [
+        "#!/usr/bin/env node",
+        "const { existsSync, readFileSync, writeFileSync } = require('node:fs');",
+        "const { join } = require('node:path');",
+        "const codexBin = join((process.env.PATH || '').split(':')[0] || '', 'codex');",
+        "const configPath = join(process.env.CODEX_HOME, 'config.toml');",
+        "const config = readFileSync(configPath, 'utf8');",
+        `writeFileSync(${JSON.stringify(codexReviewEnvLog)}, JSON.stringify({`,
+        "  codexHome: process.env.CODEX_HOME,",
+        "  home: process.env.HOME,",
+        "  authExists: existsSync(join(process.env.CODEX_HOME, 'auth.json')),",
+        "  codexBinExists: existsSync(codexBin),",
+        "  configIncludesProxy: config.includes('model_provider = \"reviewrouter_proxy\"'),",
+        "  configIncludesApprovalNever: config.includes('approval_policy = \"never\"'),",
+        "  configIncludesReadOnly: config.includes('sandbox_mode = \"read-only\"'),",
+        "  configIncludesToken: config.includes('refreshed-access-token'),",
+        "  inheritedOpenAi: process.env.OPENAI_API_KEY,",
+        "  inheritedOidc: process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,",
+        "  githubToken: process.env.GITHUB_TOKEN,",
+        "  prNumber: process.env.PR_NUMBER,",
+        "  reviewAuthMode: process.env.REVIEW_AUTH_MODE,",
+        "  providers: process.env.REVIEW_PROVIDERS,",
+        "  runtimeMode: process.env.REVIEWROUTER_RUNTIME_CONFIG_MODE,",
+        "  commentTokenMode: process.env.REVIEWROUTER_COMMENT_TOKEN_MODE,",
+        "  runtimeConfigVersion: process.env.REVIEWROUTER_CONFIG_VERSION,",
+        "}));",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
     await chmod(fakeCodex, 0o700);
     await chmod(fakeGit, 0o700);
+    await chmod(fakeFullRuntime, 0o700);
 
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
+      invokedUrls.push(href);
       if (typeof init?.body === "string") {
         requestBodies.push(init.body);
       }
@@ -660,6 +696,21 @@ describe("Codex rotating GitHub Action runtime", () => {
           repositoryOwner: "777genius",
           repositoryName: "agent-teams-ai",
           publicKeyReadToken: "ghs_public_key_read_token",
+          runtimeConfigVersion: 7,
+          runtimeEnv: {
+            REVIEW_AUTH_MODE: "codex-oauth-rotating",
+            REVIEW_PROVIDERS: "codex/gpt-5.5",
+            REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
+            SYNTHESIS_MODEL: "codex/gpt-5.5",
+            PROVIDER_LIMIT: "1",
+            INLINE_MAX_COMMENTS: "10",
+            INLINE_MIN_AGREEMENT: "1",
+            TARGET_TOKENS_PER_BATCH: "90000",
+            FAIL_ON_SEVERITY: "critical",
+            CODEX_MODEL: "gpt-5.5",
+            CODEX_REASONING_EFFORT: "high",
+            CODEX_AGENTIC_CONTEXT: "true",
+          },
         });
       }
       if (
@@ -688,22 +739,6 @@ describe("Codex rotating GitHub Action runtime", () => {
           token: "ghs_comment_token",
           repository: "777genius/agent-teams-ai",
         });
-      }
-      if (
-        href ===
-        "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100"
-      ) {
-        return jsonResponse([]);
-      }
-      if (
-        href ===
-        "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments"
-      ) {
-        if (typeof init?.body === "string") {
-          const parsed = JSON.parse(init.body) as { readonly body: string };
-          commentBodies.push(parsed.body);
-        }
-        return jsonResponse({ id: 1 });
       }
       throw new Error(`unexpected_fetch:${href}`);
     }) as unknown as typeof fetch;
@@ -751,21 +786,29 @@ describe("Codex rotating GitHub Action runtime", () => {
       const serializedRequests = requestBodies.join("\n");
       expect(serializedRequests).not.toContain("initial-refresh-token");
       expect(serializedRequests).not.toContain("refreshed-refresh-token");
-      expect(commentBodies).toHaveLength(1);
-      expect(commentBodies[0]).toContain("reviewrouter:codex-oauth-rotating");
-      expect(commentBodies[0]).toContain("access_token: [redacted]");
-      expect(commentBodies[0]).not.toContain("should-be-redacted");
+      expect(
+        invokedUrls.some((url) => url.includes("/issues/118/comments")),
+      ).toBe(false);
       const reviewEnv = JSON.parse(
         readFileSync(codexReviewEnvLog, "utf8"),
       ) as Record<string, unknown>;
       expect(reviewEnv).toMatchObject({
         authExists: true,
+        codexBinExists: true,
         configIncludesProxy: false,
         configIncludesApprovalNever: true,
         configIncludesReadOnly: true,
         configIncludesToken: false,
+        githubToken: "ghs_comment_token",
+        prNumber: "118",
+        reviewAuthMode: "codex-oauth",
+        providers: "codex/gpt-5.5",
+        runtimeMode: "static",
+        commentTokenMode: "github-token",
+        runtimeConfigVersion: "7",
       });
       expect(reviewEnv.inheritedOpenAi).toBeUndefined();
+      expect(reviewEnv.inheritedOidc).toBeUndefined();
       const gitEnvEntries = readFileSync(gitEnvLog, "utf8")
         .trim()
         .split("\n")
