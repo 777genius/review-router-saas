@@ -100,9 +100,21 @@ assert(
 );
 assert(
   demo.executionModel?.controlPlaneDoesNotStore?.includes(
-    "Codex OAuth auth.json",
+    "Codex OAuth rotating auth.json",
   ),
   "demo must state Codex OAuth auth is not stored",
+);
+assert(
+  demo.defaultReviewRuntime?.provider === "codex_oauth_rotating",
+  "demo default provider must be Codex OAuth rotating",
+);
+assert(
+  demo.providers?.some((provider) => provider.id === "codex_oauth_rotating"),
+  "demo must list Codex OAuth rotating provider support",
+);
+assert(
+  !demo.providers?.some((provider) => provider.id === "codex_api_key"),
+  "demo must not list legacy Codex API-key provider support",
 );
 assert(
   demo.executionModel?.controlPlaneDoesNotStore?.includes(
