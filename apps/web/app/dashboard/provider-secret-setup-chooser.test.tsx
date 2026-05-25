@@ -130,6 +130,7 @@ describe("ProviderSecretSetupChooser", () => {
     );
 
     renderProviderSecretSetupChooser({ organizationLogin: "agent-teams-ai" });
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
 
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
 
@@ -147,19 +148,20 @@ describe("ProviderSecretSetupChooser", () => {
 
   it("lets users choose private or all organization secret commands", () => {
     renderProviderSecretSetupChooser({ organizationLogin: "agent-teams-ai" });
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
 
     fireEvent.click(
       screen.getByTestId("provider-scope-organization_private_repositories"),
     );
     expect(pageText()).toContain(
-      "gh secret set CODEX_AUTH_JSON --org agent-teams-ai --visibility private --app actions",
+      "gh secret set OPENROUTER_API_KEY --org agent-teams-ai --visibility private --app actions",
     );
 
     fireEvent.click(
       screen.getByTestId("provider-scope-organization_all_repositories"),
     );
     expect(pageText()).toContain(
-      "gh secret set CODEX_AUTH_JSON --org agent-teams-ai --visibility all --app actions",
+      "gh secret set OPENROUTER_API_KEY --org agent-teams-ai --visibility all --app actions",
     );
   });
 
@@ -173,6 +175,7 @@ describe("ProviderSecretSetupChooser", () => {
         status: "available",
       },
     });
+    fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
 
     expect(
       (
@@ -185,7 +188,7 @@ describe("ProviderSecretSetupChooser", () => {
       screen.getByText(/do not make organization secrets available/i),
     ).toBeTruthy();
     expect(pageText()).toContain(
-      "gh secret set CODEX_AUTH_JSON --repo 777genius/plugin-kit-ai-starter-claude-python",
+      "gh secret set OPENROUTER_API_KEY --repo 777genius/plugin-kit-ai-starter-claude-python",
     );
   });
 
@@ -299,7 +302,7 @@ describe("ProviderSecretSetupChooser", () => {
 
     await screen.findByText(/Provider secret metadata was verified/i);
     expect(
-      screen.getByTestId("provider-choice-codex-oauth-confirmed"),
+      screen.getByTestId("provider-choice-codex-oauth-rotating-confirmed"),
     ).toBeTruthy();
     expect(
       screen.queryByTestId("provider-choice-openrouter-api-key-confirmed"),
@@ -307,7 +310,7 @@ describe("ProviderSecretSetupChooser", () => {
 
     fireEvent.click(screen.getByTestId("provider-choice-openrouter-api-key"));
     expect(
-      screen.getByTestId("provider-choice-codex-oauth-confirmed"),
+      screen.getByTestId("provider-choice-codex-oauth-rotating-confirmed"),
     ).toBeTruthy();
     expect(
       screen.queryByTestId("provider-choice-openrouter-api-key-confirmed"),
@@ -317,9 +320,8 @@ describe("ProviderSecretSetupChooser", () => {
   it("renders provider brand icons in the credential tabs", () => {
     renderProviderSecretSetupChooser();
 
-    expect(screen.getByTestId("provider-choice-codex-oauth-logo")).toBeTruthy();
     expect(
-      screen.getByTestId("provider-choice-codex-api-key-logo"),
+      screen.getByTestId("provider-choice-codex-oauth-rotating-logo"),
     ).toBeTruthy();
     expect(
       screen.getByTestId("provider-choice-claude-code-oauth-logo"),
@@ -333,7 +335,7 @@ describe("ProviderSecretSetupChooser", () => {
     await checkProviderSecretStatusWithCache({
       workspaceId: "workspace_1",
       repositoryId: "repo_1",
-      authMode: "codex_subscription_oauth",
+      authMode: "codex_subscription_oauth_rotating",
       formData: new FormData(),
       forceRefresh: false,
       check: vi.fn().mockResolvedValue({ status: "missing" }),
@@ -360,7 +362,7 @@ describe("ProviderSecretSetupChooser", () => {
       checkProviderSecretStatusWithCache({
         workspaceId: "workspace_1",
         repositoryId: "repo_1",
-        authMode: "codex_subscription_oauth",
+        authMode: "codex_subscription_oauth_rotating",
         formData: new FormData(),
         forceRefresh: false,
         check: refreshedCheck,
@@ -385,6 +387,46 @@ describe("ProviderSecretSetupChooser", () => {
     expect(pageText()).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(pageText()).toContain(
       "gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo 777genius/plugin-kit-ai-starter-claude-python",
+    );
+  });
+
+  it("shows one production Codex setup and hides legacy Codex credential modes", () => {
+    renderProviderSecretSetupChooser();
+
+    expect(
+      screen.getByTestId("provider-choice-codex-oauth-rotating"),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("provider-choice-codex-oauth")).toBeNull();
+    expect(screen.queryByTestId("provider-choice-codex-api-key")).toBeNull();
+    expect(pageText()).toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+    expect(pageText()).not.toContain("gh secret set CODEX_AUTH_JSON");
+    expect(pageText()).not.toContain("OPENAI_API_KEY");
+  });
+
+  it("mints rotating setup commands on demand when dashboard guidance has no serialized command", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      setupCommandResponse({
+        command: "set -euo pipefail\n# server nonce command",
+        expiresAt: "2026-05-25T12:15:00.000Z",
+        providerInstanceId: "codex-rotating:123456",
+        secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderProviderSecretSetupChooser({
+      codexOAuthRotatingGuidance: {
+        provider: "codex_oauth_rotating",
+        recommendedScope: "repository",
+        commands: [],
+        warnings: [],
+      },
+    });
+
+    expect(await screen.findByText(/server nonce command/i)).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard/codex-rotating/setup-command",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 });
@@ -436,6 +478,8 @@ function renderProviderSecretSetupChooser(input?: {
   readonly organizationLogin?: string | null;
   readonly repositoryVisibility?: string;
   readonly organizationSecretPolicy?: OrganizationSecretPolicy | null;
+  readonly codexOAuthRotatingGuidance?: ProviderSecretSetupGuidance;
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
 }): void {
   const organizationLogin = input?.organizationLogin ?? null;
@@ -447,6 +491,10 @@ function renderProviderSecretSetupChooser(input?: {
       repositoryVisibility={input?.repositoryVisibility ?? "public"}
       organizationLogin={organizationLogin}
       organizationSecretPolicy={input?.organizationSecretPolicy ?? null}
+      codexOAuthRotatingGuidance={
+        input?.codexOAuthRotatingGuidance ??
+        guidance("REVIEWROUTER_CODEX_AUTH_JSON", null)
+      }
       codexOAuthGuidance={guidance("CODEX_AUTH_JSON", organizationLogin)}
       codexApiKeyGuidance={guidance("OPENAI_API_KEY", organizationLogin)}
       claudeCodeOAuthGuidance={guidance(
@@ -457,6 +505,7 @@ function renderProviderSecretSetupChooser(input?: {
         "OPENROUTER_API_KEY",
         organizationLogin,
       )}
+      codexRotatingOAuthEnabled={input?.codexRotatingOAuthEnabled ?? true}
       claudeCodeProviderEnabled={input?.claudeCodeProviderEnabled ?? true}
     />,
   );
@@ -472,6 +521,7 @@ function renderProviderSecretSetupDialog(): void {
       organizationLogin={null}
       organizationSecretPolicy={null}
       guidanceSet={{
+        codexOAuthRotating: guidance("REVIEWROUTER_CODEX_AUTH_JSON"),
         codexOAuth: guidance("CODEX_AUTH_JSON"),
         codexApiKey: guidance("OPENAI_API_KEY"),
         claudeCodeOAuth: guidance("CLAUDE_CODE_OAUTH_TOKEN"),
@@ -490,6 +540,18 @@ function mockProviderSetupFetch(): ReturnType<typeof vi.fn> {
 
 function providerSetupResponse(body: {
   readonly params: Record<string, string>;
+}): Response {
+  return {
+    ok: true,
+    json: async () => body,
+  } as Response;
+}
+
+function setupCommandResponse(body: {
+  readonly command: string;
+  readonly expiresAt: string;
+  readonly providerInstanceId: string;
+  readonly secretNames: readonly string[];
 }): Response {
   return {
     ok: true,
@@ -518,13 +580,15 @@ function guidance(
 
   return {
     provider:
-      secretName === "CODEX_AUTH_JSON"
-        ? "codex_oauth"
-        : secretName === "OPENAI_API_KEY"
-          ? "openai_api_key"
-          : secretName === "CLAUDE_CODE_OAUTH_TOKEN"
-            ? "claude_code_oauth"
-            : "openrouter_api_key",
+      secretName === "REVIEWROUTER_CODEX_AUTH_JSON"
+        ? "codex_oauth_rotating"
+        : secretName === "CODEX_AUTH_JSON"
+          ? "codex_oauth"
+          : secretName === "OPENAI_API_KEY"
+            ? "openai_api_key"
+            : secretName === "CLAUDE_CODE_OAUTH_TOKEN"
+              ? "claude_code_oauth"
+              : "openrouter_api_key",
     recommendedScope: organizationLogin
       ? "organization_selected_repositories"
       : "repository",

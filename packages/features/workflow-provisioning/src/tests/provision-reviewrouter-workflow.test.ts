@@ -106,10 +106,9 @@ describe("provisionReviewRouterWorkflow", () => {
 
     expect(pullRequest.url).toContain("/pull/1");
     const files = new Map(
-      (gateway.input?.workflowFiles ?? []).map((file) => [
-        file.path,
-        file.content,
-      ]),
+      (gateway.input?.workflowFiles ?? [])
+        .filter((file) => file.operation !== "delete")
+        .map((file) => [file.path, file.content]),
     );
     expect([...files.keys()].sort()).toEqual([
       ".github/workflows/reviewrouter-interaction.yml",
@@ -212,9 +211,15 @@ describe("provisionReviewRouterWorkflow", () => {
       { setupGateway: gateway, provisioning },
     );
 
-    const reviewWorkflow = gateway.input?.workflowFiles.find(
-      (file) => file.path === ".github/workflows/reviewrouter.yml",
-    )?.content;
+    const reviewWorkflowFile = gateway.input?.workflowFiles.find(
+      (file) =>
+        file.operation !== "delete" &&
+        file.path === ".github/workflows/reviewrouter.yml",
+    );
+    const reviewWorkflow =
+      reviewWorkflowFile && reviewWorkflowFile.operation !== "delete"
+        ? reviewWorkflowFile.content
+        : undefined;
     expect(reviewWorkflow).toContain("repository_dispatch:");
     expect(reviewWorkflow).toContain("conflict-review:");
     expect(reviewWorkflow).toContain(
@@ -232,6 +237,99 @@ describe("provisionReviewRouterWorkflow", () => {
     );
     expect(reviewWorkflow).toContain("conflict_dispatch_event_type:");
     expect(reviewWorkflow).toContain("conflict_dispatch_id:");
+  });
+
+  it("provisions the dedicated advisory-only rotating Codex workflow", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+    const actionRef =
+      "777genius/review-router@0123456789abcdef0123456789abcdef01234567";
+
+    await provisionReviewRouterWorkflow(
+      {
+        workspaceId: "workspace-1",
+        repositoryId: "repo-1",
+        owner: "777genius",
+        name: "example",
+        defaultBranch: "main",
+        actionRef,
+        apiUrl: "https://app.reviewrouter.dev",
+        runtimeConfigMode: "oidc",
+        workflowStyle: "reusable",
+        conflictReviewFallbackEnabled: false,
+        codexRotatingProviderInstanceId: "codex-rotating:123456",
+      },
+      { setupGateway: gateway, provisioning },
+    );
+
+    const workflowFiles = gateway.input?.workflowFiles ?? [];
+    const codexWorkflow = workflowFiles.find(
+      (file) => file.path === ".github/workflows/reviewrouter-codex.yml",
+    );
+    expect(workflowFiles).toHaveLength(3);
+    expect(codexWorkflow).toMatchObject({
+      path: ".github/workflows/reviewrouter-codex.yml",
+    });
+    expect(codexWorkflow?.operation).not.toBe("delete");
+    const codexWorkflowContent =
+      codexWorkflow && codexWorkflow.operation !== "delete"
+        ? codexWorkflow.content
+        : "";
+    expect(codexWorkflowContent).toContain("name: ReviewRouter Codex OAuth");
+    expect(codexWorkflowContent).toContain("permissions: {}\n\njobs:");
+    expect(codexWorkflowContent).toContain(`uses: ${actionRef}`);
+    expect(codexWorkflowContent).toContain(
+      'provider-instance-id: "codex-rotating:123456"',
+    );
+    expect(codexWorkflowContent).toContain(
+      "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    );
+    expect(codexWorkflowContent).not.toContain("actions/checkout");
+    expect(codexWorkflowContent).not.toContain("workflow_dispatch:");
+    expect(workflowFiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ".github/workflows/reviewrouter.yml",
+          operation: "delete",
+        }),
+        expect.objectContaining({
+          path: ".github/workflows/reviewrouter-interaction.yml",
+          operation: "delete",
+        }),
+      ]),
+    );
+    expect(provisioning.opened).toMatchObject({
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowStyle: "reusable",
+      actionVersion: actionRef,
+    });
+  });
+
+  it("rejects rotating Codex workflow provisioning unless the action ref is a full SHA", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+
+    await expect(
+      provisionReviewRouterWorkflow(
+        {
+          workspaceId: "workspace-1",
+          repositoryId: "repo-1",
+          owner: "777genius",
+          name: "example",
+          defaultBranch: "main",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+          codexRotatingProviderInstanceId: "codex-rotating:123456",
+        },
+        { setupGateway: gateway, provisioning },
+      ),
+    ).rejects.toThrow("codex_rotating_action_ref_must_be_full_sha");
+
+    expect(gateway.input).toBeNull();
+    expect(provisioning.failed?.errorMessage).toBe(
+      "codex_rotating_action_ref_must_be_full_sha",
+    );
   });
 
   it("persists safe GitHub failure summaries without raw adapter details", async () => {
@@ -301,10 +399,9 @@ describe("provisionReviewRouterWorkflow", () => {
       baseBranch: "main",
     });
     const files = new Map(
-      (gateway.input?.workflowFiles ?? []).map((file) => [
-        file.path,
-        file.content,
-      ]),
+      (gateway.input?.workflowFiles ?? [])
+        .filter((file) => file.operation !== "delete")
+        .map((file) => [file.path, file.content]),
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
       '"CODEX_MODEL": "gpt-5.4-mini"',

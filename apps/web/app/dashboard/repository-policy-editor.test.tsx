@@ -86,6 +86,10 @@ afterEach(() => {
   cleanup();
 });
 
+function pageText(): string {
+  return document.body.textContent?.replace(/\s+/g, " ") ?? "";
+}
+
 describe("ReviewConfigForm", () => {
   it("keeps at least one provider and adds an OpenRouter provider", () => {
     renderReviewConfigForm();
@@ -258,65 +262,39 @@ describe("ReviewConfigForm", () => {
     expect(screen.queryByText(/OpenRouter requires/i)).toBeNull();
   });
 
-  it("checks the Codex OAuth secret for the selected auth mode", async () => {
-    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
-      status: "missing",
-    });
+  it.each(["codex_subscription_oauth", "codex_openai_api_key"] as const)(
+    "migrates legacy Codex auth mode %s to rotating OAuth in the form",
+    async (authMode) => {
+      vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+        status: "missing",
+      });
 
-    renderReviewConfigForm({
-      config: codexReviewConfiguration("codex_subscription_oauth"),
-      repositoryFullName: "777genius/agent-teams-ai",
-      repositorySecretCheckTarget: {
-        workspaceId: "workspace_1",
-        repositoryId: "repo_1",
-      },
-    });
+      renderReviewConfigForm({
+        config: codexReviewConfiguration(authMode),
+        repositoryFullName: "777genius/agent-teams-ai",
+        repositorySecretCheckTarget: {
+          workspaceId: "workspace_1",
+          repositoryId: "repo_1",
+        },
+      });
 
-    await waitFor(() => {
+      await waitFor(() => {
+        expect(screen.getByText(/Rotating Codex OAuth uses/i)).toBeTruthy();
+      });
       expect(
-        screen.getByText(/Codex OAuth uses CODEX_AUTH_JSON/i),
+        screen.getByText(/Legacy Codex setup requires reconnect/i),
       ).toBeTruthy();
-    });
-    expect(
-      screen.getByText(
-        "gh secret set CODEX_AUTH_JSON --repo 777genius/agent-teams-ai < ~/.codex/auth.json",
-      ),
-    ).toBeTruthy();
-    const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
-      .calls[0]?.[0] as FormData;
-    expect(formData.get("providerKind")).toBe("codex");
-    expect(formData.get("authMode")).toBe("codex_subscription_oauth");
-  });
-
-  it("checks the Codex API-key secret for the selected auth mode", async () => {
-    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
-      status: "missing",
-    });
-
-    renderReviewConfigForm({
-      config: codexReviewConfiguration("codex_openai_api_key"),
-      repositoryFullName: "777genius/agent-teams-ai",
-      repositorySecretCheckTarget: {
-        workspaceId: "workspace_1",
-        repositoryId: "repo_1",
-      },
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/Codex API-key mode uses OPENAI_API_KEY/i),
-      ).toBeTruthy();
-    });
-    expect(
-      screen.getByText(
-        "gh secret set OPENAI_API_KEY --repo 777genius/agent-teams-ai",
-      ),
-    ).toBeTruthy();
-    const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
-      .calls[0]?.[0] as FormData;
-    expect(formData.get("providerKind")).toBe("codex");
-    expect(formData.get("authMode")).toBe("codex_openai_api_key");
-  });
+      expect(pageText()).toContain("REVIEWROUTER_CODEX_AUTH_JSON");
+      expect(pageText()).not.toContain("gh secret set CODEX_AUTH_JSON");
+      expect(pageText()).not.toContain("OPENAI_API_KEY");
+      const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
+        .calls[0]?.[0] as FormData;
+      expect(formData.get("providerKind")).toBe("codex");
+      expect(formData.get("authMode")).toBe(
+        "codex_subscription_oauth_rotating",
+      );
+    },
+  );
 
   it("shows Claude Code by default, allows disabling it, and hides Codex controls after selection", () => {
     renderReviewConfigForm();
@@ -346,6 +324,18 @@ describe("ReviewConfigForm", () => {
     expect(screen.queryByText("Reasoning effort")).toBeNull();
     expect(screen.queryByText("Fast mode")).toBeNull();
     expect(screen.queryByText("Agentic context")).toBeNull();
+  });
+
+  it("shows only the production Codex OAuth mode", () => {
+    renderReviewConfigForm();
+    fireEvent.click(screen.getByRole("combobox", { name: "Provider auth" }));
+    expect(
+      screen.getByRole("option", { name: /Codex OAuth with refresh/i }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("option", { name: /Codex legacy OAuth/i }),
+    ).toBeNull();
+    expect(screen.queryByRole("option", { name: /Codex API key/i })).toBeNull();
   });
 
   it("checks the Claude Code OAuth secret for a saved Claude provider", async () => {
@@ -553,6 +543,7 @@ describe("ReviewConfigForm", () => {
 function renderReviewConfigForm(input?: {
   readonly config?: ReviewConfiguration;
   readonly repositoryFullName?: string;
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
   readonly repositorySecretCheckTarget?: {
     readonly workspaceId: string;
@@ -564,6 +555,7 @@ function renderReviewConfigForm(input?: {
       action={() => undefined}
       config={input?.config ?? safeDefaultReviewConfiguration}
       modelOptions={modelOptions}
+      codexRotatingOAuthEnabled={input?.codexRotatingOAuthEnabled ?? true}
       claudeCodeProviderEnabled={input?.claudeCodeProviderEnabled ?? true}
       hiddenFields={[{ name: "workspaceId", value: "workspace_1" }]}
       mutationsEnabled={true}

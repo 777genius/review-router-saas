@@ -172,6 +172,30 @@ type RuntimeReviewConfiguration = NonNullable<
   >
 >["config"];
 
+function openRouterRuntimeReviewConfiguration(): RuntimeReviewConfiguration {
+  const provider = {
+    kind: "openrouter" as const,
+    authMode: "openrouter_api_key" as const,
+    model: "poolside/laguna-m.1:free",
+    reasoningEffort: "medium" as const,
+    agenticContext: true,
+    fastMode: false,
+    requiredHealthy: true,
+  };
+  return {
+    schemaVersion: 2,
+    provider,
+    providers: [provider],
+    execution: {
+      providerLimit: 1,
+      providerMaxParallel: 1,
+      inlineMinAgreement: 1,
+    },
+    blockingPolicy: { failOnSeverity: "critical" },
+    limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+  };
+}
+
 class InMemoryActionRepositories implements ActionControlPlaneRepositoryPort {
   public readonly healthReports: ActionHealthReport[] = [];
   public runtimeConfig: RuntimeReviewConfiguration | null = null;
@@ -1301,14 +1325,15 @@ describe("API app", () => {
         reviewRunsIn: "customer_github_actions",
       },
       defaultReviewRuntime: {
-        provider: "codex_oauth",
+        provider: "codex_oauth_rotating",
       },
     });
     expect(response.body).toContain("/api/action/v1/session/exchange");
     expect(response.body).toContain("Choose provider credentials");
     expect(response.body).toContain("Runtime access");
     expect(response.body).toContain("repository source code");
-    expect(response.body).toContain("Codex OAuth auth.json");
+    expect(response.body).toContain("Codex OAuth rotating auth.json");
+    expect(response.body).not.toContain("codex_api_key");
     expect(response.body).not.toContain("CODEX_AUTH_JSON=");
     expect(response.body).not.toContain("OPENAI_API_KEY=");
   });
@@ -1696,6 +1721,7 @@ describe("API app", () => {
 
   it("serves action OIDC exchange, config fetch, and safe health report", async () => {
     const repositories = new InMemoryActionRepositories();
+    repositories.runtimeConfig = openRouterRuntimeReviewConfiguration();
     const commentTokens = new InMemoryCommentTokenIssuer();
     const sessions = new JoseActionSessionTokenService(
       "0123456789abcdef0123456789abcdef",
@@ -1759,8 +1785,8 @@ describe("API app", () => {
     expect(config.statusCode).toBe(200);
     expect(config.json()).toMatchObject({
       protocolVersion: 1,
-      provider: { model: "gpt-5.5" },
-      runtimeEnv: { REVIEW_AUTH_MODE: "codex-oauth" },
+      provider: { model: "poolside/laguna-m.1:free" },
+      runtimeEnv: { REVIEW_AUTH_MODE: "openrouter-api" },
     });
 
     const memory = await app.inject({
@@ -3069,9 +3095,11 @@ describe("API app", () => {
   });
 
   it("keeps legacy action endpoints available for current action compatibility", async () => {
+    const repositories = new InMemoryActionRepositories();
+    repositories.runtimeConfig = openRouterRuntimeReviewConfiguration();
     const app = await createApiApp({
       actionControlPlaneDependencies: {
-        repositories: new InMemoryActionRepositories(),
+        repositories,
         oidcVerifier: new StaticActionOidcVerifier(),
         sessions: new JoseActionSessionTokenService(
           "0123456789abcdef0123456789abcdef",
@@ -3157,9 +3185,11 @@ describe("API app", () => {
   });
 
   it("returns structured update-required errors for blocked action versions", async () => {
+    const repositories = new InMemoryActionRepositories();
+    repositories.runtimeConfig = openRouterRuntimeReviewConfiguration();
     const app = await createApiApp({
       actionControlPlaneDependencies: {
-        repositories: new InMemoryActionRepositories(),
+        repositories,
         oidcVerifier: new StaticActionOidcVerifier(),
         sessions: new JoseActionSessionTokenService(
           "0123456789abcdef0123456789abcdef",

@@ -4,6 +4,7 @@ export const reviewProviderKinds = ["codex", "claude", "openrouter"] as const;
 
 export const reviewProviderAuthModes = [
   "codex_subscription_oauth",
+  "codex_subscription_oauth_rotating",
   "codex_openai_api_key",
   "claude_code_oauth",
   "openrouter_api_key",
@@ -17,6 +18,7 @@ export type ProviderAuthMode = (typeof reviewProviderAuthModes)[number];
 
 export type RuntimeAuthMode =
   | "codex-oauth"
+  | "codex-oauth-rotating"
   | "openai-api"
   | "claude-oauth"
   | "openrouter-api";
@@ -28,6 +30,7 @@ export type ProviderCapability =
   | "static_model_catalog"
   | "dynamic_model_catalog"
   | "subscription_oauth"
+  | "rotating_oauth"
   | "api_key"
   | "reasoning_effort"
   | "fast_mode"
@@ -35,6 +38,7 @@ export type ProviderCapability =
 
 export type ProviderSetupKind =
   | "codex_oauth"
+  | "codex_oauth_rotating"
   | "openai_api_key"
   | "claude_code_oauth"
   | "openrouter_api_key";
@@ -62,14 +66,14 @@ const providerCatalog = {
   codex: {
     kind: "codex",
     label: "Codex",
-    authModes: ["codex_subscription_oauth", "codex_openai_api_key"],
-    defaultAuthMode: "codex_subscription_oauth",
+    authModes: ["codex_subscription_oauth_rotating"],
+    defaultAuthMode: "codex_subscription_oauth_rotating",
     defaultModel: "gpt-5.5",
     runtimeProviderPrefix: "codex",
     capabilities: [
       "static_model_catalog",
       "subscription_oauth",
-      "api_key",
+      "rotating_oauth",
       "reasoning_effort",
       "fast_mode",
       "agentic_context",
@@ -103,6 +107,14 @@ const authModeMetadata = {
     setupKind: "codex_oauth",
     label: "Codex subscription",
     secretNames: ["CODEX_AUTH_JSON"],
+  },
+  codex_subscription_oauth_rotating: {
+    authMode: "codex_subscription_oauth_rotating",
+    providerKind: "codex",
+    runtimeAuthMode: "codex-oauth-rotating",
+    setupKind: "codex_oauth_rotating",
+    label: "Codex subscription rotating",
+    secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
   },
   codex_openai_api_key: {
     authMode: "codex_openai_api_key",

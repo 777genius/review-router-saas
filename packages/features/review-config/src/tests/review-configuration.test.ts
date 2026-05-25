@@ -45,11 +45,11 @@ class InMemoryReviewConfigurationRepository implements ReviewConfigurationReposi
 }
 
 describe("review configuration", () => {
-  it("maps safe default Codex OAuth config to runtime env without secrets", () => {
+  it("maps safe default rotating Codex OAuth config to runtime env without secrets", () => {
     const env = mapConfigToRuntimeEnv(safeDefaultReviewConfiguration);
 
     expect(env).toMatchObject({
-      REVIEW_AUTH_MODE: "codex-oauth",
+      REVIEW_AUTH_MODE: "codex-oauth-rotating",
       CODEX_MODEL: "gpt-5.5",
       CODEX_REASONING_EFFORT: "medium",
       CODEX_AGENTIC_CONTEXT: "true",

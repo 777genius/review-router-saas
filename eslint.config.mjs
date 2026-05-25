@@ -6,6 +6,7 @@ export default [
     ignores: [
       "node_modules/**",
       "dist/**",
+      "action-dist/**",
       "build/**",
       "**/dist/**",
       ".next/**",

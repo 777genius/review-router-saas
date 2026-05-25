@@ -80,6 +80,7 @@ export async function getActionRuntimeConfig(
     }
   }
   const config = record?.config ?? safeDefaultReviewConfiguration;
+  assertStandardRuntimeProviderSupport(config);
   if (session.reviewKind === "conflict-head") {
     assertConflictRuntimeProviderSupport(config);
   }
@@ -154,6 +155,22 @@ export async function getActionRuntimeConfig(
       ? { conflictReview: conflictReviewRuntimeConfig }
       : {}),
   };
+}
+
+function assertStandardRuntimeProviderSupport(
+  config: ReviewConfiguration,
+): void {
+  const codexProvider = config.providers.find(
+    (provider) => provider.kind === "codex",
+  );
+  if (!codexProvider) {
+    return;
+  }
+  throw new Error(
+    codexProvider.authMode === "codex_subscription_oauth"
+      ? "codex_legacy_auth_requires_reconnect"
+      : "codex_provider_requires_rotating_workflow",
+  );
 }
 
 function assertConflictRuntimeActionVersionAllowed(

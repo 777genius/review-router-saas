@@ -28,10 +28,13 @@ run_step "typecheck" run_pnpm typecheck
 run_step "lint" run_pnpm lint
 run_step "format check" run_pnpm format:check
 run_step "production build" run_pnpm build
+run_step "Codex rotating action build" run_pnpm action:build
+run_step "Codex rotating action artifact" run_pnpm action:artifact:check
 run_step "compiled runtime smoke" run_pnpm runtime:smoke
 run_step "web page smoke" run_pnpm web:smoke
 run_step "whitespace check" git diff --check
 run_step "Codex secret seeding shell syntax" bash -n scripts/seed-codex-auth.sh
+run_step "Codex rotating secret seeding shell syntax" bash -n scripts/seed-codex-rotating-auth.sh
 run_step "local bootstrap shell syntax" bash -n scripts/bootstrap-local.sh
 run_step "public beta readiness shell syntax" bash -n scripts/check-public-beta-readiness.sh
 run_step "GitHub App readiness script syntax" node --check scripts/check-github-app-readiness.mjs
@@ -60,11 +63,14 @@ case "${REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB:-none}" in
   review)
     run_step "fresh repository GitHub full review E2E" env REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
     ;;
+  codex-rotating)
+    run_step "Codex rotating OAuth GitHub live E2E" node scripts/run-with-env.mjs pnpm spike:github:codex-rotating:e2e
+    ;;
   memory)
     run_step "disposable repository GitHub memory E2E" env REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 node scripts/run-with-env.mjs pnpm spike:github-memory:e2e
     ;;
   *)
-    printf 'REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB must be none, setup, review, or memory\n' >&2
+    printf 'REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB must be none, setup, review, codex-rotating, or memory\n' >&2
     exit 2
     ;;
 esac

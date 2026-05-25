@@ -16,6 +16,30 @@ import {
   type ExchangeGitHubOidcTokenDependencies,
 } from "../../application/use-cases/exchange-github-oidc-token.js";
 import {
+  preleaseCodexRotatingOAuth,
+  type PreleaseCodexRotatingOAuthDependencies,
+} from "../../application/use-cases/prelease-codex-rotating-oauth.js";
+import {
+  finalizeCodexRotatingOAuthLease,
+  type FinalizeCodexRotatingOAuthLeaseDependencies,
+} from "../../application/use-cases/finalize-codex-rotating-oauth-lease.js";
+import {
+  preflightCodexRotatingOAuthWriteback,
+  type PreflightCodexRotatingOAuthWritebackDependencies,
+} from "../../application/use-cases/preflight-codex-rotating-oauth-writeback.js";
+import {
+  writebackCodexRotatingOAuth,
+  type WritebackCodexRotatingOAuthDependencies,
+} from "../../application/use-cases/writeback-codex-rotating-oauth.js";
+import {
+  issueCodexRotatingOAuthCheckoutToken,
+  type IssueCodexRotatingOAuthCheckoutTokenDependencies,
+} from "../../application/use-cases/issue-codex-rotating-oauth-checkout-token.js";
+import {
+  issueCodexRotatingOAuthCommentToken,
+  type IssueCodexRotatingOAuthCommentTokenDependencies,
+} from "../../application/use-cases/issue-codex-rotating-oauth-comment-token.js";
+import {
   getActionRuntimeConfig,
   type GetActionRuntimeConfigDependencies,
 } from "../../application/use-cases/get-action-runtime-config.js";
@@ -48,6 +72,12 @@ import type { GitHubReviewThreadLifecycleResolverPort } from "../../application/
 
 export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
+    Partial<PreleaseCodexRotatingOAuthDependencies> &
+    Partial<FinalizeCodexRotatingOAuthLeaseDependencies> &
+    Partial<PreflightCodexRotatingOAuthWritebackDependencies> &
+    Partial<WritebackCodexRotatingOAuthDependencies> &
+    Partial<IssueCodexRotatingOAuthCheckoutTokenDependencies> &
+    Partial<IssueCodexRotatingOAuthCommentTokenDependencies> &
     GetActionRuntimeConfigDependencies &
     RequestConflictReviewPostingSessionDependencies &
     PostConflictReviewSummaryDependencies &
@@ -64,6 +94,44 @@ const exchangeBodySchema = z
     oidcToken: z.string().min(1),
     audience: z.string().min(1).optional(),
     conflictDispatch: actionConflictReviewDispatchPayloadSchema.optional(),
+  })
+  .strict();
+
+const codexRotatingPreleaseBodySchema = z
+  .object({
+    oidcToken: z.string().min(1),
+    audience: z.string().min(1).optional(),
+    providerInstanceId: z.string().min(8).max(160),
+    workflowSchemaVersion: z.number().int().positive(),
+  })
+  .strict();
+
+const codexRotatingFinalizeBodySchema = z
+  .object({
+    leaseId: z.string().min(8).max(160),
+    providerInstanceId: z.string().min(8).max(160),
+    restoredGenerationHash: z.string().min(32).max(128),
+  })
+  .strict();
+
+const codexRotatingWritebackPreflightBodySchema = z
+  .object({
+    leaseId: z.string().min(8).max(160),
+    providerInstanceId: z.string().min(8).max(160),
+    githubKeyId: z.string().min(1).max(256),
+  })
+  .strict();
+
+const codexRotatingLeaseBodySchema = z
+  .object({
+    leaseId: z.string().min(8).max(160),
+    providerInstanceId: z.string().min(8).max(160),
+  })
+  .strict();
+
+const codexRotatingCommentTokenBodySchema = codexRotatingLeaseBodySchema
+  .extend({
+    authCleared: z.literal(true),
   })
   .strict();
 
@@ -120,6 +188,245 @@ export async function registerActionControlPlaneRoutes(
               : {}),
           },
           dependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingPreleaseHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (!dependencies.codexRotatingOAuth) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingWorkflowSourceVerifier ||
+        !dependencies.replayNonces
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingPreleaseBodySchema.parse(request.body);
+        const result = await preleaseCodexRotatingOAuth(
+          {
+            oidcToken: body.oidcToken,
+            audience:
+              body.audience ??
+              dependencies.oidcAudience ??
+              defaultActionOidcAudience,
+            providerInstanceId: body.providerInstanceId,
+            workflowSchemaVersion: body.workflowSchemaVersion,
+          },
+          dependencies as PreleaseCodexRotatingOAuthDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingFinalizeHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (!dependencies.codexRotatingOAuth) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      if (!dependencies.codexRotatingSecretsReadTokens) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingFinalizeBodySchema.parse(request.body);
+        const result = await finalizeCodexRotatingOAuthLease(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+            restoredGenerationHash: body.restoredGenerationHash,
+          },
+          dependencies as FinalizeCodexRotatingOAuthLeaseDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingWritebackPreflightHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingOAuth ||
+        !dependencies.codexRotatingSecretWriter
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingWritebackPreflightBodySchema.parse(
+          request.body,
+        );
+        const result = await preflightCodexRotatingOAuthWriteback(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+            githubKeyId: body.githubKeyId,
+          },
+          dependencies as PreflightCodexRotatingOAuthWritebackDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingWritebackHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingOAuth ||
+        !dependencies.codexRotatingSecretWriter ||
+        !dependencies.codexRotatingWritebackHmacKey
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const result = await writebackCodexRotatingOAuth(
+          { body: request.body },
+          dependencies as WritebackCodexRotatingOAuthDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingCheckoutTokenHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingOAuth ||
+        !dependencies.codexRotatingCheckoutTokens
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingLeaseBodySchema.parse(request.body);
+        const result = await issueCodexRotatingOAuthCheckoutToken(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+          },
+          dependencies as IssueCodexRotatingOAuthCheckoutTokenDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingCommentTokenHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (!dependencies.codexRotatingOAuth || !dependencies.commentTokens) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingCommentTokenBodySchema.parse(request.body);
+        const result = await issueCodexRotatingOAuthCommentToken(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+            authCleared: body.authCleared,
+          },
+          dependencies as IssueCodexRotatingOAuthCommentTokenDependencies,
         );
         return reply.send(result);
       } catch (error) {
@@ -323,6 +630,36 @@ export async function registerActionControlPlaneRoutes(
 
   app.post("/api/action/exchange-token", createExchangeHandler("legacy"));
   app.post("/api/action/v1/session/exchange", createExchangeHandler("v1"));
+  app.post(
+    "/api/action/v1/codex-oauth/prelease",
+    { bodyLimit: 16_384 },
+    createCodexRotatingPreleaseHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/finalize",
+    { bodyLimit: 4_096 },
+    createCodexRotatingFinalizeHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/writeback-preflight",
+    { bodyLimit: 4_096 },
+    createCodexRotatingWritebackPreflightHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/writeback",
+    { bodyLimit: 128 * 1024 },
+    createCodexRotatingWritebackHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/checkout-token",
+    { bodyLimit: 4_096 },
+    createCodexRotatingCheckoutTokenHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/comment-token",
+    { bodyLimit: 4_096 },
+    createCodexRotatingCommentTokenHandler("v1"),
+  );
   app.get("/api/action/config", createConfigHandler("legacy"));
   app.get("/api/action/v1/config", createConfigHandler("v1"));
   app.post("/api/action/comment-token", createCommentTokenHandler("legacy"));
@@ -385,12 +722,22 @@ function sendActionError(
 ): unknown {
   const message = error instanceof Error ? error.message : "unknown_error";
   const statusCode = statusCodeForActionError(message);
-  return sendActionErrorCode(
-    reply,
-    safeActionErrorCode(message),
-    statusCode,
-    format,
-  );
+  const code = safeActionErrorCode(message);
+  if (process.env.REVIEW_ROUTER_DEBUG_ACTION_ERRORS === "1") {
+    console.error(
+      JSON.stringify({
+        scope: "reviewrouter_action_error",
+        code,
+        statusCode,
+        message: redactDebugActionErrorMessage(message),
+      }),
+    );
+  }
+  return sendActionErrorCode(reply, code, statusCode, format);
+}
+
+function redactDebugActionErrorMessage(message: string): string {
+  return message.replace(/[A-Za-z0-9_-]{80,}/g, "[redacted]").slice(0, 1_000);
 }
 
 function sendActionErrorCode(
@@ -416,9 +763,20 @@ function statusCodeForActionError(message: string): number {
   if (
     message.includes("conflict_review_runtime_disabled") ||
     message.includes("conflict_review_posting_session_unavailable") ||
-    message.includes("conflict_review_posting_token_unavailable")
+    message.includes("conflict_review_posting_token_unavailable") ||
+    message.includes("codex_rotating_oauth_unavailable")
   ) {
     return 503;
+  }
+  if (message.includes("codex_rotating_lease_not_active")) {
+    return 409;
+  }
+  if (
+    message.includes("codex_rotating_provider_unknown_auth_state") ||
+    message.includes("codex_rotating_provider_needs_reconnect") ||
+    message.includes("codex_rotating_provider_permission_required")
+  ) {
+    return 409;
   }
   if (message.includes("conflict_runtime_provider_unsupported")) {
     return 409;
@@ -465,6 +823,9 @@ function statusCodeForActionError(message: string): number {
     message.includes("repository_not_selected") ||
     message.includes("installation_not_active") ||
     message.includes("workflow_ref_not_allowed") ||
+    message.includes("codex_rotating_not_enabled") ||
+    message.includes("codex_legacy_auth_requires_reconnect") ||
+    message.includes("codex_provider_requires_rotating_workflow") ||
     message.includes("entitlement_denied") ||
     message.includes("mismatch")
   ) {
@@ -531,6 +892,30 @@ function safeActionErrorCode(message: string): string {
   if (message.includes("entitlement_denied")) {
     return "action_control_plane_entitlement_denied";
   }
+  if (message.includes("codex_rotating_oauth_unavailable")) {
+    return "codex_rotating_oauth_unavailable";
+  }
+  if (message.includes("codex_rotating_lease_not_active")) {
+    return "codex_rotating_lease_not_active";
+  }
+  if (message.includes("codex_rotating_not_enabled")) {
+    return "codex_rotating_not_enabled";
+  }
+  if (message.includes("codex_legacy_auth_requires_reconnect")) {
+    return "codex_legacy_auth_requires_reconnect";
+  }
+  if (message.includes("codex_provider_requires_rotating_workflow")) {
+    return "codex_provider_requires_rotating_workflow";
+  }
+  if (message.includes("codex_rotating_provider_unknown_auth_state")) {
+    return "unknown_auth_state";
+  }
+  if (message.includes("codex_rotating_provider_needs_reconnect")) {
+    return "needs_reconnect";
+  }
+  if (message.includes("codex_rotating_provider_permission_required")) {
+    return "permission_required";
+  }
   if (message.includes("mismatch")) {
     return "action_repository_mismatch";
   }
@@ -569,6 +954,22 @@ function safeActionErrorMessage(code: string): string {
       return "ReviewRouter action control plane is temporarily disabled.";
     case "comment_token_unavailable":
       return "ReviewRouter App comment identity is temporarily unavailable.";
+    case "codex_rotating_oauth_unavailable":
+      return "Codex OAuth rotating writeback is temporarily unavailable.";
+    case "codex_rotating_lease_not_active":
+      return "Codex OAuth rotating lease is not active for this request.";
+    case "codex_rotating_not_enabled":
+      return "Codex OAuth rotating is not enabled for this repository.";
+    case "codex_legacy_auth_requires_reconnect":
+      return "Legacy Codex OAuth is disabled. Reconnect Codex from the ReviewRouter dashboard.";
+    case "codex_provider_requires_rotating_workflow":
+      return "Codex now requires the rotating ReviewRouter Codex workflow. Reconnect Codex from the dashboard.";
+    case "unknown_auth_state":
+      return "Codex OAuth refreshed but ReviewRouter could not confirm the encrypted writeback. Reconnect the provider.";
+    case "needs_reconnect":
+      return "Codex OAuth needs to be reconnected for this repository.";
+    case "permission_required":
+      return "GitHub App permissions must be updated before Codex OAuth can run.";
     case "review_thread_lifecycle_resolver_unavailable":
       return "ReviewRouter review thread resolver is temporarily unavailable.";
     case "repository_not_registered":
@@ -618,6 +1019,7 @@ function isRetryableActionError(code: string): boolean {
     code === "rate_limited" ||
     code === "action_control_plane_disabled" ||
     code === "comment_token_unavailable" ||
+    code === "codex_rotating_oauth_unavailable" ||
     code === "conflict_review_runtime_disabled"
   );
 }

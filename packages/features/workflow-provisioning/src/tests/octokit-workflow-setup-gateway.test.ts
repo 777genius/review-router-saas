@@ -13,6 +13,7 @@ class FakeRequester {
   private pullReadCount = 0;
   private putFailureConsumed = false;
   private postPullFailureConsumed = false;
+  private reopenFailureConsumed = false;
 
   constructor(
     private readonly existingWorkflowYaml:
@@ -35,6 +36,7 @@ class FakeRequester {
       };
       readonly failPutOnceStatus?: number;
       readonly failPostPullOnceStatus?: number;
+      readonly failReopenOnceStatus?: number;
       readonly existingBranches?: readonly string[];
     } = {},
   ) {}
@@ -89,6 +91,9 @@ class FakeRequester {
       }
       return { data: {} };
     }
+    if (route === "DELETE /repos/{owner}/{repo}/contents/{path}") {
+      return { data: {} };
+    }
     if (route === "GET /repos/{owner}/{repo}/pulls") {
       return {
         data:
@@ -115,6 +120,17 @@ class FakeRequester {
       };
     }
     if (route === "PATCH /repos/{owner}/{repo}/pulls/{pull_number}") {
+      if (
+        parameters?.state === "open" &&
+        this.options.failReopenOnceStatus &&
+        this.reopenFailureConsumed === false
+      ) {
+        this.reopenFailureConsumed = true;
+        throw Object.assign(
+          new Error("state cannot be changed after branch recreation"),
+          { status: this.options.failReopenOnceStatus },
+        );
+      }
       const pullNumber = Number(parameters?.pull_number ?? 10);
       return {
         data: {
@@ -208,6 +224,63 @@ describe("OctokitWorkflowSetupGateway", () => {
     });
   });
 
+  it("deletes a legacy ReviewRouter workflow only when trusted markers match", async () => {
+    const requester = new FakeRequester(
+      "name: ReviewRouter\njobs:\n  review:\n    uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1\n",
+    );
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await gateway.createOrUpdateSetupPullRequest({
+      ...setupInput,
+      workflowFiles: [
+        {
+          path: ".github/workflows/reviewrouter.yml",
+          operation: "delete",
+          markerGroups: [
+            [
+              "name: ReviewRouter",
+              "777genius/review-router/.github/workflows/reviewrouter-reusable.yml",
+            ],
+          ],
+        },
+      ],
+    });
+
+    const deleteCall = requester.calls.find(
+      (call) => call.route === "DELETE /repos/{owner}/{repo}/contents/{path}",
+    );
+    expect(deleteCall?.parameters).toMatchObject({
+      path: ".github/workflows/reviewrouter.yml",
+      branch: "reviewrouter/setup",
+      sha: "workflow-sha",
+      message: "chore: remove legacy ReviewRouter workflow",
+    });
+  });
+
+  it("blocks deleting an unrecognized workflow at a legacy ReviewRouter path", async () => {
+    const requester = new FakeRequester("name: Custom CI\n");
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest({
+        ...setupInput,
+        workflowFiles: [
+          {
+            path: ".github/workflows/reviewrouter.yml",
+            operation: "delete",
+            markerGroups: [["name: ReviewRouter"]],
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "workflow_delete_untrusted:.github/workflows/reviewrouter.yml",
+    );
+
+    expect(requester.calls.map((call) => call.route)).not.toContain(
+      "DELETE /repos/{owner}/{repo}/contents/{path}",
+    );
+  });
+
   it("refreshes existing setup pull request title and body", async () => {
     const requester = new FakeRequester(primaryWorkflow.content);
     const gateway = new OctokitWorkflowSetupGateway(requester);
@@ -261,7 +334,6 @@ describe("OctokitWorkflowSetupGateway", () => {
       pull_number: 14,
       state: "open",
       title: "chore: add ReviewRouter workflow",
-      base: "main",
     });
     expect(requester.calls.map((call) => call.route)).not.toContain(
       "POST /repos/{owner}/{repo}/pulls",
@@ -316,6 +388,37 @@ describe("OctokitWorkflowSetupGateway", () => {
       pull_number: 14,
       state: "open",
     });
+  });
+
+  it("creates a new setup pull request when a recreated branch prevents reopening a closed one", async () => {
+    const requester = new FakeRequester(primaryWorkflow.content, {
+      pullRequestResponses: [[]],
+      closedPullRequestResponses: [
+        [
+          {
+            html_url: "https://github.com/777genius/example/pull/14",
+            number: 14,
+          },
+        ],
+      ],
+      failReopenOnceStatus: 422,
+      postPullRequest: {
+        html_url: "https://github.com/777genius/example/pull/15",
+        number: 15,
+      },
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({
+      number: 15,
+      url: "https://github.com/777genius/example/pull/15",
+    });
+
+    expect(requester.calls.map((call) => call.route)).toContain(
+      "POST /repos/{owner}/{repo}/pulls",
+    );
   });
 
   it("keeps an existing setup branch when an open setup pull request exists", async () => {

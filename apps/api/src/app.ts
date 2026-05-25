@@ -8,6 +8,7 @@ import {
   HmacActionLedgerKey,
   PrismaActionControlPlaneRepository,
   PrismaActionOidcReplayNonceStore,
+  PrismaCodexRotatingOAuthRepository,
   registerActionControlPlaneRoutes,
   StaticActionRuntimeCompatibilityPolicy,
   type RegisterActionControlPlaneRoutesDependencies,
@@ -50,7 +51,9 @@ import { PrismaEntitlementRepository } from "@reviewrouter/features-entitlements
 import {
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
+  isCodexRotatingOAuthAllowedForRepository,
   readGitHubAppPrivateKey,
+  resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
@@ -62,6 +65,7 @@ import {
   CompositePushWebhookHandler,
 } from "./github/composite-github-webhook-handlers.js";
 import { OctokitConflictReviewPostingGateway } from "./github/octokit-conflict-review-posting-gateway.js";
+import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-rotating-github-secret-gateway.js";
 import { OctokitGitHubAppCommentTokenIssuer } from "./github/octokit-github-app-comment-token-issuer.js";
 import { PrismaGitHubUserReviewThreadResolver } from "./github/prisma-github-user-review-thread-resolver.js";
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
@@ -117,7 +121,11 @@ export async function createApiApp(
       process.env.REVIEW_ROUTER_PUBLIC_API_URL ??
         process.env.REVIEW_ROUTER_API_URL,
     ),
-    ...definedOption("actionVersion", process.env.REVIEW_ROUTER_ACTION_VERSION),
+    ...definedOption(
+      "actionVersion",
+      process.env.REVIEW_ROUTER_ACTION_REF ??
+        process.env.REVIEW_ROUTER_ACTION_VERSION,
+    ),
     ...definedOption("model", process.env.REVIEW_ROUTER_DEFAULT_MODEL),
     ...definedOption("effort", process.env.REVIEW_ROUTER_DEFAULT_EFFORT),
   });
@@ -163,6 +171,13 @@ export async function createApiApp(
                 appSlug: process.env.GITHUB_APP_SLUG,
               })
             : undefined;
+          const codexRotatingGitHubSecretGateway =
+            process.env.GITHUB_APP_ID && githubAppPrivateKey
+              ? new OctokitCodexRotatingGitHubSecretGateway({
+                  appId: process.env.GITHUB_APP_ID,
+                  privateKey: githubAppPrivateKey,
+                })
+              : undefined;
           const ledgerSecret =
             process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
             options.actionSessionSecret;
@@ -202,6 +217,35 @@ export async function createApiApp(
               clock,
             ),
             replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
+            codexRotatingOAuth: new PrismaCodexRotatingOAuthRepository(prisma, {
+              actionRef: resolveReviewRouterActionRef(),
+              actionOwnerRepo: resolveActionOwnerRepo(
+                process.env.REVIEW_ROUTER_ACTION_REF,
+              ),
+            }),
+            codexRotatingRuntimeGate: {
+              assertCodexRotatingOAuthEnabled(input: {
+                readonly repositoryFullName: string;
+              }) {
+                if (
+                  !isCodexRotatingOAuthAllowedForRepository(
+                    input.repositoryFullName,
+                  )
+                ) {
+                  throw new Error("codex_rotating_not_enabled");
+                }
+              },
+            },
+            ...(codexRotatingGitHubSecretGateway
+              ? {
+                  codexRotatingSecretsReadTokens:
+                    codexRotatingGitHubSecretGateway,
+                  codexRotatingSecretWriter: codexRotatingGitHubSecretGateway,
+                  codexRotatingCheckoutTokens: codexRotatingGitHubSecretGateway,
+                  codexRotatingWorkflowSourceVerifier:
+                    codexRotatingGitHubSecretGateway,
+                }
+              : {}),
             compatibility: new StaticActionRuntimeCompatibilityPolicy({
               blockedActionVersions: parseCommaSeparatedEnv(
                 process.env.REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS,
@@ -219,6 +263,7 @@ export async function createApiApp(
                 }
               : {}),
             ledgerKeys: new HmacActionLedgerKey(ledgerSecret),
+            codexRotatingWritebackHmacKey: ledgerSecret,
             reviewThreadLifecycleResolver:
               new PrismaGitHubUserReviewThreadResolver(prisma),
             ...(process.env.GITHUB_APP_ID && githubAppPrivateKey
@@ -393,4 +438,13 @@ function parseCommaSeparatedEnv(value: string | undefined): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+function resolveActionOwnerRepo(actionRef: string | undefined): string {
+  const normalized = actionRef?.trim() || "777genius/review-router";
+  const ownerRepo = normalized.split("@", 1)[0] ?? normalized;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(ownerRepo)) {
+    return "777genius/review-router";
+  }
+  return ownerRepo;
 }

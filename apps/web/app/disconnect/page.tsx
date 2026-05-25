@@ -15,16 +15,17 @@ export const metadata: Metadata = createPublicPageMetadata({
 
 const uninstallPath =
   "GitHub -> Settings -> Applications -> Installed GitHub Apps -> ReviewRouter -> Configure -> Uninstall";
-const removeSecrets = `gh secret delete CODEX_AUTH_JSON --repo owner/repo
+const removeSecrets = `gh secret delete REVIEWROUTER_CODEX_AUTH_JSON --repo owner/repo
 gh secret delete CLAUDE_CODE_OAUTH_TOKEN --repo owner/repo
-gh secret delete OPENAI_API_KEY --repo owner/repo
 gh secret delete OPENROUTER_API_KEY --repo owner/repo
-# optional, only if it was intentionally stored
+gh secret delete CODEX_AUTH_JSON --repo owner/repo # optional legacy cleanup
+gh secret delete OPENAI_API_KEY --repo owner/repo # optional legacy cleanup
+# optional legacy cleanup, only if it was intentionally stored
 gh secret delete CODEX_CONFIG_TOML --repo owner/repo`;
-const orgRemoveSecrets = `gh secret delete CODEX_AUTH_JSON --org acme --app actions
-gh secret delete CLAUDE_CODE_OAUTH_TOKEN --org acme --app actions
-gh secret delete OPENAI_API_KEY --org acme --app actions
+const orgRemoveSecrets = `gh secret delete CLAUDE_CODE_OAUTH_TOKEN --org acme --app actions
 gh secret delete OPENROUTER_API_KEY --org acme --app actions
+gh secret delete CODEX_AUTH_JSON --org acme --app actions # optional legacy cleanup
+gh secret delete OPENAI_API_KEY --org acme --app actions # optional legacy cleanup
 # verify selected repositories before deleting shared org secrets`;
 
 const disconnectSteps = [

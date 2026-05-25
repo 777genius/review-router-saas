@@ -16,7 +16,8 @@ describe("getApiDemo", () => {
       clock: fixedClock,
       webUrl: "https://web.example.com/",
       apiUrl: "https://api.example.com/",
-      actionVersion: "main",
+      actionVersion:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
       model: "gpt-5.5",
       effort: "medium",
     });
@@ -28,10 +29,16 @@ describe("getApiDemo", () => {
       "repository source code",
     );
     expect(demo.executionModel.controlPlaneDoesNotStore).toContain(
-      "Codex OAuth auth.json",
+      "Codex OAuth rotating auth.json",
     );
     expect(demo.executionModel.controlPlaneDoesNotStore).toContain(
       "Claude Code OAuth token",
+    );
+    expect(demo.providers.map((provider) => provider.id)).toContain(
+      "codex_oauth_rotating",
+    );
+    expect(demo.providers.map((provider) => provider.id)).not.toContain(
+      "codex_api_key",
     );
     expect(demo.providers.map((provider) => provider.id)).toContain(
       "claude_code_oauth",

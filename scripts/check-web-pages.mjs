@@ -4,9 +4,10 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const repoCodexCommandFragment =
-  "/install/codex | bash -s -- --confirm-write --scope repo --repo owner/repo";
-const orgCodexCommandFragment =
-  "/install/codex | bash -s -- --confirm-write --scope org --org acme --visibility selected --repos repo-a,repo-b";
+  "/install/codex | REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL";
+const installCodexFragment = "/install/codex";
+const setupNonceFragment = "short-lived setup nonce";
+const rotatingCodexSecretFragment = "REVIEWROUTER_CODEX_AUTH_JSON";
 const commonTexts = ["ReviewRouter", "Security", "Support"];
 const landingHeroText = "Free privacy-first";
 
@@ -40,12 +41,17 @@ const pages = [
       "Getting started",
       "curl -fsSL ",
       repoCodexCommandFragment,
-      orgCodexCommandFragment,
+      rotatingCodexSecretFragment,
     ],
   ],
   [
     "/security",
-    ["Code and secrets stay under your control", repoCodexCommandFragment],
+    [
+      "Code and secrets stay under your control",
+      installCodexFragment,
+      setupNonceFragment,
+      rotatingCodexSecretFragment,
+    ],
   ],
   ["/fair-use", ["Fair use"]],
   ["/disconnect", ["Disconnect"]],
@@ -58,7 +64,7 @@ const redirectChecks = [
   ["/status", "/support"],
   [
     "/install/codex",
-    "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh",
+    "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh",
   ],
 ];
 

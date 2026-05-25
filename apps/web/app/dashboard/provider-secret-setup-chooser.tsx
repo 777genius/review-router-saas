@@ -1,10 +1,17 @@
 "use client";
 
-import { useMemo, useState, useTransition, type FormEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useTransition,
+  type FormEvent,
+} from "react";
 import { Tabs } from "@base-ui/react/tabs";
 import { CheckCircle2 } from "lucide-react";
 import type {
   ProviderSecretScope,
+  ProviderSecretSetupCommand,
   ProviderSecretSetupGuidance,
 } from "@reviewrouter/features-provider-setup";
 import type {
@@ -17,8 +24,7 @@ import { ProviderAuthLogoFrame } from "./provider-auth-logo";
 import { providerSetupConfirmedEvent } from "./repository-setup-optimistic-events";
 
 type ProviderChoice =
-  | "codex_oauth"
-  | "codex_api_key"
+  | "codex_oauth_rotating"
   | "claude_code_oauth"
   | "openrouter_api_key";
 type VerificationFallbackError =
@@ -26,6 +32,15 @@ type VerificationFallbackError =
   | "provider_secret_not_found"
   | "provider_secret_not_available_to_repository"
   | "provider_secret_check_permission_required";
+type RotatingSetupCommandState =
+  | { readonly status: "idle" | "loading" }
+  | {
+      readonly status: "ready";
+      readonly command: ProviderSecretSetupCommand;
+      readonly expiresAt: string;
+      readonly providerInstanceId: string;
+    }
+  | { readonly status: "error"; readonly error: string };
 
 const providerChoices: readonly {
   readonly value: ProviderChoice;
@@ -34,16 +49,10 @@ const providerChoices: readonly {
   readonly body: string;
 }[] = [
   {
-    value: "codex_oauth",
-    testId: "provider-choice-codex-oauth",
-    title: "Codex subscription",
-    body: "Use Codex CLI OAuth from your ChatGPT account.",
-  },
-  {
-    value: "codex_api_key",
-    testId: "provider-choice-codex-api-key",
-    title: "Codex API key",
-    body: "Use OPENAI_API_KEY and API billing.",
+    value: "codex_oauth_rotating",
+    testId: "provider-choice-codex-oauth-rotating",
+    title: "Codex",
+    body: "Use Codex OAuth with automatic refresh in GitHub-hosted Actions.",
   },
   {
     value: "claude_code_oauth",
@@ -66,10 +75,12 @@ export type ProviderSecretSetupChooserProps = {
   readonly repositoryVisibility: string;
   readonly organizationLogin: string | null;
   readonly organizationSecretPolicy: OrganizationSecretPolicy | null;
+  readonly codexOAuthRotatingGuidance: ProviderSecretSetupGuidance;
   readonly codexOAuthGuidance: ProviderSecretSetupGuidance;
   readonly codexApiKeyGuidance: ProviderSecretSetupGuidance;
   readonly claudeCodeOAuthGuidance: ProviderSecretSetupGuidance;
   readonly openRouterApiKeyGuidance: ProviderSecretSetupGuidance;
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
 };
 
@@ -86,14 +97,15 @@ export function ProviderSecretSetupChooser({
   repositoryVisibility,
   organizationLogin,
   organizationSecretPolicy,
-  codexOAuthGuidance,
-  codexApiKeyGuidance,
+  codexOAuthRotatingGuidance,
   claudeCodeOAuthGuidance,
   openRouterApiKeyGuidance,
+  codexRotatingOAuthEnabled = true,
   claudeCodeProviderEnabled = true,
 }: ProviderSecretSetupChooserProps): React.ReactElement {
-  const [providerChoice, setProviderChoice] =
-    useState<ProviderChoice>("codex_oauth");
+  const [providerChoice, setProviderChoice] = useState<ProviderChoice>(
+    "codex_oauth_rotating",
+  );
   const organizationSecretUnavailableForRepository =
     Boolean(organizationLogin) &&
     repositoryVisibility === "private" &&
@@ -107,37 +119,118 @@ export function ProviderSecretSetupChooser({
   const [verificationError, setVerificationError] =
     useState<VerificationFallbackError | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [rotatingSetupCommand, setRotatingSetupCommand] =
+    useState<RotatingSetupCommandState>({ status: "idle" });
   const [confirmedProviderModes, setConfirmedProviderModes] = useState<
     Partial<Record<ProviderChoice, "verified" | "manual">>
   >({});
   const [isPending, startTransition] = useTransition();
   const confirmedMode = confirmedProviderModes[providerChoice] ?? "verified";
   const confirmed = confirmedProviderModes[providerChoice] !== undefined;
+  const rotatingCodexSelected = providerChoice === "codex_oauth_rotating";
+  const shouldFetchRotatingSetupCommand =
+    rotatingCodexSelected &&
+    codexRotatingOAuthEnabled &&
+    codexOAuthRotatingGuidance.commands.length === 0;
+
+  useEffect(() => {
+    if (!shouldFetchRotatingSetupCommand) {
+      return;
+    }
+    let cancelled = false;
+    const formData = new FormData();
+    formData.set("workspaceId", workspaceId);
+    formData.set("repositoryId", repositoryId);
+    setRotatingSetupCommand({ status: "loading" });
+    void fetch("/api/dashboard/codex-rotating/setup-command", {
+      method: "POST",
+      body: formData,
+    })
+      .then(async (response) => {
+        const body: unknown = await response.json();
+        if (!response.ok || !isRotatingSetupCommandResponse(body)) {
+          const error =
+            body && typeof body === "object" && "error" in body
+              ? String((body as { readonly error?: unknown }).error)
+              : "dashboard_action_failed";
+          throw new Error(error);
+        }
+        if (cancelled) return;
+        setRotatingSetupCommand({
+          status: "ready",
+          expiresAt: body.expiresAt,
+          providerInstanceId: body.providerInstanceId,
+          command: {
+            scope: "repository",
+            title: "Repository secret with automatic refresh",
+            description:
+              "Stores REVIEWROUTER_CODEX_AUTH_JSON directly in this repository with a short-lived setup nonce.",
+            command: body.command,
+            storesSecretIn: "github_repository_secret",
+            targetLabel: `${repositoryFullName} repository secret`,
+            secretNames: body.secretNames,
+            selectedRepositories: [repositoryFullName],
+            validatesBeforeWrite: true,
+            failureRecovery:
+              "If CI reports needs_reconnect or unknown_auth_state, reopen this dialog and run a fresh setup command.",
+            sendsSecretToReviewRouter: false,
+          },
+        });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setRotatingSetupCommand({
+            status: "error",
+            error: error instanceof Error ? error.message : "unknown_error",
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    repositoryFullName,
+    repositoryId,
+    shouldFetchRotatingSetupCommand,
+    workspaceId,
+  ]);
 
   const activeGuidance =
-    providerChoice === "codex_oauth"
-      ? codexOAuthGuidance
-      : providerChoice === "codex_api_key"
-        ? codexApiKeyGuidance
-        : providerChoice === "claude_code_oauth"
-          ? claudeCodeOAuthGuidance
-          : openRouterApiKeyGuidance;
+    providerChoice === "codex_oauth_rotating"
+      ? codexOAuthRotatingGuidance
+      : providerChoice === "claude_code_oauth"
+        ? claudeCodeOAuthGuidance
+        : openRouterApiKeyGuidance;
   const repositoryCommand = activeGuidance.commands.find(
     (command) => command.scope === "repository",
   );
-  const activeCommand =
+  const staticActiveCommand =
     activeGuidance.commands.find(
       (command) => command.scope === selectedSecretScope,
     ) ?? repositoryCommand;
-  const secretNames = activeCommand?.secretNames.join(", ") ?? "GitHub secret";
+  const activeCommand =
+    shouldFetchRotatingSetupCommand && rotatingSetupCommand.status === "ready"
+      ? rotatingSetupCommand.command
+      : staticActiveCommand;
+  const secretNames = rotatingCodexSelected
+    ? "REVIEWROUTER_CODEX_AUTH_JSON"
+    : (activeCommand?.secretNames.join(", ") ?? "GitHub secret");
   const providerSetupSelection = providerChoiceToSetupSelection(providerChoice);
   const secretScope = activeCommand?.scope ?? "repository";
-  const scopeOptions = providerSecretScopeOptions({
-    organizationLogin,
-    organizationSecretPolicy,
-    repositoryFullName,
-    repositoryVisibility,
-  });
+  const scopeOptions = rotatingCodexSelected
+    ? providerSecretScopeOptions({
+        organizationLogin: null,
+        organizationSecretPolicy: null,
+        repositoryFullName,
+        repositoryVisibility,
+      })
+    : providerSecretScopeOptions({
+        organizationLogin,
+        organizationSecretPolicy,
+        repositoryFullName,
+        repositoryVisibility,
+      });
   const visibleProviderChoices = useMemo(
     () =>
       providerChoices.filter(
@@ -149,53 +242,41 @@ export function ProviderSecretSetupChooser({
 
   const providerDetails = useMemo(
     () =>
-      providerChoice === "codex_oauth"
+      providerChoice === "codex_oauth_rotating"
         ? {
-            badge: "Codex subscription",
-            title: "Use your ChatGPT Codex subscription",
-            body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, validates the active Codex account, and writes CODEX_AUTH_JSON directly to GitHub Actions secrets.`,
+            badge: "Codex rotating OAuth",
+            title: "Use your ChatGPT Codex subscription with refresh",
+            body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, creates a dedicated ReviewRouter Codex session, and writes REVIEWROUTER_CODEX_AUTH_JSON directly to this repository's GitHub Actions secrets.`,
             footnote:
-              "If Codex later says the token is stale, run codex login again and rerun this same command.",
+              "GitHub-hosted runs refresh the dedicated session and write the encrypted update back before review starts.",
             apiKey: null as {
               readonly label: string;
               readonly url: string;
             } | null,
           }
-        : providerChoice === "codex_api_key"
+        : providerChoice === "claude_code_oauth"
           ? {
-              badge: "Codex API key",
-              title: "Use OpenAI API billing for Codex",
-              body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, prompts you to paste your OpenAI API key, then stores it as the OPENAI_API_KEY secret in GitHub Actions for this repository.`,
+              badge: "Claude Code subscription",
+              title: "Use your Claude Code subscription",
+              body: `Run claude setup-token on a trusted machine, then run this GitHub CLI command from your own computer. Store only the printed token value as CLAUDE_CODE_OAUTH_TOKEN for ${repositoryFullName}.`,
               footnote:
-                "This does not use the ChatGPT subscription OAuth file. It uses normal OpenAI API billing.",
-              apiKey: {
-                label: "Get an OpenAI API key",
-                url: "https://platform.openai.com/api-keys",
-              },
+                "Do not paste the shell command, ANTHROPIC_API_KEY, Claude keychain files, or local Claude config files.",
+              apiKey: null as {
+                readonly label: string;
+                readonly url: string;
+              } | null,
             }
-          : providerChoice === "claude_code_oauth"
-            ? {
-                badge: "Claude Code subscription",
-                title: "Use your Claude Code subscription",
-                body: `Run claude setup-token on a trusted machine, then run this GitHub CLI command from your own computer. Store only the printed token value as CLAUDE_CODE_OAUTH_TOKEN for ${repositoryFullName}.`,
-                footnote:
-                  "Do not paste the shell command, ANTHROPIC_API_KEY, Claude keychain files, or local Claude config files.",
-                apiKey: null as {
-                  readonly label: string;
-                  readonly url: string;
-                } | null,
-              }
-            : {
-                badge: "OpenRouter API key",
-                title: "Use OpenRouter billing",
-                body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, prompts you to paste your OpenRouter API key, then stores it as the OPENROUTER_API_KEY secret in GitHub Actions for this repository.`,
-                footnote:
-                  "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
-                apiKey: {
-                  label: "Get an OpenRouter API key",
-                  url: "https://openrouter.ai/workspaces/default/keys",
-                },
+          : {
+              badge: "OpenRouter API key",
+              title: "Use OpenRouter billing",
+              body: `Run this from any terminal on your own computer. The command targets ${repositoryFullName}, prompts you to paste your OpenRouter API key, then stores it as the OPENROUTER_API_KEY secret in GitHub Actions for this repository.`,
+              footnote:
+                "This does not use Codex OAuth. It uses your OpenRouter API key from GitHub Actions secrets.",
+              apiKey: {
+                label: "Get an OpenRouter API key",
+                url: "https://openrouter.ai/workspaces/default/keys",
               },
+            },
     [providerChoice, repositoryFullName],
   );
 
@@ -206,6 +287,9 @@ export function ProviderSecretSetupChooser({
         onValueChange={(value) => {
           if (isProviderChoice(value)) {
             setProviderChoice(value);
+            if (value === "codex_oauth_rotating") {
+              setSelectedSecretScope("repository");
+            }
             setVerificationError(null);
             setSubmitError(null);
           }
@@ -216,7 +300,7 @@ export function ProviderSecretSetupChooser({
           activateOnFocus
           className={[
             "grid overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/70 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
-            claudeCodeProviderEnabled ? "sm:grid-cols-4" : "sm:grid-cols-3",
+            claudeCodeProviderEnabled ? "sm:grid-cols-3" : "sm:grid-cols-2",
           ].join(" ")}
         >
           {visibleProviderChoices.map((choice) => {
@@ -382,7 +466,24 @@ export function ProviderSecretSetupChooser({
           </li>
           <li>Open a test pull request and ReviewRouter will run in CI.</li>
         </ol>
-        {activeCommand ? (
+        {rotatingCodexSelected && !codexRotatingOAuthEnabled ? (
+          <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[0.08] p-3 text-sm text-red-100">
+            {providerSetupSubmitErrorText("codex_rotating_not_enabled")}
+          </p>
+        ) : shouldFetchRotatingSetupCommand &&
+          rotatingSetupCommand.status === "loading" ? (
+          <p
+            role="status"
+            className="mt-4 rounded-xl border border-cyan-300/20 bg-cyan-300/[0.08] p-3 text-sm text-cyan-100"
+          >
+            Minting a short-lived setup command...
+          </p>
+        ) : shouldFetchRotatingSetupCommand &&
+          rotatingSetupCommand.status === "error" ? (
+          <p className="mt-4 rounded-xl border border-red-300/20 bg-red-300/[0.08] p-3 text-sm text-red-100">
+            {providerSetupSubmitErrorText(rotatingSetupCommand.error)}
+          </p>
+        ) : activeCommand ? (
           <CodeBlock
             code={activeCommand.command}
             language="bash"
@@ -547,6 +648,13 @@ type DashboardActionResult = {
   readonly params: Record<string, string>;
 };
 
+type RotatingSetupCommandResponse = {
+  readonly command: string;
+  readonly expiresAt: string;
+  readonly providerInstanceId: string;
+  readonly secretNames: readonly string[];
+};
+
 async function confirmProviderSecretSetup(
   formData: FormData,
 ): Promise<DashboardActionResult> {
@@ -581,6 +689,27 @@ function isDashboardActionResult(
   return Object.values(params).every((value) => typeof value === "string");
 }
 
+function isRotatingSetupCommandResponse(
+  input: unknown,
+): input is RotatingSetupCommandResponse {
+  if (!input || typeof input !== "object") {
+    return false;
+  }
+  const candidate = input as {
+    readonly command?: unknown;
+    readonly expiresAt?: unknown;
+    readonly providerInstanceId?: unknown;
+    readonly secretNames?: unknown;
+  };
+  return (
+    typeof candidate.command === "string" &&
+    typeof candidate.expiresAt === "string" &&
+    typeof candidate.providerInstanceId === "string" &&
+    Array.isArray(candidate.secretNames) &&
+    candidate.secretNames.every((secretName) => typeof secretName === "string")
+  );
+}
+
 function providerSetupSubmitErrorText(error: string): string {
   switch (error) {
     case "dashboard_action_failed":
@@ -607,6 +736,8 @@ function providerSetupSubmitErrorText(error: string): string {
       return "Your GitHub user needs write, maintain, or admin access on this repository to confirm provider setup.";
     case "entitlement_denied":
       return "This workspace plan does not allow provider setup confirmation.";
+    case "codex_rotating_not_enabled":
+      return "Rotating Codex OAuth is not enabled for this ReviewRouter deployment.";
     default:
       return "The dashboard could not save provider setup. Retry once, then check server logs if it repeats.";
   }
@@ -617,15 +748,10 @@ function providerChoiceToSetupSelection(value: ProviderChoice): {
   readonly authMode: ProviderAuthMode;
 } {
   switch (value) {
-    case "codex_oauth":
+    case "codex_oauth_rotating":
       return {
         providerKind: "codex",
-        authMode: "codex_subscription_oauth",
-      };
-    case "codex_api_key":
-      return {
-        providerKind: "codex",
-        authMode: "codex_openai_api_key",
+        authMode: "codex_subscription_oauth_rotating",
       };
     case "claude_code_oauth":
       return {

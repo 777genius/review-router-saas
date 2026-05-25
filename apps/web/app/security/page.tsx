@@ -28,7 +28,8 @@ export const metadata: Metadata = createPublicPageMetadata({
   path: "/security",
 });
 
-const secretCommand = `curl -fsSL ${resolveCodexSeedScriptUrl()} | bash -s -- --confirm-write --scope repo --repo owner/repo`;
+const secretCommand = `# Copy the full repo-scoped Codex command from the ReviewRouter dashboard.
+# It uses ${resolveCodexSeedScriptUrl()} with a short-lived setup nonce and writes REVIEWROUTER_CODEX_AUTH_JSON directly to GitHub Actions secrets.`;
 
 const securitySignals = [
   {
@@ -41,7 +42,7 @@ const securitySignals = [
   {
     label: "Provider secrets",
     title: "OAuth tokens and API keys stay in your boundary.",
-    body: "Codex OAuth, Claude Code OAuth, OpenAI API keys, and OpenRouter keys are stored directly in GitHub Actions secrets or on a trusted self-hosted runner.",
+    body: "Codex rotating OAuth, Claude Code OAuth, and OpenRouter keys are stored directly in GitHub Actions secrets. ReviewRouter cloud never receives plaintext provider credentials.",
     icon: KeyRound,
     tone: "lime",
   },
@@ -55,7 +56,7 @@ const securitySignals = [
   {
     label: "Runtime config",
     title: "OIDC avoids long-lived ReviewRouter API tokens in repos.",
-    body: "GitHub Actions can request short-lived runtime config through OIDC. Static fallback exists for local beta, but production should prefer OIDC.",
+    body: "GitHub Actions requests short-lived runtime config through OIDC. Production Codex OAuth rotating runs fail closed if the control plane cannot validate the run.",
     icon: RadioTower,
     tone: "cyan",
   },
@@ -75,7 +76,7 @@ const boundaryRows = [
     icon: KeyRound,
     ownedBy: "GitHub Actions secrets or trusted runner",
     sensitiveData:
-      "Codex auth.json, Claude Code OAuth token, OpenAI key, OpenRouter key",
+      "Codex rotating auth.json, Claude Code OAuth token, OpenRouter key",
     custody: "Customer",
   },
   {
@@ -129,10 +130,10 @@ const permissionRows: readonly {
     reason: "Create setup PRs and read setup PR state.",
   },
   {
-    permission: "secrets: read",
-    className: "Metadata",
+    permission: "secrets: write",
+    className: "Write",
     reason:
-      "Verify required GitHub Actions secret metadata: name, timestamps, visibility, and selected repository access. GitHub does not expose decrypted secret values.",
+      "Verify required GitHub Actions secret metadata and write encrypted rotating Codex OAuth payloads after OIDC/writeback checks. GitHub does not expose decrypted secret values.",
     docs: [
       {
         label: "Repository secret docs",

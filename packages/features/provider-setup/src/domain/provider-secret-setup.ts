@@ -3,10 +3,17 @@ import {
   getProviderSecretNames,
   type ProviderSetupKind,
 } from "@reviewrouter/features-review-providers";
+import {
+  buildCodexRotatingSetupManifest,
+  codexRotatingSecretName,
+  renderCodexRotatingInstallerCommand,
+  type CodexRotatingSetupManifest,
+} from "@reviewrouter/features-codex-oauth-rotating";
 import { z } from "zod";
 
 const providerSecretKinds = [
   "codex_oauth",
+  "codex_oauth_rotating",
   "openai_api_key",
   "claude_code_oauth",
   "openrouter_api_key",
@@ -48,15 +55,72 @@ export type ProviderSecretSetupGuidance = {
 
 export const defaultCodexSeedScriptUrl =
   "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh";
+export const defaultCodexRotatingSeedScriptUrl =
+  "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh";
 
 export function buildProviderSecretSetupGuidance(input: {
   readonly provider: ProviderSecretKind;
   readonly repoFullName: string;
   readonly organizationLogin?: string | null;
   readonly seedScriptUrl?: string;
+  readonly rotatingSetup?: {
+    readonly installerUrl: string;
+    readonly installerVersion: string;
+    readonly installerSha256: string;
+    readonly setupManifestUrl?: string;
+    readonly setupConfirmUrl?: string;
+    readonly repositoryId?: string;
+    readonly providerInstanceId?: string;
+    readonly setupNonce?: string;
+    readonly now?: Date;
+    readonly ttlSeconds?: number;
+    readonly generationHashSalt?: string;
+    readonly accountFingerprintSalt?: string;
+  };
 }): ProviderSecretSetupGuidance {
   const [owner, repo] = parseRepoFullName(input.repoFullName);
   const organizationLogin = input.organizationLogin?.trim() || null;
+
+  if (input.provider === "codex_oauth_rotating") {
+    if (!input.rotatingSetup) {
+      throw new Error("codex_rotating_setup_manifest_required");
+    }
+    const manifest = buildCodexRotatingSetupManifest({
+      repositoryFullName: input.repoFullName,
+      installerUrl: input.rotatingSetup.installerUrl,
+      installerVersion: input.rotatingSetup.installerVersion,
+      installerSha256: input.rotatingSetup.installerSha256,
+      ...(input.rotatingSetup?.repositoryId
+        ? { repositoryId: input.rotatingSetup.repositoryId }
+        : {}),
+      ...(input.rotatingSetup?.providerInstanceId
+        ? { providerInstanceId: input.rotatingSetup.providerInstanceId }
+        : {}),
+      ...(input.rotatingSetup?.setupNonce
+        ? { setupNonce: input.rotatingSetup.setupNonce }
+        : {}),
+      ...(input.rotatingSetup?.now ? { now: input.rotatingSetup.now } : {}),
+      ...(input.rotatingSetup?.ttlSeconds
+        ? { ttlSeconds: input.rotatingSetup.ttlSeconds }
+        : {}),
+      ...(input.rotatingSetup?.generationHashSalt
+        ? { generationHashSalt: input.rotatingSetup.generationHashSalt }
+        : {}),
+      ...(input.rotatingSetup?.accountFingerprintSalt
+        ? { accountFingerprintSalt: input.rotatingSetup.accountFingerprintSalt }
+        : {}),
+    });
+    return buildCodexRotatingSecretSetupGuidance({
+      repoFullName: input.repoFullName,
+      manifest,
+      ...(input.rotatingSetup.setupManifestUrl
+        ? { setupManifestUrl: input.rotatingSetup.setupManifestUrl }
+        : {}),
+      ...(input.rotatingSetup.setupConfirmUrl
+        ? { setupConfirmUrl: input.rotatingSetup.setupConfirmUrl }
+        : {}),
+    });
+  }
 
   if (input.provider === "codex_oauth") {
     const seedScriptUrl = shellQuote(
@@ -230,6 +294,50 @@ export function buildProviderSecretSetupGuidance(input: {
           "ReviewRouter SaaS does not need to see this key; set it directly in GitHub Actions secrets.",
           "Prefer organization selected-repository secrets for team-owned repositories.",
         ],
+  };
+}
+
+function buildCodexRotatingSecretSetupGuidance(input: {
+  readonly repoFullName: string;
+  readonly manifest: CodexRotatingSetupManifest;
+  readonly setupManifestUrl?: string;
+  readonly setupConfirmUrl?: string;
+}): ProviderSecretSetupGuidance {
+  return {
+    provider: "codex_oauth_rotating",
+    recommendedScope: "repository",
+    commands: [
+      {
+        scope: "repository",
+        title: "Repository secret with automatic refresh",
+        description:
+          "Stores REVIEWROUTER_CODEX_AUTH_JSON directly in this repository and lets GitHub-hosted runs refresh it after each Codex bootstrap.",
+        command: renderCodexRotatingInstallerCommand({
+          manifest: input.manifest,
+          ...(input.setupManifestUrl
+            ? { setupManifestUrl: input.setupManifestUrl }
+            : {}),
+          ...(input.setupConfirmUrl
+            ? { setupConfirmUrl: input.setupConfirmUrl }
+            : {}),
+        }),
+        storesSecretIn: "github_repository_secret",
+        targetLabel: `${input.repoFullName} repository secret`,
+        secretNames: [codexRotatingSecretName],
+        selectedRepositories: [input.repoFullName],
+        validatesBeforeWrite: true,
+        failureRecovery:
+          "If CI reports needs_reconnect or unknown_auth_state, rerun this repository command from the dedicated ReviewRouter Codex session.",
+        sendsSecretToReviewRouter: false,
+      },
+    ],
+    warnings: [
+      "Rotating Codex OAuth is repository-scoped; organization secrets are intentionally disabled because each repository keeps an isolated refresh generation.",
+      "The command downloads a versioned installer, verifies SHA256 locally, then writes REVIEWROUTER_CODEX_AUTH_JSON directly to GitHub Actions secrets through gh.",
+      "The installer creates a dedicated ~/.reviewrouter/codex/<repo> CODEX_HOME and does not mutate the normal ~/.codex login cache.",
+      "ReviewRouter SaaS never receives plaintext auth.json; CI sends only the encrypted GitHub-secret payload needed for writeback.",
+      "Generated production workflows run on GitHub-hosted same-repository PRs only; fork, draft, and bot-triggered PRs never receive secret-bearing Codex review.",
+    ],
   };
 }
 

@@ -11,25 +11,25 @@ describe("resolveInstallCodexRedirect", () => {
     });
 
     expect(resolveInstallCodexRedirect(request)).toBe(
-      "https://reviewrouter.site/getting-started#codex-oauth",
+      "https://reviewrouter.site/getting-started#codex-oauth-rotating",
     );
   });
 
-  it("keeps curl requests on the raw seed script", () => {
+  it("keeps curl requests on the raw rotating seed script", () => {
     const request = new Request("https://reviewrouter.site/install/codex", {
       headers: { accept: "*/*" },
     });
 
     expect(resolveInstallCodexRedirect(request)).toBe(
-      "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh",
+      "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh",
     );
   });
 
-  it("keeps requests without accept headers on the raw seed script", () => {
+  it("keeps requests without accept headers on the raw rotating seed script", () => {
     const request = new Request("https://reviewrouter.site/install/codex");
 
     expect(resolveInstallCodexRedirect(request)).toBe(
-      "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-auth.sh",
+      "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh",
     );
   });
 });

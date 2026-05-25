@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeConflictReviewWorkflowCapability,
   analyzeWorkflowProviderCompatibility,
+  defaultCodexRotatingWorkflowPath,
   defaultInteractionWorkflowPath,
   defaultRequiredWorkflowPath,
   defaultWorkflowPath,
+  getCodexRotatingWorkflowSetupContentMarkerGroups,
   getWorkflowProviderContentMarkerGroups,
   getWorkflowSetupContentMarkerGroups,
   renderReviewRouterInteractionWorkflow,
@@ -13,7 +15,13 @@ import {
   renderReviewRouterRequiredWorkflow,
   renderReviewRouterWorkflow,
   renderReviewRouterWorkflowFiles,
+  renderCodexRotatingAdvisoryWorkflow,
+  scanCodexRotatingAdvisoryWorkflow,
 } from "../domain/workflow-template";
+import {
+  renderCodexRotatingAdvisoryWorkflow as renderExportedCodexRotatingAdvisoryWorkflow,
+  scanCodexRotatingAdvisoryWorkflow as scanExportedCodexRotatingAdvisoryWorkflow,
+} from "../index";
 
 const workflowOptions = {
   actionRef: "777genius/review-router@v1",
@@ -40,6 +48,95 @@ function getWorkflowJobSection(workflow: string, jobId: string): string {
 }
 
 describe("renderReviewRouterWorkflow", () => {
+  it("exports a dedicated advisory-only rotating Codex OAuth workflow", () => {
+    const workflow = renderExportedCodexRotatingAdvisoryWorkflow({
+      actionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+    });
+
+    expect(workflow).toContain("name: ReviewRouter Codex OAuth");
+    expect(workflow).toContain("runs-on: ubuntu-24.04");
+    expect(workflow).toContain("permissions: {}\n\njobs:");
+    expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain("mode: codex-oauth-rotating");
+    expect(workflow).toContain(
+      "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    );
+    expect(workflow).not.toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("merge_group:");
+    expect(workflow).not.toContain("actions/checkout");
+    expect(scanExportedCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(renderCodexRotatingAdvisoryWorkflow).toBe(
+      renderExportedCodexRotatingAdvisoryWorkflow,
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow).toBe(
+      scanExportedCodexRotatingAdvisoryWorkflow,
+    );
+  });
+
+  it("renders the dedicated rotating Codex workflow and trusted legacy cleanup operations when rotating provider setup is requested", () => {
+    const files = renderReviewRouterWorkflowFiles({
+      actionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      apiUrl: "https://reviewrouter.site",
+      runtimeConfigMode: "oidc",
+      workflowStyle: "reusable",
+      staticRuntimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth-rotating",
+      },
+      codexRotatingProviderInstanceId: "codex-rotating:123456",
+    });
+
+    expect(files).toHaveLength(3);
+    const codexWorkflow = files[0];
+    expect(codexWorkflow?.path).toBe(defaultCodexRotatingWorkflowPath);
+    expect(codexWorkflow?.operation).not.toBe("delete");
+    expect(files[1]).toMatchObject({
+      path: ".github/workflows/reviewrouter.yml",
+      operation: "delete",
+    });
+    expect(files[2]).toMatchObject({
+      path: ".github/workflows/reviewrouter-interaction.yml",
+      operation: "delete",
+    });
+    const codexWorkflowContent =
+      codexWorkflow && codexWorkflow.operation !== "delete"
+        ? codexWorkflow.content
+        : "";
+    expect(codexWorkflowContent).toContain("name: ReviewRouter Codex OAuth");
+    expect(codexWorkflowContent).toContain(
+      'provider-instance-id: "codex-rotating:123456"',
+    );
+    expect(codexWorkflowContent).not.toContain("reviewrouter-interaction.yml");
+    expect(codexWorkflowContent).not.toContain("workflow_dispatch:");
+    expect(scanCodexRotatingAdvisoryWorkflow(codexWorkflowContent)).toEqual({
+      valid: true,
+      errors: [],
+    });
+  });
+
+  it("exports readiness markers for the dedicated rotating Codex workflow", () => {
+    expect(
+      getCodexRotatingWorkflowSetupContentMarkerGroups({
+        providerInstanceId: "codex-rotating:123456",
+      }),
+    ).toEqual([
+      [
+        "name: ReviewRouter Codex OAuth",
+        "permissions: {}\n\njobs:",
+        "id-token: write",
+        "mode: codex-oauth-rotating",
+        'provider-instance-id: "codex-rotating:123456"',
+        "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+      ],
+    ]);
+  });
+
   it("renders a review-only pull request workflow", () => {
     const workflow = renderReviewRouterWorkflow({
       ...workflowOptions,
@@ -174,39 +271,39 @@ describe("renderReviewRouterWorkflow", () => {
       defaultInteractionWorkflowPath,
     ]);
     const [reviewWorkflow, interactionWorkflow] = files;
-    expect(reviewWorkflow?.content).toContain("name: ReviewRouter");
-    expect(reviewWorkflow?.content).toContain(
+    const reviewWorkflowContent = workflowFileContent(reviewWorkflow);
+    const interactionWorkflowContent = workflowFileContent(interactionWorkflow);
+    expect(reviewWorkflowContent).toContain("name: ReviewRouter");
+    expect(reviewWorkflowContent).toContain(
       "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",
     );
-    expect(reviewWorkflow?.content).not.toContain(
-      "pull_request_review_comment:",
-    );
-    expect(interactionWorkflow?.content).toContain(
+    expect(reviewWorkflowContent).not.toContain("pull_request_review_comment:");
+    expect(interactionWorkflowContent).toContain(
       "name: ReviewRouter Interaction",
     );
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain(
       "uses: 777genius/review-router/.github/workflows/reviewrouter-interaction-reusable.yml@v1",
     );
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain(
       "review_workflow_file: reviewrouter.yml",
     );
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain(
       "discussion_mode: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
     );
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain(
       "discussion_model: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
     );
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain(
       "discussion_reasoning_effort: ${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}",
     );
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain(
       "discussion_max_per_pr: ${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}",
     );
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain(
       "pull_request_review_comment:",
     );
-    expect(interactionWorkflow?.content).toContain("issue_comment:");
-    expect(interactionWorkflow?.content).toContain(
+    expect(interactionWorkflowContent).toContain("issue_comment:");
+    expect(interactionWorkflowContent).toContain(
       "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')",
     );
   });
@@ -365,9 +462,12 @@ describe("renderReviewRouterWorkflow", () => {
       conflictReviewFallbackEnabled: false,
     });
 
-    expect(files[0]?.content).toContain("uses: 777genius/review-router@v1");
-    expect(files[0]?.content).toContain("actions/setup-node@v6");
-    expect(files[0]?.content).not.toContain(
+    const workflow = files[0];
+    const workflowContent =
+      workflow && workflow.operation !== "delete" ? workflow.content : "";
+    expect(workflowContent).toContain("uses: 777genius/review-router@v1");
+    expect(workflowContent).toContain("actions/setup-node@v6");
+    expect(workflowContent).not.toContain(
       ".github/workflows/reviewrouter-reusable.yml",
     );
   });
@@ -861,3 +961,9 @@ describe("renderReviewRouterWorkflow", () => {
     ).toThrow("invalid_reusable_workflow_runtime_ref");
   });
 });
+
+function workflowFileContent(
+  file: ReturnType<typeof renderReviewRouterWorkflowFiles>[number] | undefined,
+): string {
+  return file && file.operation !== "delete" ? file.content : "";
+}

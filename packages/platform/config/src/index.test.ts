@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  isCodexRotatingOAuthAllowedForRepository,
+  isCodexRotatingOAuthEnabled,
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
   isClaudeCodeProviderEnabled,
   isWorkflowProvisioningEnabled,
   loadRuntimeEnv,
+  parseCodexRotatingOAuthRepositoryAllowlist,
   parseConflictReviewFallbackRepositoryAllowlist,
   readGitHubAppPrivateKey,
   requireGitHubAppPrivateKey,
@@ -138,6 +141,49 @@ describe("platform config", () => {
         REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: "0",
       } as NodeJS.ProcessEnv),
     ).toBe(false);
+  });
+
+  it("enables production rotating Codex OAuth for all repos with an optional allowlist", () => {
+    const enabledEnv = {
+      REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
+      REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES:
+        "777genius/agent-teams-ai, Other-Org/Repo.Name",
+    } as NodeJS.ProcessEnv;
+
+    expect(isCodexRotatingOAuthEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+    expect(isCodexRotatingOAuthEnabled(enabledEnv)).toBe(true);
+    expect(
+      parseCodexRotatingOAuthRepositoryAllowlist(
+        enabledEnv.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES,
+      ),
+    ).toEqual(["777genius/agent-teams-ai", "other-org/repo.name"]);
+    expect(
+      isCodexRotatingOAuthAllowedForRepository(
+        "777genius/agent-teams-ai",
+        enabledEnv,
+      ),
+    ).toBe(true);
+    expect(
+      isCodexRotatingOAuthAllowedForRepository(
+        "777genius/not-enabled",
+        enabledEnv,
+      ),
+    ).toBe(false);
+    expect(
+      isCodexRotatingOAuthAllowedForRepository("777genius/agent-teams-ai", {
+        ...enabledEnv,
+        REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "0",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
+    expect(
+      isCodexRotatingOAuthAllowedForRepository("777genius/agent-teams-ai", {
+        REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
+        REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES: "",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(() =>
+      parseCodexRotatingOAuthRepositoryAllowlist("../bad/repo"),
+    ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES");
   });
 
   it("reads GitHub App private key from an inline hosted secret", () => {

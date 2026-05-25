@@ -32,7 +32,7 @@ const requiredPermissions = {
   workflows: "write",
   pull_requests: "write",
   issues: "write",
-  secrets: "read",
+  secrets: "write",
   organization_secrets: "read",
   organization_plan: "read",
   statuses: "write",
@@ -84,6 +84,10 @@ async function checkGitHubApp() {
   const webhookConfig = await readWebhookConfig(app);
   const actualId = String(appData.id);
   const actualSlug = String(appData.slug ?? "");
+  const appSettingsUrl = buildAppSettingsUrl(
+    appData.owner,
+    actualSlug || appSlug,
+  );
 
   if (actualId !== String(appId)) {
     errors.push(
@@ -95,7 +99,7 @@ async function checkGitHubApp() {
       `GITHUB_APP_SLUG does not match authenticated App slug ${actualSlug}.`,
     );
   }
-  assertPermissions(appData.permissions ?? {});
+  assertPermissions(appData.permissions ?? {}, appSettingsUrl);
   assertWebhookConfig(webhookConfig);
   assertWebhookEvents(appData.events ?? []);
 
@@ -144,7 +148,7 @@ async function checkGitHubApp() {
           }
         : null,
       installUrl,
-      settingsUrl: buildAppSettingsUrl(appData.owner, actualSlug || appSlug),
+      settingsUrl: appSettingsUrl,
     },
     installations: installations.map((installation) => ({
       id: installation.id,
@@ -207,14 +211,14 @@ function assertWebhookConfig(webhookConfig) {
   }
 }
 
-function assertPermissions(actualPermissions) {
+function assertPermissions(actualPermissions, appSettingsUrl) {
   for (const [permission, requiredAccess] of Object.entries(
     requiredPermissions,
   )) {
     const actualAccess = actualPermissions[permission];
     if (!permissionSatisfies(actualAccess, requiredAccess)) {
       errors.push(
-        `GitHub App permission ${permission} must be ${requiredAccess}; current value is ${actualAccess ?? "missing"}.`,
+        `GitHub App permission ${permission} must be ${requiredAccess}; current value is ${actualAccess ?? "missing"}. Update the App in GitHub settings: ${appSettingsUrl}`,
       );
     }
   }
@@ -244,12 +248,15 @@ function assertInstallationPermissions(installations) {
     if (missing.length === 0) continue;
 
     const account = installation.account?.login ?? "unknown account";
+    const approvalUrl =
+      installation.html_url ?? buildInstallationSettingsUrl(installation);
     const missingSummary = missing
       .map(([permission, requiredAccess]) => `${permission}:${requiredAccess}`)
       .join(", ");
     const message = [
       `GitHub App installation ${installation.id} (${account}) has not approved the latest required permissions: ${missingSummary}.`,
       "Existing installations must approve the App permission update before installation tokens receive these permissions.",
+      `Approval URL: ${approvalUrl}`,
     ].join(" ");
     if (requireInstallationPermissionApproval) {
       errors.push(message);
@@ -326,6 +333,15 @@ function buildAppSettingsUrl(owner, slug) {
     return `https://github.com/organizations/${encodeURIComponent(owner.login)}/settings/apps/${safeSlug}`;
   }
   return `https://github.com/settings/apps/${safeSlug}`;
+}
+
+function buildInstallationSettingsUrl(installation) {
+  const safeId = encodeURIComponent(String(installation.id));
+  const account = installation.account;
+  if (account?.type === "Organization" && account.login) {
+    return `https://github.com/organizations/${encodeURIComponent(account.login)}/settings/installations/${safeId}`;
+  }
+  return `https://github.com/settings/installations/${safeId}`;
 }
 
 async function listInstallations(app) {

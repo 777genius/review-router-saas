@@ -13,6 +13,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly codexRotatingProviderInstanceId?: string;
   readonly actor?: string;
 };
 
@@ -60,6 +61,12 @@ export async function provisionRepositoryReviewRouterWorkflow(
         : {
             conflictReviewFallbackEnabled: input.conflictReviewFallbackEnabled,
           }),
+      ...(input.codexRotatingProviderInstanceId
+        ? {
+            codexRotatingProviderInstanceId:
+              input.codexRotatingProviderInstanceId,
+          }
+        : {}),
       ...(input.staticRuntimeEnv
         ? { staticRuntimeEnv: input.staticRuntimeEnv }
         : {}),

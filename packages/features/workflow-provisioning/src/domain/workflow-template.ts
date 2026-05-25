@@ -1,4 +1,13 @@
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
+import {
+  renderCodexRotatingAdvisoryWorkflow,
+  scanCodexRotatingAdvisoryWorkflow,
+} from "@reviewrouter/features-codex-oauth-rotating";
+
+export {
+  renderCodexRotatingAdvisoryWorkflow,
+  scanCodexRotatingAdvisoryWorkflow,
+};
 
 export type ReviewRouterWorkflowOptions = {
   readonly actionRef: string;
@@ -7,12 +16,26 @@ export type ReviewRouterWorkflowOptions = {
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly codexRotatingProviderInstanceId?: string;
 };
 
 export type ReviewRouterWorkflowStyle = "reusable" | "explicit";
 
-export type ReviewRouterWorkflowFile = {
+export type ReviewRouterWorkflowFile =
+  | {
+      readonly path: string;
+      readonly operation?: "upsert";
+      readonly content: string;
+    }
+  | {
+      readonly path: string;
+      readonly operation: "delete";
+      readonly markerGroups: readonly (readonly string[])[];
+    };
+
+export type ReviewRouterWorkflowUpsertFile = {
   readonly path: string;
+  readonly operation?: "upsert";
   readonly content: string;
 };
 
@@ -30,6 +53,8 @@ export type WorkflowProviderCompatibility = {
 };
 
 export const defaultWorkflowPath = ".github/workflows/reviewrouter.yml";
+export const defaultCodexRotatingWorkflowPath =
+  ".github/workflows/reviewrouter-codex.yml";
 export const defaultInteractionWorkflowPath =
   ".github/workflows/reviewrouter-interaction.yml";
 export const defaultRequiredWorkflowPath =
@@ -689,6 +714,39 @@ export function getWorkflowSetupContentMarkerGroups(input: {
   ]);
 }
 
+export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
+  readonly providerInstanceId: string;
+}): readonly (readonly string[])[] {
+  return [
+    [
+      "name: ReviewRouter Codex OAuth",
+      "permissions: {}\n\njobs:",
+      "id-token: write",
+      "mode: codex-oauth-rotating",
+      `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
+      "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    ],
+  ];
+}
+
+export function getLegacyReviewRouterWorkflowDeletionMarkerGroups(): readonly (readonly string[])[] {
+  return [
+    ["name: ReviewRouter", reusableReviewWorkflowPath],
+    [
+      "name: ReviewRouter",
+      "uses: 777genius/review-router@",
+      "REVIEW_AUTH_MODE",
+    ],
+  ];
+}
+
+export function getLegacyReviewRouterInteractionWorkflowDeletionMarkerGroups(): readonly (readonly string[])[] {
+  return [
+    ["name: ReviewRouter Interaction", reusableInteractionWorkflowPath],
+    ["name: ReviewRouter Interaction", "pull_request_review_comment:"],
+  ];
+}
+
 export function analyzeConflictReviewWorkflowCapability(input: {
   readonly workflowYaml: string;
 }):
@@ -950,6 +1008,33 @@ function inferWorkflowStyle(workflowYaml: string): ReviewRouterWorkflowStyle {
 export function renderReviewRouterWorkflowFiles(
   options: ReviewRouterWorkflowOptions,
 ): readonly ReviewRouterWorkflowFile[] {
+  if (options.codexRotatingProviderInstanceId) {
+    if (options.conflictReviewFallbackEnabled === true) {
+      throw new Error("codex_rotating_conflict_review_unsupported");
+    }
+    return [
+      {
+        path: defaultCodexRotatingWorkflowPath,
+        content: renderCodexRotatingAdvisoryWorkflow({
+          actionRef: options.actionRef,
+          apiUrl: options.apiUrl,
+          providerInstanceId: options.codexRotatingProviderInstanceId,
+        }),
+      },
+      {
+        path: defaultWorkflowPath,
+        operation: "delete",
+        markerGroups: getLegacyReviewRouterWorkflowDeletionMarkerGroups(),
+      },
+      {
+        path: defaultInteractionWorkflowPath,
+        operation: "delete",
+        markerGroups:
+          getLegacyReviewRouterInteractionWorkflowDeletionMarkerGroups(),
+      },
+    ];
+  }
+
   if (
     options.conflictReviewFallbackEnabled === true &&
     (options.workflowStyle ?? "reusable") !== "reusable"

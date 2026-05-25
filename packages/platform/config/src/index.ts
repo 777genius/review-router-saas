@@ -37,6 +37,8 @@ export const runtimeEnvSchema = z.object({
     .default("1"),
   REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES: z.string().default(""),
   REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER: z.enum(["0", "1"]).default("1"),
+  REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: z.enum(["0", "1"]).default("0"),
+  REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES: z.string().default(""),
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high", "xhigh"])
@@ -100,12 +102,25 @@ export function isConflictReviewFallbackAllowedForRepository(
   if (allowlist.length === 0) {
     return true;
   }
-  const normalizedRepository = normalizeRepositoryFullName(repositoryFullName);
+  const normalizedRepository = normalizeRepositoryFullName(
+    repositoryFullName,
+    "REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES",
+  );
   return allowlist.includes(normalizedRepository);
 }
 
 export function parseConflictReviewFallbackRepositoryAllowlist(
   value: string | undefined,
+): readonly string[] {
+  return parseRepositoryAllowlist(
+    value,
+    "REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES",
+  );
+}
+
+function parseRepositoryAllowlist(
+  value: string | undefined,
+  envName: string,
 ): readonly string[] {
   const raw = value?.trim();
   if (!raw) {
@@ -113,7 +128,7 @@ export function parseConflictReviewFallbackRepositoryAllowlist(
   }
   const repositories = raw
     .split(/[\s,]+/)
-    .map((repository) => normalizeRepositoryFullName(repository))
+    .map((repository) => normalizeRepositoryFullName(repository, envName))
     .filter((repository) => repository.length > 0);
   return [...new Set(repositories)];
 }
@@ -122,6 +137,41 @@ export function isClaudeCodeProviderEnabled(
   input: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return input.REVIEW_ROUTER_ENABLE_CLAUDE_CODE_PROVIDER !== "0";
+}
+
+export function isCodexRotatingOAuthEnabled(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return input.REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH === "1";
+}
+
+export function isCodexRotatingOAuthAllowedForRepository(
+  repositoryFullName: string,
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isCodexRotatingOAuthEnabled(input)) {
+    return false;
+  }
+  const allowlist = parseCodexRotatingOAuthRepositoryAllowlist(
+    input.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES,
+  );
+  if (allowlist.length === 0) {
+    return true;
+  }
+  const normalizedRepository = normalizeRepositoryFullName(
+    repositoryFullName,
+    "REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES",
+  );
+  return allowlist.includes(normalizedRepository);
+}
+
+export function parseCodexRotatingOAuthRepositoryAllowlist(
+  value: string | undefined,
+): readonly string[] {
+  return parseRepositoryAllowlist(
+    value,
+    "REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES",
+  );
 }
 
 export type GitHubAppPrivateKeyEnv = {
@@ -160,16 +210,17 @@ function normalizePrivateKey(value: string): string {
   return value.includes("\\n") ? value.replaceAll("\\n", "\n") : value;
 }
 
-function normalizeRepositoryFullName(repositoryFullName: string): string {
+function normalizeRepositoryFullName(
+  repositoryFullName: string,
+  envName: string,
+): string {
   const normalized = repositoryFullName.trim().toLowerCase();
   if (
     !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_.-]{1,100}$/.test(
       normalized,
     )
   ) {
-    throw new Error(
-      "invalid_env:REVIEW_ROUTER_CONFLICT_REVIEW_FALLBACK_REPOSITORIES",
-    );
+    throw new Error(`invalid_env:${envName}`);
   }
   return normalized;
 }

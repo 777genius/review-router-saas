@@ -5,6 +5,51 @@ import {
 } from "../domain/provider-secret-setup";
 
 describe("provider secret setup guidance", () => {
+  it("builds repository-only rotating Codex OAuth guidance with installer pinning", () => {
+    const guidance = buildProviderSecretSetupGuidance({
+      provider: "codex_oauth_rotating",
+      repoFullName: "777genius/agent-teams-ai",
+      organizationLogin: "777genius",
+      rotatingSetup: {
+        installerUrl: "https://reviewrouter.site/install/codex-rotating",
+        installerVersion: "v1.2.3",
+        installerSha256:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        repositoryId: "123456",
+        providerInstanceId: "codex-rotating:123456",
+        setupNonce: "stp:123456789",
+        now: new Date("2026-05-25T12:00:00.000Z"),
+        generationHashSalt: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        accountFingerprintSalt: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      },
+    });
+
+    expect(guidance.provider).toBe("codex_oauth_rotating");
+    expect(guidance.recommendedScope).toBe("repository");
+    expect(guidance.commands).toHaveLength(1);
+    expect(guidance.commands[0]).toMatchObject({
+      scope: "repository",
+      storesSecretIn: "github_repository_secret",
+      targetLabel: "777genius/agent-teams-ai repository secret",
+      secretNames: ["REVIEWROUTER_CODEX_AUTH_JSON"],
+      selectedRepositories: ["777genius/agent-teams-ai"],
+      validatesBeforeWrite: true,
+      sendsSecretToReviewRouter: false,
+    });
+    expect(guidance.commands[0]?.command).toContain("curl -fsSL");
+    expect(guidance.commands[0]?.command).toContain("shasum -a 256");
+    expect(guidance.commands[0]?.command).toContain("sha256sum");
+    expect(guidance.commands[0]?.command).toContain(
+      "Installer SHA256 mismatch",
+    );
+    expect(guidance.commands[0]?.command).toContain(
+      "REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64",
+    );
+    expect(guidance.commands[0]?.command).not.toContain("| bash");
+    expect(guidance.warnings.join(" ")).toContain("repository-scoped");
+    expect(guidance.warnings.join(" ")).toContain("fork, draft, and bot");
+  });
+
   it("builds a Codex OAuth org selected-repository command without sending secrets to SaaS", () => {
     const guidance = buildProviderSecretSetupGuidance({
       provider: "codex_oauth",

@@ -137,7 +137,7 @@ Why these are needed:
 - `workflows: write` writes `.github/workflows/reviewrouter.yml`
 - `pull_requests: write` creates setup/update PRs
 - `issues: write` supports PR summary/setup/help conversations when App-bot identity or SaaS guidance is used
-- `secrets: read` verifies GitHub Actions secret names exist after provider setup; GitHub does not return secret values
+- `secrets: write` verifies GitHub Actions secret names exist after provider setup and supports encrypted rotating Codex OAuth writeback; GitHub does not return secret values
 - `organization_secrets: read` verifies selected-repository organization secret metadata for org-owned repositories; GitHub does not return secret values
 - `actions: read` supports workflow run event metadata for live health/status updates
 - `checks: write` allows ReviewRouter-owned check runs when direct GitHub check integration is enabled

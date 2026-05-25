@@ -23,24 +23,24 @@ import { createPublicPageMetadata } from "../seo";
 export const metadata: Metadata = createPublicPageMetadata({
   title: "Getting started with ReviewRouter",
   description:
-    "Install the ReviewRouter GitHub App, merge the current reusable workflow setup PR, seed Codex, Claude Code, OpenAI, or OpenRouter credentials into GitHub Actions secrets, and run AI review in your repository runtime.",
+    "Install the ReviewRouter GitHub App, merge the current setup PR, connect Codex, Claude Code, or OpenRouter credentials into GitHub Actions secrets, and run AI review in your repository runtime.",
   path: "/getting-started",
 });
 
 const seedScriptUrl = resolveCodexSeedScriptUrl();
 
-const codexRepoCommand = `curl -fsSL ${seedScriptUrl} | bash -s -- --confirm-write --scope repo --repo owner/repo`;
-
-const codexOrgCommand = `curl -fsSL ${seedScriptUrl} | bash -s -- --confirm-write --scope org --org acme --visibility selected --repos repo-a,repo-b`;
+const codexRepoCommand = `# Copy the full repo-scoped command from Dashboard -> Enable review -> Codex.
+# It uses ${seedScriptUrl}, a short-lived setup nonce, and REVIEWROUTER_CODEX_AUTH_JSON.
+curl -fsSL ${seedScriptUrl} | REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL="..." REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE="..." REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID="..." bash -s -- --confirm-write`;
 
 const claudeCommand = `claude setup-token
 gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo owner/repo --app actions`;
 
-const apiKeyCommands = `gh secret set OPENAI_API_KEY --repo owner/repo --app actions
-gh secret set OPENROUTER_API_KEY --repo owner/repo --app actions`;
+const apiKeyCommands = `gh secret set OPENROUTER_API_KEY --repo owner/repo --app actions`;
 
 const workflowManifest = `.github/workflows/reviewrouter.yml
 .github/workflows/reviewrouter-interaction.yml
+.github/workflows/reviewrouter-codex.yml  # Codex OAuth rotating repos
 branch: reviewrouter/setup
 runtime: 777genius/review-router reusable workflows`;
 
@@ -117,20 +117,13 @@ const workflowRows = [
 
 const providerRows = [
   {
-    name: "Codex subscription",
-    auth: "CODEX_AUTH_JSON",
+    name: "Codex",
+    auth: "REVIEWROUTER_CODEX_AUTH_JSON",
     model: "gpt-5.5 default",
-    setup: "Use the hosted seed script after codex login.",
+    setup:
+      "Copy the dashboard-generated command. It writes encrypted GitHub secret payloads directly to GitHub and refreshes in GitHub-hosted Actions.",
     icon: "openai",
-    badge: "OAuth",
-  },
-  {
-    name: "Codex API key",
-    auth: "OPENAI_API_KEY",
-    model: "Codex static model catalog",
-    setup: "Paste an OpenAI API key through gh secret set.",
-    icon: "openai",
-    badge: "API key",
+    badge: "OAuth refresh",
   },
   {
     name: "Claude Code",
@@ -238,7 +231,11 @@ export default function GettingStartedPage(): React.ReactElement {
             <WorkflowPanel />
           </section>
 
-          <section className="mt-8" aria-labelledby="provider-title">
+          <section
+            id="codex-oauth-rotating"
+            className="mt-8"
+            aria-labelledby="provider-title"
+          >
             <SectionHeading
               icon={KeyRound}
               title="Provider access"
@@ -521,7 +518,9 @@ function ProviderMatrix(): React.ReactElement {
           />
           <div className="mb-4 flex items-center justify-between gap-3">
             <ProviderMark provider={provider.icon} />
-            <Badge tone={provider.badge === "OAuth" ? "success" : "neutral"}>
+            <Badge
+              tone={provider.badge.includes("OAuth") ? "success" : "neutral"}
+            >
               {provider.badge}
             </Badge>
           </div>
@@ -556,15 +555,9 @@ function CommandGrid(): React.ReactElement {
     <div className="grid gap-4 lg:grid-cols-2">
       <CommandPanel
         badge="Recommended"
-        title="Codex subscription per repository"
-        body="Use when one repository should run review with a ChatGPT Codex subscription."
+        title="Codex per repository"
+        body="Use the dashboard-generated command for the selected repository. Generic Codex commands are intentionally disabled."
         code={codexRepoCommand}
-      />
-      <CommandPanel
-        badge="Organization"
-        title="Codex subscription for selected repos"
-        body="Use for several repos without exposing the secret to the entire organization."
-        code={codexOrgCommand}
       />
       <CommandPanel
         badge="Claude Code"
@@ -574,7 +567,7 @@ function CommandGrid(): React.ReactElement {
       />
       <CommandPanel
         badge="API keys"
-        title="OpenAI or OpenRouter API key mode"
+        title="OpenRouter API key mode"
         body="Use normal provider billing when you do not want subscription OAuth."
         code={apiKeyCommands}
       />

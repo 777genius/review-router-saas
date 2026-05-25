@@ -64,6 +64,11 @@ export function safeDashboardErrorCode(error: unknown): string {
       "provider_secret_check_permission_required",
       "organization_secret_scope_forbidden",
       "workflow_provisioning_disabled",
+      "codex_rotating_not_enabled",
+      "codex_rotating_repository_scope_required",
+      "codex_rotating_single_provider_required",
+      "codex_legacy_auth_requires_reconnect",
+      "codex_api_key_setup_disabled",
       "org_ruleset_requires_organization_installation",
       "org_ruleset_no_selected_repositories",
       "org_ruleset_all_repositories_requires_all_access",
@@ -107,6 +112,8 @@ export function safeDashboardErrorCode(error: unknown): string {
       "invalid_reusable_workflow_action_ref",
       "invalid_reusable_workflow_runtime_ref",
       "invalid_workflow_env_key",
+      "codex_rotating_action_ref_must_be_full_sha",
+      "codex_rotating_conflict_review_unsupported",
     ].includes(message)
   ) {
     return "server_misconfigured";

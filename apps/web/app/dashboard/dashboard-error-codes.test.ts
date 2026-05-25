@@ -29,6 +29,22 @@ describe("safeDashboardErrorCode", () => {
     expect(safeDashboardErrorCode(new Error("setup_pr_branch_deleted"))).toBe(
       "setup_pr_branch_deleted",
     );
+    expect(
+      safeDashboardErrorCode(new Error("codex_rotating_not_enabled")),
+    ).toBe("codex_rotating_not_enabled");
+    expect(
+      safeDashboardErrorCode(
+        new Error("codex_rotating_repository_scope_required"),
+      ),
+    ).toBe("codex_rotating_repository_scope_required");
+    expect(
+      safeDashboardErrorCode(
+        new Error("codex_rotating_single_provider_required"),
+      ),
+    ).toBe("codex_rotating_single_provider_required");
+    expect(
+      safeDashboardErrorCode(new Error("codex_legacy_auth_requires_reconnect")),
+    ).toBe("codex_legacy_auth_requires_reconnect");
     expect(safeDashboardErrorCode(new Error("rate_limit_exceeded:setup"))).toBe(
       "rate_limited",
     );

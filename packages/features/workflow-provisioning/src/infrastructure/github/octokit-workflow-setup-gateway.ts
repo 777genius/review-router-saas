@@ -56,7 +56,11 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
     }
 
     for (const file of input.workflowFiles) {
-      await this.createOrUpdateWorkflowFile(input, file);
+      if (file.operation === "delete") {
+        await this.deleteWorkflowFileIfTrusted(input, file);
+      } else {
+        await this.createOrUpdateWorkflowFile(input, file);
+      }
     }
 
     const pullRequest = await this.getOrCreateSetupPullRequest(
@@ -106,7 +110,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
 
   private async createOrUpdateWorkflowFile(
     input: WorkflowSetupGatewayInput,
-    file: WorkflowSetupFile,
+    file: Extract<WorkflowSetupFile, { readonly operation?: "upsert" }>,
   ): Promise<void> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const existing = await this.readWorkflowFile(input, file.path);
@@ -135,6 +139,28 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         throw error;
       }
     }
+  }
+
+  private async deleteWorkflowFileIfTrusted(
+    input: WorkflowSetupGatewayInput,
+    file: Extract<WorkflowSetupFile, { readonly operation: "delete" }>,
+  ): Promise<void> {
+    const existing = await this.readWorkflowFile(input, file.path);
+    if (!existing.sha || existing.content === null) {
+      return;
+    }
+    if (!matchesAnyMarkerGroup(existing.content, file.markerGroups)) {
+      throw new Error(`workflow_delete_untrusted:${file.path}`);
+    }
+
+    await this.octokit.request("DELETE /repos/{owner}/{repo}/contents/{path}", {
+      owner: input.owner,
+      repo: input.repo,
+      path: file.path,
+      branch: input.setupBranch,
+      sha: existing.sha,
+      message: "chore: remove legacy ReviewRouter workflow",
+    });
   }
 
   private async readWorkflowFile(
@@ -190,7 +216,13 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
 
     const closed = await this.findClosedSetupPullRequest(input);
     if (closed) {
-      return this.reopenSetupPullRequest(input, closed);
+      try {
+        return await this.reopenSetupPullRequest(input, closed);
+      } catch (error: unknown) {
+        if (!isGitHubWriteConflict(error)) {
+          throw error;
+        }
+      }
     }
 
     try {
@@ -216,7 +248,13 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       }
       const closedPullRequest = await this.findClosedSetupPullRequest(input);
       if (closedPullRequest) {
-        return this.reopenSetupPullRequest(input, closedPullRequest);
+        try {
+          return await this.reopenSetupPullRequest(input, closedPullRequest);
+        } catch (reopenError: unknown) {
+          if (!isGitHubWriteConflict(reopenError)) {
+            throw reopenError;
+          }
+        }
       }
       throw error;
     }
@@ -251,7 +289,6 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         repo: input.repo,
         pull_number: pullRequest.number,
         title: setupPullRequestTitle,
-        base: input.baseBranch,
         body: setupPullRequestBody,
         state: "open",
       },
@@ -324,10 +361,12 @@ const setupPullRequestBody = [
   "- uses GitHub OIDC for SaaS runtime config",
   "- keeps provider secrets in this repository or organization Actions secrets",
   "- compact mode keeps small caller workflows here and runs versioned ReviewRouter runtime from `777genius/review-router`",
+  "- rotating Codex setup removes legacy ReviewRouter workflows only when they match trusted ReviewRouter markers",
   "",
   "Workflow files:",
   "- `.github/workflows/reviewrouter.yml` - pull request review gate",
   "- `.github/workflows/reviewrouter-interaction.yml` - `/rr` comment commands and discussion routing",
+  "- `.github/workflows/reviewrouter-codex.yml` - production Codex OAuth rotating review workflow",
 ].join("\n");
 
 function parseWorkflowFile(data: unknown): {
@@ -399,4 +438,13 @@ function decodeBase64Content(content: unknown): string | null {
     return null;
   }
   return Buffer.from(content.replaceAll("\n", ""), "base64").toString("utf8");
+}
+
+function matchesAnyMarkerGroup(
+  content: string,
+  markerGroups: readonly (readonly string[])[],
+): boolean {
+  return markerGroups.some((group) =>
+    group.every((marker) => content.includes(marker)),
+  );
 }

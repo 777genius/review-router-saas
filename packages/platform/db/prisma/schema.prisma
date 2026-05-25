@@ -27,6 +27,8 @@ model Workspace {
   memoryItems            MemoryItem[]
   memorySuggestions      MemorySuggestion[]
   memoryUsageEvents      MemoryUsageEvent[]
+  codexOAuthProviders    CodexOAuthProviderInstance[]
+  codexOAuthSetupManifests CodexOAuthSetupManifest[]
 }
 
 model User {
@@ -134,6 +136,8 @@ model RepositoryConnection {
   memoryItems            MemoryItem[]
   memorySuggestions      MemorySuggestion[]
   memoryUsageEvents      MemoryUsageEvent[]
+  codexOAuthProviders    CodexOAuthProviderInstance[]
+  codexOAuthSetupManifests CodexOAuthSetupManifest[]
 
   @@unique([workspaceId, fullName])
   @@index([installationId])
@@ -239,6 +243,106 @@ model ProviderSetupState {
 
   @@unique([workspaceId, targetKey, providerKind, authMode])
   @@index([workspaceId, state])
+}
+
+model CodexOAuthProviderInstance {
+  id                     String   @id @default(cuid())
+  workspaceId            String
+  repositoryId           String
+  providerInstanceId     String   @unique
+  authMode               String
+  secretName             String
+  state                  String   @default("setup_pending")
+  latestGeneration       Int      @default(1)
+  latestGenerationHash   String?
+  generationHashSalt     String
+  accountFingerprintSalt String
+  activeLeaseId          String?
+  activeLeaseExpiresAt   DateTime?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository       RepositoryConnection        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  leases           CodexOAuthLease[]
+  writebackIntents CodexOAuthWritebackIntent[]
+  setupManifests   CodexOAuthSetupManifest[]
+
+  @@unique([repositoryId, authMode])
+  @@index([workspaceId, state])
+  @@index([repositoryId, state])
+  @@index([activeLeaseExpiresAt])
+}
+
+model CodexOAuthSetupManifest {
+  id                    String    @id @default(cuid())
+  workspaceId           String
+  repositoryId          String
+  providerInstanceRowId String
+  providerInstanceId    String
+  setupNonce            String    @unique
+  manifestJson          Json
+  status                String    @default("issued")
+  expiresAt             DateTime
+  createdAt             DateTime  @default(now())
+  lastFetchedAt         DateTime?
+  consumedAt            DateTime?
+
+  workspace        Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository       RepositoryConnection       @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryId, status])
+  @@index([providerInstanceId, status])
+  @@index([expiresAt])
+}
+
+model CodexOAuthLease {
+  id                    String    @id @default(cuid())
+  providerInstanceRowId String
+  providerInstanceId    String
+  githubRunId           String
+  githubRunAttempt      String
+  leaseKey              String    @unique
+  status                String    @default("preleased")
+  restoredGenerationHash String?
+  nextGeneration        Int?
+  writebackPreflightKeyId String?
+  writebackPreflightedAt DateTime?
+  expiresAt             DateTime
+  createdAt             DateTime  @default(now())
+  finalizedAt           DateTime?
+  completedAt           DateTime?
+
+  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  writebackIntents CodexOAuthWritebackIntent[]
+
+  @@index([providerInstanceId, status])
+  @@index([expiresAt])
+}
+
+model CodexOAuthWritebackIntent {
+  id                     String    @id @default(cuid())
+  providerInstanceRowId  String
+  leaseId                String
+  providerInstanceId     String
+  idempotencyKey         String
+  generation             Int
+  latestGenerationHash   String
+  encryptedPayloadDigest String
+  keyId                  String
+  status                 String    @default("pending")
+  safeErrorCode          String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  completedAt            DateTime?
+
+  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  lease            CodexOAuthLease            @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+
+  @@unique([providerInstanceId, idempotencyKey])
+  @@index([providerInstanceId, status])
+  @@index([leaseId, status])
 }
 
 model ActionRunHealthReport {

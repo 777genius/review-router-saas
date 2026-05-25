@@ -96,10 +96,12 @@ envVarGroups:
         value: "0"
       - key: REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE
         value: "0"
-      - key: REVIEW_ROUTER_ACTION_VERSION
-        value: main
+      - key: REVIEW_ROUTER_ACTION_REF
+        sync: false
       - key: REVIEW_ROUTER_ACTION_OIDC_AUDIENCE
         value: reviewrouter
+      - key: REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH
+        value: "1"
       - key: REVIEW_ROUTER_DEFAULT_MODEL
         value: gpt-5.5
       - key: REVIEW_ROUTER_DEFAULT_EFFORT

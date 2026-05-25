@@ -1,0 +1,654 @@
+import { describe, expect, it, vi } from "vitest";
+import Fastify from "fastify";
+import {
+  computeCodexAuthGenerationHash,
+  encryptCodexRotatingAuthForGitHubSecret,
+  readCodexRotatingWorkflowSourceMetadata,
+  renderCodexRotatingAdvisoryWorkflow,
+  scanCodexRotatingAdvisoryWorkflow,
+} from "@reviewrouter/features-codex-oauth-rotating";
+import {
+  finalizeCodexRotatingOAuthLease,
+  InMemoryCodexRotatingOAuthRepository,
+  issueCodexRotatingOAuthCheckoutToken,
+  issueCodexRotatingOAuthCommentToken,
+  preflightCodexRotatingOAuthWriteback,
+  preleaseCodexRotatingOAuth,
+  registerActionControlPlaneRoutes,
+  writebackCodexRotatingOAuth,
+} from "../index";
+
+const firstRunAt = new Date("2026-05-25T12:00:00.000Z");
+const secondRunAt = new Date("2026-05-25T12:05:00.000Z");
+const workflowSha = "0123456789abcdef0123456789abcdef01234567";
+const actionRef = `777genius/review-router@${workflowSha}`;
+const providerInstanceId = "codex-rotating:123456";
+const generationHashSalt = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
+
+const repository = {
+  workspaceId: "workspace_1",
+  repositoryId: "repo_1",
+  githubRepositoryId: "123456",
+  githubInstallationId: "789",
+  fullName: "777genius/agent-teams-ai",
+  owner: "777genius",
+  selected: true,
+  installationStatus: "active",
+};
+
+const initialAuthJson = JSON.stringify({
+  auth_mode: "chatgpt",
+  tokens: {
+    refresh_token: "initial-refresh-token",
+    access_token: "initial-access-token",
+  },
+  last_refresh: "2026-05-25T11:55:00.000Z",
+});
+
+const refreshedAuthJson = JSON.stringify({
+  auth_mode: "chatgpt",
+  tokens: {
+    refresh_token: "refreshed-refresh-token",
+    access_token: "refreshed-access-token",
+  },
+  last_refresh: "2026-05-25T12:01:00.000Z",
+});
+
+describe("Codex rotating OAuth local E2E", () => {
+  it("proves setup workflow -> first writeback -> next-run restore without plaintext SaaS", async () => {
+    const githubPublicKeyBase64 = Buffer.alloc(32, 1).toString("base64");
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef,
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId,
+    });
+    expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    const workflowMetadata = readCodexRotatingWorkflowSourceMetadata(workflow);
+
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId,
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const tokens = buildTokenFakes();
+    const dependencies = {
+      oidcVerifier: {
+        verify: vi
+          .fn()
+          .mockResolvedValueOnce(
+            githubOidcClaims({
+              runId: "9001",
+              jti: "jti-first",
+              now: firstRunAt,
+            }),
+          )
+          .mockResolvedValueOnce(
+            githubOidcClaims({
+              runId: "9002",
+              jti: "jti-second",
+              now: secondRunAt,
+            }),
+          ),
+      },
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn(),
+        recordHealthReport: vi.fn(),
+      },
+      codexRotatingOAuth,
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn(async (input) => {
+          expect(input.expectedActionRef).toBe(actionRef);
+          expect(input.expectedProviderInstanceId).toBe(providerInstanceId);
+          expect(workflowMetadata.actionRef).toBe(actionRef);
+          return {
+            binding: {
+              providerInstanceId: workflowMetadata.providerInstanceId,
+              repositoryFullName: repository.fullName,
+              githubRepositoryId: repository.githubRepositoryId,
+              actionRef: workflowMetadata.actionRef,
+              workflowPath: ".github/workflows/reviewrouter-codex.yml",
+              workflowSchemaVersion: workflowMetadata.workflowSchemaVersion,
+            },
+            workflowSourceSha256:
+              "workflow-source-sha256-012345678901234567890123456789",
+          };
+        }),
+      },
+      replayNonces: {
+        tryConsumeNonce: vi.fn().mockResolvedValue(true),
+      },
+      ...tokens,
+      codexRotatingWritebackHmacKey: "writeback-key",
+      clock: { now: vi.fn(() => firstRunAt) },
+    };
+
+    const firstPrelease = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "first-oidc-jwt",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+    expect(firstPrelease.currentGeneration).toBe(1);
+    expect(firstPrelease.currentGenerationHash).toBeUndefined();
+
+    const restoredGenerationHash = computeCodexAuthGenerationHash({
+      authJsonBytes: initialAuthJson,
+      generationHashSalt,
+    });
+    const firstLease = await finalizeCodexRotatingOAuthLease(
+      {
+        leaseId: firstPrelease.leaseId,
+        providerInstanceId,
+        restoredGenerationHash,
+      },
+      dependencies,
+    );
+    expect(firstLease.status).toBe("finalized");
+
+    const encrypted = await encryptCodexRotatingAuthForGitHubSecret({
+      authJsonBytes: refreshedAuthJson,
+      githubPublicKeyBase64,
+      githubKeyId: "github-key",
+      generationHashSalt,
+    });
+
+    await expect(
+      preflightCodexRotatingOAuthWriteback(
+        {
+          leaseId: firstPrelease.leaseId,
+          providerInstanceId,
+          githubKeyId: encrypted.keyId,
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({ protocolVersion: 1, status: "ready" });
+
+    await expect(
+      writebackCodexRotatingOAuth(
+        {
+          body: {
+            protocolVersion: 1,
+            leaseId: firstPrelease.leaseId,
+            providerInstanceId,
+            generation: firstLease.nextGeneration,
+            latestGenerationHash: encrypted.latestGenerationHash,
+            encryptedValue: encrypted.encryptedValue,
+            keyId: encrypted.keyId,
+            idempotencyKey: "idem:first-run",
+          },
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({ protocolVersion: 1, status: "accepted" });
+    expect(
+      tokens.codexRotatingSecretWriter.putEncryptedRepositorySecret,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encryptedValue: encrypted.encryptedValue,
+        keyId: encrypted.keyId,
+      }),
+    );
+    expect(
+      JSON.stringify(
+        tokens.codexRotatingSecretWriter.putEncryptedRepositorySecret.mock
+          .calls,
+      ),
+    ).not.toContain("refreshed-refresh-token");
+
+    await expect(
+      issueCodexRotatingOAuthCheckoutToken(
+        {
+          leaseId: firstPrelease.leaseId,
+          providerInstanceId,
+        },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({
+      protocolVersion: 1,
+      repository: repository.fullName,
+      permissions: { contents: "read", pullRequests: "read" },
+    });
+
+    await expect(
+      issueCodexRotatingOAuthCommentToken(
+        {
+          leaseId: firstPrelease.leaseId,
+          providerInstanceId,
+          authCleared: true,
+        },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({
+      protocolVersion: 1,
+      repository: repository.fullName,
+    });
+
+    dependencies.clock.now.mockReturnValue(secondRunAt);
+    const secondPrelease = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "second-oidc-jwt",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+    expect(secondPrelease.currentGeneration).toBe(2);
+    expect(secondPrelease.currentGenerationHash).toBe(
+      encrypted.latestGenerationHash,
+    );
+    await expect(
+      finalizeCodexRotatingOAuthLease(
+        {
+          leaseId: secondPrelease.leaseId,
+          providerInstanceId,
+          restoredGenerationHash: encrypted.latestGenerationHash,
+        },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({
+      status: "finalized",
+      nextGeneration: 3,
+    });
+  });
+
+  it("exercises the rotating OAuth HTTP route chain without plaintext auth", async () => {
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId,
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const tokenFakes = buildTokenFakes();
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef,
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId,
+    });
+    const workflowMetadata = readCodexRotatingWorkflowSourceMetadata(workflow);
+    const dependencies = {
+      oidcVerifier: {
+        verify: vi.fn().mockResolvedValue(
+          githubOidcClaims({
+            runId: "9003",
+            jti: "jti-http",
+            now: firstRunAt,
+          }),
+        ),
+      },
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn(),
+        recordHealthReport: vi.fn(),
+      },
+      codexRotatingOAuth,
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn().mockResolvedValue({
+          binding: {
+            providerInstanceId: workflowMetadata.providerInstanceId,
+            repositoryFullName: repository.fullName,
+            githubRepositoryId: repository.githubRepositoryId,
+            actionRef: workflowMetadata.actionRef,
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            workflowSchemaVersion: workflowMetadata.workflowSchemaVersion,
+          },
+          workflowSourceSha256:
+            "workflow-source-sha256-012345678901234567890123456789",
+        }),
+      },
+      replayNonces: {
+        tryConsumeNonce: vi
+          .fn()
+          .mockResolvedValueOnce(true)
+          .mockResolvedValueOnce(false),
+      },
+      ...tokenFakes,
+      codexRotatingWritebackHmacKey: "writeback-key",
+      clock: { now: vi.fn(() => firstRunAt) },
+      sessions: {},
+      ledgerKeys: {},
+      compatibility: {},
+    };
+    const app = Fastify({ logger: false });
+    await registerActionControlPlaneRoutes(
+      app,
+      dependencies as unknown as Parameters<
+        typeof registerActionControlPlaneRoutes
+      >[1],
+    );
+
+    const prelease = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/prelease",
+      payload: {
+        oidcToken: "oidc-jwt",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+    });
+    expect(prelease.statusCode).toBe(200);
+    const preleaseBody = prelease.json<{
+      readonly leaseId: string;
+      readonly generationHashSalt: string;
+      readonly currentGeneration: number;
+    }>();
+    expect(preleaseBody.currentGeneration).toBe(1);
+
+    const restoredGenerationHash = computeCodexAuthGenerationHash({
+      authJsonBytes: initialAuthJson,
+      generationHashSalt: preleaseBody.generationHashSalt,
+    });
+    const finalize = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/finalize",
+      payload: {
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        restoredGenerationHash,
+      },
+    });
+    expect(finalize.statusCode).toBe(200);
+    const finalizeBody = finalize.json<{ readonly nextGeneration: number }>();
+    expect(finalizeBody.nextGeneration).toBe(2);
+
+    const encrypted = await encryptCodexRotatingAuthForGitHubSecret({
+      authJsonBytes: refreshedAuthJson,
+      githubPublicKeyBase64: Buffer.alloc(32, 1).toString("base64"),
+      githubKeyId: "github-key-http",
+      generationHashSalt: preleaseBody.generationHashSalt,
+    });
+    const preflight = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/writeback-preflight",
+      payload: {
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        githubKeyId: encrypted.keyId,
+      },
+    });
+    expect(preflight.statusCode).toBe(200);
+    expect(preflight.json()).toEqual({ protocolVersion: 1, status: "ready" });
+
+    const writeback = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/writeback",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        generation: finalizeBody.nextGeneration,
+        latestGenerationHash: encrypted.latestGenerationHash,
+        encryptedValue: encrypted.encryptedValue,
+        keyId: encrypted.keyId,
+        idempotencyKey: "idem:http-run",
+      },
+    });
+    expect(writeback.statusCode).toBe(200);
+    expect(writeback.json()).toEqual({
+      protocolVersion: 1,
+      status: "accepted",
+    });
+    expect(
+      JSON.stringify(
+        tokenFakes.codexRotatingSecretWriter.putEncryptedRepositorySecret.mock
+          .calls,
+      ),
+    ).not.toContain("refreshed-refresh-token");
+
+    const checkout = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/checkout-token",
+      payload: {
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+      },
+    });
+    expect(checkout.statusCode).toBe(200);
+    expect(checkout.json()).toMatchObject({
+      protocolVersion: 1,
+      repository: repository.fullName,
+      permissions: { contents: "read", pullRequests: "read" },
+    });
+
+    const comment = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/comment-token",
+      payload: {
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        authCleared: true,
+      },
+    });
+    expect(comment.statusCode).toBe(200);
+    expect(comment.json()).toMatchObject({
+      protocolVersion: 1,
+      repository: repository.fullName,
+    });
+
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/prelease",
+      payload: {
+        oidcToken: "oidc-jwt-replay",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+    });
+    expect(replay.statusCode).toBe(401);
+    expect(replay.json()).toMatchObject({
+      error: {
+        code: "invalid_action_token",
+        retryable: false,
+      },
+    });
+
+    await app.close();
+  });
+
+  it("skips stale queued secrets before refresh starts", async () => {
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId,
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const dependencies = {
+      oidcVerifier: {
+        verify: vi
+          .fn()
+          .mockResolvedValueOnce(
+            githubOidcClaims({
+              runId: "9001",
+              jti: "jti-first",
+              now: firstRunAt,
+            }),
+          )
+          .mockResolvedValueOnce(
+            githubOidcClaims({
+              runId: "9002",
+              jti: "jti-stale",
+              now: secondRunAt,
+            }),
+          ),
+      },
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn(),
+        recordHealthReport: vi.fn(),
+      },
+      codexRotatingOAuth,
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn().mockResolvedValue({
+          binding: {
+            providerInstanceId,
+            repositoryFullName: repository.fullName,
+            githubRepositoryId: repository.githubRepositoryId,
+            actionRef,
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            workflowSchemaVersion: 1,
+          },
+          workflowSourceSha256:
+            "workflow-source-sha256-012345678901234567890123456789",
+        }),
+      },
+      replayNonces: {
+        tryConsumeNonce: vi.fn().mockResolvedValue(true),
+      },
+      ...buildTokenFakes(),
+      codexRotatingWritebackHmacKey: "writeback-key",
+      clock: { now: vi.fn(() => firstRunAt) },
+    };
+
+    const firstPrelease = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "first-oidc-jwt",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+    const firstLease = await finalizeCodexRotatingOAuthLease(
+      {
+        leaseId: firstPrelease.leaseId,
+        providerInstanceId,
+        restoredGenerationHash: "first-generation-hash-value-0123456789",
+      },
+      dependencies,
+    );
+    await preflightCodexRotatingOAuthWriteback(
+      {
+        leaseId: firstPrelease.leaseId,
+        providerInstanceId,
+        githubKeyId: "github-key",
+      },
+      dependencies,
+    );
+    await writebackCodexRotatingOAuth(
+      {
+        body: {
+          protocolVersion: 1,
+          leaseId: firstPrelease.leaseId,
+          providerInstanceId,
+          generation: firstLease.nextGeneration,
+          latestGenerationHash: "latest-generation-hash-value-0123456789",
+          encryptedValue: Buffer.from("ciphertext").toString("base64"),
+          keyId: "github-key",
+          idempotencyKey: "idem:first-run",
+        },
+      },
+      dependencies,
+    );
+
+    dependencies.clock.now.mockReturnValue(secondRunAt);
+    const stalePrelease = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "stale-oidc-jwt",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+    await expect(
+      finalizeCodexRotatingOAuthLease(
+        {
+          leaseId: stalePrelease.leaseId,
+          providerInstanceId,
+          restoredGenerationHash: "old-generation-hash-value-0123456789",
+        },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({
+      status: "stale_queued_secret",
+    });
+  });
+});
+
+function githubOidcClaims(input: {
+  readonly runId: string;
+  readonly jti: string;
+  readonly now: Date;
+}) {
+  return {
+    iss: "https://token.actions.githubusercontent.com",
+    aud: "reviewrouter",
+    repository: repository.fullName,
+    repository_id: repository.githubRepositoryId,
+    repository_visibility: "private",
+    event_name: "pull_request",
+    run_id: input.runId,
+    run_attempt: "1",
+    workflow_ref:
+      "777genius/agent-teams-ai/.github/workflows/reviewrouter-codex.yml@refs/heads/main",
+    workflow_sha: workflowSha,
+    actor: "belief",
+    runner_environment: "github-hosted",
+    iat: Math.floor(input.now.getTime() / 1000) - 10,
+    nbf: Math.floor(input.now.getTime() / 1000) - 20,
+    exp: Math.floor(input.now.getTime() / 1000) + 120,
+    jti: input.jti,
+  } as const;
+}
+
+function buildTokenFakes() {
+  return {
+    codexRotatingSecretsReadTokens: {
+      issueSecretsReadToken: vi.fn().mockResolvedValue({
+        token: "ghs_public_key_read_token",
+        expiresAt: new Date("2026-05-25T12:15:00.000Z"),
+        permissions: { secrets: "read" },
+      }),
+    },
+    codexRotatingSecretWriter: {
+      assertCanWriteRepositorySecret: vi
+        .fn()
+        .mockResolvedValue({ status: "ready" }),
+      putEncryptedRepositorySecret: vi.fn().mockResolvedValue({
+        status: "accepted",
+        statusCode: 204,
+      }),
+    },
+    codexRotatingCheckoutTokens: {
+      issueContentsReadToken: vi.fn().mockResolvedValue({
+        token: "ghs_contents_read_token",
+        expiresAt: new Date("2026-05-25T12:15:00.000Z"),
+        permissions: { contents: "read", pullRequests: "read" },
+      }),
+    },
+    commentTokens: {
+      issueCommentToken: vi.fn().mockResolvedValue({
+        token: "ghs_comment_token",
+        expiresAt: new Date("2026-05-25T12:15:00.000Z"),
+        repository: repository.fullName,
+        permissions: {
+          contents: "read",
+          pullRequests: "write",
+          issues: "write",
+        },
+      }),
+    },
+  };
+}

@@ -7,7 +7,7 @@ import type {
 
 type InstallationTokenResponse = {
   readonly token?: unknown;
-  readonly expires_at?: unknown;
+  readonly expiresAt?: unknown;
   readonly permissions?: {
     readonly contents?: unknown;
     readonly pull_requests?: unknown;
@@ -31,27 +31,31 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
   async issueCommentToken(
     input: IssueGitHubAppCommentTokenInput,
   ): Promise<IssuedGitHubAppCommentToken> {
-    const response = await this.app.octokit.request(
-      "POST /app/installations/{installation_id}/access_tokens",
-      {
-        installation_id: Number(input.githubInstallationId),
-        repository_ids: [Number(input.githubRepositoryId)],
-        permissions: {
-          contents: "read",
-          pull_requests: "write",
-          issues: "write",
-        },
+    const data = (await this.app.octokit.auth({
+      type: "installation",
+      installationId: parsePositiveSafeInteger(
+        input.githubInstallationId,
+        "comment_token_installation_id_invalid",
+      ),
+      repositoryIds: [
+        parsePositiveSafeInteger(
+          input.githubRepositoryId,
+          "comment_token_repository_id_invalid",
+        ),
+      ],
+      permissions: {
+        contents: "read",
+        pull_requests: "write",
+        issues: "write",
       },
-    );
-
-    const data = response.data as InstallationTokenResponse;
+    })) as InstallationTokenResponse;
     if (typeof data.token !== "string" || data.token.length === 0) {
       throw new Error("comment_token_invalid_response");
     }
-    if (typeof data.expires_at !== "string") {
+    if (typeof data.expiresAt !== "string") {
       throw new Error("comment_token_invalid_response");
     }
-    const expiresAt = new Date(data.expires_at);
+    const expiresAt = new Date(data.expiresAt);
     if (!Number.isFinite(expiresAt.getTime())) {
       throw new Error("comment_token_invalid_response");
     }
@@ -74,4 +78,12 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
       },
     };
   }
+}
+
+function parsePositiveSafeInteger(value: string, errorCode: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(errorCode);
+  }
+  return parsed;
 }

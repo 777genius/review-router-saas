@@ -1,7 +1,9 @@
 node_modules
 .next
 .turbo
+.serena
 dist
+action-dist
 build
 coverage
 pnpm-lock.yaml

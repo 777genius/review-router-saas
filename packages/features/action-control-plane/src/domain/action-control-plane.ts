@@ -47,6 +47,7 @@ export const githubActionsOidcClaimsSchema = z.object({
   repository_id: z.string().min(1),
   repository_owner: z.string().min(1),
   repository_owner_id: z.string().optional(),
+  repository_visibility: z.string().optional(),
   event_name: z.enum(allowedActionEvents),
   run_id: z.string().min(1),
   run_attempt: z.string().min(1),

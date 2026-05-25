@@ -29,7 +29,7 @@ export function getApiDemo(input: GetApiDemoInput): ApiDemoDocument {
     checkedAt: input.clock.now(),
     webUrl: urls.webUrl,
     apiUrl: urls.apiUrl,
-    actionVersion: input.actionVersion ?? "main",
+    actionVersion: input.actionVersion ?? "unconfigured",
     model: input.model ?? "gpt-5.5",
     effort: input.effort ?? "medium",
   });

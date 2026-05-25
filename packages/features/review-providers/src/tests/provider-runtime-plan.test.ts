@@ -46,6 +46,28 @@ describe("provider runtime plan", () => {
     expect(plan.requiredCliTools).toEqual(["codex"]);
   });
 
+  it("plans rotating Codex OAuth without falling back to the legacy secret", () => {
+    const plan = buildProviderRuntimePlan({
+      ...baseInput,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth_rotating",
+          model: "gpt-5.5",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+          requiredHealthy: true,
+        },
+      ],
+    });
+
+    expect(plan.runtimeEnv.REVIEW_AUTH_MODE).toBe("codex-oauth-rotating");
+    expect(plan.requiredSecretNames).toEqual(["REVIEWROUTER_CODEX_AUTH_JSON"]);
+    expect(plan.requiredSecretNames).not.toContain("CODEX_AUTH_JSON");
+    expect(plan.requiredCliTools).toEqual(["codex"]);
+  });
+
   it("emits only required healthy provider ids", () => {
     const plan = buildProviderRuntimePlan({
       ...baseInput,

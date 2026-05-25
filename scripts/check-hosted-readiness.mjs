@@ -31,11 +31,14 @@ requireSecret("GITHUB_WEBHOOK_SECRET", 16);
 requireSecret("REVIEW_ROUTER_ACTION_SESSION_SECRET", 32);
 requireEqual("REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS", "1");
 requireEqual("REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING", "1");
+requireEqual("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH", "1");
 forbidEqual("REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING", "1");
 forbidEqual("REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE", "1");
+forbidSet("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH_BETA");
+forbidSet("REVIEW_ROUTER_CODEX_ROTATING_OAUTH_BETA_REPOSITORIES");
 requireGitHubAppPrivateKey();
 forbidProviderSecretsInSaaS();
-warnForLiveMainActionRef();
+requireFullShaActionRef();
 
 if (errors.length > 0) {
   console.error("ReviewRouter hosted readiness failed:");
@@ -64,6 +67,14 @@ function forbidEqual(name, forbidden) {
   const actual = read(name);
   if (actual === forbidden) {
     errors.push(`${name} must not be ${forbidden}.`);
+  }
+}
+
+function forbidSet(name) {
+  if (read(name)) {
+    errors.push(
+      `${name} is obsolete. Use REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH and optional REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES.`,
+    );
   }
 }
 
@@ -188,12 +199,15 @@ function forbidProviderSecretsInSaaS() {
   }
 }
 
-function warnForLiveMainActionRef() {
+function requireFullShaActionRef() {
   const explicitRef = read("REVIEW_ROUTER_ACTION_REF");
-  const version = read("REVIEW_ROUTER_ACTION_VERSION");
-  if (explicitRef.endsWith("@main") || version === "main") {
-    warnings.push(
-      "ReviewRouter Action is configured to main. This is acceptable for private beta, but public production should pin a release tag.",
+  if (!explicitRef) {
+    errors.push("REVIEW_ROUTER_ACTION_REF is required in hosted production.");
+    return;
+  }
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(explicitRef)) {
+    errors.push(
+      "REVIEW_ROUTER_ACTION_REF must be pinned to a full 40-character commit SHA in hosted production.",
     );
   }
 }

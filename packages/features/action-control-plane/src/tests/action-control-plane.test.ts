@@ -51,6 +51,7 @@ import {
   assertSafeActionHealthReport,
   defaultActionOidcAudience,
   githubActionsOidcIssuer,
+  githubActionsOidcClaimsSchema,
   parseActionConflictReviewDispatchPayload,
   type ActionConflictReviewPostingSessionClaims,
   type ActionHealthReport,
@@ -90,10 +91,34 @@ const sessionClaims: ActionSessionClaims = {
   protocolVersion: 1,
 };
 
+const defaultOpenRouterRuntimeConfig = parseReviewConfiguration({
+  ...safeDefaultReviewConfiguration,
+  provider: {
+    kind: "openrouter",
+    authMode: "openrouter_api_key",
+    model: "poolside/laguna-m.1:free",
+    reasoningEffort: "medium",
+    agenticContext: true,
+    fastMode: false,
+    requiredHealthy: true,
+  },
+  providers: [
+    {
+      kind: "openrouter",
+      authMode: "openrouter_api_key",
+      model: "poolside/laguna-m.1:free",
+      reasoningEffort: "medium",
+      agenticContext: true,
+      fastMode: false,
+      requiredHealthy: true,
+    },
+  ],
+});
+
 class InMemoryActionControlPlaneRepository implements ActionControlPlaneRepositoryPort {
   public healthReports: ActionHealthReport[] = [];
   public repository: ActionRepositoryContext | null = repositoryContext;
-  public runtimeConfig = safeDefaultReviewConfiguration;
+  public runtimeConfig = defaultOpenRouterRuntimeConfig;
   public runtimeConfigVersion = 7;
   public runtimeConfigSource: "repository" | "workspace" = "repository";
 
@@ -583,6 +608,15 @@ class InMemoryActionOidcReplayNonceStore
 }
 
 describe("action control plane", () => {
+  it("preserves GitHub repository visibility claims for stricter Codex OAuth validation", () => {
+    const claims = githubActionsOidcClaimsSchema.parse({
+      ...githubOidcClaims(),
+      repository_visibility: "private",
+    });
+
+    expect(claims.repository_visibility).toBe("private");
+  });
+
   it("exchanges valid GitHub OIDC claims for a scoped action session", async () => {
     const repository = new InMemoryActionControlPlaneRepository();
     const sessions = new StaticSessionTokenService();
@@ -1465,14 +1499,14 @@ describe("action control plane", () => {
       protocolVersion: 1,
       configVersion: 7,
       provider: {
-        model: "gpt-5.5",
+        model: "poolside/laguna-m.1:free",
         reasoningEffort: "medium",
         fastMode: false,
         secretBackedProviderEnabled: true,
       },
       providers: [
         {
-          model: "gpt-5.5",
+          model: "poolside/laguna-m.1:free",
           requiredHealthy: true,
           secretBackedProviderEnabled: true,
         },
@@ -1483,37 +1517,39 @@ describe("action control plane", () => {
         inlineMinAgreement: 1,
       },
       runtimeEnv: {
-        REVIEW_AUTH_MODE: "codex-oauth",
-        CODEX_MODEL: "gpt-5.5",
+        REVIEW_AUTH_MODE: "openrouter-api",
         CODEX_FAST_MODE: "false",
-        REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
+        REQUIRED_HEALTHY_PROVIDERS: "openrouter/poolside/laguna-m.1:free",
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
   });
 
-  it("returns conflict review runtime identity from the verified action session", async () => {
+  it("checks the conflict runtime gate before rejecting unsupported production providers", async () => {
     const conflictReviewRuntimeGate =
       new ConfigurableConflictReviewRuntimeGate();
-    const config = await getActionRuntimeConfig(
-      { sessionToken: "session", actionVersion: "v1" },
-      {
-        repositories: new InMemoryActionControlPlaneRepository(),
-        sessions: new StaticSessionTokenService({
-          ...sessionClaims,
-          eventName: "repository_dispatch",
-          reviewKind: "conflict-head",
-          conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
-          pullRequestNumber: 7,
-          headSha: "a".repeat(40),
-          baseRef: "main",
-          baseSha: "b".repeat(40),
-          configSnapshotId: "repository:7",
-        }),
-        conflictReviewRuntimeGate,
-        clock,
-      },
-    );
+
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session", actionVersion: "v1" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          conflictReviewRuntimeGate,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_runtime_provider_unsupported:openrouter");
 
     expect(conflictReviewRuntimeGate.calls).toEqual([
       {
@@ -1523,82 +1559,32 @@ describe("action control plane", () => {
         repositoryFullName: "777genius/example",
       },
     ]);
-    expect(config.runtimeEnv).toMatchObject({
-      REVIEW_ROUTER_REVIEW_KIND: "conflict-head",
-      REVIEW_ROUTER_CONFLICT_DISPATCH_ID:
-        "cr_123e4567-e89b-12d3-a456-426614174000",
-      REVIEW_ROUTER_CONFLICT_PR_NUMBER: "7",
-      REVIEW_ROUTER_CONFLICT_HEAD_SHA: "a".repeat(40),
-      REVIEW_ROUTER_CONFLICT_BASE_REF: "main",
-      REVIEW_ROUTER_CONFLICT_BASE_SHA: "b".repeat(40),
-    });
-    expect(config.conflictReview).toMatchObject({
-      protocolVersion: 1,
-      reviewKind: "conflict-head",
-      dispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
-      pullRequestNumber: 7,
-      headSha: "a".repeat(40),
-      baseRef: "main",
-      baseSha: "b".repeat(40),
-      checkout: {
-        mode: "exact_head_sha",
-        headSha: "a".repeat(40),
-        baseRef: "main",
-        baseSha: "b".repeat(40),
-        persistCredentials: false,
-      },
-      diff: {
-        mode: "expected_base_to_head",
-        baseSha: "b".repeat(40),
-        headSha: "a".repeat(40),
-      },
-      posting: {
-        mode: "disabled",
-        reason: "posting_proxy_not_enabled",
-      },
-    });
-    expect(JSON.stringify(config.runtimeEnv)).not.toMatch(
-      /nonce|posting|comment_token|github_token/i,
-    );
-    expect(JSON.stringify(config.conflictReview)).not.toMatch(
-      /nonce|token|secret/i,
-    );
   });
 
-  it("advertises conflict posting proxy only when server posting is available", async () => {
-    const config = await getActionRuntimeConfig(
-      { sessionToken: "session", actionVersion: "v1" },
-      {
-        repositories: new InMemoryActionControlPlaneRepository(),
-        sessions: new StaticSessionTokenService({
-          ...sessionClaims,
-          eventName: "repository_dispatch",
-          reviewKind: "conflict-head",
-          conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
-          pullRequestNumber: 7,
-          headSha: "a".repeat(40),
-          baseRef: "main",
-          baseSha: "b".repeat(40),
-          configSnapshotId: "repository:7",
-        }),
-        conflictReviewRuntimeGate: new ConfigurableConflictReviewRuntimeGate(),
-        conflictReviewPostingAvailable: true,
-        clock,
-      },
-    );
-
-    expect(config.conflictReview?.posting).toEqual({
-      mode: "proxy",
-      sessionEndpoint: "/api/action/v1/conflict-posting/session",
-      summaryEndpoint: "/api/action/v1/conflict-posting/summary",
-      statusEndpoint: "/api/action/v1/conflict-posting/status",
-      allowedOperations: ["summary_comment", "advisory_status"],
-      summaryMaxBytes: 60_000,
-      statusContext: "ReviewRouter conflict review",
-    });
-    expect(JSON.stringify(config.conflictReview?.posting)).not.toMatch(
-      /token|secret|github_token/i,
-    );
+  it("does not build conflict posting proxy config for unsupported production providers", async () => {
+    await expect(
+      getActionRuntimeConfig(
+        { sessionToken: "session", actionVersion: "v1" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService({
+            ...sessionClaims,
+            eventName: "repository_dispatch",
+            reviewKind: "conflict-head",
+            conflictDispatchId: "cr_123e4567-e89b-12d3-a456-426614174000",
+            pullRequestNumber: 7,
+            headSha: "a".repeat(40),
+            baseRef: "main",
+            baseSha: "b".repeat(40),
+            configSnapshotId: "repository:7",
+          }),
+          conflictReviewRuntimeGate:
+            new ConfigurableConflictReviewRuntimeGate(),
+          conflictReviewPostingAvailable: true,
+          clock,
+        },
+      ),
+    ).rejects.toThrow("conflict_runtime_provider_unsupported:openrouter");
   });
 
   it("fails conflict runtime config when the runtime gate is disabled", async () => {
@@ -1740,14 +1726,6 @@ describe("action control plane", () => {
         expectedCode: "conflict_runtime_provider_unsupported:openrouter",
         providers: [
           {
-            kind: "codex",
-            authMode: "codex_subscription_oauth",
-            model: "gpt-5.5",
-            reasoningEffort: "medium",
-            agenticContext: true,
-            fastMode: false,
-          },
-          {
             kind: "openrouter",
             authMode: "openrouter_api_key",
             model: "poolside/laguna-m.1:free",
@@ -1758,12 +1736,7 @@ describe("action control plane", () => {
         ],
       },
       {
-        expectedCode: "conflict_runtime_provider_unsupported:multi_provider",
-        execution: {
-          providerLimit: 2,
-          providerMaxParallel: 2,
-          inlineMinAgreement: 2,
-        },
+        expectedCode: "codex_legacy_auth_requires_reconnect",
         providers: [
           {
             kind: "codex",
@@ -1777,6 +1750,19 @@ describe("action control plane", () => {
             kind: "codex",
             authMode: "codex_openai_api_key",
             model: "gpt-5.4",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+        ],
+      },
+      {
+        expectedCode: "codex_provider_requires_rotating_workflow",
+        providers: [
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth_rotating",
+            model: "gpt-5.5",
             reasoningEffort: "medium",
             agenticContext: true,
             fastMode: false,
@@ -1821,65 +1807,49 @@ describe("action control plane", () => {
     }
   });
 
-  it("returns multi-provider runtime config for the action", async () => {
-    const repositories = new InMemoryActionControlPlaneRepository();
-    repositories.runtimeConfig = parseReviewConfiguration({
-      ...safeDefaultReviewConfiguration,
-      providers: [
-        {
-          kind: "codex",
-          authMode: "codex_subscription_oauth",
-          model: "gpt-5.5",
-          reasoningEffort: "medium",
-          agenticContext: true,
-          fastMode: false,
-        },
-        {
-          kind: "openrouter",
-          authMode: "openrouter_api_key",
-          model: "poolside/laguna-m.1:free",
-          reasoningEffort: "medium",
-          agenticContext: true,
-          fastMode: false,
-        },
-      ],
-      execution: {
-        providerLimit: 2,
-        providerMaxParallel: 2,
-        inlineMinAgreement: 2,
-      },
-    });
+  it.each([
+    {
+      authMode: "codex_subscription_oauth" as const,
+      expectedCode: "codex_legacy_auth_requires_reconnect",
+    },
+    {
+      authMode: "codex_openai_api_key" as const,
+      expectedCode: "codex_provider_requires_rotating_workflow",
+    },
+    {
+      authMode: "codex_subscription_oauth_rotating" as const,
+      expectedCode: "codex_provider_requires_rotating_workflow",
+    },
+  ])(
+    "rejects Codex auth mode $authMode on the standard action runtime",
+    async ({ authMode, expectedCode }) => {
+      const repositories = new InMemoryActionControlPlaneRepository();
+      repositories.runtimeConfig = parseReviewConfiguration({
+        ...safeDefaultReviewConfiguration,
+        providers: [
+          {
+            kind: "codex",
+            authMode,
+            model: "gpt-5.5",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
+        ],
+      });
 
-    const config = await getActionRuntimeConfig(
-      { sessionToken: "session" },
-      {
-        repositories,
-        sessions: new StaticSessionTokenService(),
-        clock,
-      },
-    );
-
-    expect(config.providers.map((provider) => provider.model)).toEqual([
-      "gpt-5.5",
-      "poolside/laguna-m.1:free",
-    ]);
-    expect(
-      config.providers.map((provider) => provider.requiredHealthy),
-    ).toEqual([true, false]);
-    expect(config.execution).toEqual({
-      providerLimit: 2,
-      providerMaxParallel: 2,
-      inlineMinAgreement: 2,
-    });
-    expect(config.runtimeEnv).toMatchObject({
-      REVIEW_PROVIDERS: "codex/gpt-5.5,openrouter/poolside/laguna-m.1:free",
-      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
-      PROVIDER_LIMIT: "2",
-      PROVIDER_MAX_PARALLEL: "2",
-      INLINE_MIN_AGREEMENT: "2",
-      SYNTHESIS_MODEL: "codex/gpt-5.5",
-    });
-  });
+      await expect(
+        getActionRuntimeConfig(
+          { sessionToken: "session" },
+          {
+            repositories,
+            sessions: new StaticSessionTokenService(),
+            clock,
+          },
+        ),
+      ).rejects.toThrow(expectedCode);
+    },
+  );
 
   it("returns Claude runtime config without provider secrets", async () => {
     const repositories = new InMemoryActionControlPlaneRepository();

@@ -18,6 +18,7 @@ import { ProviderSecretSetupChooser } from "./provider-secret-setup-chooser";
 import type { OrganizationSecretPolicy } from "./provider-secret-setup-chooser";
 
 type ProviderSecretGuidanceSet = {
+  readonly codexOAuthRotating: ProviderSecretSetupGuidance;
   readonly codexOAuth: ProviderSecretSetupGuidance;
   readonly codexApiKey: ProviderSecretSetupGuidance;
   readonly claudeCodeOAuth: ProviderSecretSetupGuidance;
@@ -32,6 +33,7 @@ export function ProviderSecretSetupDialog({
   organizationLogin,
   organizationSecretPolicy,
   guidanceSet,
+  codexRotatingOAuthEnabled = true,
   claudeCodeProviderEnabled = true,
   triggerLabel,
   triggerVariant = "outline",
@@ -46,6 +48,7 @@ export function ProviderSecretSetupDialog({
   readonly organizationLogin: string | null;
   readonly organizationSecretPolicy: OrganizationSecretPolicy | null;
   readonly guidanceSet: ProviderSecretGuidanceSet;
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
   readonly triggerLabel: string;
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
@@ -121,10 +124,12 @@ export function ProviderSecretSetupDialog({
               repositoryVisibility={repositoryVisibility}
               organizationLogin={organizationLogin}
               organizationSecretPolicy={organizationSecretPolicy}
+              codexOAuthRotatingGuidance={guidanceSet.codexOAuthRotating}
               codexOAuthGuidance={guidanceSet.codexOAuth}
               codexApiKeyGuidance={guidanceSet.codexApiKey}
               claudeCodeOAuthGuidance={guidanceSet.claudeCodeOAuth}
               openRouterApiKeyGuidance={guidanceSet.openRouterApiKey}
+              codexRotatingOAuthEnabled={codexRotatingOAuthEnabled}
               claudeCodeProviderEnabled={claudeCodeProviderEnabled}
             />
           </div>

@@ -72,16 +72,20 @@ type ReviewConfigActionToast = {
 };
 
 const providerAuthModeOrder = [
-  "codex_subscription_oauth",
-  "codex_openai_api_key",
+  "codex_subscription_oauth_rotating",
   "claude_code_oauth",
   "openrouter_api_key",
 ] as const satisfies readonly ProviderAuthMode[];
 
 const providerAuthOptionCopyByAuthMode = {
+  codex_subscription_oauth_rotating: {
+    label: "Codex OAuth with refresh",
+    description:
+      "Uses REVIEWROUTER_CODEX_AUTH_JSON with automatic GitHub-hosted refresh.",
+  },
   codex_subscription_oauth: {
-    label: "Codex OAuth",
-    description: "Uses the user's Codex subscription in GitHub Actions.",
+    label: "Codex legacy OAuth",
+    description: "Uses static CODEX_AUTH_JSON without automatic refresh.",
   },
   codex_openai_api_key: {
     label: "Codex API key",
@@ -101,18 +105,16 @@ const providerAuthOptionCopyByAuthMode = {
 >;
 
 function buildProviderAuthOptions(input: {
+  readonly codexRotatingOAuthEnabled: boolean;
   readonly claudeCodeProviderEnabled: boolean;
   readonly providers: readonly ReviewProviderConfiguration[];
 }): readonly DashboardSelectOption[] {
-  const selectedAuthModes = new Set(
-    input.providers.map((provider) => provider.authMode),
-  );
   return providerAuthModeOrder
     .filter(
       (authMode) =>
-        authMode !== "claude_code_oauth" ||
-        input.claudeCodeProviderEnabled ||
-        selectedAuthModes.has(authMode),
+        (authMode !== "codex_subscription_oauth_rotating" ||
+          input.codexRotatingOAuthEnabled) &&
+        (authMode !== "claude_code_oauth" || input.claudeCodeProviderEnabled),
     )
     .map((authMode) => ({
       value: authMode,
@@ -185,11 +187,19 @@ const fieldHelp = {
 } as const;
 
 const defaultCodexProvider = {
-  ...getDefaultProviderConfigForAuthMode("codex_subscription_oauth"),
+  ...getDefaultProviderConfigForAuthMode("codex_subscription_oauth_rotating"),
   requiredHealthy: true,
 } satisfies ReviewProviderConfiguration;
 
 const secretCopyByAuthMode = {
+  codex_subscription_oauth_rotating: {
+    label: "Codex OAuth with refresh",
+    description:
+      "Rotating Codex OAuth uses REVIEWROUTER_CODEX_AUTH_JSON from repository GitHub Actions secrets.",
+    commandSuffix: "",
+    recovery:
+      "Run the rotating Codex OAuth setup command from the provider setup panel.",
+  },
   codex_subscription_oauth: {
     label: "Codex OAuth",
     description:
@@ -453,6 +463,7 @@ export function RepositoryPolicyOverrideDetails({
   modelOptions,
   mutationsEnabled,
   editDisabledReason,
+  codexRotatingOAuthEnabled = false,
   claudeCodeProviderEnabled = true,
 }: {
   readonly workspaceId: string;
@@ -463,6 +474,7 @@ export function RepositoryPolicyOverrideDetails({
   readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
   readonly editDisabledReason?: string | undefined;
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
 }): React.ReactElement {
   const reviewConfigAction = useReviewConfigActionToast();
@@ -534,6 +546,7 @@ export function RepositoryPolicyOverrideDetails({
               action={saveRepositoryOverride}
               config={effectiveConfig}
               modelOptions={modelOptions}
+              codexRotatingOAuthEnabled={codexRotatingOAuthEnabled}
               claudeCodeProviderEnabled={claudeCodeProviderEnabled}
               hiddenFields={[
                 { name: "workspaceId", value: workspaceId },
@@ -586,6 +599,7 @@ export function RepositoryPolicyEditor({
   modelOptions,
   mutationsEnabled,
   editDisabledReason,
+  codexRotatingOAuthEnabled = false,
   claudeCodeProviderEnabled = true,
   compact = false,
 }: {
@@ -596,6 +610,7 @@ export function RepositoryPolicyEditor({
   readonly modelOptions: readonly ReviewModelOption[];
   readonly mutationsEnabled: boolean;
   readonly editDisabledReason?: string | undefined;
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
   readonly compact?: boolean;
 }): React.ReactElement {
@@ -670,6 +685,7 @@ export function RepositoryPolicyEditor({
             action={saveRepositorySettings}
             config={effectiveConfig}
             modelOptions={modelOptions}
+            codexRotatingOAuthEnabled={codexRotatingOAuthEnabled}
             claudeCodeProviderEnabled={claudeCodeProviderEnabled}
             hiddenFields={[
               { name: "workspaceId", value: workspaceId },
@@ -842,6 +858,16 @@ function reviewConfigActionErrorText(error: string): string {
       return "The submitted form is invalid. Refresh the dashboard and try again.";
     case "entitlement_denied":
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
+    case "codex_rotating_not_enabled":
+      return "Rotating Codex OAuth is not enabled for this ReviewRouter deployment.";
+    case "codex_rotating_repository_scope_required":
+      return "Codex rotating OAuth must be configured per repository, not as a workspace default.";
+    case "codex_rotating_single_provider_required":
+      return "Codex rotating OAuth supports exactly one Codex provider in this repository.";
+    case "codex_legacy_auth_requires_reconnect":
+      return "Legacy Codex OAuth is disabled. Reconnect Codex with the rotating setup command.";
+    case "codex_api_key_setup_disabled":
+      return "Codex API-key setup is disabled. Use Codex OAuth rotating instead.";
     default:
       return "The dashboard could not save these settings. Retry once, then check server logs if it repeats.";
   }
@@ -851,12 +877,14 @@ export function WorkspaceReviewConfigForm({
   workspaceId,
   config,
   modelOptions,
+  codexRotatingOAuthEnabled = false,
   claudeCodeProviderEnabled = true,
   mutationsEnabled,
 }: {
   readonly workspaceId: string;
   readonly config: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
   readonly mutationsEnabled: boolean;
 }): React.ReactElement {
@@ -880,6 +908,7 @@ export function WorkspaceReviewConfigForm({
         action={saveWorkspaceSettings}
         config={config}
         modelOptions={modelOptions}
+        codexRotatingOAuthEnabled={codexRotatingOAuthEnabled}
         claudeCodeProviderEnabled={claudeCodeProviderEnabled}
         hiddenFields={[{ name: "workspaceId", value: workspaceId }]}
         mutationsEnabled={mutationsEnabled}
@@ -893,6 +922,7 @@ export function ReviewConfigForm({
   action,
   config,
   modelOptions,
+  codexRotatingOAuthEnabled = false,
   claudeCodeProviderEnabled = true,
   hiddenFields,
   mutationsEnabled,
@@ -903,6 +933,7 @@ export function ReviewConfigForm({
   readonly action: DashboardFormAction;
   readonly config: ReviewConfiguration;
   readonly modelOptions: readonly ReviewModelOption[];
+  readonly codexRotatingOAuthEnabled?: boolean;
   readonly claudeCodeProviderEnabled?: boolean;
   readonly hiddenFields: readonly {
     readonly name: string;
@@ -915,8 +946,13 @@ export function ReviewConfigForm({
     | RepositorySecretCheckTarget
     | undefined;
 }): React.ReactElement {
+  const configuredProviders =
+    config.providers.length > 0 ? [...config.providers] : [config.provider];
+  const legacyCodexReconnectRequired = configuredProviders.some(
+    isDisabledCodexAuthMode,
+  );
   const initialProviders = ensureAtLeastOneRequiredProvider(
-    config.providers.length > 0 ? [...config.providers] : [config.provider],
+    configuredProviders.map(replaceDisabledCodexProvider),
   );
   const [providers, setProviders] = useState(initialProviders);
   const [providerMaxParallel, setProviderMaxParallel] = useState(
@@ -928,10 +964,11 @@ export function ReviewConfigForm({
   const providerAuthOptions = useMemo(
     () =>
       buildProviderAuthOptions({
+        codexRotatingOAuthEnabled,
         claudeCodeProviderEnabled,
         providers,
       }),
-    [claudeCodeProviderEnabled, providers],
+    [codexRotatingOAuthEnabled, claudeCodeProviderEnabled, providers],
   );
 
   const modelOptionsByProvider = useMemo(
@@ -1060,6 +1097,13 @@ export function ReviewConfigForm({
           name="targetTokensPerBatch"
           value={config.limits.targetTokensPerBatch}
         />
+        {legacyCodexReconnectRequired ? (
+          <div className="rounded-xl border border-amber-300/25 bg-amber-300/[0.08] p-3 text-sm leading-6 text-amber-50">
+            Legacy Codex setup requires reconnect. This form has switched Codex
+            to the production rotating OAuth mode; save the config, create the
+            setup PR, and run the fresh Codex setup command.
+          </div>
+        ) : null}
 
         <section className="grid gap-3">
           <div>
@@ -1301,6 +1345,28 @@ function firstSelectableModel(
   options: readonly ReviewModelOption[],
 ): ReviewModelOption | undefined {
   return options.find((option) => !option.disabled) ?? options[0];
+}
+
+function isDisabledCodexAuthMode(
+  provider: ReviewProviderConfiguration,
+): boolean {
+  return (
+    provider.authMode === "codex_subscription_oauth" ||
+    provider.authMode === "codex_openai_api_key"
+  );
+}
+
+function replaceDisabledCodexProvider(
+  provider: ReviewProviderConfiguration,
+): ReviewProviderConfiguration {
+  if (!isDisabledCodexAuthMode(provider)) {
+    return provider;
+  }
+  return {
+    ...provider,
+    kind: "codex",
+    authMode: "codex_subscription_oauth_rotating",
+  };
 }
 
 function ensureAtLeastOneRequiredProvider(

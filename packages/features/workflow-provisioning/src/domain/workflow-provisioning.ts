@@ -1,4 +1,5 @@
 import {
+  defaultCodexRotatingWorkflowPath,
   defaultSetupBranch,
   defaultWorkflowPath,
   type ReviewRouterWorkflowStyle,
@@ -22,6 +23,7 @@ export type ProvisionWorkflowInput = {
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly codexRotatingProviderInstanceId?: string;
   readonly setupBranch?: string;
   readonly workflowPath?: string;
 };
@@ -38,6 +40,10 @@ export function createProvisionWorkflowPlan(
     ...input,
     workflowStyle: input.workflowStyle ?? "reusable",
     setupBranch: input.setupBranch ?? defaultSetupBranch,
-    workflowPath: input.workflowPath ?? defaultWorkflowPath,
+    workflowPath:
+      input.workflowPath ??
+      (input.codexRotatingProviderInstanceId
+        ? defaultCodexRotatingWorkflowPath
+        : defaultWorkflowPath),
   };
 }

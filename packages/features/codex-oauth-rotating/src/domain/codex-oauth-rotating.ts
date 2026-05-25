@@ -1,0 +1,990 @@
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { z } from "zod";
+import sodium from "libsodium-wrappers";
+
+export const codexRotatingAuthMode = "codex_subscription_oauth_rotating";
+export const codexRotatingSetupKind = "codex_oauth_rotating";
+export const codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
+export const codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
+export const codexRotatingWorkflowSchemaVersion = 1;
+export const codexRotatingAuthJsonMaxBytes = 32 * 1024;
+export const codexRotatingDefaultRunner = "ubuntu-24.04";
+export const codexRotatingDefaultTimeoutMinutes = 30;
+export const codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
+
+const repoFullNamePattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const sha256HexPattern = /^[a-f0-9]{64}$/i;
+const fullShaPattern = /^[a-f0-9]{40}$/i;
+const base64Pattern = /^[A-Za-z0-9+/]+={0,2}$/;
+const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
+const safeOpaqueIdPattern = /^[A-Za-z0-9_.:-]{8,160}$/;
+const safeVersionPattern = /^[A-Za-z0-9_.@/-]{1,120}$/;
+
+export const codexRotatingProviderStateValues = [
+  "setup_pending",
+  "active",
+  "permission_required",
+  "workflow_update_required",
+  "quota_limited",
+  "needs_reconnect",
+  "stale_queued_secret",
+  "skipped_retryable",
+  "policy_blocked",
+  "unknown_auth_state",
+] as const;
+
+export type CodexRotatingProviderState =
+  (typeof codexRotatingProviderStateValues)[number];
+
+export const codexRotatingRunStateValues = [
+  "prelease_acquired",
+  "lease_finalized",
+  "refresh_bootstrapped",
+  "writeback_pending",
+  "writeback_confirmed",
+  "checkout_ready",
+  "comment_posted",
+  "permission_required",
+  "needs_reconnect",
+  "stale_queued_secret",
+  "quota_limited",
+  "skipped_retryable",
+  "policy_blocked",
+  "unknown_auth_state",
+  "security_invariant_failed",
+] as const;
+
+export type CodexRotatingRunState =
+  (typeof codexRotatingRunStateValues)[number];
+
+export const codexRotatingPermissionIssues = [
+  "missing_secrets_read",
+  "missing_secrets_write",
+  "missing_contents_read",
+  "missing_pull_requests_read",
+  "missing_pull_requests_write",
+  "missing_issues_write",
+  "repository_not_selected",
+] as const;
+
+export type CodexRotatingPermissionIssue =
+  (typeof codexRotatingPermissionIssues)[number];
+
+const codexTokensSchema = z
+  .object({
+    refresh_token: z.string().min(1),
+    access_token: z.string().min(1).optional(),
+    id_token: z.string().min(1).optional(),
+    expiry: z.union([z.string(), z.number()]).optional(),
+  })
+  .passthrough();
+
+const codexAuthJsonSchema = z
+  .object({
+    auth_mode: z.literal("chatgpt"),
+    tokens: codexTokensSchema,
+    last_refresh: z.string().optional(),
+  })
+  .passthrough();
+
+export type ValidatedCodexAuthJson = z.infer<typeof codexAuthJsonSchema>;
+
+export type CodexAuthJsonValidationResult = {
+  readonly parsed: ValidatedCodexAuthJson;
+  readonly byteLength: number;
+  readonly exactBytesSha256: string;
+  readonly warnings: readonly string[];
+};
+
+export function validateCodexAuthJsonBytes(input: {
+  readonly authJsonBytes: string;
+  readonly maxBytes?: number;
+  readonly staleWarningDays?: number;
+  readonly now?: Date;
+}): CodexAuthJsonValidationResult {
+  const maxBytes = input.maxBytes ?? codexRotatingAuthJsonMaxBytes;
+  const byteLength = Buffer.byteLength(input.authJsonBytes, "utf8");
+  if (byteLength === 0) {
+    throw new Error("codex_auth_json_empty");
+  }
+  if (byteLength > maxBytes) {
+    throw new Error("codex_auth_json_too_large");
+  }
+
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(input.authJsonBytes);
+  } catch {
+    throw new Error("codex_auth_json_invalid_json");
+  }
+  const parsed = codexAuthJsonSchema.parse(parsedJson);
+  const warnings = collectCodexAuthJsonWarnings({
+    parsed,
+    staleWarningDays: input.staleWarningDays ?? 30,
+    now: input.now ?? new Date(),
+  });
+
+  return {
+    parsed,
+    byteLength,
+    exactBytesSha256: createHash("sha256")
+      .update(input.authJsonBytes, "utf8")
+      .digest("hex"),
+    warnings,
+  };
+}
+
+export function compactCodexAuthJson(input: {
+  readonly authJsonBytes: string;
+  readonly maxBytes?: number;
+}): {
+  readonly compactAuthJsonBytes: string;
+  readonly byteLength: number;
+} {
+  const validation = validateCodexAuthJsonBytes(input);
+  const compactAuthJsonBytes = JSON.stringify(validation.parsed);
+  const byteLength = Buffer.byteLength(compactAuthJsonBytes, "utf8");
+  if (byteLength > (input.maxBytes ?? codexRotatingAuthJsonMaxBytes)) {
+    throw new Error("codex_auth_json_too_large_after_compact");
+  }
+  return { compactAuthJsonBytes, byteLength };
+}
+
+export function computeCodexAuthGenerationHash(input: {
+  readonly authJsonBytes: string;
+  readonly generationHashSalt: string;
+}): string {
+  const salt = decodeBase64OrBase64Url(input.generationHashSalt);
+  if (salt.length < 16) {
+    throw new Error("generation_hash_salt_too_short");
+  }
+  return createHmac("sha256", salt)
+    .update(input.authJsonBytes, "utf8")
+    .digest("base64url");
+}
+
+export function createCodexRotatingSalt(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+export const codexRotatingSetupManifestSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    repositoryFullName: z.string().regex(repoFullNamePattern),
+    repositoryId: z
+      .string()
+      .regex(/^[0-9]+$/)
+      .optional(),
+    providerInstanceId: z.string().regex(safeOpaqueIdPattern),
+    setupNonce: z.string().regex(safeOpaqueIdPattern),
+    secretName: z.literal(codexRotatingSecretName),
+    authMode: z.literal(codexRotatingAuthMode),
+    generatedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    installer: z
+      .object({
+        url: z.string().url(),
+        version: z.string().regex(safeVersionPattern),
+        sha256: z.string().regex(sha256HexPattern),
+      })
+      .strict(),
+    generationHashSalt: z.string().regex(base64UrlPattern),
+    accountFingerprintSalt: z.string().regex(base64UrlPattern),
+  })
+  .strict();
+
+export type CodexRotatingSetupManifest = z.infer<
+  typeof codexRotatingSetupManifestSchema
+>;
+
+export function buildCodexRotatingSetupManifest(input: {
+  readonly repositoryFullName: string;
+  readonly repositoryId?: string;
+  readonly providerInstanceId?: string;
+  readonly setupNonce?: string;
+  readonly installerUrl: string;
+  readonly installerVersion: string;
+  readonly installerSha256: string;
+  readonly now?: Date;
+  readonly ttlSeconds?: number;
+  readonly generationHashSalt?: string;
+  readonly accountFingerprintSalt?: string;
+}): CodexRotatingSetupManifest {
+  const now = input.now ?? new Date();
+  const ttlSeconds = input.ttlSeconds ?? 15 * 60;
+  const manifest = {
+    protocolVersion: 1,
+    repositoryFullName: input.repositoryFullName,
+    ...(input.repositoryId ? { repositoryId: input.repositoryId } : {}),
+    providerInstanceId:
+      input.providerInstanceId ??
+      `codex-rotating:${input.repositoryFullName.replace("/", ":")}`,
+    setupNonce: input.setupNonce ?? `stp:${randomUUID()}`,
+    secretName: codexRotatingSecretName,
+    authMode: codexRotatingAuthMode,
+    generatedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+    installer: {
+      url: input.installerUrl,
+      version: input.installerVersion,
+      sha256: input.installerSha256,
+    },
+    generationHashSalt: input.generationHashSalt ?? createCodexRotatingSalt(),
+    accountFingerprintSalt:
+      input.accountFingerprintSalt ?? createCodexRotatingSalt(),
+  } satisfies CodexRotatingSetupManifest;
+
+  return codexRotatingSetupManifestSchema.parse(manifest);
+}
+
+export function encodeCodexRotatingSetupManifest(
+  manifest: CodexRotatingSetupManifest,
+): string {
+  return Buffer.from(
+    JSON.stringify(codexRotatingSetupManifestSchema.parse(manifest)),
+  ).toString("base64url");
+}
+
+export function decodeCodexRotatingSetupManifest(
+  encoded: string,
+): CodexRotatingSetupManifest {
+  if (!base64UrlPattern.test(encoded)) {
+    throw new Error("setup_manifest_invalid_encoding");
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("setup_manifest_invalid_json");
+  }
+  return codexRotatingSetupManifestSchema.parse(decoded);
+}
+
+export function assertCodexRotatingSetupManifestUsable(input: {
+  readonly manifest: CodexRotatingSetupManifest;
+  readonly expectedRepositoryFullName: string;
+  readonly expectedInstallerUrl: string;
+  readonly expectedInstallerVersion: string;
+  readonly expectedInstallerSha256: string;
+  readonly now?: Date;
+}): void {
+  if (input.manifest.repositoryFullName !== input.expectedRepositoryFullName) {
+    throw new Error("setup_manifest_repository_mismatch");
+  }
+  if (
+    input.manifest.installer.url !== input.expectedInstallerUrl ||
+    input.manifest.installer.version !== input.expectedInstallerVersion ||
+    input.manifest.installer.sha256.toLowerCase() !==
+      input.expectedInstallerSha256.toLowerCase()
+  ) {
+    throw new Error("setup_manifest_installer_tuple_mismatch");
+  }
+  const expiresAt = Date.parse(input.manifest.expiresAt);
+  if (!Number.isFinite(expiresAt)) {
+    throw new Error("setup_manifest_invalid_expiry");
+  }
+  if (expiresAt <= (input.now ?? new Date()).getTime()) {
+    throw new Error("setup_manifest_expired");
+  }
+}
+
+export function renderCodexRotatingInstallerCommand(input: {
+  readonly manifest: CodexRotatingSetupManifest;
+  readonly manifestBase64?: string;
+  readonly setupManifestUrl?: string;
+  readonly setupConfirmUrl?: string;
+}): string {
+  const manifestBase64 =
+    input.manifestBase64 ?? encodeCodexRotatingSetupManifest(input.manifest);
+  const installerUrl = shellQuote(input.manifest.installer.url);
+  const installerVersion = shellQuote(input.manifest.installer.version);
+  const installerSha256 = shellQuote(input.manifest.installer.sha256);
+  const manifest = shellQuote(manifestBase64);
+  const setupNonce = shellQuote(input.manifest.setupNonce);
+  const providerInstanceId = shellQuote(input.manifest.providerInstanceId);
+  const setupManifestUrl = input.setupManifestUrl
+    ? shellQuote(input.setupManifestUrl)
+    : null;
+  const setupConfirmUrl = input.setupConfirmUrl
+    ? shellQuote(input.setupConfirmUrl)
+    : null;
+
+  const envLines = [
+    `REVIEW_ROUTER_INSTALLER_URL=${installerUrl} \\`,
+    `REVIEW_ROUTER_INSTALLER_VERSION=${installerVersion} \\`,
+    `REVIEW_ROUTER_INSTALLER_SHA256=${installerSha256} \\`,
+    `REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID=${providerInstanceId} \\`,
+    ...(setupManifestUrl
+      ? [
+          `REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL=${setupManifestUrl} \\`,
+          ...(setupConfirmUrl
+            ? [
+                `REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL=${setupConfirmUrl} \\`,
+              ]
+            : []),
+          `REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE=${setupNonce} \\`,
+        ]
+      : [`REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64=${manifest} \\`]),
+  ];
+
+  return [
+    "set -euo pipefail",
+    'tmp="$(mktemp)"',
+    "trap 'rm -f \"$tmp\"' EXIT",
+    `curl -fsSL ${installerUrl} -o "$tmp"`,
+    `expected_sha256=${installerSha256}`,
+    "if command -v shasum >/dev/null 2>&1; then",
+    "  actual_sha256=\"$(shasum -a 256 \"$tmp\" | sed 's/[[:space:]].*$//' | tr '[:upper:]' '[:lower:]')\"",
+    "elif command -v sha256sum >/dev/null 2>&1; then",
+    "  actual_sha256=\"$(sha256sum \"$tmp\" | sed 's/[[:space:]].*$//' | tr '[:upper:]' '[:lower:]')\"",
+    "else",
+    '  echo "Missing required checksum command: shasum or sha256sum" >&2',
+    "  exit 1",
+    "fi",
+    'if [ "$actual_sha256" != "$expected_sha256" ]; then',
+    '  echo "Installer SHA256 mismatch. Reopen the ReviewRouter dashboard and copy a fresh command." >&2',
+    "  exit 1",
+    "fi",
+    ...envLines,
+    'bash "$tmp" --confirm-write',
+  ].join("\n");
+}
+
+export type CodexRotatingWorkflowOptions = {
+  readonly actionRef: string;
+  readonly apiUrl: string;
+  readonly providerInstanceId: string;
+  readonly runnerLabel?: string;
+  readonly timeoutMinutes?: number;
+  readonly workflowSchemaVersion?: number;
+};
+
+export function renderCodexRotatingAdvisoryWorkflow(
+  options: CodexRotatingWorkflowOptions,
+): string {
+  assertFullShaActionRef(options.actionRef);
+  const runnerLabel = options.runnerLabel ?? codexRotatingDefaultRunner;
+  const timeoutMinutes =
+    options.timeoutMinutes ?? codexRotatingDefaultTimeoutMinutes;
+  const schemaVersion =
+    options.workflowSchemaVersion ?? codexRotatingWorkflowSchemaVersion;
+
+  return `name: ReviewRouter Codex OAuth
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  codex-review:
+    name: codex-review
+    runs-on: ${runnerLabel}
+    timeout-minutes: ${timeoutMinutes}
+    if: \${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
+    permissions:
+      id-token: write
+    steps:
+      - name: ReviewRouter Codex OAuth review
+        id: run_codex
+        uses: ${options.actionRef}
+        with:
+          mode: codex-oauth-rotating
+          api-url: ${JSON.stringify(options.apiUrl)}
+          provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
+          workflow-schema-version: "${schemaVersion}"
+          auth-json: \${{ secrets.${codexRotatingSecretName} }}
+`;
+}
+
+export type CodexRotatingWorkflowScanResult = {
+  readonly valid: boolean;
+  readonly errors: readonly string[];
+};
+
+export type CodexRotatingWorkflowSourceMetadata = {
+  readonly actionRef: string;
+  readonly providerInstanceId: string;
+  readonly workflowSchemaVersion: number;
+};
+
+export function scanCodexRotatingAdvisoryWorkflow(
+  workflow: string,
+): CodexRotatingWorkflowScanResult {
+  const errors: string[] = [];
+  const secretMatches = workflow.match(
+    new RegExp(codexRotatingSecretName, "g"),
+  );
+  if ((secretMatches?.length ?? 0) !== 1) {
+    errors.push("rotating_secret_must_appear_exactly_once");
+  }
+  if (
+    !workflow.includes(`auth-json: \${{ secrets.${codexRotatingSecretName} }}`)
+  ) {
+    errors.push("rotating_secret_must_be_literal_auth_json_input");
+  }
+  for (const [pattern, code] of [
+    [/\bworkflow_dispatch\s*:/, "workflow_dispatch_not_allowed"],
+    [/\bmerge_group\s*:/, "merge_group_not_allowed"],
+    [/\bpull_request_target\s*:/, "pull_request_target_not_allowed"],
+    [/\buses:\s*actions\/checkout@/i, "actions_checkout_not_allowed"],
+    [/\brun:\s*[|>]?/i, "raw_run_step_not_allowed"],
+    [/^\s*env:\s*$/m, "workflow_env_not_allowed"],
+    [/^\s*strategy:\s*$/m, "matrix_strategy_not_allowed"],
+    [/^\s*container:\s*$/m, "job_container_not_allowed"],
+    [/^\s*services:\s*$/m, "job_services_not_allowed"],
+    [/^\s*concurrency:\s*$/m, "workflow_concurrency_not_allowed"],
+    [/^ {4}uses:\s*/m, "reusable_job_not_allowed"],
+    [/ubuntu-latest/i, "mutable_runner_label_not_allowed"],
+    [/toJSON\s*\(\s*secrets\s*\)/, "tojson_secrets_not_allowed"],
+    [
+      /(^|[^A-Z0-9_])CODEX_AUTH_JSON([^A-Z0-9_]|$)/,
+      "legacy_codex_auth_secret_not_allowed",
+    ],
+  ] as const) {
+    if (pattern.test(workflow)) {
+      errors.push(code);
+    }
+  }
+  const actionRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)$/gm)].map(
+    (match) => match[1]!,
+  );
+  const actionRef = actionRefs[0];
+  if (actionRefs.length !== 1) {
+    errors.push("exactly_one_action_step_required");
+  }
+  if (!actionRef || !/@[a-f0-9]{40}$/i.test(actionRef)) {
+    errors.push("action_ref_must_be_full_sha");
+  }
+  const source = extractCodexRotatingWorkflowSourceMetadata(workflow);
+  if (!source.providerInstanceId) {
+    errors.push("provider_instance_id_required");
+  }
+  if (source.workflowSchemaVersion !== codexRotatingWorkflowSchemaVersion) {
+    errors.push("workflow_schema_version_mismatch");
+  }
+  if (source.mode !== codexRotatingRuntimeAuthMode) {
+    errors.push("rotating_mode_required");
+  }
+  if (!workflow.includes("permissions: {}\n\njobs:")) {
+    errors.push("workflow_permissions_must_be_empty");
+  }
+  if (!workflow.includes("id-token: write")) {
+    errors.push("review_job_requires_id_token_write");
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+export function readCodexRotatingWorkflowSourceMetadata(
+  workflow: string,
+): CodexRotatingWorkflowSourceMetadata {
+  const scan = scanCodexRotatingAdvisoryWorkflow(workflow);
+  if (!scan.valid) {
+    throw new Error(`codex_rotating_workflow_invalid:${scan.errors.join(",")}`);
+  }
+  const metadata = extractCodexRotatingWorkflowSourceMetadata(workflow);
+  if (
+    !metadata.actionRef ||
+    !metadata.providerInstanceId ||
+    metadata.workflowSchemaVersion === undefined
+  ) {
+    throw new Error("codex_rotating_workflow_metadata_missing");
+  }
+  return {
+    actionRef: metadata.actionRef,
+    providerInstanceId: metadata.providerInstanceId,
+    workflowSchemaVersion: metadata.workflowSchemaVersion,
+  };
+}
+
+export const codexRotatingOidcClaimsSchema = z
+  .object({
+    iss: z.literal("https://token.actions.githubusercontent.com"),
+    aud: z.union([z.string(), z.array(z.string())]),
+    sub: z.string().min(1).optional(),
+    repository: z.string().regex(repoFullNamePattern),
+    repository_id: z.string().regex(/^[0-9]+$/),
+    repository_owner: z.string().min(1).optional(),
+    repository_owner_id: z.string().min(1).optional(),
+    repository_visibility: z.enum(["public", "private", "internal"]),
+    event_name: z.literal("pull_request"),
+    run_id: z.string().min(1),
+    run_attempt: z.string().min(1),
+    workflow_ref: z.string().min(1),
+    workflow_sha: z.string().regex(fullShaPattern),
+    job_workflow_ref: z.string().min(1).optional(),
+    job_workflow_sha: z.string().regex(fullShaPattern).optional(),
+    actor: z.string().min(1),
+    runner_environment: z.literal("github-hosted"),
+    iat: z.number(),
+    nbf: z.number(),
+    exp: z.number(),
+    jti: z.string().min(8),
+  })
+  .strict();
+
+export type CodexRotatingOidcClaims = z.infer<
+  typeof codexRotatingOidcClaimsSchema
+>;
+
+export type CodexRotatingProviderBinding = {
+  readonly providerInstanceId: string;
+  readonly repositoryFullName: string;
+  readonly githubRepositoryId: string;
+  readonly actionRef: string;
+  readonly workflowPath: string;
+  readonly workflowSchemaVersion: number;
+};
+
+export function validateCodexRotatingPrelease(input: {
+  readonly claims: CodexRotatingOidcClaims;
+  readonly binding: CodexRotatingProviderBinding;
+  readonly requestedProviderInstanceId: string;
+  readonly requestedWorkflowSchemaVersion: number;
+  readonly now?: Date;
+  readonly maxTokenAgeSeconds?: number;
+}): {
+  readonly leaseKey: string;
+  readonly runKey: string;
+} {
+  const claims = codexRotatingOidcClaimsSchema.parse(input.claims);
+  if (claims.repository !== input.binding.repositoryFullName) {
+    throw new Error("oidc_repository_mismatch");
+  }
+  if (claims.repository_id !== input.binding.githubRepositoryId) {
+    throw new Error("oidc_repository_id_mismatch");
+  }
+  if (input.requestedProviderInstanceId !== input.binding.providerInstanceId) {
+    throw new Error("provider_instance_mismatch");
+  }
+  if (
+    input.requestedWorkflowSchemaVersion !== input.binding.workflowSchemaVersion
+  ) {
+    throw new Error("workflow_schema_mismatch");
+  }
+  const workflowRefSuffix = `/${input.binding.workflowPath}@`;
+  if (!claims.workflow_ref.includes(workflowRefSuffix)) {
+    throw new Error("workflow_path_mismatch");
+  }
+  if (/^dependabot(?:-preview)?\[bot\]$/i.test(claims.actor)) {
+    throw new Error("dependabot_actor_not_allowed");
+  }
+  assertFullShaActionRef(input.binding.actionRef);
+  assertOidcFreshness({
+    claims,
+    now: input.now ?? new Date(),
+    maxTokenAgeSeconds:
+      input.maxTokenAgeSeconds ?? codexRotatingOidcMaxTokenAgeSeconds,
+  });
+  return {
+    leaseKey: `${input.binding.providerInstanceId}:${claims.run_id}:${claims.run_attempt}`,
+    runKey: `${claims.repository_id}:${claims.run_id}:${claims.run_attempt}`,
+  };
+}
+
+export type CodexRotatingLeaseStatus =
+  | "preleased"
+  | "finalized"
+  | "completed"
+  | "expired"
+  | "conflict";
+
+export type CodexRotatingLeaseRecord = {
+  readonly leaseId: string;
+  readonly providerInstanceId: string;
+  readonly runId: string;
+  readonly runAttempt: string;
+  readonly restoredGenerationHash?: string;
+  readonly nextGeneration?: number;
+  readonly status: CodexRotatingLeaseStatus;
+  readonly expiresAt: Date;
+};
+
+export class InMemoryCodexRotatingLeaseStore {
+  private readonly records = new Map<string, CodexRotatingLeaseRecord>();
+
+  acquire(input: {
+    readonly providerInstanceId: string;
+    readonly runId: string;
+    readonly runAttempt: string;
+    readonly now: Date;
+    readonly ttlSeconds: number;
+  }): CodexRotatingLeaseRecord {
+    const active = [...this.records.values()].find(
+      (record) =>
+        record.providerInstanceId === input.providerInstanceId &&
+        record.status !== "completed" &&
+        record.expiresAt > input.now,
+    );
+    if (active) {
+      return { ...active, status: "conflict" };
+    }
+    const lease: CodexRotatingLeaseRecord = {
+      leaseId: `lease:${randomUUID()}`,
+      providerInstanceId: input.providerInstanceId,
+      runId: input.runId,
+      runAttempt: input.runAttempt,
+      status: "preleased",
+      expiresAt: new Date(input.now.getTime() + input.ttlSeconds * 1000),
+    };
+    this.records.set(lease.leaseId, lease);
+    return lease;
+  }
+
+  finalize(input: {
+    readonly leaseId: string;
+    readonly restoredGenerationHash: string;
+    readonly nextGeneration: number;
+    readonly now: Date;
+  }): CodexRotatingLeaseRecord {
+    const current = this.records.get(input.leaseId);
+    if (!current || current.expiresAt <= input.now) {
+      throw new Error("lease_not_active");
+    }
+    if (current.status !== "preleased") {
+      throw new Error("lease_invalid_state");
+    }
+    const finalized: CodexRotatingLeaseRecord = {
+      ...current,
+      status: "finalized",
+      restoredGenerationHash: input.restoredGenerationHash,
+      nextGeneration: input.nextGeneration,
+    };
+    this.records.set(finalized.leaseId, finalized);
+    return finalized;
+  }
+
+  complete(input: {
+    readonly leaseId: string;
+    readonly now: Date;
+  }): CodexRotatingLeaseRecord {
+    const current = this.records.get(input.leaseId);
+    if (!current || current.expiresAt <= input.now) {
+      throw new Error("lease_not_active");
+    }
+    if (current.status !== "finalized") {
+      throw new Error("lease_invalid_state");
+    }
+    const completed = { ...current, status: "completed" as const };
+    this.records.set(completed.leaseId, completed);
+    return completed;
+  }
+}
+
+export const codexRotatingEncryptedWritebackSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    leaseId: z.string().regex(safeOpaqueIdPattern),
+    providerInstanceId: z.string().regex(safeOpaqueIdPattern),
+    generation: z.number().int().positive(),
+    latestGenerationHash: z.string().min(32).max(128),
+    encryptedValue: z
+      .string()
+      .regex(base64Pattern)
+      .max(96 * 1024),
+    keyId: z.string().min(1).max(256),
+    idempotencyKey: z.string().regex(safeOpaqueIdPattern),
+  })
+  .strict();
+
+export type CodexRotatingEncryptedWritebackRequest = z.infer<
+  typeof codexRotatingEncryptedWritebackSchema
+>;
+
+export async function encryptCodexRotatingAuthForGitHubSecret(input: {
+  readonly authJsonBytes: string;
+  readonly githubPublicKeyBase64: string;
+  readonly githubKeyId: string;
+  readonly generationHashSalt: string;
+}): Promise<{
+  readonly compactAuthJsonBytes: string;
+  readonly compactByteLength: number;
+  readonly latestGenerationHash: string;
+  readonly encryptedValue: string;
+  readonly keyId: string;
+}> {
+  const compact = compactCodexAuthJson({
+    authJsonBytes: input.authJsonBytes,
+    maxBytes: codexRotatingAuthJsonMaxBytes,
+  });
+  await sodium.ready;
+  const publicKey = Buffer.from(input.githubPublicKeyBase64, "base64");
+  if (publicKey.length !== sodium.crypto_box_PUBLICKEYBYTES) {
+    throw new Error("github_secret_public_key_invalid");
+  }
+
+  const encrypted = sodium.crypto_box_seal(
+    compact.compactAuthJsonBytes,
+    publicKey,
+  );
+  return {
+    compactAuthJsonBytes: compact.compactAuthJsonBytes,
+    compactByteLength: compact.byteLength,
+    latestGenerationHash: computeCodexAuthGenerationHash({
+      authJsonBytes: compact.compactAuthJsonBytes,
+      generationHashSalt: input.generationHashSalt,
+    }),
+    encryptedValue: Buffer.from(encrypted).toString("base64"),
+    keyId: input.githubKeyId,
+  };
+}
+
+export function parseCodexRotatingEncryptedWritebackRequest(
+  input: unknown,
+): CodexRotatingEncryptedWritebackRequest {
+  const request = codexRotatingEncryptedWritebackSchema.parse(input);
+  if (looksLikePlaintextAuthJson(request.encryptedValue)) {
+    throw new Error("writeback_plaintext_auth_rejected");
+  }
+  return request;
+}
+
+export function computeEncryptedPayloadDigest(input: {
+  readonly encryptedValue: string;
+  readonly hmacKey: string;
+}): string {
+  const key = decodeBase64OrUtf8(input.hmacKey);
+  return createHmac("sha256", key)
+    .update(input.encryptedValue, "utf8")
+    .digest("base64url");
+}
+
+export function classifyCodexRuntimeFailure(
+  message: string,
+): CodexRotatingRunState {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("quota") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("billing")
+  ) {
+    return "quota_limited";
+  }
+  if (
+    normalized.includes("unauthorized") ||
+    normalized.includes("invalid_grant") ||
+    normalized.includes("refresh token") ||
+    normalized.includes("login required")
+  ) {
+    return "needs_reconnect";
+  }
+  if (
+    normalized.includes("permission") ||
+    normalized.includes("forbidden") ||
+    normalized.includes("resource not accessible")
+  ) {
+    return "permission_required";
+  }
+  return "unknown_auth_state";
+}
+
+export function pruneCodexRotatingChildEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const allowed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (shouldDropChildEnvKey(key)) continue;
+    allowed[key] = value;
+  }
+  return allowed;
+}
+
+export function buildCodexRefreshBootstrapPlan(input: {
+  readonly codexBinaryPath: string;
+  readonly tempHome: string;
+  readonly tempCodexHome: string;
+  readonly emptyWorkingDirectory: string;
+  readonly authJsonPath: string;
+}): {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+  readonly cwd: string;
+} {
+  return {
+    command: input.codexBinaryPath,
+    args: ["exec", "--skip-git-repo-check", "--", "Respond with OK only."],
+    cwd: input.emptyWorkingDirectory,
+    env: {
+      HOME: input.tempHome,
+      CODEX_HOME: input.tempCodexHome,
+      REVIEWROUTER_CODEX_AUTH_PATH: input.authJsonPath,
+    },
+  };
+}
+
+export function buildSafeCheckoutPlan(input: {
+  readonly repositoryFullName: string;
+  readonly headSha: string;
+  readonly workspacePath: string;
+}): {
+  readonly commands: readonly string[];
+} {
+  if (!repoFullNamePattern.test(input.repositoryFullName)) {
+    throw new Error("invalid_repository_full_name");
+  }
+  if (!fullShaPattern.test(input.headSha)) {
+    throw new Error("invalid_head_sha");
+  }
+  const repoUrl = `https://github.com/${input.repositoryFullName}.git`;
+  return {
+    commands: [
+      "git init .",
+      "git config --local gc.auto 0",
+      "git config --local core.hooksPath /dev/null",
+      "git config --local advice.detachedHead false",
+      `git remote add origin ${shellQuote(repoUrl)}`,
+      `git -c protocol.file.allow=never -c protocol.ext.allow=never fetch --no-tags --no-recurse-submodules --depth=1 origin ${input.headSha}`,
+      `git -c protocol.file.allow=never -c protocol.ext.allow=never checkout --detach ${input.headSha}`,
+    ],
+  };
+}
+
+function collectCodexAuthJsonWarnings(input: {
+  readonly parsed: ValidatedCodexAuthJson;
+  readonly staleWarningDays: number;
+  readonly now: Date;
+}): readonly string[] {
+  const warnings: string[] = [];
+  if (!input.parsed.last_refresh) {
+    warnings.push("last_refresh_missing");
+    return warnings;
+  }
+  const refreshedAt = Date.parse(input.parsed.last_refresh);
+  if (!Number.isFinite(refreshedAt)) {
+    warnings.push("last_refresh_unparseable");
+    return warnings;
+  }
+  const ageDays = (input.now.getTime() - refreshedAt) / 86_400_000;
+  if (ageDays > input.staleWarningDays) {
+    warnings.push("last_refresh_stale");
+  }
+  return warnings;
+}
+
+function assertFullShaActionRef(actionRef: string): void {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(actionRef)) {
+    throw new Error("codex_rotating_action_ref_must_be_full_sha");
+  }
+}
+
+function assertOidcFreshness(input: {
+  readonly claims: CodexRotatingOidcClaims;
+  readonly now: Date;
+  readonly maxTokenAgeSeconds: number;
+}): void {
+  const nowSeconds = Math.floor(input.now.getTime() / 1000);
+  if (input.claims.nbf > nowSeconds + 30) {
+    throw new Error("oidc_token_not_yet_valid");
+  }
+  if (input.claims.exp <= nowSeconds) {
+    throw new Error("oidc_token_expired");
+  }
+  if (input.claims.exp - input.claims.nbf > input.maxTokenAgeSeconds + 60) {
+    throw new Error("oidc_token_lifetime_too_long");
+  }
+  if (nowSeconds - input.claims.iat > input.maxTokenAgeSeconds) {
+    throw new Error("oidc_token_too_old");
+  }
+}
+
+function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
+  readonly actionRef?: string;
+  readonly providerInstanceId?: string;
+  readonly workflowSchemaVersion?: number;
+  readonly mode?: string;
+} {
+  const actionRef = workflow.match(/^\s*uses:\s*([^\s]+)$/m)?.[1];
+  const providerInstanceId = unquoteWorkflowScalar(
+    workflow.match(/^\s*provider-instance-id:\s*(.+)$/m)?.[1],
+  );
+  const workflowSchemaVersionRaw = unquoteWorkflowScalar(
+    workflow.match(/^\s*workflow-schema-version:\s*(.+)$/m)?.[1],
+  );
+  const workflowSchemaVersion =
+    workflowSchemaVersionRaw && /^[0-9]+$/.test(workflowSchemaVersionRaw)
+      ? Number(workflowSchemaVersionRaw)
+      : undefined;
+  const mode = unquoteWorkflowScalar(workflow.match(/^\s*mode:\s*(.+)$/m)?.[1]);
+  return {
+    ...(actionRef ? { actionRef } : {}),
+    ...(providerInstanceId ? { providerInstanceId } : {}),
+    ...(workflowSchemaVersion !== undefined ? { workflowSchemaVersion } : {}),
+    ...(mode ? { mode } : {}),
+  };
+}
+
+function unquoteWorkflowScalar(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function shouldDropChildEnvKey(key: string): boolean {
+  return (
+    key === "GITHUB_TOKEN" ||
+    key === "GH_TOKEN" ||
+    key === "ACTIONS_ID_TOKEN_REQUEST_URL" ||
+    key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" ||
+    key === "GITHUB_ENV" ||
+    key === "GITHUB_OUTPUT" ||
+    key === "GITHUB_PATH" ||
+    key === "GITHUB_STEP_SUMMARY" ||
+    key === "GITHUB_STATE" ||
+    key === "NODE_OPTIONS" ||
+    key === "BASH_ENV" ||
+    key === "ENV" ||
+    key.startsWith("GIT_") ||
+    key.startsWith("INPUT_AUTH") ||
+    key.includes("CODEX_AUTH_JSON") ||
+    key.includes("REVIEWROUTER_CODEX_AUTH_JSON") ||
+    key.includes("OPENAI_API_KEY") ||
+    key.includes("CLAUDE_CODE_OAUTH_TOKEN") ||
+    key.includes("OPENROUTER_API_KEY") ||
+    key.includes("REVIEW_ROUTER_COMMENT_TOKEN") ||
+    key.includes("REVIEWROUTER_PROXY_NONCE")
+  );
+}
+
+function looksLikePlaintextAuthJson(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith("{") ||
+    trimmed.includes("refresh_token") ||
+    trimmed.includes("access_token") ||
+    trimmed.includes("auth_mode")
+  );
+}
+
+function decodeBase64OrBase64Url(value: string): Buffer {
+  if (base64UrlPattern.test(value)) {
+    return Buffer.from(value, "base64url");
+  }
+  if (base64Pattern.test(value)) {
+    return Buffer.from(value, "base64");
+  }
+  throw new Error("invalid_base64_value");
+}
+
+function decodeBase64OrUtf8(value: string): Buffer {
+  try {
+    return decodeBase64OrBase64Url(value);
+  } catch {
+    return Buffer.from(value, "utf8");
+  }
+}
+
+function shellQuote(value: string): string {
+  if (/^[a-zA-Z0-9_./:@?=&%-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}

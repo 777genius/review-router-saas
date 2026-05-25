@@ -88,7 +88,7 @@ export const safeDefaultReviewConfiguration = parseReviewConfiguration({
   providers: [
     {
       kind: "codex",
-      authMode: "codex_subscription_oauth",
+      authMode: "codex_subscription_oauth_rotating",
       model: "gpt-5.5",
       reasoningEffort: "medium",
       agenticContext: true,

@@ -27,6 +27,7 @@ describe("provider catalog", () => {
       allProviderAuthModeMetadata().map((entry) => entry.authMode),
     ).toEqual([
       "codex_subscription_oauth",
+      "codex_subscription_oauth_rotating",
       "codex_openai_api_key",
       "claude_code_oauth",
       "openrouter_api_key",
@@ -41,6 +42,9 @@ describe("provider catalog", () => {
 
   it("keeps auth modes owned by exactly one provider kind", () => {
     expect(providerKindForAuthMode("codex_subscription_oauth")).toBe("codex");
+    expect(providerKindForAuthMode("codex_subscription_oauth_rotating")).toBe(
+      "codex",
+    );
     expect(providerKindForAuthMode("codex_openai_api_key")).toBe("codex");
     expect(providerKindForAuthMode("claude_code_oauth")).toBe("claude");
     expect(providerKindForAuthMode("openrouter_api_key")).toBe("openrouter");
@@ -61,6 +65,12 @@ describe("provider catalog", () => {
     expect(toLegacyRuntimeAuthMode("codex_subscription_oauth")).toBe(
       "codex-oauth",
     );
+    expect(toLegacyRuntimeAuthMode("codex_subscription_oauth_rotating")).toBe(
+      "codex-oauth-rotating",
+    );
+    expect(getProviderSecretNames("codex_subscription_oauth_rotating")).toEqual(
+      ["REVIEWROUTER_CODEX_AUTH_JSON"],
+    );
     expect(toLegacyRuntimeAuthMode("codex_openai_api_key")).toBe("openai-api");
     expect(toLegacyRuntimeAuthMode("openrouter_api_key")).toBe(
       "openrouter-api",
@@ -74,6 +84,9 @@ describe("provider catalog", () => {
     );
     expect(fromProviderSetupKind("codex_oauth")).toBe(
       "codex_subscription_oauth",
+    );
+    expect(fromProviderSetupKind("codex_oauth_rotating")).toBe(
+      "codex_subscription_oauth_rotating",
     );
   });
 
@@ -90,6 +103,15 @@ describe("provider catalog", () => {
       "static_model_catalog",
       "subscription_oauth",
     ]);
+    expect(getProviderCatalogEntry("codex").authModes).toEqual([
+      "codex_subscription_oauth_rotating",
+    ]);
+    expect(getProviderCatalogEntry("codex").defaultAuthMode).toBe(
+      "codex_subscription_oauth_rotating",
+    );
+    expect(getProviderCatalogEntry("codex").capabilities).not.toContain(
+      "api_key",
+    );
     expect(getDefaultProviderConfigForAuthMode("openrouter_api_key")).toEqual({
       kind: "openrouter",
       authMode: "openrouter_api_key",

@@ -4,7 +4,10 @@ import type {
   RepositoryWorkflowProbeInput,
   RepositoryWorkflowProbePort,
 } from "@reviewrouter/features-repo-health";
-import { defaultWorkflowPath } from "@reviewrouter/features-workflow-provisioning";
+import {
+  defaultCodexRotatingWorkflowPath,
+  defaultWorkflowPath,
+} from "@reviewrouter/features-workflow-provisioning";
 import { isWorkflowSetupAlreadyCurrent } from "./workflow-setup-readiness";
 
 class CapturingWorkflowProbe implements RepositoryWorkflowProbePort {
@@ -172,5 +175,42 @@ describe("workflow setup readiness", () => {
         },
       ),
     ).resolves.toBe(false);
+  });
+
+  it("checks the dedicated rotating Codex workflow path and markers", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        {
+          ...readinessInput,
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          codexRotatingProviderInstanceId: "codex-rotating:123456",
+          conflictReviewFallbackEnabled: true,
+        },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
+
+    expect(probe.input).toMatchObject({
+      workflowPath: defaultCodexRotatingWorkflowPath,
+      expectedActionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      expectedContentMarkerGroups: [
+        [
+          "name: ReviewRouter Codex OAuth",
+          "permissions: {}\n\njobs:",
+          "id-token: write",
+          "mode: codex-oauth-rotating",
+          'provider-instance-id: "codex-rotating:123456"',
+          "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+        ],
+      ],
+    });
   });
 });

@@ -59,18 +59,25 @@ export async function provisionReviewRouterWorkflow(
     throw new Error("workflow_provisioning_disabled");
   }
 
-  const workflowFiles = renderReviewRouterWorkflowFiles({
-    actionRef: plan.actionRef,
-    apiUrl: plan.apiUrl,
-    runtimeConfigMode: plan.runtimeConfigMode,
-    workflowStyle: plan.workflowStyle,
-    conflictReviewFallbackEnabled: plan.conflictReviewFallbackEnabled === true,
-    staticRuntimeEnv:
-      plan.staticRuntimeEnv ??
-      mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
-  });
-
   try {
+    const workflowFiles = renderReviewRouterWorkflowFiles({
+      actionRef: plan.actionRef,
+      apiUrl: plan.apiUrl,
+      runtimeConfigMode: plan.runtimeConfigMode,
+      workflowStyle: plan.workflowStyle,
+      conflictReviewFallbackEnabled:
+        plan.conflictReviewFallbackEnabled === true,
+      ...(plan.codexRotatingProviderInstanceId
+        ? {
+            codexRotatingProviderInstanceId:
+              plan.codexRotatingProviderInstanceId,
+          }
+        : {}),
+      staticRuntimeEnv:
+        plan.staticRuntimeEnv ??
+        mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
+    });
+
     const pullRequest =
       await dependencies.setupGateway.createOrUpdateSetupPullRequest({
         owner: plan.owner,
@@ -163,6 +170,8 @@ function safeWorkflowProvisioningErrorSummary(error: unknown): string {
       "invalid_workflow_env_value",
       "workflow_provisioning_disabled",
       "conflict_review_explicit_workflow_unsupported",
+      "codex_rotating_action_ref_must_be_full_sha",
+      "codex_rotating_conflict_review_unsupported",
     ].includes(message)
   ) {
     return message;

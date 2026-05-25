@@ -57,7 +57,7 @@ const manifest = {
     contents: "write",
     issues: "write",
     pull_requests: "write",
-    secrets: "read",
+    secrets: "write",
     organization_secrets: "read",
     organization_plan: "read",
     statuses: "write",

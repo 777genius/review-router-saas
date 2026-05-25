@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@prisma/client": "^7.8.0",
+    "@reviewrouter/features-codex-oauth-rotating": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-review-providers": "workspace:*",
     "@reviewrouter/shared": "workspace:*",

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   cleanup,
   fireEvent,
@@ -77,6 +77,7 @@ describe("RepositorySetupProgressPanel", () => {
             organizationLogin={null}
             organizationSecretPolicy={null}
             guidanceSet={{
+              codexOAuthRotating: guidance("REVIEWROUTER_CODEX_AUTH_JSON"),
               codexOAuth: guidance("CODEX_AUTH_JSON"),
               codexApiKey: guidance("OPENAI_API_KEY"),
               claudeCodeOAuth: guidance("CLAUDE_CODE_OAUTH_TOKEN"),
@@ -310,20 +311,35 @@ describe("RepositorySetupProgressPanel", () => {
       expect(toast.custom).toHaveBeenCalled();
     });
 
-    const renderCustomToast = vi.mocked(toast.custom).mock.calls.at(-1)?.[0] as
-      | ((id: string | number) => ReactNode)
-      | undefined;
-    expect(renderCustomToast).toBeTruthy();
-
-    render(<>{renderCustomToast!("setup-action-toast")}</>);
-    expect(
-      screen.getByText(/GitHub refused the setup PR update/i),
-    ).toBeTruthy();
-    expect(
-      screen.queryByText("The dashboard action could not be completed."),
-    ).toBeNull();
+    await waitFor(() => {
+      expect(
+        hasCustomToastMessage(
+          /GitHub refused the setup PR update/i,
+          "The dashboard action could not be completed.",
+        ),
+      ).toBe(true);
+    });
   });
 });
+
+function hasCustomToastMessage(expected: RegExp, forbidden: string): boolean {
+  type ToastRenderer = Parameters<typeof toast.custom>[0];
+  const renderers = vi
+    .mocked(toast.custom)
+    .mock.calls.map((call) => call[0])
+    .filter(
+      (renderer): renderer is ToastRenderer => typeof renderer === "function",
+    );
+
+  return renderers.some((renderer, index) => {
+    const rendered = render(<>{renderer(`setup-action-toast-${index}`)}</>);
+    const matched =
+      rendered.queryByText(expected) !== null &&
+      rendered.queryByText(forbidden) === null;
+    rendered.unmount();
+    return matched;
+  });
+}
 
 function guidance(secretName: string): ProviderSecretSetupGuidance {
   return {

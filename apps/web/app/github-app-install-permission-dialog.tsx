@@ -47,9 +47,9 @@ type PermissionRow = {
 
 const sensitivePermissionRows: readonly PermissionRow[] = [
   {
-    title: "Secrets: read",
+    title: "Secrets: write",
     badge: "Cannot read secret values",
-    body: "GitHub returns metadata only: secret name, timestamps, visibility, and selected repository access. ReviewRouter checks that CODEX_AUTH_JSON, CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY, or OPENROUTER_API_KEY exists.",
+    body: "GitHub never returns decrypted secret values. ReviewRouter uses this to verify repository secret metadata and, for rotating Codex OAuth, write back only the encrypted refreshed auth payload after OIDC/writeback checks.",
     docs: [
       {
         label: "GitHub Docs: Get a repository secret",

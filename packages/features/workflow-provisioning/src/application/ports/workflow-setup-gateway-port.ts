@@ -6,8 +6,16 @@ export type WorkflowSetupPullRequest = {
 
 export type WorkflowSetupFile = {
   readonly path: string;
-  readonly content: string;
-};
+} & (
+  | {
+      readonly operation?: "upsert";
+      readonly content: string;
+    }
+  | {
+      readonly operation: "delete";
+      readonly markerGroups: readonly (readonly string[])[];
+    }
+);
 
 export type WorkflowSetupGatewayInput = {
   readonly owner: string;

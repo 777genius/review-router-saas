@@ -10,8 +10,7 @@ export type ApiDemoEndpoint = {
 
 export type ApiDemoProvider = {
   readonly id:
-    | "codex_oauth"
-    | "codex_api_key"
+    | "codex_oauth_rotating"
     | "claude_code_oauth"
     | "openrouter_api_key";
   readonly label: string;
@@ -76,7 +75,7 @@ export type ApiDemoDocument = {
     readonly actionVersion: string;
     readonly model: string;
     readonly effort: string;
-    readonly provider: "codex_oauth";
+    readonly provider: "codex_oauth_rotating";
   };
   readonly providers: readonly ApiDemoProvider[];
   readonly endpoints: readonly ApiDemoEndpoint[];
@@ -146,7 +145,7 @@ export function buildApiDemoDocument(input: {
         "repository source code",
         "pull request diffs",
         "model prompts or responses by default",
-        "Codex OAuth auth.json",
+        "Codex OAuth rotating auth.json",
         "Claude Code OAuth token",
         "provider API keys",
       ],
@@ -155,18 +154,13 @@ export function buildApiDemoDocument(input: {
       actionVersion: input.actionVersion,
       model: input.model,
       effort: input.effort,
-      provider: "codex_oauth",
+      provider: "codex_oauth_rotating",
     },
     providers: [
       {
-        id: "codex_oauth",
-        label: "Codex CLI with ChatGPT subscription OAuth",
-        secretLocation: "github_actions_secret",
-        sentToSaas: false,
-      },
-      {
-        id: "codex_api_key",
-        label: "Codex/OpenAI API key mode",
+        id: "codex_oauth_rotating",
+        label:
+          "Codex CLI with ChatGPT subscription OAuth and GitHub-hosted refresh",
         secretLocation: "github_actions_secret",
         sentToSaas: false,
       },
@@ -280,7 +274,7 @@ export function buildApiDemoDocument(input: {
         order: 2,
         title: "Choose provider credentials",
         description:
-          "Store Codex OAuth, Claude Code OAuth, OpenAI API key, or OpenRouter API key in GitHub Actions secrets. The hosted control plane does not receive those credentials.",
+          "Store Codex OAuth rotating, Claude Code OAuth, or OpenRouter API credentials in GitHub Actions secrets. The hosted control plane does not receive those credentials.",
       },
       {
         order: 3,
@@ -328,7 +322,7 @@ export function buildApiDemoDocument(input: {
       {
         topic: "Provider credentials",
         guarantee:
-          "Codex OAuth auth.json, Claude Code OAuth tokens, and provider API keys remain GitHub Actions secrets owned by the target repository or organization.",
+          "Codex OAuth rotating auth.json, Claude Code OAuth tokens, and provider API keys remain GitHub Actions secrets owned by the target repository or organization.",
       },
       {
         topic: "Runtime access",
@@ -351,7 +345,7 @@ export function buildApiDemoDocument(input: {
       ],
       knownLimitations: [
         "GitHub App lifecycle events must be enabled in the App settings before full install sync works.",
-        "Public production should pin the GitHub Action to a release tag instead of main.",
+        "Hosted production requires REVIEW_ROUTER_ACTION_REF to be pinned to a full 40-character commit SHA.",
       ],
     },
     links: {
@@ -476,7 +470,8 @@ export function buildApiDemoOpenApiDocument(input: {
                           checkedAt: new Date("2026-05-04T00:00:00.000Z"),
                           webUrl: "https://reviewrouter.site",
                           apiUrl: input.apiUrl,
-                          actionVersion: "main",
+                          actionVersion:
+                            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
                           model: "gpt-5.5",
                           effort: "medium",
                         }),

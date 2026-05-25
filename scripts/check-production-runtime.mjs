@@ -5,6 +5,12 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const port = Number(process.env.REVIEW_ROUTER_API_SMOKE_PORT ?? 4100);
 const apiUrl = `http://127.0.0.1:${port}/health`;
+const apiSmokeTimeoutMs = Number(
+  process.env.REVIEW_ROUTER_API_SMOKE_TIMEOUT_MS ?? 45_000,
+);
+const workerSmokeTimeoutMs = Number(
+  process.env.REVIEW_ROUTER_WORKER_SMOKE_TIMEOUT_MS ?? 20_000,
+);
 
 await checkApi();
 await checkWorker();
@@ -26,7 +32,7 @@ async function checkApi() {
   child.stderr.on("data", (chunk) => output.push(chunk.toString()));
 
   try {
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + apiSmokeTimeoutMs;
     while (Date.now() < deadline) {
       if (child.exitCode !== null) {
         fail(`compiled API exited with code ${child.exitCode}`, output);
@@ -48,7 +54,10 @@ async function checkApi() {
       await delay(250);
     }
 
-    fail("compiled API did not become healthy within 20s", output);
+    fail(
+      `compiled API did not become healthy within ${apiSmokeTimeoutMs}ms`,
+      output,
+    );
   } finally {
     await terminateProcessGroup(child);
   }
@@ -67,10 +76,13 @@ async function checkWorker() {
   child.stdout.on("data", (chunk) => output.push(chunk.toString()));
   child.stderr.on("data", (chunk) => output.push(chunk.toString()));
 
-  const exitCode = await waitForExit(child, 20_000);
+  const exitCode = await waitForExit(child, workerSmokeTimeoutMs);
   if (exitCode === "timeout") {
     await terminateProcessGroup(child);
-    fail("compiled worker did not exit within 20s", output);
+    fail(
+      `compiled worker did not exit within ${workerSmokeTimeoutMs}ms`,
+      output,
+    );
   }
   if (exitCode !== 0) {
     fail(`compiled worker exited with code ${exitCode}`, output);

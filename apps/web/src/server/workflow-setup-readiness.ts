@@ -1,7 +1,9 @@
 import type { RepositoryWorkflowProbePort } from "@reviewrouter/features-repo-health";
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
+  getCodexRotatingWorkflowSetupContentMarkerGroups,
   getWorkflowSetupContentMarkerGroups,
 } from "@reviewrouter/features-workflow-provisioning";
 
@@ -13,6 +15,7 @@ export type WorkflowSetupReadinessInput = {
   readonly actionRef: string;
   readonly providerKind?: ProviderKind;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly codexRotatingProviderInstanceId?: string;
 };
 
 export async function isWorkflowSetupAlreadyCurrent(
@@ -26,17 +29,26 @@ export async function isWorkflowSetupAlreadyCurrent(
     owner: input.owner,
     name: input.name,
     defaultBranch: input.defaultBranch,
-    workflowPath: defaultWorkflowPath,
+    workflowPath: input.codexRotatingProviderInstanceId
+      ? defaultCodexRotatingWorkflowPath
+      : defaultWorkflowPath,
     expectedActionRef: input.actionRef,
-    ...(input.providerKind || input.conflictReviewFallbackEnabled === true
+    ...(input.codexRotatingProviderInstanceId
       ? {
-          expectedContentMarkerGroups: getWorkflowSetupContentMarkerGroups({
-            providerKind: input.providerKind,
-            conflictReviewFallbackEnabled:
-              input.conflictReviewFallbackEnabled === true,
-          }),
+          expectedContentMarkerGroups:
+            getCodexRotatingWorkflowSetupContentMarkerGroups({
+              providerInstanceId: input.codexRotatingProviderInstanceId,
+            }),
         }
-      : {}),
+      : input.providerKind || input.conflictReviewFallbackEnabled === true
+        ? {
+            expectedContentMarkerGroups: getWorkflowSetupContentMarkerGroups({
+              providerKind: input.providerKind,
+              conflictReviewFallbackEnabled:
+                input.conflictReviewFallbackEnabled === true,
+            }),
+          }
+        : {}),
   });
 
   return (

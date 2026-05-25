@@ -1,5 +1,11 @@
 export * from "./domain/workflow-template";
 export * from "./domain/workflow-provisioning";
+export {
+  renderCodexRotatingAdvisoryWorkflow,
+  scanCodexRotatingAdvisoryWorkflow,
+  codexRotatingWorkflowSchemaVersion,
+  codexRotatingSecretName,
+} from "@reviewrouter/features-codex-oauth-rotating";
 export * from "./application/ports/workflow-setup-gateway-port";
 export * from "./application/ports/workflow-provisioning-query-port";
 export * from "./application/ports/workflow-provisioning-repository-port";

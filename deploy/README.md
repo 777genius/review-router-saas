@@ -101,7 +101,7 @@ Contents: write
 Workflows: write
 Pull requests: write
 Issues: write
-Secrets: read
+Secrets: write
 Organization secrets: read
 Actions: read
 Checks: write
