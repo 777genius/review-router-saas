@@ -121,6 +121,67 @@ describe("Codex rotating GitHub Action runtime", () => {
     }
   });
 
+  it("labels repeated control-plane network failures without exposing auth-json", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-test-"));
+    const eventPath = join(tempDir, "event.json");
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        number: 118,
+        repository: { full_name: "777genius/agent-teams-ai" },
+        pull_request: {
+          draft: false,
+          head: {
+            sha: "0123456789abcdef0123456789abcdef01234567",
+            repo: { full_name: "777genius/agent-teams-ai" },
+          },
+          base: { sha: "abcdef0123456789abcdef0123456789abcdef01" },
+        },
+      }),
+    );
+    let preleaseAttempts = 0;
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const href = String(url);
+      if (href.startsWith("https://oidc.actions.test/token")) {
+        return jsonResponse({ value: "oidc.jwt.value" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
+        preleaseAttempts += 1;
+        throw new TypeError("fetch failed");
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+
+    try {
+      await expect(
+        runCodexRotatingGitHubAction({
+          env: {
+            "INPUT_API-URL": "https://api.reviewrouter.site/",
+            "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+            "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+            "INPUT_AUTH-JSON": JSON.stringify({
+              auth_mode: "chatgpt",
+              tokens: { refresh_token: "must-not-appear" },
+            }),
+            ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+            GITHUB_EVENT_NAME: "pull_request",
+            GITHUB_EVENT_PATH: eventPath,
+            GITHUB_REPOSITORY: "777genius/agent-teams-ai",
+          },
+          fetchImpl,
+          io: {
+            stdout: { write: vi.fn() },
+            stderr: { write: vi.fn() },
+          },
+        }),
+      ).rejects.toThrow("network_request_failed:api_prelease");
+      expect(preleaseAttempts).toBe(3);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("checks the bundled Codex binary before auth-json is read", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-test-"));
     const eventPath = join(tempDir, "event.json");

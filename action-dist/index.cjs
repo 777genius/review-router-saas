@@ -18201,6 +18201,11 @@ var supportedRunnerOs = "Linux";
 var supportedRunnerArch = "X64";
 var supportedRunnerImageOs = "ubuntu24";
 var minimumNodeMajor = 20;
+var controlPlaneRequestTimeoutMs = 3e4;
+var oidcRequestTimeoutMs = 2e4;
+var githubRequestTimeoutMs = 3e4;
+var networkRetryMaxAttempts = 3;
+var networkRetryBaseDelayMs = 750;
 async function runCodexRotatingGitHubAction(runtime = {}) {
   const env = runtime.env ?? process.env;
   const io = runtime.io ?? { stdout: process.stdout, stderr: process.stderr };
@@ -18221,6 +18226,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   clearOidcRequestEnv(env);
   const prelease = await postJson({
     fetchImpl,
+    label: "api_prelease",
     url: `${inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
     body: {
       oidcToken,
@@ -18241,6 +18247,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   });
   const finalize2 = await postJson({
     fetchImpl,
+    label: "api_finalize",
     url: `${inputs.apiUrl}/api/action/v1/codex-oauth/finalize`,
     body: {
       leaseId: prelease.leaseId,
@@ -18262,6 +18269,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   });
   await postJson({
     fetchImpl,
+    label: "api_writeback_preflight",
     url: `${inputs.apiUrl}/api/action/v1/codex-oauth/writeback-preflight`,
     body: {
       leaseId: prelease.leaseId,
@@ -18298,6 +18306,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
         });
         const writeback = await postJson({
           fetchImpl,
+          label: "api_writeback",
           url: `${inputs.apiUrl}/api/action/v1/codex-oauth/writeback`,
           body: {
             protocolVersion: 1,
@@ -18313,6 +18322,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
         assertWritebackAccepted(writeback);
         const checkout = await postJson({
           fetchImpl,
+          label: "api_checkout_token",
           url: `${inputs.apiUrl}/api/action/v1/codex-oauth/checkout-token`,
           body: {
             leaseId: prelease.leaseId,
@@ -18328,6 +18338,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
         });
         const commentToken = await postJson({
           fetchImpl,
+          label: "api_comment_token",
           url: `${inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
           body: {
             leaseId: prelease.leaseId,
@@ -18518,10 +18529,13 @@ async function requestGitHubActionsOidcToken(input) {
     throw new Error("github_oidc_unavailable");
   }
   const separator = requestUrl.includes("?") ? "&" : "?";
-  const response = await input.fetchImpl(
-    `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
-    { headers: { authorization: `bearer ${requestToken}` } }
-  );
+  const response = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: "github_oidc",
+    timeoutMs: oidcRequestTimeoutMs,
+    url: `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
+    init: { headers: { authorization: `bearer ${requestToken}` } }
+  });
   const body = await response.json();
   if (!response.ok || typeof body.value !== "string" || body.value.length === 0) {
     throw new Error("github_oidc_request_failed");
@@ -18529,10 +18543,16 @@ async function requestGitHubActionsOidcToken(input) {
   return body.value;
 }
 async function postJson(input) {
-  const response = await input.fetchImpl(input.url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input.body)
+  const response = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: input.label,
+    timeoutMs: controlPlaneRequestTimeoutMs,
+    url: input.url,
+    init: {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input.body)
+    }
   });
   const text = await response.text();
   const parsed = text ? JSON.parse(text) : {};
@@ -18542,21 +18562,81 @@ async function postJson(input) {
   return parsed;
 }
 async function fetchGitHubRepositoryPublicKey(input) {
-  const response = await input.fetchImpl(
-    `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/actions/secrets/public-key`,
-    {
+  const response = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: "github_public_key",
+    timeoutMs: githubRequestTimeoutMs,
+    url: `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/actions/secrets/public-key`,
+    init: {
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
       }
     }
-  );
+  });
   const body = await response.json();
   if (!response.ok || typeof body.key !== "string" || typeof body.key_id !== "string") {
     throw new Error("github_public_key_fetch_failed");
   }
   return { key: body.key, key_id: body.key_id };
+}
+async function fetchWithRetry(input) {
+  const maxAttempts = input.maxAttempts ?? networkRetryMaxAttempts;
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, input.timeoutMs);
+    try {
+      const response = await input.fetchImpl(input.url, {
+        ...input.init,
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      if (shouldRetryHttpStatus(response.status) && attempt < maxAttempts) {
+        await discardResponseBody(response);
+        await sleep(networkRetryDelayMs(attempt));
+        continue;
+      }
+      return response;
+    } catch (error51) {
+      clearTimeout(timeout);
+      lastError = error51;
+      if (attempt < maxAttempts) {
+        await sleep(networkRetryDelayMs(attempt));
+        continue;
+      }
+      const code = timedOut ? "network_request_timeout" : "network_request_failed";
+      throw new Error(`${code}:${safeNetworkLabel(input.label)}`, {
+        cause: error51
+      });
+    }
+  }
+  throw new Error(`network_request_failed:${safeNetworkLabel(input.label)}`, {
+    cause: lastError
+  });
+}
+function shouldRetryHttpStatus(status) {
+  return status === 408 || status === 429 || status >= 500 && status <= 599;
+}
+function networkRetryDelayMs(attempt) {
+  return networkRetryBaseDelayMs * 2 ** Math.max(0, attempt - 1);
+}
+function safeNetworkLabel(label) {
+  return /^[a-z0-9_:-]{1,80}$/i.test(label) ? label : "unknown";
+}
+async function discardResponseBody(response) {
+  try {
+    await response.arrayBuffer();
+  } catch {
+  }
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function assertWritebackAccepted(response) {
   if (!response || response.protocolVersion !== 1) {
@@ -19058,16 +19138,19 @@ function safeEnvKeyLabel(key) {
 }
 async function postPullRequestComment(input) {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await input.fetchImpl(
-    `${commentsUrl}?per_page=100`,
-    {
+  const commentsResponse = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: "github_comment_lookup",
+    timeoutMs: githubRequestTimeoutMs,
+    url: `${commentsUrl}?per_page=100`,
+    init: {
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
       }
     }
-  );
+  });
   if (!commentsResponse.ok) {
     throw new Error("github_comment_lookup_failed");
   }
@@ -19079,9 +19162,12 @@ async function postPullRequestComment(input) {
     (comment) => typeof comment === "object" && comment !== null && typeof comment.id === "number" && typeof comment.body === "string" && comment.body.startsWith(input.marker)
   );
   if (existing) {
-    const updateResponse = await input.fetchImpl(
-      `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/comments/${existing.id}`,
-      {
+    const updateResponse = await fetchWithRetry({
+      fetchImpl: input.fetchImpl,
+      label: "github_comment_update",
+      timeoutMs: githubRequestTimeoutMs,
+      url: `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/comments/${existing.id}`,
+      init: {
         method: "PATCH",
         headers: {
           accept: "application/vnd.github+json",
@@ -19091,21 +19177,27 @@ async function postPullRequestComment(input) {
         },
         body: JSON.stringify({ body: input.body })
       }
-    );
+    });
     if (!updateResponse.ok) {
       throw new Error("github_comment_update_failed");
     }
     return;
   }
-  const createResponse = await input.fetchImpl(commentsUrl, {
-    method: "POST",
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${input.token}`,
-      "content-type": "application/json",
-      "x-github-api-version": "2022-11-28"
-    },
-    body: JSON.stringify({ body: input.body })
+  const createResponse = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: "github_comment_create",
+    timeoutMs: githubRequestTimeoutMs,
+    url: commentsUrl,
+    init: {
+      method: "POST",
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${input.token}`,
+        "content-type": "application/json",
+        "x-github-api-version": "2022-11-28"
+      },
+      body: JSON.stringify({ body: input.body })
+    }
   });
   if (!createResponse.ok) {
     throw new Error("github_comment_post_failed");
@@ -19113,16 +19205,19 @@ async function postPullRequestComment(input) {
 }
 async function deleteStaleCodexRotatingSummaryComments(input) {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await input.fetchImpl(
-    `${commentsUrl}?per_page=100`,
-    {
+  const commentsResponse = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: "github_stale_comment_lookup",
+    timeoutMs: githubRequestTimeoutMs,
+    url: `${commentsUrl}?per_page=100`,
+    init: {
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
       }
     }
-  );
+  });
   if (!commentsResponse.ok) {
     throw new Error("github_stale_comment_lookup_failed");
   }
@@ -19136,9 +19231,12 @@ async function deleteStaleCodexRotatingSummaryComments(input) {
     )
   );
   for (const comment of staleComments) {
-    const deleteResponse = await input.fetchImpl(
-      `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/comments/${comment.id}`,
-      {
+    const deleteResponse = await fetchWithRetry({
+      fetchImpl: input.fetchImpl,
+      label: "github_stale_comment_delete",
+      timeoutMs: githubRequestTimeoutMs,
+      url: `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/comments/${comment.id}`,
+      init: {
         method: "DELETE",
         headers: {
           accept: "application/vnd.github+json",
@@ -19146,7 +19244,7 @@ async function deleteStaleCodexRotatingSummaryComments(input) {
           "x-github-api-version": "2022-11-28"
         }
       }
-    );
+    });
     if (!deleteResponse.ok) {
       throw new Error("github_stale_comment_delete_failed");
     }
