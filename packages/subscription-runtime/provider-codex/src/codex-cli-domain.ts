@@ -77,11 +77,7 @@ export function compactCodexAuthJson(input: {
 
 export function classifyCodexRuntimeFailure(message: string): string {
   const normalized = message.toLowerCase();
-  if (
-    normalized.includes("quota") ||
-    normalized.includes("rate limit") ||
-    normalized.includes("billing")
-  ) {
+  if (isCodexQuotaOrRateLimitFailure(normalized)) {
     return "quota_limited";
   }
   if (
@@ -100,6 +96,20 @@ export function classifyCodexRuntimeFailure(message: string): string {
     return "permission_required";
   }
   return "unknown_auth_state";
+}
+
+function isCodexQuotaOrRateLimitFailure(normalizedMessage: string): boolean {
+  return (
+    /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(
+      normalizedMessage,
+    ) ||
+    /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(
+      normalizedMessage,
+    ) ||
+    /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(
+      normalizedMessage,
+    )
+  );
 }
 
 export function pruneCodexChildEnv(

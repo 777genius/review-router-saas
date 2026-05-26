@@ -1695,7 +1695,7 @@ function buildFullReviewRuntimeEnv(input: {
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
-    CODEX_AGENTIC_AUDIT: runtimeEnv.CODEX_AGENTIC_AUDIT ?? "strict",
+    CODEX_AGENTIC_AUDIT: runtimeEnv.CODEX_AGENTIC_AUDIT ?? "rerun",
     FAIL_ON_NO_HEALTHY_PROVIDERS:
       runtimeEnv.FAIL_ON_NO_HEALTHY_PROVIDERS ?? "true",
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
@@ -2029,8 +2029,12 @@ function classifyPostWritebackCodexFailure(error: unknown): Error {
   );
 }
 
-function extractReviewRouterRuntimeFailure(output: string): string | undefined {
-  const match = output.match(/ReviewRouter found [^\r\n]+/);
+export function extractReviewRouterRuntimeFailure(
+  output: string,
+): string | undefined {
+  const match = output.match(
+    /(?:ReviewRouter found [^\r\n]+|Review failed \[[^\r\n]+)(?:\r?\n|$)/,
+  );
   return match?.[0]?.trim();
 }
 

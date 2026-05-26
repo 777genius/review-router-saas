@@ -9,6 +9,7 @@ import {
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
   deleteStaleCodexRotatingSummaryComments,
+  extractReviewRouterRuntimeFailure,
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,
@@ -23,6 +24,26 @@ import {
 } from "../action/github-action";
 
 describe("Codex rotating GitHub Action runtime", () => {
+  it("detects already reported ReviewRouter runtime failures", () => {
+    expect(
+      extractReviewRouterRuntimeFailure(
+        "ReviewRouter found 2 major+ finding(s). Review comments were posted before failing this check.\n",
+      ),
+    ).toBe(
+      "ReviewRouter found 2 major+ finding(s). Review comments were posted before failing this check.",
+    );
+    expect(
+      extractReviewRouterRuntimeFailure(
+        [
+          "Review failed [required_provider_unhealthy]: A required review provider was unavailable or unhealthy.",
+          "Check provider credentials, CLI setup, model name, and quota.",
+        ].join("\n"),
+      ),
+    ).toBe(
+      "Review failed [required_provider_unhealthy]: A required review provider was unavailable or unhealthy.",
+    );
+  });
+
   it("declares a real node action entrypoint without pre or post hooks", () => {
     const actionYml = readFileSync(join(process.cwd(), "action.yml"), "utf8");
     const actionSource = readFileSync(
@@ -992,7 +1013,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         githubOutputInsideHome: true,
         prNumber: "118",
         reviewAuthMode: "codex-oauth",
-        codexAgenticAudit: "strict",
+        codexAgenticAudit: "rerun",
         failOnNoHealthyProviders: "true",
         providers: "codex/gpt-5.5",
         runtimeMode: "static",

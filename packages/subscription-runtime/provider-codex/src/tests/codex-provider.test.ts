@@ -22,6 +22,7 @@ import {
   sessionArtifactFromCodexAuthJson,
   validateCodexSessionArtifact,
 } from "../index";
+import { classifyCodexRuntimeFailure } from "../codex-cli-domain";
 
 const validAuthJson = JSON.stringify({
   auth_mode: "chatgpt",
@@ -42,6 +43,29 @@ const refreshedAuthJson = JSON.stringify({
 });
 
 describe("Codex provider adapter", () => {
+  it("classifies quota failures without matching generic support guidance", () => {
+    expect(
+      classifyCodexRuntimeFailure(
+        "Error 429: rate limit exceeded for this account",
+      ),
+    ).toBe("quota_limited");
+    expect(
+      classifyCodexRuntimeFailure(
+        "insufficient_quota: You exceeded your current quota",
+      ),
+    ).toBe("quota_limited");
+    expect(
+      classifyCodexRuntimeFailure(
+        "Check the required provider credentials, CLI setup, model name, and quota.",
+      ),
+    ).toBe("unknown_auth_state");
+    expect(
+      classifyCodexRuntimeFailure(
+        "Verify the key has quota and access to the configured model.",
+      ),
+    ).toBe("unknown_auth_state");
+  });
+
   it("declares split session and agent capabilities", () => {
     expect(codexSessionCapabilities.providerId).toBe("codex");
     expect(codexSessionCapabilities.refreshMayRotateSession).toBe(true);

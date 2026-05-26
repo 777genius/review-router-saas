@@ -33,6 +33,7 @@ __export(github_action_exports, {
   assertSupportedRunnerEnvironment: () => assertSupportedRunnerEnvironment,
   buildCodexCommand: () => buildCodexCommand,
   deleteStaleCodexRotatingSummaryComments: () => deleteStaleCodexRotatingSummaryComments,
+  extractReviewRouterRuntimeFailure: () => extractReviewRouterRuntimeFailure,
   postPullRequestComment: () => postPullRequestComment,
   readActionAuthJson: () => readActionAuthJson,
   readActionInputs: () => readActionInputs,
@@ -800,7 +801,7 @@ function compactCodexAuthJson(input) {
 }
 function classifyCodexRuntimeFailure(message) {
   const normalized = message.toLowerCase();
-  if (normalized.includes("quota") || normalized.includes("rate limit") || normalized.includes("billing")) {
+  if (isCodexQuotaOrRateLimitFailure(normalized)) {
     return "quota_limited";
   }
   if (normalized.includes("unauthorized") || normalized.includes("invalid_grant") || normalized.includes("refresh token") || normalized.includes("login required")) {
@@ -810,6 +811,15 @@ function classifyCodexRuntimeFailure(message) {
     return "permission_required";
   }
   return "unknown_auth_state";
+}
+function isCodexQuotaOrRateLimitFailure(normalizedMessage) {
+  return /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(
+    normalizedMessage
+  ) || /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(
+    normalizedMessage
+  ) || /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(
+    normalizedMessage
+  );
 }
 function pruneCodexChildEnv(env) {
   const allowed = {};
@@ -20673,7 +20683,7 @@ function buildFullReviewRuntimeEnv(input) {
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
-    CODEX_AGENTIC_AUDIT: runtimeEnv.CODEX_AGENTIC_AUDIT ?? "strict",
+    CODEX_AGENTIC_AUDIT: runtimeEnv.CODEX_AGENTIC_AUDIT ?? "rerun",
     FAIL_ON_NO_HEALTHY_PROVIDERS: runtimeEnv.FAIL_ON_NO_HEALTHY_PROVIDERS ?? "true",
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
@@ -20936,7 +20946,9 @@ function classifyPostWritebackCodexFailure(error51) {
   );
 }
 function extractReviewRouterRuntimeFailure(output) {
-  const match = output.match(/ReviewRouter found [^\r\n]+/);
+  const match = output.match(
+    /(?:ReviewRouter found [^\r\n]+|Review failed \[[^\r\n]+)(?:\r?\n|$)/
+  );
   return match?.[0]?.trim();
 }
 function shouldSuppressTopLevelActionError(error51) {
@@ -21072,6 +21084,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
   deleteStaleCodexRotatingSummaryComments,
+  extractReviewRouterRuntimeFailure,
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,
