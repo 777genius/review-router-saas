@@ -40,6 +40,7 @@ __export(github_action_exports, {
   routeCodexLocalProviderRequest: () => routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction: () => runCodexRotatingGitHubAction,
   sanitizeReviewComment: () => sanitizeReviewComment,
+  shouldAutoRunCodexRotatingAction: () => shouldAutoRunCodexRotatingAction,
   shouldSuppressTopLevelActionError: () => shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex: () => shouldUseSubscriptionRuntimeCodex,
   startCodexLocalProviderProxy: () => startCodexLocalProviderProxy
@@ -21046,7 +21047,17 @@ function requireSha(value, field) {
   }
   return sha;
 }
-if (process.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1" || process.env.GITHUB_ACTIONS === "true") {
+function shouldAutoRunCodexRotatingAction(input) {
+  if (input.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1") {
+    return true;
+  }
+  if (input.env.GITHUB_ACTIONS !== "true") {
+    return false;
+  }
+  const entrypoint = input.argv[1] ?? "";
+  return /(?:^|[\\/])action-dist[\\/]index\.cjs$/.test(entrypoint);
+}
+if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) {
   runCodexRotatingGitHubAction().catch((error51) => {
     if (!shouldSuppressTopLevelActionError(error51)) {
       const message = error51 instanceof Error ? error51.message : "unknown_error";
@@ -21068,6 +21079,7 @@ if (process.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1" || process.env.G
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
+  shouldAutoRunCodexRotatingAction,
   shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex,
   startCodexLocalProviderProxy

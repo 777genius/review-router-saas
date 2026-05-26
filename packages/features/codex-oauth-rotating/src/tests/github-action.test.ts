@@ -16,6 +16,7 @@ import {
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
+  shouldAutoRunCodexRotatingAction,
   shouldUseSubscriptionRuntimeCodex,
   shouldSuppressTopLevelActionError,
   startCodexLocalProviderProxy,
@@ -34,7 +35,7 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     expect(actionYml).toContain("using: node24");
     expect(actionYml).toContain("main: action-dist/index.cjs");
-    expect(actionSource).toContain('process.env.GITHUB_ACTIONS === "true"');
+    expect(actionSource).toContain("action-dist[\\\\/]index\\.cjs");
     expect(actionSource).not.toContain("process.env.GITHUB_ACTION_PATH");
     expect(actionYml).toContain("provider-instance-id:\n    description:");
     expect(actionYml).toContain("auth-json:\n    description:");
@@ -44,6 +45,30 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(actionYml).not.toMatch(/\bpre-if:/);
     expect(actionYml).not.toMatch(/\bpost:/);
     expect(actionYml).not.toMatch(/\bpost-if:/);
+  });
+
+  it("does not auto-run when imported by CI tooling under GitHub Actions", () => {
+    expect(
+      shouldAutoRunCodexRotatingAction({
+        env: { GITHUB_ACTIONS: "true" },
+        argv: ["/usr/bin/node", "/workspace/scripts/check-runtime.mjs"],
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoRunCodexRotatingAction({
+        env: { GITHUB_ACTIONS: "true" },
+        argv: [
+          "/usr/bin/node",
+          "/home/runner/work/_actions/777genius/review-router/789c192/action-dist/index.cjs",
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      shouldAutoRunCodexRotatingAction({
+        env: { REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION: "1" },
+        argv: ["/usr/bin/node", "/workspace/custom-entrypoint.js"],
+      }),
+    ).toBe(true);
   });
 
   it("reads hyphenated GitHub action inputs without reading auth-json", () => {

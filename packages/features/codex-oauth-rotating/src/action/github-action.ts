@@ -2206,9 +2206,23 @@ function requireSha(value: unknown, field: string): string {
   return sha;
 }
 
+export function shouldAutoRunCodexRotatingAction(input: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly argv: readonly string[];
+}): boolean {
+  if (input.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1") {
+    return true;
+  }
+  if (input.env.GITHUB_ACTIONS !== "true") {
+    return false;
+  }
+
+  const entrypoint = input.argv[1] ?? "";
+  return /(?:^|[\\/])action-dist[\\/]index\.cjs$/.test(entrypoint);
+}
+
 if (
-  process.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1" ||
-  process.env.GITHUB_ACTIONS === "true"
+  shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })
 ) {
   runCodexRotatingGitHubAction().catch((error: unknown) => {
     if (!shouldSuppressTopLevelActionError(error)) {
