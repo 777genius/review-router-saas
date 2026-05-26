@@ -7,6 +7,11 @@ import {
   type GitHubActionsOidcClaims,
   type GitHubActionsOidcTokenVerifierPort,
 } from "../../../packages/features/action-control-plane/src/index.ts";
+import {
+  PrismaReviewConfigurationRepository,
+  safeDefaultReviewConfiguration,
+  saveReviewConfiguration,
+} from "../../../packages/features/review-config/src/index.ts";
 import { createPrismaClient } from "../../../packages/platform/db/src/index.ts";
 import { SystemClock } from "../../../packages/shared/src/index.ts";
 import { createApiApp } from "../../../apps/api/src/app.js";
@@ -48,6 +53,28 @@ if (!actionSessionSecret) {
 const prisma = createPrismaClient();
 try {
   const repository = await ensureRepositoryFixture();
+  const e2eProvider = {
+    ...safeDefaultReviewConfiguration.provider,
+    kind: "openrouter" as const,
+    authMode: "openrouter_api_key" as const,
+    model: "poolside/laguna-m.1:free",
+  };
+
+  await saveReviewConfiguration(
+    {
+      target: {
+        scope: "repository",
+        workspaceId: repository.workspaceId,
+        repositoryId: repository.id,
+      },
+      config: {
+        ...safeDefaultReviewConfiguration,
+        provider: e2eProvider,
+        providers: [e2eProvider],
+      },
+    },
+    { configurations: new PrismaReviewConfigurationRepository(prisma) },
+  );
   const runId = `local-e2e-${Date.now()}`;
   const oidcJti = `local-e2e-jti-${Date.now()}`;
   const app = await createApiApp({
@@ -296,6 +323,7 @@ async function ensureRepositoryFixture() {
     },
     select: {
       id: true,
+      workspaceId: true,
       githubRepositoryId: true,
       fullName: true,
       owner: true,
