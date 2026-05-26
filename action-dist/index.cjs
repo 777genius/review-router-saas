@@ -1006,7 +1006,9 @@ var CodexCliAgentDriver = class {
   async runTask(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await (0, import_promises.mkdtemp)((0, import_node_path.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-"));
+    const tempRoot = await (0, import_promises.mkdtemp)(
+      (0, import_node_path.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-")
+    );
     const tempHome = (0, import_node_path.join)(tempRoot, "home");
     const tempCodexHome = (0, import_node_path.join)(tempRoot, "codex-home");
     await (0, import_promises.mkdir)(tempHome, { recursive: true, mode: 448 });
