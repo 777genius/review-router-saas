@@ -702,6 +702,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  inheritedOpenAi: process.env.OPENAI_API_KEY,",
         "  inheritedOidc: process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,",
         "  githubToken: process.env.GITHUB_TOKEN,",
+        "  githubOutput: process.env.GITHUB_OUTPUT,",
+        "  githubOutputInsideHome: Boolean(process.env.GITHUB_OUTPUT && process.env.GITHUB_OUTPUT.startsWith(process.env.HOME + '/')),",
         "  prNumber: process.env.PR_NUMBER,",
         "  reviewAuthMode: process.env.REVIEW_AUTH_MODE,",
         "  codexAgenticAudit: process.env.CODEX_AGENTIC_AUDIT,",
@@ -874,6 +876,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         configIncludesReadOnly: true,
         configIncludesToken: false,
         githubToken: "ghs_comment_token",
+        githubOutputInsideHome: true,
         prNumber: "118",
         reviewAuthMode: "codex-oauth",
         codexAgenticAudit: "strict",
@@ -885,6 +888,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       });
       expect(reviewEnv.inheritedOpenAi).toBeUndefined();
       expect(reviewEnv.inheritedOidc).toBeUndefined();
+      expect(String(reviewEnv.githubOutput)).toContain("github-output");
       const childStdout = stdoutWrite.mock.calls
         .map(([chunk]) => String(chunk))
         .join("");

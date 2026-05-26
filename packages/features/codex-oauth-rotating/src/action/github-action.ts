@@ -1216,6 +1216,7 @@ function buildFullReviewRuntimeEnv(input: {
     CODEX_HOME: input.tempCodexHome,
     CI: "true",
     PATH: `${input.codexBinDir}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
+    GITHUB_OUTPUT: join(input.tempHome, "github-output"),
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
