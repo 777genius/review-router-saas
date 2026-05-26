@@ -3,6 +3,33 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import http from "node:http";
 import {
+  createSubscriptionRuntime,
+  DefaultRedactor,
+  DeterministicIdGenerator,
+  NullObservability,
+  SystemClock,
+  type AgentDriver,
+  type ClockPort,
+  type IdGeneratorPort,
+  type LeaseStorePort,
+  type ProviderSessionDriver,
+  type RefreshedSession,
+  type RuntimePolicy,
+  type SessionArtifact,
+  type SessionEnvelope,
+  type SessionStoreCapabilities,
+  type SessionStorePort,
+  type SessionWriteResult,
+  type WorkspaceHandle,
+  type WorkspacePort,
+} from "@reviewrouter/subscription-runtime-core";
+import {
+  CodexCliAgentDriver,
+  CodexCliSessionDriver,
+  sessionArtifactFromCodexAuthJson,
+} from "@reviewrouter/subscription-runtime-provider-codex";
+import { GitHubActionRunner } from "@reviewrouter/subscription-runtime-runner-github-action";
+import {
   mkdtemp,
   readFile,
   rm,
@@ -267,45 +294,30 @@ export async function runCodexRotatingGitHubAction(
       const tempHome = await makeTempDirectory("reviewrouter-home-");
       const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
       try {
-        await writeCodexAuthSnapshot(tempCodexHome, authJson);
-        await runCodexBootstrap({
+        const refreshed = await refreshCodexAuthJson({
+          authJson,
           inputs,
+          fetchImpl,
+          prelease,
+          finalize,
+          publicKey,
           codexBinaryPath,
           env,
           tempHome,
           tempCodexHome,
         });
 
-        const refreshedAuthJson = await readFile(
-          join(tempCodexHome, "auth.json"),
-          "utf8",
-        );
-        const compact = compactCodexAuthJson({
-          authJsonBytes: refreshedAuthJson,
-        });
-        const encrypted = await encryptCodexRotatingAuthForGitHubSecret({
-          authJsonBytes: compact.compactAuthJsonBytes,
-          githubPublicKeyBase64: publicKey.key,
-          githubKeyId: publicKey.key_id,
-          generationHashSalt: prelease.generationHashSalt,
-        });
-
-        const writeback = await postJson<WritebackResponse>({
-          fetchImpl,
-          label: "api_writeback",
-          url: `${inputs.apiUrl}/api/action/v1/codex-oauth/writeback`,
-          body: {
-            protocolVersion: 1,
-            leaseId: prelease.leaseId,
-            providerInstanceId: inputs.providerInstanceId,
-            generation: finalize.nextGeneration,
-            latestGenerationHash: encrypted.latestGenerationHash,
-            encryptedValue: encrypted.encryptedValue,
-            keyId: encrypted.keyId,
-            idempotencyKey: buildWritebackIdempotencyKey(env, prelease.leaseId),
-          },
-        });
-        assertWritebackAccepted(writeback);
+        if (!refreshed.writebackCommittedByRuntime) {
+          await writeRefreshedCodexAuthJson({
+            authJson: refreshed.authJson,
+            inputs,
+            fetchImpl,
+            prelease,
+            finalize,
+            publicKey,
+            env,
+          });
+        }
 
         const checkout = await postJson<CheckoutTokenResponse>({
           fetchImpl,
@@ -1107,6 +1119,372 @@ async function runCodexBootstrap(input: {
   }
 }
 
+async function refreshCodexAuthJson(input: {
+  readonly authJson: string;
+  readonly inputs: ActionInputs;
+  readonly fetchImpl: FetchLike;
+  readonly prelease: PreleaseResponse;
+  readonly finalize: Extract<
+    FinalizeResponse,
+    { readonly status: "finalized" }
+  >;
+  readonly publicKey: GitHubPublicKeyResponse;
+  readonly codexBinaryPath: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly tempHome: string;
+  readonly tempCodexHome: string;
+}): Promise<{
+  readonly authJson: string;
+  readonly writebackCommittedByRuntime: boolean;
+}> {
+  if (!shouldUseSubscriptionRuntimeCodex(input.env)) {
+    await writeCodexAuthSnapshot(input.tempCodexHome, input.authJson);
+    await runCodexBootstrap(input);
+    return {
+      authJson: await readFile(join(input.tempCodexHome, "auth.json"), "utf8"),
+      writebackCommittedByRuntime: false,
+    };
+  }
+
+  const sessionDriver = new CodexCliSessionDriver({
+    codexBinaryPath: input.codexBinaryPath,
+    sourceEnv: input.env,
+  });
+  const agentDriver = new CodexCliAgentDriver({
+    codexBinaryPath: input.codexBinaryPath,
+    sourceEnv: input.env,
+  });
+  const redactor = new DefaultRedactor();
+  const sessionStore = new ReviewRouterCodexActionSessionStore({
+    authJson: input.authJson,
+    inputs: input.inputs,
+    fetchImpl: input.fetchImpl,
+    prelease: input.prelease,
+    finalize: input.finalize,
+    publicKey: input.publicKey,
+    env: input.env,
+  });
+  const runtime = createSubscriptionRuntime({
+    policy: buildCodexActionRuntimePolicy({
+      sessionDriver,
+      agentDriver,
+      sessionStore,
+    }),
+    sessionDriver,
+    agentDriver,
+    sessionStore,
+    leaseStore: new ReviewRouterCodexActionLeaseStore(input.prelease),
+    runner: new GitHubActionRunner({ redactor }),
+    workspace: new ExistingPathWorkspace(input.tempHome),
+    redactor,
+    observability: new NullObservability(),
+    clock: new SystemClock(),
+    idGenerator: new ReviewRouterCodexActionIdGenerator({
+      env: input.env,
+      leaseId: input.prelease.leaseId,
+    }),
+  });
+
+  const refresh = await runtime.refreshSession({
+    providerInstanceId: input.inputs.providerInstanceId,
+    runContext: {
+      runId: input.env.GITHUB_RUN_ID || input.prelease.leaseId,
+      attempt: Number(input.env.GITHUB_RUN_ATTEMPT || "1"),
+      abortSignal: new AbortController().signal,
+    },
+  });
+
+  if (refresh.status === "blocked") {
+    throw new Error(mapRefreshBlockedReasonToActionError(refresh.reason));
+  }
+  if (refresh.status === "skipped" && refresh.reason === "stale_generation") {
+    throw new Error("stale_generation");
+  }
+
+  const artifact =
+    refresh.status === "ready"
+      ? refresh.session.artifact
+      : refresh.session?.artifact;
+  if (!artifact) {
+    throw new Error("needs_reconnect");
+  }
+
+  const refreshedAuthJson = Buffer.from(artifact.bytes).toString("utf8");
+  await writeCodexAuthSnapshot(input.tempCodexHome, refreshedAuthJson);
+  return {
+    authJson: refreshedAuthJson,
+    writebackCommittedByRuntime: refresh.status === "ready",
+  };
+}
+
+async function writeRefreshedCodexAuthJson(input: {
+  readonly authJson: string;
+  readonly inputs: ActionInputs;
+  readonly fetchImpl: FetchLike;
+  readonly prelease: PreleaseResponse;
+  readonly finalize: Extract<
+    FinalizeResponse,
+    { readonly status: "finalized" }
+  >;
+  readonly publicKey: GitHubPublicKeyResponse;
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<SessionWriteResult> {
+  const compact = compactCodexAuthJson({
+    authJsonBytes: input.authJson,
+  });
+  const encrypted = await encryptCodexRotatingAuthForGitHubSecret({
+    authJsonBytes: compact.compactAuthJsonBytes,
+    githubPublicKeyBase64: input.publicKey.key,
+    githubKeyId: input.publicKey.key_id,
+    generationHashSalt: input.prelease.generationHashSalt,
+  });
+
+  const writeback = await postJson<WritebackResponse>({
+    fetchImpl: input.fetchImpl,
+    label: "api_writeback",
+    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/writeback`,
+    body: {
+      protocolVersion: 1,
+      leaseId: input.prelease.leaseId,
+      providerInstanceId: input.inputs.providerInstanceId,
+      generation: input.finalize.nextGeneration,
+      latestGenerationHash: encrypted.latestGenerationHash,
+      encryptedValue: encrypted.encryptedValue,
+      keyId: encrypted.keyId,
+      idempotencyKey: buildWritebackIdempotencyKey(
+        input.env,
+        input.prelease.leaseId,
+      ),
+    },
+  });
+  assertWritebackAccepted(writeback);
+
+  return {
+    status:
+      writeback.status === "idempotent_replay"
+        ? "idempotent_replay"
+        : "accepted",
+    generation: input.finalize.nextGeneration,
+    generationHash: encrypted.latestGenerationHash,
+  };
+}
+
+const reviewRouterCodexActionStoreCapabilities: SessionStoreCapabilities = {
+  storeId: "reviewrouter-codex-action-secret-writeback",
+  custody: "no-plaintext-backend",
+  supportsRead: true,
+  supportsWriteback: true,
+  supportsCompareAndSwap: true,
+  supportsIdempotency: true,
+  supportsDelete: false,
+  supportsAuditLog: false,
+  supportsMetadataOnlyHealthCheck: true,
+  plaintextAvailableToBackend: false,
+  maxArtifactBytes: 256_000,
+};
+
+class ReviewRouterCodexActionSessionStore implements SessionStorePort {
+  readonly storeId = reviewRouterCodexActionStoreCapabilities.storeId;
+  readonly custody = reviewRouterCodexActionStoreCapabilities.custody;
+  readonly capabilities = reviewRouterCodexActionStoreCapabilities;
+  private readonly artifact: SessionArtifact;
+  private readonly generation: number;
+
+  constructor(
+    private readonly options: {
+      readonly authJson: string;
+      readonly inputs: ActionInputs;
+      readonly fetchImpl: FetchLike;
+      readonly prelease: PreleaseResponse;
+      readonly finalize: Extract<
+        FinalizeResponse,
+        { readonly status: "finalized" }
+      >;
+      readonly publicKey: GitHubPublicKeyResponse;
+      readonly env: NodeJS.ProcessEnv;
+    },
+  ) {
+    this.artifact = sessionArtifactFromCodexAuthJson(options.authJson);
+    this.generation = Math.max(1, options.finalize.nextGeneration - 1);
+  }
+
+  async read(input: {
+    readonly providerInstanceId: string;
+    readonly expectedProviderId?: string;
+  }): Promise<SessionEnvelope | null> {
+    if (input.providerInstanceId !== this.options.inputs.providerInstanceId) {
+      return null;
+    }
+    if (
+      input.expectedProviderId &&
+      input.expectedProviderId !== this.artifact.providerId
+    ) {
+      return null;
+    }
+    return {
+      providerInstanceId: this.options.inputs.providerInstanceId,
+      providerId: this.artifact.providerId,
+      artifact: this.artifact,
+      generation: this.generation,
+      generationHash: computeRestoredCodexGenerationHash(this.options),
+      storageVersion: "reviewrouter-codex-action-secret-v1",
+      custody: this.custody,
+      metadata: {
+        leaseId: this.options.prelease.leaseId,
+      },
+    };
+  }
+
+  async write(input: {
+    readonly providerInstanceId: string;
+    readonly expectedGeneration: number;
+    readonly nextArtifact: SessionArtifact;
+  }): Promise<SessionWriteResult> {
+    if (input.providerInstanceId !== this.options.inputs.providerInstanceId) {
+      throw new Error("provider_instance_mismatch");
+    }
+    if (input.expectedGeneration !== this.generation) {
+      return {
+        status: "stale_generation",
+        currentGeneration: this.generation,
+        currentGenerationHash: computeRestoredCodexGenerationHash(this.options),
+      };
+    }
+    const authJson = Buffer.from(input.nextArtifact.bytes).toString("utf8");
+    return writeRefreshedCodexAuthJson({
+      authJson,
+      inputs: this.options.inputs,
+      fetchImpl: this.options.fetchImpl,
+      prelease: this.options.prelease,
+      finalize: this.options.finalize,
+      publicKey: this.options.publicKey,
+      env: this.options.env,
+    });
+  }
+}
+
+class ReviewRouterCodexActionLeaseStore implements LeaseStorePort {
+  readonly leaseStoreId = "reviewrouter-codex-action-lease";
+  readonly capabilities = {
+    leaseStoreId: this.leaseStoreId,
+    supportsTtl: true,
+    supportsFinalize: true,
+    supportsWritebackCommit: true,
+  } as const;
+
+  constructor(private readonly prelease: PreleaseResponse) {}
+
+  async acquire() {
+    return {
+      status: "granted" as const,
+      leaseId: this.prelease.leaseId,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    };
+  }
+
+  async finalize(input: {
+    readonly leaseId: string;
+    readonly restoredGenerationHash: string;
+  }) {
+    return input;
+  }
+
+  async markWritebackStarted(): Promise<void> {}
+
+  async markWritebackCommitted(): Promise<{ readonly status: "committed" }> {
+    return { status: "committed" };
+  }
+}
+
+class ExistingPathWorkspace implements WorkspacePort {
+  readonly workspaceId = "reviewrouter-existing-action-workspace";
+  readonly capabilities = {
+    workspaceId: this.workspaceId,
+    supportsTempDir: true,
+    supportsExistingCheckout: true,
+    supportsContainer: false,
+  } as const;
+
+  constructor(private readonly path: string) {}
+
+  async create(): Promise<WorkspaceHandle> {
+    return { path: this.path };
+  }
+}
+
+class ReviewRouterCodexActionIdGenerator
+  extends DeterministicIdGenerator
+  implements IdGeneratorPort
+{
+  constructor(
+    private readonly options: {
+      readonly env: NodeJS.ProcessEnv;
+      readonly leaseId: string;
+    },
+  ) {
+    super();
+  }
+
+  override idempotencyKey(input: {
+    readonly providerInstanceId: string;
+    readonly runId: string;
+    readonly attempt: number;
+    readonly purpose: "refresh" | "writeback" | "run-task";
+  }): string {
+    if (input.purpose === "writeback") {
+      return buildWritebackIdempotencyKey(
+        this.options.env,
+        this.options.leaseId,
+      );
+    }
+    return super.idempotencyKey(input);
+  }
+}
+
+function buildCodexActionRuntimePolicy(input: {
+  readonly sessionDriver: ProviderSessionDriver;
+  readonly agentDriver: AgentDriver;
+  readonly sessionStore: SessionStorePort;
+}): RuntimePolicy {
+  return {
+    custodyMode: "no-plaintext-backend",
+    requireNoBackendPlaintext: true,
+    requireWritebackBeforeTask: true,
+    requireCompareAndSwap: true,
+    allowInteractiveSetupInRuntime: false,
+    allowedProviderIds: [input.sessionDriver.providerId],
+    allowedAgentIds: [input.agentDriver.agentId],
+    allowedStoreIds: [input.sessionStore.storeId],
+    allowedRunnerIds: ["github-action"],
+  };
+}
+
+function computeRestoredCodexGenerationHash(input: {
+  readonly authJson: string;
+  readonly prelease: PreleaseResponse;
+}): string {
+  return computeCodexAuthGenerationHash({
+    authJsonBytes: input.authJson,
+    generationHashSalt: input.prelease.generationHashSalt,
+  });
+}
+
+function mapRefreshBlockedReasonToActionError(
+  reason:
+    | "provider_reconnect_required"
+    | "permission_required"
+    | "quota_limited",
+): string {
+  return reason === "provider_reconnect_required" ? "needs_reconnect" : reason;
+}
+
+export function shouldUseSubscriptionRuntimeCodex(
+  env: NodeJS.ProcessEnv,
+): boolean {
+  const value = env.REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX;
+  return value !== "0" && value !== "false";
+}
+
 async function safeCheckoutPullRequest(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly workspace: string;
@@ -1696,9 +2074,7 @@ function writeProcessLogChunk(
   chunk: unknown,
 ): void {
   if (!stream) return;
-  const text = Buffer.isBuffer(chunk)
-    ? chunk.toString("utf8")
-    : String(chunk);
+  const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
   stream.write(sanitizeProcessLogChunk(text));
 }
 

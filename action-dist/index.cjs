@@ -41,19 +41,1339 @@ __export(github_action_exports, {
   runCodexRotatingGitHubAction: () => runCodexRotatingGitHubAction,
   sanitizeReviewComment: () => sanitizeReviewComment,
   shouldSuppressTopLevelActionError: () => shouldSuppressTopLevelActionError,
+  shouldUseSubscriptionRuntimeCodex: () => shouldUseSubscriptionRuntimeCodex,
   startCodexLocalProviderProxy: () => startCodexLocalProviderProxy
 });
 module.exports = __toCommonJS(github_action_exports);
-var import_node_child_process = require("node:child_process");
-var import_node_crypto2 = require("node:crypto");
+var import_node_child_process2 = require("node:child_process");
+var import_node_crypto4 = require("node:crypto");
 var import_node_fs = require("node:fs");
 var import_node_http = __toESM(require("node:http"), 1);
+
+// packages/subscription-runtime/core/src/domain/errors.ts
+var RuntimeConfigurationError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RuntimeConfigurationError";
+  }
+};
+var BoundaryViolationError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "BoundaryViolationError";
+  }
+};
+
+// packages/subscription-runtime/core/src/application/policy.ts
+function negotiateCapabilities(input) {
+  const policy = input.requested ?? input.policy;
+  if (!policy) {
+    throw new RuntimeConfigurationError("runtime_policy_missing");
+  }
+  if (input.provider.providerId !== input.agent.providerId) {
+    return rejected("provider_store_incompatible", "Agent/provider mismatch.", {
+      providerId: input.provider.providerId,
+      agentProviderId: input.agent.providerId
+    });
+  }
+  if (!policy.allowedProviderIds.includes(input.provider.providerId)) {
+    return rejected("missing_required_capability", "Provider is not allowed.", {
+      providerId: input.provider.providerId
+    });
+  }
+  if (!policy.allowedAgentIds.includes(input.agent.agentId)) {
+    return rejected("missing_required_capability", "Agent is not allowed.", {
+      agentId: input.agent.agentId
+    });
+  }
+  if (!policy.allowedStoreIds.includes(input.store.storeId)) {
+    return rejected("missing_required_capability", "Store is not allowed.", {
+      storeId: input.store.storeId
+    });
+  }
+  if (!policy.allowedRunnerIds.includes(input.runner.runnerId)) {
+    return rejected("missing_required_capability", "Runner is not allowed.", {
+      runnerId: input.runner.runnerId
+    });
+  }
+  if (policy.allowInteractiveSetupInRuntime !== false) {
+    return rejected(
+      "interactive_runtime_forbidden",
+      "Interactive setup is forbidden in runtime jobs.",
+      {}
+    );
+  }
+  if (policy.custodyMode === "no-plaintext-backend") {
+    if (input.store.custody !== "no-plaintext-backend") {
+      return rejected(
+        "custody_mode_forbidden",
+        "Selected store is not compatible with no-custody mode.",
+        { storeId: input.store.storeId }
+      );
+    }
+    if (input.store.plaintextAvailableToBackend) {
+      return rejected(
+        "custody_mode_forbidden",
+        "Selected store exposes plaintext to backend.",
+        { storeId: input.store.storeId }
+      );
+    }
+  }
+  if (policy.requireNoBackendPlaintext && input.store.plaintextAvailableToBackend) {
+    return rejected(
+      "custody_mode_forbidden",
+      "Runtime policy forbids backend plaintext.",
+      { storeId: input.store.storeId }
+    );
+  }
+  if (policy.requireCompareAndSwap && !input.store.supportsCompareAndSwap) {
+    return rejected(
+      "missing_required_capability",
+      "Runtime policy requires compare-and-swap writes.",
+      { storeId: input.store.storeId }
+    );
+  }
+  if (input.provider.refreshMayRotateSession) {
+    if (!input.store.supportsWriteback) {
+      return rejected(
+        "provider_store_incompatible",
+        "Provider can rotate sessions, but store cannot write back.",
+        { providerId: input.provider.providerId }
+      );
+    }
+    if (!input.store.supportsIdempotency) {
+      return rejected(
+        "provider_store_incompatible",
+        "Provider can rotate sessions, but store cannot deduplicate writes.",
+        { storeId: input.store.storeId }
+      );
+    }
+  }
+  if (!input.runner.supportsEnvAllowlist) {
+    return rejected(
+      "missing_required_capability",
+      "Runner must support environment allowlisting.",
+      { runnerId: input.runner.runnerId }
+    );
+  }
+  if ((input.provider.requiresWorkspace || input.agent.supportsRepositoryContext) && !input.runner.supportsWorkingDirectory) {
+    return rejected(
+      "runner_provider_incompatible",
+      "Provider or agent requires workspace support.",
+      { runnerId: input.runner.runnerId }
+    );
+  }
+  if (input.agent.requiresWritableWorkspace && input.runner.readOnlyFilesystem) {
+    return rejected(
+      "runner_provider_incompatible",
+      "Agent requires writable workspace, but runner is read-only.",
+      { agentId: input.agent.agentId }
+    );
+  }
+  return {
+    status: "accepted",
+    compiledPolicy: compileRuntimePolicy({
+      requested: policy,
+      provider: input.provider,
+      agent: input.agent,
+      store: input.store,
+      runner: input.runner
+    }),
+    warnings: []
+  };
+}
+function compileRuntimePolicy(input) {
+  return {
+    trustMode: input.store.custody,
+    providerId: input.provider.providerId,
+    agentId: input.agent.agentId,
+    storeId: input.store.storeId,
+    runnerId: input.runner.runnerId,
+    requiresDurableWriteback: input.provider.refreshMayRotateSession,
+    requiresLease: input.provider.refreshMayRotateSession,
+    requiresCas: input.store.supportsCompareAndSwap,
+    allowsInteractiveRuntime: false,
+    maxSessionBytes: input.store.maxArtifactBytes,
+    maxTaskOutputBytes: input.requested.maxTaskOutputBytes ?? 1024 * 1024,
+    timeoutMs: Math.min(
+      input.provider.defaultTimeoutMs,
+      input.agent.maxRuntimeMs
+    )
+  };
+}
+function rejected(code, safeMessage, details) {
+  return {
+    status: "rejected",
+    code,
+    safeMessage,
+    details
+  };
+}
+
+// packages/subscription-runtime/core/src/application/redactor.ts
+var textDecoder = new TextDecoder();
+var DefaultRedactor = class {
+  secrets = /* @__PURE__ */ new Map();
+  registerSecret(value, label = "secret") {
+    const normalized = typeof value === "string" ? value : textDecoder.decode(value);
+    if (normalized.length === 0) {
+      return;
+    }
+    this.secrets.set(normalized, label);
+  }
+  redact(input) {
+    let output = input;
+    for (const [secret, label] of this.secrets.entries()) {
+      output = output.split(secret).join(`[redacted:${label}]`);
+    }
+    output = output.replace(
+      /["']?\b(?:access_token|refresh_token|id_token|api_key|token)\b["']?\s*[:=]\s*["']?[^"',}\s]+["']?/gi,
+      (match) => {
+        const key = match.match(/["']?([A-Za-z_]+)["']?\s*[:=]/)?.[1];
+        return `${key ?? "token"}=[redacted:token-field]`;
+      }
+    );
+    output = output.replace(
+      /\bBearer\s+[A-Za-z0-9._~+/=-]+/g,
+      "Bearer [redacted]"
+    );
+    return output;
+  }
+  assertNoKnownSecret(input, context) {
+    for (const secret of this.secrets.keys()) {
+      if (input.includes(secret)) {
+        throw new BoundaryViolationError(
+          `Known secret leaked through ${context}`
+        );
+      }
+    }
+  }
+};
+var NullObservability = class {
+  emit() {
+  }
+  count() {
+  }
+  timing() {
+  }
+};
+var SystemClock = class {
+  now() {
+    return /* @__PURE__ */ new Date();
+  }
+  monotonicMs() {
+    return performance.now();
+  }
+};
+var DeterministicIdGenerator = class {
+  next = 1;
+  leaseId() {
+    return `lease-${this.next++}`;
+  }
+  idempotencyKey(input) {
+    return [
+      input.providerInstanceId,
+      input.runId,
+      String(input.attempt),
+      input.purpose
+    ].join(":");
+  }
+  operationId(prefix) {
+    return `${prefix}-${this.next++}`;
+  }
+};
+
+// packages/subscription-runtime/core/src/domain/generation-hash.ts
+var import_node_crypto = require("node:crypto");
+function computeSessionGenerationHash(input) {
+  const hash2 = (0, import_node_crypto.createHash)("sha256");
+  hash2.update("subscription-runtime-session-v1");
+  hash2.update("\0");
+  hash2.update(input.artifact.providerId);
+  hash2.update("\0");
+  hash2.update(input.artifact.kind);
+  hash2.update("\0");
+  hash2.update(input.artifact.formatVersion);
+  hash2.update("\0");
+  if (input.salt) {
+    hash2.update(input.salt);
+    hash2.update("\0");
+  }
+  hash2.update(input.artifact.bytes);
+  return hash2.digest("base64url");
+}
+
+// packages/subscription-runtime/core/src/application/runtime.ts
+function createSubscriptionRuntime(deps) {
+  const decision = negotiateCapabilities({
+    requested: deps.policy,
+    provider: deps.sessionDriver.capabilities,
+    agent: deps.agentDriver.capabilities,
+    store: deps.sessionStore.capabilities,
+    runner: deps.runner.capabilities
+  });
+  if (decision.status === "rejected") {
+    throw new Error(decision.code);
+  }
+  const kernel = new RuntimeKernel(deps, decision.compiledPolicy);
+  return {
+    capabilities: decision.compiledPolicy,
+    refreshSession: (input) => kernel.refreshSession(input),
+    runTask: (input) => kernel.runTask(input),
+    refreshThenRunTask: (input) => kernel.refreshThenRunTask(input),
+    healthCheck: (input) => kernel.healthCheck(input)
+  };
+}
+var RuntimeKernel = class {
+  constructor(deps, policy) {
+    this.deps = deps;
+    this.policy = policy;
+  }
+  deps;
+  policy;
+  async refreshSession(input) {
+    const readStartedAt = this.deps.clock.monotonicMs();
+    this.emit("session.read.started", input.runContext.runId, {
+      purpose: "refresh"
+    });
+    const session = await this.deps.sessionStore.read({
+      providerInstanceId: input.providerInstanceId,
+      expectedProviderId: this.deps.sessionDriver.providerId,
+      purpose: "refresh"
+    });
+    this.emit(
+      "session.read.completed",
+      input.runContext.runId,
+      {
+        purpose: "refresh",
+        found: session ? "true" : "false",
+        generation: session ? String(session.generation) : "none"
+      },
+      this.deps.clock.monotonicMs() - readStartedAt
+    );
+    if (!session) {
+      this.emitFailure("provider_reconnect_required", input.runContext.runId);
+      return blocked(
+        "provider_reconnect_required",
+        "Provider session is missing."
+      );
+    }
+    this.deps.redactor.registerSecret(session.artifact.bytes, "session");
+    const leaseStartedAt = this.deps.clock.monotonicMs();
+    this.emit("lease.acquire.started", input.runContext.runId, {
+      generation: String(session.generation)
+    });
+    const lease = await this.deps.leaseStore.acquire({
+      providerInstanceId: input.providerInstanceId,
+      runId: input.runContext.runId,
+      attempt: input.runContext.attempt,
+      ttlMs: this.policy.timeoutMs,
+      restoredGenerationHash: session.generationHash
+    });
+    this.emit(
+      "lease.acquire.completed",
+      input.runContext.runId,
+      {
+        status: lease.status
+      },
+      this.deps.clock.monotonicMs() - leaseStartedAt
+    );
+    if (lease.status === "stale") {
+      this.deps.observability.count("subscription_runtime.stale_generation");
+      this.emitFailure("stale_generation", input.runContext.runId);
+      return {
+        status: "skipped",
+        reason: "stale_generation",
+        warnings: []
+      };
+    }
+    if (lease.status === "denied") {
+      this.emitFailure("permission_required", input.runContext.runId);
+      return blocked("permission_required", lease.safeMessage);
+    }
+    const validation = await this.deps.sessionDriver.validateSession({
+      session: session.artifact,
+      redactor: this.deps.redactor
+    });
+    if (validation.status === "invalid") {
+      this.emitFailure(validation.failure.code, input.runContext.runId);
+      return blocked(
+        validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required",
+        validation.failure.safeMessage
+      );
+    }
+    const workspace = await this.deps.workspace.create({
+      purpose: "refresh",
+      isolation: "temp-dir"
+    });
+    try {
+      const refreshStartedAt = this.deps.clock.monotonicMs();
+      this.emit("provider.refresh.started", input.runContext.runId, {
+        generation: String(session.generation)
+      });
+      const refreshed = await this.deps.sessionDriver.refreshSession({
+        session: session.artifact,
+        workspace,
+        runner: this.deps.runner,
+        redactor: this.deps.redactor,
+        abortSignal: input.runContext.abortSignal
+      });
+      this.emit(
+        "provider.refresh.completed",
+        input.runContext.runId,
+        {
+          providerState: refreshed.providerState
+        },
+        this.deps.clock.monotonicMs() - refreshStartedAt
+      );
+      this.deps.observability.timing(
+        "subscription_runtime.provider_refresh_ms",
+        this.deps.clock.monotonicMs() - refreshStartedAt
+      );
+      if (refreshed.providerState === "needs-reconnect") {
+        this.deps.observability.count(
+          "subscription_runtime.reconnect_required"
+        );
+        this.emitFailure("needs_reconnect", input.runContext.runId);
+        return blocked(
+          "provider_reconnect_required",
+          "Provider session needs reconnect.",
+          refreshed.warnings
+        );
+      }
+      if (refreshed.providerState === "permission-required") {
+        this.emitFailure("permission_required", input.runContext.runId);
+        return blocked(
+          "permission_required",
+          "Provider permission is required.",
+          refreshed.warnings
+        );
+      }
+      if (refreshed.providerState === "quota-limited") {
+        this.deps.observability.count("subscription_runtime.quota_limited");
+        this.emitFailure("quota_limited", input.runContext.runId);
+        return blocked(
+          "quota_limited",
+          "Provider quota is limited.",
+          refreshed.warnings
+        );
+      }
+      const nextHash = computeSessionGenerationHash({
+        artifact: refreshed.artifact
+      });
+      if (nextHash === session.generationHash) {
+        this.emit("session.writeback.completed", input.runContext.runId, {
+          status: "skipped_unchanged",
+          generation: String(session.generation)
+        });
+        return {
+          status: "skipped",
+          reason: "session_unchanged",
+          session,
+          warnings: refreshed.warnings
+        };
+      }
+      await this.deps.leaseStore.finalize({
+        leaseId: lease.leaseId,
+        restoredGenerationHash: session.generationHash
+      });
+      this.emit("session.writeback.started", input.runContext.runId, {
+        leaseId: lease.leaseId,
+        expectedGeneration: String(session.generation)
+      });
+      await this.deps.leaseStore.markWritebackStarted({
+        leaseId: lease.leaseId
+      });
+      const idempotencyKey = this.deps.idGenerator.idempotencyKey({
+        providerInstanceId: input.providerInstanceId,
+        runId: input.runContext.runId,
+        attempt: input.runContext.attempt,
+        purpose: "writeback"
+      });
+      const writeback = await this.deps.sessionStore.write({
+        providerInstanceId: input.providerInstanceId,
+        expectedGeneration: session.generation,
+        nextArtifact: refreshed.artifact,
+        idempotencyKey,
+        leaseId: lease.leaseId
+      });
+      if (writeback.status === "stale_generation") {
+        this.deps.observability.count(
+          "subscription_runtime.writeback_conflict"
+        );
+        this.emit("session.writeback.completed", input.runContext.runId, {
+          status: writeback.status
+        });
+        this.emitFailure("stale_generation", input.runContext.runId);
+        return {
+          status: "skipped",
+          reason: "stale_generation",
+          warnings: refreshed.warnings
+        };
+      }
+      await this.deps.leaseStore.markWritebackCommitted({
+        leaseId: lease.leaseId,
+        nextGenerationHash: writeback.generationHash,
+        idempotencyKey
+      });
+      this.emit("session.writeback.completed", input.runContext.runId, {
+        status: writeback.status,
+        generation: String(writeback.generation)
+      });
+      this.deps.observability.count("subscription_runtime.refresh_success");
+      return {
+        status: "ready",
+        session: nextEnvelope(session, refreshed.artifact, writeback),
+        writeback,
+        warnings: refreshed.warnings
+      };
+    } finally {
+      await workspace.dispose?.();
+    }
+  }
+  async runTask(input) {
+    const readStartedAt = this.deps.clock.monotonicMs();
+    this.emit("session.read.started", input.runContext.runId, {
+      purpose: "run"
+    });
+    const session = await this.deps.sessionStore.read({
+      providerInstanceId: input.providerInstanceId,
+      expectedProviderId: this.deps.sessionDriver.providerId,
+      purpose: "run"
+    });
+    this.emit(
+      "session.read.completed",
+      input.runContext.runId,
+      {
+        purpose: "run",
+        found: session ? "true" : "false",
+        generation: session ? String(session.generation) : "none"
+      },
+      this.deps.clock.monotonicMs() - readStartedAt
+    );
+    if (!session) {
+      this.emitFailure("needs_reconnect", input.runContext.runId);
+      return failedTask("needs_reconnect", "Provider session is missing.");
+    }
+    return this.runTaskWithSession({
+      session: session.artifact,
+      task: input.task,
+      runContext: input.runContext
+    });
+  }
+  async refreshThenRunTask(input) {
+    const refresh = await this.refreshSession(input);
+    if (refresh.status === "blocked") {
+      return {
+        status: "blocked",
+        reason: refresh.reason,
+        safeMessage: refresh.safeMessage,
+        warnings: refresh.warnings
+      };
+    }
+    if (refresh.status === "skipped" && refresh.reason === "stale_generation") {
+      return {
+        status: "blocked",
+        reason: "stale_generation",
+        safeMessage: "A newer provider session generation already exists.",
+        warnings: refresh.warnings
+      };
+    }
+    const session = sessionForPostRefreshTask(refresh);
+    if (!session) {
+      return {
+        status: "blocked",
+        reason: "provider_reconnect_required",
+        safeMessage: "Provider session is missing after refresh.",
+        warnings: refresh.warnings
+      };
+    }
+    const task = await this.runTaskWithSession({
+      session: session.artifact,
+      task: input.task,
+      runContext: input.runContext
+    });
+    return {
+      status: "completed",
+      refresh,
+      task
+    };
+  }
+  async healthCheck(input) {
+    const session = await this.deps.sessionStore.read({
+      providerInstanceId: input.providerInstanceId,
+      expectedProviderId: this.deps.sessionDriver.providerId,
+      purpose: "health-check"
+    });
+    if (!session) {
+      return {
+        status: "unhealthy",
+        failures: [missingSessionFailure()],
+        warnings: []
+      };
+    }
+    const validation = await this.deps.sessionDriver.validateSession({
+      session: session.artifact,
+      redactor: this.deps.redactor
+    });
+    if (validation.status === "invalid") {
+      return {
+        status: "unhealthy",
+        failures: [validation.failure],
+        warnings: []
+      };
+    }
+    return {
+      status: "healthy",
+      failures: [],
+      warnings: validation.warnings
+    };
+  }
+  async runTaskWithSession(input) {
+    this.deps.redactor.registerSecret(input.session.bytes, "session");
+    const workspace = await this.deps.workspace.create({
+      purpose: "run-task",
+      isolation: "temp-dir"
+    });
+    try {
+      const taskStartedAt = this.deps.clock.monotonicMs();
+      this.emit("provider.task.started", input.runContext.runId, {
+        taskKind: input.task.kind
+      });
+      const result = await this.deps.agentDriver.runTask({
+        session: input.session,
+        task: input.task,
+        workspace,
+        runner: this.deps.runner,
+        redactor: this.deps.redactor,
+        abortSignal: input.runContext.abortSignal
+      });
+      this.emit(
+        "provider.task.completed",
+        input.runContext.runId,
+        {
+          taskKind: input.task.kind,
+          status: result.status
+        },
+        this.deps.clock.monotonicMs() - taskStartedAt
+      );
+      this.deps.observability.timing(
+        "subscription_runtime.provider_task_ms",
+        this.deps.clock.monotonicMs() - taskStartedAt
+      );
+      return result;
+    } finally {
+      await workspace.dispose?.();
+    }
+  }
+  emit(name, runId, metadata = {}, durationMs) {
+    const event = {
+      name,
+      providerId: this.deps.sessionDriver.providerId,
+      agentId: this.deps.agentDriver.agentId,
+      storeId: this.deps.sessionStore.storeId,
+      metadata,
+      ...runId === void 0 ? {} : { runId },
+      ...durationMs === void 0 ? {} : { durationMs }
+    };
+    this.deps.observability.emit(event);
+  }
+  emitFailure(code, runId) {
+    this.emit("runtime.failure.classified", runId, { code });
+  }
+};
+function nextEnvelope(previous, artifact, writeback) {
+  return {
+    ...previous,
+    artifact,
+    generation: writeback.generation,
+    generationHash: writeback.generationHash
+  };
+}
+function sessionForPostRefreshTask(refresh) {
+  if (refresh.status === "ready") {
+    return refresh.session;
+  }
+  if (refresh.status === "skipped" && refresh.reason === "session_unchanged") {
+    return refresh.session ?? null;
+  }
+  return null;
+}
+function blocked(reason, safeMessage, warnings = []) {
+  return {
+    status: "blocked",
+    reason,
+    safeMessage,
+    warnings
+  };
+}
+function failedTask(code, safeMessage) {
+  return {
+    status: "failed",
+    failure: {
+      code,
+      retryable: false,
+      reconnectRequired: code === "needs_reconnect",
+      safeMessage
+    },
+    warnings: []
+  };
+}
+function missingSessionFailure() {
+  return {
+    code: "needs_reconnect",
+    retryable: false,
+    reconnectRequired: true,
+    safeMessage: "Provider session is missing."
+  };
+}
+
+// packages/subscription-runtime/provider-codex/src/capabilities.ts
+var codexProviderId = "codex";
+var codexAgentId = "codex-cli";
+var codexAuthJsonFormatVersion = "codex-auth-json-v1";
+var codexSessionCapabilities = {
+  providerId: codexProviderId,
+  displayName: "Codex",
+  sessionArtifactKinds: ["json-file"],
+  supportsRefresh: true,
+  refreshMayRotateSession: true,
+  supportsNonInteractiveRuntime: true,
+  requiresNetwork: true,
+  requiresWorkspace: true,
+  supportsStructuredOutput: true,
+  supportsReadOnlySandbox: true,
+  defaultTimeoutMs: 6e5,
+  setupModes: ["device-auth", "import-local-session"]
+};
+var codexAgentCapabilities = {
+  agentId: codexAgentId,
+  providerId: codexProviderId,
+  supportsReviewTasks: true,
+  supportsStructuredOutput: true,
+  supportsToolCalling: false,
+  supportsRepositoryContext: true,
+  supportsInlineFindings: true,
+  requiresWritableWorkspace: false,
+  maxRuntimeMs: 6e5
+};
+
+// packages/subscription-runtime/provider-codex/src/codex-cli-domain.ts
+var import_node_crypto2 = require("node:crypto");
+var codexAuthJsonMaxBytes = 32 * 1024;
+function validateCodexAuthJsonBytes(input) {
+  const maxBytes = input.maxBytes ?? codexAuthJsonMaxBytes;
+  const byteLength = Buffer.byteLength(input.authJsonBytes, "utf8");
+  if (byteLength === 0) {
+    throw new Error("codex_auth_json_empty");
+  }
+  if (byteLength > maxBytes) {
+    throw new Error("codex_auth_json_too_large");
+  }
+  let parsedJson;
+  try {
+    parsedJson = JSON.parse(input.authJsonBytes);
+  } catch {
+    throw new Error("codex_auth_json_invalid_json");
+  }
+  const parsed = parseCodexAuthJson(parsedJson);
+  return {
+    parsed,
+    byteLength,
+    exactBytesSha256: (0, import_node_crypto2.createHash)("sha256").update(input.authJsonBytes, "utf8").digest("hex"),
+    warnings: collectCodexAuthJsonWarnings({
+      parsed,
+      staleWarningDays: input.staleWarningDays ?? 30,
+      now: input.now ?? /* @__PURE__ */ new Date()
+    })
+  };
+}
+function compactCodexAuthJson(input) {
+  const validation = validateCodexAuthJsonBytes(input);
+  const compactAuthJsonBytes = JSON.stringify(validation.parsed);
+  const byteLength = Buffer.byteLength(compactAuthJsonBytes, "utf8");
+  if (byteLength > (input.maxBytes ?? codexAuthJsonMaxBytes)) {
+    throw new Error("codex_auth_json_too_large_after_compact");
+  }
+  return { compactAuthJsonBytes, byteLength };
+}
+function classifyCodexRuntimeFailure(message) {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("quota") || normalized.includes("rate limit") || normalized.includes("billing")) {
+    return "quota_limited";
+  }
+  if (normalized.includes("unauthorized") || normalized.includes("invalid_grant") || normalized.includes("refresh token") || normalized.includes("login required")) {
+    return "needs_reconnect";
+  }
+  if (normalized.includes("permission") || normalized.includes("forbidden") || normalized.includes("resource not accessible")) {
+    return "permission_required";
+  }
+  return "unknown_auth_state";
+}
+function pruneCodexChildEnv(env) {
+  const allowed = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === void 0) continue;
+    if (shouldDropChildEnvKey(key)) continue;
+    allowed[key] = value;
+  }
+  return allowed;
+}
+function buildCodexRefreshBootstrapPlan(input) {
+  return {
+    command: input.codexBinaryPath,
+    args: [
+      "exec",
+      "--sandbox",
+      "read-only",
+      "--ignore-rules",
+      "--ephemeral",
+      "-C",
+      input.emptyWorkingDirectory,
+      "--skip-git-repo-check",
+      "-"
+    ],
+    cwd: input.emptyWorkingDirectory,
+    env: {
+      HOME: input.tempHome,
+      CODEX_HOME: input.tempCodexHome,
+      REVIEWROUTER_CODEX_AUTH_PATH: input.authJsonPath
+    }
+  };
+}
+function parseCodexAuthJson(value) {
+  if (!isObject(value)) {
+    throw new Error("codex_auth_json_invalid_shape");
+  }
+  if (value.auth_mode !== "chatgpt") {
+    throw new Error("codex_auth_json_invalid_auth_mode");
+  }
+  if (!isObject(value.tokens)) {
+    throw new Error("codex_auth_json_missing_tokens");
+  }
+  if (typeof value.tokens.refresh_token !== "string" || value.tokens.refresh_token.length === 0) {
+    throw new Error("codex_auth_json_missing_refresh_token");
+  }
+  for (const key of ["access_token", "id_token"]) {
+    const token = value.tokens[key];
+    if (token !== void 0 && typeof token !== "string") {
+      throw new Error(`codex_auth_json_invalid_${key}`);
+    }
+  }
+  if (value.last_refresh !== void 0 && typeof value.last_refresh !== "string") {
+    throw new Error("codex_auth_json_invalid_last_refresh");
+  }
+  return value;
+}
+function collectCodexAuthJsonWarnings(input) {
+  const warnings = [];
+  if (!input.parsed.last_refresh) {
+    warnings.push("last_refresh_missing");
+    return warnings;
+  }
+  const refreshedAt = Date.parse(input.parsed.last_refresh);
+  if (!Number.isFinite(refreshedAt)) {
+    warnings.push("last_refresh_unparseable");
+    return warnings;
+  }
+  const ageDays = (input.now.getTime() - refreshedAt) / 864e5;
+  if (ageDays > input.staleWarningDays) {
+    warnings.push("last_refresh_stale");
+  }
+  return warnings;
+}
+function shouldDropChildEnvKey(key) {
+  return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("GIT_") || key.startsWith("INPUT_AUTH") || key.includes("CODEX_AUTH_JSON") || key.includes("REVIEWROUTER_CODEX_AUTH_JSON") || key.includes("OPENAI_API_KEY") || key.includes("CLAUDE_CODE_OAUTH_TOKEN") || key.includes("OPENROUTER_API_KEY") || key.includes("REVIEW_ROUTER_COMMENT_TOKEN") || key.includes("REVIEWROUTER_PROXY_NONCE");
+}
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// packages/subscription-runtime/provider-codex/src/codex-auth-json-codec.ts
+var textDecoder2 = new TextDecoder();
+var textEncoder = new TextEncoder();
+function sessionArtifactFromCodexAuthJson(authJsonBytes) {
+  const compact = compactCodexAuthJson({ authJsonBytes }).compactAuthJsonBytes;
+  return {
+    kind: "json-file",
+    providerId: codexProviderId,
+    formatVersion: codexAuthJsonFormatVersion,
+    bytes: textEncoder.encode(compact),
+    contentType: "application/json"
+  };
+}
+function codexAuthJsonFromArtifact(session) {
+  if (session.providerId !== codexProviderId) {
+    throw new Error("codex_session_provider_mismatch");
+  }
+  if (session.kind !== "json-file") {
+    throw new Error("codex_session_artifact_kind_mismatch");
+  }
+  if (session.formatVersion !== codexAuthJsonFormatVersion) {
+    throw new Error("codex_session_format_version_mismatch");
+  }
+  return textDecoder2.decode(session.bytes);
+}
+function validateCodexSessionArtifact(session) {
+  try {
+    const authJsonBytes = codexAuthJsonFromArtifact(session);
+    const validation = validateCodexAuthJsonBytes({ authJsonBytes });
+    return {
+      status: "valid",
+      warnings: validation.warnings.map((warning) => {
+        return {
+          code: warning,
+          safeMessage: `Codex auth warning: ${warning}`
+        };
+      })
+    };
+  } catch (error51) {
+    return {
+      status: "invalid",
+      failure: codexValidationFailure(error51)
+    };
+  }
+}
+function codexValidationFailure(error51) {
+  const message = error51 instanceof Error ? error51.message : "unknown_auth_state";
+  const reconnectRequired = message.includes("auth_json") || message.includes("provider_mismatch") || message.includes("format_version");
+  return {
+    code: reconnectRequired ? "provider_session_invalid" : "unknown_runtime_failure",
+    retryable: false,
+    reconnectRequired,
+    safeMessage: "Codex session artifact is invalid and must be reconnected.",
+    causeCategory: safeCauseCategory(message)
+  };
+}
+function safeCauseCategory(message) {
+  return /^[a-z0-9_:-]{1,80}$/i.test(message) ? message : "codex_validation";
+}
+
+// packages/subscription-runtime/provider-codex/src/codex-cli-agent-driver.ts
 var import_promises = require("node:fs/promises");
 var import_node_os = require("node:os");
 var import_node_path = require("node:path");
 
+// packages/subscription-runtime/provider-codex/src/failure-classifier.ts
+function classifyCodexFailure(error51) {
+  const message = error51 instanceof Error ? error51.message : String(error51);
+  const state = classifyCodexRuntimeFailure(message);
+  switch (state) {
+    case "needs_reconnect":
+      return {
+        code: "needs_reconnect",
+        retryable: false,
+        reconnectRequired: true,
+        safeMessage: "Codex session needs reconnect.",
+        causeCategory: state
+      };
+    case "quota_limited":
+      return {
+        code: "quota_limited",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex quota or billing limit was reached.",
+        causeCategory: state
+      };
+    case "permission_required":
+      return {
+        code: "permission_required",
+        retryable: false,
+        reconnectRequired: false,
+        safeMessage: "Codex permission is required.",
+        causeCategory: state
+      };
+    default:
+      return {
+        code: "unknown_runtime_failure",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex runtime failed.",
+        causeCategory: state
+      };
+  }
+}
+
+// packages/subscription-runtime/provider-codex/src/codex-cli-agent-driver.ts
+var CodexCliAgentDriver = class {
+  constructor(options = {}) {
+    this.options = options;
+  }
+  options;
+  agentId = codexAgentId;
+  providerId = codexProviderId;
+  capabilities = codexAgentCapabilities;
+  async runTask(input) {
+    const authJson = codexAuthJsonFromArtifact(input.session);
+    input.redactor.registerSecret(authJson, "codex-auth-json");
+    const tempRoot = await (0, import_promises.mkdtemp)((0, import_node_path.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-"));
+    const tempHome = (0, import_node_path.join)(tempRoot, "home");
+    const tempCodexHome = (0, import_node_path.join)(tempRoot, "codex-home");
+    await (0, import_promises.mkdir)(tempHome, { recursive: true, mode: 448 });
+    await (0, import_promises.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
+    try {
+      await writeCodexHomeSnapshot({ codexHome: tempCodexHome, authJson });
+      const result = await input.runner.run({
+        command: this.options.codexBinaryPath ?? "codex",
+        args: [
+          "exec",
+          "--skip-git-repo-check",
+          "--model",
+          this.options.model ?? "gpt-5.5",
+          "--",
+          input.task.prompt
+        ],
+        cwd: input.workspace.path,
+        env: {
+          ...pruneCodexChildEnv(this.options.sourceEnv ?? {}),
+          HOME: tempHome,
+          CODEX_HOME: tempCodexHome,
+          CI: "true"
+        },
+        timeoutMs: this.options.timeoutMs ?? this.capabilities.maxRuntimeMs,
+        abortSignal: input.abortSignal
+      });
+      const stdout = input.redactor.redact(result.stdout);
+      const stderr = input.redactor.redact(result.stderr);
+      input.redactor.assertNoKnownSecret(stdout, "codex-agent-stdout");
+      input.redactor.assertNoKnownSecret(stderr, "codex-agent-stderr");
+      if (result.exitCode !== 0) {
+        return {
+          status: "failed",
+          failure: this.classifyRunFailure(`${stdout}
+${stderr}`),
+          warnings: []
+        };
+      }
+      return {
+        status: "completed",
+        outputText: stdout,
+        warnings: []
+      };
+    } finally {
+      await (0, import_promises.rm)(tempRoot, { recursive: true, force: true });
+    }
+  }
+  classifyRunFailure(error51) {
+    return classifyCodexFailure(error51);
+  }
+};
+async function writeCodexHomeSnapshot(input) {
+  const config2 = [
+    'approval_policy = "never"',
+    'sandbox_mode = "read-only"',
+    "",
+    "[history]",
+    'persistence = "none"',
+    "",
+    "[otel]",
+    'exporter = "none"',
+    'metrics_exporter = "none"',
+    'trace_exporter = "none"',
+    "log_user_prompt = false",
+    "",
+    "[shell_environment_policy]",
+    'inherit = "none"',
+    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
+    ""
+  ].join("\n");
+  await (0, import_promises.writeFile)((0, import_node_path.join)(input.codexHome, "config.toml"), config2, {
+    mode: 384
+  });
+  await (0, import_promises.writeFile)((0, import_node_path.join)(input.codexHome, "auth.json"), input.authJson, {
+    mode: 384
+  });
+}
+
+// packages/subscription-runtime/provider-codex/src/codex-cli-session-driver.ts
+var import_promises2 = require("node:fs/promises");
+var import_node_os2 = require("node:os");
+var import_node_path2 = require("node:path");
+var CodexCliSessionDriver = class {
+  constructor(options = {}) {
+    this.options = options;
+  }
+  options;
+  providerId = codexProviderId;
+  supportedArtifactKinds = ["json-file"];
+  capabilities = codexSessionCapabilities;
+  async validateSession(input) {
+    return validateCodexSessionArtifact(input.session);
+  }
+  async refreshSession(input) {
+    const authJson = codexAuthJsonFromArtifact(input.session);
+    input.redactor.registerSecret(authJson, "codex-auth-json");
+    const tempRoot = await (0, import_promises2.mkdtemp)(
+      (0, import_node_path2.join)((0, import_node_os2.tmpdir)(), "subscription-runtime-codex-")
+    );
+    const tempHome = (0, import_node_path2.join)(tempRoot, "home");
+    const tempCodexHome = (0, import_node_path2.join)(tempRoot, "codex-home");
+    const emptyWorkingDirectory = (0, import_node_path2.join)(tempRoot, "empty-workdir");
+    const authJsonPath = (0, import_node_path2.join)(tempCodexHome, "auth.json");
+    await (0, import_promises2.mkdir)(tempHome, { recursive: true, mode: 448 });
+    await (0, import_promises2.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
+    await (0, import_promises2.mkdir)(emptyWorkingDirectory, { recursive: true, mode: 448 });
+    try {
+      await writeCodexHomeSnapshot2({ codexHome: tempCodexHome, authJson });
+      const plan = buildCodexRefreshBootstrapPlan({
+        codexBinaryPath: this.options.codexBinaryPath ?? "codex",
+        tempHome,
+        tempCodexHome,
+        emptyWorkingDirectory,
+        authJsonPath
+      });
+      await input.runner.run({
+        command: plan.command,
+        args: plan.args,
+        cwd: plan.cwd,
+        env: {
+          ...pruneCodexChildEnv(this.options.sourceEnv ?? {}),
+          ...plan.env
+        },
+        stdin: new TextEncoder().encode("Respond with OK only."),
+        timeoutMs: 5 * 60 * 1e3,
+        abortSignal: input.abortSignal
+      });
+      const refreshedAuthJson = await (0, import_promises2.readFile)(authJsonPath, "utf8");
+      const refreshed = sessionArtifactFromCodexAuthJson(refreshedAuthJson);
+      const providerState = refreshedAuthJson === authJson ? "unchanged" : "refreshed";
+      return {
+        artifact: refreshed,
+        providerState,
+        warnings: []
+      };
+    } catch (error51) {
+      const failure = classifyCodexFailure(error51);
+      if (failure.code === "needs_reconnect") {
+        return {
+          artifact: {
+            ...input.session,
+            formatVersion: codexAuthJsonFormatVersion
+          },
+          providerState: "needs-reconnect",
+          warnings: []
+        };
+      }
+      if (failure.code === "quota_limited") {
+        return {
+          artifact: input.session,
+          providerState: "quota-limited",
+          warnings: [{ code: failure.code, safeMessage: failure.safeMessage }]
+        };
+      }
+      if (failure.code === "permission_required") {
+        return {
+          artifact: input.session,
+          providerState: "permission-required",
+          warnings: [{ code: failure.code, safeMessage: failure.safeMessage }]
+        };
+      }
+      throw error51;
+    } finally {
+      await (0, import_promises2.rm)(tempRoot, { recursive: true, force: true });
+    }
+  }
+  classifySessionFailure(error51) {
+    return classifyCodexFailure(error51);
+  }
+};
+async function writeCodexHomeSnapshot2(input) {
+  const config2 = [
+    'cli_auth_credentials_store = "file"',
+    'approval_policy = "never"',
+    'sandbox_mode = "read-only"',
+    'web_search = "disabled"',
+    "disable_response_storage = true",
+    "",
+    "[history]",
+    'persistence = "none"',
+    "",
+    "[otel]",
+    'exporter = "none"',
+    'metrics_exporter = "none"',
+    'trace_exporter = "none"',
+    "log_user_prompt = false",
+    "",
+    "[shell_environment_policy]",
+    'inherit = "none"',
+    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
+    ""
+  ].join("\n");
+  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "config.toml"), config2, {
+    mode: 384
+  });
+  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "auth.json"), input.authJson, {
+    mode: 384
+  });
+}
+
+// packages/subscription-runtime/runner-github-action/src/capabilities.ts
+var githubActionRunnerCapabilities = {
+  runnerId: "github-action",
+  supportsEnvAllowlist: true,
+  supportsWorkingDirectory: true,
+  supportsTimeout: true,
+  supportsAbortSignal: true,
+  supportsOutputRedaction: true,
+  supportsReadOnlySandbox: true,
+  readOnlyFilesystem: false,
+  platform: "github-actions"
+};
+
+// packages/subscription-runtime/runner-github-action/src/github-action-runner.ts
+var import_node_child_process = require("node:child_process");
+var defaultMaxCapturedOutputBytes = 256e3;
+var GitHubActionRunner = class {
+  runnerId = githubActionRunnerCapabilities.runnerId;
+  capabilities = githubActionRunnerCapabilities;
+  redactor;
+  maxCapturedOutputBytes;
+  constructor(options = {}) {
+    this.redactor = options.redactor ?? new DefaultRedactor();
+    this.maxCapturedOutputBytes = options.maxCapturedOutputBytes ?? defaultMaxCapturedOutputBytes;
+  }
+  run(input) {
+    try {
+      assertSafeProcessInput(input);
+    } catch (error51) {
+      return Promise.reject(error51);
+    }
+    if (input.abortSignal.aborted) {
+      return Promise.reject(new Error("process_aborted"));
+    }
+    return new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const stdoutChunks = [];
+      const stderrChunks = [];
+      let capturedBytes = 0;
+      let settled = false;
+      const child = (0, import_node_child_process.spawn)(input.command, input.args, {
+        cwd: input.cwd,
+        env: input.env,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      const cleanup = () => {
+        clearTimeout(timer);
+        input.abortSignal.removeEventListener("abort", abort);
+      };
+      const settleReject = (error51) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error51);
+      };
+      const abort = () => {
+        child.kill("SIGTERM");
+        settleReject(new Error("process_aborted"));
+      };
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        settleReject(new Error("process_timeout"));
+      }, input.timeoutMs);
+      input.abortSignal.addEventListener("abort", abort, { once: true });
+      child.stdout.on("data", (chunk) => {
+        const buffer = Buffer.from(chunk);
+        writeRedacted(input.stdout, this.redactor, buffer);
+        capturedBytes = appendCapturedChunk(
+          stdoutChunks,
+          capturedBytes,
+          buffer,
+          this.maxCapturedOutputBytes
+        );
+      });
+      child.stderr.on("data", (chunk) => {
+        const buffer = Buffer.from(chunk);
+        writeRedacted(input.stderr, this.redactor, buffer);
+        capturedBytes = appendCapturedChunk(
+          stderrChunks,
+          capturedBytes,
+          buffer,
+          this.maxCapturedOutputBytes
+        );
+      });
+      child.on("error", (error51) => {
+        settleReject(error51 instanceof Error ? error51 : new Error(String(error51)));
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        const stdout = this.redactor.redact(
+          Buffer.concat(stdoutChunks).toString("utf8")
+        );
+        const stderr = this.redactor.redact(
+          Buffer.concat(stderrChunks).toString("utf8")
+        );
+        const durationMs = Date.now() - startedAt;
+        if (code === 0) {
+          resolve({
+            exitCode: 0,
+            stdout,
+            stderr,
+            durationMs
+          });
+          return;
+        }
+        reject(
+          new Error(
+            `process_failed:${input.command}:${code ?? "signal"}:${safeFailureOutput(
+              `${stdout}
+${stderr}`
+            )}`
+          )
+        );
+      });
+      child.stdin.end(input.stdin ? Buffer.from(input.stdin) : void 0);
+    });
+  }
+};
+function assertSafeProcessInput(input) {
+  if (!input.command || input.command.includes("\0")) {
+    throw new Error("runner_invalid_command");
+  }
+  if (!input.cwd || input.cwd.includes("\0")) {
+    throw new Error("runner_invalid_cwd");
+  }
+  if (!Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0) {
+    throw new Error("runner_invalid_timeout");
+  }
+  for (const arg of input.args) {
+    if (arg.includes("\0")) {
+      throw new Error("runner_invalid_arg");
+    }
+  }
+  for (const key of Object.keys(input.env)) {
+    if (isForbiddenRunnerEnvKey(key)) {
+      throw new Error(`runner_forbidden_env:${key}`);
+    }
+  }
+}
+function isForbiddenRunnerEnvKey(key) {
+  return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("INPUT_AUTH") || key.includes("AUTH_JSON") || key.includes("OPENAI_API_KEY") || key.includes("CLAUDE_CODE_OAUTH_TOKEN") || key.includes("OPENROUTER_API_KEY");
+}
+function writeRedacted(sink, redactor, chunk) {
+  if (!sink) return;
+  sink.write(redactor.redact(chunk.toString("utf8")));
+}
+function appendCapturedChunk(chunks, currentBytes, chunk, maxBytes) {
+  const remaining = maxBytes - currentBytes;
+  if (remaining <= 0) return currentBytes;
+  const nextChunk = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+  chunks.push(nextChunk);
+  return currentBytes + nextChunk.byteLength;
+}
+function safeFailureOutput(output) {
+  const compact = output.replace(/\s+/g, " ").trim();
+  return compact ? compact.slice(-1e3) : "empty_process_output";
+}
+
+// packages/features/codex-oauth-rotating/src/action/github-action.ts
+var import_promises3 = require("node:fs/promises");
+var import_node_os3 = require("node:os");
+var import_node_path3 = require("node:path");
+
 // packages/features/codex-oauth-rotating/src/domain/codex-oauth-rotating.ts
-var import_node_crypto = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 
 // node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -690,7 +2010,7 @@ __export(util_exports, {
   getParsedType: () => getParsedType,
   getSizableOrigin: () => getSizableOrigin,
   hexToUint8Array: () => hexToUint8Array,
-  isObject: () => isObject,
+  isObject: () => isObject2,
   isPlainObject: () => isPlainObject,
   issue: () => issue,
   joinValues: () => joinValues,
@@ -853,7 +2173,7 @@ function slugify(input) {
 }
 var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {
 };
-function isObject(data) {
+function isObject2(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 var allowsEval = /* @__PURE__ */ cached(() => {
@@ -872,7 +2192,7 @@ var allowsEval = /* @__PURE__ */ cached(() => {
   }
 });
 function isPlainObject(o2) {
-  if (isObject(o2) === false)
+  if (isObject2(o2) === false)
     return false;
   const ctor = o2.constructor;
   if (ctor === void 0)
@@ -880,7 +2200,7 @@ function isPlainObject(o2) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject(prot) === false)
+  if (isObject2(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -3093,13 +4413,13 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject3 = isObject2;
   const catchall = def.catchall;
   let value;
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject3(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -3226,7 +4546,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return (payload, ctx) => fn(shape, payload, ctx);
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject3 = isObject2;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -3235,7 +4555,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject3(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -3411,7 +4731,7 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
   });
   inst._zod.parse = (payload, ctx) => {
     const input = payload.value;
-    if (!isObject(input)) {
+    if (!isObject2(input)) {
       payload.issues.push({
         code: "invalid_type",
         expected: "object",
@@ -18014,7 +19334,7 @@ var codexAuthJsonSchema = external_exports.object({
   tokens: codexTokensSchema,
   last_refresh: external_exports.string().optional()
 }).passthrough();
-function validateCodexAuthJsonBytes(input) {
+function validateCodexAuthJsonBytes2(input) {
   const maxBytes = input.maxBytes ?? codexRotatingAuthJsonMaxBytes;
   const byteLength = Buffer.byteLength(input.authJsonBytes, "utf8");
   if (byteLength === 0) {
@@ -18030,7 +19350,7 @@ function validateCodexAuthJsonBytes(input) {
     throw new Error("codex_auth_json_invalid_json");
   }
   const parsed = codexAuthJsonSchema.parse(parsedJson);
-  const warnings = collectCodexAuthJsonWarnings({
+  const warnings = collectCodexAuthJsonWarnings2({
     parsed,
     staleWarningDays: input.staleWarningDays ?? 30,
     now: input.now ?? /* @__PURE__ */ new Date()
@@ -18038,12 +19358,12 @@ function validateCodexAuthJsonBytes(input) {
   return {
     parsed,
     byteLength,
-    exactBytesSha256: (0, import_node_crypto.createHash)("sha256").update(input.authJsonBytes, "utf8").digest("hex"),
+    exactBytesSha256: (0, import_node_crypto3.createHash)("sha256").update(input.authJsonBytes, "utf8").digest("hex"),
     warnings
   };
 }
-function compactCodexAuthJson(input) {
-  const validation = validateCodexAuthJsonBytes(input);
+function compactCodexAuthJson2(input) {
+  const validation = validateCodexAuthJsonBytes2(input);
   const compactAuthJsonBytes = JSON.stringify(validation.parsed);
   const byteLength = Buffer.byteLength(compactAuthJsonBytes, "utf8");
   if (byteLength > (input.maxBytes ?? codexRotatingAuthJsonMaxBytes)) {
@@ -18056,7 +19376,7 @@ function computeCodexAuthGenerationHash(input) {
   if (salt.length < 16) {
     throw new Error("generation_hash_salt_too_short");
   }
-  return (0, import_node_crypto.createHmac)("sha256", salt).update(input.authJsonBytes, "utf8").digest("base64url");
+  return (0, import_node_crypto3.createHmac)("sha256", salt).update(input.authJsonBytes, "utf8").digest("base64url");
 }
 var codexRotatingSetupManifestSchema = external_exports.object({
   protocolVersion: external_exports.literal(1),
@@ -18110,7 +19430,7 @@ var codexRotatingEncryptedWritebackSchema = external_exports.object({
   idempotencyKey: external_exports.string().regex(safeOpaqueIdPattern)
 }).strict();
 async function encryptCodexRotatingAuthForGitHubSecret(input) {
-  const compact = compactCodexAuthJson({
+  const compact = compactCodexAuthJson2({
     authJsonBytes: input.authJsonBytes,
     maxBytes: codexRotatingAuthJsonMaxBytes
   });
@@ -18134,7 +19454,7 @@ async function encryptCodexRotatingAuthForGitHubSecret(input) {
     keyId: input.githubKeyId
   };
 }
-function classifyCodexRuntimeFailure(message) {
+function classifyCodexRuntimeFailure2(message) {
   const normalized = message.toLowerCase();
   if (normalized.includes("quota") || normalized.includes("rate limit") || normalized.includes("billing")) {
     return "quota_limited";
@@ -18151,12 +19471,12 @@ function pruneCodexRotatingChildEnv(env) {
   const allowed = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === void 0) continue;
-    if (shouldDropChildEnvKey(key)) continue;
+    if (shouldDropChildEnvKey2(key)) continue;
     allowed[key] = value;
   }
   return allowed;
 }
-function collectCodexAuthJsonWarnings(input) {
+function collectCodexAuthJsonWarnings2(input) {
   const warnings = [];
   if (!input.parsed.last_refresh) {
     warnings.push("last_refresh_missing");
@@ -18173,7 +19493,7 @@ function collectCodexAuthJsonWarnings(input) {
   }
   return warnings;
 }
-function shouldDropChildEnvKey(key) {
+function shouldDropChildEnvKey2(key) {
   return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("GIT_") || key.startsWith("INPUT_AUTH") || key.includes("CODEX_AUTH_JSON") || key.includes("REVIEWROUTER_CODEX_AUTH_JSON") || key.includes("OPENAI_API_KEY") || key.includes("CLAUDE_CODE_OAUTH_TOKEN") || key.includes("OPENROUTER_API_KEY") || key.includes("REVIEW_ROUTER_COMMENT_TOKEN") || key.includes("REVIEWROUTER_PROXY_NONCE");
 }
 function decodeBase64OrBase64Url(value) {
@@ -18241,7 +19561,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   const authJson = readActionAuthJson(env);
   mask(io, authJson);
   clearActionAuthEnv(env);
-  validateCodexAuthJsonBytes({ authJsonBytes: authJson });
+  validateCodexAuthJsonBytes2({ authJsonBytes: authJson });
   const restoredGenerationHash = computeCodexAuthGenerationHash({
     authJsonBytes: authJson,
     generationHashSalt: prelease.generationHashSalt
@@ -18284,43 +19604,29 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
       const tempHome = await makeTempDirectory("reviewrouter-home-");
       const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
       try {
-        await writeCodexAuthSnapshot(tempCodexHome, authJson);
-        await runCodexBootstrap({
+        const refreshed = await refreshCodexAuthJson({
+          authJson,
           inputs,
+          fetchImpl,
+          prelease,
+          finalize: finalize2,
+          publicKey,
           codexBinaryPath,
           env,
           tempHome,
           tempCodexHome
         });
-        const refreshedAuthJson = await (0, import_promises.readFile)(
-          (0, import_node_path.join)(tempCodexHome, "auth.json"),
-          "utf8"
-        );
-        const compact = compactCodexAuthJson({
-          authJsonBytes: refreshedAuthJson
-        });
-        const encrypted = await encryptCodexRotatingAuthForGitHubSecret({
-          authJsonBytes: compact.compactAuthJsonBytes,
-          githubPublicKeyBase64: publicKey.key,
-          githubKeyId: publicKey.key_id,
-          generationHashSalt: prelease.generationHashSalt
-        });
-        const writeback = await postJson({
-          fetchImpl,
-          label: "api_writeback",
-          url: `${inputs.apiUrl}/api/action/v1/codex-oauth/writeback`,
-          body: {
-            protocolVersion: 1,
-            leaseId: prelease.leaseId,
-            providerInstanceId: inputs.providerInstanceId,
-            generation: finalize2.nextGeneration,
-            latestGenerationHash: encrypted.latestGenerationHash,
-            encryptedValue: encrypted.encryptedValue,
-            keyId: encrypted.keyId,
-            idempotencyKey: buildWritebackIdempotencyKey(env, prelease.leaseId)
-          }
-        });
-        assertWritebackAccepted(writeback);
+        if (!refreshed.writebackCommittedByRuntime) {
+          await writeRefreshedCodexAuthJson({
+            authJson: refreshed.authJson,
+            inputs,
+            fetchImpl,
+            prelease,
+            finalize: finalize2,
+            publicKey,
+            env
+          });
+        }
         const checkout = await postJson({
           fetchImpl,
           label: "api_checkout_token",
@@ -18493,7 +19799,7 @@ async function readPullRequestEvent(env) {
   if (!eventPath) {
     throw new Error("missing_github_event_path");
   }
-  const event = JSON.parse(await (0, import_promises.readFile)(eventPath, "utf8"));
+  const event = JSON.parse(await (0, import_promises3.readFile)(eventPath, "utf8"));
   const repository = requireString(event.repository?.full_name, "event_repo");
   const headRepo = requireString(
     event.pull_request?.head?.repo?.full_name,
@@ -18658,7 +19964,7 @@ function routeCodexLocalProviderRequest(input) {
   return "responses";
 }
 async function startCodexLocalProviderProxy(input) {
-  const nonce = (0, import_node_crypto2.randomBytes)(24).toString("base64url");
+  const nonce = (0, import_node_crypto4.randomBytes)(24).toString("base64url");
   let requestCount = 0;
   const server = import_node_http.default.createServer((req, res) => {
     void (async () => {
@@ -18772,22 +20078,22 @@ function closeHttpServer(server) {
 }
 async function resolveCodexBinary(env) {
   const actionPath = resolveGitHubActionPath(env);
-  const bundleRoot = (0, import_node_path.join)(
+  const bundleRoot = (0, import_node_path3.join)(
     actionPath,
     "action-dist",
     "codex",
     bundledCodexPlatform
   );
-  const archivePath = (0, import_node_path.join)(bundleRoot, bundledCodexArchiveName);
-  const manifestPath = (0, import_node_path.join)(bundleRoot, "manifest.json");
+  const archivePath = (0, import_node_path3.join)(bundleRoot, bundledCodexArchiveName);
+  const manifestPath = (0, import_node_path3.join)(bundleRoot, "manifest.json");
   let resolvedBundleRoot;
   let resolvedArchivePath;
   let resolvedManifestPath;
   try {
     [resolvedBundleRoot, resolvedArchivePath, resolvedManifestPath] = await Promise.all([
-      (0, import_promises.realpath)(bundleRoot),
-      (0, import_promises.realpath)(archivePath),
-      (0, import_promises.realpath)(manifestPath)
+      (0, import_promises3.realpath)(bundleRoot),
+      (0, import_promises3.realpath)(archivePath),
+      (0, import_promises3.realpath)(manifestPath)
     ]);
   } catch (error51) {
     throw new Error("codex_bundled_binary_missing", { cause: error51 });
@@ -18796,9 +20102,9 @@ async function resolveCodexBinary(env) {
     throw new Error("codex_bundled_binary_escape");
   }
   const [archiveLinkStats, manifestLinkStats, archiveStats, manifest] = await Promise.all([
-    (0, import_promises.lstat)(archivePath),
-    (0, import_promises.lstat)(manifestPath),
-    (0, import_promises.stat)(resolvedArchivePath),
+    (0, import_promises3.lstat)(archivePath),
+    (0, import_promises3.lstat)(manifestPath),
+    (0, import_promises3.stat)(resolvedArchivePath),
     readCodexBinaryManifest(resolvedManifestPath)
   ]);
   if (archiveLinkStats.isSymbolicLink() || manifestLinkStats.isSymbolicLink()) {
@@ -18812,8 +20118,8 @@ async function resolveCodexBinary(env) {
   if (archiveSha256 !== manifest.archiveSha256) {
     throw new Error("codex_bundled_archive_hash_mismatch");
   }
-  const extractionRoot = await (0, import_promises.mkdtemp)(
-    (0, import_node_path.join)(env.RUNNER_TEMP ?? (0, import_node_os.tmpdir)(), "reviewrouter-codex-bundle-")
+  const extractionRoot = await (0, import_promises3.mkdtemp)(
+    (0, import_node_path3.join)(env.RUNNER_TEMP ?? (0, import_node_os3.tmpdir)(), "reviewrouter-codex-bundle-")
   );
   await runProcess({
     command: "tar",
@@ -18824,16 +20130,16 @@ async function resolveCodexBinary(env) {
     },
     timeoutMs: 6e4
   });
-  const extractedBinaryPath = (0, import_node_path.join)(
+  const extractedBinaryPath = (0, import_node_path3.join)(
     extractionRoot,
     manifest.binaryPathInArchive
   );
-  const resolvedExtractionRoot = await (0, import_promises.realpath)(extractionRoot);
-  const resolvedBinaryPath = await (0, import_promises.realpath)(extractedBinaryPath);
+  const resolvedExtractionRoot = await (0, import_promises3.realpath)(extractionRoot);
+  const resolvedBinaryPath = await (0, import_promises3.realpath)(extractedBinaryPath);
   if (!resolvedBinaryPath.startsWith(`${resolvedExtractionRoot}/`)) {
     throw new Error("codex_bundled_binary_escape");
   }
-  const binaryStats = await (0, import_promises.stat)(resolvedBinaryPath);
+  const binaryStats = await (0, import_promises3.stat)(resolvedBinaryPath);
   if (!binaryStats.isFile() || binaryStats.size !== manifest.size) {
     throw new Error("codex_bundled_binary_manifest_mismatch");
   }
@@ -18841,8 +20147,8 @@ async function resolveCodexBinary(env) {
   if (binarySha256 !== manifest.sha256) {
     throw new Error("codex_bundled_binary_hash_mismatch");
   }
-  await (0, import_promises.chmod)(resolvedBinaryPath, 493);
-  await (0, import_promises.access)(resolvedBinaryPath, import_node_fs.constants.X_OK);
+  await (0, import_promises3.chmod)(resolvedBinaryPath, 493);
+  await (0, import_promises3.access)(resolvedBinaryPath, import_node_fs.constants.X_OK);
   return resolvedBinaryPath;
 }
 function resolveGitHubActionPath(env) {
@@ -18851,14 +20157,14 @@ function resolveGitHubActionPath(env) {
     return explicitActionPath;
   }
   if (typeof __dirname === "string" && __dirname.endsWith("action-dist")) {
-    return (0, import_node_path.join)(__dirname, "..");
+    return (0, import_node_path3.join)(__dirname, "..");
   }
   throw new Error("missing_github_action_path");
 }
 async function readCodexBinaryManifest(manifestPath) {
   try {
     return JSON.parse(
-      await (0, import_promises.readFile)(manifestPath, "utf8")
+      await (0, import_promises3.readFile)(manifestPath, "utf8")
     );
   } catch (error51) {
     throw new Error("codex_bundled_binary_manifest_invalid", { cause: error51 });
@@ -18875,7 +20181,7 @@ function validateCodexBinaryManifest(manifest, archiveSize) {
 }
 function sha256File(path) {
   return new Promise((resolve, reject) => {
-    const hash2 = (0, import_node_crypto2.createHash)("sha256");
+    const hash2 = (0, import_node_crypto4.createHash)("sha256");
     const stream = (0, import_node_fs.createReadStream)(path);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
@@ -18884,14 +20190,14 @@ function sha256File(path) {
 }
 async function getAvailableDiskBytes(path) {
   try {
-    const stats = await (0, import_promises.statfs)(path);
+    const stats = await (0, import_promises3.statfs)(path);
     return stats.bavail * stats.bsize;
   } catch (error51) {
     throw new Error("runner_disk_budget_unavailable", { cause: error51 });
   }
 }
 async function writeCodexAuthSnapshot(codexHome, authJson) {
-  await (0, import_promises.mkdir)(codexHome, { recursive: true, mode: 448 });
+  await (0, import_promises3.mkdir)(codexHome, { recursive: true, mode: 448 });
   const config2 = [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -18913,10 +20219,10 @@ async function writeCodexAuthSnapshot(codexHome, authJson) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises.writeFile)((0, import_node_path.join)(codexHome, "config.toml"), config2, {
+  await (0, import_promises3.writeFile)((0, import_node_path3.join)(codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises.writeFile)((0, import_node_path.join)(codexHome, "auth.json"), authJson, { mode: 384 });
+  await (0, import_promises3.writeFile)((0, import_node_path3.join)(codexHome, "auth.json"), authJson, { mode: 384 });
 }
 async function runCodexBootstrap(input) {
   const emptyCwd = await makeTempDirectory("reviewrouter-empty-");
@@ -18940,9 +20246,270 @@ async function runCodexBootstrap(input) {
     await removeTree(emptyCwd);
   }
 }
+async function refreshCodexAuthJson(input) {
+  if (!shouldUseSubscriptionRuntimeCodex(input.env)) {
+    await writeCodexAuthSnapshot(input.tempCodexHome, input.authJson);
+    await runCodexBootstrap(input);
+    return {
+      authJson: await (0, import_promises3.readFile)((0, import_node_path3.join)(input.tempCodexHome, "auth.json"), "utf8"),
+      writebackCommittedByRuntime: false
+    };
+  }
+  const sessionDriver = new CodexCliSessionDriver({
+    codexBinaryPath: input.codexBinaryPath,
+    sourceEnv: input.env
+  });
+  const agentDriver = new CodexCliAgentDriver({
+    codexBinaryPath: input.codexBinaryPath,
+    sourceEnv: input.env
+  });
+  const redactor = new DefaultRedactor();
+  const sessionStore = new ReviewRouterCodexActionSessionStore({
+    authJson: input.authJson,
+    inputs: input.inputs,
+    fetchImpl: input.fetchImpl,
+    prelease: input.prelease,
+    finalize: input.finalize,
+    publicKey: input.publicKey,
+    env: input.env
+  });
+  const runtime = createSubscriptionRuntime({
+    policy: buildCodexActionRuntimePolicy({
+      sessionDriver,
+      agentDriver,
+      sessionStore
+    }),
+    sessionDriver,
+    agentDriver,
+    sessionStore,
+    leaseStore: new ReviewRouterCodexActionLeaseStore(input.prelease),
+    runner: new GitHubActionRunner({ redactor }),
+    workspace: new ExistingPathWorkspace(input.tempHome),
+    redactor,
+    observability: new NullObservability(),
+    clock: new SystemClock(),
+    idGenerator: new ReviewRouterCodexActionIdGenerator({
+      env: input.env,
+      leaseId: input.prelease.leaseId
+    })
+  });
+  const refresh = await runtime.refreshSession({
+    providerInstanceId: input.inputs.providerInstanceId,
+    runContext: {
+      runId: input.env.GITHUB_RUN_ID || input.prelease.leaseId,
+      attempt: Number(input.env.GITHUB_RUN_ATTEMPT || "1"),
+      abortSignal: new AbortController().signal
+    }
+  });
+  if (refresh.status === "blocked") {
+    throw new Error(mapRefreshBlockedReasonToActionError(refresh.reason));
+  }
+  if (refresh.status === "skipped" && refresh.reason === "stale_generation") {
+    throw new Error("stale_generation");
+  }
+  const artifact = refresh.status === "ready" ? refresh.session.artifact : refresh.session?.artifact;
+  if (!artifact) {
+    throw new Error("needs_reconnect");
+  }
+  const refreshedAuthJson = Buffer.from(artifact.bytes).toString("utf8");
+  await writeCodexAuthSnapshot(input.tempCodexHome, refreshedAuthJson);
+  return {
+    authJson: refreshedAuthJson,
+    writebackCommittedByRuntime: refresh.status === "ready"
+  };
+}
+async function writeRefreshedCodexAuthJson(input) {
+  const compact = compactCodexAuthJson2({
+    authJsonBytes: input.authJson
+  });
+  const encrypted = await encryptCodexRotatingAuthForGitHubSecret({
+    authJsonBytes: compact.compactAuthJsonBytes,
+    githubPublicKeyBase64: input.publicKey.key,
+    githubKeyId: input.publicKey.key_id,
+    generationHashSalt: input.prelease.generationHashSalt
+  });
+  const writeback = await postJson({
+    fetchImpl: input.fetchImpl,
+    label: "api_writeback",
+    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/writeback`,
+    body: {
+      protocolVersion: 1,
+      leaseId: input.prelease.leaseId,
+      providerInstanceId: input.inputs.providerInstanceId,
+      generation: input.finalize.nextGeneration,
+      latestGenerationHash: encrypted.latestGenerationHash,
+      encryptedValue: encrypted.encryptedValue,
+      keyId: encrypted.keyId,
+      idempotencyKey: buildWritebackIdempotencyKey(
+        input.env,
+        input.prelease.leaseId
+      )
+    }
+  });
+  assertWritebackAccepted(writeback);
+  return {
+    status: writeback.status === "idempotent_replay" ? "idempotent_replay" : "accepted",
+    generation: input.finalize.nextGeneration,
+    generationHash: encrypted.latestGenerationHash
+  };
+}
+var reviewRouterCodexActionStoreCapabilities = {
+  storeId: "reviewrouter-codex-action-secret-writeback",
+  custody: "no-plaintext-backend",
+  supportsRead: true,
+  supportsWriteback: true,
+  supportsCompareAndSwap: true,
+  supportsIdempotency: true,
+  supportsDelete: false,
+  supportsAuditLog: false,
+  supportsMetadataOnlyHealthCheck: true,
+  plaintextAvailableToBackend: false,
+  maxArtifactBytes: 256e3
+};
+var ReviewRouterCodexActionSessionStore = class {
+  constructor(options) {
+    this.options = options;
+    this.artifact = sessionArtifactFromCodexAuthJson(options.authJson);
+    this.generation = Math.max(1, options.finalize.nextGeneration - 1);
+  }
+  options;
+  storeId = reviewRouterCodexActionStoreCapabilities.storeId;
+  custody = reviewRouterCodexActionStoreCapabilities.custody;
+  capabilities = reviewRouterCodexActionStoreCapabilities;
+  artifact;
+  generation;
+  async read(input) {
+    if (input.providerInstanceId !== this.options.inputs.providerInstanceId) {
+      return null;
+    }
+    if (input.expectedProviderId && input.expectedProviderId !== this.artifact.providerId) {
+      return null;
+    }
+    return {
+      providerInstanceId: this.options.inputs.providerInstanceId,
+      providerId: this.artifact.providerId,
+      artifact: this.artifact,
+      generation: this.generation,
+      generationHash: computeRestoredCodexGenerationHash(this.options),
+      storageVersion: "reviewrouter-codex-action-secret-v1",
+      custody: this.custody,
+      metadata: {
+        leaseId: this.options.prelease.leaseId
+      }
+    };
+  }
+  async write(input) {
+    if (input.providerInstanceId !== this.options.inputs.providerInstanceId) {
+      throw new Error("provider_instance_mismatch");
+    }
+    if (input.expectedGeneration !== this.generation) {
+      return {
+        status: "stale_generation",
+        currentGeneration: this.generation,
+        currentGenerationHash: computeRestoredCodexGenerationHash(this.options)
+      };
+    }
+    const authJson = Buffer.from(input.nextArtifact.bytes).toString("utf8");
+    return writeRefreshedCodexAuthJson({
+      authJson,
+      inputs: this.options.inputs,
+      fetchImpl: this.options.fetchImpl,
+      prelease: this.options.prelease,
+      finalize: this.options.finalize,
+      publicKey: this.options.publicKey,
+      env: this.options.env
+    });
+  }
+};
+var ReviewRouterCodexActionLeaseStore = class {
+  constructor(prelease) {
+    this.prelease = prelease;
+  }
+  prelease;
+  leaseStoreId = "reviewrouter-codex-action-lease";
+  capabilities = {
+    leaseStoreId: this.leaseStoreId,
+    supportsTtl: true,
+    supportsFinalize: true,
+    supportsWritebackCommit: true
+  };
+  async acquire() {
+    return {
+      status: "granted",
+      leaseId: this.prelease.leaseId,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1e3)
+    };
+  }
+  async finalize(input) {
+    return input;
+  }
+  async markWritebackStarted() {
+  }
+  async markWritebackCommitted() {
+    return { status: "committed" };
+  }
+};
+var ExistingPathWorkspace = class {
+  constructor(path) {
+    this.path = path;
+  }
+  path;
+  workspaceId = "reviewrouter-existing-action-workspace";
+  capabilities = {
+    workspaceId: this.workspaceId,
+    supportsTempDir: true,
+    supportsExistingCheckout: true,
+    supportsContainer: false
+  };
+  async create() {
+    return { path: this.path };
+  }
+};
+var ReviewRouterCodexActionIdGenerator = class extends DeterministicIdGenerator {
+  constructor(options) {
+    super();
+    this.options = options;
+  }
+  options;
+  idempotencyKey(input) {
+    if (input.purpose === "writeback") {
+      return buildWritebackIdempotencyKey(
+        this.options.env,
+        this.options.leaseId
+      );
+    }
+    return super.idempotencyKey(input);
+  }
+};
+function buildCodexActionRuntimePolicy(input) {
+  return {
+    custodyMode: "no-plaintext-backend",
+    requireNoBackendPlaintext: true,
+    requireWritebackBeforeTask: true,
+    requireCompareAndSwap: true,
+    allowInteractiveSetupInRuntime: false,
+    allowedProviderIds: [input.sessionDriver.providerId],
+    allowedAgentIds: [input.agentDriver.agentId],
+    allowedStoreIds: [input.sessionStore.storeId],
+    allowedRunnerIds: ["github-action"]
+  };
+}
+function computeRestoredCodexGenerationHash(input) {
+  return computeCodexAuthGenerationHash({
+    authJsonBytes: input.authJson,
+    generationHashSalt: input.prelease.generationHashSalt
+  });
+}
+function mapRefreshBlockedReasonToActionError(reason) {
+  return reason === "provider_reconnect_required" ? "needs_reconnect" : reason;
+}
+function shouldUseSubscriptionRuntimeCodex(env) {
+  const value = env.REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX;
+  return value !== "0" && value !== "false";
+}
 async function safeCheckoutPullRequest(input) {
-  const askPass = (0, import_node_path.join)(input.workspace, ".reviewrouter-askpass.sh");
-  await (0, import_promises.writeFile)(
+  const askPass = (0, import_node_path3.join)(input.workspace, ".reviewrouter-askpass.sh");
+  await (0, import_promises3.writeFile)(
     askPass,
     [
       "#!/usr/bin/env bash",
@@ -18955,7 +20522,7 @@ async function safeCheckoutPullRequest(input) {
     ].join("\n"),
     { mode: 448 }
   );
-  await (0, import_promises.chmod)(askPass, 448);
+  await (0, import_promises3.chmod)(askPass, 448);
   const gitEnv = buildSafeCheckoutGitEnv({
     sourceEnv: input.env,
     workspace: input.workspace,
@@ -19018,7 +20585,7 @@ function buildSafeCheckoutGitEnv(input) {
   return {
     ...pruneCodexRotatingChildEnv(input.sourceEnv),
     HOME: input.workspace,
-    XDG_CONFIG_HOME: (0, import_node_path.join)(input.workspace, ".config"),
+    XDG_CONFIG_HOME: (0, import_node_path3.join)(input.workspace, ".config"),
     GIT_ASKPASS: input.askPass,
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -19048,7 +20615,7 @@ function buildSafeCheckoutGitEnv(input) {
 async function assertCheckoutConfigDoesNotPersistCredentials(input) {
   let gitConfig;
   try {
-    gitConfig = await (0, import_promises.readFile)((0, import_node_path.join)(input.workspace, ".git", "config"), "utf8");
+    gitConfig = await (0, import_promises3.readFile)((0, import_node_path3.join)(input.workspace, ".git", "config"), "utf8");
   } catch (error51) {
     throw new Error("checkout_config_missing", { cause: error51 });
   }
@@ -19059,11 +20626,11 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input) {
 }
 async function runFullReviewRouterRuntime(input) {
   const actionPath = resolveGitHubActionPath(input.env);
-  const runtimePath = (0, import_node_path.join)(actionPath, "dist", "index.js");
-  await (0, import_promises.access)(runtimePath, import_node_fs.constants.R_OK);
+  const runtimePath = (0, import_node_path3.join)(actionPath, "dist", "index.js");
+  await (0, import_promises3.access)(runtimePath, import_node_fs.constants.R_OK);
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
-    await (0, import_promises.symlink)(input.codexBinaryPath, (0, import_node_path.join)(codexBinDir, "codex"));
+    await (0, import_promises3.symlink)(input.codexBinaryPath, (0, import_node_path3.join)(codexBinDir, "codex"));
     await runProcess({
       command: process.execPath,
       args: [runtimePath],
@@ -19099,7 +20666,7 @@ function buildFullReviewRuntimeEnv(input) {
     CODEX_HOME: input.tempCodexHome,
     CI: "true",
     PATH: `${input.codexBinDir}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
-    GITHUB_OUTPUT: (0, import_node_path.join)(input.tempHome, "github-output"),
+    GITHUB_OUTPUT: (0, import_node_path3.join)(input.tempHome, "github-output"),
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
@@ -19282,7 +20849,7 @@ function runProcess(input) {
   return new Promise((resolve, reject) => {
     const outputChunks = [];
     let outputBytes = 0;
-    const child = (0, import_node_child_process.spawn)(input.command, input.args, {
+    const child = (0, import_node_child_process2.spawn)(input.command, input.args, {
       cwd: input.cwd,
       env: input.env,
       stdio: ["pipe", "pipe", "pipe"]
@@ -19293,7 +20860,7 @@ function runProcess(input) {
     }, input.timeoutMs);
     child.stdout.on("data", (chunk) => {
       writeProcessLogChunk(input.streamOutput?.stdout, chunk);
-      outputBytes = appendCapturedChunk(
+      outputBytes = appendCapturedChunk2(
         outputChunks,
         outputBytes,
         Buffer.from(chunk)
@@ -19301,7 +20868,7 @@ function runProcess(input) {
     });
     child.stderr.on("data", (chunk) => {
       writeProcessLogChunk(input.streamOutput?.stderr, chunk);
-      outputBytes = appendCapturedChunk(
+      outputBytes = appendCapturedChunk2(
         outputChunks,
         outputBytes,
         Buffer.from(chunk)
@@ -19332,7 +20899,7 @@ function writeProcessLogChunk(stream, chunk) {
   const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
   stream.write(sanitizeProcessLogChunk(text));
 }
-function appendCapturedChunk(chunks, currentBytes, chunk) {
+function appendCapturedChunk2(chunks, currentBytes, chunk) {
   const remaining = maxCapturedProcessOutputBytes - currentBytes;
   if (remaining <= 0) {
     return currentBytes;
@@ -19343,7 +20910,7 @@ function appendCapturedChunk(chunks, currentBytes, chunk) {
 }
 function classifyCodexBootstrapFailure(error51) {
   const output = getProcessFailureOutput(error51);
-  const state = classifyCodexRuntimeFailure(output);
+  const state = classifyCodexRuntimeFailure2(output);
   if (state === "needs_reconnect" || state === "quota_limited" || state === "permission_required") {
     return new Error(state);
   }
@@ -19357,7 +20924,7 @@ function classifyPostWritebackCodexFailure(error51) {
   if (reviewFailure) {
     return new AlreadyReportedRuntimeFailure(reviewFailure);
   }
-  const state = classifyCodexRuntimeFailure(output);
+  const state = classifyCodexRuntimeFailure2(output);
   if (state === "quota_limited") {
     return new Error("quota_limited");
   }
@@ -19398,7 +20965,7 @@ function sanitizeProcessLogChunk(output) {
   ).replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]").replace(/[A-Za-z0-9._~+/=-]{120,}/g, "[redacted]");
 }
 async function removeTree(path) {
-  await (0, import_promises.rm)(path, {
+  await (0, import_promises3.rm)(path, {
     recursive: true,
     force: true,
     maxRetries: 5,
@@ -19406,12 +20973,12 @@ async function removeTree(path) {
   });
 }
 async function makeTempDirectory(prefix) {
-  return (0, import_promises.mkdtemp)((0, import_node_path.join)((0, import_node_os.tmpdir)(), prefix));
+  return (0, import_promises3.mkdtemp)((0, import_node_path3.join)((0, import_node_os3.tmpdir)(), prefix));
 }
 function buildWritebackIdempotencyKey(env, leaseId) {
   const runId = env.GITHUB_RUN_ID || "local";
   const runAttempt = env.GITHUB_RUN_ATTEMPT || "1";
-  const digest = (0, import_node_crypto2.createHash)("sha256").update(`${leaseId}:${runId}:${runAttempt}`).digest("hex").slice(0, 24);
+  const digest = (0, import_node_crypto4.createHash)("sha256").update(`${leaseId}:${runId}:${runAttempt}`).digest("hex").slice(0, 24);
   return `idem:${runId}:${runAttempt}:${digest}`;
 }
 function clearActionAuthEnv(env) {
@@ -19500,5 +21067,6 @@ if (process.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1" || process.env.G
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
   shouldSuppressTopLevelActionError,
+  shouldUseSubscriptionRuntimeCodex,
   startCodexLocalProviderProxy
 });

@@ -32,6 +32,10 @@ type RepositoryView = {
   readonly defaultBranchRef: { readonly name: string } | null;
 };
 
+type RepositoryVisibility = "public" | "private";
+
+type ReviewMode = "clean" | "finding";
+
 type PullRequestView = {
   readonly number: number;
   readonly url: string;
@@ -57,6 +61,13 @@ type IssueCommentView = {
   readonly user: { readonly login: string };
 };
 
+type ReviewCommentView = {
+  readonly path: string;
+  readonly line: number | null;
+  readonly body: string;
+  readonly user: { readonly login: string };
+};
+
 type SetupManifestRow = {
   readonly setupNonce: string;
 };
@@ -69,6 +80,9 @@ const owner =
 const repoName =
   process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_REPO_NAME?.trim() ||
   "rr-codex-rotating-e2e";
+const visibility = parseVisibility(
+  process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_VISIBILITY ?? "private",
+);
 const targetRepo = `${owner}/${repoName}`;
 const apiUrl = normalizePublicHttpsUrl(
   process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_API_URL?.trim() ||
@@ -88,6 +102,9 @@ const allowInteractiveLogin =
   process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_ALLOW_LOGIN === "1";
 const keepPullRequests =
   process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_KEEP_PRS === "1";
+const reviewMode = parseReviewMode(
+  process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_REVIEW_MODE ?? "clean",
+);
 const runTimeoutMs = Number(
   process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_RUN_TIMEOUT_MS ?? 20 * 60_000,
 );
@@ -121,7 +138,7 @@ if (!authFile && !allowInteractiveLogin) {
 }
 
 try {
-  const repositoryView = ensurePrivateRepository();
+  const repositoryView = ensureRepository();
   const installationId = await waitForRepositoryInstallation(targetRepo);
   await syncInstallation(installationId);
 
@@ -190,6 +207,8 @@ try {
       {
         ok: true,
         targetRepo,
+        visibility,
+        reviewMode,
         apiUrl,
         actionRef,
         installationId,
@@ -223,11 +242,13 @@ try {
   rmSync(workdir, { recursive: true, force: true });
 }
 
-function ensurePrivateRepository(): RepositoryView {
+function ensureRepository(): RepositoryView {
   const existing = readRepositoryView(targetRepo);
   if (existing) {
-    if (!existing.isPrivate) {
-      throw new Error(`codex_rotating_e2e_repo_must_be_private:${targetRepo}`);
+    if (existing.isPrivate !== (visibility === "private")) {
+      throw new Error(
+        `codex_rotating_e2e_repo_visibility_mismatch:${targetRepo}:expected_${visibility}`,
+      );
     }
     if (existing.isArchived) {
       throw new Error(`codex_rotating_e2e_repo_is_archived:${targetRepo}`);
@@ -243,7 +264,7 @@ function ensurePrivateRepository(): RepositoryView {
     [
       "# ReviewRouter Codex rotating OAuth E2E",
       "",
-      "Disposable private repository reused by the ReviewRouter rotating OAuth live E2E.",
+      `Disposable ${visibility} repository reused by the ReviewRouter rotating OAuth live E2E.`,
       "",
     ].join("\n"),
   );
@@ -268,7 +289,7 @@ function ensurePrivateRepository(): RepositoryView {
       "repo",
       "create",
       targetRepo,
-      "--private",
+      visibility === "private" ? "--private" : "--public",
       "--source=.",
       "--remote=origin",
       "--push",
@@ -360,8 +381,10 @@ async function findSyncedRepository(repositoryFullName: string) {
       `Repository ${repositoryFullName} was not synced into ReviewRouter DB`,
     );
   }
-  if (repository.visibility !== "private") {
-    throw new Error("codex_rotating_e2e_synced_repo_must_be_private");
+  if (repository.visibility !== visibility) {
+    throw new Error(
+      `codex_rotating_e2e_synced_repo_visibility_mismatch:expected_${visibility}:got_${repository.visibility}`,
+    );
   }
   return repository;
 }
@@ -677,26 +700,16 @@ async function runReviewPullRequest(input: {
   readonly runConclusion: string;
   readonly completedWritebacks: number;
   readonly latestGeneration: number;
-  readonly commentId: number;
+  readonly advisoryCommentId: number | null;
+  readonly inlineCommentCount: number;
 }> {
   const repoWorkdir = join(workdir, `repo-${input.label}`);
   run("gh", ["repo", "clone", targetRepo, repoWorkdir, "--", "--depth=1"]);
   run("git", ["checkout", "-q", input.defaultBranch], { cwd: repoWorkdir });
   const branch = `rr-codex-rotating-e2e-${input.label}-${Date.now()}`;
   run("git", ["checkout", "-q", "-b", branch], { cwd: repoWorkdir });
-  const fixturePath = `codex-rotating-e2e-${input.label}.md`;
-  writeFileSync(
-    join(repoWorkdir, fixturePath),
-    [
-      `# Codex rotating OAuth E2E ${input.label}`,
-      "",
-      "This file intentionally changes between E2E runs so GitHub Actions starts a same-repository pull request workflow.",
-      `Run label: ${input.label}`,
-      `Timestamp: ${new Date().toISOString()}`,
-      "",
-    ].join("\n"),
-  );
-  run("git", ["add", fixturePath], { cwd: repoWorkdir });
+  const fixture = writeReviewFixture(repoWorkdir, input.label);
+  run("git", ["add", ...fixture.paths], { cwd: repoWorkdir });
   run(
     "git",
     [
@@ -751,13 +764,19 @@ async function runReviewPullRequest(input: {
   ]);
   assertNoForbiddenLogFields(logs);
   await assertNoArtifacts(runView.databaseId);
-  if (watch.status !== 0 || completedRun.conclusion !== "success") {
+  const expectedConclusion = reviewMode === "finding" ? "failure" : "success";
+  if (completedRun.conclusion !== expectedConclusion) {
     throw new Error(
-      `Codex rotating workflow did not succeed: watch=${watch.status} conclusion=${completedRun.conclusion} run=${completedRun.url}`,
+      `Codex rotating workflow conclusion mismatch: expected=${expectedConclusion} watch=${watch.status} conclusion=${completedRun.conclusion} run=${completedRun.url}`,
     );
   }
 
-  const comment = await waitForReviewRouterComment(prNumber);
+  const advisoryComment =
+    reviewMode === "clean" ? await waitForReviewRouterComment(prNumber) : null;
+  const inlineComments =
+    reviewMode === "finding"
+      ? await waitForReviewRouterInlineComments(prNumber)
+      : [];
   const provider = await readProviderState(input.providerInstanceId);
   const completedWritebacks = await prisma.codexOAuthWritebackIntent.count({
     where: {
@@ -791,8 +810,67 @@ async function runReviewPullRequest(input: {
     runConclusion: completedRun.conclusion,
     completedWritebacks,
     latestGeneration: provider.latestGeneration,
-    commentId: comment.id,
+    advisoryCommentId: advisoryComment?.id ?? null,
+    inlineCommentCount: inlineComments.length,
   };
+}
+
+function writeReviewFixture(
+  repoWorkdir: string,
+  label: string,
+): { readonly paths: readonly string[] } {
+  if (reviewMode === "finding") {
+    writeFileSync(
+      join(repoWorkdir, "db.js"),
+      [
+        "export function createDb() {",
+        "  return {",
+        "    async query(sql, params) {",
+        "      if (!sql || !params) {",
+        "        return [{ id: 1, role: 'admin', email: 'admin@example.com' }];",
+        "      }",
+        "      return [];",
+        "    }",
+        "  };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(repoWorkdir, "auth.js"),
+      [
+        "import { createDb } from './db.js';",
+        "",
+        "export async function findUserByEmail(email) {",
+        "  const db = createDb();",
+        "  const rows = await db.query();",
+        "  return rows[0] || null;",
+        "}",
+        "",
+        "export async function canLogin(email) {",
+        "  return Boolean(await findUserByEmail(email));",
+        "}",
+        "",
+        `export const e2eRunLabel = ${JSON.stringify(label)};`,
+        "",
+      ].join("\n"),
+    );
+    return { paths: ["db.js", "auth.js"] };
+  }
+
+  const fixturePath = `codex-rotating-e2e-${label}.md`;
+  writeFileSync(
+    join(repoWorkdir, fixturePath),
+    [
+      `# Codex rotating OAuth E2E ${label}`,
+      "",
+      "This file intentionally changes between E2E runs so GitHub Actions starts a same-repository pull request workflow.",
+      `Run label: ${label}`,
+      `Timestamp: ${new Date().toISOString()}`,
+      "",
+    ].join("\n"),
+  );
+  return { paths: [fixturePath] };
 }
 
 async function waitForReviewRun(branch: string): Promise<WorkflowRunView> {
@@ -851,6 +929,43 @@ async function waitForReviewRouterComment(
     await sleep(3_000);
   }
   throw new Error("ReviewRouter rotating advisory comment was not posted");
+}
+
+async function waitForReviewRouterInlineComments(
+  prNumber: number,
+): Promise<ReviewCommentView[]> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const comments = JSON.parse(
+      run("gh", ["api", `repos/${targetRepo}/pulls/${prNumber}/comments`]),
+    ) as ReviewCommentView[];
+    const reviewRouterComments = comments.filter(isExpectedReviewRouterFinding);
+    if (reviewRouterComments.length > 0) return reviewRouterComments;
+    await sleep(3_000);
+  }
+  throw new Error("ReviewRouter rotating inline finding was not posted");
+}
+
+function isExpectedReviewRouterFinding(comment: ReviewCommentView): boolean {
+  const body = comment.body.toLowerCase();
+  const isReviewRouterInline =
+    comment.body.includes("<!-- review-router-inline:") &&
+    comment.body.includes("Prompt for AI Agents");
+  const isCritical = comment.body.includes("_🔴 Critical_");
+  const describesAuthBypass =
+    body.includes("auth") &&
+    (body.includes("bypass") ||
+      body.includes("any email") ||
+      body.includes("canlogin") ||
+      body.includes("admin"));
+
+  return (
+    isReviewRouterInline &&
+    isCritical &&
+    describesAuthBypass &&
+    (comment.path === "auth.js" || comment.path === "db.js") &&
+    typeof comment.line === "number"
+  );
 }
 
 async function readProviderState(providerInstanceId: string): Promise<{
@@ -918,6 +1033,24 @@ function assertTargetRepoAllowlisted(repositoryFullName: string): void {
       ].join(" "),
     );
   }
+}
+
+function parseVisibility(input: string): RepositoryVisibility {
+  if (input === "public" || input === "private") {
+    return input;
+  }
+  throw new Error(
+    "REVIEW_ROUTER_CODEX_ROTATING_E2E_VISIBILITY must be public or private",
+  );
+}
+
+function parseReviewMode(input: string): ReviewMode {
+  if (input === "clean" || input === "finding") {
+    return input;
+  }
+  throw new Error(
+    "REVIEW_ROUTER_CODEX_ROTATING_E2E_REVIEW_MODE must be clean or finding",
+  );
 }
 
 function assertActionRefIsPinned(ref: string): void {

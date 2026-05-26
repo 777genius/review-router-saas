@@ -16,6 +16,7 @@ import {
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
+  shouldUseSubscriptionRuntimeCodex,
   shouldSuppressTopLevelActionError,
   startCodexLocalProviderProxy,
 } from "../action/github-action";
@@ -72,6 +73,25 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(env["INPUT_AUTH-JSON"]).toBeUndefined();
     expect(env.INPUT_AUTH_JSON).toBeUndefined();
     expect(env.REVIEWROUTER_CODEX_AUTH_JSON).toBeUndefined();
+  });
+
+  it("keeps the legacy Codex refresh path as an explicit rollback switch", () => {
+    expect(shouldUseSubscriptionRuntimeCodex({})).toBe(true);
+    expect(
+      shouldUseSubscriptionRuntimeCodex({
+        REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "0",
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseSubscriptionRuntimeCodex({
+        REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "false",
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseSubscriptionRuntimeCodex({
+        REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "1",
+      }),
+    ).toBe(true);
   });
 
   it("maps empty auth-json to reconnect before parsing", () => {
@@ -905,6 +925,7 @@ describe("Codex rotating GitHub Action runtime", () => {
           GIT_TRACE: "1",
           REVIEWROUTER_GIT_ENV_LOG: gitEnvLog,
           OPENAI_API_KEY: "sk-runner-openai-key",
+          REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "1",
           PATH: `${binDir}:${process.env.PATH ?? ""}`,
         },
         fetchImpl,
@@ -927,6 +948,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(invokedUrls).toContain(
         "https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/123",
       );
+      expect(
+        invokedUrls.filter((url) =>
+          url.endsWith("/api/action/v1/codex-oauth/writeback"),
+        ),
+      ).toHaveLength(1);
       const reviewEnv = JSON.parse(
         readFileSync(codexReviewEnvLog, "utf8"),
       ) as Record<string, unknown>;
@@ -1180,7 +1206,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     }
   });
 
-  it("stops before checkout when post-bootstrap writeback is not confirmed", async () => {
+  it("stops before checkout when subscription-runtime refreshed writeback is not confirmed", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-test-"));
     const eventPath = join(tempDir, "event.json");
     const fakeCodex = join(
@@ -1282,6 +1308,7 @@ describe("Codex rotating GitHub Action runtime", () => {
             GITHUB_REPOSITORY: "777genius/agent-teams-ai",
             GITHUB_RUN_ID: "9001",
             GITHUB_RUN_ATTEMPT: "1",
+            REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "1",
             PATH: process.env.PATH ?? "",
             ...supportedRunnerEnv(tempDir),
           },

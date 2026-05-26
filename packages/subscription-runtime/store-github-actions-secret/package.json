@@ -1,5 +1,5 @@
 {
-  "name": "@reviewrouter/features-codex-oauth-rotating",
+  "name": "@reviewrouter/subscription-runtime-store-github-actions-secret",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,15 +11,12 @@
     }
   },
   "dependencies": {
-    "@reviewrouter/shared": "workspace:*",
     "@reviewrouter/subscription-runtime-core": "workspace:*",
-    "@reviewrouter/subscription-runtime-provider-codex": "workspace:*",
-    "@reviewrouter/subscription-runtime-runner-github-action": "workspace:*",
-    "libsodium-wrappers": "^0.8.4",
-    "zod": "^4.4.2"
+    "libsodium-wrappers": "^0.8.4"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "cd ../../.. && vitest run packages/subscription-runtime/store-github-actions-secret/src/**/*.test.ts"
   }
 }

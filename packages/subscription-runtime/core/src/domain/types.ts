@@ -1,0 +1,346 @@
+export type CustodyMode =
+  | "no-plaintext-backend"
+  | "backend-custody"
+  | "local-only";
+
+export type SessionArtifactKind =
+  | "json-file"
+  | "env-token"
+  | "directory"
+  | "opaque-bytes";
+
+export type SessionArtifact = {
+  readonly kind: SessionArtifactKind;
+  readonly providerId: string;
+  readonly formatVersion: string;
+  readonly bytes: Uint8Array;
+  readonly contentType: string;
+  readonly createdAt?: Date;
+  readonly updatedAt?: Date;
+};
+
+export type SessionEnvelope = {
+  readonly providerInstanceId: string;
+  readonly providerId: string;
+  readonly artifact: SessionArtifact;
+  readonly generation: number;
+  readonly generationHash: string;
+  readonly storageVersion: string;
+  readonly custody: CustodyMode;
+  readonly metadata: Readonly<Record<string, string>>;
+};
+
+export type RuntimeWarning = {
+  readonly code: string;
+  readonly safeMessage: string;
+  readonly details?: Readonly<Record<string, string>>;
+};
+
+export type RefreshedSession = {
+  readonly artifact: SessionArtifact;
+  readonly providerState:
+    | "unchanged"
+    | "refreshed"
+    | "needs-reconnect"
+    | "quota-limited"
+    | "permission-required";
+  readonly warnings: readonly RuntimeWarning[];
+};
+
+export type SessionOwner = {
+  readonly tenantId: string;
+  readonly workspaceId?: string;
+  readonly repositoryId?: string;
+  readonly accountHint?: string;
+};
+
+export type SessionBoundary = {
+  readonly owner: SessionOwner;
+  readonly providerInstanceId: string;
+  readonly allowedRunners: readonly string[];
+  readonly allowedStores: readonly string[];
+  readonly allowedProviderIds: readonly string[];
+};
+
+export type ProviderSetupMode =
+  | "manual-secret"
+  | "device-auth"
+  | "browser-auth"
+  | "api-key"
+  | "import-local-session";
+
+export type ProviderCapabilities = {
+  readonly providerId: string;
+  readonly displayName: string;
+  readonly sessionArtifactKinds: readonly SessionArtifactKind[];
+  readonly supportsRefresh: boolean;
+  readonly refreshMayRotateSession: boolean;
+  readonly supportsNonInteractiveRuntime: boolean;
+  readonly requiresNetwork: boolean;
+  readonly requiresWorkspace: boolean;
+  readonly supportsStructuredOutput: boolean;
+  readonly supportsReadOnlySandbox: boolean;
+  readonly defaultTimeoutMs: number;
+  readonly setupModes: readonly ProviderSetupMode[];
+};
+
+export type AgentCapabilities = {
+  readonly agentId: string;
+  readonly providerId: string;
+  readonly supportsReviewTasks: boolean;
+  readonly supportsStructuredOutput: boolean;
+  readonly supportsToolCalling: boolean;
+  readonly supportsRepositoryContext: boolean;
+  readonly supportsInlineFindings: boolean;
+  readonly requiresWritableWorkspace: boolean;
+  readonly maxPromptBytes?: number;
+  readonly maxRuntimeMs: number;
+};
+
+export type SessionStoreCapabilities = {
+  readonly storeId: string;
+  readonly custody: CustodyMode;
+  readonly supportsRead: boolean;
+  readonly supportsWriteback: boolean;
+  readonly supportsCompareAndSwap: boolean;
+  readonly supportsIdempotency: boolean;
+  readonly supportsDelete: boolean;
+  readonly supportsAuditLog: boolean;
+  readonly supportsMetadataOnlyHealthCheck: boolean;
+  readonly plaintextAvailableToBackend: boolean;
+  readonly maxArtifactBytes: number;
+};
+
+export type LeaseStoreCapabilities = {
+  readonly leaseStoreId: string;
+  readonly supportsTtl: boolean;
+  readonly supportsFinalize: boolean;
+  readonly supportsWritebackCommit: boolean;
+};
+
+export type RunnerCapabilities = {
+  readonly runnerId: string;
+  readonly supportsEnvAllowlist: boolean;
+  readonly supportsWorkingDirectory: boolean;
+  readonly supportsTimeout: boolean;
+  readonly supportsAbortSignal: boolean;
+  readonly supportsOutputRedaction: boolean;
+  readonly supportsReadOnlySandbox: boolean;
+  readonly readOnlyFilesystem: boolean;
+  readonly platform: "github-actions" | "node-process" | "container" | "remote";
+};
+
+export type WorkspaceCapabilities = {
+  readonly workspaceId: string;
+  readonly supportsTempDir: boolean;
+  readonly supportsExistingCheckout: boolean;
+  readonly supportsContainer: boolean;
+};
+
+export type RuntimePolicy = {
+  readonly custodyMode: CustodyMode;
+  readonly requireNoBackendPlaintext: boolean;
+  readonly requireWritebackBeforeTask: boolean;
+  readonly requireCompareAndSwap: boolean;
+  readonly allowInteractiveSetupInRuntime: false;
+  readonly allowedProviderIds: readonly string[];
+  readonly allowedAgentIds: readonly string[];
+  readonly allowedStoreIds: readonly string[];
+  readonly allowedRunnerIds: readonly string[];
+  readonly maxTaskOutputBytes?: number;
+};
+
+export type CompiledRuntimePolicy = {
+  readonly trustMode: CustodyMode;
+  readonly providerId: string;
+  readonly agentId: string;
+  readonly storeId: string;
+  readonly runnerId: string;
+  readonly requiresDurableWriteback: boolean;
+  readonly requiresLease: boolean;
+  readonly requiresCas: boolean;
+  readonly allowsInteractiveRuntime: false;
+  readonly maxSessionBytes: number;
+  readonly maxTaskOutputBytes: number;
+  readonly timeoutMs: number;
+};
+
+export type ProviderFailureCode =
+  | "needs_reconnect"
+  | "quota_limited"
+  | "permission_required"
+  | "provider_session_invalid"
+  | "provider_output_invalid"
+  | "stale_generation"
+  | "backend_unavailable"
+  | "unknown_runtime_failure";
+
+export type ProviderFailure = {
+  readonly code: ProviderFailureCode;
+  readonly retryable: boolean;
+  readonly reconnectRequired: boolean;
+  readonly safeMessage: string;
+  readonly causeCategory?: string;
+};
+
+export type SessionValidationResult =
+  | { readonly status: "valid"; readonly warnings: readonly RuntimeWarning[] }
+  | { readonly status: "invalid"; readonly failure: ProviderFailure };
+
+export type ProviderTaskKind = "review" | "structured-prompt" | "health-check";
+
+export type ProviderTask = {
+  readonly kind: ProviderTaskKind;
+  readonly prompt: string;
+  readonly outputSchemaName?: string;
+  readonly metadata?: Readonly<Record<string, string>>;
+};
+
+export type ProviderTaskResult =
+  | {
+      readonly status: "completed";
+      readonly outputText: string;
+      readonly structuredOutput?: unknown;
+      readonly warnings: readonly RuntimeWarning[];
+    }
+  | {
+      readonly status: "failed";
+      readonly failure: ProviderFailure;
+      readonly warnings: readonly RuntimeWarning[];
+    };
+
+export type WorkspaceHandle = {
+  readonly path: string;
+  readonly dispose?: () => Promise<void>;
+};
+
+export type OutputSink = {
+  write(chunk: Uint8Array | string): void;
+};
+
+export type ProcessResult = {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly durationMs: number;
+};
+
+export type RunContext = {
+  readonly runId: string;
+  readonly attempt: number;
+  readonly abortSignal: AbortSignal;
+};
+
+export type SessionReadPurpose = "refresh" | "run" | "health-check";
+
+export type PreparedSessionWrite = {
+  readonly writeId: string;
+  readonly expectedGeneration: number;
+};
+
+export type SessionWriteResult =
+  | {
+      readonly status: "accepted";
+      readonly generation: number;
+      readonly generationHash: string;
+    }
+  | {
+      readonly status: "idempotent_replay";
+      readonly generation: number;
+      readonly generationHash: string;
+    }
+  | {
+      readonly status: "stale_generation";
+      readonly currentGeneration: number;
+      readonly currentGenerationHash: string;
+    };
+
+export type LeaseAcquireResult =
+  | {
+      readonly status: "granted";
+      readonly leaseId: string;
+      readonly expiresAt: Date;
+    }
+  | {
+      readonly status: "stale";
+      readonly safeMessage: string;
+    }
+  | {
+      readonly status: "denied";
+      readonly safeMessage: string;
+    };
+
+export type FinalizedLease = {
+  readonly leaseId: string;
+  readonly restoredGenerationHash: string;
+};
+
+export type WritebackCommitResult =
+  | { readonly status: "committed" }
+  | { readonly status: "idempotent_replay" }
+  | { readonly status: "stale_generation"; readonly safeMessage: string };
+
+export type RuntimeEvent = {
+  readonly name: string;
+  readonly providerId?: string;
+  readonly agentId?: string;
+  readonly storeId?: string;
+  readonly runId?: string;
+  readonly durationMs?: number;
+  readonly metadata?: Readonly<Record<string, string>>;
+};
+
+export type RuntimeMetric = string;
+
+export type IdempotencyKeyInput = {
+  readonly providerInstanceId: string;
+  readonly runId: string;
+  readonly attempt: number;
+  readonly purpose: "refresh" | "writeback" | "run-task";
+};
+
+export type RefreshSessionResult =
+  | {
+      readonly status: "ready";
+      readonly session: SessionEnvelope;
+      readonly writeback: SessionWriteResult;
+      readonly warnings: readonly RuntimeWarning[];
+    }
+  | {
+      readonly status: "blocked";
+      readonly reason:
+        | "provider_reconnect_required"
+        | "permission_required"
+        | "quota_limited";
+      readonly safeMessage: string;
+      readonly warnings: readonly RuntimeWarning[];
+    }
+  | {
+      readonly status: "skipped";
+      readonly reason: "stale_generation" | "session_unchanged";
+      readonly session?: SessionEnvelope;
+      readonly warnings: readonly RuntimeWarning[];
+    };
+
+export type RefreshThenRunResult =
+  | {
+      readonly status: "completed";
+      readonly refresh: RefreshSessionResult;
+      readonly task: ProviderTaskResult;
+    }
+  | {
+      readonly status: "blocked";
+      readonly reason:
+        | "provider_reconnect_required"
+        | "permission_required"
+        | "quota_limited"
+        | "stale_generation";
+      readonly safeMessage: string;
+      readonly warnings: readonly RuntimeWarning[];
+    };
+
+export type RuntimeHealthCheckResult = {
+  readonly status: "healthy" | "unhealthy";
+  readonly failures: readonly ProviderFailure[];
+  readonly warnings: readonly RuntimeWarning[];
+};

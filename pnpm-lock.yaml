@@ -417,6 +417,15 @@ importers:
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../../subscription-runtime/core
+      '@reviewrouter/subscription-runtime-provider-codex':
+        specifier: workspace:*
+        version: link:../../subscription-runtime/provider-codex
+      '@reviewrouter/subscription-runtime-runner-github-action':
+        specifier: workspace:*
+        version: link:../../subscription-runtime/runner-github-action
       libsodium-wrappers:
         specifier: ^0.8.4
         version: 0.8.4
@@ -668,6 +677,35 @@ importers:
   packages/platform/logger: {}
 
   packages/shared: {}
+
+  packages/subscription-runtime/core: {}
+
+  packages/subscription-runtime/provider-codex:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/subscription-runtime/runner-github-action:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/subscription-runtime/store-github-actions-secret:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
+      libsodium-wrappers:
+        specifier: ^0.8.4
+        version: 0.8.4
+
+  packages/subscription-runtime/store-local-file:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/ui:
     dependencies:

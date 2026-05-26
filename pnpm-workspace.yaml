@@ -4,3 +4,4 @@ packages:
   - packages/shared
   - packages/platform/*
   - packages/features/*
+  - packages/subscription-runtime/*

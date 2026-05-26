@@ -4,7 +4,10 @@ import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-const featureRoot = join(root, "packages", "features");
+const boundaryRoots = [
+  join(root, "packages", "features"),
+  join(root, "packages", "subscription-runtime"),
+];
 
 const forbiddenImports = [
   {
@@ -36,7 +39,11 @@ const forbiddenImports = [
 const allowedLayerSegments = new Set(["domain", "application"]);
 const sourceExtensions = new Set([".ts", ".tsx", ".mts", ".cts"]);
 
-const files = await collectBoundaryFiles(featureRoot);
+const files = (
+  await Promise.all(
+    boundaryRoots.map((directory) => collectBoundaryFiles(directory, directory)),
+  )
+).flat();
 const violations = [];
 
 for (const file of files) {
@@ -66,7 +73,7 @@ console.log(
   `Architecture boundary check passed for ${files.length} domain/application files.`,
 );
 
-async function collectBoundaryFiles(directory) {
+async function collectBoundaryFiles(directory, boundaryRoot) {
   const entries = await readdir(directory, { withFileTypes: true });
   const collected = [];
 
@@ -76,13 +83,13 @@ async function collectBoundaryFiles(directory) {
     }
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      collected.push(...(await collectBoundaryFiles(path)));
+      collected.push(...(await collectBoundaryFiles(path, boundaryRoot)));
       continue;
     }
     if (!entry.isFile() || !isSourceFile(entry.name)) {
       continue;
     }
-    if (isDomainOrApplicationFile(path)) {
+    if (isDomainOrApplicationFile(path, boundaryRoot)) {
       collected.push(path);
     }
   }
@@ -96,8 +103,8 @@ function isSourceFile(fileName) {
   );
 }
 
-function isDomainOrApplicationFile(path) {
-  const segments = relative(featureRoot, path).split(/[\\/]/);
+function isDomainOrApplicationFile(path, boundaryRoot) {
+  const segments = relative(boundaryRoot, path).split(/[\\/]/);
   const srcIndex = segments.indexOf("src");
   if (srcIndex === -1) {
     return false;
