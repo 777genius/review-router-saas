@@ -9,11 +9,9 @@ import {
   NullObservability,
   SystemClock,
   type AgentDriver,
-  type ClockPort,
   type IdGeneratorPort,
   type LeaseStorePort,
   type ProviderSessionDriver,
-  type RefreshedSession,
   type RuntimePolicy,
   type SessionArtifact,
   type SessionEnvelope,
@@ -64,7 +62,6 @@ const bundledCodexPackageName = ["@openai", "codex"].join("/");
 const bundledCodexArchiveName = "codex-linux-x64.tgz";
 const bundledCodexBinaryPathInArchive =
   "package/vendor/x86_64-unknown-linux-musl/codex/codex";
-const maxDiffBytes = 180_000;
 const maxCommentBytes = 60_000;
 const maxCapturedProcessOutputBytes = 256_000;
 const maxProxyRequestBodyBytes = 2_000_000;
@@ -1739,64 +1736,6 @@ function safeEnvKeyLabel(key: string): string {
   return /^[A-Z_][A-Z0-9_]{0,80}$/.test(key) ? key : "<invalid-env-key>";
 }
 
-async function runStaticCodexReview(input: {
-  readonly inputs: ActionInputs;
-  readonly codexBinaryPath: string;
-  readonly env: NodeJS.ProcessEnv;
-  readonly workspace: string;
-  readonly tempHome: string;
-  readonly tempCodexHome: string;
-  readonly event: PullRequestEvent;
-}): Promise<string> {
-  const diff = await runCapture({
-    command: "git",
-    args: [
-      "diff",
-      "--no-ext-diff",
-      "--unified=80",
-      input.event.baseSha,
-      input.event.headSha,
-    ],
-    cwd: input.workspace,
-    env: buildCodexChildEnv(input.env, input.tempHome, input.tempCodexHome),
-    timeoutMs: 60_000,
-  });
-  const reviewOutputFile = join(input.workspace, ".reviewrouter-review.md");
-  const command = buildCodexCommand({
-    codexBinaryPath: input.codexBinaryPath,
-    mode: "review",
-    cwd: input.workspace,
-    outputFile: reviewOutputFile,
-  });
-  try {
-    await runProcess({
-      ...command,
-      stdin: buildReviewPrompt(limitUtf8(diff.stdout, maxDiffBytes)),
-      env: buildReviewCodexChildEnv(
-        input.env,
-        input.tempHome,
-        input.tempCodexHome,
-      ),
-      timeoutMs: 20 * 60 * 1000,
-    });
-  } catch (error) {
-    const partialReview = await readReviewOutputIfPresent(reviewOutputFile);
-    if (partialReview.trim().length > 0) {
-      return partialReview;
-    }
-    throw classifyPostWritebackCodexFailure(error);
-  }
-  return readFile(reviewOutputFile, "utf8");
-}
-
-async function readReviewOutputIfPresent(path: string): Promise<string> {
-  try {
-    return await readFile(path, "utf8");
-  } catch {
-    return "";
-  }
-}
-
 export async function postPullRequestComment(input: {
   readonly fetchImpl: FetchLike;
   readonly token: string;
@@ -1938,26 +1877,6 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
   }
 }
 
-function buildReviewCommentMarker(headSha: string): string {
-  if (!/^[a-f0-9]{40}$/i.test(headSha)) {
-    throw new Error("invalid_review_comment_head_sha");
-  }
-  return `<!-- reviewrouter:codex-oauth-rotating head=${headSha.toLowerCase()} -->`;
-}
-
-function buildReviewPrompt(diff: string): string {
-  return [
-    "You are ReviewRouter running an advisory private-beta Codex OAuth review.",
-    "Review only the diff below. Do not run tests, install packages, modify files, browse the web, or use network tools.",
-    "Return a concise Markdown PR comment with concrete bugs and risks. If there are no issues, say that no blocking issues were found.",
-    "Do not include secrets, tokens, raw auth JSON, or hidden environment values.",
-    "",
-    "```diff",
-    diff,
-    "```",
-  ].join("\n");
-}
-
 function buildCodexChildEnv(
   sourceEnv: NodeJS.ProcessEnv,
   home: string,
@@ -1965,19 +1884,6 @@ function buildCodexChildEnv(
 ): Record<string, string> {
   return {
     ...pruneCodexRotatingChildEnv(sourceEnv),
-    HOME: home,
-    CODEX_HOME: codexHome,
-    CI: "true",
-  };
-}
-
-function buildReviewCodexChildEnv(
-  sourceEnv: NodeJS.ProcessEnv,
-  home: string,
-  codexHome: string,
-): Record<string, string> {
-  return {
-    PATH: sourceEnv.PATH ?? process.env.PATH ?? "",
     HOME: home,
     CODEX_HOME: codexHome,
     CI: "true",
@@ -2186,43 +2092,6 @@ async function removeTree(path: string): Promise<void> {
     force: true,
     maxRetries: 5,
     retryDelay: 250,
-  });
-}
-
-function runCapture(input: {
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly cwd: string;
-  readonly env: Record<string, string>;
-  readonly timeoutMs: number;
-}): Promise<{ readonly stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    const child = spawn(input.command, input.args, {
-      cwd: input.cwd,
-      env: input.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("process_timeout"));
-    }, input.timeoutMs);
-    child.stdout.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-    child.stderr.on("data", () => undefined);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve({ stdout: Buffer.concat(chunks).toString("utf8") });
-      } else {
-        reject(
-          new Error(`process_failed:${input.command}:${code ?? "signal"}`),
-        );
-      }
-    });
   });
 }
 

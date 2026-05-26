@@ -11,7 +11,6 @@ import type {
   ProviderTask,
   ProviderTaskResult,
   RefreshedSession,
-  RunContext,
   RuntimeEvent,
   RuntimeMetric,
   RunnerCapabilities,
