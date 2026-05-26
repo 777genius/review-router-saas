@@ -560,7 +560,7 @@ export function ProviderSecretSetupChooser({
                   );
                 })
                 .catch(() => {
-                  setSubmitError("dashboard_action_failed");
+                  setSubmitError("dashboard_action_stale");
                 });
             });
           }}
@@ -732,6 +732,8 @@ function isRotatingSetupCommandResponse(
 
 function providerSetupSubmitErrorText(error: string): string {
   switch (error) {
+    case "dashboard_action_stale":
+      return "The dashboard was updated while this page was open. Refresh the page, then try again.";
     case "dashboard_action_failed":
       return "The dashboard action failed. Retry once; if it repeats, keep this dialog open and check server logs.";
     case "github_operation_forbidden":

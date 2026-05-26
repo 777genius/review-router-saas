@@ -580,6 +580,8 @@ function openOnce(url: string | undefined): void {
 
 function dashboardErrorText(error: string): string {
   switch (error) {
+    case "dashboard_action_stale":
+      return "The dashboard was updated while this page was open. Refresh the page, then click again.";
     case "setup_pr_not_merged":
       return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
     case "setup_pr_closed":

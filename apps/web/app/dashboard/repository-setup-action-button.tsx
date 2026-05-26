@@ -68,7 +68,7 @@ export function RepositorySetupActionButton({
             })
             .catch(() => {
               const fallbackParams = {
-                error: "dashboard_action_failed",
+                error: "dashboard_action_stale",
                 workspace: workspaceId,
                 section: "repositories",
               };
@@ -173,7 +173,7 @@ export function RepositorySetupMergedButton({
             })
             .catch(() => {
               const fallbackParams = {
-                error: "dashboard_action_failed",
+                error: "dashboard_action_stale",
                 workspace: workspaceId,
                 section: "repositories",
               };
@@ -308,6 +308,8 @@ function setupActionToast(
 
 function setupActionErrorText(error: string): string {
   switch (error) {
+    case "dashboard_action_stale":
+      return "The dashboard was updated while this page was open. Refresh the page, then click again.";
     case "dashboard_action_failed":
       return "The dashboard action failed. Retry once, then inspect server logs if it repeats.";
     case "setup_pr_not_merged":

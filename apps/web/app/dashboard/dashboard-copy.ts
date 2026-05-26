@@ -372,6 +372,8 @@ export function dashboardErrorText(error: string): string {
       return "The submitted form is invalid. Refresh the dashboard and try again.";
     case "dashboard_action_failed":
       return "The dashboard could not complete this action. Refresh and try again.";
+    case "dashboard_action_stale":
+      return "The dashboard was updated while this page was open. Refresh the page, then try again.";
     case "server_misconfigured":
       return "Server setup is incomplete. Check GitHub App credentials and the public ReviewRouter API URL.";
     case "github_operation_forbidden":

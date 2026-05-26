@@ -320,6 +320,39 @@ describe("RepositorySetupProgressPanel", () => {
       ).toBe(true);
     });
   });
+
+  it("shows stale dashboard guidance when a server action id changed after deploy", async () => {
+    vi.mocked(confirmSetupPullRequestMergedClientAction).mockRejectedValueOnce(
+      new Error("Failed to find Server Action"),
+    );
+
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="setup_pr_open"
+        initialSetupPullRequestUrl="https://github.com/777genius/example/pull/1"
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={2}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "I merged it" }));
+
+    await waitFor(() => {
+      expect(
+        hasCustomToastMessage(
+          /dashboard was updated while this page was open/i,
+          "inspect server logs",
+        ),
+      ).toBe(true);
+    });
+  });
 });
 
 function hasCustomToastMessage(expected: RegExp, forbidden: string): boolean {

@@ -489,7 +489,7 @@ export function RepositoryPolicyOverrideDetails({
     await reviewConfigAction.run(
       () => saveRepositoryReviewConfigClientAction(formData),
       {
-        error: "dashboard_action_failed",
+        error: "dashboard_action_stale",
         workspace: workspaceId,
         section: "policy",
       },
@@ -500,7 +500,7 @@ export function RepositoryPolicyOverrideDetails({
     await reviewConfigAction.run(
       () => clearRepositoryReviewConfigClientAction(formData),
       {
-        error: "dashboard_action_failed",
+        error: "dashboard_action_stale",
         workspace: workspaceId,
         section: "policy",
       },
@@ -627,7 +627,7 @@ export function RepositoryPolicyEditor({
     await reviewConfigAction.run(
       () => saveRepositoryReviewConfigClientAction(formData),
       {
-        error: "dashboard_action_failed",
+        error: "dashboard_action_stale",
         workspace: workspaceId,
         section: "repositories",
       },
@@ -638,7 +638,7 @@ export function RepositoryPolicyEditor({
     await reviewConfigAction.run(
       () => clearRepositoryReviewConfigClientAction(formData),
       {
-        error: "dashboard_action_failed",
+        error: "dashboard_action_stale",
         workspace: workspaceId,
         section: "repositories",
       },
@@ -840,6 +840,8 @@ function reviewConfigActionToast(
 
 function reviewConfigActionErrorText(error: string): string {
   switch (error) {
+    case "dashboard_action_stale":
+      return "The dashboard was updated while this page was open. Refresh the page, then try again.";
     case "dashboard_action_failed":
       return "The dashboard could not complete this action. Refresh and try again.";
     case "dashboard_mutation_requires_sign_in":
@@ -896,7 +898,7 @@ export function WorkspaceReviewConfigForm({
     await reviewConfigAction.run(
       () => saveWorkspaceReviewConfigClientAction(formData),
       {
-        error: "dashboard_action_failed",
+        error: "dashboard_action_stale",
         workspace: workspaceId,
         section: "policy",
       },

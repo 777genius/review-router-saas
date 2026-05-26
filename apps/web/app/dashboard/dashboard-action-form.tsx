@@ -204,6 +204,8 @@ function dashboardActionToast(
 
 function dashboardActionErrorText(error: string): string {
   switch (error) {
+    case "dashboard_action_stale":
+      return "The dashboard was updated while this page was open. Refresh the page, then try again.";
     case "dashboard_action_failed":
       return "The dashboard could not complete this action. Refresh and try again.";
     case "dashboard_mutation_requires_sign_in":
