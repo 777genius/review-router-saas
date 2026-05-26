@@ -232,10 +232,23 @@ pnpm ops:sync-action-ref --no-deploy
 pnpm ops:sync-action-ref --allowlist-window 3
 ```
 
+Post-sync production checks:
+
+```bash
+curl -fsS https://api.reviewrouter.site/health
+curl -fsS -o /dev/null -w '%{http_code}\n' https://reviewrouter.site
+pnpm ops:sync-action-ref --dry-run --no-deploy
+```
+
 `REVIEW_ROUTER_ALLOWED_ACTION_REFS` is a rollout safety window, not a channel.
 Every value must be `owner/repo@40-char-sha` and must use the same Action
 repository as `REVIEW_ROUTER_ACTION_REF`. Remove old SHAs by running the command
 again with `--allowlist-window 1` after customer workflows have converged.
+
+If a PR run fails with `action_repository_mismatch` immediately after an Action
+runtime bump, run the sync command before rerunning the PR. The failure means the
+OIDC guard worked: the workflow SHA and the trusted production action refs were
+temporarily out of sync.
 
 ## Rollback
 

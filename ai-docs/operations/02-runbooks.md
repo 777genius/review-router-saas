@@ -157,6 +157,71 @@ Check:
 4. workflow references expected secret names
 5. fork PR warning shown for public repos
 
+## Codex Rotating Action Ref Mismatch
+
+Use this when a GitHub Actions run fails with `action_repository_mismatch`,
+`codex_rotating_workflow_action_ref_mismatch`, or a safe error that says the
+workflow/action repository does not match the selected repository.
+
+Why it happens:
+
+1. Codex OAuth rotating workflows are pinned to a full
+   `777genius/review-router@40-char-sha`.
+2. The SaaS API validates the workflow source at GitHub's `workflow_sha` before
+   issuing checkout, comment, or secret writeback tokens.
+3. During a release, customer workflows can move to a new Action SHA before all
+   Render services have the same trusted SHA in env.
+4. The correct behavior is fail closed. Do not bypass this check with `@main` or
+   `@v1`.
+
+Normal recovery:
+
+```bash
+pnpm ops:sync-action-ref --dry-run --no-deploy
+pnpm ops:sync-action-ref
+```
+
+Expected sync output:
+
+1. `actionRef` is a full `777genius/review-router@40-char-sha`
+2. `allowedActionRefs` contains only full SHA refs
+3. services are exactly `reviewrouter-web`, `reviewrouter-api`, and
+   `reviewrouter-worker`
+4. deploy ids are printed for all three services
+
+Post-sync verification:
+
+```bash
+curl -fsS https://api.reviewrouter.site/health
+curl -fsS -o /dev/null -w '%{http_code}\n' https://reviewrouter.site
+pnpm ops:sync-action-ref --dry-run --no-deploy
+```
+
+The final dry-run should show the same `actionRef` and
+`allowedActionRefs` that are already live. If the failing PR used a newer SHA
+than the dry-run output, rerun the sync with an explicit ref:
+
+```bash
+pnpm ops:sync-action-ref \
+  --action-ref 777genius/review-router@<40-char-sha>
+```
+
+Rollback:
+
+1. If the new Action commit is bad, roll back generated/customer workflows to
+   the previous full SHA or publish a fixed Action commit.
+2. Keep both current and previous SHAs in `REVIEW_ROUTER_ALLOWED_ACTION_REFS`
+   during the transition.
+3. After workflows converge, shrink the window:
+
+```bash
+pnpm ops:sync-action-ref --allowlist-window 1
+```
+
+Do not store provider auth JSON, API keys, PR diffs, prompts, or model output in
+Render env while debugging. The action-ref sync only changes
+`REVIEW_ROUTER_ACTION_REF` and `REVIEW_ROUTER_ALLOWED_ACTION_REFS`.
+
 ## Rotate GitHub App Private Key
 
 Steps:
