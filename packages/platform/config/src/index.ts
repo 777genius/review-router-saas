@@ -22,6 +22,7 @@ export const runtimeEnvSchema = z.object({
   GITHUB_APP_PRIVATE_KEY_FILE: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   REVIEW_ROUTER_ACTION_REF: z.string().optional(),
+  REVIEW_ROUTER_ALLOWED_ACTION_REFS: z.string().default(""),
   REVIEW_ROUTER_ACTION_VERSION: z
     .string()
     .default(DEFAULT_REVIEW_ROUTER_ACTION_VERSION),
@@ -49,6 +50,7 @@ export type RuntimeEnv = z.infer<typeof runtimeEnvSchema>;
 
 type ReviewRouterActionRefEnv = {
   readonly REVIEW_ROUTER_ACTION_REF?: string | undefined;
+  readonly REVIEW_ROUTER_ALLOWED_ACTION_REFS?: string | undefined;
   readonly REVIEW_ROUTER_ACTION_VERSION?: string | undefined;
   readonly [key: string]: string | undefined;
 };
@@ -71,6 +73,35 @@ export function resolveReviewRouterActionRef(
     input.REVIEW_ROUTER_ACTION_VERSION?.trim() ||
     DEFAULT_REVIEW_ROUTER_ACTION_VERSION;
   return `${REVIEW_ROUTER_ACTION_REPOSITORY}@${version}`;
+}
+
+export function resolveReviewRouterTrustedActionRefs(
+  input: ReviewRouterActionRefEnv = process.env,
+): readonly string[] {
+  const primaryRef = resolveReviewRouterActionRef(input);
+  const refs = [
+    ...(isFullShaActionRef(primaryRef) ? [primaryRef] : []),
+    ...parseReviewRouterActionRefList(input.REVIEW_ROUTER_ALLOWED_ACTION_REFS),
+  ];
+  const normalizedRefs = refs.map((ref) =>
+    normalizeFullShaActionRef(ref, "REVIEW_ROUTER_ALLOWED_ACTION_REFS"),
+  );
+  return [...new Set(normalizedRefs)];
+}
+
+export function parseReviewRouterActionRefList(
+  value: string | undefined,
+): readonly string[] {
+  const raw = value?.trim();
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(/[\s,]+/)
+    .map((ref) =>
+      normalizeFullShaActionRef(ref, "REVIEW_ROUTER_ALLOWED_ACTION_REFS"),
+    )
+    .filter((ref) => ref.length > 0);
 }
 
 export function isWorkflowProvisioningEnabled(
@@ -223,4 +254,16 @@ function normalizeRepositoryFullName(
     throw new Error(`invalid_env:${envName}`);
   }
   return normalized;
+}
+
+function normalizeFullShaActionRef(actionRef: string, envName: string): string {
+  const normalized = actionRef.trim().toLowerCase();
+  if (!isFullShaActionRef(normalized)) {
+    throw new Error(`invalid_env:${envName}`);
+  }
+  return normalized;
+}
+
+function isFullShaActionRef(actionRef: string): boolean {
+  return /^[a-z0-9_.-]+\/[a-z0-9_.-]+@[a-f0-9]{40}$/i.test(actionRef.trim());
 }

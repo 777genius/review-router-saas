@@ -79,14 +79,12 @@ export async function preleaseCodexRotatingOAuth(
         workflowPath: binding.workflowPath,
         expectedActionOwnerRepo: binding.actionRef.split("@")[0]!,
         expectedActionRef: binding.actionRef,
+        expectedActionRefs: trustedActionRefsForBinding(binding),
         expectedProviderInstanceId: input.providerInstanceId,
         expectedWorkflowSchemaVersion: input.workflowSchemaVersion,
       },
     );
-  if (
-    normalizeActionRef(verifiedWorkflow.binding.actionRef) !==
-    normalizeActionRef(binding.actionRef)
-  ) {
+  if (!isTrustedActionRef(verifiedWorkflow.binding.actionRef, binding)) {
     throw new Error("codex_rotating_workflow_action_ref_mismatch");
   }
   validateCodexRotatingPrelease({
@@ -127,6 +125,30 @@ export async function preleaseCodexRotatingOAuth(
 
 function normalizeActionRef(actionRef: string): string {
   return actionRef.trim().toLowerCase();
+}
+
+function trustedActionRefsForBinding(input: {
+  readonly actionRef: string;
+  readonly allowedActionRefs?: readonly string[] | undefined;
+}): readonly string[] {
+  return [
+    ...new Set(
+      [input.actionRef, ...(input.allowedActionRefs ?? [])].map((actionRef) =>
+        normalizeActionRef(actionRef),
+      ),
+    ),
+  ];
+}
+
+function isTrustedActionRef(
+  actionRef: string,
+  binding: {
+    readonly actionRef: string;
+    readonly allowedActionRefs?: readonly string[] | undefined;
+  },
+): boolean {
+  const trusted = new Set(trustedActionRefsForBinding(binding));
+  return trusted.has(normalizeActionRef(actionRef));
 }
 
 async function consumeCodexRotatingOidcReplayNonce(input: {

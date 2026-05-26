@@ -261,6 +261,60 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     ).rejects.toThrow("codex_rotating_workflow_action_ref_mismatch");
   });
 
+  it("accepts rotating workflow source pinned to a trusted rollout action SHA", async () => {
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef:
+        "777genius/review-router@2222222222222222222222222222222222222222",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+    });
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_contents_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { contents: "read" },
+    });
+    mocks.request.mockResolvedValueOnce({
+      data: {
+        type: "file",
+        encoding: "base64",
+        content: Buffer.from(workflow, "utf8").toString("base64"),
+      },
+    });
+
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.verifyWorkflowSource({
+        repository: {
+          githubInstallationId: "129500385",
+          githubRepositoryId: "123456",
+          fullName: "777genius/example",
+          owner: "777genius",
+        },
+        workflowSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        expectedActionOwnerRepo: "777genius/review-router",
+        expectedActionRef:
+          "777genius/review-router@1111111111111111111111111111111111111111",
+        expectedActionRefs: [
+          "777genius/review-router@1111111111111111111111111111111111111111",
+          "777genius/review-router@2222222222222222222222222222222222222222",
+        ],
+        expectedProviderInstanceId: "codex-rotating:123456",
+        expectedWorkflowSchemaVersion: 1,
+      }),
+    ).resolves.toMatchObject({
+      binding: {
+        providerInstanceId: "codex-rotating:123456",
+        actionRef:
+          "777genius/review-router@2222222222222222222222222222222222222222",
+      },
+    });
+  });
+
   it("rejects non-numeric GitHub repository ids before token minting", async () => {
     const gateway = new OctokitCodexRotatingGitHubSecretGateway({
       appId: "123",

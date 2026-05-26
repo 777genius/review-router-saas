@@ -12,9 +12,11 @@ import {
   loadRuntimeEnv,
   parseCodexRotatingOAuthRepositoryAllowlist,
   parseConflictReviewFallbackRepositoryAllowlist,
+  parseReviewRouterActionRefList,
   readGitHubAppPrivateKey,
   requireGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
+  resolveReviewRouterTrustedActionRefs,
 } from "./index";
 
 describe("platform config", () => {
@@ -37,6 +39,31 @@ describe("platform config", () => {
         REVIEW_ROUTER_ACTION_VERSION: "v1.0.4",
       }),
     ).toBe("777genius/review-router@feature/test");
+  });
+
+  it("builds a unique full-SHA trusted action ref rollout window", () => {
+    expect(
+      resolveReviewRouterTrustedActionRefs({
+        REVIEW_ROUTER_ACTION_REF:
+          "777genius/review-router@AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        REVIEW_ROUTER_ALLOWED_ACTION_REFS:
+          "777genius/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, 777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ).toEqual([
+      "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "777genius/review-router@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ]);
+  });
+
+  it("does not trust non-SHA channel refs for Codex OIDC allowlists", () => {
+    expect(
+      resolveReviewRouterTrustedActionRefs({
+        REVIEW_ROUTER_ACTION_REF: "777genius/review-router@v1",
+      }),
+    ).toEqual([]);
+    expect(() =>
+      parseReviewRouterActionRefList("777genius/review-router@main"),
+    ).toThrow("invalid_env:REVIEW_ROUTER_ALLOWED_ACTION_REFS");
   });
 
   it("keeps runtime env default aligned with the resolver", () => {

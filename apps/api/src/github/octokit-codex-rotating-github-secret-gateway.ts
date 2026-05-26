@@ -157,6 +157,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
     readonly workflowPath: string;
     readonly expectedActionOwnerRepo: string;
     readonly expectedActionRef: string;
+    readonly expectedActionRefs?: readonly string[] | undefined;
     readonly expectedProviderInstanceId: string;
     readonly expectedWorkflowSchemaVersion: number;
   }) {
@@ -185,9 +186,13 @@ export class OctokitCodexRotatingGitHubSecretGateway
     ) {
       throw new Error("codex_rotating_workflow_action_ref_not_allowed");
     }
-    if (
-      metadata.actionRef.toLowerCase() !== input.expectedActionRef.toLowerCase()
-    ) {
+    const expectedActionRefs = new Set(
+      (input.expectedActionRefs?.length
+        ? input.expectedActionRefs
+        : [input.expectedActionRef]
+      ).map((actionRef) => actionRef.trim().toLowerCase()),
+    );
+    if (!expectedActionRefs.has(metadata.actionRef.trim().toLowerCase())) {
       throw new Error("codex_rotating_workflow_action_ref_mismatch");
     }
     if (metadata.providerInstanceId !== input.expectedProviderInstanceId) {

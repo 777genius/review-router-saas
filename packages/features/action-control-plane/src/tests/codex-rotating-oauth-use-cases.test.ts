@@ -143,6 +143,7 @@ describe("Codex rotating OAuth action control plane", () => {
       expect.objectContaining({
         expectedActionOwnerRepo: "777genius/review-router",
         expectedActionRef: `777genius/review-router@${workflowSha}`,
+        expectedActionRefs: [`777genius/review-router@${workflowSha}`],
         expectedProviderInstanceId: "codex-rotating:123456",
         expectedWorkflowSchemaVersion: 1,
       }),
@@ -245,6 +246,75 @@ describe("Codex rotating OAuth action control plane", () => {
         dependencies,
       ),
     ).rejects.toThrow();
+  });
+
+  it("accepts a trusted rollout action SHA while keeping the primary workflow pin strict", async () => {
+    const previousActionRef =
+      "777genius/review-router@1111111111111111111111111111111111111111";
+    const currentActionRef = `777genius/review-router@${workflowSha}`;
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: "777genius/agent-teams-ai",
+        githubRepositoryId: "123456",
+        actionRef: currentActionRef,
+        allowedActionRefs: [currentActionRef, previousActionRef],
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const dependencies = {
+      oidcVerifier: {
+        verify: vi.fn().mockResolvedValue(claims),
+      },
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn(),
+        recordHealthReport: vi.fn(),
+      },
+      codexRotatingOAuth,
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn().mockResolvedValue({
+          binding: {
+            providerInstanceId: "codex-rotating:123456",
+            repositoryFullName: "777genius/agent-teams-ai",
+            githubRepositoryId: "123456",
+            actionRef: previousActionRef,
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            workflowSchemaVersion: 1,
+          },
+          workflowSourceSha256:
+            "workflow-source-sha256-012345678901234567890123456789",
+        }),
+      },
+      replayNonces: {
+        tryConsumeNonce: vi.fn().mockResolvedValue(true),
+      },
+      clock: { now: () => now },
+    };
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({
+      providerInstanceId: "codex-rotating:123456",
+      repository: "777genius/agent-teams-ai",
+    });
+    expect(
+      dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedActionRef: currentActionRef,
+        expectedActionRefs: [currentActionRef, previousActionRef],
+      }),
+    );
   });
 
   it("blocks rotating prelease when the production gate denies the repository", async () => {

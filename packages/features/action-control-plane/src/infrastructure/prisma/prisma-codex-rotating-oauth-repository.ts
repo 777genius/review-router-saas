@@ -35,6 +35,7 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
     private readonly prisma: PrismaClient,
     private readonly options: {
       readonly actionRef?: string;
+      readonly allowedActionRefs?: readonly string[] | undefined;
       readonly actionOwnerRepo: string;
       readonly workflowPath?: string;
     },
@@ -71,6 +72,9 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
       actionRef:
         this.options.actionRef ??
         `${this.options.actionOwnerRepo}@${input.workflowSha}`,
+      ...(this.options.allowedActionRefs?.length
+        ? { allowedActionRefs: this.options.allowedActionRefs }
+        : {}),
       workflowPath:
         this.options.workflowPath ?? ".github/workflows/reviewrouter-codex.yml",
       workflowSchemaVersion: codexRotatingWorkflowSchemaVersion,

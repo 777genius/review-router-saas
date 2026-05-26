@@ -533,6 +533,7 @@ export type CodexRotatingProviderBinding = {
   readonly repositoryFullName: string;
   readonly githubRepositoryId: string;
   readonly actionRef: string;
+  readonly allowedActionRefs?: readonly string[] | undefined;
   readonly workflowPath: string;
   readonly workflowSchemaVersion: number;
 };

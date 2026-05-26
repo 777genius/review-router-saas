@@ -54,6 +54,7 @@ import {
   isCodexRotatingOAuthAllowedForRepository,
   readGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
+  resolveReviewRouterTrustedActionRefs,
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
@@ -219,6 +220,7 @@ export async function createApiApp(
             replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
             codexRotatingOAuth: new PrismaCodexRotatingOAuthRepository(prisma, {
               actionRef: resolveReviewRouterActionRef(),
+              allowedActionRefs: resolveReviewRouterTrustedActionRefs(),
               actionOwnerRepo: resolveActionOwnerRepo(
                 process.env.REVIEW_ROUTER_ACTION_REF,
               ),

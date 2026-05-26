@@ -210,6 +210,24 @@ function requireFullShaActionRef() {
       "REVIEW_ROUTER_ACTION_REF must be pinned to a full 40-character commit SHA in hosted production.",
     );
   }
+  const expectedOwnerRepo = explicitRef.split("@", 1)[0]?.toLowerCase();
+  const allowedRefs = read("REVIEW_ROUTER_ALLOWED_ACTION_REFS");
+  if (!allowedRefs) {
+    return;
+  }
+  for (const actionRef of allowedRefs.split(/[\s,]+/).filter(Boolean)) {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(actionRef)) {
+      errors.push(
+        "REVIEW_ROUTER_ALLOWED_ACTION_REFS must contain only full 40-character commit SHA action refs.",
+      );
+      continue;
+    }
+    if (actionRef.split("@", 1)[0]?.toLowerCase() !== expectedOwnerRepo) {
+      errors.push(
+        "REVIEW_ROUTER_ALLOWED_ACTION_REFS must use the same action repository as REVIEW_ROUTER_ACTION_REF.",
+      );
+    }
+  }
 }
 
 function read(name) {

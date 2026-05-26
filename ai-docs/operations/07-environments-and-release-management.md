@@ -201,6 +201,42 @@ has passed CI and after the relevant runtime release is validated. Check Render
 logs after deploy for startup errors, webhook errors, and action session/config
 errors.
 
+## Production Action Ref Sync
+
+Codex OAuth rotating workflows are pinned to a full Action commit SHA, and the
+SaaS control plane validates that exact ref during GitHub OIDC prelease. This is
+intentional: a workflow that silently switches to an untrusted Action commit
+must fail closed instead of receiving checkout/comment/writeback tokens.
+
+Use the sync command after pushing a new `777genius/review-router` Action commit:
+
+```bash
+pnpm ops:sync-action-ref
+```
+
+By default, the command:
+
+- resolves `777genius/review-router@refs/heads/main` to a 40-character SHA
+- updates `REVIEW_ROUTER_ACTION_REF` on `reviewrouter-web`,
+  `reviewrouter-api`, and `reviewrouter-worker`
+- writes `REVIEW_ROUTER_ALLOWED_ACTION_REFS` as a short rolling window that
+  includes the new SHA and the previous SHA
+- triggers Render deploys for the three services
+
+Useful variants:
+
+```bash
+pnpm ops:sync-action-ref --dry-run
+pnpm ops:sync-action-ref --action-ref 777genius/review-router@<40-char-sha>
+pnpm ops:sync-action-ref --no-deploy
+pnpm ops:sync-action-ref --allowlist-window 3
+```
+
+`REVIEW_ROUTER_ALLOWED_ACTION_REFS` is a rollout safety window, not a channel.
+Every value must be `owner/repo@40-char-sha` and must use the same Action
+repository as `REVIEW_ROUTER_ACTION_REF`. Remove old SHAs by running the command
+again with `--allowlist-window 1` after customer workflows have converged.
+
 ## Rollback
 
 Rollback options, safest first:
@@ -261,6 +297,7 @@ Critical flags:
 
 ```text
 REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE
+REVIEW_ROUTER_ALLOWED_ACTION_REFS
 REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS
 REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING
@@ -274,3 +311,6 @@ Flags must fail closed for security-sensitive features.
 blocklist for known-bad installed Action versions, for example
 `v1.0.0,main-bad-sha`. It should be used as an emergency stopgap and followed
 by a fixed release or workflow update PR.
+
+`REVIEW_ROUTER_ALLOWED_ACTION_REFS` is a comma-separated full-SHA allowlist used
+only for trusted rollout overlap during pinned Codex OAuth rotating releases.
