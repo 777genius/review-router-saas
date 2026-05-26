@@ -1611,6 +1611,10 @@ function classifyCodexBootstrapFailure(error: unknown): Error {
 
 function classifyPostWritebackCodexFailure(error: unknown): Error {
   const output = getProcessFailureOutput(error);
+  const reviewFailure = extractReviewRouterRuntimeFailure(output);
+  if (reviewFailure) {
+    return new Error(reviewFailure);
+  }
   const state = classifyCodexRuntimeFailure(output);
   if (state === "quota_limited") {
     return new Error("quota_limited");
@@ -1618,6 +1622,11 @@ function classifyPostWritebackCodexFailure(error: unknown): Error {
   return new Error(
     `unknown_auth_state:${sanitizeProcessFailureOutput(output)}`,
   );
+}
+
+function extractReviewRouterRuntimeFailure(output: string): string | undefined {
+  const match = output.match(/ReviewRouter found [^\r\n]+/);
+  return match?.[0]?.trim();
 }
 
 function getProcessFailureOutput(error: unknown): string {

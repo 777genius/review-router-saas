@@ -19250,6 +19250,10 @@ function classifyCodexBootstrapFailure(error51) {
 }
 function classifyPostWritebackCodexFailure(error51) {
   const output = getProcessFailureOutput(error51);
+  const reviewFailure = extractReviewRouterRuntimeFailure(output);
+  if (reviewFailure) {
+    return new Error(reviewFailure);
+  }
   const state = classifyCodexRuntimeFailure(output);
   if (state === "quota_limited") {
     return new Error("quota_limited");
@@ -19257,6 +19261,10 @@ function classifyPostWritebackCodexFailure(error51) {
   return new Error(
     `unknown_auth_state:${sanitizeProcessFailureOutput(output)}`
   );
+}
+function extractReviewRouterRuntimeFailure(output) {
+  const match = output.match(/ReviewRouter found [^\r\n]+/);
+  return match?.[0]?.trim();
 }
 function getProcessFailureOutput(error51) {
   if (error51 instanceof ProcessExecutionError) {
