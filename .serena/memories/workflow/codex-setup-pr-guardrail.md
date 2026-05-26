@@ -1,0 +1,3 @@
+# Codex setup PR guardrail
+
+For production Codex subscription reviews, never accept a setup PR that creates `.github/workflows/reviewrouter.yml` with `REVIEW_AUTH_MODE: codex-oauth`, `CODEX_AUTH_JSON`, or the old `reviewrouter-reusable.yml` entrypoint. Production Codex must use `.github/workflows/reviewrouter-codex.yml`, `mode: codex-oauth-rotating`, `auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}`, and a full-SHA `777genius/review-router@<40-char-sha>` action ref. If a legacy setup PR appears, close or regenerate it after reconnecting Codex rotating; do not merge it.

@@ -495,6 +495,11 @@ async function createSetupPullRequestMutation(
       workspaceId,
       repositoryId,
     });
+    assertCodexProductionReviewConfigAllowed(resolvedRuntime.config);
+    assertCodexRotatingReviewConfigAllowed({
+      config: resolvedRuntime.config,
+      repository,
+    });
     const workflowProviderKind = workflowReadinessProviderKind(
       resolvedRuntime.config,
     );
@@ -689,6 +694,13 @@ async function confirmSetupPullRequestMergedMutation(
       resolvedRuntime === null
         ? undefined
         : workflowReadinessProviderKind(resolvedRuntime.config);
+    if (resolvedRuntime !== null) {
+      assertCodexProductionReviewConfigAllowed(resolvedRuntime.config);
+      assertCodexRotatingReviewConfigAllowed({
+        config: resolvedRuntime.config,
+        repository,
+      });
+    }
     const codexRotatingProviderInstanceId =
       resolvedRuntime === null
         ? undefined

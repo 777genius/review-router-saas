@@ -60,6 +60,14 @@ export async function provisionReviewRouterWorkflow(
   }
 
   try {
+    const staticRuntimeEnv =
+      plan.staticRuntimeEnv ??
+      mapConfigToRuntimeEnv(safeDefaultReviewConfiguration);
+    assertProductionCodexWorkflowProvisioningAllowed({
+      codexRotatingProviderInstanceId: plan.codexRotatingProviderInstanceId,
+      staticRuntimeEnv,
+    });
+
     const workflowFiles = renderReviewRouterWorkflowFiles({
       actionRef: plan.actionRef,
       apiUrl: plan.apiUrl,
@@ -73,9 +81,7 @@ export async function provisionReviewRouterWorkflow(
               plan.codexRotatingProviderInstanceId,
           }
         : {}),
-      staticRuntimeEnv:
-        plan.staticRuntimeEnv ??
-        mapConfigToRuntimeEnv(safeDefaultReviewConfiguration),
+      staticRuntimeEnv,
     });
 
     const pullRequest =
@@ -157,6 +163,25 @@ export async function provisionReviewRouterWorkflow(
   }
 }
 
+function assertProductionCodexWorkflowProvisioningAllowed(input: {
+  readonly codexRotatingProviderInstanceId?: string | undefined;
+  readonly staticRuntimeEnv: Readonly<Record<string, string>>;
+}): void {
+  const authMode = input.staticRuntimeEnv.REVIEW_AUTH_MODE;
+  if (authMode === "codex-oauth") {
+    throw new Error("codex_legacy_auth_requires_reconnect");
+  }
+  if (authMode === "openai-api") {
+    throw new Error("codex_api_key_setup_disabled");
+  }
+  if (
+    authMode === "codex-oauth-rotating" &&
+    !input.codexRotatingProviderInstanceId
+  ) {
+    throw new Error("codex_rotating_provider_instance_required");
+  }
+}
+
 function safeWorkflowProvisioningErrorSummary(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (
@@ -170,6 +195,9 @@ function safeWorkflowProvisioningErrorSummary(error: unknown): string {
       "invalid_workflow_env_value",
       "workflow_provisioning_disabled",
       "conflict_review_explicit_workflow_unsupported",
+      "codex_legacy_auth_requires_reconnect",
+      "codex_api_key_setup_disabled",
+      "codex_rotating_provider_instance_required",
       "codex_rotating_action_ref_must_be_full_sha",
       "codex_rotating_conflict_review_unsupported",
     ].includes(message)

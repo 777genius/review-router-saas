@@ -157,6 +157,31 @@ Check:
 4. workflow references expected secret names
 5. fork PR warning shown for public repos
 
+## Wrong Codex Setup PR Generated
+
+Use this when a setup PR for a Codex repository creates
+`.github/workflows/reviewrouter.yml` or references `CODEX_AUTH_JSON`.
+
+Production Codex must always use the rotating workflow:
+
+1. `.github/workflows/reviewrouter-codex.yml`
+2. `mode: codex-oauth-rotating`
+3. `auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}`
+4. full-SHA action ref: `777genius/review-router@<40-char-sha>`
+
+Do not merge a Codex setup PR that uses `REVIEW_AUTH_MODE=codex-oauth`,
+`CODEX_AUTH_JSON`, `OPENAI_API_KEY`, `reviewrouter-reusable.yml`, or
+`.github/workflows/reviewrouter.yml`. That is the legacy path and must be
+regenerated after reconnecting the repository with Codex OAuth rotating.
+
+Expected recovery:
+
+1. close the bad setup PR or replace its branch with the rotating workflow
+2. confirm repository config uses provider auth mode
+   `codex_subscription_oauth_rotating`
+3. rerun setup from the dashboard
+4. run the local/prod smoke against the affected repo
+
 ## Codex Rotating Action Ref Mismatch
 
 Use this when a GitHub Actions run fails with `action_repository_mismatch`,

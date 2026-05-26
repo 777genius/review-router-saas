@@ -80,7 +80,7 @@ const activeTarget = {
 } satisfies WorkflowProvisioningTarget;
 
 describe("provisionReviewRouterWorkflow", () => {
-  it("renders workflow and records setup PR state", async () => {
+  it("renders non-Codex workflow and records setup PR state", async () => {
     const gateway = new CapturingSetupGateway();
     const provisioning = new CapturingProvisioningRepository();
     const auditLog = new CapturingAuditLog();
@@ -96,9 +96,10 @@ describe("provisionReviewRouterWorkflow", () => {
         apiUrl: "https://app.reviewrouter.dev",
         runtimeConfigMode: "oidc",
         staticRuntimeEnv: {
-          CODEX_MODEL: "gpt-5.4-mini",
           FAIL_ON_SEVERITY: "major",
-          REVIEW_AUTH_MODE: "codex-oauth",
+          REVIEW_AUTH_MODE: "openrouter-api",
+          REVIEW_PROVIDERS: "openrouter/openai/gpt-5.3-codex",
+          SYNTHESIS_MODEL: "openrouter/openai/gpt-5.3-codex",
         },
       },
       { setupGateway: gateway, provisioning, auditLog },
@@ -142,7 +143,7 @@ describe("provisionReviewRouterWorkflow", () => {
       files.get(".github/workflows/reviewrouter-interaction.yml"),
     ).toContain("types: [created, edited]");
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
-      '"CODEX_MODEL": "gpt-5.4-mini"',
+      '"REVIEW_AUTH_MODE": "openrouter-api"',
     );
     expect(files.get(".github/workflows/reviewrouter.yml")).toContain(
       '"FAIL_ON_SEVERITY": "major"',
@@ -158,6 +159,100 @@ describe("provisionReviewRouterWorkflow", () => {
         action: "workflow.setup_pr_opened",
         targetId: "repo-1",
       }),
+    );
+  });
+
+  it("rejects legacy Codex setup PR provisioning", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+    const auditLog = new CapturingAuditLog();
+
+    await expect(
+      provisionReviewRouterWorkflow(
+        {
+          workspaceId: "workspace-1",
+          repositoryId: "repo-1",
+          owner: "777genius",
+          name: "example",
+          defaultBranch: "main",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+          staticRuntimeEnv: {
+            CODEX_MODEL: "gpt-5.4-mini",
+            REVIEW_AUTH_MODE: "codex-oauth",
+          },
+        },
+        { setupGateway: gateway, provisioning, auditLog },
+      ),
+    ).rejects.toThrow("codex_legacy_auth_requires_reconnect");
+
+    expect(gateway.input).toBeNull();
+    expect(provisioning.failed?.errorMessage).toBe(
+      "codex_legacy_auth_requires_reconnect",
+    );
+    expect(auditLog.events[0]?.metadata).toMatchObject({
+      errorSummary: "codex_legacy_auth_requires_reconnect",
+    });
+  });
+
+  it("rejects Codex API-key setup PR provisioning", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+
+    await expect(
+      provisionReviewRouterWorkflow(
+        {
+          workspaceId: "workspace-1",
+          repositoryId: "repo-1",
+          owner: "777genius",
+          name: "example",
+          defaultBranch: "main",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+          staticRuntimeEnv: {
+            CODEX_MODEL: "gpt-5.4-mini",
+            REVIEW_AUTH_MODE: "openai-api",
+          },
+        },
+        { setupGateway: gateway, provisioning },
+      ),
+    ).rejects.toThrow("codex_api_key_setup_disabled");
+
+    expect(gateway.input).toBeNull();
+    expect(provisioning.failed?.errorMessage).toBe(
+      "codex_api_key_setup_disabled",
+    );
+  });
+
+  it("rejects rotating Codex setup PR provisioning without provider instance id", async () => {
+    const gateway = new CapturingSetupGateway();
+    const provisioning = new CapturingProvisioningRepository();
+
+    await expect(
+      provisionReviewRouterWorkflow(
+        {
+          workspaceId: "workspace-1",
+          repositoryId: "repo-1",
+          owner: "777genius",
+          name: "example",
+          defaultBranch: "main",
+          actionRef: "777genius/review-router@v1",
+          apiUrl: "https://app.reviewrouter.dev",
+          runtimeConfigMode: "oidc",
+          staticRuntimeEnv: {
+            CODEX_MODEL: "gpt-5.5",
+            REVIEW_AUTH_MODE: "codex-oauth-rotating",
+          },
+        },
+        { setupGateway: gateway, provisioning },
+      ),
+    ).rejects.toThrow("codex_rotating_provider_instance_required");
+
+    expect(gateway.input).toBeNull();
+    expect(provisioning.failed?.errorMessage).toBe(
+      "codex_rotating_provider_instance_required",
     );
   });
 
@@ -207,6 +302,11 @@ describe("provisionReviewRouterWorkflow", () => {
         apiUrl: "https://app.reviewrouter.dev",
         runtimeConfigMode: "oidc",
         conflictReviewFallbackEnabled: true,
+        staticRuntimeEnv: {
+          REVIEW_AUTH_MODE: "openrouter-api",
+          REVIEW_PROVIDERS: "openrouter/openai/gpt-5.3-codex",
+          SYNTHESIS_MODEL: "openrouter/openai/gpt-5.3-codex",
+        },
       },
       { setupGateway: gateway, provisioning },
     );
@@ -379,6 +479,11 @@ describe("provisionReviewRouterWorkflow", () => {
           actionRef: "777genius/review-router@v1",
           apiUrl: "https://app.reviewrouter.dev",
           runtimeConfigMode: "oidc",
+          staticRuntimeEnv: {
+            REVIEW_AUTH_MODE: "openrouter-api",
+            REVIEW_PROVIDERS: "openrouter/openai/gpt-5.3-codex",
+            SYNTHESIS_MODEL: "openrouter/openai/gpt-5.3-codex",
+          },
         },
         { setupGateway: gateway, provisioning, auditLog },
       ),
