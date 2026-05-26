@@ -51,7 +51,9 @@ describe("ProviderSecretSetupChooser", () => {
     fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
 
     expect(
-      await screen.findByText(/The dashboard action failed/i),
+      await screen.findByText(
+        /dashboard was updated while this page was open/i,
+      ),
     ).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "I ran this script" }),
