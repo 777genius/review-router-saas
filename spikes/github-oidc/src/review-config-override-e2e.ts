@@ -98,12 +98,17 @@ try {
   const configurations = new PrismaReviewConfigurationRepository(prisma);
   const workspaceProvider = {
     ...safeDefaultReviewConfiguration.provider,
-    model: "gpt-5.4",
+    kind: "openrouter" as const,
+    authMode: "openrouter_api_key" as const,
+    model: "poolside/laguna-m.1:free",
+    reasoningEffort: "medium" as const,
   };
   const repositoryProviders = [
     {
       ...safeDefaultReviewConfiguration.provider,
-      model: "gpt-5.4-mini",
+      kind: "openrouter" as const,
+      authMode: "openrouter_api_key" as const,
+      model: "openai/gpt-5.3-codex",
       reasoningEffort: "high" as const,
     },
     {
@@ -191,11 +196,12 @@ try {
 
   const overrideConfig = await fetchRuntimeConfig(app, "repo-override-token");
   assertConfig(overrideConfig, {
-    model: "gpt-5.4-mini",
+    model: "openai/gpt-5.3-codex",
     reasoningEffort: "high",
     failOnSeverity: "major",
     version: repositoryConfig.version,
-    runtimeProviders: "codex/gpt-5.4-mini,openrouter/poolside/laguna-m.1:free",
+    runtimeProviders:
+      "openrouter/openai/gpt-5.3-codex,openrouter/poolside/laguna-m.1:free",
     providerMaxParallel: "2",
     inlineMinAgreement: "2",
   });
@@ -217,11 +223,11 @@ try {
     "workspace-fallback-token",
   );
   assertConfig(fallbackConfig, {
-    model: "gpt-5.4",
+    model: "poolside/laguna-m.1:free",
     reasoningEffort: "medium",
     failOnSeverity: "critical",
     version: workspaceConfig.version,
-    runtimeProviders: "codex/gpt-5.4",
+    runtimeProviders: "openrouter/poolside/laguna-m.1:free",
     providerMaxParallel: "1",
     inlineMinAgreement: "1",
   });
@@ -336,9 +342,15 @@ function assertConfig(
       `expected failOnSeverity ${expected.failOnSeverity}, got ${actual.blockingPolicy.failOnSeverity}`,
     );
   }
-  if (actual.runtimeEnv.CODEX_MODEL !== expected.model) {
+  const expectedSynthesisModel = expected.runtimeProviders.split(",")[0];
+  if (actual.runtimeEnv.SYNTHESIS_MODEL !== expectedSynthesisModel) {
     throw new Error(
-      `expected runtime CODEX_MODEL ${expected.model}, got ${actual.runtimeEnv.CODEX_MODEL}`,
+      `expected SYNTHESIS_MODEL ${expectedSynthesisModel}, got ${actual.runtimeEnv.SYNTHESIS_MODEL}`,
+    );
+  }
+  if (actual.runtimeEnv.CODEX_MODEL) {
+    throw new Error(
+      `expected no CODEX_MODEL, got ${actual.runtimeEnv.CODEX_MODEL}`,
     );
   }
   if (actual.runtimeEnv.REVIEW_PROVIDERS !== expected.runtimeProviders) {
