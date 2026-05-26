@@ -18349,6 +18349,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
             inputs,
             codexBinaryPath,
             env,
+            io,
             workspace,
             tempHome: reviewHome,
             tempCodexHome,
@@ -18997,6 +18998,7 @@ async function runFullReviewRouterRuntime(input) {
         runtimeConfigVersion: input.runtimeConfigVersion,
         runtimeEnv: input.runtimeEnv
       }),
+      streamOutput: input.io,
       timeoutMs: 30 * 60 * 1e3
     });
   } catch (error51) {
@@ -19019,6 +19021,8 @@ function buildFullReviewRuntimeEnv(input) {
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
+    CODEX_AGENTIC_AUDIT: runtimeEnv.CODEX_AGENTIC_AUDIT ?? "strict",
+    FAIL_ON_NO_HEALTHY_PROVIDERS: runtimeEnv.FAIL_ON_NO_HEALTHY_PROVIDERS ?? "true",
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
     REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
@@ -19185,6 +19189,7 @@ function runProcess(input) {
       reject(new Error("process_timeout"));
     }, input.timeoutMs);
     child.stdout.on("data", (chunk) => {
+      writeProcessLogChunk(input.streamOutput?.stdout, chunk);
       outputBytes = appendCapturedChunk(
         outputChunks,
         outputBytes,
@@ -19192,6 +19197,7 @@ function runProcess(input) {
       );
     });
     child.stderr.on("data", (chunk) => {
+      writeProcessLogChunk(input.streamOutput?.stderr, chunk);
       outputBytes = appendCapturedChunk(
         outputChunks,
         outputBytes,
@@ -19217,6 +19223,11 @@ function runProcess(input) {
     });
     child.stdin.end(input.stdin ?? "");
   });
+}
+function writeProcessLogChunk(stream, chunk) {
+  if (!stream) return;
+  const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+  stream.write(sanitizeProcessLogChunk(text));
 }
 function appendCapturedChunk(chunks, currentBytes, chunk) {
   const remaining = maxCapturedProcessOutputBytes - currentBytes;
@@ -19260,11 +19271,17 @@ function getProcessFailureOutput(error51) {
   return String(error51);
 }
 function sanitizeProcessFailureOutput(output) {
-  const sanitized = output.replace(
+  const sanitized = output.replace(/auth\.json["'\s:=]+[^\s"'`]+/gi, "auth.json: [redacted]").replace(
     /\b(refresh_token|access_token|id_token)\b["'\s:=]+[A-Za-z0-9._~+/=-]+/gi,
     "$1: [redacted]"
   ).replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]").replace(/[A-Za-z0-9._~+/=-]{80,}/g, "[redacted]").replace(/\s+/g, " ").trim();
   return sanitized ? limitUtf8Tail(sanitized, 1e3) : "empty_process_output";
+}
+function sanitizeProcessLogChunk(output) {
+  return output.replace(/auth\.json["'\s:=]+[^\s"'`]+/gi, "auth.json: [redacted]").replace(
+    /\b(refresh_token|access_token|id_token)\b["'\s:=]+[A-Za-z0-9._~+/=-]+/gi,
+    "$1: [redacted]"
+  ).replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]").replace(/[A-Za-z0-9._~+/=-]{120,}/g, "[redacted]");
 }
 async function removeTree(path) {
   await (0, import_promises.rm)(path, {

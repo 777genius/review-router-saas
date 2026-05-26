@@ -704,11 +704,16 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  githubToken: process.env.GITHUB_TOKEN,",
         "  prNumber: process.env.PR_NUMBER,",
         "  reviewAuthMode: process.env.REVIEW_AUTH_MODE,",
+        "  codexAgenticAudit: process.env.CODEX_AGENTIC_AUDIT,",
+        "  failOnNoHealthyProviders: process.env.FAIL_ON_NO_HEALTHY_PROVIDERS,",
         "  providers: process.env.REVIEW_PROVIDERS,",
         "  runtimeMode: process.env.REVIEWROUTER_RUNTIME_CONFIG_MODE,",
         "  commentTokenMode: process.env.REVIEWROUTER_COMMENT_TOKEN_MODE,",
         "  runtimeConfigVersion: process.env.REVIEWROUTER_CONFIG_VERSION,",
         "}));",
+        "process.stdout.write('runtime marker visible\\n');",
+        "process.stdout.write('refresh_token: refreshed-refresh-token access_token=refreshed-access-token Bearer ghs_comment_token auth.json=/tmp/private/auth.json\\n');",
+        "process.stderr.write('runtime stderr marker Bearer refreshed-access-token\\n');",
         "",
       ].join("\n"),
       { mode: 0o700 },
@@ -802,6 +807,8 @@ describe("Codex rotating GitHub Action runtime", () => {
       }
       throw new Error(`unexpected_fetch:${href}`);
     }) as unknown as typeof fetch;
+    const stdoutWrite = vi.fn();
+    const stderrWrite = vi.fn();
 
     try {
       await runCodexRotatingGitHubAction({
@@ -838,8 +845,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         },
         fetchImpl,
         io: {
-          stdout: { write: vi.fn() },
-          stderr: { write: vi.fn() },
+          stdout: { write: stdoutWrite },
+          stderr: { write: stderrWrite },
         },
       });
 
@@ -869,6 +876,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         githubToken: "ghs_comment_token",
         prNumber: "118",
         reviewAuthMode: "codex-oauth",
+        codexAgenticAudit: "strict",
+        failOnNoHealthyProviders: "true",
         providers: "codex/gpt-5.5",
         runtimeMode: "static",
         commentTokenMode: "github-token",
@@ -876,6 +885,22 @@ describe("Codex rotating GitHub Action runtime", () => {
       });
       expect(reviewEnv.inheritedOpenAi).toBeUndefined();
       expect(reviewEnv.inheritedOidc).toBeUndefined();
+      const childStdout = stdoutWrite.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("");
+      const childStderr = stderrWrite.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("");
+      const runtimeStdout = childStdout.slice(
+        childStdout.indexOf("runtime marker visible"),
+      );
+      expect(runtimeStdout).toContain("runtime marker visible");
+      expect(childStderr).toContain("runtime stderr marker");
+      expect(runtimeStdout).not.toContain("refreshed-refresh-token");
+      expect(runtimeStdout).not.toContain("refreshed-access-token");
+      expect(childStderr).not.toContain("refreshed-access-token");
+      expect(runtimeStdout).not.toContain("ghs_comment_token");
+      expect(runtimeStdout).not.toContain("/tmp/private/auth.json");
       const gitEnvEntries = readFileSync(gitEnvLog, "utf8")
         .trim()
         .split("\n")
