@@ -16,6 +16,7 @@ import {
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
+  shouldSuppressTopLevelActionError,
   startCodexLocalProviderProxy,
 } from "../action/github-action";
 
@@ -982,6 +983,198 @@ describe("Codex rotating GitHub Action runtime", () => {
         tokenInArgs: false,
       });
       expect(fetchEntry).not.toHaveProperty("inheritedGitTrace");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses duplicate top-level errors when full runtime already reported findings", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-e2e-"));
+    const binDir = join(tempDir, "bin");
+    const eventPath = join(tempDir, "event.json");
+    const fakeCodex = join(
+      tempDir,
+      "action-dist",
+      "codex",
+      "linux-x64",
+      "codex",
+    );
+    const fakeGit = join(binDir, "git");
+    const fakeFullRuntime = join(tempDir, "dist", "index.js");
+    const invokedUrls: string[] = [];
+
+    await mkdir(binDir, { recursive: true });
+    await mkdir(join(tempDir, "action-dist", "codex", "linux-x64"), {
+      recursive: true,
+    });
+    await mkdir(join(tempDir, "dist"), { recursive: true });
+    await writePullRequestEvent(eventPath);
+    await writeFile(
+      fakeCodex,
+      [
+        "#!/usr/bin/env node",
+        "const { readFileSync, writeFileSync } = require('node:fs');",
+        "const { join } = require('node:path');",
+        "const authPath = join(process.env.CODEX_HOME, 'auth.json');",
+        "readFileSync(authPath, 'utf8');",
+        "writeFileSync(authPath, JSON.stringify({",
+        "  auth_mode: 'chatgpt',",
+        "  tokens: {",
+        "    refresh_token: 'refreshed-refresh-token',",
+        "    access_token: 'refreshed-access-token'",
+        "  }",
+        "}));",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await writeCodexManifest(fakeCodex);
+    await writeFile(
+      fakeGit,
+      [
+        "#!/usr/bin/env node",
+        "const { mkdirSync, writeFileSync, appendFileSync } = require('node:fs');",
+        "let args = process.argv.slice(2);",
+        "while (args[0] === '-c') args = args.slice(2);",
+        "const command = args[0];",
+        "if (command === 'init') {",
+        "  mkdirSync('.git', { recursive: true });",
+        "  writeFileSync('.git/config', '[core]\\n\\trepositoryformatversion = 0\\n');",
+        "}",
+        "if (command === 'remote' && args[1] === 'add') {",
+        "  appendFileSync('.git/config', `[remote \"${args[2]}\"]\\n\\turl = ${args[3]}\\n`);",
+        "}",
+        "process.exit(0);",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await writeFile(
+      fakeFullRuntime,
+      [
+        "#!/usr/bin/env node",
+        "process.stderr.write('::error::ReviewRouter found 2 major+ finding(s). Review comments were posted before failing this check.\\n');",
+        "process.exit(1);",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await chmod(fakeCodex, 0o700);
+    await chmod(fakeGit, 0o700);
+    await chmod(fakeFullRuntime, 0o700);
+
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const href = String(url);
+      invokedUrls.push(href);
+      if (href.startsWith("https://oidc.actions.test/token")) {
+        return jsonResponse({ value: "oidc.jwt.value" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
+        return jsonResponse({
+          leaseId: "lease_1",
+          generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
+        return jsonResponse({
+          status: "finalized",
+          nextGeneration: 2,
+          repositoryOwner: "777genius",
+          repositoryName: "agent-teams-ai",
+          publicKeyReadToken: "ghs_public_key_read_token",
+          runtimeConfigVersion: 7,
+          runtimeEnv: {},
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/actions/secrets/public-key"
+      ) {
+        return jsonResponse({
+          key: Buffer.alloc(32, 1).toString("base64"),
+          key_id: "github-key-id",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback-preflight")) {
+        return jsonResponse({ protocolVersion: 1, status: "ready" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback")) {
+        return jsonResponse({ protocolVersion: 1, status: "accepted" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/checkout-token")) {
+        return jsonResponse({
+          token: "ghs_checkout_token",
+          repository: "777genius/agent-teams-ai",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/comment-token")) {
+        return jsonResponse({
+          token: "ghs_comment_token",
+          repository: "777genius/agent-teams-ai",
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100"
+      ) {
+        return jsonResponse([]);
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+    const stdoutWrite = vi.fn();
+    const stderrWrite = vi.fn();
+
+    try {
+      let thrown: unknown;
+      try {
+        await runCodexRotatingGitHubAction({
+          env: {
+            "INPUT_API-URL": "https://api.reviewrouter.site/",
+            "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+            "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+            "INPUT_AUTH-JSON": JSON.stringify({
+              auth_mode: "chatgpt",
+              tokens: {
+                refresh_token: "initial-refresh-token",
+                access_token: "initial-access-token",
+              },
+            }),
+            ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+            ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+            GITHUB_EVENT_NAME: "pull_request",
+            GITHUB_EVENT_PATH: eventPath,
+            GITHUB_REPOSITORY: "777genius/agent-teams-ai",
+            GITHUB_RUN_ID: "9001",
+            GITHUB_RUN_ATTEMPT: "1",
+            PATH: `${binDir}:${process.env.PATH ?? ""}`,
+            ...supportedRunnerEnv(tempDir),
+          },
+          fetchImpl,
+          io: {
+            stdout: { write: stdoutWrite },
+            stderr: { write: stderrWrite },
+          },
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(shouldSuppressTopLevelActionError(thrown)).toBe(true);
+      expect(invokedUrls.some((url) => url.endsWith("/comment-token"))).toBe(
+        true,
+      );
+
+      const childStdout = stdoutWrite.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("");
+      const childStderr = stderrWrite.mock.calls
+        .map(([chunk]) => String(chunk))
+        .join("");
+      const streamedText = `${childStdout}\n${childStderr}`;
+      expect(
+        streamedText.match(/ReviewRouter found 2 major\+ finding\(s\)/g) ?? [],
+      ).toHaveLength(1);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

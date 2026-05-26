@@ -1629,6 +1629,10 @@ class ProcessExecutionError extends Error {
   }
 }
 
+class AlreadyReportedRuntimeFailure extends Error {
+  readonly alreadyReportedToGitHub = true;
+}
+
 function runProcess(input: {
   readonly command: string;
   readonly args: readonly string[];
@@ -1732,7 +1736,7 @@ function classifyPostWritebackCodexFailure(error: unknown): Error {
   const output = getProcessFailureOutput(error);
   const reviewFailure = extractReviewRouterRuntimeFailure(output);
   if (reviewFailure) {
-    return new Error(reviewFailure);
+    return new AlreadyReportedRuntimeFailure(reviewFailure);
   }
   const state = classifyCodexRuntimeFailure(output);
   if (state === "quota_limited") {
@@ -1746,6 +1750,16 @@ function classifyPostWritebackCodexFailure(error: unknown): Error {
 function extractReviewRouterRuntimeFailure(output: string): string | undefined {
   const match = output.match(/ReviewRouter found [^\r\n]+/);
   return match?.[0]?.trim();
+}
+
+export function shouldSuppressTopLevelActionError(error: unknown): boolean {
+  return (
+    error instanceof AlreadyReportedRuntimeFailure ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { readonly alreadyReportedToGitHub?: unknown })
+        .alreadyReportedToGitHub === true)
+  );
 }
 
 function getProcessFailureOutput(error: unknown): string {
@@ -1952,8 +1966,10 @@ if (
   process.env.GITHUB_ACTIONS === "true"
 ) {
   runCodexRotatingGitHubAction().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : "unknown_error";
-    process.stderr.write(`::error::${escapeCommandValue(message)}\n`);
+    if (!shouldSuppressTopLevelActionError(error)) {
+      const message = error instanceof Error ? error.message : "unknown_error";
+      process.stderr.write(`::error::${escapeCommandValue(message)}\n`);
+    }
     process.exitCode = 1;
   });
 }

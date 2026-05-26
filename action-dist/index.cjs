@@ -40,6 +40,7 @@ __export(github_action_exports, {
   routeCodexLocalProviderRequest: () => routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction: () => runCodexRotatingGitHubAction,
   sanitizeReviewComment: () => sanitizeReviewComment,
+  shouldSuppressTopLevelActionError: () => shouldSuppressTopLevelActionError,
   startCodexLocalProviderProxy: () => startCodexLocalProviderProxy
 });
 module.exports = __toCommonJS(github_action_exports);
@@ -19274,6 +19275,9 @@ var ProcessExecutionError = class extends Error {
   }
   output;
 };
+var AlreadyReportedRuntimeFailure = class extends Error {
+  alreadyReportedToGitHub = true;
+};
 function runProcess(input) {
   return new Promise((resolve, reject) => {
     const outputChunks = [];
@@ -19351,7 +19355,7 @@ function classifyPostWritebackCodexFailure(error51) {
   const output = getProcessFailureOutput(error51);
   const reviewFailure = extractReviewRouterRuntimeFailure(output);
   if (reviewFailure) {
-    return new Error(reviewFailure);
+    return new AlreadyReportedRuntimeFailure(reviewFailure);
   }
   const state = classifyCodexRuntimeFailure(output);
   if (state === "quota_limited") {
@@ -19364,6 +19368,9 @@ function classifyPostWritebackCodexFailure(error51) {
 function extractReviewRouterRuntimeFailure(output) {
   const match = output.match(/ReviewRouter found [^\r\n]+/);
   return match?.[0]?.trim();
+}
+function shouldSuppressTopLevelActionError(error51) {
+  return error51 instanceof AlreadyReportedRuntimeFailure || typeof error51 === "object" && error51 !== null && error51.alreadyReportedToGitHub === true;
 }
 function getProcessFailureOutput(error51) {
   if (error51 instanceof ProcessExecutionError) {
@@ -19472,9 +19479,11 @@ function requireSha(value, field) {
 }
 if (process.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1" || process.env.GITHUB_ACTIONS === "true") {
   runCodexRotatingGitHubAction().catch((error51) => {
-    const message = error51 instanceof Error ? error51.message : "unknown_error";
-    process.stderr.write(`::error::${escapeCommandValue(message)}
+    if (!shouldSuppressTopLevelActionError(error51)) {
+      const message = error51 instanceof Error ? error51.message : "unknown_error";
+      process.stderr.write(`::error::${escapeCommandValue(message)}
 `);
+    }
     process.exitCode = 1;
   });
 }
@@ -19490,5 +19499,6 @@ if (process.env.REVIEW_ROUTER_RUN_CODEX_ROTATING_ACTION === "1" || process.env.G
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
+  shouldSuppressTopLevelActionError,
   startCodexLocalProviderProxy
 });
