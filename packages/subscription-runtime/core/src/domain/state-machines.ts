@@ -39,23 +39,25 @@ const sessionTransitions: Record<
   stale: [],
 };
 
-const leaseTransitions: Record<LeaseRuntimeState, readonly LeaseRuntimeState[]> =
-  {
-    requested: ["granted", "denied", "expired"],
-    granted: ["finalized", "expired"],
-    denied: [],
-    finalized: ["writeback_started", "expired"],
-    writeback_started: [
-      "writeback_committed",
-      "idempotent_replay",
-      "stale_generation",
-      "expired",
-    ],
-    writeback_committed: [],
-    idempotent_replay: [],
-    stale_generation: [],
-    expired: [],
-  };
+const leaseTransitions: Record<
+  LeaseRuntimeState,
+  readonly LeaseRuntimeState[]
+> = {
+  requested: ["granted", "denied", "expired"],
+  granted: ["finalized", "expired"],
+  denied: [],
+  finalized: ["writeback_started", "expired"],
+  writeback_started: [
+    "writeback_committed",
+    "idempotent_replay",
+    "stale_generation",
+    "expired",
+  ],
+  writeback_committed: [],
+  idempotent_replay: [],
+  stale_generation: [],
+  expired: [],
+};
 
 export function assertSessionTransition(
   from: SessionRuntimeState,

@@ -8,10 +8,7 @@ import {
   compactCodexAuthJson,
   validateCodexAuthJsonBytes,
 } from "./codex-cli-domain";
-import {
-  codexAuthJsonFormatVersion,
-  codexProviderId,
-} from "./capabilities";
+import { codexAuthJsonFormatVersion, codexProviderId } from "./capabilities";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();

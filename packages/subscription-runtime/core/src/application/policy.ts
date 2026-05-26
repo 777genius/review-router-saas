@@ -123,7 +123,10 @@ export function negotiateCapabilities(input: {
     }
   }
 
-  if (policy.requireNoBackendPlaintext && input.store.plaintextAvailableToBackend) {
+  if (
+    policy.requireNoBackendPlaintext &&
+    input.store.plaintextAvailableToBackend
+  ) {
     return rejected(
       "custody_mode_forbidden",
       "Runtime policy forbids backend plaintext.",
@@ -165,7 +168,8 @@ export function negotiateCapabilities(input: {
   }
 
   if (
-    (input.provider.requiresWorkspace || input.agent.supportsRepositoryContext) &&
+    (input.provider.requiresWorkspace ||
+      input.agent.supportsRepositoryContext) &&
     !input.runner.supportsWorkingDirectory
   ) {
     return rejected(
@@ -175,7 +179,10 @@ export function negotiateCapabilities(input: {
     );
   }
 
-  if (input.agent.requiresWritableWorkspace && input.runner.readOnlyFilesystem) {
+  if (
+    input.agent.requiresWritableWorkspace &&
+    input.runner.readOnlyFilesystem
+  ) {
     return rejected(
       "runner_provider_incompatible",
       "Agent requires writable workspace, but runner is read-only.",

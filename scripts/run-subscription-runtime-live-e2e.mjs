@@ -54,7 +54,10 @@ for (const target of targets) {
 
 requireActionArtifactsFetchable();
 
-if (!checkOnly && read("REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E") !== "1") {
+if (
+  !checkOnly &&
+  read("REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E") !== "1"
+) {
   errors.push(
     "Live E2E mutates GitHub repositories. Set REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E=1 after reviewing the target repository names.",
   );
@@ -120,9 +123,9 @@ function loadRuntimeEnv() {
   const files =
     process.env.REVIEW_ROUTER_SUBSCRIPTION_RUNTIME_LIVE_E2E_SKIP_ENV_FILES ===
     "1"
-      ? [process.env.REVIEW_ROUTER_SUBSCRIPTION_RUNTIME_LIVE_E2E_ENV_FILE].filter(
-          Boolean,
-        )
+      ? [
+          process.env.REVIEW_ROUTER_SUBSCRIPTION_RUNTIME_LIVE_E2E_ENV_FILE,
+        ].filter(Boolean)
       : [
           ".env",
           ".env.local",
@@ -281,7 +284,12 @@ function requireActionArtifactsFetchable() {
   for (const path of requiredPaths) {
     const result = spawnSync(
       "gh",
-      ["api", `repos/${repository}/contents/${path}?ref=${sha}`, "--jq", ".size"],
+      [
+        "api",
+        `repos/${repository}/contents/${path}?ref=${sha}`,
+        "--jq",
+        ".size",
+      ],
       { encoding: "utf8", env, stdio: "ignore" },
     );
     if (result.error || result.status !== 0) {
@@ -349,10 +357,7 @@ function requireRepositoryAllowlisted(repository) {
     .split(/[\s,]+/)
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
-  if (
-    allowlist.length > 0 &&
-    !allowlist.includes(repository.toLowerCase())
-  ) {
+  if (allowlist.length > 0 && !allowlist.includes(repository.toLowerCase())) {
     errors.push(
       `Repository ${repository} is not in REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES.`,
     );

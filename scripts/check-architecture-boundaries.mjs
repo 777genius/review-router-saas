@@ -41,7 +41,9 @@ const sourceExtensions = new Set([".ts", ".tsx", ".mts", ".cts"]);
 
 const files = (
   await Promise.all(
-    boundaryRoots.map((directory) => collectBoundaryFiles(directory, directory)),
+    boundaryRoots.map((directory) =>
+      collectBoundaryFiles(directory, directory),
+    ),
   )
 ).flat();
 const violations = [];

@@ -11,7 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexAuthJsonFromArtifact } from "./codex-auth-json-codec";
 import { pruneCodexChildEnv } from "./codex-cli-domain";
-import { codexAgentCapabilities, codexAgentId, codexProviderId } from "./capabilities";
+import {
+  codexAgentCapabilities,
+  codexAgentId,
+  codexProviderId,
+} from "./capabilities";
 import { classifyCodexFailure } from "./failure-classifier";
 
 export type CodexCliAgentDriverOptions = {
@@ -39,7 +43,9 @@ export class CodexCliAgentDriver implements AgentDriver {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
 
-    const tempRoot = await mkdtemp(join(tmpdir(), "subscription-runtime-codex-"));
+    const tempRoot = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-codex-"),
+    );
     const tempHome = join(tempRoot, "home");
     const tempCodexHome = join(tempRoot, "codex-home");
     await mkdir(tempHome, { recursive: true, mode: 0o700 });

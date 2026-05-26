@@ -18,7 +18,8 @@ try {
     ...process.env,
     PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
     REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
-    REVIEW_ROUTER_CODEX_ROTATING_E2E_API_URL: "https://api.reviewrouter.example",
+    REVIEW_ROUTER_CODEX_ROTATING_E2E_API_URL:
+      "https://api.reviewrouter.example",
     REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF:
       "777genius/review-router@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     REVIEW_ROUTER_CODEX_ROTATING_E2E_AUTH_FILE: join(tempDir, "auth.json"),
@@ -75,7 +76,9 @@ try {
     "action-dist/codex/linux-x64/manifest.json",
   ]) {
     if (!calls.includes(path)) {
-      console.error(`ERROR: action artifact fetch check did not request ${path}`);
+      console.error(
+        `ERROR: action artifact fetch check did not request ${path}`,
+      );
       console.error(calls);
       process.exit(1);
     }
