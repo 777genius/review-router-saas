@@ -431,7 +431,7 @@ describe("provisionReviewRouterWorkflow", () => {
     });
   });
 
-  it("rejects rotating Codex workflow provisioning unless the action ref is a full SHA", async () => {
+  it("allows rotating Codex workflow provisioning on the live main action ref", async () => {
     const gateway = new CapturingSetupGateway();
     const provisioning = new CapturingProvisioningRepository();
 
@@ -443,18 +443,30 @@ describe("provisionReviewRouterWorkflow", () => {
           owner: "777genius",
           name: "example",
           defaultBranch: "main",
-          actionRef: "777genius/review-router@v1",
+          actionRef: "777genius/review-router@main",
           apiUrl: "https://app.reviewrouter.dev",
           runtimeConfigMode: "oidc",
           codexRotatingProviderInstanceId: "codex-rotating:123456",
         },
         { setupGateway: gateway, provisioning },
       ),
-    ).rejects.toThrow("codex_rotating_action_ref_must_be_full_sha");
+    ).resolves.toMatchObject({
+      url: "https://github.com/777genius/example/pull/1",
+    });
 
-    expect(gateway.input).toBeNull();
-    expect(provisioning.failed?.errorMessage).toBe(
-      "codex_rotating_action_ref_must_be_full_sha",
+    const codexWorkflow = gateway.input?.workflowFiles.find(
+      (file) => file.path === ".github/workflows/reviewrouter-codex.yml",
+    );
+    expect(codexWorkflow).toBeDefined();
+    expect(codexWorkflow?.operation).not.toBe("delete");
+    if (!codexWorkflow || codexWorkflow.operation === "delete") {
+      throw new Error("expected codex workflow upsert");
+    }
+    expect(codexWorkflow.content).toContain(
+      "uses: 777genius/review-router@main",
+    );
+    expect(provisioning.opened?.actionVersion).toBe(
+      "777genius/review-router@main",
     );
   });
 

@@ -198,7 +198,7 @@ function safeWorkflowProvisioningErrorSummary(error: unknown): string {
       "codex_legacy_auth_requires_reconnect",
       "codex_api_key_setup_disabled",
       "codex_rotating_provider_instance_required",
-      "codex_rotating_action_ref_must_be_full_sha",
+      "codex_rotating_action_ref_invalid",
       "codex_rotating_conflict_review_unsupported",
     ].includes(message)
   ) {

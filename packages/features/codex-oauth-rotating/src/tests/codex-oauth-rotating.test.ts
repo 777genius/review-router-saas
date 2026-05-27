@@ -138,8 +138,7 @@ describe("Codex rotating auth domain", () => {
 
   it("renders an advisory-only workflow and scanner rejects hardened-only surfaces", () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
-      actionRef:
-        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
       providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
     });
@@ -207,8 +206,7 @@ describe("Codex rotating auth domain", () => {
           providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
           repositoryFullName: "777genius/agent-teams-ai",
           githubRepositoryId: "123456",
-          actionRef:
-            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          actionRef: "777genius/review-router@main",
           workflowPath: ".github/workflows/reviewrouter-codex.yml",
           workflowSchemaVersion: 1,
         },
