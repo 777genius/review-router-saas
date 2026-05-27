@@ -76,6 +76,8 @@ const oidcRequestTimeoutMs = 20_000;
 const githubRequestTimeoutMs = 30_000;
 const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
+const fullRuntimeProgressCommentMarker =
+  "<!-- review-router-progress-tracker -->";
 
 type FetchLike = typeof fetch;
 
@@ -368,6 +370,17 @@ export async function runCodexRotatingGitHubAction(
             runtimeConfigVersion: finalize.runtimeConfigVersion,
             runtimeEnv: finalize.runtimeEnv,
           });
+          try {
+            await deleteFullRuntimeProgressComments({
+              fetchImpl,
+              token: commentToken.token,
+              owner: event.owner,
+              repo: event.repo,
+              issueNumber: event.number,
+            });
+          } catch {
+            notice(io, "ReviewRouter could not clean up progress comments.");
+          }
         } finally {
           await removeTree(reviewHome);
         }
@@ -1873,6 +1886,65 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
     });
     if (!deleteResponse.ok) {
       throw new Error("github_stale_comment_delete_failed");
+    }
+  }
+}
+
+export async function deleteFullRuntimeProgressComments(input: {
+  readonly fetchImpl: FetchLike;
+  readonly token: string;
+  readonly owner: string;
+  readonly repo: string;
+  readonly issueNumber: number;
+}): Promise<void> {
+  const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
+  const commentsResponse = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: "github_progress_comment_lookup",
+    timeoutMs: githubRequestTimeoutMs,
+    url: `${commentsUrl}?per_page=100`,
+    init: {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${input.token}`,
+        "x-github-api-version": "2022-11-28",
+      },
+    },
+  });
+  if (!commentsResponse.ok) {
+    throw new Error("github_progress_comment_lookup_failed");
+  }
+  const comments = (await commentsResponse.json()) as unknown;
+  if (!Array.isArray(comments)) {
+    throw new Error("github_progress_comment_lookup_invalid");
+  }
+  const progressComments = comments.filter(
+    (comment): comment is GitHubIssueCommentResponse =>
+      typeof comment === "object" &&
+      comment !== null &&
+      typeof (comment as GitHubIssueCommentResponse).id === "number" &&
+      typeof (comment as GitHubIssueCommentResponse).body === "string" &&
+      (comment as GitHubIssueCommentResponse).body!.includes(
+        fullRuntimeProgressCommentMarker,
+      ),
+  );
+  for (const comment of progressComments) {
+    const deleteResponse = await fetchWithRetry({
+      fetchImpl: input.fetchImpl,
+      label: "github_progress_comment_delete",
+      timeoutMs: githubRequestTimeoutMs,
+      url: `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/comments/${comment.id}`,
+      init: {
+        method: "DELETE",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${input.token}`,
+          "x-github-api-version": "2022-11-28",
+        },
+      },
+    });
+    if (!deleteResponse.ok) {
+      throw new Error("github_progress_comment_delete_failed");
     }
   }
 }

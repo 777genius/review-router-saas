@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
+  deleteFullRuntimeProgressComments,
   deleteStaleCodexRotatingSummaryComments,
   extractReviewRouterRuntimeFailure,
   formatTopLevelActionErrorMessage,
@@ -685,6 +686,55 @@ describe("Codex rotating GitHub Action runtime", () => {
     }) as unknown as typeof fetch;
 
     await deleteStaleCodexRotatingSummaryComments({
+      fetchImpl,
+      token: "ghs_comment_token",
+      owner: "777genius",
+      repo: "agent-teams-ai",
+      issueNumber: 118,
+    });
+
+    expect(methods).toContain(
+      "GET https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100",
+    );
+    expect(methods).toContain(
+      "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/123",
+    );
+    expect(methods).not.toContain(
+      "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/456",
+    );
+  });
+
+  it("deletes full runtime progress comments after a successful review", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      methods.push(`${init?.method ?? "GET"} ${href}`);
+      if (href.endsWith("/issues/118/comments?per_page=100")) {
+        return jsonResponse([
+          {
+            id: 123,
+            body: [
+              "## ReviewRouter Progress",
+              "",
+              "| Step | Status |",
+              "| --- | --- |",
+              "| Synthesize & report | Done |",
+              "<!-- review-router-progress-tracker -->",
+            ].join("\n"),
+          },
+          {
+            id: 456,
+            body: "# ReviewRouter\n\nCurrent full runtime summary",
+          },
+        ]);
+      }
+      if (href.endsWith("/issues/comments/123")) {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+
+    await deleteFullRuntimeProgressComments({
       fetchImpl,
       token: "ghs_comment_token",
       owner: "777genius",
