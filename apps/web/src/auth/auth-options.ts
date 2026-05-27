@@ -13,6 +13,18 @@ import { readOptionalAuthEnv } from "./auth-env";
 export const authOptions: NextAuthOptions = {
   secret: readOptionalAuthEnv("AUTH_SECRET"),
   session: { strategy: "jwt" },
+  logger: {
+    error(code, metadata) {
+      if (code === "JWT_SESSION_ERROR") {
+        console.warn(
+          "[next-auth][warn][JWT_SESSION_ERROR] Ignoring stale or undecryptable session cookie.",
+          metadata,
+        );
+        return;
+      }
+      console.error(`[next-auth][error][${code}]`, metadata);
+    },
+  },
   pages: {
     signIn: "/auth/signin",
     error: "/auth/signin",

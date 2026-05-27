@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { authOptions } from "./auth-options";
 import { getAuthEnvironmentStatus, readOptionalAuthEnv } from "./auth-env";
 
@@ -35,5 +35,21 @@ describe("auth env", () => {
       signIn: "/auth/signin",
       error: "/auth/signin",
     });
+  });
+
+  it("downgrades stale JWT session cookie noise to a warning", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    authOptions.logger?.error?.(
+      "JWT_SESSION_ERROR",
+      new Error("decryption operation failed"),
+    );
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 });
