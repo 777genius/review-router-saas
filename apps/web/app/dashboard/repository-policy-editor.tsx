@@ -1476,10 +1476,10 @@ function DashboardFieldHelp({
           align="start"
           sideOffset={8}
           collisionPadding={12}
-          className="z-[80] max-w-72 rounded-lg border border-cyan-200/20 bg-[#0a101c] px-3 py-2 text-xs font-medium normal-case leading-5 tracking-normal text-slate-200 shadow-[0_18px_60px_rgba(0,0,0,0.62),0_0_44px_-30px_rgba(103,232,249,0.8)]"
+          className="z-[80] max-w-72 rounded-lg border border-cyan-200/20 bg-[var(--rr-surface-menu)] px-3 py-2 text-xs font-medium normal-case leading-5 tracking-normal text-slate-200 shadow-[0_18px_60px_rgba(0,0,0,0.62),0_0_44px_-30px_rgba(103,232,249,0.8)]"
         >
           {helpText}
-          <Tooltip.Arrow className="fill-[#0a101c]" />
+          <Tooltip.Arrow className="fill-[var(--rr-surface-menu)]" />
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
@@ -1595,7 +1595,7 @@ function DashboardSelectField({
             position="popper"
             sideOffset={8}
             collisionPadding={12}
-            className="z-[90] max-h-80 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-cyan-200/20 bg-[#061015] p-1 text-cyan-50 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
+            className="z-[90] max-h-80 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-cyan-200/20 bg-[var(--rr-surface-menu)] p-1 text-cyan-50 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
           >
             <RadixSelect.Viewport>
               {options.map((option) => (
@@ -1757,7 +1757,7 @@ function DashboardModelField({
         <div
           id={listboxId}
           role="listbox"
-          className="absolute left-0 right-0 top-full z-40 mt-2 max-h-96 overflow-y-auto rounded-xl border border-cyan-200/20 bg-[#061015] p-1 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
+          className="absolute left-0 right-0 top-full z-40 mt-2 max-h-96 overflow-y-auto rounded-xl border border-cyan-200/20 bg-[var(--rr-surface-menu)] p-1 shadow-[0_20px_70px_rgba(0,0,0,0.62),0_0_50px_-34px_rgba(103,232,249,0.8)]"
         >
           {filteredOptions.length === 0 ? (
             <div className="px-3 py-3 text-sm text-slate-400">

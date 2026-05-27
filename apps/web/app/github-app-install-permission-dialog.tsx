@@ -119,7 +119,7 @@ export function GitHubAppInstallPermissionDialog({
       </DialogTrigger>
       <DialogPortal>
         <DialogBackdrop className="z-50 bg-black/80 backdrop-blur-md" />
-        <DialogPopup className="z-[60] max-h-[86vh] w-[min(94vw,52rem)] overflow-y-auto border-cyan-200/20 bg-[#061015] p-0 text-cyan-50 shadow-[0_30px_120px_rgba(0,0,0,0.62),0_0_90px_-48px_rgba(0,240,255,0.72)]">
+        <DialogPopup className="z-[60] max-h-[86vh] w-[min(94vw,52rem)] overflow-y-auto border-cyan-200/20 bg-[var(--rr-surface-menu)] p-0 text-cyan-50 shadow-[0_30px_120px_rgba(0,0,0,0.62),0_0_90px_-48px_rgba(0,240,255,0.72)]">
           <div className="relative p-5 sm:p-6">
             <DialogClose
               aria-label="Close GitHub App permission dialog"

@@ -3,7 +3,6 @@
 @source "../../../packages/ui/src";
 
 html {
-  color-scheme: dark;
   background: var(--rr-color-void);
   max-width: 100%;
   scroll-padding-top: 14rem;
@@ -21,7 +20,7 @@ body {
   min-height: 100vh;
   width: 100%;
   overflow-x: hidden;
-  background: rgb(10, 10, 15);
+  background: var(--rr-page-bg);
   color: var(--rr-color-text);
   font-family:
     var(--font-sans), "Space Grotesk", "Segoe UI", system-ui, sans-serif;
@@ -34,19 +33,19 @@ body::before {
   pointer-events: none;
   content: "";
   background:
-    linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(var(--rr-page-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--rr-page-grid) 1px, transparent 1px),
     radial-gradient(
       circle at 82% -10%,
-      rgba(0, 240, 255, 0.13),
+      var(--rr-page-glow-cyan),
       transparent 34rem
     ),
     radial-gradient(
       circle at 90% 92%,
-      rgba(57, 255, 20, 0.05),
+      var(--rr-page-glow-lime),
       transparent 26rem
     ),
-    rgb(10, 10, 15);
+    var(--rr-page-bg);
   background-size:
     60px 60px,
     60px 60px,
@@ -65,8 +64,8 @@ body::after {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 240, 255, 0.008) 2px,
-    rgba(0, 240, 255, 0.008) 4px
+    var(--rr-page-scanline) 2px,
+    var(--rr-page-scanline) 4px
   );
 }
 
@@ -100,9 +99,9 @@ canvas {
 :not(pre) > code {
   border: 1px solid rgba(103, 232, 249, 0.16);
   border-radius: 0.45rem;
-  background: rgba(8, 47, 73, 0.34);
+  background: var(--rr-inline-code-bg);
   padding: 0.05rem 0.32rem;
-  color: #cffafe;
+  color: var(--rr-inline-code-text);
   font-family: var(--font-mono), "JetBrains Mono", "Fira Code", monospace;
   font-size: 0.9em;
 }
@@ -168,19 +167,24 @@ canvas {
 
 .home-shell {
   background:
-    linear-gradient(rgba(103, 232, 249, 0.014) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(103, 232, 249, 0.012) 1px, transparent 1px),
+    linear-gradient(var(--rr-page-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--rr-page-grid) 1px, transparent 1px),
     radial-gradient(
       circle at 51% 44%,
-      rgba(14, 116, 144, 0.22),
+      rgba(var(--rr-page-bg-rgb), 0.22),
       transparent 30rem
     ),
     radial-gradient(
       circle at 82% 21%,
-      rgba(163, 230, 53, 0.07),
+      var(--rr-page-glow-lime),
       transparent 26rem
     ),
-    linear-gradient(180deg, #02070c 0 48rem, #03080e 56rem, #0a0a0f 100%);
+    linear-gradient(
+      180deg,
+      var(--rr-page-bg) 0 48rem,
+      var(--rr-color-bg) 56rem,
+      var(--rr-color-void) 100%
+    );
   background-size:
     48px 48px,
     48px 48px,
@@ -549,6 +553,86 @@ canvas {
   font-size: clamp(0.7rem, 0.7vw, 0.9rem);
   line-height: 1.35;
   text-align: right;
+}
+
+[data-theme="light"] .setup-blueprint::after {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(247, 251, 255, 0.72),
+      transparent 18%,
+      transparent 82%,
+      rgba(247, 251, 255, 0.72)
+    ),
+    radial-gradient(
+      ellipse at 52% 5%,
+      rgba(255, 255, 255, 0.7),
+      transparent 34rem
+    );
+}
+
+[data-theme="light"] .setup-blueprint__eyebrow {
+  color: rgba(71, 85, 105, 0.74);
+}
+
+[data-theme="light"] .setup-blueprint__intro h1,
+[data-theme="light"] .setup-blueprint__step h2 {
+  color: #102033;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+[data-theme="light"] .setup-blueprint__intro p:not(.setup-blueprint__eyebrow) {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.88),
+    rgba(255, 255, 255, 0.68) 72%,
+    transparent
+  );
+  color: #334155;
+  text-shadow: none;
+}
+
+[data-theme="light"] .setup-blueprint__node {
+  background:
+    radial-gradient(circle, rgba(255, 255, 255, 0.55) 0 38%, transparent 39%),
+    radial-gradient(
+      circle,
+      color-mix(in srgb, var(--node-color) 16%, transparent) 0 55%,
+      transparent 70%
+    ),
+    rgba(255, 255, 255, 0.86);
+  box-shadow:
+    0 0 0 7px rgba(255, 255, 255, 0.72),
+    0 0 0 10px color-mix(in srgb, var(--node-color) 20%, transparent),
+    0 16px 50px rgba(15, 23, 42, 0.1),
+    inset 0 0 26px color-mix(in srgb, var(--node-color) 15%, transparent);
+}
+
+[data-theme="light"] .setup-blueprint__node span {
+  color: #102033;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+[data-theme="light"] .setup-blueprint__step,
+[data-theme="light"] .setup-blueprint__step p:not(.setup-blueprint__step-label),
+[data-theme="light"] .setup-blueprint__signal small {
+  color: #475569;
+}
+
+[data-theme="light"] .setup-blueprint__version {
+  color: rgba(71, 85, 105, 0.72);
+}
+
+[data-theme="light"] .rr-accent-callout {
+  border-color: rgba(162, 28, 175, 0.26);
+  background:
+    linear-gradient(
+      90deg,
+      rgba(162, 28, 175, 0.12),
+      rgba(8, 145, 178, 0.1),
+      rgba(77, 124, 15, 0.11)
+    ),
+    rgba(255, 255, 255, 0.64);
 }
 
 @keyframes setup-grid-drift {

@@ -7,6 +7,7 @@ import { AppToaster } from "./app-toaster";
 import { LogoMark } from "./logo-mark";
 import { PrimaryNav } from "./primary-nav";
 import { HeaderProfileMenu } from "./header-profile-menu";
+import { ThemeToggle } from "./theme-toggle";
 import "./globals.css";
 import {
   reviewRouterContactEmail,
@@ -105,6 +106,22 @@ const footerLegalLinks = [
   { href: "/disconnect", label: "Disconnect" },
 ] as const;
 
+const themeInitScript = `
+(() => {
+  try {
+    const preference = localStorage.getItem("reviewrouter-theme") || "dark";
+    const theme = preference === "system"
+      ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+      : preference;
+    document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
+    document.documentElement.dataset.themePreference = preference;
+  } catch {
+    document.documentElement.dataset.theme = "dark";
+    document.documentElement.dataset.themePreference = "dark";
+  }
+})();
+`;
+
 export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>): Promise<React.ReactElement> {
@@ -113,8 +130,13 @@ export default async function RootLayout({
   return (
     <html
       lang="en"
+      data-theme="dark"
       className={`${spaceGrotesk.variable} ${jetBrainsMono.variable}`}
+      suppressHydrationWarning
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body>
         <a
           href="#content"
@@ -122,7 +144,7 @@ export default async function RootLayout({
         >
           Skip to content
         </a>
-        <header className="sticky top-0 z-40 border-b border-cyan-300/[0.1] bg-[#04070d]/90 shadow-[0_18px_60px_-42px_rgba(0,240,255,0.7)] backdrop-blur-xl">
+        <header className="sticky top-0 z-40 border-b border-cyan-300/[0.1] bg-[var(--rr-header-bg)] shadow-[0_18px_60px_-42px_rgba(0,240,255,0.7)] backdrop-blur-xl">
           <div
             aria-hidden="true"
             className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-cyan-200/55 to-transparent"
@@ -153,6 +175,7 @@ export default async function RootLayout({
               <PrimaryNav signedIn={profile.signedIn} />
             </div>
             <div className="flex min-w-0 items-center gap-3 lg:justify-end">
+              <ThemeToggle />
               <div className="hidden items-center gap-3 border-r border-cyan-200/10 pr-3 xl:flex">
                 <span className="relative grid h-9 w-9 place-items-center rounded-xl border border-lime-300/20 bg-lime-300/[0.07] text-lime-300">
                   <ShieldCheck aria-hidden="true" className="size-4" />
@@ -176,14 +199,14 @@ export default async function RootLayout({
         </header>
         <div id="content">{children}</div>
         <AppToaster />
-        <footer className="relative isolate overflow-hidden border-t border-cyan-200/10 bg-[#05070d]">
+        <footer className="relative isolate overflow-hidden border-t border-cyan-200/10 bg-[var(--rr-footer-bg)]">
           <div
             aria-hidden="true"
             className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-200/45 to-transparent"
           />
           <div
             aria-hidden="true"
-            className="absolute inset-0 -z-10 bg-[linear-gradient(rgba(103,232,249,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(103,232,249,0.018)_1px,transparent_1px),linear-gradient(180deg,rgba(8,47,73,0.22),rgba(2,6,23,0.78))] bg-[size:56px_56px,56px_56px,auto]"
+            className="absolute inset-0 -z-10 bg-[linear-gradient(var(--rr-page-grid)_1px,transparent_1px),linear-gradient(90deg,var(--rr-page-grid)_1px,transparent_1px),linear-gradient(180deg,var(--rr-surface-panel-muted),var(--rr-surface-card-strong))] bg-[size:56px_56px,56px_56px,auto]"
           />
           <div className="mx-auto grid w-full max-w-6xl gap-8 px-4 py-10 text-sm text-slate-400 sm:px-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)] lg:items-start">
             <div className="max-w-2xl">

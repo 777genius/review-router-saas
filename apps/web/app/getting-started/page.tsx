@@ -174,7 +174,7 @@ export default function GettingStartedPage(): React.ReactElement {
   return (
     <main className="home-shell min-h-screen w-full overflow-hidden py-8 md:py-10">
       <section className="mx-auto w-[calc(100%-2rem)] max-w-7xl sm:w-[calc(100%-3rem)]">
-        <div className="relative isolate overflow-hidden rounded-[2rem] border border-cyan-200/12 bg-[#030911]/90 p-4 shadow-[0_28px_120px_-70px_rgba(0,240,255,0.95)] sm:p-6 lg:p-7">
+        <div className="relative isolate overflow-hidden rounded-[2rem] border border-cyan-200/12 bg-[var(--rr-surface-card-strong)] p-4 shadow-[0_28px_120px_-70px_rgba(0,240,255,0.95)] sm:p-6 lg:p-7">
           <div
             aria-hidden="true"
             className="absolute inset-0 -z-10 bg-[linear-gradient(rgba(103,232,249,0.055)_1px,transparent_1px),linear-gradient(90deg,rgba(103,232,249,0.035)_1px,transparent_1px),radial-gradient(circle_at_76%_8%,rgba(163,230,53,0.13),transparent_24rem),radial-gradient(circle_at_18%_34%,rgba(0,240,255,0.12),transparent_23rem),linear-gradient(180deg,rgba(2,6,12,0.1),rgba(0,0,0,0.28))] bg-[size:56px_56px,56px_56px,auto,auto,auto]"
@@ -265,7 +265,7 @@ export default function GettingStartedPage(): React.ReactElement {
             <BoundaryGrid />
           </section>
 
-          <div className="mt-7 grid gap-5 rounded-2xl border border-fuchsia-400/30 bg-[linear-gradient(90deg,rgba(217,70,239,0.08),rgba(0,240,255,0.055),rgba(163,230,53,0.05))] p-5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
+          <div className="rr-accent-callout mt-7 grid gap-5 rounded-2xl border border-fuchsia-400/30 bg-[linear-gradient(90deg,rgba(217,70,239,0.08),rgba(0,240,255,0.055),rgba(163,230,53,0.05))] p-5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
             <div className="grid h-14 w-14 place-items-center rounded-2xl border border-lime-300/30 bg-lime-300/[0.08] text-lime-200">
               <CheckCircle2 aria-hidden="true" className="size-6" />
             </div>
@@ -296,7 +296,7 @@ export default function GettingStartedPage(): React.ReactElement {
 
 function FlowPanel(): React.ReactElement {
   return (
-    <div className="relative overflow-hidden rounded-[1.5rem] border border-lime-300/28 bg-[#0a0d14]/86 p-5 shadow-[inset_0_0_0_1px_rgba(190,242,100,0.04),0_0_70px_-42px_rgba(163,230,53,0.95)] sm:p-6">
+    <div className="relative overflow-hidden rounded-[1.5rem] border border-lime-300/28 bg-[var(--rr-surface-panel)] p-5 shadow-[inset_0_0_0_1px_rgba(190,242,100,0.04),0_0_70px_-42px_rgba(163,230,53,0.95)] sm:p-6">
       <div
         aria-hidden="true"
         className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-lime-200/60 to-transparent"
@@ -326,7 +326,7 @@ function FlowPanel(): React.ReactElement {
         ))}
       </div>
 
-      <div className="mt-7 rounded-2xl border border-cyan-200/12 bg-[#050b13]/86 p-3">
+      <div className="mt-7 rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] p-3">
         <div className="mb-3 flex items-center gap-2 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
           <Webhook aria-hidden="true" className="size-4" />
           Setup PR manifest
@@ -381,7 +381,7 @@ function SetupStepCard({
   tone,
 }: (typeof setupSteps)[number]): React.ReactElement {
   return (
-    <article className="relative min-h-full overflow-hidden rounded-2xl border border-cyan-200/10 bg-[#041018]/74 p-5 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
+    <article className="relative min-h-full overflow-hidden rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] p-5 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
       <div
         aria-hidden="true"
         className={
@@ -455,7 +455,7 @@ function SectionHeading({
 
 function WorkflowPanel(): React.ReactElement {
   return (
-    <div className="overflow-hidden rounded-2xl border border-cyan-200/12 bg-[#041018]/76 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
+    <div className="overflow-hidden rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
       <div className="overflow-x-auto">
         <table className="min-w-[760px] w-full border-collapse text-left text-sm">
           <thead>
@@ -483,7 +483,7 @@ function WorkflowPanel(): React.ReactElement {
           </tbody>
         </table>
       </div>
-      <div className="grid gap-4 border-t border-cyan-200/10 bg-[#02080f]/55 p-4 md:grid-cols-3">
+      <div className="grid gap-4 border-t border-cyan-200/10 bg-[var(--rr-surface-panel-muted)] p-4 md:grid-cols-3">
         <InlineSignal
           icon={CircleDotDashed}
           title="No pull_request_target"
@@ -510,7 +510,7 @@ function ProviderMatrix(): React.ReactElement {
       {providerRows.map((provider) => (
         <article
           key={provider.name}
-          className="relative min-h-full overflow-hidden rounded-2xl border border-cyan-200/10 bg-[#041018]/74 p-5 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]"
+          className="relative min-h-full overflow-hidden rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] p-5 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]"
         >
           <div
             aria-hidden="true"
@@ -587,7 +587,7 @@ function CommandPanel({
   readonly code: string;
 }): React.ReactElement {
   return (
-    <article className="overflow-hidden rounded-2xl border border-cyan-200/12 bg-[#041018]/76 p-4 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
+    <article className="overflow-hidden rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] p-4 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
       <Badge tone={badge === "Recommended" ? "success" : "neutral"}>
         {badge}
       </Badge>
@@ -625,7 +625,7 @@ function InlineSignal({
   readonly body: string;
 }): React.ReactElement {
   return (
-    <article className="rounded-2xl border border-cyan-200/10 bg-[#030d15]/76 p-4">
+    <article className="rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] p-4">
       <div className="flex items-start gap-3">
         <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-cyan-300/25 bg-cyan-300/[0.08] text-cyan-200">
           <Icon aria-hidden="true" className="size-5" />

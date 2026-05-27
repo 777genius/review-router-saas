@@ -220,7 +220,7 @@ export default function SecurityPage(): React.ReactElement {
   return (
     <main className="home-shell min-h-screen w-full overflow-hidden py-8 md:py-10">
       <section className="mx-auto w-[calc(100%-2rem)] max-w-7xl sm:w-[calc(100%-3rem)]">
-        <div className="relative isolate overflow-hidden rounded-[2rem] border border-cyan-200/12 bg-[#030911]/90 p-4 shadow-[0_28px_120px_-70px_rgba(0,240,255,0.95)] sm:p-6 lg:p-7">
+        <div className="relative isolate overflow-hidden rounded-[2rem] border border-cyan-200/12 bg-[var(--rr-surface-card-strong)] p-4 shadow-[0_28px_120px_-70px_rgba(0,240,255,0.95)] sm:p-6 lg:p-7">
           <div
             aria-hidden="true"
             className="absolute inset-0 -z-10 bg-[linear-gradient(rgba(103,232,249,0.055)_1px,transparent_1px),linear-gradient(90deg,rgba(103,232,249,0.035)_1px,transparent_1px),radial-gradient(circle_at_70%_7%,rgba(163,230,53,0.13),transparent_24rem),radial-gradient(circle_at_18%_34%,rgba(0,240,255,0.12),transparent_23rem),linear-gradient(180deg,rgba(2,6,12,0.1),rgba(0,0,0,0.28))] bg-[size:56px_56px,56px_56px,auto,auto,auto]"
@@ -308,7 +308,7 @@ export default function SecurityPage(): React.ReactElement {
             <WebhookTable />
           </section>
 
-          <div className="mt-7 grid gap-5 rounded-2xl border border-fuchsia-400/30 bg-[linear-gradient(90deg,rgba(217,70,239,0.08),rgba(0,240,255,0.055),rgba(163,230,53,0.05))] p-5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
+          <div className="rr-accent-callout mt-7 grid gap-5 rounded-2xl border border-fuchsia-400/30 bg-[linear-gradient(90deg,rgba(217,70,239,0.08),rgba(0,240,255,0.055),rgba(163,230,53,0.05))] p-5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
             <div className="grid h-14 w-14 place-items-center rounded-2xl border border-lime-300/30 bg-lime-300/[0.08] text-lime-200">
               <ShieldCheck aria-hidden="true" className="size-6" />
             </div>
@@ -338,7 +338,7 @@ export default function SecurityPage(): React.ReactElement {
 
 function CredentialPanel(): React.ReactElement {
   return (
-    <div className="relative overflow-hidden rounded-[1.5rem] border border-lime-300/28 bg-[#0a0d14]/86 p-5 shadow-[inset_0_0_0_1px_rgba(190,242,100,0.04),0_0_70px_-42px_rgba(163,230,53,0.95)] sm:p-6">
+    <div className="relative overflow-hidden rounded-[1.5rem] border border-lime-300/28 bg-[var(--rr-surface-panel)] p-5 shadow-[inset_0_0_0_1px_rgba(190,242,100,0.04),0_0_70px_-42px_rgba(163,230,53,0.95)] sm:p-6">
       <div
         aria-hidden="true"
         className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-lime-200/60 to-transparent"
@@ -383,7 +383,7 @@ function CredentialPanel(): React.ReactElement {
         />
       </div>
 
-      <div className="mt-7 rounded-2xl border border-cyan-200/12 bg-[#050b13]/86 p-3">
+      <div className="mt-7 rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] p-3">
         <div className="mb-3 flex items-center gap-2 font-mono text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-cyan-100">
           <Terminal aria-hidden="true" className="size-4" />
           Secret seed command
@@ -402,7 +402,7 @@ function SignalCard({
   tone,
 }: (typeof securitySignals)[number]): React.ReactElement {
   return (
-    <article className="relative min-h-full overflow-hidden rounded-2xl border border-cyan-200/10 bg-[#041018]/74 p-5 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
+    <article className="relative min-h-full overflow-hidden rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] p-5 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
       <div
         aria-hidden="true"
         className={cx(
@@ -475,7 +475,7 @@ function SectionHeading({
 
 function BoundaryTable(): React.ReactElement {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[#041018]/78 shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
+    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
       <table className="w-full min-w-[860px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">
@@ -530,7 +530,7 @@ function BoundaryTable(): React.ReactElement {
 
 function PermissionTable(): React.ReactElement {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[#041018]/78 shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
+    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
       <table className="w-full min-w-[920px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">
@@ -580,7 +580,7 @@ function PermissionTable(): React.ReactElement {
 
 function WebhookTable(): React.ReactElement {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[#041018]/78 shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
+    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
       <table className="w-full min-w-[760px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">

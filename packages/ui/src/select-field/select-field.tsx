@@ -60,7 +60,7 @@ export function SelectField({
             className="z-50"
           >
             <BaseSelect.Popup
-              className="max-h-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-cyan-200/15 bg-[#080b12] p-1.5 text-cyan-50 shadow-[0_24px_80px_rgba(0,0,0,0.72),0_0_60px_-32px_rgba(0,240,255,0.9)] outline-none"
+              className="max-h-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-cyan-200/15 bg-[var(--rr-surface-menu)] p-1.5 text-cyan-50 shadow-[var(--rr-shadow-elevated),0_0_60px_-32px_rgba(0,240,255,0.9)] outline-none"
               style={{
                 minWidth:
                   "min(max(var(--anchor-width), 18rem), calc(100vw - 2rem))",

@@ -994,7 +994,7 @@ function MemorySuggestionEditConfirmDialog({
       />
       <DialogPortal>
         <DialogBackdrop className="z-50" />
-        <DialogPopup className="z-[60] border-amber-300/25 bg-[#061015]">
+        <DialogPopup className="z-[60] border-amber-300/25 bg-[var(--rr-surface-menu)]">
           <DialogTitle className="text-lg font-semibold text-cyan-50">
             Edit and approve suggestion
           </DialogTitle>
@@ -1195,7 +1195,7 @@ function MemoryEditActionDialog({
       />
       <DialogPortal>
         <DialogBackdrop className="z-50" />
-        <DialogPopup className="z-[60] border-cyan-300/25 bg-[#061015]">
+        <DialogPopup className="z-[60] border-cyan-300/25 bg-[var(--rr-surface-menu)]">
           <DialogTitle className="text-lg font-semibold text-cyan-50">
             Edit memory
           </DialogTitle>
@@ -1301,7 +1301,7 @@ function MemoryDangerActionDialog({
       />
       <DialogPortal>
         <DialogBackdrop className="z-50" />
-        <DialogPopup className="z-[60] border-rose-300/25 bg-[#061015]">
+        <DialogPopup className="z-[60] border-rose-300/25 bg-[var(--rr-surface-menu)]">
           <DialogTitle className="text-lg font-semibold text-cyan-50">
             {title}
           </DialogTitle>

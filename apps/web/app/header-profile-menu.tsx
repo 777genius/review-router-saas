@@ -52,7 +52,7 @@ export function HeaderProfileMenu({
           aria-label="Profile menu"
           align="end"
           sideOffset={12}
-          className="z-50 w-[min(18rem,calc(100vw-2rem))] rounded-2xl border border-cyan-200/15 bg-[#090d17]/95 p-3 shadow-[0_24px_70px_rgba(0,0,0,0.55),0_0_60px_-42px_rgba(0,240,255,0.9)] backdrop-blur-2xl"
+          className="z-50 w-[min(18rem,calc(100vw-2rem))] rounded-2xl border border-cyan-200/15 bg-[var(--rr-surface-menu)] p-3 shadow-[var(--rr-shadow-elevated),0_0_60px_-42px_rgba(0,240,255,0.9)] backdrop-blur-2xl"
         >
           <div className="flex items-center gap-3 rounded-xl bg-cyan-300/[0.055] p-3">
             <ProfileAvatar
@@ -75,7 +75,7 @@ export function HeaderProfileMenu({
               className="mt-2 w-full justify-center rounded-xl border border-white/10 text-cyan-100 hover:border-cyan-200/30 hover:bg-cyan-300/[0.08] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
             />
           </DropdownMenu.Item>
-          <DropdownMenu.Arrow className="fill-[#090d17]" />
+          <DropdownMenu.Arrow className="fill-[var(--rr-surface-menu)]" />
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
