@@ -867,7 +867,7 @@ function reviewConfigActionErrorText(error: string): string {
     case "codex_rotating_repository_scope_required":
       return "Codex rotating OAuth must be configured per repository, not as a workspace default.";
     case "codex_rotating_single_provider_required":
-      return "Codex rotating OAuth supports exactly one Codex provider in this repository.";
+      return "Codex rotating OAuth must be the only provider in this repository. Remove other providers and save again.";
     case "codex_legacy_auth_requires_reconnect":
       return "Legacy Codex OAuth is disabled. Reconnect Codex with the rotating setup command.";
     case "codex_api_key_setup_disabled":
@@ -956,7 +956,9 @@ export function ReviewConfigForm({
     isDisabledCodexAuthMode,
   );
   const initialProviders = ensureAtLeastOneRequiredProvider(
-    configuredProviders.map(replaceDisabledCodexProvider),
+    normalizeCodexRotatingProvidersForForm(
+      configuredProviders.map(replaceDisabledCodexProvider),
+    ),
   );
   const [providers, setProviders] = useState(initialProviders);
   const [providerMaxParallel, setProviderMaxParallel] = useState(
@@ -1053,31 +1055,32 @@ export function ReviewConfigForm({
     const kind = providerKindForAuthMode(authMode);
     const defaultProvider = getDefaultProviderConfigForAuthMode(authMode);
     const nextOptions = modelOptionsByProvider[kind];
-    updateProvider(index, (provider) => ({
-      ...provider,
-      kind,
-      authMode,
-      model:
-        nextOptions.find(
-          (option) => option.value === provider.model && !option.disabled,
-        )?.value ??
-        firstSelectableModel(nextOptions)?.value ??
-        nextOptions[0]?.value ??
-        defaultProvider.model,
-      reasoningEffort:
-        kind === "codex" && provider.kind === "codex"
-          ? provider.reasoningEffort
-          : defaultProvider.reasoningEffort,
-      agenticContext:
-        kind === "codex" && provider.kind === "codex"
-          ? provider.agenticContext
-          : defaultProvider.agenticContext,
-      fastMode:
-        kind === "codex" && provider.kind === "codex"
-          ? provider.fastMode
-          : defaultProvider.fastMode,
-    }));
+    setProviders((current) => {
+      const fallbackProvider = {
+        ...defaultProvider,
+        requiredHealthy: false,
+      } satisfies ReviewProviderConfiguration;
+      const nextProvider = resolveProviderAfterAuthChange({
+        provider: current[index] ?? fallbackProvider,
+        authMode,
+        kind,
+        defaultProvider: fallbackProvider,
+        nextOptions,
+      });
+      if (authMode === "codex_subscription_oauth_rotating") {
+        setProviderMaxParallel(1);
+        setInlineMinAgreement(1);
+        return [{ ...nextProvider, requiredHealthy: true }];
+      }
+      return current.map((provider, providerIndex) =>
+        providerIndex === index ? nextProvider : provider,
+      );
+    });
   }
+
+  const codexRotatingSelected = providers.some(
+    (provider) => provider.authMode === "codex_subscription_oauth_rotating",
+  );
 
   return (
     <Tooltip.Provider delayDuration={180} skipDelayDuration={80}>
@@ -1286,7 +1289,7 @@ export function ReviewConfigForm({
           <button
             type="button"
             aria-label="Add provider"
-            disabled={!mutationsEnabled}
+            disabled={!mutationsEnabled || codexRotatingSelected}
             onClick={addProvider}
             className="inline-flex w-fit items-center gap-2 rounded-lg border border-cyan-300/50 px-3 py-2 text-sm font-semibold text-cyan-300 transition hover:border-cyan-200 hover:bg-cyan-300/[0.08] hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -1370,6 +1373,52 @@ function replaceDisabledCodexProvider(
     ...provider,
     kind: "codex",
     authMode: "codex_subscription_oauth_rotating",
+  };
+}
+
+function normalizeCodexRotatingProvidersForForm(
+  providers: readonly ReviewProviderConfiguration[],
+): ReviewProviderConfiguration[] {
+  const rotatingProvider = providers.find(
+    (provider) => provider.authMode === "codex_subscription_oauth_rotating",
+  );
+  if (!rotatingProvider) {
+    return [...providers];
+  }
+  return [{ ...rotatingProvider, requiredHealthy: true }];
+}
+
+function resolveProviderAfterAuthChange(input: {
+  readonly provider: ReviewProviderConfiguration;
+  readonly authMode: ReviewProviderConfiguration["authMode"];
+  readonly kind: ProviderKind;
+  readonly defaultProvider: ReviewProviderConfiguration;
+  readonly nextOptions: readonly ReviewModelOption[];
+}): ReviewProviderConfiguration {
+  const { provider, authMode, kind, defaultProvider, nextOptions } = input;
+  return {
+    ...provider,
+    kind,
+    authMode,
+    model:
+      nextOptions.find(
+        (option) => option.value === provider.model && !option.disabled,
+      )?.value ??
+      firstSelectableModel(nextOptions)?.value ??
+      nextOptions[0]?.value ??
+      defaultProvider.model,
+    reasoningEffort:
+      kind === "codex" && provider.kind === "codex"
+        ? provider.reasoningEffort
+        : defaultProvider.reasoningEffort,
+    agenticContext:
+      kind === "codex" && provider.kind === "codex"
+        ? provider.agenticContext
+        : defaultProvider.agenticContext,
+    fastMode:
+      kind === "codex" && provider.kind === "codex"
+        ? provider.fastMode
+        : defaultProvider.fastMode,
   };
 }
 

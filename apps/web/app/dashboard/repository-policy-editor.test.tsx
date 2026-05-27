@@ -92,7 +92,7 @@ function pageText(): string {
 
 describe("ReviewConfigForm", () => {
   it("keeps at least one provider and adds an OpenRouter provider", () => {
-    renderReviewConfigForm();
+    renderReviewConfigForm({ config: openRouterReviewConfiguration() });
 
     expect(
       (screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement)
@@ -134,7 +134,7 @@ describe("ReviewConfigForm", () => {
   });
 
   it("keeps one provider marked as required healthy", () => {
-    renderReviewConfigForm();
+    renderReviewConfigForm({ config: openRouterReviewConfiguration() });
 
     const requiredToggle = screen.getByRole("checkbox", {
       name: "Required healthy",
@@ -159,7 +159,6 @@ describe("ReviewConfigForm", () => {
   it("filters model options by selected provider", () => {
     renderReviewConfigForm();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
     fireEvent.click(
       screen.getAllByRole("button", { name: "Open model options" })[0]!,
     );
@@ -169,7 +168,7 @@ describe("ReviewConfigForm", () => {
   });
 
   it("allows paid model options when they match the typed search", () => {
-    renderReviewConfigForm();
+    renderReviewConfigForm({ config: openRouterReviewConfiguration() });
 
     fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
     const modelInput = screen.getAllByRole("textbox", {
@@ -195,7 +194,7 @@ describe("ReviewConfigForm", () => {
   });
 
   it("filters model options by typed model text while keeping custom input", () => {
-    renderReviewConfigForm();
+    renderReviewConfigForm({ config: openRouterReviewConfiguration() });
 
     fireEvent.click(screen.getByRole("button", { name: "Add provider" }));
     const modelInput = screen.getAllByRole("textbox", {
@@ -323,6 +322,77 @@ describe("ReviewConfigForm", () => {
       );
     },
   );
+
+  it("collapses inherited legacy Codex multi-provider config to one rotating provider", async () => {
+    vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
+      status: "missing",
+    });
+
+    renderReviewConfigForm({
+      config: legacyCodexMultiProviderReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositorySecretCheckTarget: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Rotating Codex OAuth uses/i)).toBeTruthy();
+    });
+    expect(screen.getByText("Provider 1")).toBeTruthy();
+    expect(screen.queryByText("Provider 2")).toBeNull();
+    expect(
+      (
+        document.querySelector(
+          'input[name="providerCount"]',
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("1");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Add provider",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
+      .calls[0]?.[0] as FormData;
+    expect(formData.get("providerKind")).toBe("codex");
+    expect(formData.get("authMode")).toBe("codex_subscription_oauth_rotating");
+  });
+
+  it("switching a multi-provider config to Codex rotating removes extra providers", () => {
+    renderReviewConfigForm({
+      config: duplicateOpenRouterReviewConfiguration(),
+      repositoryFullName: "777genius/agent-teams-ai",
+    });
+
+    expect(screen.getByText("Provider 2")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getAllByRole("combobox", { name: "Provider auth" })[0]!,
+    );
+    fireEvent.click(
+      screen.getByRole("option", { name: /Codex OAuth with refresh/i }),
+    );
+
+    expect(screen.queryByText("Provider 2")).toBeNull();
+    expect(
+      (
+        document.querySelector(
+          'input[name="providerCount"]',
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("1");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Add provider",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
 
   it("shows Claude Code by default, allows disabling it, and hides Codex controls after selection", () => {
     renderReviewConfigForm();
@@ -659,6 +729,46 @@ function duplicateOpenRouterReviewConfiguration(): ReviewConfiguration {
     ...safeDefaultReviewConfiguration,
     provider: firstOpenRouterProvider,
     providers: [firstOpenRouterProvider, secondOpenRouterProvider],
+  };
+}
+
+function legacyCodexMultiProviderReviewConfiguration(): ReviewConfiguration {
+  const codexProvider: ReviewProviderConfiguration = {
+    kind: "codex",
+    authMode: "codex_subscription_oauth",
+    model: "gpt-5.5",
+    reasoningEffort: "high",
+    agenticContext: true,
+    fastMode: false,
+    requiredHealthy: true,
+  };
+  const firstOpenRouterProvider: ReviewProviderConfiguration = {
+    kind: "openrouter",
+    authMode: "openrouter_api_key",
+    model: "poolside/laguna-m.1:free",
+    reasoningEffort: "medium",
+    agenticContext: true,
+    fastMode: false,
+    requiredHealthy: false,
+  };
+  const secondOpenRouterProvider: ReviewProviderConfiguration = {
+    ...firstOpenRouterProvider,
+    model: "anthropic/claude-sonnet-4.5",
+  };
+
+  return {
+    ...safeDefaultReviewConfiguration,
+    provider: codexProvider,
+    providers: [
+      codexProvider,
+      firstOpenRouterProvider,
+      secondOpenRouterProvider,
+    ],
+    execution: {
+      ...safeDefaultReviewConfiguration.execution,
+      providerLimit: 3,
+      providerMaxParallel: 2,
+    },
   };
 }
 
