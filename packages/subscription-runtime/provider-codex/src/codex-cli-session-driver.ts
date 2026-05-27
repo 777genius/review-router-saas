@@ -6,7 +6,7 @@ import type {
   SessionValidationResult,
   WorkspaceHandle,
 } from "@reviewrouter/subscription-runtime-core";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
   buildCodexRefreshBootstrapPlan,
   pruneCodexChildEnv,
 } from "./codex-cli-domain";
+import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import {
   codexAuthJsonFormatVersion,
   codexProviderId,
@@ -128,7 +129,7 @@ export class CodexCliSessionDriver implements ProviderSessionDriver {
       }
       throw error;
     } finally {
-      await rm(tempRoot, { recursive: true, force: true });
+      await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
     }
   }
 

@@ -23,6 +23,7 @@ import {
   validateCodexSessionArtifact,
 } from "../index";
 import { classifyCodexRuntimeFailure } from "../codex-cli-domain";
+import { isTransientCodexTempCleanupError } from "../codex-cli-temp-cleanup";
 
 const validAuthJson = JSON.stringify({
   auth_mode: "chatgpt",
@@ -55,6 +56,19 @@ describe("Codex provider adapter", () => {
       ),
     ).toBe("quota_limited");
     expect(
+      classifyCodexRuntimeFailure("You've hit your usage limit."),
+    ).toBe("quota_limited");
+    expect(
+      classifyCodexRuntimeFailure(
+        "Visit https://chatgpt.com/codex/settings/usage to purchase more credits",
+      ),
+    ).toBe("quota_limited");
+    expect(
+      classifyCodexRuntimeFailure(
+        "However, not enough retry quota is available for another attempt",
+      ),
+    ).toBe("quota_limited");
+    expect(
       classifyCodexRuntimeFailure(
         "Check the required provider credentials, CLI setup, model name, and quota.",
       ),
@@ -64,6 +78,18 @@ describe("Codex provider adapter", () => {
         "Verify the key has quota and access to the configured model.",
       ),
     ).toBe("unknown_auth_state");
+  });
+
+  it("recognizes transient Codex temp cleanup races", () => {
+    const error = Object.assign(
+      new Error(
+        "ENOTEMPTY: directory not empty, rmdir '/tmp/codex-home/.tmp/plugins-clone-test'",
+      ),
+      { code: "ENOTEMPTY" },
+    );
+
+    expect(isTransientCodexTempCleanupError(error)).toBe(true);
+    expect(isTransientCodexTempCleanupError(new Error("boom"))).toBe(false);
   });
 
   it("declares split session and agent capabilities", () => {

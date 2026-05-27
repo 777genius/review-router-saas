@@ -103,9 +103,15 @@ function isCodexQuotaOrRateLimitFailure(normalizedMessage: string): boolean {
     /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(
       normalizedMessage,
     ) ||
+    /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?: reached| exceeded)?|limit reached)\b/.test(
+      normalizedMessage,
+    ) ||
     /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(
       normalizedMessage,
     ) ||
+    /\byou(?:'|’)ve hit your usage limit\b/.test(normalizedMessage) ||
+    /\b(?:purchase|buy|add|get) more credits\b/.test(normalizedMessage) ||
+    /\bout of credits\b/.test(normalizedMessage) ||
     /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(
       normalizedMessage,
     )

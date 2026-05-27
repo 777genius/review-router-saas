@@ -34,6 +34,7 @@ __export(github_action_exports, {
   buildCodexCommand: () => buildCodexCommand,
   deleteStaleCodexRotatingSummaryComments: () => deleteStaleCodexRotatingSummaryComments,
   extractReviewRouterRuntimeFailure: () => extractReviewRouterRuntimeFailure,
+  formatTopLevelActionErrorMessage: () => formatTopLevelActionErrorMessage,
   postPullRequestComment: () => postPullRequestComment,
   readActionAuthJson: () => readActionAuthJson,
   readActionInputs: () => readActionInputs,
@@ -815,9 +816,11 @@ function classifyCodexRuntimeFailure(message) {
 function isCodexQuotaOrRateLimitFailure(normalizedMessage) {
   return /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(
     normalizedMessage
+  ) || /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?: reached| exceeded)?|limit reached)\b/.test(
+    normalizedMessage
   ) || /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(
     normalizedMessage
-  ) || /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(
+  ) || /\byou(?:'|’)ve hit your usage limit\b/.test(normalizedMessage) || /\b(?:purchase|buy|add|get) more credits\b/.test(normalizedMessage) || /\bout of credits\b/.test(normalizedMessage) || /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(
     normalizedMessage
   );
 }
@@ -961,9 +964,55 @@ function safeCauseCategory(message) {
 }
 
 // packages/subscription-runtime/provider-codex/src/codex-cli-agent-driver.ts
-var import_promises = require("node:fs/promises");
+var import_promises2 = require("node:fs/promises");
 var import_node_os = require("node:os");
+var import_node_path2 = require("node:path");
+
+// packages/subscription-runtime/provider-codex/src/codex-cli-temp-cleanup.ts
+var import_promises = require("node:fs/promises");
 var import_node_path = require("node:path");
+var transientCleanupErrorCodes = /* @__PURE__ */ new Set([
+  "EBUSY",
+  "EACCES",
+  "ENOTEMPTY",
+  "EPERM"
+]);
+async function cleanupCodexRuntimeTempRoot(input) {
+  const secretsScrubbed = await scrubSensitiveCodexHomePaths(
+    input.tempCodexHome
+  );
+  try {
+    await (0, import_promises.rm)(input.tempRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 250
+    });
+  } catch (error51) {
+    if (secretsScrubbed && isTransientCodexTempCleanupError(error51)) {
+      return;
+    }
+    throw error51;
+  }
+}
+function isTransientCodexTempCleanupError(error51) {
+  if (typeof error51 !== "object" || error51 === null) {
+    return false;
+  }
+  const code = error51.code;
+  if (typeof code === "string" && transientCleanupErrorCodes.has(code)) {
+    return true;
+  }
+  const message = error51 instanceof Error ? error51.message.toLowerCase() : String(error51).toLowerCase();
+  return message.includes("directory not empty") || message.includes("resource busy") || message.includes("operation not permitted");
+}
+async function scrubSensitiveCodexHomePaths(codexHome) {
+  const results = await Promise.allSettled([
+    (0, import_promises.rm)((0, import_node_path.join)(codexHome, "auth.json"), { force: true }),
+    (0, import_promises.rm)((0, import_node_path.join)(codexHome, "accounts"), { recursive: true, force: true })
+  ]);
+  return results.every((result) => result.status === "fulfilled");
+}
 
 // packages/subscription-runtime/provider-codex/src/failure-classifier.ts
 function classifyCodexFailure(error51) {
@@ -1017,13 +1066,13 @@ var CodexCliAgentDriver = class {
   async runTask(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await (0, import_promises.mkdtemp)(
-      (0, import_node_path.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-")
+    const tempRoot = await (0, import_promises2.mkdtemp)(
+      (0, import_node_path2.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-")
     );
-    const tempHome = (0, import_node_path.join)(tempRoot, "home");
-    const tempCodexHome = (0, import_node_path.join)(tempRoot, "codex-home");
-    await (0, import_promises.mkdir)(tempHome, { recursive: true, mode: 448 });
-    await (0, import_promises.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
+    const tempHome = (0, import_node_path2.join)(tempRoot, "home");
+    const tempCodexHome = (0, import_node_path2.join)(tempRoot, "codex-home");
+    await (0, import_promises2.mkdir)(tempHome, { recursive: true, mode: 448 });
+    await (0, import_promises2.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
     try {
       await writeCodexHomeSnapshot({ codexHome: tempCodexHome, authJson });
       const result = await input.runner.run({
@@ -1064,7 +1113,7 @@ ${stderr}`),
         warnings: []
       };
     } finally {
-      await (0, import_promises.rm)(tempRoot, { recursive: true, force: true });
+      await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
     }
   }
   classifyRunFailure(error51) {
@@ -1090,18 +1139,18 @@ async function writeCodexHomeSnapshot(input) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises.writeFile)((0, import_node_path.join)(input.codexHome, "config.toml"), config2, {
+  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises.writeFile)((0, import_node_path.join)(input.codexHome, "auth.json"), input.authJson, {
+  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "auth.json"), input.authJson, {
     mode: 384
   });
 }
 
 // packages/subscription-runtime/provider-codex/src/codex-cli-session-driver.ts
-var import_promises2 = require("node:fs/promises");
+var import_promises3 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
-var import_node_path2 = require("node:path");
+var import_node_path3 = require("node:path");
 var CodexCliSessionDriver = class {
   constructor(options = {}) {
     this.options = options;
@@ -1116,16 +1165,16 @@ var CodexCliSessionDriver = class {
   async refreshSession(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await (0, import_promises2.mkdtemp)(
-      (0, import_node_path2.join)((0, import_node_os2.tmpdir)(), "subscription-runtime-codex-")
+    const tempRoot = await (0, import_promises3.mkdtemp)(
+      (0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "subscription-runtime-codex-")
     );
-    const tempHome = (0, import_node_path2.join)(tempRoot, "home");
-    const tempCodexHome = (0, import_node_path2.join)(tempRoot, "codex-home");
-    const emptyWorkingDirectory = (0, import_node_path2.join)(tempRoot, "empty-workdir");
-    const authJsonPath = (0, import_node_path2.join)(tempCodexHome, "auth.json");
-    await (0, import_promises2.mkdir)(tempHome, { recursive: true, mode: 448 });
-    await (0, import_promises2.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
-    await (0, import_promises2.mkdir)(emptyWorkingDirectory, { recursive: true, mode: 448 });
+    const tempHome = (0, import_node_path3.join)(tempRoot, "home");
+    const tempCodexHome = (0, import_node_path3.join)(tempRoot, "codex-home");
+    const emptyWorkingDirectory = (0, import_node_path3.join)(tempRoot, "empty-workdir");
+    const authJsonPath = (0, import_node_path3.join)(tempCodexHome, "auth.json");
+    await (0, import_promises3.mkdir)(tempHome, { recursive: true, mode: 448 });
+    await (0, import_promises3.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
+    await (0, import_promises3.mkdir)(emptyWorkingDirectory, { recursive: true, mode: 448 });
     try {
       await writeCodexHomeSnapshot2({ codexHome: tempCodexHome, authJson });
       const plan = buildCodexRefreshBootstrapPlan({
@@ -1147,7 +1196,7 @@ var CodexCliSessionDriver = class {
         timeoutMs: 5 * 60 * 1e3,
         abortSignal: input.abortSignal
       });
-      const refreshedAuthJson = await (0, import_promises2.readFile)(authJsonPath, "utf8");
+      const refreshedAuthJson = await (0, import_promises3.readFile)(authJsonPath, "utf8");
       const refreshed = sessionArtifactFromCodexAuthJson(refreshedAuthJson);
       const providerState = refreshedAuthJson === authJson ? "unchanged" : "refreshed";
       return {
@@ -1183,7 +1232,7 @@ var CodexCliSessionDriver = class {
       }
       throw error51;
     } finally {
-      await (0, import_promises2.rm)(tempRoot, { recursive: true, force: true });
+      await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
     }
   }
   classifySessionFailure(error51) {
@@ -1212,10 +1261,10 @@ async function writeCodexHomeSnapshot2(input) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "config.toml"), config2, {
+  await (0, import_promises3.writeFile)((0, import_node_path3.join)(input.codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "auth.json"), input.authJson, {
+  await (0, import_promises3.writeFile)((0, import_node_path3.join)(input.codexHome, "auth.json"), input.authJson, {
     mode: 384
   });
 }
@@ -1381,9 +1430,9 @@ function safeFailureOutput(output) {
 }
 
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
-var import_promises3 = require("node:fs/promises");
+var import_promises4 = require("node:fs/promises");
 var import_node_os3 = require("node:os");
-var import_node_path3 = require("node:path");
+var import_node_path4 = require("node:path");
 
 // packages/features/codex-oauth-rotating/src/domain/codex-oauth-rotating.ts
 var import_node_crypto3 = require("node:crypto");
@@ -19469,7 +19518,7 @@ async function encryptCodexRotatingAuthForGitHubSecret(input) {
 }
 function classifyCodexRuntimeFailure2(message) {
   const normalized = message.toLowerCase();
-  if (normalized.includes("quota") || normalized.includes("rate limit") || normalized.includes("billing")) {
+  if (isCodexQuotaOrRateLimitFailure2(normalized)) {
     return "quota_limited";
   }
   if (normalized.includes("unauthorized") || normalized.includes("invalid_grant") || normalized.includes("refresh token") || normalized.includes("login required")) {
@@ -19479,6 +19528,17 @@ function classifyCodexRuntimeFailure2(message) {
     return "permission_required";
   }
   return "unknown_auth_state";
+}
+function isCodexQuotaOrRateLimitFailure2(normalizedMessage) {
+  return /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(
+    normalizedMessage
+  ) || /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?: reached| exceeded)?|limit reached)\b/.test(
+    normalizedMessage
+  ) || /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(
+    normalizedMessage
+  ) || /\byou(?:'|’)ve hit your usage limit\b/.test(normalizedMessage) || /\b(?:purchase|buy|add|get) more credits\b/.test(normalizedMessage) || /\bout of credits\b/.test(normalizedMessage) || /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(
+    normalizedMessage
+  );
 }
 function pruneCodexRotatingChildEnv(env) {
   const allowed = {};
@@ -19812,7 +19872,7 @@ async function readPullRequestEvent(env) {
   if (!eventPath) {
     throw new Error("missing_github_event_path");
   }
-  const event = JSON.parse(await (0, import_promises3.readFile)(eventPath, "utf8"));
+  const event = JSON.parse(await (0, import_promises4.readFile)(eventPath, "utf8"));
   const repository = requireString(event.repository?.full_name, "event_repo");
   const headRepo = requireString(
     event.pull_request?.head?.repo?.full_name,
@@ -20091,22 +20151,22 @@ function closeHttpServer(server) {
 }
 async function resolveCodexBinary(env) {
   const actionPath = resolveGitHubActionPath(env);
-  const bundleRoot = (0, import_node_path3.join)(
+  const bundleRoot = (0, import_node_path4.join)(
     actionPath,
     "action-dist",
     "codex",
     bundledCodexPlatform
   );
-  const archivePath = (0, import_node_path3.join)(bundleRoot, bundledCodexArchiveName);
-  const manifestPath = (0, import_node_path3.join)(bundleRoot, "manifest.json");
+  const archivePath = (0, import_node_path4.join)(bundleRoot, bundledCodexArchiveName);
+  const manifestPath = (0, import_node_path4.join)(bundleRoot, "manifest.json");
   let resolvedBundleRoot;
   let resolvedArchivePath;
   let resolvedManifestPath;
   try {
     [resolvedBundleRoot, resolvedArchivePath, resolvedManifestPath] = await Promise.all([
-      (0, import_promises3.realpath)(bundleRoot),
-      (0, import_promises3.realpath)(archivePath),
-      (0, import_promises3.realpath)(manifestPath)
+      (0, import_promises4.realpath)(bundleRoot),
+      (0, import_promises4.realpath)(archivePath),
+      (0, import_promises4.realpath)(manifestPath)
     ]);
   } catch (error51) {
     throw new Error("codex_bundled_binary_missing", { cause: error51 });
@@ -20115,9 +20175,9 @@ async function resolveCodexBinary(env) {
     throw new Error("codex_bundled_binary_escape");
   }
   const [archiveLinkStats, manifestLinkStats, archiveStats, manifest] = await Promise.all([
-    (0, import_promises3.lstat)(archivePath),
-    (0, import_promises3.lstat)(manifestPath),
-    (0, import_promises3.stat)(resolvedArchivePath),
+    (0, import_promises4.lstat)(archivePath),
+    (0, import_promises4.lstat)(manifestPath),
+    (0, import_promises4.stat)(resolvedArchivePath),
     readCodexBinaryManifest(resolvedManifestPath)
   ]);
   if (archiveLinkStats.isSymbolicLink() || manifestLinkStats.isSymbolicLink()) {
@@ -20131,8 +20191,8 @@ async function resolveCodexBinary(env) {
   if (archiveSha256 !== manifest.archiveSha256) {
     throw new Error("codex_bundled_archive_hash_mismatch");
   }
-  const extractionRoot = await (0, import_promises3.mkdtemp)(
-    (0, import_node_path3.join)(env.RUNNER_TEMP ?? (0, import_node_os3.tmpdir)(), "reviewrouter-codex-bundle-")
+  const extractionRoot = await (0, import_promises4.mkdtemp)(
+    (0, import_node_path4.join)(env.RUNNER_TEMP ?? (0, import_node_os3.tmpdir)(), "reviewrouter-codex-bundle-")
   );
   await runProcess({
     command: "tar",
@@ -20143,16 +20203,16 @@ async function resolveCodexBinary(env) {
     },
     timeoutMs: 6e4
   });
-  const extractedBinaryPath = (0, import_node_path3.join)(
+  const extractedBinaryPath = (0, import_node_path4.join)(
     extractionRoot,
     manifest.binaryPathInArchive
   );
-  const resolvedExtractionRoot = await (0, import_promises3.realpath)(extractionRoot);
-  const resolvedBinaryPath = await (0, import_promises3.realpath)(extractedBinaryPath);
+  const resolvedExtractionRoot = await (0, import_promises4.realpath)(extractionRoot);
+  const resolvedBinaryPath = await (0, import_promises4.realpath)(extractedBinaryPath);
   if (!resolvedBinaryPath.startsWith(`${resolvedExtractionRoot}/`)) {
     throw new Error("codex_bundled_binary_escape");
   }
-  const binaryStats = await (0, import_promises3.stat)(resolvedBinaryPath);
+  const binaryStats = await (0, import_promises4.stat)(resolvedBinaryPath);
   if (!binaryStats.isFile() || binaryStats.size !== manifest.size) {
     throw new Error("codex_bundled_binary_manifest_mismatch");
   }
@@ -20160,8 +20220,8 @@ async function resolveCodexBinary(env) {
   if (binarySha256 !== manifest.sha256) {
     throw new Error("codex_bundled_binary_hash_mismatch");
   }
-  await (0, import_promises3.chmod)(resolvedBinaryPath, 493);
-  await (0, import_promises3.access)(resolvedBinaryPath, import_node_fs.constants.X_OK);
+  await (0, import_promises4.chmod)(resolvedBinaryPath, 493);
+  await (0, import_promises4.access)(resolvedBinaryPath, import_node_fs.constants.X_OK);
   return resolvedBinaryPath;
 }
 function resolveGitHubActionPath(env) {
@@ -20170,14 +20230,14 @@ function resolveGitHubActionPath(env) {
     return explicitActionPath;
   }
   if (typeof __dirname === "string" && __dirname.endsWith("action-dist")) {
-    return (0, import_node_path3.join)(__dirname, "..");
+    return (0, import_node_path4.join)(__dirname, "..");
   }
   throw new Error("missing_github_action_path");
 }
 async function readCodexBinaryManifest(manifestPath) {
   try {
     return JSON.parse(
-      await (0, import_promises3.readFile)(manifestPath, "utf8")
+      await (0, import_promises4.readFile)(manifestPath, "utf8")
     );
   } catch (error51) {
     throw new Error("codex_bundled_binary_manifest_invalid", { cause: error51 });
@@ -20203,14 +20263,14 @@ function sha256File(path) {
 }
 async function getAvailableDiskBytes(path) {
   try {
-    const stats = await (0, import_promises3.statfs)(path);
+    const stats = await (0, import_promises4.statfs)(path);
     return stats.bavail * stats.bsize;
   } catch (error51) {
     throw new Error("runner_disk_budget_unavailable", { cause: error51 });
   }
 }
 async function writeCodexAuthSnapshot(codexHome, authJson) {
-  await (0, import_promises3.mkdir)(codexHome, { recursive: true, mode: 448 });
+  await (0, import_promises4.mkdir)(codexHome, { recursive: true, mode: 448 });
   const config2 = [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -20232,10 +20292,10 @@ async function writeCodexAuthSnapshot(codexHome, authJson) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises3.writeFile)((0, import_node_path3.join)(codexHome, "config.toml"), config2, {
+  await (0, import_promises4.writeFile)((0, import_node_path4.join)(codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises3.writeFile)((0, import_node_path3.join)(codexHome, "auth.json"), authJson, { mode: 384 });
+  await (0, import_promises4.writeFile)((0, import_node_path4.join)(codexHome, "auth.json"), authJson, { mode: 384 });
 }
 async function runCodexBootstrap(input) {
   const emptyCwd = await makeTempDirectory("reviewrouter-empty-");
@@ -20264,7 +20324,7 @@ async function refreshCodexAuthJson(input) {
     await writeCodexAuthSnapshot(input.tempCodexHome, input.authJson);
     await runCodexBootstrap(input);
     return {
-      authJson: await (0, import_promises3.readFile)((0, import_node_path3.join)(input.tempCodexHome, "auth.json"), "utf8"),
+      authJson: await (0, import_promises4.readFile)((0, import_node_path4.join)(input.tempCodexHome, "auth.json"), "utf8"),
       writebackCommittedByRuntime: false
     };
   }
@@ -20521,8 +20581,8 @@ function shouldUseSubscriptionRuntimeCodex(env) {
   return value !== "0" && value !== "false";
 }
 async function safeCheckoutPullRequest(input) {
-  const askPass = (0, import_node_path3.join)(input.workspace, ".reviewrouter-askpass.sh");
-  await (0, import_promises3.writeFile)(
+  const askPass = (0, import_node_path4.join)(input.workspace, ".reviewrouter-askpass.sh");
+  await (0, import_promises4.writeFile)(
     askPass,
     [
       "#!/usr/bin/env bash",
@@ -20535,7 +20595,7 @@ async function safeCheckoutPullRequest(input) {
     ].join("\n"),
     { mode: 448 }
   );
-  await (0, import_promises3.chmod)(askPass, 448);
+  await (0, import_promises4.chmod)(askPass, 448);
   const gitEnv = buildSafeCheckoutGitEnv({
     sourceEnv: input.env,
     workspace: input.workspace,
@@ -20598,7 +20658,7 @@ function buildSafeCheckoutGitEnv(input) {
   return {
     ...pruneCodexRotatingChildEnv(input.sourceEnv),
     HOME: input.workspace,
-    XDG_CONFIG_HOME: (0, import_node_path3.join)(input.workspace, ".config"),
+    XDG_CONFIG_HOME: (0, import_node_path4.join)(input.workspace, ".config"),
     GIT_ASKPASS: input.askPass,
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -20628,7 +20688,7 @@ function buildSafeCheckoutGitEnv(input) {
 async function assertCheckoutConfigDoesNotPersistCredentials(input) {
   let gitConfig;
   try {
-    gitConfig = await (0, import_promises3.readFile)((0, import_node_path3.join)(input.workspace, ".git", "config"), "utf8");
+    gitConfig = await (0, import_promises4.readFile)((0, import_node_path4.join)(input.workspace, ".git", "config"), "utf8");
   } catch (error51) {
     throw new Error("checkout_config_missing", { cause: error51 });
   }
@@ -20639,11 +20699,11 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input) {
 }
 async function runFullReviewRouterRuntime(input) {
   const actionPath = resolveGitHubActionPath(input.env);
-  const runtimePath = (0, import_node_path3.join)(actionPath, "dist", "index.js");
-  await (0, import_promises3.access)(runtimePath, import_node_fs.constants.R_OK);
+  const runtimePath = (0, import_node_path4.join)(actionPath, "dist", "index.js");
+  await (0, import_promises4.access)(runtimePath, import_node_fs.constants.R_OK);
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
-    await (0, import_promises3.symlink)(input.codexBinaryPath, (0, import_node_path3.join)(codexBinDir, "codex"));
+    await (0, import_promises4.symlink)(input.codexBinaryPath, (0, import_node_path4.join)(codexBinDir, "codex"));
     await runProcess({
       command: process.execPath,
       args: [runtimePath],
@@ -20679,7 +20739,7 @@ function buildFullReviewRuntimeEnv(input) {
     CODEX_HOME: input.tempCodexHome,
     CI: "true",
     PATH: `${input.codexBinDir}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
-    GITHUB_OUTPUT: (0, import_node_path3.join)(input.tempHome, "github-output"),
+    GITHUB_OUTPUT: (0, import_node_path4.join)(input.tempHome, "github-output"),
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
@@ -20954,6 +21014,19 @@ function extractReviewRouterRuntimeFailure(output) {
 function shouldSuppressTopLevelActionError(error51) {
   return error51 instanceof AlreadyReportedRuntimeFailure || typeof error51 === "object" && error51 !== null && error51.alreadyReportedToGitHub === true;
 }
+function formatTopLevelActionErrorMessage(error51) {
+  const message = error51 instanceof Error ? error51.message : "unknown_error";
+  switch (message) {
+    case "needs_reconnect":
+      return "needs_reconnect: Codex OAuth session is expired or revoked. Reconnect the Codex provider in ReviewRouter.";
+    case "quota_limited":
+      return "quota_limited: Codex usage, rate, or billing limit was reached. Add credits, wait for reset, or change account entitlement.";
+    case "permission_required":
+      return "permission_required: Codex permission is required.";
+    default:
+      return message;
+  }
+}
 function getProcessFailureOutput(error51) {
   if (error51 instanceof ProcessExecutionError) {
     return error51.output;
@@ -20980,7 +21053,7 @@ function sanitizeProcessLogChunk(output) {
   ).replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]").replace(/[A-Za-z0-9._~+/=-]{120,}/g, "[redacted]");
 }
 async function removeTree(path) {
-  await (0, import_promises3.rm)(path, {
+  await (0, import_promises4.rm)(path, {
     recursive: true,
     force: true,
     maxRetries: 5,
@@ -20988,7 +21061,7 @@ async function removeTree(path) {
   });
 }
 async function makeTempDirectory(prefix) {
-  return (0, import_promises3.mkdtemp)((0, import_node_path3.join)((0, import_node_os3.tmpdir)(), prefix));
+  return (0, import_promises4.mkdtemp)((0, import_node_path4.join)((0, import_node_os3.tmpdir)(), prefix));
 }
 function buildWritebackIdempotencyKey(env, leaseId) {
   const runId = env.GITHUB_RUN_ID || "local";
@@ -21072,9 +21145,10 @@ function shouldAutoRunCodexRotatingAction(input) {
 if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) {
   runCodexRotatingGitHubAction().catch((error51) => {
     if (!shouldSuppressTopLevelActionError(error51)) {
-      const message = error51 instanceof Error ? error51.message : "unknown_error";
-      process.stderr.write(`::error::${escapeCommandValue(message)}
-`);
+      process.stderr.write(
+        `::error::${escapeCommandValue(formatTopLevelActionErrorMessage(error51))}
+`
+      );
     }
     process.exitCode = 1;
   });
@@ -21085,6 +21159,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   buildCodexCommand,
   deleteStaleCodexRotatingSummaryComments,
   extractReviewRouterRuntimeFailure,
+  formatTopLevelActionErrorMessage,
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,

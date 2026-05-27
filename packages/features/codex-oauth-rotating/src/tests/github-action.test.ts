@@ -10,6 +10,7 @@ import {
   buildCodexCommand,
   deleteStaleCodexRotatingSummaryComments,
   extractReviewRouterRuntimeFailure,
+  formatTopLevelActionErrorMessage,
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,
@@ -143,6 +144,15 @@ describe("Codex rotating GitHub Action runtime", () => {
   it("maps empty auth-json to reconnect before parsing", () => {
     expect(() => readActionAuthJson({ "INPUT_AUTH-JSON": "" })).toThrow(
       "needs_reconnect",
+    );
+  });
+
+  it("formats top-level action state codes with actionable safe messages", () => {
+    expect(formatTopLevelActionErrorMessage(new Error("needs_reconnect"))).toBe(
+      "needs_reconnect: Codex OAuth session is expired or revoked. Reconnect the Codex provider in ReviewRouter.",
+    );
+    expect(formatTopLevelActionErrorMessage(new Error("quota_limited"))).toBe(
+      "quota_limited: Codex usage, rate, or billing limit was reached. Add credits, wait for reset, or change account entitlement.",
     );
   });
 

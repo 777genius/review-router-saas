@@ -4,6 +4,7 @@ import {
   buildCodexRefreshBootstrapPlan,
   buildCodexRotatingSetupManifest,
   buildSafeCheckoutPlan,
+  classifyCodexRuntimeFailure,
   codexRotatingOidcClaimsSchema,
   codexRotatingAuthMode,
   codexRotatingSecretName,
@@ -61,6 +62,20 @@ describe("Codex rotating auth domain", () => {
         authJsonBytes: `${validAuthJson}${" ".repeat(33 * 1024)}`,
       }),
     ).toThrow("codex_auth_json_too_large");
+  });
+
+  it("classifies Codex usage and credit limits as quota-limited", () => {
+    expect(classifyCodexRuntimeFailure("You've hit your usage limit.")).toBe(
+      "quota_limited",
+    );
+    expect(
+      classifyCodexRuntimeFailure(
+        "Visit https://chatgpt.com/codex/settings/usage to purchase more credits",
+      ),
+    ).toBe("quota_limited");
+    expect(classifyCodexRuntimeFailure("invalid_grant refresh token")).toBe(
+      "needs_reconnect",
+    );
   });
 
   it("builds and encodes a repo-bound setup manifest", () => {

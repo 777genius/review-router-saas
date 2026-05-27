@@ -2048,6 +2048,20 @@ export function shouldSuppressTopLevelActionError(error: unknown): boolean {
   );
 }
 
+export function formatTopLevelActionErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown_error";
+  switch (message) {
+    case "needs_reconnect":
+      return "needs_reconnect: Codex OAuth session is expired or revoked. Reconnect the Codex provider in ReviewRouter.";
+    case "quota_limited":
+      return "quota_limited: Codex usage, rate, or billing limit was reached. Add credits, wait for reset, or change account entitlement.";
+    case "permission_required":
+      return "permission_required: Codex permission is required.";
+    default:
+      return message;
+  }
+}
+
 function getProcessFailureOutput(error: unknown): string {
   if (error instanceof ProcessExecutionError) {
     return error.output;
@@ -2230,8 +2244,9 @@ if (
 ) {
   runCodexRotatingGitHubAction().catch((error: unknown) => {
     if (!shouldSuppressTopLevelActionError(error)) {
-      const message = error instanceof Error ? error.message : "unknown_error";
-      process.stderr.write(`::error::${escapeCommandValue(message)}\n`);
+      process.stderr.write(
+        `::error::${escapeCommandValue(formatTopLevelActionErrorMessage(error))}\n`,
+      );
     }
     process.exitCode = 1;
   });

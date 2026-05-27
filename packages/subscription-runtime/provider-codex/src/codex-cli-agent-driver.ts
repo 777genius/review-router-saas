@@ -6,11 +6,12 @@ import type {
   SessionArtifact,
   WorkspaceHandle,
 } from "@reviewrouter/subscription-runtime-core";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexAuthJsonFromArtifact } from "./codex-auth-json-codec";
 import { pruneCodexChildEnv } from "./codex-cli-domain";
+import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
 import {
   codexAgentCapabilities,
   codexAgentId,
@@ -93,7 +94,7 @@ export class CodexCliAgentDriver implements AgentDriver {
         warnings: [],
       };
     } finally {
-      await rm(tempRoot, { recursive: true, force: true });
+      await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
     }
   }
 
