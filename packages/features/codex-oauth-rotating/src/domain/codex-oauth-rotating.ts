@@ -619,7 +619,25 @@ export class InMemoryCodexRotatingLeaseStore {
         record.expiresAt > input.now,
     );
     if (active) {
-      return { ...active, status: "conflict" };
+      if (
+        active.runId === input.runId &&
+        active.runAttempt === input.runAttempt &&
+        active.status === "preleased"
+      ) {
+        return active;
+      }
+      if (
+        active.runId === input.runId &&
+        active.runAttempt !== input.runAttempt
+      ) {
+        this.records.set(active.leaseId, {
+          ...active,
+          status: "expired",
+          expiresAt: input.now,
+        });
+      } else {
+        return { ...active, status: "conflict" };
+      }
     }
     const lease: CodexRotatingLeaseRecord = {
       leaseId: `lease:${randomUUID()}`,

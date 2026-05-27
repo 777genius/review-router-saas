@@ -768,7 +768,10 @@ function statusCodeForActionError(message: string): number {
   ) {
     return 503;
   }
-  if (message.includes("codex_rotating_lease_not_active")) {
+  if (
+    message.includes("codex_rotating_lease_not_active") ||
+    message.includes("codex_rotating_lease_conflict")
+  ) {
     return 409;
   }
   if (
@@ -898,6 +901,9 @@ function safeActionErrorCode(message: string): string {
   if (message.includes("codex_rotating_lease_not_active")) {
     return "codex_rotating_lease_not_active";
   }
+  if (message.includes("codex_rotating_lease_conflict")) {
+    return "codex_rotating_lease_conflict";
+  }
   if (message.includes("codex_rotating_not_enabled")) {
     return "codex_rotating_not_enabled";
   }
@@ -958,6 +964,8 @@ function safeActionErrorMessage(code: string): string {
       return "Codex OAuth rotating writeback is temporarily unavailable.";
     case "codex_rotating_lease_not_active":
       return "Codex OAuth rotating lease is not active for this request.";
+    case "codex_rotating_lease_conflict":
+      return "Another Codex OAuth run is still active for this repository.";
     case "codex_rotating_not_enabled":
       return "Codex OAuth rotating is not enabled for this repository.";
     case "codex_legacy_auth_requires_reconnect":
@@ -1020,6 +1028,7 @@ function isRetryableActionError(code: string): boolean {
     code === "action_control_plane_disabled" ||
     code === "comment_token_unavailable" ||
     code === "codex_rotating_oauth_unavailable" ||
+    code === "codex_rotating_lease_conflict" ||
     code === "conflict_review_runtime_disabled"
   );
 }

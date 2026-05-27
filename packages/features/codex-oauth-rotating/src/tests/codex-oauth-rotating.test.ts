@@ -358,6 +358,45 @@ describe("Codex rotating auth domain", () => {
     );
   });
 
+  it("allows a rerun attempt to replace an unfinished lease", () => {
+    const store = new InMemoryCodexRotatingLeaseStore();
+    const now = new Date("2026-05-25T12:00:00.000Z");
+    const first = store.acquire({
+      providerInstanceId: "codex-rotating:repo",
+      runId: "1",
+      runAttempt: "1",
+      now,
+      ttlSeconds: 300,
+    });
+    const rerun = store.acquire({
+      providerInstanceId: "codex-rotating:repo",
+      runId: "1",
+      runAttempt: "2",
+      now,
+      ttlSeconds: 300,
+    });
+    const otherRun = store.acquire({
+      providerInstanceId: "codex-rotating:repo",
+      runId: "2",
+      runAttempt: "1",
+      now,
+      ttlSeconds: 300,
+    });
+
+    expect(first.status).toBe("preleased");
+    expect(rerun.status).toBe("preleased");
+    expect(rerun.leaseId).not.toBe(first.leaseId);
+    expect(otherRun.status).toBe("conflict");
+    expect(() =>
+      store.finalize({
+        leaseId: first.leaseId,
+        restoredGenerationHash: "hash-1",
+        nextGeneration: 2,
+        now,
+      }),
+    ).toThrow("lease_not_active");
+  });
+
   it("accepts encrypted writeback and rejects plaintext-like payloads", () => {
     expect(
       parseCodexRotatingEncryptedWritebackRequest({

@@ -119,20 +119,69 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
         provider.activeLeaseExpiresAt &&
         provider.activeLeaseExpiresAt > input.now
       ) {
-        return {
-          leaseId: provider.activeLeaseId,
-          providerInstanceId: input.providerInstanceId,
-          runId: input.githubRunId,
-          runAttempt: input.githubRunAttempt,
-          status: "conflict" as const,
-          expiresAt: provider.activeLeaseExpiresAt,
-          repository: input.repository,
-          generationHashSalt: provider.generationHashSalt,
-          currentGeneration: provider.latestGeneration,
-          ...(provider.latestGenerationHash
-            ? { currentGenerationHash: provider.latestGenerationHash }
-            : {}),
-        };
+        const activeLease = await tx.codexOAuthLease.findUnique({
+          where: { id: provider.activeLeaseId },
+          select: {
+            id: true,
+            githubRunId: true,
+            githubRunAttempt: true,
+            status: true,
+            expiresAt: true,
+          },
+        });
+        if (
+          activeLease &&
+          activeLease.status !== "completed" &&
+          activeLease.expiresAt > input.now
+        ) {
+          if (
+            activeLease.githubRunId === input.githubRunId &&
+            activeLease.githubRunAttempt === input.githubRunAttempt &&
+            activeLease.status === "preleased"
+          ) {
+            return {
+              leaseId: activeLease.id,
+              providerInstanceId: input.providerInstanceId,
+              runId: input.githubRunId,
+              runAttempt: input.githubRunAttempt,
+              status: "preleased" as const,
+              expiresAt: activeLease.expiresAt,
+              repository: input.repository,
+              generationHashSalt: provider.generationHashSalt,
+              currentGeneration: provider.latestGeneration,
+              ...(provider.latestGenerationHash
+                ? { currentGenerationHash: provider.latestGenerationHash }
+                : {}),
+            };
+          }
+          if (
+            activeLease.githubRunId === input.githubRunId &&
+            activeLease.githubRunAttempt !== input.githubRunAttempt
+          ) {
+            await tx.codexOAuthLease.update({
+              where: { id: activeLease.id },
+              data: {
+                status: "expired",
+                expiresAt: input.now,
+              },
+            });
+          } else {
+            return {
+              leaseId: activeLease.id,
+              providerInstanceId: input.providerInstanceId,
+              runId: activeLease.githubRunId,
+              runAttempt: activeLease.githubRunAttempt,
+              status: "conflict" as const,
+              expiresAt: activeLease.expiresAt,
+              repository: input.repository,
+              generationHashSalt: provider.generationHashSalt,
+              currentGeneration: provider.latestGeneration,
+              ...(provider.latestGenerationHash
+                ? { currentGenerationHash: provider.latestGenerationHash }
+                : {}),
+            };
+          }
+        }
       }
 
       const lease = await tx.codexOAuthLease.upsert({
