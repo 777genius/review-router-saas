@@ -11,7 +11,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import type { ProviderSecretSetupGuidance } from "@reviewrouter/features-provider-setup";
 import { ProviderSecretSetupDialog } from "./provider-secret-setup-dialog";
-import { confirmSetupPullRequestMergedClientAction } from "./actions";
+import {
+  confirmSetupPullRequestMergedClientAction,
+  createSetupPullRequestClientAction,
+} from "./actions";
 import { RepositorySetupProgressPanel } from "./repository-setup-progress-panel";
 import {
   providerSetupConfirmedEvent,
@@ -315,6 +318,43 @@ describe("RepositorySetupProgressPanel", () => {
       expect(
         hasCustomToastMessage(
           /GitHub refused the setup PR update/i,
+          "The dashboard action could not be completed.",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("shows Codex reconnect guidance for legacy setup PR actions", async () => {
+    vi.mocked(createSetupPullRequestClientAction).mockResolvedValueOnce({
+      params: {
+        error: "codex_legacy_auth_requires_reconnect",
+        workspace: "workspace_1",
+        section: "repositories",
+      },
+    });
+
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="not_configured"
+        initialSetupPullRequestUrl={null}
+        workflowCurrent={false}
+        mutationsEnabled
+        initialStep={1}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Create setup PR/i }));
+
+    await waitFor(() => {
+      expect(
+        hasCustomToastMessage(
+          /Reconnect Codex with the rotating setup command/i,
           "The dashboard action could not be completed.",
         ),
       ).toBe(true);

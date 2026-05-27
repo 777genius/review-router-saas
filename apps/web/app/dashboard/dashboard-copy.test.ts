@@ -22,4 +22,16 @@ describe("dashboard Codex rotating OAuth copy", () => {
       "private same-repository PRs",
     );
   });
+
+  it("maps Codex setup PR errors to reconnect guidance", () => {
+    expect(
+      dashboardErrorText("codex_legacy_auth_requires_reconnect"),
+    ).toContain("Reconnect Codex with the rotating setup command");
+    expect(dashboardErrorText("codex_api_key_setup_disabled")).toContain(
+      "Use Codex OAuth rotating",
+    );
+    expect(
+      dashboardErrorText("codex_rotating_provider_instance_required"),
+    ).toContain("Codex rotating setup is incomplete");
+  });
 });

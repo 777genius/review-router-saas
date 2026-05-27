@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition, type ReactElement } from "react";
 import { Button } from "@reviewrouter/ui";
 import { ActionToast } from "../action-toast";
+import { dashboardErrorText } from "./dashboard-copy";
 import {
   confirmSetupPullRequestMergedClientAction,
   createSetupPullRequestClientAction,
@@ -337,7 +338,7 @@ function setupActionErrorText(error: string): string {
     case "repository_archived":
       return "Archived repositories cannot be provisioned.";
     default:
-      return "The dashboard action could not be completed.";
+      return dashboardErrorText(error);
   }
 }
 

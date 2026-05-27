@@ -414,6 +414,20 @@ export function dashboardErrorText(error: string): string {
       return "This workspace plan does not allow that action. Check the plan status or feature flags.";
     case "workflow_provisioning_disabled":
       return "Workflow provisioning is disabled. Set REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING=1 in a trusted local or beta environment.";
+    case "codex_rotating_not_enabled":
+      return "Rotating Codex OAuth is not enabled for this ReviewRouter deployment.";
+    case "codex_rotating_repository_scope_required":
+      return "Codex rotating OAuth must be configured per repository, not as a workspace default.";
+    case "codex_rotating_single_provider_required":
+      return "Codex rotating OAuth supports exactly one Codex provider in this repository.";
+    case "codex_rotating_provider_instance_required":
+      return "Codex rotating setup is incomplete. Reconnect Codex with the rotating setup command, then create the setup PR again.";
+    case "codex_legacy_auth_requires_reconnect":
+      return "Legacy Codex OAuth is disabled. Reconnect Codex with the rotating setup command, then create the setup PR again.";
+    case "codex_api_key_setup_disabled":
+      return "Codex API-key setup is disabled. Use Codex OAuth rotating instead.";
+    case "codex_provider_requires_rotating_workflow":
+      return "Codex requires the rotating workflow. Reconnect Codex with the rotating setup command, then recreate the setup PR.";
     case "org_ruleset_requires_organization_installation":
       return "Organization-wide required workflow is available only for GitHub organization installations. Use per-repository setup PR for personal repositories.";
     case "org_ruleset_no_selected_repositories":

@@ -67,6 +67,7 @@ export function safeDashboardErrorCode(error: unknown): string {
       "codex_rotating_not_enabled",
       "codex_rotating_repository_scope_required",
       "codex_rotating_single_provider_required",
+      "codex_rotating_provider_instance_required",
       "codex_legacy_auth_requires_reconnect",
       "codex_api_key_setup_disabled",
       "org_ruleset_requires_organization_installation",
@@ -113,6 +114,7 @@ export function safeDashboardErrorCode(error: unknown): string {
       "invalid_reusable_workflow_runtime_ref",
       "invalid_workflow_env_key",
       "codex_rotating_action_ref_invalid",
+      "codex_rotating_action_ref_must_be_full_sha",
       "codex_rotating_conflict_review_unsupported",
     ].includes(message)
   ) {

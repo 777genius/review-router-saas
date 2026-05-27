@@ -43,10 +43,25 @@ describe("safeDashboardErrorCode", () => {
       ),
     ).toBe("codex_rotating_single_provider_required");
     expect(
+      safeDashboardErrorCode(
+        new Error("codex_rotating_provider_instance_required"),
+      ),
+    ).toBe("codex_rotating_provider_instance_required");
+    expect(
       safeDashboardErrorCode(new Error("codex_legacy_auth_requires_reconnect")),
     ).toBe("codex_legacy_auth_requires_reconnect");
     expect(safeDashboardErrorCode(new Error("rate_limit_exceeded:setup"))).toBe(
       "rate_limited",
+    );
+  });
+
+  it.each([
+    "codex_rotating_action_ref_invalid",
+    "codex_rotating_action_ref_must_be_full_sha",
+    "codex_rotating_conflict_review_unsupported",
+  ])("maps Codex deployment setup error %s to server_misconfigured", (message) => {
+    expect(safeDashboardErrorCode(new Error(message))).toBe(
+      "server_misconfigured",
     );
   });
 });

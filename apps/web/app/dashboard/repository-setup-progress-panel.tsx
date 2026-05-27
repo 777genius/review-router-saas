@@ -8,6 +8,7 @@ import {
   RepositorySetupActionButton,
   RepositorySetupMergedButton,
 } from "./repository-setup-action-button";
+import { dashboardErrorText as sharedDashboardErrorText } from "./dashboard-copy";
 import {
   providerSetupConfirmedEventName,
   setupPullRequestMergedEvent,
@@ -603,7 +604,7 @@ function dashboardErrorText(error: string): string {
     case "github_operation_failed":
       return "GitHub did not complete the setup PR action. Check audit events or server logs for the safe error code.";
     default:
-      return "The dashboard action could not be completed.";
+      return sharedDashboardErrorText(error);
   }
 }
 

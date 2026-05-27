@@ -65,10 +65,12 @@ export function RepositoryLiveSearch({
   );
   const [isRoutePending, startRouteTransition] = useTransition();
   const normalizedQuery = query.trim();
+  const hasUncommittedSearch =
+    normalizedQuery !== initialQuery.trim() || activeFilter !== initialFilter;
   const matchingCount = matchingIds.size;
   const hasActiveQuery = normalizedQuery.length > 0;
   const hasActiveFilter = hasActiveQuery || activeFilter !== "all";
-  const isSearchLoading = isRoutePending;
+  const isSearchLoading = isRoutePending || hasUncommittedSearch;
   const renderedCountLabel = Math.min(matchingCount, rowLimit);
   const updateLocalMatches = (
     nextQuery: string,
@@ -302,21 +304,16 @@ function useRepositorySearchHelperText({
   readonly totalRepositoryCount: number;
 }): string {
   return useMemo(() => {
-    if (isSearchLoading && (hasActiveQuery || activeFilter !== "all")) {
-      return `${matchingCount} ${repositoryFilterResultLabel(activeFilter)}. Loading updated results...`;
-    }
-    if (isSearchLoading) return "Loading updated repositories...";
-    if (hasActiveQuery || activeFilter !== "all") {
-      const label = repositoryFilterResultLabel(activeFilter);
-      if (matchingCount > rowLimit) {
-        return `${matchingCount} ${label}. Showing first ${renderedCountLabel}.`;
-      }
-      return `${matchingCount} ${label}.`;
-    }
-    if (renderedRepositoryCount < totalRepositoryCount) {
-      return `Showing first ${renderedRepositoryCount} of ${totalRepositoryCount}. Search to load matching repositories.`;
-    }
-    return "";
+    return buildRepositorySearchHelperText({
+      isSearchLoading,
+      hasActiveQuery,
+      activeFilter,
+      matchingCount,
+      renderedCountLabel,
+      renderedRepositoryCount,
+      rowLimit,
+      totalRepositoryCount,
+    });
   }, [
     activeFilter,
     hasActiveQuery,
@@ -327,6 +324,42 @@ function useRepositorySearchHelperText({
     rowLimit,
     totalRepositoryCount,
   ]);
+}
+
+export function buildRepositorySearchHelperText({
+  isSearchLoading,
+  hasActiveQuery,
+  activeFilter,
+  matchingCount,
+  renderedCountLabel,
+  renderedRepositoryCount,
+  rowLimit,
+  totalRepositoryCount,
+}: {
+  readonly isSearchLoading: boolean;
+  readonly hasActiveQuery: boolean;
+  readonly activeFilter: RepositorySearchFilter;
+  readonly matchingCount: number;
+  readonly renderedCountLabel: number;
+  readonly renderedRepositoryCount: number;
+  readonly rowLimit: number;
+  readonly totalRepositoryCount: number;
+}): string {
+  if (isSearchLoading && (hasActiveQuery || activeFilter !== "all")) {
+    return "Loading updated results...";
+  }
+  if (isSearchLoading) return "Loading updated repositories...";
+  if (hasActiveQuery || activeFilter !== "all") {
+    const label = repositoryFilterResultLabel(activeFilter);
+    if (matchingCount > rowLimit) {
+      return `${matchingCount} ${label}. Showing first ${renderedCountLabel}.`;
+    }
+    return `${matchingCount} ${label}.`;
+  }
+  if (renderedRepositoryCount < totalRepositoryCount) {
+    return `Showing first ${renderedRepositoryCount} of ${totalRepositoryCount}. Search to load matching repositories.`;
+  }
+  return "";
 }
 
 function repositoryFilterResultLabel(filter: RepositorySearchFilter): string {

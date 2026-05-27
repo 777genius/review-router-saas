@@ -111,7 +111,7 @@ const runTimeoutMs = Number(
 const workdir = mkdtempSync(join(tmpdir(), "reviewrouter-codex-rotating-e2e-"));
 const profile = loadAppProfile();
 const app = createGitHubApp(profile);
-const prisma = createPrismaClient();
+let prisma = createPrismaClient();
 const created = {
   targetRepo,
   workdir,
@@ -138,11 +138,16 @@ if (!authFile && !allowInteractiveLogin) {
 }
 
 try {
+  trace("ensure-repository");
   const repositoryView = ensureRepository();
+  trace("wait-for-installation");
   const installationId = await waitForRepositoryInstallation(targetRepo);
+  trace("sync-installation");
   await syncInstallation(installationId);
 
+  trace("find-synced-repository");
   const repository = await findSyncedRepository(targetRepo);
+  trace("seed-rotating-codex-auth");
   const setup = await seedRotatingCodexAuth({
     workspaceId: repository.workspaceId,
     repositoryId: repository.id,
@@ -150,6 +155,7 @@ try {
     githubRepositoryId: repository.githubRepositoryId.toString(),
   });
 
+  trace("check-workflow-current");
   const workflowCurrent = await isRotatingWorkflowCurrentOnDefaultBranch(
     repository.defaultBranch,
     setup.providerInstanceId,
@@ -166,6 +172,7 @@ try {
         providerInstanceId: setup.providerInstanceId,
       });
   if (setupPullRequest) {
+    trace("merge-setup-pr");
     created.setupPullRequestUrl = setupPullRequest.url;
     await assertSetupPullRequest(setupPullRequest);
     mergePullRequest(
@@ -178,7 +185,9 @@ try {
     );
   }
 
+  trace("read-provider-before-runs");
   const providerBeforeRuns = await readProviderState(setup.providerInstanceId);
+  trace("run-first-review-pr");
   const first = await runReviewPullRequest({
     label: "first",
     defaultBranch:
@@ -190,7 +199,9 @@ try {
   created.firstPullRequestUrl = first.pullRequestUrl;
   created.firstRunUrl = first.runUrl;
 
+  trace("read-provider-after-first");
   const afterFirst = await readProviderState(setup.providerInstanceId);
+  trace("run-second-review-pr");
   const second = await runReviewPullRequest({
     label: "second",
     defaultBranch:
@@ -231,6 +242,11 @@ try {
         actionRef,
         created,
         error: error instanceof Error ? error.message : String(error),
+        stack:
+          process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_TRACE === "1" &&
+          error instanceof Error
+            ? error.stack
+            : undefined,
       },
       null,
       2,
@@ -352,30 +368,36 @@ async function waitForRepositoryInstallation(
 }
 
 async function syncInstallation(installationId: number): Promise<void> {
-  await syncInstallationRepositories(String(installationId), {
-    github: new OctokitGitHubRepositorySource({
-      appId: profile.APP_ID,
-      privateKey: profile.privateKey,
+  await withPrismaConnectionRetry("sync-installation", () =>
+    syncInstallationRepositories(String(installationId), {
+      github: new OctokitGitHubRepositorySource({
+        appId: profile.APP_ID,
+        privateKey: profile.privateKey,
+      }),
+      repositories: new PrismaRepositoryConnectionRepository(prisma),
+      clock: new SystemClock(),
     }),
-    repositories: new PrismaRepositoryConnectionRepository(prisma),
-    clock: new SystemClock(),
-  });
+  );
 }
 
 async function findSyncedRepository(repositoryFullName: string) {
-  const repository = await prisma.repositoryConnection.findFirst({
-    where: { fullName: repositoryFullName, selected: true },
-    select: {
-      id: true,
-      workspaceId: true,
-      githubRepositoryId: true,
-      owner: true,
-      name: true,
-      fullName: true,
-      defaultBranch: true,
-      visibility: true,
-    },
-  });
+  const repository = await withPrismaConnectionRetry(
+    "find-synced-repository",
+    () =>
+      prisma.repositoryConnection.findFirst({
+        where: { fullName: repositoryFullName, selected: true },
+        select: {
+          id: true,
+          workspaceId: true,
+          githubRepositoryId: true,
+          owner: true,
+          name: true,
+          fullName: true,
+          defaultBranch: true,
+          visibility: true,
+        },
+      }),
+  );
   if (!repository) {
     throw new Error(
       `Repository ${repositoryFullName} was not synced into ReviewRouter DB`,
@@ -532,13 +554,16 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
 async function findLatestSetupNonce(
   providerInstanceId: string,
 ): Promise<string> {
-  const rows = await prisma.$queryRaw<SetupManifestRow[]>`
-    SELECT "setupNonce"
-    FROM "CodexOAuthSetupManifest"
-    WHERE "providerInstanceId" = ${providerInstanceId}
-    ORDER BY "createdAt" DESC
-    LIMIT 1
-  `;
+  const rows = await withPrismaConnectionRetry(
+    "find-latest-setup-nonce",
+    () => prisma.$queryRaw<SetupManifestRow[]>`
+      SELECT "setupNonce"
+      FROM "CodexOAuthSetupManifest"
+      WHERE "providerInstanceId" = ${providerInstanceId}
+      ORDER BY "createdAt" DESC
+      LIMIT 1
+    `,
+  );
   const row = rows[0];
   if (!row) {
     throw new Error("codex_rotating_setup_manifest_not_created");
@@ -778,12 +803,16 @@ async function runReviewPullRequest(input: {
       ? await waitForReviewRouterInlineComments(prNumber)
       : [];
   const provider = await readProviderState(input.providerInstanceId);
-  const completedWritebacks = await prisma.codexOAuthWritebackIntent.count({
-    where: {
-      providerInstanceId: input.providerInstanceId,
-      status: "completed",
-    },
-  });
+  const completedWritebacks = await withPrismaConnectionRetry(
+    "count-completed-writebacks",
+    () =>
+      prisma.codexOAuthWritebackIntent.count({
+        where: {
+          providerInstanceId: input.providerInstanceId,
+          status: "completed",
+        },
+      }),
+  );
   if (provider.latestGeneration < input.minGeneration) {
     throw new Error(
       `provider generation did not advance: expected at least ${input.minGeneration}, got ${provider.latestGeneration}`,
@@ -972,10 +1001,12 @@ async function readProviderState(providerInstanceId: string): Promise<{
   readonly latestGeneration: number;
   readonly state: string;
 }> {
-  const provider = await prisma.codexOAuthProviderInstance.findUnique({
-    where: { providerInstanceId },
-    select: { latestGeneration: true, state: true },
-  });
+  const provider = await withPrismaConnectionRetry("read-provider-state", () =>
+    prisma.codexOAuthProviderInstance.findUnique({
+      where: { providerInstanceId },
+      select: { latestGeneration: true, state: true },
+    }),
+  );
   if (!provider) {
     throw new Error("codex_rotating_provider_missing_after_setup");
   }
@@ -1235,4 +1266,32 @@ function runAllowFailure(command: string, args: readonly string[]) {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function trace(stage: string): void {
+  if (process.env.REVIEW_ROUTER_CODEX_ROTATING_E2E_TRACE !== "1") return;
+  console.log(`[codex-rotating-live-e2e] ${stage}`);
+}
+
+async function withPrismaConnectionRetry<T>(
+  operation: string,
+  runOperation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await runOperation();
+  } catch (error) {
+    if (!isRetriablePrismaConnectionError(error)) throw error;
+    trace(`db-reconnect:${operation}`);
+    await prisma.$disconnect().catch(() => undefined);
+    prisma = createPrismaClient();
+    return await runOperation();
+  }
+}
+
+function isRetriablePrismaConnectionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Connection terminated unexpectedly") ||
+    message.includes("Can't reach database server")
+  );
 }

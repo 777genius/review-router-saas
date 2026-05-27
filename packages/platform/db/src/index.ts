@@ -15,6 +15,7 @@ export function createDatabaseHealth(
 
 export type CreatePrismaClientOptions = {
   readonly databaseUrl?: string;
+  readonly poolMax?: number;
 };
 
 export function createPrismaClient(
@@ -24,10 +25,27 @@ export function createPrismaClient(
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is required to create PrismaClient");
   }
+  const poolMax =
+    options.poolMax ??
+    parseOptionalPositiveInteger("REVIEW_ROUTER_DB_POOL_MAX");
+  const adapterConfig =
+    typeof poolMax === "number"
+      ? { connectionString: databaseUrl, max: poolMax }
+      : { connectionString: databaseUrl };
 
   return new PrismaClient({
-    adapter: new PrismaPg({ connectionString: databaseUrl }),
+    adapter: new PrismaPg(adapterConfig),
   });
+}
+
+function parseOptionalPositiveInteger(name: string): number | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return parsed;
 }
 
 export { PrismaClient };
