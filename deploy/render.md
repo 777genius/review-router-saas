@@ -82,7 +82,7 @@ GITHUB_APP_PRIVATE_KEY=<production/staging app private key PEM>
 GITHUB_CLIENT_ID=<same as GITHUB_APP_CLIENT_ID for current Auth.js setup>
 GITHUB_CLIENT_SECRET=<same as GITHUB_APP_CLIENT_SECRET for current Auth.js setup>
 REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY=<strong random secret for encrypted user tokens>
-REVIEW_ROUTER_ACTION_REF=777genius/review-router@<40-char-action-repo-commit-sha>
+REVIEW_ROUTER_ACTION_REF=777genius/review-router@main
 REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH=1
 ```
 
@@ -195,10 +195,9 @@ GitHub-hosted runner -> public HTTPS API -> OIDC exchange -> config fetch -> hea
 - Keep web, API, and worker on the same git commit.
 - Do not enable cloud review execution in Render.
 - Do not add `pull_request_target` to generated customer workflows.
-- In hosted production, set `REVIEW_ROUTER_ACTION_REF` to
-  `777genius/review-router@<40-char-action-repo-commit-sha>`. This must be a
-  commit in the public Action repository, not the Render/SaaS repository commit.
-  `@main`, `@v1`, and short refs are intentionally rejected for Codex OAuth
-  rotating workflows.
+- In hosted production, leave `REVIEW_ROUTER_ACTION_REF` unset or set it to
+  `777genius/review-router@main` so generated customer workflows receive the
+  latest public Action runtime. Use a full Action repository commit SHA only
+  for a deliberate rollback or smoke branch.
 - The Postgres `ipAllowList: []` setting keeps the database private to Render's
   network. Use Render shell or trusted admin tooling for direct DB operations.

@@ -362,7 +362,7 @@ export type CodexRotatingWorkflowOptions = {
 export function renderCodexRotatingAdvisoryWorkflow(
   options: CodexRotatingWorkflowOptions,
 ): string {
-  assertFullShaActionRef(options.actionRef);
+  assertSafeActionRef(options.actionRef);
   const runnerLabel = options.runnerLabel ?? codexRotatingDefaultRunner;
   const timeoutMinutes =
     options.timeoutMinutes ?? codexRotatingDefaultTimeoutMinutes;
@@ -454,8 +454,8 @@ export function scanCodexRotatingAdvisoryWorkflow(
   if (actionRefs.length !== 1) {
     errors.push("exactly_one_action_step_required");
   }
-  if (!actionRef || !/@[a-f0-9]{40}$/i.test(actionRef)) {
-    errors.push("action_ref_must_be_full_sha");
+  if (!actionRef || !isSafeActionRef(actionRef)) {
+    errors.push("action_ref_invalid");
   }
   const source = extractCodexRotatingWorkflowSourceMetadata(workflow);
   if (!source.providerInstanceId) {
@@ -571,7 +571,7 @@ export function validateCodexRotatingPrelease(input: {
   if (/^dependabot(?:-preview)?\[bot\]$/i.test(claims.actor)) {
     throw new Error("dependabot_actor_not_allowed");
   }
-  assertFullShaActionRef(input.binding.actionRef);
+  assertSafeActionRef(input.binding.actionRef);
   assertOidcFreshness({
     claims,
     now: input.now ?? new Date(),
@@ -865,10 +865,16 @@ function collectCodexAuthJsonWarnings(input: {
   return warnings;
 }
 
-function assertFullShaActionRef(actionRef: string): void {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(actionRef)) {
-    throw new Error("codex_rotating_action_ref_must_be_full_sha");
+function assertSafeActionRef(actionRef: string): void {
+  if (!isSafeActionRef(actionRef)) {
+    throw new Error("codex_rotating_action_ref_invalid");
   }
+}
+
+function isSafeActionRef(actionRef: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[A-Za-z0-9_./-]{1,120}$/.test(
+    actionRef,
+  );
 }
 
 function assertOidcFreshness(input: {

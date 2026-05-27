@@ -332,7 +332,7 @@ jobs:
 export function renderCodexRotatingInteractionWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
-  assertCodexRotatingFullShaActionRef(options.actionRef);
+  assertSafeActionRef(options.actionRef);
   const template = prepareWorkflowTemplate(options);
 
   return `name: ReviewRouter Interaction
@@ -414,12 +414,6 @@ jobs:
           CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
           CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
 `;
-}
-
-function assertCodexRotatingFullShaActionRef(actionRef: string): void {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(actionRef)) {
-    throw new Error("codex_rotating_action_ref_must_be_full_sha");
-  }
 }
 
 export function renderReviewRouterReusableWorkflow(

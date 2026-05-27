@@ -112,7 +112,7 @@ export function safeDashboardErrorCode(error: unknown): string {
       "invalid_reusable_workflow_action_ref",
       "invalid_reusable_workflow_runtime_ref",
       "invalid_workflow_env_key",
-      "codex_rotating_action_ref_must_be_full_sha",
+      "codex_rotating_action_ref_invalid",
       "codex_rotating_conflict_review_unsupported",
     ].includes(message)
   ) {
