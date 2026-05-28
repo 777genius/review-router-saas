@@ -389,7 +389,9 @@ describe("provisionReviewRouterWorkflow", () => {
         : "";
     const interactionWorkflowContent = interactionWorkflow?.content ?? "";
     expect(codexWorkflowContent).toContain("name: ReviewRouter Codex OAuth");
-    expect(codexWorkflowContent).toContain("permissions: {}\n\njobs:");
+    expect(codexWorkflowContent).toContain(
+      "permissions:\n  id-token: write\n\njobs:",
+    );
     expect(codexWorkflowContent).toContain(`uses: ${actionRef}`);
     expect(codexWorkflowContent).toContain(
       'provider-instance-id: "codex-rotating:123456"',

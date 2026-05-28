@@ -59,7 +59,7 @@ describe("renderReviewRouterWorkflow", () => {
 
     expect(workflow).toContain("name: ReviewRouter Codex OAuth");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
-    expect(workflow).toContain("permissions: {}\n\njobs:");
+    expect(workflow).toContain("permissions:\n  id-token: write\n\njobs:");
     expect(workflow).toContain("id-token: write");
     expect(workflow).toContain("mode: codex-oauth-rotating");
     expect(workflow).toContain(
@@ -216,7 +216,7 @@ describe("renderReviewRouterWorkflow", () => {
     ).toEqual([
       [
         "name: ReviewRouter Codex OAuth",
-        "permissions: {}\n\njobs:",
+        "permissions:\n  id-token: write\n\njobs:",
         "id-token: write",
         "mode: codex-oauth-rotating",
         'provider-instance-id: "codex-rotating:123456"',

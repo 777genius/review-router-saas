@@ -206,7 +206,7 @@ describe("workflow setup readiness", () => {
       expectedContentMarkerGroups: [
         [
           "name: ReviewRouter Codex OAuth",
-          "permissions: {}\n\njobs:",
+          "permissions:\n  id-token: write\n\njobs:",
           "id-token: write",
           "mode: codex-oauth-rotating",
           'provider-instance-id: "codex-rotating:123456"',

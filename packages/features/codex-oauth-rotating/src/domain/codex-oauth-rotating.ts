@@ -377,7 +377,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
-permissions: {}
+permissions:
+  id-token: write
 
 jobs:
   codex-review:
@@ -499,8 +500,8 @@ export function scanCodexRotatingAdvisoryWorkflow(
   if (source.mode !== codexRotatingRuntimeAuthMode) {
     errors.push("rotating_mode_required");
   }
-  if (!workflow.includes("permissions: {}\n\njobs:")) {
-    errors.push("workflow_permissions_must_be_empty");
+  if (!workflow.includes("permissions:\n  id-token: write\n\njobs:")) {
+    errors.push("workflow_permissions_must_grant_id_token_only");
   }
   if (!workflow.includes("id-token: write")) {
     errors.push("review_job_requires_id_token_write");
