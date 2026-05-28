@@ -156,8 +156,17 @@ describe("review configuration", () => {
 
     expect(config).toMatchObject({
       schemaVersion: 2,
-      provider: { model: "gpt-5.4" },
-      providers: [{ model: "gpt-5.4", requiredHealthy: true }],
+      provider: {
+        authMode: "codex_subscription_oauth_rotating",
+        model: "gpt-5.4",
+      },
+      providers: [
+        {
+          authMode: "codex_subscription_oauth_rotating",
+          model: "gpt-5.4",
+          requiredHealthy: true,
+        },
+      ],
       execution: {
         providerLimit: 1,
         providerMaxParallel: 1,
@@ -171,9 +180,9 @@ describe("review configuration", () => {
       schemaVersion: 2,
       providers: [
         {
-          kind: "codex",
-          authMode: "codex_subscription_oauth",
-          model: "gpt-5.5",
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "openai/gpt-5.3-codex",
           requiredHealthy: false,
         },
         {
@@ -223,15 +232,15 @@ describe("review configuration", () => {
     );
 
     expect(env).toMatchObject({
-      REVIEW_AUTH_MODE: "codex-oauth",
-      REVIEW_PROVIDERS: "codex/gpt-5.5,openrouter/poolside/laguna-m.1:free",
+      REVIEW_AUTH_MODE: "codex-oauth-rotating",
+      REVIEW_PROVIDERS: "codex/gpt-5.5",
       REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
       SYNTHESIS_MODEL: "codex/gpt-5.5",
       CODEX_MODEL: "gpt-5.5",
       CODEX_REASONING_EFFORT: "high",
-      PROVIDER_LIMIT: "2",
-      PROVIDER_MAX_PARALLEL: "2",
-      INLINE_MIN_AGREEMENT: "2",
+      PROVIDER_LIMIT: "1",
+      PROVIDER_MAX_PARALLEL: "1",
+      INLINE_MIN_AGREEMENT: "1",
     });
   });
 
@@ -418,19 +427,17 @@ describe("review configuration", () => {
       workspaceId: "workspace_1",
     });
 
-    expect(saved.config.providers).toHaveLength(2);
+    expect(saved.config.providers).toHaveLength(1);
     expect(latest?.config.providers.map((provider) => provider.model)).toEqual([
       "gpt-5.5",
-      "poolside/laguna-m.1:free",
     ]);
     expect(versions[0]?.model).toBe("gpt-5.5");
     expect(versions[0]?.providers.map((provider) => provider.model)).toEqual([
       "gpt-5.5",
-      "poolside/laguna-m.1:free",
     ]);
     expect(
       versions[0]?.providers.map((provider) => provider.requiredHealthy),
-    ).toEqual([true, false]);
+    ).toEqual([true]);
   });
 
   it("resolves repository config before workspace default and safe default", async () => {

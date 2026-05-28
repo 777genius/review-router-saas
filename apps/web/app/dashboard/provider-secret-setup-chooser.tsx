@@ -556,6 +556,9 @@ export function ProviderSecretSetupChooser({
                     providerSetupConfirmedEvent({
                       repositoryId,
                       repositoryFullName,
+                      providerKind:
+                        submittedProviderSetupSelection.providerKind,
+                      authMode: submittedProviderSetupSelection.authMode,
                     }),
                   );
                 })

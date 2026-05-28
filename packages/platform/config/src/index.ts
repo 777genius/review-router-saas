@@ -196,6 +196,19 @@ export function isCodexRotatingOAuthAllowedForRepository(
   return allowlist.includes(normalizedRepository);
 }
 
+export function isCodexRotatingOAuthAllowedForWorkspaceDefault(
+  input: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isCodexRotatingOAuthEnabled(input)) {
+    return false;
+  }
+  return (
+    parseCodexRotatingOAuthRepositoryAllowlist(
+      input.REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES,
+    ).length === 0
+  );
+}
+
 export function parseCodexRotatingOAuthRepositoryAllowlist(
   value: string | undefined,
 ): readonly string[] {

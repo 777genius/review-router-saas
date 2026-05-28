@@ -110,7 +110,9 @@ function normalizeReviewConfiguration(
 ): ReviewConfiguration {
   const parsedProviders =
     input.schemaVersion === 1 ? [input.provider] : [...input.providers];
-  const providers = ensureRequiredHealthyProvider(parsedProviders);
+  const providers = ensureRequiredHealthyProvider(
+    normalizeProductionCodexProviders(parsedProviders),
+  );
   const provider = providers[0]!;
   const execution =
     input.schemaVersion === 1
@@ -134,6 +136,31 @@ function normalizeReviewConfiguration(
     blockingPolicy: input.blockingPolicy,
     limits: input.limits,
   };
+}
+
+function normalizeProductionCodexProviders(
+  providers: readonly ReviewProviderConfiguration[],
+): readonly ReviewProviderConfiguration[] {
+  const normalizedProviders = providers.map((provider) => {
+    if (
+      provider.authMode !== "codex_subscription_oauth" &&
+      provider.authMode !== "codex_openai_api_key"
+    ) {
+      return provider;
+    }
+    return {
+      ...provider,
+      kind: "codex" as const,
+      authMode: "codex_subscription_oauth_rotating" as const,
+    };
+  });
+  const rotatingCodexProvider = normalizedProviders.find(
+    (provider) => provider.authMode === "codex_subscription_oauth_rotating",
+  );
+  if (!rotatingCodexProvider) {
+    return normalizedProviders;
+  }
+  return [{ ...rotatingCodexProvider, requiredHealthy: true }];
 }
 
 function ensureRequiredHealthyProvider(

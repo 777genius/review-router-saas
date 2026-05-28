@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Badge, LinkButton, SelectField } from "@reviewrouter/ui";
 import {
   isCodexRotatingOAuthAllowedForRepository,
+  isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isClaudeCodeProviderEnabled,
   resolveReviewRouterActionRef,
 } from "@reviewrouter/platform-config";
@@ -89,6 +90,12 @@ import {
   tokenizeRepositorySearch,
   workflowSetupAlreadyCurrent,
 } from "../../src/server/repository-search";
+import {
+  buildConfiguredProviderSetupByRepositoryId,
+  buildEffectiveProviderSetupStateByRepositoryId,
+  buildProviderSetupMismatchRepositoryIds,
+  repositoryHealthStatusWithProviderSetupReadiness,
+} from "../../src/server/dashboard-provider-setup-readiness";
 import {
   getReviewModelOptions,
   type ReviewModelOption,
@@ -277,6 +284,8 @@ async function loadDashboardData(
         >[number][];
         providerSetup: readonly {
           readonly repositoryId: string | null;
+          readonly providerKind: string;
+          readonly authMode: string;
           readonly state: string;
           readonly updatedAt: Date;
         }[];
@@ -369,6 +378,8 @@ async function loadDashboardData(
           },
           select: {
             repositoryId: true,
+            providerKind: true,
+            authMode: true,
             state: true,
             updatedAt: true,
           },
@@ -1624,6 +1635,8 @@ function WorkspaceCard({
     repositories,
     health,
     providerSetup,
+    repositoryConfigs,
+    activeConfig,
     providerSecretCheckFailedRepositoryFullName,
   });
   const activeInstallations = workspace.installations.filter(
@@ -1940,6 +1953,7 @@ function WorkspaceCard({
                   workspaceId={workspace.id}
                   config={activeConfig}
                   modelOptions={modelOptions}
+                  codexRotatingOAuthEnabled={isCodexRotatingOAuthAllowedForWorkspaceDefault()}
                   claudeCodeProviderEnabled={claudeCodeProviderEnabled}
                   mutationsEnabled={mutationsEnabled}
                 />
@@ -2355,27 +2369,57 @@ function summarizeWorkspaceSetupReadiness({
   repositories,
   health,
   providerSetup,
+  repositoryConfigs,
+  activeConfig,
   providerSecretCheckFailedRepositoryFullName,
 }: {
   readonly repositories: DashboardWorkspaceData["repositories"];
   readonly health: DashboardWorkspaceData["health"];
   readonly providerSetup: DashboardWorkspaceData["providerSetup"];
+  readonly repositoryConfigs: DashboardWorkspaceData["repositoryConfigs"];
+  readonly activeConfig: ReviewConfiguration;
   readonly providerSecretCheckFailedRepositoryFullName: string | null;
 }): WorkspaceHealthSummary {
   const repositoryHealthById = new Map(
     health.map((item) => [item.repositoryId, item] as const),
   );
   const configuredProviderSetupByRepositoryId =
-    buildConfiguredProviderSetupByRepositoryId(providerSetup);
+    buildConfiguredProviderSetupByRepositoryId({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
+  const effectiveProviderSetupStateByRepositoryId =
+    buildEffectiveProviderSetupStateByRepositoryId({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
+  const providerSetupMismatchRepositoryIds =
+    buildProviderSetupMismatchRepositoryIds({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
   const counts = repositories.reduce(
     (accumulator, repository) => {
       const repositoryHealth = repositoryHealthById.get(repository.id);
+      const effectiveHealthStatus =
+        repositoryHealthStatusWithProviderSetupReadiness({
+          repositoryId: repository.id,
+          healthStatus: repositoryHealth?.status,
+          effectiveProviderSetupStateByRepositoryId,
+          providerSetupMismatchRepositoryIds,
+        });
       const workflowCurrent = workflowSetupAlreadyCurrent(
-        repositoryHealth?.status,
+        effectiveHealthStatus,
       );
       const setupProgressStep = repositorySetupProgressStep({
         setupStatus: repository.setupStatus,
-        healthStatus: repositoryHealth?.status,
+        healthStatus: effectiveHealthStatus,
         workflowCurrent,
         providerSetupConfirmed: isRepositoryProviderSetupConfirmed({
           repository,
@@ -2386,7 +2430,7 @@ function summarizeWorkspaceSetupReadiness({
       });
       const readiness = repositorySearchReadiness({
         setupProgressStep,
-        healthStatus: repositoryHealth?.status,
+        healthStatus: effectiveHealthStatus,
       });
 
       if (readiness === "ready") accumulator.ready += 1;
@@ -2423,29 +2467,6 @@ function summarizeWorkspaceSetupReadiness({
     label: "All synced repos ready",
     tone: "success",
   };
-}
-
-function buildConfiguredProviderSetupByRepositoryId(
-  providerSetup: DashboardWorkspaceData["providerSetup"],
-): ReadonlyMap<string, { readonly updatedAt: Date }> {
-  const configuredProviderSetupByRepositoryId = new Map<
-    string,
-    { readonly updatedAt: Date }
-  >();
-  for (const item of providerSetup) {
-    if (!item.repositoryId || item.state !== "configured") continue;
-
-    const existing = configuredProviderSetupByRepositoryId.get(
-      item.repositoryId,
-    );
-    if (!existing || existing.updatedAt < item.updatedAt) {
-      configuredProviderSetupByRepositoryId.set(item.repositoryId, {
-        updatedAt: item.updatedAt,
-      });
-    }
-  }
-
-  return configuredProviderSetupByRepositoryId;
 }
 
 function isRepositoryProviderSetupConfirmed({
@@ -2536,7 +2557,26 @@ function RepositoryTable({
     provisioning.map((item) => [item.repositoryId, item] as const),
   );
   const configuredProviderSetupByRepositoryId =
-    buildConfiguredProviderSetupByRepositoryId(providerSetup);
+    buildConfiguredProviderSetupByRepositoryId({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
+  const effectiveProviderSetupStateByRepositoryId =
+    buildEffectiveProviderSetupStateByRepositoryId({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
+  const providerSetupMismatchRepositoryIds =
+    buildProviderSetupMismatchRepositoryIds({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
 
   const rows = repositories.map((repository) => {
     const repositoryHealth = repositoryHealthById.get(repository.id);
@@ -2547,12 +2587,17 @@ function RepositoryTable({
       repositoryProvisioning?.pullRequestUrl ?? "",
     );
     const setupIssue = repositoryProvisioning?.errorMessage ?? null;
-    const workflowCurrent = workflowSetupAlreadyCurrent(
-      repositoryHealth?.status,
-    );
+    const effectiveHealthStatus =
+      repositoryHealthStatusWithProviderSetupReadiness({
+        repositoryId: repository.id,
+        healthStatus: repositoryHealth?.status,
+        effectiveProviderSetupStateByRepositoryId,
+        providerSetupMismatchRepositoryIds,
+      });
+    const workflowCurrent = workflowSetupAlreadyCurrent(effectiveHealthStatus);
     const setupProgressStep = repositorySetupProgressStep({
       setupStatus: repository.setupStatus,
-      healthStatus: repositoryHealth?.status,
+      healthStatus: effectiveHealthStatus,
       workflowCurrent,
       setupNeedsAttention: isSetupRecoveryIssue(setupIssue),
       providerSetupConfirmed: isRepositoryProviderSetupConfirmed({
@@ -2564,7 +2609,7 @@ function RepositoryTable({
     });
     const readiness = repositorySearchReadiness({
       setupProgressStep,
-      healthStatus: repositoryHealth?.status,
+      healthStatus: effectiveHealthStatus,
     });
     const searchableText = buildRepositorySearchText({
       fullName: repository.fullName,
@@ -2576,7 +2621,7 @@ function RepositoryTable({
       archived: repository.archived,
       selected: repository.selected,
       setupStatus: repository.setupStatus,
-      healthStatus: repositoryHealth?.status,
+      healthStatus: effectiveHealthStatus,
       healthSummary: repositoryHealth?.summary,
     });
 
@@ -2772,6 +2817,9 @@ function RepositoryTable({
                       repositoryId={repository.id}
                       disclosureId={setupDisclosureId}
                       currentStep={setupProgressStep}
+                      expectedProviderAuthModes={effectiveConfig.providers.map(
+                        (provider) => provider.authMode,
+                      )}
                     />
                   </div>
                 </div>
@@ -2792,6 +2840,7 @@ function RepositoryTable({
                       allowOrganizationSecrets={
                         directConfigRepositoryIds === null
                       }
+                      effectiveConfig={effectiveConfig}
                       currentStep={setupProgressStep}
                     />
                   </div>
@@ -2799,6 +2848,9 @@ function RepositoryTable({
                 <RepositorySetupReadyGate
                   repositoryId={repository.id}
                   currentStep={setupProgressStep}
+                  expectedProviderAuthModes={effectiveConfig.providers.map(
+                    (provider) => provider.authMode,
+                  )}
                 >
                   <RepositoryPolicyEditor
                     workspaceId={workspace.id}
@@ -2927,6 +2979,7 @@ function RepositorySetupProgressPanel({
   mutationsEnabled,
   claudeCodeProviderEnabled,
   allowOrganizationSecrets,
+  effectiveConfig,
   currentStep,
 }: {
   readonly workspace: DashboardWorkspace;
@@ -2937,6 +2990,7 @@ function RepositorySetupProgressPanel({
   readonly mutationsEnabled: boolean;
   readonly claudeCodeProviderEnabled: boolean;
   readonly allowOrganizationSecrets: boolean;
+  readonly effectiveConfig: ReviewConfiguration;
   readonly currentStep: 1 | 2 | 3 | 4;
 }): React.ReactElement {
   const canManage =
@@ -2971,6 +3025,9 @@ function RepositorySetupProgressPanel({
       workflowCurrent={workflowCurrent}
       mutationsEnabled={mutationsEnabled}
       initialStep={currentStep}
+      expectedProviderAuthModes={effectiveConfig.providers.map(
+        (provider) => provider.authMode,
+      )}
       enableReviewAction={canManage ? enableReviewAction : null}
     />
   );

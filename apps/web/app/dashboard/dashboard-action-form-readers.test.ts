@@ -1,0 +1,79 @@
+import { describe, expect, it } from "vitest";
+import {
+  readProviderSetupSelection,
+  readReviewConfigurationForm,
+} from "./dashboard-action-form-readers";
+
+describe("dashboard action form readers", () => {
+  it("normalizes stale legacy Codex policy submissions to rotating Codex", () => {
+    const formData = reviewConfigFormData([
+      {
+        authMode: "codex_subscription_oauth",
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+      },
+      {
+        authMode: "openrouter_api_key",
+        model: "openai/gpt-5.3-codex",
+        reasoningEffort: "medium",
+      },
+    ]);
+
+    const config = readReviewConfigurationForm(formData);
+
+    expect(config.providers).toHaveLength(1);
+    expect(config.provider).toMatchObject({
+      kind: "codex",
+      authMode: "codex_subscription_oauth_rotating",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      requiredHealthy: true,
+    });
+    expect(config.execution).toMatchObject({
+      providerLimit: 1,
+      providerMaxParallel: 1,
+      inlineMinAgreement: 1,
+    });
+  });
+
+  it.each(["codex_subscription_oauth", "codex_openai_api_key"] as const)(
+    "normalizes stale provider setup auth mode %s to rotating Codex",
+    (authMode) => {
+      const formData = new FormData();
+      formData.set("providerKind", "codex");
+      formData.set("authMode", authMode);
+
+      expect(readProviderSetupSelection(formData)).toEqual({
+        providerKind: "codex",
+        authMode: "codex_subscription_oauth_rotating",
+      });
+    },
+  );
+});
+
+function reviewConfigFormData(
+  providers: readonly {
+    readonly authMode: string;
+    readonly model: string;
+    readonly reasoningEffort: string;
+  }[],
+): FormData {
+  const formData = new FormData();
+  formData.set("providerCount", String(providers.length));
+  formData.set("providerMaxParallel", String(providers.length));
+  formData.set("inlineMinAgreement", String(providers.length));
+  formData.set("failOnSeverity", "critical");
+  formData.set("inlineMaxComments", "5");
+  formData.set("targetTokensPerBatch", "50000");
+
+  providers.forEach((provider, index) => {
+    formData.set(`providerAuthMode.${index}`, provider.authMode);
+    formData.set(`providerModel.${index}`, provider.model);
+    formData.set(`providerReasoningEffort.${index}`, provider.reasoningEffort);
+    formData.set(`providerAgenticContext.${index}`, "true");
+    formData.set(`providerFastMode.${index}`, "false");
+    formData.set(`providerRequiredHealthy.${index}`, String(index === 0));
+  });
+
+  return formData;
+}

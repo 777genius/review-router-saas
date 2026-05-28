@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import type { ProviderAuthMode } from "@reviewrouter/features-review-providers";
 import {
   providerSetupConfirmedEventName,
   setupPullRequestMergedEventName,
@@ -14,12 +15,18 @@ export function RepositorySetupDisclosureToggle({
   repositoryId,
   disclosureId,
   currentStep,
+  expectedProviderAuthModes = [],
 }: {
   readonly repositoryId: string;
   readonly disclosureId: string;
   readonly currentStep: SetupStep;
+  readonly expectedProviderAuthModes?: readonly ProviderAuthMode[];
 }): React.ReactElement {
-  const optimisticStep = useOptimisticSetupStep({ repositoryId, currentStep });
+  const optimisticStep = useOptimisticSetupStep({
+    repositoryId,
+    currentStep,
+    expectedProviderAuthModes,
+  });
 
   const isComplete = optimisticStep === 4;
   return (
@@ -50,13 +57,19 @@ export function RepositorySetupDisclosureToggle({
 export function RepositorySetupReadyGate({
   repositoryId,
   currentStep,
+  expectedProviderAuthModes = [],
   children,
 }: {
   readonly repositoryId: string;
   readonly currentStep: SetupStep;
+  readonly expectedProviderAuthModes?: readonly ProviderAuthMode[];
   readonly children: ReactNode;
 }): React.ReactElement | null {
-  const optimisticStep = useOptimisticSetupStep({ repositoryId, currentStep });
+  const optimisticStep = useOptimisticSetupStep({
+    repositoryId,
+    currentStep,
+    expectedProviderAuthModes,
+  });
 
   return optimisticStep === 4 ? <>{children}</> : null;
 }
@@ -64,9 +77,11 @@ export function RepositorySetupReadyGate({
 function useOptimisticSetupStep({
   repositoryId,
   currentStep,
+  expectedProviderAuthModes,
 }: {
   readonly repositoryId: string;
   readonly currentStep: SetupStep;
+  readonly expectedProviderAuthModes: readonly ProviderAuthMode[];
 }): SetupStep {
   const [optimisticStep, setOptimisticStep] = useState(currentStep);
 
@@ -86,7 +101,13 @@ function useOptimisticSetupStep({
     function handleProviderSetupConfirmed(event: Event): void {
       const detail = (event as CustomEvent<ProviderSetupConfirmedEventDetail>)
         .detail;
-      if (detail?.repositoryId === repositoryId) {
+      if (
+        detail?.repositoryId === repositoryId &&
+        providerSetupConfirmationMatchesExpectedAuthModes(
+          detail,
+          expectedProviderAuthModes,
+        )
+      ) {
         setOptimisticStep(4);
       }
     }
@@ -109,9 +130,25 @@ function useOptimisticSetupStep({
         handleProviderSetupConfirmed,
       );
     };
-  }, [repositoryId]);
+  }, [expectedProviderAuthModes, repositoryId]);
 
   return optimisticStep;
+}
+
+function providerSetupConfirmationMatchesExpectedAuthModes(
+  detail: ProviderSetupConfirmedEventDetail,
+  expectedProviderAuthModes: readonly ProviderAuthMode[],
+): boolean {
+  if (expectedProviderAuthModes.length === 0) {
+    return true;
+  }
+  if ([...new Set(expectedProviderAuthModes)].length > 1) {
+    return false;
+  }
+  return (
+    detail.authMode !== undefined &&
+    expectedProviderAuthModes.includes(detail.authMode)
+  );
 }
 
 export function RepositorySetupRowDisclosureController(): null {

@@ -158,6 +158,66 @@ describe("RepositorySetupProgressPanel", () => {
     expect(actionUnmounts).toBe(0);
   });
 
+  it("does not advance progress for a provider setup outside the effective config", () => {
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="configured"
+        initialSetupPullRequestUrl={null}
+        workflowCurrent
+        mutationsEnabled
+        initialStep={3}
+        expectedProviderAuthModes={["codex_subscription_oauth_rotating"]}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "openrouter",
+        authMode: "openrouter_api_key",
+      }),
+    );
+
+    expect(screen.getByText("3 of 4 - enable review")).toBeTruthy();
+  });
+
+  it("does not advance multi-auth progress after a single provider confirmation", () => {
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="configured"
+        initialSetupPullRequestUrl={null}
+        workflowCurrent
+        mutationsEnabled
+        initialStep={3}
+        expectedProviderAuthModes={["openrouter_api_key", "claude_code_oauth"]}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "openrouter",
+        authMode: "openrouter_api_key",
+      }),
+    );
+
+    expect(screen.getByText("3 of 4 - enable review")).toBeTruthy();
+  });
+
   it("keeps the provider action available for rows that are already complete", () => {
     let actionMounts = 0;
 

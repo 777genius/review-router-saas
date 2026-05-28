@@ -1,5 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
+  findReviewConfiguration,
+  PrismaReviewConfigurationRepository,
+  safeDefaultReviewConfiguration,
+} from "@reviewrouter/features-review-config";
+import {
   listWorkspaceRepositoryHealth,
   PrismaRepositoryHealthRepository,
 } from "@reviewrouter/features-repo-health";
@@ -8,6 +13,12 @@ import {
   getDashboardSignedInActor,
   getDashboardWorkspaceScope,
 } from "../../../../../src/server/dashboard-mutations";
+import {
+  buildConfiguredProviderSetupByRepositoryId,
+  buildEffectiveProviderSetupStateByRepositoryId,
+  buildProviderSetupMismatchRepositoryIds,
+  repositoryHealthStatusWithProviderSetupReadiness,
+} from "../../../../../src/server/dashboard-provider-setup-readiness";
 import { listGitHubUserRepositoryAccess } from "../../../../../src/server/github-user-repository-access";
 import { getPrisma } from "../../../../../src/server/prisma";
 import {
@@ -129,6 +140,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       },
       select: {
         repositoryId: true,
+        providerKind: true,
+        authMode: true,
         state: true,
         updatedAt: true,
       },
@@ -137,29 +150,72 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const repositoryHealthById = new Map(
     health.map((item) => [item.repositoryId, item] as const),
   );
-  const configuredProviderSetupByRepositoryId = new Map<
-    string,
-    { readonly updatedAt: Date }
-  >();
-  for (const item of providerSetup) {
-    if (!item.repositoryId || item.state !== "configured") continue;
-
-    const existing = configuredProviderSetupByRepositoryId.get(
-      item.repositoryId,
-    );
-    if (!existing || existing.updatedAt < item.updatedAt) {
-      configuredProviderSetupByRepositoryId.set(item.repositoryId, {
-        updatedAt: item.updatedAt,
-      });
-    }
-  }
+  const providerSetupConfigRepositoryIds = [
+    ...new Set(
+      providerSetup
+        .filter((item) => item.repositoryId)
+        .map((item) => item.repositoryId!),
+    ),
+  ];
+  const reviewConfigStore = new PrismaReviewConfigurationRepository(prisma);
+  const [reviewConfig, repositoryConfigs] =
+    providerSetupConfigRepositoryIds.length > 0
+      ? await Promise.all([
+          findReviewConfiguration(
+            { scope: "workspace", workspaceId: workspace.id },
+            { configurations: reviewConfigStore },
+          ),
+          Promise.all(
+            providerSetupConfigRepositoryIds.map(async (repositoryId) => ({
+              repositoryId,
+              config: await findReviewConfiguration(
+                {
+                  scope: "repository",
+                  workspaceId: workspace.id,
+                  repositoryId,
+                },
+                { configurations: reviewConfigStore },
+              ),
+            })),
+          ),
+        ])
+      : [null, []];
+  const activeConfig = reviewConfig?.config ?? safeDefaultReviewConfiguration;
+  const configuredProviderSetupByRepositoryId =
+    buildConfiguredProviderSetupByRepositoryId({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
+  const effectiveProviderSetupStateByRepositoryId =
+    buildEffectiveProviderSetupStateByRepositoryId({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
+  const providerSetupMismatchRepositoryIds =
+    buildProviderSetupMismatchRepositoryIds({
+      providerSetup,
+      repositories,
+      repositoryConfigs,
+      activeConfig,
+    });
 
   const tokens = tokenizeRepositorySearch(query);
   const repositoryIds = repositories
     .filter((repository) => {
       const repositoryHealth = repositoryHealthById.get(repository.id);
+      const effectiveHealthStatus =
+        repositoryHealthStatusWithProviderSetupReadiness({
+          repositoryId: repository.id,
+          healthStatus: repositoryHealth?.status,
+          effectiveProviderSetupStateByRepositoryId,
+          providerSetupMismatchRepositoryIds,
+        });
       const workflowCurrent = workflowSetupAlreadyCurrent(
-        repositoryHealth?.status,
+        effectiveHealthStatus,
       );
       const providerSetupConfirmedAt =
         configuredProviderSetupByRepositoryId.get(repository.id)?.updatedAt;
@@ -170,13 +226,13 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
             repositoryHealth.latestActionHealthReceivedAt);
       const setupProgressStep = repositorySetupProgressStep({
         setupStatus: repository.setupStatus,
-        healthStatus: repositoryHealth?.status,
+        healthStatus: effectiveHealthStatus,
         workflowCurrent,
         providerSetupConfirmed,
       });
       const readiness = repositorySearchReadiness({
         setupProgressStep,
-        healthStatus: repositoryHealth?.status,
+        healthStatus: effectiveHealthStatus,
       });
       if (!repositoryMatchesSearchFilter({ repository, readiness }, filter)) {
         return false;
@@ -192,7 +248,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         archived: repository.archived,
         selected: repository.selected,
         setupStatus: repository.setupStatus,
-        healthStatus: repositoryHealth?.status,
+        healthStatus: effectiveHealthStatus,
         healthSummary: repositoryHealth?.summary,
       });
       return tokens.every((token) => searchable.includes(token));

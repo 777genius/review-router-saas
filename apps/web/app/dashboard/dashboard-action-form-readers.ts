@@ -1,5 +1,8 @@
 import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
-import type { ReviewConfiguration } from "@reviewrouter/features-review-config";
+import {
+  parseReviewConfiguration,
+  type ReviewConfiguration,
+} from "@reviewrouter/features-review-config";
 import type { MemoryScope } from "@reviewrouter/features-memory";
 import {
   getProviderSecretNames,
@@ -43,7 +46,7 @@ export function readReviewConfigurationForm(
     } satisfies ReviewConfiguration["provider"];
   });
 
-  return {
+  return parseReviewConfiguration({
     schemaVersion: 2,
     providers,
     provider: providers[0]!,
@@ -62,7 +65,7 @@ export function readReviewConfigurationForm(
       inlineMaxComments: readFormNumber(formData, "inlineMaxComments"),
       targetTokensPerBatch: readFormNumber(formData, "targetTokensPerBatch"),
     },
-  };
+  });
 }
 
 export function readFormString(formData: FormData, key: string): string {
@@ -143,10 +146,34 @@ export function readProviderSetupSelection(formData: FormData): {
     authMode.success &&
     providerAuthModeBelongsToKind(authMode.data, providerKind.data)
   ) {
-    return { providerKind: providerKind.data, authMode: authMode.data };
+    return normalizeProductionProviderSetupSelection({
+      providerKind: providerKind.data,
+      authMode: authMode.data,
+    });
   }
 
   throw new Error("invalid_form_value:providerSetup");
+}
+
+function normalizeProductionProviderSetupSelection(input: {
+  readonly providerKind: ProviderKind;
+  readonly authMode: ProviderAuthMode;
+}): {
+  readonly providerKind: ProviderKind;
+  readonly authMode: ProviderAuthMode;
+} {
+  if (
+    input.providerKind === "codex" &&
+    (input.authMode === "codex_subscription_oauth" ||
+      input.authMode === "codex_openai_api_key")
+  ) {
+    return {
+      providerKind: "codex",
+      authMode: "codex_subscription_oauth_rotating",
+    };
+  }
+
+  return input;
 }
 
 export function readProviderSecretScope(

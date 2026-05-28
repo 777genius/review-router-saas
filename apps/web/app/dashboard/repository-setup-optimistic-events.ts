@@ -1,3 +1,8 @@
+import type {
+  ProviderAuthMode,
+  ProviderKind,
+} from "@reviewrouter/features-review-providers";
+
 export const providerSetupConfirmedEventName =
   "reviewrouter:provider-setup-confirmed";
 export const setupPullRequestMergedEventName =
@@ -6,6 +11,8 @@ export const setupPullRequestMergedEventName =
 export type ProviderSetupConfirmedEventDetail = {
   readonly repositoryId: string;
   readonly repositoryFullName: string;
+  readonly providerKind?: ProviderKind;
+  readonly authMode?: ProviderAuthMode;
 };
 
 export type SetupPullRequestMergedEventDetail = {

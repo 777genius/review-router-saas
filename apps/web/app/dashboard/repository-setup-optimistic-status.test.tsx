@@ -100,6 +100,52 @@ describe("RepositorySetupReadyGate", () => {
       ).toBeTruthy();
     });
   });
+
+  it("ignores provider setup confirmations that do not match effective auth", () => {
+    render(
+      <RepositorySetupReadyGate
+        repositoryId="repo_1"
+        currentStep={3}
+        expectedProviderAuthModes={["codex_subscription_oauth_rotating"]}
+      >
+        <button type="button">Edit settings</button>
+      </RepositorySetupReadyGate>,
+    );
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "openrouter",
+        authMode: "openrouter_api_key",
+      }),
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit settings" })).toBeNull();
+  });
+
+  it("does not complete multi-auth setup after a single provider confirmation", () => {
+    render(
+      <RepositorySetupReadyGate
+        repositoryId="repo_1"
+        currentStep={3}
+        expectedProviderAuthModes={["openrouter_api_key", "claude_code_oauth"]}
+      >
+        <button type="button">Edit settings</button>
+      </RepositorySetupReadyGate>,
+    );
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "openrouter",
+        authMode: "openrouter_api_key",
+      }),
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit settings" })).toBeNull();
+  });
 });
 
 describe("RepositorySetupRowDisclosureController", () => {

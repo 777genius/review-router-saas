@@ -276,6 +276,8 @@ describe("ProviderSecretSetupChooser", () => {
       expect(event.detail).toEqual({
         repositoryId: "repo_1",
         repositoryFullName: "777genius/plugin-kit-ai-starter-claude-python",
+        providerKind: "codex",
+        authMode: "codex_subscription_oauth_rotating",
       });
       expect(routerMock.replace).not.toHaveBeenCalled();
       expect(routerMock.refresh).not.toHaveBeenCalled();

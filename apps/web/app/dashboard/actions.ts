@@ -45,6 +45,7 @@ import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   isCodexRotatingOAuthAllowedForRepository,
+  isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isConflictReviewFallbackAllowedForRepository,
   isWorkflowProvisioningEnabled,
   resolveReviewRouterActionRef,
@@ -2194,12 +2195,15 @@ function assertCodexRotatingReviewConfigAllowed(input: {
     return;
   }
   if (!input.repository) {
-    throw new Error("codex_rotating_repository_scope_required");
+    if (!isCodexRotatingOAuthAllowedForWorkspaceDefault()) {
+      throw new Error("codex_rotating_repository_scope_required");
+    }
+  } else {
+    assertCodexRotatingOAuthRepositoryAllowed({
+      repositoryFullName: input.repository.fullName,
+      repositoryVisibility: input.repository.visibility,
+    });
   }
-  assertCodexRotatingOAuthRepositoryAllowed({
-    repositoryFullName: input.repository.fullName,
-    repositoryVisibility: input.repository.visibility,
-  });
   if (
     rotatingProviders.length !== 1 ||
     input.config.providers.length !== 1 ||

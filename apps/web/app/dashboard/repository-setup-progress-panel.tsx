@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Button, LinkButton } from "@reviewrouter/ui";
+import type { ProviderAuthMode } from "@reviewrouter/features-review-providers";
 import { ActionToast } from "../action-toast";
 import {
   RepositorySetupActionButton,
@@ -42,6 +43,7 @@ export function RepositorySetupProgressPanel({
   workflowCurrent,
   mutationsEnabled,
   initialStep,
+  expectedProviderAuthModes = [],
   enableReviewAction,
 }: {
   readonly workspaceId: string;
@@ -55,6 +57,7 @@ export function RepositorySetupProgressPanel({
   readonly workflowCurrent: boolean;
   readonly mutationsEnabled: boolean;
   readonly initialStep: SetupStep;
+  readonly expectedProviderAuthModes?: readonly ProviderAuthMode[];
   readonly enableReviewAction?: ReactNode;
 }): React.ReactElement {
   const router = useRouter();
@@ -101,6 +104,14 @@ export function RepositorySetupProgressPanel({
       const detail = (event as CustomEvent<ProviderSetupConfirmedEventDetail>)
         .detail;
       if (detail?.repositoryId !== repositoryId) return;
+      if (
+        !providerSetupConfirmationMatchesExpectedAuthModes(
+          detail,
+          expectedProviderAuthModes,
+        )
+      ) {
+        return;
+      }
 
       setSetupStatus("configured");
       setSetupIssue(null);
@@ -125,7 +136,7 @@ export function RepositorySetupProgressPanel({
         handleProviderSetupConfirmed,
       );
     };
-  }, [repositoryId]);
+  }, [expectedProviderAuthModes, repositoryId]);
 
   const handleSetupMutation = (params: Record<string, string>) => {
     clearTransientDashboardUrlParams("repositories");
@@ -279,6 +290,22 @@ export function RepositorySetupProgressPanel({
         </ol>
       </div>
     </section>
+  );
+}
+
+function providerSetupConfirmationMatchesExpectedAuthModes(
+  detail: ProviderSetupConfirmedEventDetail,
+  expectedProviderAuthModes: readonly ProviderAuthMode[],
+): boolean {
+  if (expectedProviderAuthModes.length === 0) {
+    return true;
+  }
+  if ([...new Set(expectedProviderAuthModes)].length > 1) {
+    return false;
+  }
+  return (
+    detail.authMode !== undefined &&
+    expectedProviderAuthModes.includes(detail.authMode)
   );
 }
 

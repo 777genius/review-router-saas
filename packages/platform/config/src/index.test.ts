@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   isCodexRotatingOAuthAllowedForRepository,
+  isCodexRotatingOAuthAllowedForWorkspaceDefault,
   isCodexRotatingOAuthEnabled,
   isConflictReviewFallbackAllowedForRepository,
   isConflictReviewFallbackEnabled,
@@ -210,6 +211,15 @@ describe("platform config", () => {
         REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES: "",
       } as NodeJS.ProcessEnv),
     ).toBe(true);
+    expect(
+      isCodexRotatingOAuthAllowedForWorkspaceDefault({
+        REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
+        REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES: "",
+      } as NodeJS.ProcessEnv),
+    ).toBe(true);
+    expect(isCodexRotatingOAuthAllowedForWorkspaceDefault(enabledEnv)).toBe(
+      false,
+    );
     expect(() =>
       parseCodexRotatingOAuthRepositoryAllowlist("../bad/repo"),
     ).toThrow("invalid_env:REVIEW_ROUTER_CODEX_ROTATING_OAUTH_REPOSITORIES");

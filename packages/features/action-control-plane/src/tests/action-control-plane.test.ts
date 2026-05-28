@@ -1736,7 +1736,7 @@ describe("action control plane", () => {
         ],
       },
       {
-        expectedCode: "codex_legacy_auth_requires_reconnect",
+        expectedCode: "codex_provider_requires_rotating_workflow",
         providers: [
           {
             kind: "codex",
@@ -1810,7 +1810,7 @@ describe("action control plane", () => {
   it.each([
     {
       authMode: "codex_subscription_oauth" as const,
-      expectedCode: "codex_legacy_auth_requires_reconnect",
+      expectedCode: "codex_provider_requires_rotating_workflow",
     },
     {
       authMode: "codex_openai_api_key" as const,
