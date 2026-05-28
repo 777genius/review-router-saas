@@ -25,6 +25,7 @@ export const actionConflictReviewPostingSessionTtlSeconds = 5 * 60;
 export const actionOidcReplayNonceFallbackTtlSeconds = actionSessionTtlSeconds;
 export const allowedWorkflowPaths = [
   ".github/workflows/reviewrouter.yml",
+  ".github/workflows/reviewrouter-codex.yml",
   ".github/workflows/reviewrouter-interaction.yml",
 ] as const;
 export const trustedReviewRouterReusableWorkflowRefPattern =

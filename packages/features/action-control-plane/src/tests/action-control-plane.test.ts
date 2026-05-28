@@ -668,6 +668,28 @@ describe("action control plane", () => {
     });
   });
 
+  it("accepts Codex rotating workflow OIDC claims", async () => {
+    const sessions = new StaticSessionTokenService();
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      {
+        oidcVerifier: new StaticOidcVerifier(
+          githubOidcClaims({
+            workflow_ref:
+              "777genius/example/.github/workflows/reviewrouter-codex.yml@refs/pull/1/merge",
+          }),
+        ),
+        repositories: new InMemoryActionControlPlaneRepository(),
+        sessions,
+        clock,
+      },
+    );
+
+    expect(sessions.signedClaims).toMatchObject({
+      repository: "777genius/example",
+    });
+  });
+
   it("rejects the legacy review-router.yml workflow path", async () => {
     await expect(
       exchangeGitHubOidcToken(
