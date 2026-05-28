@@ -102,6 +102,7 @@ export type ActionSessionClaims = {
   readonly githubRunId: string;
   readonly githubRunAttempt: string;
   readonly eventName: (typeof allowedActionEvents)[number];
+  readonly workflowPath?: string;
   readonly reviewKind?: "normal" | "conflict-head";
   readonly conflictDispatchId?: string;
   readonly pullRequestNumber?: number;

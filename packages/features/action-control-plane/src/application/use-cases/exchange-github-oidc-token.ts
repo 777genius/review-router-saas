@@ -115,6 +115,7 @@ export async function exchangeGitHubOidcToken(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     eventName: claims.event_name,
+    workflowPath: workflowPathFromRef(claims.workflow_ref, repository.fullName),
     ...(conflictReview
       ? {
           reviewKind: conflictReview.reviewKind,
@@ -175,6 +176,20 @@ async function verifyConflictReviewExchangeIfNeeded(input: {
     configSnapshotId: input.configSnapshotId,
     exchangedAt: input.exchangedAt,
   });
+}
+
+function workflowPathFromRef(workflowRef: string, repository: string): string {
+  const atIndex = workflowRef.indexOf("@");
+  const workflowIdentity =
+    atIndex > 0 ? workflowRef.slice(0, atIndex) : workflowRef;
+  const repositoryPrefix = `${repository}/`;
+  if (
+    workflowIdentity.slice(0, repositoryPrefix.length).toLowerCase() !==
+    repositoryPrefix.toLowerCase()
+  ) {
+    return workflowIdentity;
+  }
+  return workflowIdentity.slice(repositoryPrefix.length);
 }
 
 async function consumeOidcReplayNonceIfConfigured(input: {

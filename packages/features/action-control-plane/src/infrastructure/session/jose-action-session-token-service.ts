@@ -70,6 +70,10 @@ export class JoseActionSessionTokenService implements ActionSessionTokenServiceP
         "githubRunAttempt",
       ),
       eventName: assertEventName(payload.eventName),
+      ...(typeof payload.workflowPath === "string" &&
+      payload.workflowPath.length > 0
+        ? { workflowPath: payload.workflowPath }
+        : {}),
       ...optionalConflictReviewClaims(payload),
       protocolVersion: 1,
     };

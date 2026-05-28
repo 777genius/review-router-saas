@@ -665,6 +665,7 @@ describe("action control plane", () => {
 
     expect(sessions.signedClaims).toMatchObject({
       repository: "777genius/example",
+      workflowPath: ".github/workflows/reviewrouter.yml",
     });
   });
 
@@ -687,6 +688,7 @@ describe("action control plane", () => {
 
     expect(sessions.signedClaims).toMatchObject({
       repository: "777genius/example",
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
     });
   });
 
@@ -1852,6 +1854,46 @@ describe("action control plane", () => {
     },
   );
 
+  it("returns Codex rotating runtime config for the Codex rotating workflow", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth_rotating",
+          model: "gpt-5.5",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+      ],
+    });
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService({
+          ...sessionClaims,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        }),
+        clock,
+      },
+    );
+
+    expect(config).toMatchObject({
+      provider: {
+        kind: "codex",
+        authMode: "codex_subscription_oauth_rotating",
+        model: "gpt-5.5",
+      },
+      runtimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth-rotating",
+      },
+    });
+  });
+
   it("returns Claude runtime config without provider secrets", async () => {
     const repositories = new InMemoryActionControlPlaneRepository();
     repositories.runtimeConfig = parseReviewConfiguration({
@@ -2915,15 +2957,19 @@ describe("action control plane", () => {
     const sessions = new JoseActionSessionTokenService(
       "0123456789abcdef0123456789abcdef",
     );
+    const claims: ActionSessionClaims = {
+      ...sessionClaims,
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+    };
     const signed = await sessions.sign({
-      claims: sessionClaims,
+      claims,
       expiresInSeconds: 60,
       issuedAt: fixedNow,
     });
 
     await expect(
       sessions.verify({ token: signed.token, now: fixedNow }),
-    ).resolves.toMatchObject(sessionClaims);
+    ).resolves.toMatchObject(claims);
     await expect(
       sessions.verify({
         token: signed.token,

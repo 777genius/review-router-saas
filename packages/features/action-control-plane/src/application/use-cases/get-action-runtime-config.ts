@@ -7,6 +7,7 @@ import type { Clock } from "@reviewrouter/shared";
 import {
   buildActionConflictReviewRuntimeConfig,
   validateActionSessionAgainstRepository,
+  type ActionSessionClaims,
   type ActionRuntimeConfigResponse,
 } from "../../domain/action-control-plane.js";
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
@@ -80,7 +81,7 @@ export async function getActionRuntimeConfig(
     }
   }
   const config = record?.config ?? safeDefaultReviewConfiguration;
-  assertStandardRuntimeProviderSupport(config);
+  assertStandardRuntimeProviderSupport(config, session);
   if (session.reviewKind === "conflict-head") {
     assertConflictRuntimeProviderSupport(config);
   }
@@ -159,11 +160,18 @@ export async function getActionRuntimeConfig(
 
 function assertStandardRuntimeProviderSupport(
   config: ReviewConfiguration,
+  session: ActionSessionClaims,
 ): void {
   const codexProvider = config.providers.find(
     (provider) => provider.kind === "codex",
   );
   if (!codexProvider) {
+    return;
+  }
+  if (
+    codexProvider.authMode === "codex_subscription_oauth_rotating" &&
+    session.workflowPath === ".github/workflows/reviewrouter-codex.yml"
+  ) {
     return;
   }
   throw new Error(
