@@ -19608,6 +19608,8 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   const fetchImpl = runtime.fetchImpl ?? fetch;
   const fullReviewRuntimeRunner = runtime.fullReviewRuntimeRunner ?? runFullReviewRouterRuntime;
   const inputs = readActionInputs(env);
+  maskProviderSecretInputs(io, inputs.providerSecrets);
+  clearActionProviderSecretEnv(env);
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
   }
@@ -19782,6 +19784,11 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
 function readActionInputs(env) {
   const mode = readInput(env, "mode") || codexRotatingRuntimeAuthMode;
   const apiUrl = requireInput(env, "api-url").replace(/\/+$/, "");
+  const claudeCodeOAuthToken = optionalSecretInput(
+    env,
+    "claude-code-oauth-token"
+  );
+  const openRouterApiKey = optionalSecretInput(env, "openrouter-api-key");
   const workflowSchemaVersion = Number(
     readInput(env, "workflow-schema-version") || "1"
   );
@@ -19792,7 +19799,11 @@ function readActionInputs(env) {
     mode,
     apiUrl,
     providerInstanceId: requireInput(env, "provider-instance-id"),
-    workflowSchemaVersion
+    workflowSchemaVersion,
+    providerSecrets: {
+      ...claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {},
+      ...openRouterApiKey ? { openRouterApiKey } : {}
+    }
   };
 }
 function readActionAuthJson(env) {
@@ -19876,6 +19887,14 @@ function requireInput(env, name) {
     throw new Error(`missing_action_input:${name}`);
   }
   return value;
+}
+function optionalSecretInput(env, name) {
+  const value = readRawInput(env, name);
+  if (value === void 0) {
+    return void 0;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : void 0;
 }
 async function readPullRequestEvent(env) {
   if (env.GITHUB_EVENT_NAME !== "pull_request") {
@@ -20717,21 +20736,28 @@ async function runFullReviewRouterRuntime(input) {
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
     await (0, import_promises4.symlink)(input.codexBinaryPath, (0, import_node_path4.join)(codexBinDir, "codex"));
+    const childEnv = buildFullReviewRuntimeEnv({
+      sourceEnv: input.env,
+      inputs: input.inputs,
+      event: input.event,
+      tempHome: input.tempHome,
+      tempCodexHome: input.tempCodexHome,
+      codexBinDir,
+      commentToken: input.commentToken,
+      runtimeConfigVersion: input.runtimeConfigVersion,
+      runtimeEnv: input.runtimeEnv
+    });
+    await ensureFullReviewRuntimeTools({
+      env: childEnv,
+      io: input.io,
+      workspace: input.workspace,
+      runtimeEnv: input.runtimeEnv
+    });
     await runProcess({
       command: process.execPath,
       args: [runtimePath],
       cwd: input.workspace,
-      env: buildFullReviewRuntimeEnv({
-        sourceEnv: input.env,
-        inputs: input.inputs,
-        event: input.event,
-        tempHome: input.tempHome,
-        tempCodexHome: input.tempCodexHome,
-        codexBinDir,
-        commentToken: input.commentToken,
-        runtimeConfigVersion: input.runtimeConfigVersion,
-        runtimeEnv: input.runtimeEnv
-      }),
+      env: childEnv,
       streamOutput: input.io,
       timeoutMs: 30 * 60 * 1e3
     });
@@ -20745,13 +20771,18 @@ function buildFullReviewRuntimeEnv(input) {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
   const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
   const reviewAuthMode = runtimeEnv.REVIEW_AUTH_MODE === codexRotatingRuntimeAuthMode ? "codex-oauth" : runtimeEnv.REVIEW_AUTH_MODE ?? "codex-oauth";
+  const providerSecretEnv = buildProviderSecretEnvForRuntime({
+    runtimeEnv,
+    providerSecrets: input.inputs.providerSecrets
+  });
   return {
     ...inherited,
     ...runtimeEnv,
+    ...providerSecretEnv,
     HOME: input.tempHome,
     CODEX_HOME: input.tempCodexHome,
     CI: "true",
-    PATH: `${input.codexBinDir}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
+    PATH: `${input.codexBinDir}:${(0, import_node_path4.join)(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
     GITHUB_OUTPUT: (0, import_node_path4.join)(input.tempHome, "github-output"),
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
@@ -20764,6 +20795,50 @@ function buildFullReviewRuntimeEnv(input) {
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion)
   };
+}
+function buildProviderSecretEnvForRuntime(input) {
+  const env = {};
+  if (runtimeProvidersInclude(input.runtimeEnv, "claude/") && input.providerSecrets.claudeCodeOAuthToken) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = input.providerSecrets.claudeCodeOAuthToken;
+  }
+  if (runtimeProvidersInclude(input.runtimeEnv, "openrouter/") && input.providerSecrets.openRouterApiKey) {
+    env.OPENROUTER_API_KEY = input.providerSecrets.openRouterApiKey;
+  }
+  return env;
+}
+async function ensureFullReviewRuntimeTools(input) {
+  if (!runtimeProvidersInclude(input.runtimeEnv, "claude/")) {
+    return;
+  }
+  await runProcess({
+    command: "bash",
+    args: [
+      "-lc",
+      [
+        "set -euo pipefail",
+        "if command -v claude >/dev/null 2>&1; then",
+        "  claude --version",
+        "else",
+        "  curl -fsSL https://claude.ai/install.sh | bash -s stable",
+        '  "$HOME/.local/bin/claude" --version',
+        "fi"
+      ].join("\n")
+    ],
+    cwd: input.workspace,
+    env: buildToolInstallEnv(input.env),
+    streamOutput: input.io,
+    timeoutMs: 2 * 60 * 1e3
+  });
+}
+function buildToolInstallEnv(env) {
+  return {
+    HOME: env.HOME ?? "",
+    PATH: env.PATH ?? "",
+    CI: "true"
+  };
+}
+function runtimeProvidersInclude(runtimeEnv, providerPrefix) {
+  return (runtimeEnv.REVIEW_PROVIDERS ?? "").split(",").some((provider) => provider.trim().startsWith(providerPrefix));
 }
 function normalizeFullReviewRuntimeEnv(runtimeEnv) {
   const normalized = {};
@@ -21133,6 +21208,23 @@ function clearActionAuthEnv(env) {
   delete env["INPUT_AUTH-JSON"];
   delete env.INPUT_AUTH_JSON;
   delete env.REVIEWROUTER_CODEX_AUTH_JSON;
+  clearActionProviderSecretEnv(env);
+}
+function clearActionProviderSecretEnv(env) {
+  delete env["INPUT_CLAUDE-CODE-OAUTH-TOKEN"];
+  delete env.INPUT_CLAUDE_CODE_OAUTH_TOKEN;
+  delete env["INPUT_OPENROUTER-API-KEY"];
+  delete env.INPUT_OPENROUTER_API_KEY;
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete env.OPENROUTER_API_KEY;
+}
+function maskProviderSecretInputs(io, providerSecrets) {
+  if (providerSecrets.claudeCodeOAuthToken) {
+    mask(io, providerSecrets.claudeCodeOAuthToken);
+  }
+  if (providerSecrets.openRouterApiKey) {
+    mask(io, providerSecrets.openRouterApiKey);
+  }
 }
 function clearOidcRequestEnv(env) {
   delete env.ACTIONS_ID_TOKEN_REQUEST_URL;

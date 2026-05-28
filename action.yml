@@ -18,6 +18,12 @@ inputs:
   auth-json:
     description: Codex OAuth auth JSON.
     required: true
+  claude-code-oauth-token:
+    description: Claude Code OAuth token for hybrid reviews.
+    required: false
+  openrouter-api-key:
+    description: OpenRouter API key for hybrid reviews.
+    required: false
 runs:
   using: node24
   main: action-dist/index.cjs

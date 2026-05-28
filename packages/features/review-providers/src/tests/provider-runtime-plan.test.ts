@@ -120,6 +120,7 @@ describe("provider runtime plan", () => {
       REQUIRED_HEALTHY_PROVIDERS: "claude/sonnet",
       SYNTHESIS_MODEL: "claude/sonnet",
       CLAUDE_MODEL: "sonnet",
+      CLAUDE_AGENTIC_CONTEXT: "true",
     });
     expect(plan.runtimeEnv).not.toHaveProperty("CODEX_MODEL");
     expect(plan.requiredSecretNames).toEqual(["CLAUDE_CODE_OAUTH_TOKEN"]);
@@ -204,6 +205,7 @@ describe("provider runtime plan", () => {
     expect(plan.runtimeEnv.PROVIDER_MAX_PARALLEL).toBe("3");
     expect(plan.runtimeEnv.INLINE_MIN_AGREEMENT).toBe("2");
     expect(plan.runtimeEnv.REQUIRED_HEALTHY_PROVIDERS).toBe("codex/gpt-5.5");
+    expect(plan.runtimeEnv.CLAUDE_AGENTIC_CONTEXT).toBe("true");
   });
 
   it("normalizes all-false required health flags to the first provider", () => {

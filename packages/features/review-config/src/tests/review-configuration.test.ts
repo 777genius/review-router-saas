@@ -114,6 +114,7 @@ describe("review configuration", () => {
       REQUIRED_HEALTHY_PROVIDERS: "claude/sonnet",
       SYNTHESIS_MODEL: "claude/sonnet",
       CLAUDE_MODEL: "sonnet",
+      CLAUDE_AGENTIC_CONTEXT: "true",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
     });
@@ -201,7 +202,7 @@ describe("review configuration", () => {
     ).toEqual([true, false]);
   });
 
-  it("maps mixed provider config to parallel runtime env", () => {
+  it("maps hybrid rotating Codex provider config to parallel runtime env", () => {
     const env = mapConfigToRuntimeEnv(
       parseReviewConfiguration({
         ...safeDefaultReviewConfiguration,
@@ -222,10 +223,18 @@ describe("review configuration", () => {
             agenticContext: true,
             fastMode: false,
           },
+          {
+            kind: "claude",
+            authMode: "claude_code_oauth",
+            model: "sonnet",
+            reasoningEffort: "medium",
+            agenticContext: true,
+            fastMode: false,
+          },
         ],
         execution: {
-          providerLimit: 2,
-          providerMaxParallel: 2,
+          providerLimit: 3,
+          providerMaxParallel: 3,
           inlineMinAgreement: 2,
         },
       }),
@@ -233,15 +242,62 @@ describe("review configuration", () => {
 
     expect(env).toMatchObject({
       REVIEW_AUTH_MODE: "codex-oauth-rotating",
-      REVIEW_PROVIDERS: "codex/gpt-5.5",
+      REVIEW_PROVIDERS:
+        "codex/gpt-5.5,openrouter/poolside/laguna-m.1:free,claude/sonnet",
       REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
       SYNTHESIS_MODEL: "codex/gpt-5.5",
       CODEX_MODEL: "gpt-5.5",
       CODEX_REASONING_EFFORT: "high",
-      PROVIDER_LIMIT: "1",
-      PROVIDER_MAX_PARALLEL: "1",
-      INLINE_MIN_AGREEMENT: "1",
+      CLAUDE_MODEL: "sonnet",
+      CLAUDE_AGENTIC_CONTEXT: "true",
+      PROVIDER_LIMIT: "3",
+      PROVIDER_MAX_PARALLEL: "3",
+      INLINE_MIN_AGREEMENT: "2",
     });
+  });
+
+  it("rejects multiple rotating Codex providers", () => {
+    expect(() =>
+      parseReviewConfiguration({
+        schemaVersion: 2,
+        providers: [
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth_rotating",
+            model: "gpt-5.5",
+          },
+          {
+            kind: "codex",
+            authMode: "codex_subscription_oauth_rotating",
+            model: "gpt-5.4",
+          },
+        ],
+        blockingPolicy: { failOnSeverity: "critical" },
+        limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+      }),
+    ).toThrow("codex_rotating_single_provider_required");
+  });
+
+  it("rejects exact duplicate provider and model rows", () => {
+    expect(() =>
+      parseReviewConfiguration({
+        schemaVersion: 2,
+        providers: [
+          {
+            kind: "openrouter",
+            authMode: "openrouter_api_key",
+            model: "openai/gpt-5.3-codex",
+          },
+          {
+            kind: "openrouter",
+            authMode: "openrouter_api_key",
+            model: "openai/gpt-5.3-codex",
+          },
+        ],
+        blockingPolicy: { failOnSeverity: "critical" },
+        limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+      }),
+    ).toThrow("duplicate_review_provider");
   });
 
   it("rejects invalid limits", () => {
@@ -427,17 +483,19 @@ describe("review configuration", () => {
       workspaceId: "workspace_1",
     });
 
-    expect(saved.config.providers).toHaveLength(1);
+    expect(saved.config.providers).toHaveLength(2);
     expect(latest?.config.providers.map((provider) => provider.model)).toEqual([
       "gpt-5.5",
+      "poolside/laguna-m.1:free",
     ]);
     expect(versions[0]?.model).toBe("gpt-5.5");
     expect(versions[0]?.providers.map((provider) => provider.model)).toEqual([
       "gpt-5.5",
+      "poolside/laguna-m.1:free",
     ]);
     expect(
       versions[0]?.providers.map((provider) => provider.requiredHealthy),
-    ).toEqual([true]);
+    ).toEqual([true, false]);
   });
 
   it("resolves repository config before workspace default and safe default", async () => {

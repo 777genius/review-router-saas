@@ -62,6 +62,8 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(actionSource).not.toContain("process.env.GITHUB_ACTION_PATH");
     expect(actionYml).toContain("provider-instance-id:\n    description:");
     expect(actionYml).toContain("auth-json:\n    description:");
+    expect(actionYml).toContain("claude-code-oauth-token:\n    description:");
+    expect(actionYml).toContain("openrouter-api-key:\n    description:");
     expect(actionYml).not.toContain("codex-package-version");
     expect(actionYml).not.toContain("codex-binary");
     expect(actionYml).not.toMatch(/\bpre:/);
@@ -99,12 +101,18 @@ describe("Codex rotating GitHub Action runtime", () => {
       "INPUT_API-URL": "https://api.reviewrouter.site/",
       "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
       "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+      "INPUT_CLAUDE-CODE-OAUTH-TOKEN": " sk-ant-oat01-provider-secret\n",
+      "INPUT_OPENROUTER-API-KEY": "sk-or-provider-secret",
     });
 
     expect(inputs).toMatchObject({
       apiUrl: "https://api.reviewrouter.site",
       providerInstanceId: "codex-rotating:123456",
       workflowSchemaVersion: 1,
+      providerSecrets: {
+        claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
+        openRouterApiKey: "sk-or-provider-secret",
+      },
     });
   });
 
@@ -753,7 +761,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     );
   });
 
-  it("runs the local action E2E without sending plaintext auth to SaaS or child runtime env", async () => {
+  it("runs the local action E2E with only explicit hybrid provider secrets in child runtime env", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-e2e-"));
     const binDir = join(tempDir, "bin");
     const eventPath = join(tempDir, "event.json");
@@ -765,9 +773,11 @@ describe("Codex rotating GitHub Action runtime", () => {
       "codex",
     );
     const fakeGit = join(binDir, "git");
+    const fakeClaude = join(binDir, "claude");
     const fakeFullRuntime = join(tempDir, "dist", "index.js");
     const gitEnvLog = join(tempDir, "git-env.log");
     const codexReviewEnvLog = join(tempDir, "codex-review-env.log");
+    const claudeInstallEnvLog = join(tempDir, "claude-install-env.log");
     const requestBodies: string[] = [];
     const invokedUrls: string[] = [];
     const refreshedAuthJson = JSON.stringify({
@@ -870,6 +880,23 @@ describe("Codex rotating GitHub Action runtime", () => {
       { mode: 0o700 },
     );
     await writeFile(
+      fakeClaude,
+      [
+        "#!/usr/bin/env node",
+        "const { writeFileSync } = require('node:fs');",
+        `writeFileSync(${JSON.stringify(claudeInstallEnvLog)}, JSON.stringify({`,
+        "  githubToken: process.env.GITHUB_TOKEN,",
+        "  claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,",
+        "  openrouterKey: process.env.OPENROUTER_API_KEY,",
+        "  home: process.env.HOME,",
+        "  path: process.env.PATH,",
+        "}));",
+        "process.stdout.write('claude 1.0.0\\n');",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await writeFile(
       fakeFullRuntime,
       [
         "#!/usr/bin/env node",
@@ -888,6 +915,10 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  configIncludesReadOnly: config.includes('sandbox_mode = \"read-only\"'),",
         "  configIncludesToken: config.includes('refreshed-access-token'),",
         "  inheritedOpenAi: process.env.OPENAI_API_KEY,",
+        "  claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,",
+        "  openrouterKey: process.env.OPENROUTER_API_KEY,",
+        "  inheritedInputClaude: process.env['INPUT_CLAUDE-CODE-OAUTH-TOKEN'] || process.env.INPUT_CLAUDE_CODE_OAUTH_TOKEN,",
+        "  inheritedInputOpenRouter: process.env['INPUT_OPENROUTER-API-KEY'] || process.env.INPUT_OPENROUTER_API_KEY,",
         "  inheritedOidc: process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,",
         "  githubToken: process.env.GITHUB_TOKEN,",
         "  githubOutput: process.env.GITHUB_OUTPUT,",
@@ -910,6 +941,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     );
     await chmod(fakeCodex, 0o700);
     await chmod(fakeGit, 0o700);
+    await chmod(fakeClaude, 0o700);
     await chmod(fakeFullRuntime, 0o700);
 
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -937,17 +969,21 @@ describe("Codex rotating GitHub Action runtime", () => {
           runtimeConfigVersion: 7,
           runtimeEnv: {
             REVIEW_AUTH_MODE: "codex-oauth-rotating",
-            REVIEW_PROVIDERS: "codex/gpt-5.5",
+            REVIEW_PROVIDERS:
+              "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
             REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
             SYNTHESIS_MODEL: "codex/gpt-5.5",
-            PROVIDER_LIMIT: "1",
+            PROVIDER_LIMIT: "3",
+            PROVIDER_MAX_PARALLEL: "3",
             INLINE_MAX_COMMENTS: "10",
-            INLINE_MIN_AGREEMENT: "1",
+            INLINE_MIN_AGREEMENT: "2",
             TARGET_TOKENS_PER_BATCH: "90000",
             FAIL_ON_SEVERITY: "critical",
             CODEX_MODEL: "gpt-5.5",
             CODEX_REASONING_EFFORT: "high",
             CODEX_AGENTIC_CONTEXT: "true",
+            CLAUDE_MODEL: "sonnet",
+            CLAUDE_AGENTIC_CONTEXT: "true",
           },
         });
       }
@@ -1006,6 +1042,8 @@ describe("Codex rotating GitHub Action runtime", () => {
           "INPUT_API-URL": "https://api.reviewrouter.site/",
           "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
           "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+          "INPUT_CLAUDE-CODE-OAUTH-TOKEN": "sk-ant-oat01-claude-input",
+          "INPUT_OPENROUTER-API-KEY": "sk-or-input",
           "INPUT_AUTH-JSON": JSON.stringify({
             auth_mode: "chatgpt",
             tokens: {
@@ -1031,6 +1069,8 @@ describe("Codex rotating GitHub Action runtime", () => {
           GIT_TRACE: "1",
           REVIEWROUTER_GIT_ENV_LOG: gitEnvLog,
           OPENAI_API_KEY: "sk-runner-openai-key",
+          CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-inherited",
+          OPENROUTER_API_KEY: "sk-or-inherited",
           REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "1",
           PATH: `${binDir}:${process.env.PATH ?? ""}`,
         },
@@ -1044,6 +1084,8 @@ describe("Codex rotating GitHub Action runtime", () => {
       const serializedRequests = requestBodies.join("\n");
       expect(serializedRequests).not.toContain("initial-refresh-token");
       expect(serializedRequests).not.toContain("refreshed-refresh-token");
+      expect(serializedRequests).not.toContain("sk-ant-oat01-claude-input");
+      expect(serializedRequests).not.toContain("sk-or-input");
       expect(
         invokedUrls.some(
           (url) =>
@@ -1075,13 +1117,25 @@ describe("Codex rotating GitHub Action runtime", () => {
         reviewAuthMode: "codex-oauth",
         codexAgenticAudit: "rerun",
         failOnNoHealthyProviders: "true",
-        providers: "codex/gpt-5.5",
+        providers:
+          "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
         runtimeMode: "static",
         commentTokenMode: "github-token",
         runtimeConfigVersion: "7",
       });
       expect(reviewEnv.inheritedOpenAi).toBeUndefined();
+      expect(reviewEnv.claudeToken).toBe("sk-ant-oat01-claude-input");
+      expect(reviewEnv.openrouterKey).toBe("sk-or-input");
+      expect(reviewEnv.inheritedInputClaude).toBeUndefined();
+      expect(reviewEnv.inheritedInputOpenRouter).toBeUndefined();
       expect(reviewEnv.inheritedOidc).toBeUndefined();
+      const claudeInstallEnv = JSON.parse(
+        readFileSync(claudeInstallEnvLog, "utf8"),
+      ) as Record<string, unknown>;
+      expect(claudeInstallEnv.githubToken).toBeUndefined();
+      expect(claudeInstallEnv.claudeToken).toBeUndefined();
+      expect(claudeInstallEnv.openrouterKey).toBeUndefined();
+      expect(claudeInstallEnv.home).toBe(reviewEnv.home);
       expect(String(reviewEnv.githubOutput)).toContain("github-output");
       const childStdout = stdoutWrite.mock.calls
         .map(([chunk]) => String(chunk))
@@ -1094,6 +1148,8 @@ describe("Codex rotating GitHub Action runtime", () => {
       );
       expect(runtimeStdout).toContain("runtime marker visible");
       expect(childStderr).toContain("runtime stderr marker");
+      expect(childStdout).toContain("::add-mask::sk-ant-oat01-claude-input");
+      expect(childStdout).toContain("::add-mask::sk-or-input");
       expect(runtimeStdout).not.toContain("refreshed-refresh-token");
       expect(runtimeStdout).not.toContain("refreshed-access-token");
       expect(childStderr).not.toContain("refreshed-access-token");

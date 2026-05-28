@@ -354,6 +354,8 @@ export type CodexRotatingWorkflowOptions = {
   readonly actionRef: string;
   readonly apiUrl: string;
   readonly providerInstanceId: string;
+  readonly claudeCodeOAuthTokenSecret?: boolean;
+  readonly openRouterApiKeySecret?: boolean;
   readonly runnerLabel?: string;
   readonly timeoutMinutes?: number;
   readonly workflowSchemaVersion?: number;
@@ -395,7 +397,7 @@ jobs:
           provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
           workflow-schema-version: "${schemaVersion}"
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
-`;
+${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}`;
 }
 
 export type CodexRotatingWorkflowScanResult = {
@@ -424,17 +426,47 @@ export function scanCodexRotatingAdvisoryWorkflow(
   ) {
     errors.push("rotating_secret_must_be_literal_auth_json_input");
   }
+  const secretReferences = [...workflow.matchAll(/\bsecrets\.([A-Z0-9_]+)\b/g)]
+    .map((match) => match[1]!)
+    .filter((secretName, index, all) => all.indexOf(secretName) === index);
+  const allowedSecretReferences = new Set([
+    codexRotatingSecretName,
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "OPENROUTER_API_KEY",
+  ]);
+  for (const secretName of secretReferences) {
+    if (!allowedSecretReferences.has(secretName)) {
+      errors.push(`unknown_secret_reference:${secretName}`);
+    }
+  }
+  if (/\bsecrets\s*\[/.test(workflow) || /\bsecrets\s*\*/.test(workflow)) {
+    errors.push("dynamic_secret_reference_not_allowed");
+  }
+  if (
+    workflow.includes("CLAUDE_CODE_OAUTH_TOKEN") &&
+    !workflow.includes(
+      "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    )
+  ) {
+    errors.push("claude_secret_must_be_literal_input");
+  }
+  if (
+    workflow.includes("OPENROUTER_API_KEY") &&
+    !workflow.includes("openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}")
+  ) {
+    errors.push("openrouter_secret_must_be_literal_input");
+  }
   for (const [pattern, code] of [
     [/\bworkflow_dispatch\s*:/, "workflow_dispatch_not_allowed"],
     [/\bmerge_group\s*:/, "merge_group_not_allowed"],
     [/\bpull_request_target\s*:/, "pull_request_target_not_allowed"],
     [/\buses:\s*actions\/checkout@/i, "actions_checkout_not_allowed"],
     [/\brun:\s*[|>]?/i, "raw_run_step_not_allowed"],
-    [/^\s*env:\s*$/m, "workflow_env_not_allowed"],
-    [/^\s*strategy:\s*$/m, "matrix_strategy_not_allowed"],
-    [/^\s*container:\s*$/m, "job_container_not_allowed"],
-    [/^\s*services:\s*$/m, "job_services_not_allowed"],
-    [/^\s*concurrency:\s*$/m, "workflow_concurrency_not_allowed"],
+    [/^\s*env\s*:/m, "workflow_env_not_allowed"],
+    [/^\s*strategy\s*:/m, "matrix_strategy_not_allowed"],
+    [/^\s*container\s*:/m, "job_container_not_allowed"],
+    [/^\s*services\s*:/m, "job_services_not_allowed"],
+    [/^\s*concurrency\s*:/m, "workflow_concurrency_not_allowed"],
     [/^ {4}uses:\s*/m, "reusable_job_not_allowed"],
     [/ubuntu-latest/i, "mutable_runner_label_not_allowed"],
     [/toJSON\s*\(\s*secrets\s*\)/, "tojson_secrets_not_allowed"],

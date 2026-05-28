@@ -144,6 +144,40 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflowContent).not.toContain("OPENAI_API_KEY");
   });
 
+  it("renders optional hybrid provider secret inputs only when configured for rotating Codex workflow", () => {
+    const files = renderReviewRouterWorkflowFiles({
+      actionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      apiUrl: "https://reviewrouter.site",
+      runtimeConfigMode: "oidc",
+      staticRuntimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth-rotating",
+        REVIEW_PROVIDERS:
+          "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
+      },
+      codexRotatingProviderInstanceId: "codex-rotating:123456",
+    });
+
+    const codexWorkflow = files[0];
+    const content =
+      codexWorkflow && codexWorkflow.operation !== "delete"
+        ? codexWorkflow.content
+        : "";
+    expect(content).toContain(
+      "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    );
+    expect(content).toContain(
+      "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    );
+    expect(content).toContain(
+      "openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(content)).toEqual({
+      valid: true,
+      errors: [],
+    });
+  });
+
   it("renders the dedicated rotating Codex interaction workflow", () => {
     const workflow = renderCodexRotatingInteractionWorkflow({
       actionRef:
@@ -176,6 +210,8 @@ describe("renderReviewRouterWorkflow", () => {
     expect(
       getCodexRotatingWorkflowSetupContentMarkerGroups({
         providerInstanceId: "codex-rotating:123456",
+        claudeCodeOAuthTokenSecret: true,
+        openRouterApiKeySecret: true,
       }),
     ).toEqual([
       [
@@ -185,6 +221,8 @@ describe("renderReviewRouterWorkflow", () => {
         "mode: codex-oauth-rotating",
         'provider-instance-id: "codex-rotating:123456"',
         "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+        "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+        "openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}",
       ],
     ]);
   });

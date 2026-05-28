@@ -16,6 +16,8 @@ export type WorkflowSetupReadinessInput = {
   readonly providerKind?: ProviderKind;
   readonly conflictReviewFallbackEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
+  readonly codexRotatingClaudeCodeOAuthTokenSecret?: boolean;
+  readonly codexRotatingOpenRouterApiKeySecret?: boolean;
 };
 
 export async function isWorkflowSetupAlreadyCurrent(
@@ -38,6 +40,10 @@ export async function isWorkflowSetupAlreadyCurrent(
           expectedContentMarkerGroups:
             getCodexRotatingWorkflowSetupContentMarkerGroups({
               providerInstanceId: input.codexRotatingProviderInstanceId,
+              claudeCodeOAuthTokenSecret:
+                input.codexRotatingClaudeCodeOAuthTokenSecret === true,
+              openRouterApiKeySecret:
+                input.codexRotatingOpenRouterApiKeySecret === true,
             }),
         }
       : input.providerKind || input.conflictReviewFallbackEnabled === true

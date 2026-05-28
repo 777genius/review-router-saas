@@ -420,6 +420,8 @@ export function dashboardErrorText(error: string): string {
       return "Codex rotating OAuth must be configured per repository, not as a workspace default.";
     case "codex_rotating_single_provider_required":
       return "Codex rotating OAuth supports exactly one Codex provider in this repository.";
+    case "duplicate_review_provider":
+      return "Duplicate provider/model rows are not supported yet. Pick a different model for duplicate providers.";
     case "codex_rotating_provider_instance_required":
       return "Codex rotating setup is incomplete. Reconnect Codex with the rotating setup command, then create the setup PR again.";
     case "codex_legacy_auth_requires_reconnect":

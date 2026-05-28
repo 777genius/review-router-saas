@@ -146,6 +146,43 @@ describe("RepositorySetupReadyGate", () => {
 
     expect(screen.queryByRole("button", { name: "Edit settings" })).toBeNull();
   });
+
+  it("completes multi-auth setup after all expected provider confirmations", async () => {
+    render(
+      <RepositorySetupReadyGate
+        repositoryId="repo_1"
+        currentStep={3}
+        expectedProviderAuthModes={["openrouter_api_key", "claude_code_oauth"]}
+      >
+        <button type="button">Edit settings</button>
+      </RepositorySetupReadyGate>,
+    );
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "openrouter",
+        authMode: "openrouter_api_key",
+      }),
+    );
+    expect(screen.queryByRole("button", { name: "Edit settings" })).toBeNull();
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "claude",
+        authMode: "claude_code_oauth",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Edit settings" }),
+      ).toBeTruthy();
+    });
+  });
 });
 
 describe("RepositorySetupRowDisclosureController", () => {

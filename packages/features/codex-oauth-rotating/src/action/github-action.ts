@@ -100,6 +100,12 @@ type ActionInputs = {
   readonly apiUrl: string;
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
+  readonly providerSecrets: ProviderSecretInputs;
+};
+
+type ProviderSecretInputs = {
+  readonly claudeCodeOAuthToken?: string;
+  readonly openRouterApiKey?: string;
 };
 
 type PullRequestEvent = {
@@ -213,6 +219,8 @@ export async function runCodexRotatingGitHubAction(
   const fullReviewRuntimeRunner =
     runtime.fullReviewRuntimeRunner ?? runFullReviewRouterRuntime;
   const inputs = readActionInputs(env);
+  maskProviderSecretInputs(io, inputs.providerSecrets);
+  clearActionProviderSecretEnv(env);
 
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
@@ -402,6 +410,11 @@ export async function runCodexRotatingGitHubAction(
 export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
   const mode = readInput(env, "mode") || codexRotatingRuntimeAuthMode;
   const apiUrl = requireInput(env, "api-url").replace(/\/+$/, "");
+  const claudeCodeOAuthToken = optionalSecretInput(
+    env,
+    "claude-code-oauth-token",
+  );
+  const openRouterApiKey = optionalSecretInput(env, "openrouter-api-key");
   const workflowSchemaVersion = Number(
     readInput(env, "workflow-schema-version") || "1",
   );
@@ -414,6 +427,10 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
     apiUrl,
     providerInstanceId: requireInput(env, "provider-instance-id"),
     workflowSchemaVersion,
+    providerSecrets: {
+      ...(claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {}),
+      ...(openRouterApiKey ? { openRouterApiKey } : {}),
+    },
   };
 }
 
@@ -527,6 +544,18 @@ function requireInput(env: NodeJS.ProcessEnv, name: string): string {
     throw new Error(`missing_action_input:${name}`);
   }
   return value;
+}
+
+function optionalSecretInput(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): string | undefined {
+  const value = readRawInput(env, name);
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 async function readPullRequestEvent(
@@ -1655,21 +1684,28 @@ async function runFullReviewRouterRuntime(input: {
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
     await symlink(input.codexBinaryPath, join(codexBinDir, "codex"));
+    const childEnv = buildFullReviewRuntimeEnv({
+      sourceEnv: input.env,
+      inputs: input.inputs,
+      event: input.event,
+      tempHome: input.tempHome,
+      tempCodexHome: input.tempCodexHome,
+      codexBinDir,
+      commentToken: input.commentToken,
+      runtimeConfigVersion: input.runtimeConfigVersion,
+      runtimeEnv: input.runtimeEnv,
+    });
+    await ensureFullReviewRuntimeTools({
+      env: childEnv,
+      io: input.io,
+      workspace: input.workspace,
+      runtimeEnv: input.runtimeEnv,
+    });
     await runProcess({
       command: process.execPath,
       args: [runtimePath],
       cwd: input.workspace,
-      env: buildFullReviewRuntimeEnv({
-        sourceEnv: input.env,
-        inputs: input.inputs,
-        event: input.event,
-        tempHome: input.tempHome,
-        tempCodexHome: input.tempCodexHome,
-        codexBinDir,
-        commentToken: input.commentToken,
-        runtimeConfigVersion: input.runtimeConfigVersion,
-        runtimeEnv: input.runtimeEnv,
-      }),
+      env: childEnv,
       streamOutput: input.io,
       timeoutMs: 30 * 60 * 1000,
     });
@@ -1697,13 +1733,18 @@ function buildFullReviewRuntimeEnv(input: {
     runtimeEnv.REVIEW_AUTH_MODE === codexRotatingRuntimeAuthMode
       ? "codex-oauth"
       : (runtimeEnv.REVIEW_AUTH_MODE ?? "codex-oauth");
+  const providerSecretEnv = buildProviderSecretEnvForRuntime({
+    runtimeEnv,
+    providerSecrets: input.inputs.providerSecrets,
+  });
   return {
     ...inherited,
     ...runtimeEnv,
+    ...providerSecretEnv,
     HOME: input.tempHome,
     CODEX_HOME: input.tempCodexHome,
     CI: "true",
-    PATH: `${input.codexBinDir}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
+    PATH: `${input.codexBinDir}:${join(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
     GITHUB_OUTPUT: join(input.tempHome, "github-output"),
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
@@ -1717,6 +1758,76 @@ function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
   };
+}
+
+function buildProviderSecretEnvForRuntime(input: {
+  readonly runtimeEnv: Readonly<Record<string, string>>;
+  readonly providerSecrets: ProviderSecretInputs;
+}): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (
+    runtimeProvidersInclude(input.runtimeEnv, "claude/") &&
+    input.providerSecrets.claudeCodeOAuthToken
+  ) {
+    env.CLAUDE_CODE_OAUTH_TOKEN = input.providerSecrets.claudeCodeOAuthToken;
+  }
+  if (
+    runtimeProvidersInclude(input.runtimeEnv, "openrouter/") &&
+    input.providerSecrets.openRouterApiKey
+  ) {
+    env.OPENROUTER_API_KEY = input.providerSecrets.openRouterApiKey;
+  }
+  return env;
+}
+
+async function ensureFullReviewRuntimeTools(input: {
+  readonly env: Record<string, string>;
+  readonly io: ActionIO;
+  readonly workspace: string;
+  readonly runtimeEnv: Readonly<Record<string, string>>;
+}): Promise<void> {
+  if (!runtimeProvidersInclude(input.runtimeEnv, "claude/")) {
+    return;
+  }
+
+  await runProcess({
+    command: "bash",
+    args: [
+      "-lc",
+      [
+        "set -euo pipefail",
+        "if command -v claude >/dev/null 2>&1; then",
+        "  claude --version",
+        "else",
+        "  curl -fsSL https://claude.ai/install.sh | bash -s stable",
+        '  "$HOME/.local/bin/claude" --version',
+        "fi",
+      ].join("\n"),
+    ],
+    cwd: input.workspace,
+    env: buildToolInstallEnv(input.env),
+    streamOutput: input.io,
+    timeoutMs: 2 * 60 * 1000,
+  });
+}
+
+function buildToolInstallEnv(
+  env: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return {
+    HOME: env.HOME ?? "",
+    PATH: env.PATH ?? "",
+    CI: "true",
+  };
+}
+
+function runtimeProvidersInclude(
+  runtimeEnv: Readonly<Record<string, string>>,
+  providerPrefix: string,
+): boolean {
+  return (runtimeEnv.REVIEW_PROVIDERS ?? "")
+    .split(",")
+    .some((provider) => provider.trim().startsWith(providerPrefix));
 }
 
 function normalizeFullReviewRuntimeEnv(
@@ -2206,6 +2317,28 @@ function clearActionAuthEnv(env: NodeJS.ProcessEnv): void {
   delete env["INPUT_AUTH-JSON"];
   delete env.INPUT_AUTH_JSON;
   delete env.REVIEWROUTER_CODEX_AUTH_JSON;
+  clearActionProviderSecretEnv(env);
+}
+
+function clearActionProviderSecretEnv(env: NodeJS.ProcessEnv): void {
+  delete env["INPUT_CLAUDE-CODE-OAUTH-TOKEN"];
+  delete env.INPUT_CLAUDE_CODE_OAUTH_TOKEN;
+  delete env["INPUT_OPENROUTER-API-KEY"];
+  delete env.INPUT_OPENROUTER_API_KEY;
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete env.OPENROUTER_API_KEY;
+}
+
+function maskProviderSecretInputs(
+  io: ActionIO,
+  providerSecrets: ProviderSecretInputs,
+): void {
+  if (providerSecrets.claudeCodeOAuthToken) {
+    mask(io, providerSecrets.claudeCodeOAuthToken);
+  }
+  if (providerSecrets.openRouterApiKey) {
+    mask(io, providerSecrets.openRouterApiKey);
+  }
 }
 
 function clearOidcRequestEnv(env: NodeJS.ProcessEnv): void {

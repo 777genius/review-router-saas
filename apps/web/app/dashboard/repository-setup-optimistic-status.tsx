@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ProviderAuthMode } from "@reviewrouter/features-review-providers";
 import {
   providerSetupConfirmedEventName,
@@ -84,8 +84,10 @@ function useOptimisticSetupStep({
   readonly expectedProviderAuthModes: readonly ProviderAuthMode[];
 }): SetupStep {
   const [optimisticStep, setOptimisticStep] = useState(currentStep);
+  const optimisticProviderAuthModesRef = useRef(new Set<ProviderAuthMode>());
 
   useEffect(() => {
+    optimisticProviderAuthModesRef.current = new Set();
     setOptimisticStep(currentStep);
   }, [currentStep]);
 
@@ -103,12 +105,22 @@ function useOptimisticSetupStep({
         .detail;
       if (
         detail?.repositoryId === repositoryId &&
-        providerSetupConfirmationMatchesExpectedAuthModes(
+        providerSetupConfirmationMatchesAnyExpectedAuthMode(
           detail,
           expectedProviderAuthModes,
         )
       ) {
-        setOptimisticStep(4);
+        if (detail.authMode !== undefined) {
+          optimisticProviderAuthModesRef.current.add(detail.authMode);
+        }
+        if (
+          providerSetupConfirmationsComplete(
+            optimisticProviderAuthModesRef.current,
+            expectedProviderAuthModes,
+          )
+        ) {
+          setOptimisticStep(4);
+        }
       }
     }
 
@@ -135,20 +147,28 @@ function useOptimisticSetupStep({
   return optimisticStep;
 }
 
-function providerSetupConfirmationMatchesExpectedAuthModes(
+function providerSetupConfirmationMatchesAnyExpectedAuthMode(
   detail: ProviderSetupConfirmedEventDetail,
   expectedProviderAuthModes: readonly ProviderAuthMode[],
 ): boolean {
   if (expectedProviderAuthModes.length === 0) {
     return true;
   }
-  if ([...new Set(expectedProviderAuthModes)].length > 1) {
-    return false;
-  }
   return (
     detail.authMode !== undefined &&
     expectedProviderAuthModes.includes(detail.authMode)
   );
+}
+
+function providerSetupConfirmationsComplete(
+  confirmedAuthModes: ReadonlySet<ProviderAuthMode>,
+  expectedProviderAuthModes: readonly ProviderAuthMode[],
+): boolean {
+  const uniqueExpected = [...new Set(expectedProviderAuthModes)];
+  if (uniqueExpected.length === 0) {
+    return true;
+  }
+  return uniqueExpected.every((authMode) => confirmedAuthModes.has(authMode));
 }
 
 export function RepositorySetupRowDisclosureController(): null {

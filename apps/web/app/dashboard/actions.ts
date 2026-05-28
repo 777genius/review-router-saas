@@ -511,6 +511,9 @@ async function createSetupPullRequestMutation(
         repositoryFullName: repository.fullName,
         repositoryVisibility: repository.visibility,
       });
+    const codexRotatingSecretInputs = codexRotatingProviderInstanceId
+      ? codexRotatingWorkflowSecretInputs(resolvedRuntime.config)
+      : null;
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -524,7 +527,10 @@ async function createSetupPullRequestMutation(
         actionRef,
         conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
         ...(codexRotatingProviderInstanceId
-          ? { codexRotatingProviderInstanceId }
+          ? {
+              codexRotatingProviderInstanceId,
+              ...(codexRotatingSecretInputs ?? {}),
+            }
           : {}),
         ...(workflowProviderKind ? { providerKind: workflowProviderKind } : {}),
       },
@@ -711,6 +717,10 @@ async function confirmSetupPullRequestMergedMutation(
             repositoryFullName: repository.fullName,
             repositoryVisibility: repository.visibility,
           });
+    const codexRotatingSecretInputs =
+      resolvedRuntime !== null && codexRotatingProviderInstanceId
+        ? codexRotatingWorkflowSecretInputs(resolvedRuntime.config)
+        : null;
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -726,7 +736,10 @@ async function confirmSetupPullRequestMergedMutation(
             actionRef: resolveReviewRouterActionRef(),
             conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
             ...(codexRotatingProviderInstanceId
-              ? { codexRotatingProviderInstanceId }
+              ? {
+                  codexRotatingProviderInstanceId,
+                  ...(codexRotatingSecretInputs ?? {}),
+                }
               : {}),
             ...(workflowProviderKind
               ? { providerKind: workflowProviderKind }
@@ -2118,6 +2131,20 @@ function workflowReadinessProviderKind(
     : undefined;
 }
 
+function codexRotatingWorkflowSecretInputs(config: ReviewConfiguration): {
+  readonly codexRotatingClaudeCodeOAuthTokenSecret: boolean;
+  readonly codexRotatingOpenRouterApiKeySecret: boolean;
+} {
+  return {
+    codexRotatingClaudeCodeOAuthTokenSecret: config.providers.some(
+      (provider) => provider.kind === "claude",
+    ),
+    codexRotatingOpenRouterApiKeySecret: config.providers.some(
+      (provider) => provider.kind === "openrouter",
+    ),
+  };
+}
+
 function resolveCodexRotatingProviderInstanceId(input: {
   readonly config: ReviewConfiguration;
   readonly githubRepositoryId: string;
@@ -2136,7 +2163,6 @@ function resolveCodexRotatingProviderInstanceId(input: {
   });
   if (
     rotatingProviders.length !== 1 ||
-    input.config.providers.length !== 1 ||
     rotatingProviders[0]?.kind !== "codex"
   ) {
     throw new Error("codex_rotating_single_provider_required");
@@ -2206,7 +2232,6 @@ function assertCodexRotatingReviewConfigAllowed(input: {
   }
   if (
     rotatingProviders.length !== 1 ||
-    input.config.providers.length !== 1 ||
     rotatingProviders[0]?.kind !== "codex"
   ) {
     throw new Error("codex_rotating_single_provider_required");

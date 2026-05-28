@@ -107,6 +107,7 @@ export function buildProviderRuntimePlan(
   );
   if (claudeProvider) {
     runtimeEnv.CLAUDE_MODEL = claudeProvider.model;
+    runtimeEnv.CLAUDE_AGENTIC_CONTEXT = String(claudeProvider.agenticContext);
   }
 
   assertRuntimeEnvIsNonSecret(runtimeEnv);

@@ -191,6 +191,8 @@ describe("workflow setup readiness", () => {
           actionRef:
             "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
           codexRotatingProviderInstanceId: "codex-rotating:123456",
+          codexRotatingClaudeCodeOAuthTokenSecret: true,
+          codexRotatingOpenRouterApiKeySecret: true,
           conflictReviewFallbackEnabled: true,
         },
         { workflowProbe: probe },
@@ -209,6 +211,8 @@ describe("workflow setup readiness", () => {
           "mode: codex-oauth-rotating",
           'provider-instance-id: "codex-rotating:123456"',
           "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+          "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+          "openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}",
         ],
       ],
     });

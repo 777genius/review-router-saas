@@ -5,7 +5,7 @@ import {
 } from "./dashboard-action-form-readers";
 
 describe("dashboard action form readers", () => {
-  it("normalizes stale legacy Codex policy submissions to rotating Codex", () => {
+  it("normalizes stale legacy Codex policy submissions to rotating Codex without dropping hybrid providers", () => {
     const formData = reviewConfigFormData([
       {
         authMode: "codex_subscription_oauth",
@@ -21,7 +21,7 @@ describe("dashboard action form readers", () => {
 
     const config = readReviewConfigurationForm(formData);
 
-    expect(config.providers).toHaveLength(1);
+    expect(config.providers).toHaveLength(2);
     expect(config.provider).toMatchObject({
       kind: "codex",
       authMode: "codex_subscription_oauth_rotating",
@@ -29,10 +29,16 @@ describe("dashboard action form readers", () => {
       reasoningEffort: "high",
       requiredHealthy: true,
     });
+    expect(config.providers[1]).toMatchObject({
+      kind: "openrouter",
+      authMode: "openrouter_api_key",
+      model: "openai/gpt-5.3-codex",
+      reasoningEffort: "medium",
+    });
     expect(config.execution).toMatchObject({
-      providerLimit: 1,
-      providerMaxParallel: 1,
-      inlineMinAgreement: 1,
+      providerLimit: 2,
+      providerMaxParallel: 2,
+      inlineMinAgreement: 2,
     });
   });
 

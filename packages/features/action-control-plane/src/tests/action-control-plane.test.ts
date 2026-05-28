@@ -1740,27 +1740,6 @@ describe("action control plane", () => {
         providers: [
           {
             kind: "codex",
-            authMode: "codex_subscription_oauth",
-            model: "gpt-5.5",
-            reasoningEffort: "medium",
-            agenticContext: true,
-            fastMode: false,
-          },
-          {
-            kind: "codex",
-            authMode: "codex_openai_api_key",
-            model: "gpt-5.4",
-            reasoningEffort: "medium",
-            agenticContext: true,
-            fastMode: false,
-          },
-        ],
-      },
-      {
-        expectedCode: "codex_provider_requires_rotating_workflow",
-        providers: [
-          {
-            kind: "codex",
             authMode: "codex_subscription_oauth_rotating",
             model: "gpt-5.5",
             reasoningEffort: "medium",

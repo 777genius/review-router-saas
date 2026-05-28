@@ -804,17 +804,28 @@ export function getWorkflowSetupContentMarkerGroups(input: {
 
 export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   readonly providerInstanceId: string;
+  readonly claudeCodeOAuthTokenSecret?: boolean | undefined;
+  readonly openRouterApiKeySecret?: boolean | undefined;
 }): readonly (readonly string[])[] {
-  return [
-    [
-      "name: ReviewRouter Codex OAuth",
-      "permissions: {}\n\njobs:",
-      "id-token: write",
-      "mode: codex-oauth-rotating",
-      `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
-      "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
-    ],
+  const markers = [
+    "name: ReviewRouter Codex OAuth",
+    "permissions: {}\n\njobs:",
+    "id-token: write",
+    "mode: codex-oauth-rotating",
+    `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
+    "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
   ];
+
+  if (input.claudeCodeOAuthTokenSecret === true) {
+    markers.push(
+      "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    );
+  }
+  if (input.openRouterApiKeySecret === true) {
+    markers.push("openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}");
+  }
+
+  return [markers];
 }
 
 export function getLegacyReviewRouterWorkflowDeletionMarkerGroups(): readonly (readonly string[])[] {
@@ -1107,6 +1118,9 @@ export function renderReviewRouterWorkflowFiles(
           actionRef: options.actionRef,
           apiUrl: options.apiUrl,
           providerInstanceId: options.codexRotatingProviderInstanceId,
+          ...codexRotatingProviderSecretInputsForRuntimeEnv(
+            options.staticRuntimeEnv,
+          ),
         }),
       },
       {
@@ -1161,6 +1175,23 @@ export function renderReviewRouterWorkflowFiles(
       content: renderReviewRouterInteractionWorkflow(options),
     },
   ];
+}
+
+function codexRotatingProviderSecretInputsForRuntimeEnv(
+  runtimeEnv: Readonly<Record<string, string>> | undefined,
+): {
+  readonly claudeCodeOAuthTokenSecret: boolean;
+  readonly openRouterApiKeySecret: boolean;
+} {
+  const providers = runtimeEnv?.REVIEW_PROVIDERS ?? "";
+  return {
+    claudeCodeOAuthTokenSecret: providers
+      .split(",")
+      .some((provider) => provider.trim().startsWith("claude/")),
+    openRouterApiKeySecret: providers
+      .split(",")
+      .some((provider) => provider.trim().startsWith("openrouter/")),
+  };
 }
 
 function prepareReusableWorkflowTemplate(

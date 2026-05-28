@@ -323,7 +323,7 @@ describe("ReviewConfigForm", () => {
     },
   );
 
-  it("collapses inherited legacy Codex multi-provider config to one rotating provider", async () => {
+  it("preserves inherited legacy Codex hybrid config as rotating Codex plus other providers", async () => {
     vi.mocked(checkProviderRepositorySecretClientAction).mockResolvedValue({
       status: "missing",
     });
@@ -341,28 +341,29 @@ describe("ReviewConfigForm", () => {
       expect(screen.getByText(/Rotating Codex OAuth uses/i)).toBeTruthy();
     });
     expect(screen.getByText("Provider 1")).toBeTruthy();
-    expect(screen.queryByText("Provider 2")).toBeNull();
+    expect(screen.getByText("Provider 2")).toBeTruthy();
+    expect(screen.getByText("Provider 3")).toBeTruthy();
     expect(
       (
         document.querySelector(
           'input[name="providerCount"]',
         ) as HTMLInputElement
       ).value,
-    ).toBe("1");
+    ).toBe("3");
     expect(
       (
         screen.getByRole("button", {
           name: "Add provider",
         }) as HTMLButtonElement
       ).disabled,
-    ).toBe(true);
+    ).toBe(false);
     const formData = vi.mocked(checkProviderRepositorySecretClientAction).mock
       .calls[0]?.[0] as FormData;
     expect(formData.get("providerKind")).toBe("codex");
     expect(formData.get("authMode")).toBe("codex_subscription_oauth_rotating");
   });
 
-  it("switching a multi-provider config to Codex rotating removes extra providers", () => {
+  it("switching one provider to Codex rotating keeps other providers and blocks a second rotating Codex", () => {
     renderReviewConfigForm({
       config: duplicateOpenRouterReviewConfiguration(),
       repositoryFullName: "777genius/agent-teams-ai",
@@ -377,21 +378,30 @@ describe("ReviewConfigForm", () => {
       screen.getByRole("option", { name: /Codex OAuth with refresh/i }),
     );
 
-    expect(screen.queryByText("Provider 2")).toBeNull();
+    expect(screen.getByText("Provider 2")).toBeTruthy();
     expect(
       (
         document.querySelector(
           'input[name="providerCount"]',
         ) as HTMLInputElement
       ).value,
-    ).toBe("1");
+    ).toBe("2");
     expect(
       (
         screen.getByRole("button", {
           name: "Add provider",
         }) as HTMLButtonElement
       ).disabled,
-    ).toBe(true);
+    ).toBe(false);
+
+    fireEvent.click(
+      screen.getAllByRole("combobox", { name: "Provider auth" })[1]!,
+    );
+    expect(
+      screen
+        .getByRole("option", { name: /Only one Codex OAuth with refresh/i })
+        .getAttribute("aria-disabled"),
+    ).toBe("true");
   });
 
   it("shows Claude Code by default, allows disabling it, and hides Codex controls after selection", () => {

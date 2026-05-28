@@ -8,6 +8,7 @@ import {
   issueCodexRotatingOAuthCheckoutToken,
   issueCodexRotatingOAuthCommentToken,
 } from "../index";
+import { parseReviewConfiguration } from "@reviewrouter/features-review-config";
 
 const now = new Date("2026-05-25T12:00:00.000Z");
 const workflowSha = "0123456789abcdef0123456789abcdef01234567";
@@ -340,6 +341,100 @@ describe("Codex rotating OAuth action control plane", () => {
     expect(
       dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource,
     ).not.toHaveBeenCalled();
+  });
+
+  it("finalizes hybrid runtime env for rotating Codex reviews", async () => {
+    const dependencies = buildRotatingDependencies({
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn().mockResolvedValue({
+          source: "repository",
+          version: 17,
+          config: parseReviewConfiguration({
+            schemaVersion: 2,
+            providers: [
+              {
+                kind: "codex",
+                authMode: "codex_subscription_oauth_rotating",
+                model: "gpt-5.5",
+                reasoningEffort: "high",
+                agenticContext: true,
+                fastMode: false,
+              },
+              {
+                kind: "claude",
+                authMode: "claude_code_oauth",
+                model: "sonnet",
+                reasoningEffort: "medium",
+                agenticContext: true,
+                fastMode: false,
+              },
+              {
+                kind: "openrouter",
+                authMode: "openrouter_api_key",
+                model: "openai/gpt-5.3-codex",
+                reasoningEffort: "medium",
+                agenticContext: true,
+                fastMode: false,
+              },
+              {
+                kind: "openrouter",
+                authMode: "openrouter_api_key",
+                model: "anthropic/claude-sonnet-4.5",
+                reasoningEffort: "medium",
+                agenticContext: true,
+                fastMode: false,
+              },
+            ],
+            execution: {
+              providerMaxParallel: 4,
+              inlineMinAgreement: 2,
+            },
+            blockingPolicy: { failOnSeverity: "critical" },
+            limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+          }),
+        }),
+        recordHealthReport: vi.fn(),
+      },
+    });
+
+    const prelease = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "jwt",
+        audience: "reviewrouter",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+    const finalized = await finalizeCodexRotatingOAuthLease(
+      {
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        restoredGenerationHash: "restored-generation-hash-value",
+      },
+      dependencies,
+    );
+
+    expect(finalized.status).toBe("finalized");
+    if (finalized.status !== "finalized") {
+      throw new Error("expected_finalized");
+    }
+    expect(finalized.runtimeConfigVersion).toBe(17);
+    expect(finalized.runtimeEnv).toMatchObject({
+      REVIEW_AUTH_MODE: "codex-oauth-rotating",
+      REVIEW_PROVIDERS:
+        "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex,openrouter/anthropic/claude-sonnet-4.5",
+      REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
+      PROVIDER_LIMIT: "4",
+      PROVIDER_MAX_PARALLEL: "4",
+      INLINE_MIN_AGREEMENT: "2",
+      CODEX_MODEL: "gpt-5.5",
+      CLAUDE_MODEL: "sonnet",
+      CLAUDE_AGENTIC_CONTEXT: "true",
+    });
+    expect(finalized.runtimeEnv).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(finalized.runtimeEnv).not.toHaveProperty("OPENROUTER_API_KEY");
   });
 
   it("moves failed encrypted writeback into unknown auth state before another refresh can start", async () => {

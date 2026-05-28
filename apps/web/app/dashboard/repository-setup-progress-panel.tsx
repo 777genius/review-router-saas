@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Button, LinkButton } from "@reviewrouter/ui";
 import type { ProviderAuthMode } from "@reviewrouter/features-review-providers";
@@ -69,10 +69,12 @@ export function RepositorySetupProgressPanel({
     normalizeSetupIssue(initialSetupIssue),
   );
   const [currentStep, setCurrentStep] = useState(initialStep);
+  const optimisticProviderAuthModesRef = useRef(new Set<ProviderAuthMode>());
   const [toast, setToast] = useState<SetupToast | null>(null);
   const canManage = mutationsEnabled && selected && !archived;
 
   useEffect(() => {
+    optimisticProviderAuthModesRef.current = new Set();
     setSetupStatus(initialSetupStatus);
     setSetupPullRequestUrl(initialSetupPullRequestUrl);
     setSetupIssue(normalizeSetupIssue(initialSetupIssue));
@@ -105,8 +107,21 @@ export function RepositorySetupProgressPanel({
         .detail;
       if (detail?.repositoryId !== repositoryId) return;
       if (
-        !providerSetupConfirmationMatchesExpectedAuthModes(
+        !providerSetupConfirmationMatchesAnyExpectedAuthMode(
           detail,
+          expectedProviderAuthModes,
+        )
+      ) {
+        return;
+      }
+
+      if (detail.authMode !== undefined) {
+        optimisticProviderAuthModesRef.current.add(detail.authMode);
+      }
+      router.refresh();
+      if (
+        !providerSetupConfirmationsComplete(
+          optimisticProviderAuthModesRef.current,
           expectedProviderAuthModes,
         )
       ) {
@@ -136,7 +151,7 @@ export function RepositorySetupProgressPanel({
         handleProviderSetupConfirmed,
       );
     };
-  }, [expectedProviderAuthModes, repositoryId]);
+  }, [expectedProviderAuthModes, repositoryId, router]);
 
   const handleSetupMutation = (params: Record<string, string>) => {
     clearTransientDashboardUrlParams("repositories");
@@ -293,20 +308,28 @@ export function RepositorySetupProgressPanel({
   );
 }
 
-function providerSetupConfirmationMatchesExpectedAuthModes(
+function providerSetupConfirmationMatchesAnyExpectedAuthMode(
   detail: ProviderSetupConfirmedEventDetail,
   expectedProviderAuthModes: readonly ProviderAuthMode[],
 ): boolean {
   if (expectedProviderAuthModes.length === 0) {
     return true;
   }
-  if ([...new Set(expectedProviderAuthModes)].length > 1) {
-    return false;
-  }
   return (
     detail.authMode !== undefined &&
     expectedProviderAuthModes.includes(detail.authMode)
   );
+}
+
+function providerSetupConfirmationsComplete(
+  confirmedAuthModes: ReadonlySet<ProviderAuthMode>,
+  expectedProviderAuthModes: readonly ProviderAuthMode[],
+): boolean {
+  const uniqueExpected = [...new Set(expectedProviderAuthModes)];
+  if (uniqueExpected.length === 0) {
+    return true;
+  }
+  return uniqueExpected.every((authMode) => confirmedAuthModes.has(authMode));
 }
 
 function buildSetupSteps({

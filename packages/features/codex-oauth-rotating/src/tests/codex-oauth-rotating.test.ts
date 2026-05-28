@@ -178,6 +178,51 @@ describe("Codex rotating auth domain", () => {
     expect(scanCodexRotatingAdvisoryWorkflow(unsafe).errors).toContain(
       "workflow_dispatch_not_allowed",
     );
+
+    const inlineEnv = workflow.replace(
+      "    timeout-minutes:",
+      "    env: { NODE_OPTIONS: --require ./hook.js }\n    timeout-minutes:",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(inlineEnv).errors).toContain(
+      "workflow_env_not_allowed",
+    );
+
+    const inlineStrategy = workflow.replace(
+      "    timeout-minutes:",
+      "    strategy: { matrix: { node: [24] } }\n    timeout-minutes:",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(inlineStrategy).errors).toContain(
+      "matrix_strategy_not_allowed",
+    );
+  });
+
+  it("allows only explicit hybrid provider secret inputs in rotating workflow", () => {
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      claudeCodeOAuthTokenSecret: true,
+      openRouterApiKeySecret: true,
+    });
+
+    expect(workflow).toContain(
+      "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    );
+    expect(workflow).toContain(
+      "openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const unsafe = workflow.replace(
+      "openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}",
+      "openrouter-api-key: ${{ secrets.SOME_OTHER_SECRET }}",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(unsafe).errors).toContain(
+      "unknown_secret_reference:SOME_OTHER_SECRET",
+    );
   });
 
   it("validates OIDC prelease binding before auth input can be read", () => {

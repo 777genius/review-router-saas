@@ -218,6 +218,48 @@ describe("RepositorySetupProgressPanel", () => {
     expect(screen.getByText("3 of 4 - enable review")).toBeTruthy();
   });
 
+  it("advances multi-auth progress after all expected providers are confirmed", async () => {
+    render(
+      <RepositorySetupProgressPanel
+        workspaceId="workspace_1"
+        repositoryId="repo_1"
+        repositoryFullName="777genius/example"
+        selected
+        archived={false}
+        initialSetupStatus="configured"
+        initialSetupPullRequestUrl={null}
+        workflowCurrent
+        mutationsEnabled
+        initialStep={3}
+        expectedProviderAuthModes={["openrouter_api_key", "claude_code_oauth"]}
+        enableReviewAction={<button type="button">Enable review</button>}
+      />,
+    );
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "openrouter",
+        authMode: "openrouter_api_key",
+      }),
+    );
+    expect(screen.getByText("3 of 4 - enable review")).toBeTruthy();
+
+    window.dispatchEvent(
+      providerSetupConfirmedEvent({
+        repositoryId: "repo_1",
+        repositoryFullName: "777genius/example",
+        providerKind: "claude",
+        authMode: "claude_code_oauth",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("4 of 4 - complete")).toBeTruthy();
+    });
+  });
+
   it("keeps the provider action available for rows that are already complete", () => {
     let actionMounts = 0;
 

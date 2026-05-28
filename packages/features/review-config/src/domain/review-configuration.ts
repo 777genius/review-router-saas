@@ -146,21 +146,45 @@ function normalizeProductionCodexProviders(
       provider.authMode !== "codex_subscription_oauth" &&
       provider.authMode !== "codex_openai_api_key"
     ) {
-      return provider;
+      return provider.authMode === "codex_subscription_oauth_rotating"
+        ? {
+            ...provider,
+            kind: "codex" as const,
+            requiredHealthy: true,
+          }
+        : provider;
     }
     return {
       ...provider,
       kind: "codex" as const,
       authMode: "codex_subscription_oauth_rotating" as const,
+      requiredHealthy: true,
     };
   });
-  const rotatingCodexProvider = normalizedProviders.find(
+
+  const rotatingCodexProviders = normalizedProviders.filter(
     (provider) => provider.authMode === "codex_subscription_oauth_rotating",
   );
-  if (!rotatingCodexProvider) {
-    return normalizedProviders;
+  if (rotatingCodexProviders.length > 1) {
+    throw new Error("codex_rotating_single_provider_required");
   }
-  return [{ ...rotatingCodexProvider, requiredHealthy: true }];
+
+  assertUniqueProviderRows(normalizedProviders);
+  return normalizedProviders;
+}
+
+function assertUniqueProviderRows(
+  providers: readonly ReviewProviderConfiguration[],
+): void {
+  const seen = new Set<string>();
+
+  for (const provider of providers) {
+    const key = `${provider.kind}:${provider.authMode}:${provider.model.trim()}`;
+    if (seen.has(key)) {
+      throw new Error("duplicate_review_provider");
+    }
+    seen.add(key);
+  }
 }
 
 function ensureRequiredHealthyProvider(
