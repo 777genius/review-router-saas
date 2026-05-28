@@ -50,7 +50,9 @@ export function isTransientCodexTempCleanupError(error: unknown): boolean {
   );
 }
 
-async function scrubSensitiveCodexHomePaths(codexHome: string): Promise<boolean> {
+async function scrubSensitiveCodexHomePaths(
+  codexHome: string,
+): Promise<boolean> {
   const results = await Promise.allSettled([
     rm(join(codexHome, "auth.json"), { force: true }),
     rm(join(codexHome, "accounts"), { recursive: true, force: true }),

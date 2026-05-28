@@ -59,9 +59,12 @@ describe("safeDashboardErrorCode", () => {
     "codex_rotating_action_ref_invalid",
     "codex_rotating_action_ref_must_be_full_sha",
     "codex_rotating_conflict_review_unsupported",
-  ])("maps Codex deployment setup error %s to server_misconfigured", (message) => {
-    expect(safeDashboardErrorCode(new Error(message))).toBe(
-      "server_misconfigured",
-    );
-  });
+  ])(
+    "maps Codex deployment setup error %s to server_misconfigured",
+    (message) => {
+      expect(safeDashboardErrorCode(new Error(message))).toBe(
+        "server_misconfigured",
+      );
+    },
+  );
 });

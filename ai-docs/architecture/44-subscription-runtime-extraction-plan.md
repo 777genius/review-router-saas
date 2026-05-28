@@ -127,16 +127,16 @@ adapter, not accidentally get it through the default runtime.
 The runtime must use precise language. Otherwise Codex works in v1, but the
 first Claude/Gemini/local-agent adapter will force a rewrite.
 
-| Term | Meaning | Owns | Must not own |
-|---|---|---|---|
-| Provider | External subscription/auth system, for example Codex, Claude Code, Gemini CLI | session format, refresh semantics, provider failure classification | storage, host app policy, PR review lifecycle |
-| Agent | Executable capability that performs a task using a provider session | prompt/task execution, output parsing, model/tool limits | durable session storage, GitHub permissions |
-| Session | Durable auth artifact needed to restore a provider | bytes, format version, generation hash, custody metadata | business policy |
-| Store | Persistence adapter for session envelopes | read/write/CAS/delete, custody mode, metadata | provider refresh logic |
-| Lease | Coordination record around one refresh/writeback attempt | concurrency, idempotency, stale generation protection | provider-specific auth |
-| Runner | Process/container/remote executor | env isolation, timeout, stdout/stderr sinks, abort | storage and provider policy |
-| Workspace | Filesystem/repo context visible to the provider task | checkout/temp dir/container path | provider session ownership |
-| Host app | Product embedding the library, for example ReviewRouter | user policy, repo policy, UI, GitHub App permission model, review comments | provider internals |
+| Term      | Meaning                                                                       | Owns                                                                       | Must not own                                  |
+| --------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------- | --------------------------------------------- |
+| Provider  | External subscription/auth system, for example Codex, Claude Code, Gemini CLI | session format, refresh semantics, provider failure classification         | storage, host app policy, PR review lifecycle |
+| Agent     | Executable capability that performs a task using a provider session           | prompt/task execution, output parsing, model/tool limits                   | durable session storage, GitHub permissions   |
+| Session   | Durable auth artifact needed to restore a provider                            | bytes, format version, generation hash, custody metadata                   | business policy                               |
+| Store     | Persistence adapter for session envelopes                                     | read/write/CAS/delete, custody mode, metadata                              | provider refresh logic                        |
+| Lease     | Coordination record around one refresh/writeback attempt                      | concurrency, idempotency, stale generation protection                      | provider-specific auth                        |
+| Runner    | Process/container/remote executor                                             | env isolation, timeout, stdout/stderr sinks, abort                         | storage and provider policy                   |
+| Workspace | Filesystem/repo context visible to the provider task                          | checkout/temp dir/container path                                           | provider session ownership                    |
+| Host app  | Product embedding the library, for example ReviewRouter                       | user policy, repo policy, UI, GitHub App permission model, review comments | provider internals                            |
 
 Key rule: **agent execution and provider session management are separate
 capabilities**. A simple v1 adapter can implement both, but the core API should
@@ -147,7 +147,9 @@ export interface ProviderSessionDriver {
   readonly providerId: string;
   readonly capabilities: ProviderCapabilities;
 
-  validateSession(input: ValidateSessionInput): Promise<SessionValidationResult>;
+  validateSession(
+    input: ValidateSessionInput,
+  ): Promise<SessionValidationResult>;
   refreshSession(input: RefreshSessionInput): Promise<RefreshedSession>;
   classifySessionFailure(error: unknown): ProviderFailure;
 }
@@ -161,9 +163,7 @@ export interface AgentDriver {
   classifyRunFailure(error: unknown): ProviderFailure;
 }
 
-export type SubscriptionProviderDriver =
-  ProviderSessionDriver &
-  AgentDriver;
+export type SubscriptionProviderDriver = ProviderSessionDriver & AgentDriver;
 ```
 
 Why this matters:
@@ -208,15 +208,15 @@ contracts from ReviewRouter-specific adapters.
 
 Initial extraction map:
 
-| Current area | Future home | Notes |
-|---|---|---|
-| `codex-oauth-rotating/src/domain` validation/hash helpers | `core` + `provider-codex` | Split generic generation/hash from Codex auth JSON |
-| `codex-oauth-rotating/src/action` process/env/runner helpers | `runner-github-action` + `provider-codex` | Keep ReviewRouter review bridge outside provider |
-| action-control-plane Codex lease use cases | `core` use-case contracts + ReviewRouter adapter | Generic lease state in core, API paths in adapter |
-| Octokit GitHub secret gateway | `store-github-actions-secret` + ReviewRouter adapter | Generic GitHub encrypted secret write, app-token policy in adapter |
-| workflow provisioning Codex YAML | ReviewRouter adapter | Host app owns workflow shape |
-| setup manifest/seed script | setup adapter + ReviewRouter web | Setup is separate from runtime |
-| dashboard provider setup copy | ReviewRouter web | Never move UI copy into core |
+| Current area                                                 | Future home                                          | Notes                                                              |
+| ------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------ |
+| `codex-oauth-rotating/src/domain` validation/hash helpers    | `core` + `provider-codex`                            | Split generic generation/hash from Codex auth JSON                 |
+| `codex-oauth-rotating/src/action` process/env/runner helpers | `runner-github-action` + `provider-codex`            | Keep ReviewRouter review bridge outside provider                   |
+| action-control-plane Codex lease use cases                   | `core` use-case contracts + ReviewRouter adapter     | Generic lease state in core, API paths in adapter                  |
+| Octokit GitHub secret gateway                                | `store-github-actions-secret` + ReviewRouter adapter | Generic GitHub encrypted secret write, app-token policy in adapter |
+| workflow provisioning Codex YAML                             | ReviewRouter adapter                                 | Host app owns workflow shape                                       |
+| setup manifest/seed script                                   | setup adapter + ReviewRouter web                     | Setup is separate from runtime                                     |
+| dashboard provider setup copy                                | ReviewRouter web                                     | Never move UI copy into core                                       |
 
 ## Decision Options
 
@@ -456,12 +456,16 @@ export type SubscriptionRuntimeDeps = {
 
 export type SubscriptionRuntime = {
   readonly capabilities: RuntimeCapabilitySnapshot;
-  refreshSession(input: RefreshSessionUseCaseInput): Promise<RefreshSessionResult>;
+  refreshSession(
+    input: RefreshSessionUseCaseInput,
+  ): Promise<RefreshSessionResult>;
   runTask(input: RunTaskUseCaseInput): Promise<ProviderTaskResult>;
   refreshThenRunTask(
     input: RefreshThenRunUseCaseInput,
   ): Promise<RefreshThenRunResult>;
-  healthCheck(input: RuntimeHealthCheckInput): Promise<RuntimeHealthCheckResult>;
+  healthCheck(
+    input: RuntimeHealthCheckInput,
+  ): Promise<RuntimeHealthCheckResult>;
 };
 
 export function createSubscriptionRuntime(
@@ -665,10 +669,7 @@ export interface AdapterRegistry {
   createAgentDriver(adapterId: string, options: unknown): AgentDriver;
   createSessionStore(adapterId: string, options: unknown): SessionStorePort;
   createRunner(adapterId: string, options: unknown): RunnerPort;
-  createObservability(
-    adapterId: string,
-    options: unknown,
-  ): ObservabilityPort;
+  createObservability(adapterId: string, options: unknown): ObservabilityPort;
 }
 
 export function createAdapterRegistry(
@@ -729,7 +730,10 @@ export function negotiateCapabilities(input: {
     }
   }
 
-  if (input.provider.refreshMayRotateSession && !input.store.supportsWriteback) {
+  if (
+    input.provider.refreshMayRotateSession &&
+    !input.store.supportsWriteback
+  ) {
     return {
       status: "rejected",
       code: "provider_store_incompatible",
@@ -738,11 +742,15 @@ export function negotiateCapabilities(input: {
     };
   }
 
-  if (input.agent.requiresWritableWorkspace && input.runner.readOnlyFilesystem) {
+  if (
+    input.agent.requiresWritableWorkspace &&
+    input.runner.readOnlyFilesystem
+  ) {
     return {
       status: "rejected",
       code: "runner_provider_incompatible",
-      safeMessage: "Agent requires writable workspace, but runner is read-only.",
+      safeMessage:
+        "Agent requires writable workspace, but runner is read-only.",
       details: { agentId: input.agent.agentId },
     };
   }
@@ -1343,9 +1351,7 @@ export interface AgentDriver {
   classifyRunFailure(error: unknown): ProviderFailure;
 }
 
-export type SubscriptionProviderDriver =
-  ProviderSessionDriver &
-  AgentDriver;
+export type SubscriptionProviderDriver = ProviderSessionDriver & AgentDriver;
 ```
 
 This split lets a future package publish:
@@ -1996,18 +2002,21 @@ the **Setup Flow Architecture** section.
 The same core should support multiple trust models, but the host app must choose
 one explicitly.
 
-| Mode | Plaintext session visible to backend | Typical store | Typical runner | Default? |
-|---|---:|---|---|---:|
-| `no-plaintext-backend` | No | GitHub Actions Secret encrypted writeback | GitHub-hosted Action | Yes |
-| `local-only` | No SaaS backend | local encrypted file | local daemon/process | No |
-| `backend-custody` | Yes | Postgres/KMS | backend worker/container | No |
-| `split-custody` | Depends on adapter | customer vault + SaaS lease | remote runner | Later |
+| Mode                   | Plaintext session visible to backend | Typical store                             | Typical runner           | Default? |
+| ---------------------- | -----------------------------------: | ----------------------------------------- | ------------------------ | -------: |
+| `no-plaintext-backend` |                                   No | GitHub Actions Secret encrypted writeback | GitHub-hosted Action     |      Yes |
+| `local-only`           |                      No SaaS backend | local encrypted file                      | local daemon/process     |       No |
+| `backend-custody`      |                                  Yes | Postgres/KMS                              | backend worker/container |       No |
+| `split-custody`        |                   Depends on adapter | customer vault + SaaS lease               | remote runner            |    Later |
 
 Policy example:
 
 ```ts
 export type RuntimePolicy = {
-  readonly custodyMode: "no-plaintext-backend" | "backend-custody" | "local-only";
+  readonly custodyMode:
+    | "no-plaintext-backend"
+    | "backend-custody"
+    | "local-only";
   readonly requireNoBackendPlaintext: boolean;
   readonly requireWritebackBeforeTask: boolean;
   readonly requireCompareAndSwap: boolean;
@@ -2074,7 +2083,8 @@ export function compileRuntimePolicy(input: {
   }
 
   if (
-    (input.provider.requiresWorkspace || input.agent.supportsRepositoryContext) &&
+    (input.provider.requiresWorkspace ||
+      input.agent.supportsRepositoryContext) &&
     !input.runner.supportsWorkingDirectory
   ) {
     throw new Error("runner_missing_workspace_support");
@@ -2141,16 +2151,16 @@ flowchart TD
 
 Gate responsibilities:
 
-| Gate | Owner | Examples | May read session? |
-|---|---|---|---:|
-| Host policy | host app | repo enabled, PR allowed, billing active, provider enabled | No |
-| Identity/boundary | host + store adapter | OIDC repo id, workflow SHA, actor, installation id | No |
-| Capability negotiation | core | provider/store/runner compatibility | No |
-| Lease | lease store | stale generation, concurrent run, idempotency | No |
-| Session read | store adapter | decrypt/inject/load session | Yes |
-| Provider refresh/run | provider + runner | CLI invocation, auth refresh, task execution | Yes |
-| Writeback | store + lease | CAS, encrypted update, generation commit | Yes, runner side only |
-| Result handling | host app | review comments, status, summary, issue copy | No new read |
+| Gate                   | Owner                | Examples                                                   |     May read session? |
+| ---------------------- | -------------------- | ---------------------------------------------------------- | --------------------: |
+| Host policy            | host app             | repo enabled, PR allowed, billing active, provider enabled |                    No |
+| Identity/boundary      | host + store adapter | OIDC repo id, workflow SHA, actor, installation id         |                    No |
+| Capability negotiation | core                 | provider/store/runner compatibility                        |                    No |
+| Lease                  | lease store          | stale generation, concurrent run, idempotency              |                    No |
+| Session read           | store adapter        | decrypt/inject/load session                                |                   Yes |
+| Provider refresh/run   | provider + runner    | CLI invocation, auth refresh, task execution               |                   Yes |
+| Writeback              | store + lease        | CAS, encrypted update, generation commit                   | Yes, runner side only |
+| Result handling        | host app             | review comments, status, summary, issue copy               |           No new read |
 
 Illustrative gate runner:
 
@@ -2192,13 +2202,13 @@ policy, capability negotiation, and lease acquisition have all accepted.
 This matrix should be maintained as adapters are added. Values are examples and
 must be verified per provider before release.
 
-| Provider | Session artifact | Refresh likely? | Runtime path | Main risk | v1 stance |
-|---|---|---:|---|---|---|
-| Codex | `auth.json` JSON file | Yes | CLI | token rotation/writeback | Ship first |
-| Claude Code | token or CLI auth state | Maybe/no | CLI | exact session semantics | Design for later |
-| Gemini CLI | CLI auth state or API key | Unknown | CLI/API | auth format stability | Later spike |
-| OpenRouter | API key | No | API | billing/user key custody | Existing separate path |
-| Local model | none or local config | No | process/server | sandbox/resource use | Later |
+| Provider    | Session artifact          | Refresh likely? | Runtime path   | Main risk                | v1 stance              |
+| ----------- | ------------------------- | --------------: | -------------- | ------------------------ | ---------------------- |
+| Codex       | `auth.json` JSON file     |             Yes | CLI            | token rotation/writeback | Ship first             |
+| Claude Code | token or CLI auth state   |        Maybe/no | CLI            | exact session semantics  | Design for later       |
+| Gemini CLI  | CLI auth state or API key |         Unknown | CLI/API        | auth format stability    | Later spike            |
+| OpenRouter  | API key                   |              No | API            | billing/user key custody | Existing separate path |
+| Local model | none or local config      |              No | process/server | sandbox/resource use     | Later                  |
 
 Do not add provider-specific branches to core. Add a provider driver, capability
 metadata, setup driver if needed, and adapter tests.
@@ -2209,14 +2219,14 @@ Future integrations should be described as combinations of session, agent,
 store, runner, and setup adapters. This avoids making "Codex shape" the hidden
 architecture.
 
-| Scenario | Session driver | Agent driver | Store | Runner | Setup mode | Notes |
-|---|---|---|---|---|---|---|
-| ReviewRouter Codex in GitHub Actions | `CodexSessionDriver` | `CodexCliAgentDriver` | GitHub Secret no-custody | GitHub Action | local command/device/import | first production path |
-| Claude Code with durable token | `StaticTokenSessionDriver` or `ClaudeSessionDriver` | `ClaudeCodeAgentDriver` | GitHub Secret or local file | GitHub Action/node | manual secret/import | may not need refresh |
-| Local developer daemon | `CodexSessionDriver` | `CodexCliAgentDriver` | local encrypted file | node process | device/import | no GitHub dependency |
-| Backend batch worker with custody | provider-specific session | provider-specific agent | Postgres/KMS | container | account consent/import | opt-in only |
-| API-key provider | `ApiKeySessionDriver` | provider API agent | GitHub Secret/KMS | node/container | manual secret | no refresh, simpler lease |
-| Local model | `NoSessionDriver` | `LocalModelAgentDriver` | none/local config | process/container | none | runtime still useful for task isolation |
+| Scenario                             | Session driver                                      | Agent driver            | Store                       | Runner             | Setup mode                  | Notes                                   |
+| ------------------------------------ | --------------------------------------------------- | ----------------------- | --------------------------- | ------------------ | --------------------------- | --------------------------------------- |
+| ReviewRouter Codex in GitHub Actions | `CodexSessionDriver`                                | `CodexCliAgentDriver`   | GitHub Secret no-custody    | GitHub Action      | local command/device/import | first production path                   |
+| Claude Code with durable token       | `StaticTokenSessionDriver` or `ClaudeSessionDriver` | `ClaudeCodeAgentDriver` | GitHub Secret or local file | GitHub Action/node | manual secret/import        | may not need refresh                    |
+| Local developer daemon               | `CodexSessionDriver`                                | `CodexCliAgentDriver`   | local encrypted file        | node process       | device/import               | no GitHub dependency                    |
+| Backend batch worker with custody    | provider-specific session                           | provider-specific agent | Postgres/KMS                | container          | account consent/import      | opt-in only                             |
+| API-key provider                     | `ApiKeySessionDriver`                               | provider API agent      | GitHub Secret/KMS           | node/container     | manual secret               | no refresh, simpler lease               |
+| Local model                          | `NoSessionDriver`                                   | `LocalModelAgentDriver` | none/local config           | process/container  | none                        | runtime still useful for task isolation |
 
 Recommended adapter composition APIs:
 
@@ -2281,11 +2291,11 @@ Use this checklist before adding any provider adapter.
 
 Provider adapter readiness levels:
 
-| Level | Meaning | Allowed use |
-|---|---|---|
-| `experimental` | local tests only, no live E2E | development |
-| `beta` | live E2E on one trusted repo/workspace | limited customers |
-| `stable` | contract tests, live E2E, docs, rollback path | production |
+| Level          | Meaning                                       | Allowed use       |
+| -------------- | --------------------------------------------- | ----------------- |
+| `experimental` | local tests only, no live E2E                 | development       |
+| `beta`         | live E2E on one trusted repo/workspace        | limited customers |
+| `stable`       | contract tests, live E2E, docs, rollback path | production        |
 
 ## Storage Adapters
 
@@ -2657,31 +2667,31 @@ export async function handleEncryptedWriteback(
 
 Required API error codes:
 
-| Code | Meaning | Retry behavior |
-|---|---|---|
-| `permission_required` | GitHub App lacks required permission or repo selection | user/admin action required |
-| `oidc_claim_mismatch` | token does not match repo/workflow/action policy | fail closed |
-| `stale_generation` | another run wrote a newer session | rerun may succeed |
-| `idempotent_replay` | same request already committed | treat as success |
-| `lease_expired` | run waited too long before writeback | rerun |
-| `backend_unavailable` | control plane unavailable | fail closed, rerun later |
-| `provider_reconnect_required` | provider rejected refresh | user must relogin |
+| Code                          | Meaning                                                | Retry behavior             |
+| ----------------------------- | ------------------------------------------------------ | -------------------------- |
+| `permission_required`         | GitHub App lacks required permission or repo selection | user/admin action required |
+| `oidc_claim_mismatch`         | token does not match repo/workflow/action policy       | fail closed                |
+| `stale_generation`            | another run wrote a newer session                      | rerun may succeed          |
+| `idempotent_replay`           | same request already committed                         | treat as success           |
+| `lease_expired`               | run waited too long before writeback                   | rerun                      |
+| `backend_unavailable`         | control plane unavailable                              | fail closed, rerun later   |
+| `provider_reconnect_required` | provider rejected refresh                              | user must relogin          |
 
 ### GitHub Permission Matrix
 
 The library should document permissions, but the host app owns requesting them.
 For ReviewRouter production, the App and workflow permissions should be:
 
-| Feature | GitHub App permission | Workflow permission | Why | Can avoid? |
-|---|---|---|---|---|
-| Write refreshed session to repo secret | `Secrets: write` | none exposed to runner | backend writes encrypted value to GitHub Secret | No for GitHub Secret store |
-| Create/update setup PR | `Contents: write`, `Workflows: write` | none | add or update workflow files | Only with manual copy/paste |
-| Post review and inline comments | `Pull requests: write` | none | submit review comments | No for ReviewRouter reviews |
-| Post issue/PR status comments | `Issues: write` | none | user-facing setup/runtime messages | Can reduce if all comments disabled |
-| Inspect workflow runs/status | `Actions: read` | none | debug readiness and setup state | Optional but useful |
-| Bind installation/repo identity | `Metadata: read` | none | minimum GitHub App repo metadata | No |
-| Runtime OIDC claim | none | `id-token: write` on one job | prove repo/workflow/run identity to backend | No for no-custody control plane |
-| Runtime checkout | App-scoped checkout token or `Contents: read` | prefer none in workflow | read repository code | Use backend-issued read token if available |
+| Feature                                | GitHub App permission                         | Workflow permission          | Why                                             | Can avoid?                                 |
+| -------------------------------------- | --------------------------------------------- | ---------------------------- | ----------------------------------------------- | ------------------------------------------ |
+| Write refreshed session to repo secret | `Secrets: write`                              | none exposed to runner       | backend writes encrypted value to GitHub Secret | No for GitHub Secret store                 |
+| Create/update setup PR                 | `Contents: write`, `Workflows: write`         | none                         | add or update workflow files                    | Only with manual copy/paste                |
+| Post review and inline comments        | `Pull requests: write`                        | none                         | submit review comments                          | No for ReviewRouter reviews                |
+| Post issue/PR status comments          | `Issues: write`                               | none                         | user-facing setup/runtime messages              | Can reduce if all comments disabled        |
+| Inspect workflow runs/status           | `Actions: read`                               | none                         | debug readiness and setup state                 | Optional but useful                        |
+| Bind installation/repo identity        | `Metadata: read`                              | none                         | minimum GitHub App repo metadata                | No                                         |
+| Runtime OIDC claim                     | none                                          | `id-token: write` on one job | prove repo/workflow/run identity to backend     | No for no-custody control plane            |
+| Runtime checkout                       | App-scoped checkout token or `Contents: read` | prefer none in workflow      | read repository code                            | Use backend-issued read token if available |
 
 ReviewRouter workflow hardening rule:
 
@@ -2962,18 +2972,18 @@ These invariants should be encoded as tests and runtime assertions.
 
 ## Threat Model
 
-| Threat | Example | Required mitigation |
-|---|---|---|
-| Session exfiltration through logs | provider prints `refresh_token` to stderr | streaming redactor, log assertions, output caps |
-| Cross-tenant session use | provider instance from repo A used in repo B | session boundary, OIDC repo id, host policy |
-| Stale write overwrite | older run writes after newer run | generation hash, CAS, lease, idempotency |
-| Backend custody creep | no-custody adapter starts accepting plaintext | schema rejection, adapter manifest custody check |
-| Runner secret escalation | workflow gets `Secrets: write` token | backend-only writeback, env allowlist tests |
-| Malicious PR code | fork PR attempts to read secrets | same-repo guard, no `pull_request_target` for secret run |
-| Provider format change | CLI changes `auth.json` shape | provider validation, format version, reconnect state |
-| Dependency compromise | adapter package executes unsafe postinstall | lockfile, package provenance, artifact checks |
-| Setup command replay | old nonce writes wrong session | expiring nonce, setup manifest binding, confirmation metadata |
-| Debug artifact leak | crash dump includes temp auth directory | temp dir cleanup, no debug archive of secret paths |
+| Threat                            | Example                                       | Required mitigation                                           |
+| --------------------------------- | --------------------------------------------- | ------------------------------------------------------------- |
+| Session exfiltration through logs | provider prints `refresh_token` to stderr     | streaming redactor, log assertions, output caps               |
+| Cross-tenant session use          | provider instance from repo A used in repo B  | session boundary, OIDC repo id, host policy                   |
+| Stale write overwrite             | older run writes after newer run              | generation hash, CAS, lease, idempotency                      |
+| Backend custody creep             | no-custody adapter starts accepting plaintext | schema rejection, adapter manifest custody check              |
+| Runner secret escalation          | workflow gets `Secrets: write` token          | backend-only writeback, env allowlist tests                   |
+| Malicious PR code                 | fork PR attempts to read secrets              | same-repo guard, no `pull_request_target` for secret run      |
+| Provider format change            | CLI changes `auth.json` shape                 | provider validation, format version, reconnect state          |
+| Dependency compromise             | adapter package executes unsafe postinstall   | lockfile, package provenance, artifact checks                 |
+| Setup command replay              | old nonce writes wrong session                | expiring nonce, setup manifest binding, confirmation metadata |
+| Debug artifact leak               | crash dump includes temp auth directory       | temp dir cleanup, no debug archive of secret paths            |
 
 Abuse cases to test:
 
@@ -3249,25 +3259,25 @@ Required controls:
 Each critical edge case should have an owner and a test. If ownership is unclear,
 the case will regress when adapters are extracted.
 
-| Edge case | Detect at | Owner | Runtime action | Required test |
-|---|---|---|---|---|
-| Fork PR attempts secret-bearing run | identity gate before prelease | host app | fail closed before session read | action test with fork payload |
-| Bot actor triggers review | host policy gate | host app | skip with safe message | policy unit test |
-| Draft PR triggers run | host policy gate | host app | skip before session read | policy unit test |
-| Wrong workflow SHA/action ref | identity gate | host + lease store | fail closed | OIDC claim fixture test |
-| GitHub App lacks `Secrets: write` | setup/writeback | store adapter + host app | return `permission_required` | GitHub API fake test |
-| Two runs refresh same generation | lease/writeback | lease store + session store | first wins, stale skips | concurrency contract test |
-| Writeback succeeds but response lost | writeback | store adapter | idempotent replay returns success | idempotency contract test |
-| Provider refresh token revoked | provider refresh | provider session driver | return `needs_reconnect` | provider fixture test |
-| Provider CLI leaks token to stderr | runner output | runner + redactor | redact and fail canary if leak remains | redaction canary |
-| Provider writes auth into workspace | workspace scan or adapter cleanup | provider adapter | fail or cleanup before artifact upload | temp workspace test |
-| Store CAS unsupported | capability negotiation | core | reject policy requiring CAS | policy compile test |
-| Local file lock orphaned | lease/read/write | local store adapter | stale lock recovery with owner/ttl | local store test |
-| KMS key rotated | store read/write | KMS store adapter | decrypt old, write new key version | KMS adapter test |
-| Backend down before prelease | identity/lease gate | host adapter | fail closed before session read | API outage test |
-| Backend down after refresh | writeback | host/store adapter | do not publish session, rerun safe | outage-after-refresh test |
-| Provider output malformed | agent parse | agent driver | return structured failure | malformed output fixture |
-| Provider terms disallow automation | adapter certification | host/product owner | do not ship adapter | release checklist |
+| Edge case                            | Detect at                         | Owner                       | Runtime action                         | Required test                 |
+| ------------------------------------ | --------------------------------- | --------------------------- | -------------------------------------- | ----------------------------- |
+| Fork PR attempts secret-bearing run  | identity gate before prelease     | host app                    | fail closed before session read        | action test with fork payload |
+| Bot actor triggers review            | host policy gate                  | host app                    | skip with safe message                 | policy unit test              |
+| Draft PR triggers run                | host policy gate                  | host app                    | skip before session read               | policy unit test              |
+| Wrong workflow SHA/action ref        | identity gate                     | host + lease store          | fail closed                            | OIDC claim fixture test       |
+| GitHub App lacks `Secrets: write`    | setup/writeback                   | store adapter + host app    | return `permission_required`           | GitHub API fake test          |
+| Two runs refresh same generation     | lease/writeback                   | lease store + session store | first wins, stale skips                | concurrency contract test     |
+| Writeback succeeds but response lost | writeback                         | store adapter               | idempotent replay returns success      | idempotency contract test     |
+| Provider refresh token revoked       | provider refresh                  | provider session driver     | return `needs_reconnect`               | provider fixture test         |
+| Provider CLI leaks token to stderr   | runner output                     | runner + redactor           | redact and fail canary if leak remains | redaction canary              |
+| Provider writes auth into workspace  | workspace scan or adapter cleanup | provider adapter            | fail or cleanup before artifact upload | temp workspace test           |
+| Store CAS unsupported                | capability negotiation            | core                        | reject policy requiring CAS            | policy compile test           |
+| Local file lock orphaned             | lease/read/write                  | local store adapter         | stale lock recovery with owner/ttl     | local store test              |
+| KMS key rotated                      | store read/write                  | KMS store adapter           | decrypt old, write new key version     | KMS adapter test              |
+| Backend down before prelease         | identity/lease gate               | host adapter                | fail closed before session read        | API outage test               |
+| Backend down after refresh           | writeback                         | host/store adapter          | do not publish session, rerun safe     | outage-after-refresh test     |
+| Provider output malformed            | agent parse                       | agent driver                | return structured failure              | malformed output fixture      |
+| Provider terms disallow automation   | adapter certification             | host/product owner          | do not ship adapter                    | release checklist             |
 
 Default edge-case policy:
 
@@ -3354,9 +3364,7 @@ export function providerDriverContract(
 
     it("classifies reconnect failures without leaking raw tokens", async () => {
       const fixture = factory();
-      const failure = fixture.driver.classifyFailure(
-        fixture.errors.reconnect,
-      );
+      const failure = fixture.driver.classifyFailure(fixture.errors.reconnect);
 
       expect(failure.code).toBe("needs_reconnect");
       expect(failure.safeMessage).not.toContain("refresh_token");
@@ -3732,28 +3740,30 @@ export default defineSubscriptionRuntimeConfig({
 Runtime config schema should reject vague or unsafe defaults:
 
 ```ts
-export const runtimeConfigSchema = z.object({
-  custodyMode: z.enum([
-    "no-plaintext-backend",
-    "backend-custody",
-    "local-only",
-  ]),
-  defaultPolicy: runtimePolicySchema,
-  providers: z.array(adapterManifestSchema).min(1),
-  stores: z.array(adapterManifestSchema).min(1),
-  runners: z.array(adapterManifestSchema).min(1),
-}).superRefine((config, ctx) => {
-  if (config.custodyMode === "no-plaintext-backend") {
-    for (const store of config.stores) {
-      if (store.custody !== "no-plaintext-backend") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `Store ${store.adapterId} is not no-custody compatible`,
-        });
+export const runtimeConfigSchema = z
+  .object({
+    custodyMode: z.enum([
+      "no-plaintext-backend",
+      "backend-custody",
+      "local-only",
+    ]),
+    defaultPolicy: runtimePolicySchema,
+    providers: z.array(adapterManifestSchema).min(1),
+    stores: z.array(adapterManifestSchema).min(1),
+    runners: z.array(adapterManifestSchema).min(1),
+  })
+  .superRefine((config, ctx) => {
+    if (config.custodyMode === "no-plaintext-backend") {
+      for (const store of config.stores) {
+        if (store.custody !== "no-plaintext-backend") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Store ${store.adapterId} is not no-custody compatible`,
+          });
+        }
       }
     }
-  }
-});
+  });
 ```
 
 Config rules:
@@ -4066,13 +4076,13 @@ Only publish public `@subscription-runtime/*` packages after:
 
 Compatibility matrix:
 
-| Package | Versioning rule | Can release independently? |
-|---|---|---:|
-| `core` | strict semver | Yes |
-| provider adapters | compatible with core range | Yes |
-| store adapters | compatible with core range | Yes |
-| runner adapters | compatible with core range | Yes |
-| ReviewRouter adapter | app-internal release | Yes |
+| Package              | Versioning rule            | Can release independently? |
+| -------------------- | -------------------------- | -------------------------: |
+| `core`               | strict semver              |                        Yes |
+| provider adapters    | compatible with core range |                        Yes |
+| store adapters       | compatible with core range |                        Yes |
+| runner adapters      | compatible with core range |                        Yes |
+| ReviewRouter adapter | app-internal release       |                        Yes |
 
 Recommended package peer dependency:
 
@@ -4223,7 +4233,9 @@ REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX=1
 Use a strangler-wrapper rather than a big-bang rewrite:
 
 ```ts
-export async function runCodexRotatingAction(input: ActionInput): Promise<void> {
+export async function runCodexRotatingAction(
+  input: ActionInput,
+): Promise<void> {
   if (input.flags.useSubscriptionRuntimeCodex) {
     return runCodexViaSubscriptionRuntime(input);
   }

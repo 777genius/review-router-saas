@@ -55,9 +55,9 @@ describe("Codex provider adapter", () => {
         "insufficient_quota: You exceeded your current quota",
       ),
     ).toBe("quota_limited");
-    expect(
-      classifyCodexRuntimeFailure("You've hit your usage limit."),
-    ).toBe("quota_limited");
+    expect(classifyCodexRuntimeFailure("You've hit your usage limit.")).toBe(
+      "quota_limited",
+    );
     expect(
       classifyCodexRuntimeFailure(
         "Visit https://chatgpt.com/codex/settings/usage to purchase more credits",
