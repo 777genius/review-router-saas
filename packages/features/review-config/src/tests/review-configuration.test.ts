@@ -4,6 +4,7 @@ import {
   clearReviewConfiguration,
   mapConfigToRuntimeEnv,
   parseReviewConfiguration,
+  parseReviewConfigurationStrict,
   PrismaReviewConfigurationRepository,
   reviewConfigurationTargetKey,
   resolveReviewConfiguration,
@@ -280,7 +281,7 @@ describe("review configuration", () => {
 
   it("rejects exact duplicate provider and model rows", () => {
     expect(() =>
-      parseReviewConfiguration({
+      parseReviewConfigurationStrict({
         schemaVersion: 2,
         providers: [
           {
@@ -298,6 +299,37 @@ describe("review configuration", () => {
         limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
       }),
     ).toThrow("duplicate_review_provider");
+  });
+
+  it("deduplicates exact duplicate provider rows when reading persisted configs", () => {
+    const config = parseReviewConfiguration({
+      schemaVersion: 2,
+      providers: [
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "openai/gpt-5.3-codex",
+        },
+        {
+          kind: "openrouter",
+          authMode: "openrouter_api_key",
+          model: "openai/gpt-5.3-codex",
+        },
+      ],
+      execution: {
+        providerMaxParallel: 2,
+        inlineMinAgreement: 2,
+      },
+      blockingPolicy: { failOnSeverity: "critical" },
+      limits: { inlineMaxComments: 5, targetTokensPerBatch: 50000 },
+    });
+
+    expect(config.providers).toHaveLength(1);
+    expect(config.execution).toMatchObject({
+      providerLimit: 1,
+      providerMaxParallel: 1,
+      inlineMinAgreement: 1,
+    });
   });
 
   it("rejects invalid limits", () => {

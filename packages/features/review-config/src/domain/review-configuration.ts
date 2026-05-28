@@ -79,9 +79,29 @@ export type ReviewConfiguration = {
   readonly limits: z.infer<typeof limitsSchema>;
 };
 
-export const reviewConfigurationSchema = z
-  .union([reviewConfigurationV2Schema, reviewConfigurationV1Schema])
-  .transform(normalizeReviewConfiguration);
+const reviewConfigurationInputSchema = z.union([
+  reviewConfigurationV2Schema,
+  reviewConfigurationV1Schema,
+]);
+
+type ReviewConfigurationInput = z.infer<typeof reviewConfigurationInputSchema>;
+
+type NormalizeReviewConfigurationOptions = {
+  readonly rejectDuplicateProviderRows: boolean;
+};
+
+const tolerantNormalizeOptions = {
+  rejectDuplicateProviderRows: false,
+} satisfies NormalizeReviewConfigurationOptions;
+
+const strictNormalizeOptions = {
+  rejectDuplicateProviderRows: true,
+} satisfies NormalizeReviewConfigurationOptions;
+
+export const reviewConfigurationSchema =
+  reviewConfigurationInputSchema.transform((input) =>
+    normalizeReviewConfiguration(input, tolerantNormalizeOptions),
+  );
 
 export const safeDefaultReviewConfiguration = parseReviewConfiguration({
   schemaVersion: 2,
@@ -103,15 +123,23 @@ export function parseReviewConfiguration(input: unknown): ReviewConfiguration {
   return reviewConfigurationSchema.parse(input);
 }
 
+export function parseReviewConfigurationStrict(
+  input: unknown,
+): ReviewConfiguration {
+  return normalizeReviewConfiguration(
+    reviewConfigurationInputSchema.parse(input),
+    strictNormalizeOptions,
+  );
+}
+
 function normalizeReviewConfiguration(
-  input:
-    | z.infer<typeof reviewConfigurationV1Schema>
-    | z.infer<typeof reviewConfigurationV2Schema>,
+  input: ReviewConfigurationInput,
+  options: NormalizeReviewConfigurationOptions,
 ): ReviewConfiguration {
   const parsedProviders =
     input.schemaVersion === 1 ? [input.provider] : [...input.providers];
   const providers = ensureRequiredHealthyProvider(
-    normalizeProductionCodexProviders(parsedProviders),
+    normalizeProductionCodexProviders(parsedProviders, options),
   );
   const provider = providers[0]!;
   const execution =
@@ -140,6 +168,7 @@ function normalizeReviewConfiguration(
 
 function normalizeProductionCodexProviders(
   providers: readonly ReviewProviderConfiguration[],
+  options: NormalizeReviewConfigurationOptions,
 ): readonly ReviewProviderConfiguration[] {
   const normalizedProviders = providers.map((provider) => {
     if (
@@ -162,15 +191,37 @@ function normalizeProductionCodexProviders(
     };
   });
 
-  const rotatingCodexProviders = normalizedProviders.filter(
+  if (options.rejectDuplicateProviderRows) {
+    assertUniqueProviderRows(normalizedProviders);
+  }
+
+  const uniqueProviders = dedupeProviderRows(normalizedProviders);
+  const rotatingCodexProviders = uniqueProviders.filter(
     (provider) => provider.authMode === "codex_subscription_oauth_rotating",
   );
   if (rotatingCodexProviders.length > 1) {
     throw new Error("codex_rotating_single_provider_required");
   }
 
-  assertUniqueProviderRows(normalizedProviders);
-  return normalizedProviders;
+  return uniqueProviders;
+}
+
+function dedupeProviderRows(
+  providers: readonly ReviewProviderConfiguration[],
+): readonly ReviewProviderConfiguration[] {
+  const seen = new Set<string>();
+  const uniqueProviders: ReviewProviderConfiguration[] = [];
+
+  for (const provider of providers) {
+    const key = providerRowKey(provider);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    uniqueProviders.push(provider);
+  }
+
+  return uniqueProviders;
 }
 
 function assertUniqueProviderRows(
@@ -179,12 +230,16 @@ function assertUniqueProviderRows(
   const seen = new Set<string>();
 
   for (const provider of providers) {
-    const key = `${provider.kind}:${provider.authMode}:${provider.model.trim()}`;
+    const key = providerRowKey(provider);
     if (seen.has(key)) {
       throw new Error("duplicate_review_provider");
     }
     seen.add(key);
   }
+}
+
+function providerRowKey(provider: ReviewProviderConfiguration): string {
+  return `${provider.kind}:${provider.authMode}:${provider.model.trim()}`;
 }
 
 function ensureRequiredHealthyProvider(

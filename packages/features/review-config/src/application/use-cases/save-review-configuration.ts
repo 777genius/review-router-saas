@@ -1,5 +1,5 @@
 import {
-  parseReviewConfiguration,
+  parseReviewConfigurationStrict,
   type ReviewConfiguration,
 } from "../../domain/review-configuration";
 import type { ReviewConfigurationTarget } from "../../domain/review-configuration-target";
@@ -17,7 +17,7 @@ export async function saveReviewConfiguration(
     readonly configurations: ReviewConfigurationRepositoryPort;
   },
 ): Promise<PersistedReviewConfiguration> {
-  const config = parseReviewConfiguration(input.config);
+  const config = parseReviewConfigurationStrict(input.config);
 
   return dependencies.configurations.saveNextVersion({
     target: input.target,

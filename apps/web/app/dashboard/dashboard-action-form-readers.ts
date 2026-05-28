@@ -1,6 +1,6 @@
 import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
 import {
-  parseReviewConfiguration,
+  parseReviewConfigurationStrict,
   type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
 import type { MemoryScope } from "@reviewrouter/features-memory";
@@ -46,7 +46,7 @@ export function readReviewConfigurationForm(
     } satisfies ReviewConfiguration["provider"];
   });
 
-  return parseReviewConfiguration({
+  return parseReviewConfigurationStrict({
     schemaVersion: 2,
     providers,
     provider: providers[0]!,

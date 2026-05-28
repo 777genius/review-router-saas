@@ -55,6 +55,25 @@ describe("dashboard action form readers", () => {
       });
     },
   );
+
+  it("rejects duplicate provider rows from policy submissions", () => {
+    const formData = reviewConfigFormData([
+      {
+        authMode: "openrouter_api_key",
+        model: "openai/gpt-5.3-codex",
+        reasoningEffort: "medium",
+      },
+      {
+        authMode: "openrouter_api_key",
+        model: "openai/gpt-5.3-codex",
+        reasoningEffort: "high",
+      },
+    ]);
+
+    expect(() => readReviewConfigurationForm(formData)).toThrow(
+      "duplicate_review_provider",
+    );
+  });
 });
 
 function reviewConfigFormData(
