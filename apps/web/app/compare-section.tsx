@@ -361,7 +361,60 @@ function BoundaryConnector(): React.ReactElement {
 
 function CompetitorTable(): React.ReactElement {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
+    <>
+      <div className="grid overflow-hidden rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] md:hidden">
+        {competitorRows.map((row) => {
+          const isAccent = row.product === "ReviewRouter";
+
+          return (
+            <article
+              className={cx(
+                "border-b border-cyan-200/10 p-4 last:border-b-0",
+                isAccent && "bg-lime-300/[0.06]",
+              )}
+              key={row.product}
+            >
+              <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3">
+                <ServiceIcon
+                  accent={isAccent}
+                  iconSrc={row.iconSrc}
+                  mark={row.mark}
+                  product={row.product}
+                />
+                <div className="min-w-0">
+                  <div className="flex min-w-0 items-start justify-between gap-3">
+                    <h4 className="truncate font-semibold text-cyan-50">
+                      {row.product}
+                    </h4>
+                    <span
+                      className={cx(
+                        "shrink-0 font-mono text-[0.62rem] font-semibold uppercase tracking-[0.12em]",
+                        isAccent ? "text-lime-300" : "text-fuchsia-300",
+                      )}
+                    >
+                      {row.control}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-slate-300">
+                    {row.execution}
+                  </p>
+                  <p
+                    className={cx(
+                      "mt-2 border-l pl-3 text-sm leading-6",
+                      isAccent
+                        ? "border-lime-300/40 text-lime-300"
+                        : "border-cyan-200/15 text-slate-400",
+                    )}
+                  >
+                    {row.codePath}
+                  </p>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <div className="hidden overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)] md:block">
       <table className="w-full min-w-[1040px] border-collapse text-left">
         <thead>
           <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">
@@ -437,7 +490,8 @@ function CompetitorTable(): React.ReactElement {
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -514,7 +568,42 @@ function TablePill({
 
 function BoundaryTable(): React.ReactElement {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)]">
+    <>
+      <div className="grid overflow-hidden rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] md:hidden">
+        {boundaryRows.map((row) => {
+          const Icon = row.icon;
+          const reviewRouterIndex = boundaryColumns.indexOf("ReviewRouter");
+          const reviewRouterValue = row.values[reviewRouterIndex];
+
+          return (
+            <article
+              className="grid gap-3 border-b border-cyan-200/10 p-4 last:border-b-0"
+              key={row.label}
+            >
+              <div className="flex items-start gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-cyan-300/25 bg-cyan-300/[0.08] text-cyan-200">
+                  <Icon aria-hidden="true" className="size-4" />
+                </span>
+                <div className="min-w-0">
+                  <h4 className="font-semibold text-cyan-50">{row.label}</h4>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    {row.hint}
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-xl border border-lime-300/20 bg-lime-300/[0.06] px-3 py-2">
+                <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-lime-300">
+                  ReviewRouter
+                </p>
+                <p className="mt-1 text-sm font-semibold text-cyan-50">
+                  {reviewRouterValue}
+                </p>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <div className="hidden overflow-x-auto rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] md:block">
       <table className="w-full min-w-[940px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.16em] text-slate-400">
@@ -573,7 +662,8 @@ function BoundaryTable(): React.ReactElement {
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 

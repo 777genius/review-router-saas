@@ -1059,16 +1059,166 @@ canvas {
 }
 
 @media (max-width: 640px) {
+  .home-shell {
+    gap: 1.5rem;
+    padding-bottom: 1.5rem;
+    background-size:
+      36px 36px,
+      36px 36px,
+      auto,
+      auto,
+      auto;
+  }
+
   .setup-blueprint {
+    width: 100%;
+    padding: 1.5rem 1rem 1.25rem;
     border-radius: 1.5rem;
+    border-bottom: 1px solid rgba(103, 232, 249, 0.12);
+  }
+
+  .setup-blueprint__lines {
+    opacity: 0.12;
+  }
+
+  .setup-blueprint__intro {
+    width: 100%;
+    border-left: 2px solid rgba(190, 242, 100, 0.42);
+    padding-left: 1rem;
+  }
+
+  .setup-blueprint__intro h1 {
+    max-width: 21rem;
+    margin-top: 0.85rem;
+    font-size: clamp(2rem, 9.8vw, 2.8rem);
+    line-height: 1.02;
+  }
+
+  .setup-blueprint__intro-rule {
+    width: 100%;
+    max-width: 18rem;
+    margin-top: 1.15rem;
+    background: linear-gradient(90deg, #e3ff69, #64e1ff, transparent);
+  }
+
+  .setup-blueprint__intro p:not(.setup-blueprint__eyebrow) {
+    max-width: 20rem;
+    padding: 0;
+    background: transparent;
+    font-size: 0.95rem;
+    line-height: 1.65;
+  }
+
+  .setup-blueprint__mobile-steps {
+    width: 100%;
+    gap: 0;
+    margin-top: 1.75rem;
+    overflow: hidden;
+    border: 1px solid rgba(103, 232, 249, 0.12);
+    border-radius: 1.25rem;
+    background: rgba(8, 13, 24, 0.58);
   }
 
   .setup-blueprint__mobile-step {
-    grid-template-columns: 5rem minmax(0, 1fr);
-    gap: 1.05rem;
+    grid-template-columns: 3.75rem minmax(0, 1fr);
+    gap: 0.9rem;
+    min-height: 8.5rem;
+    border-bottom: 1px solid rgba(103, 232, 249, 0.1);
+    padding: 1rem;
+  }
+
+  .setup-blueprint__mobile-step:last-child {
+    border-bottom: 0;
   }
 
   .setup-blueprint__mobile-node {
-    width: 4.5rem;
+    width: 3rem;
+    border-radius: 1rem;
+    box-shadow:
+      0 0 0 1px rgba(103, 232, 249, 0.12),
+      inset 0 0 20px color-mix(in srgb, var(--node-color) 14%, transparent);
+  }
+
+  .setup-blueprint__mobile-node::before,
+  .setup-blueprint__mobile-node::after {
+    display: none;
+  }
+
+  .setup-blueprint__mobile-node span {
+    font-size: 1.55rem;
+  }
+
+  .setup-blueprint__mobile-step h2 {
+    margin-top: 0.55rem;
+    font-size: clamp(1.25rem, 6.4vw, 1.75rem);
+  }
+
+  .setup-blueprint__mobile-step p:not(.setup-blueprint__step-label) {
+    margin-top: 0.55rem;
+    font-size: 0.9rem;
+    line-height: 1.58;
+  }
+
+  .setup-blueprint__signal {
+    width: 100%;
+    margin: 0;
+    border-bottom: 1px solid rgba(103, 232, 249, 0.1);
+    padding: 0.9rem 0;
+  }
+
+  .setup-blueprint__signal--data {
+    margin-top: 1.25rem;
+  }
+
+  .setup-blueprint__signal span {
+    gap: 0.2rem;
+  }
+
+  .setup-blueprint__cta {
+    margin-top: 1.25rem;
+  }
+
+  .setup-blueprint__install-cta {
+    width: 100%;
+    min-height: 3.4rem;
+    border-radius: 0.9rem;
+    padding-inline: 1rem;
+    font-size: 0.95rem;
+  }
+
+  .setup-blueprint__version {
+    display: none;
+  }
+
+  #compare {
+    width: calc(100% - 1rem);
+    scroll-margin-top: 6rem;
+  }
+
+  #compare h2 {
+    font-size: clamp(1.95rem, 8.8vw, 2.55rem);
+    line-height: 1.04;
+  }
+
+  #compare .rr-accent-callout {
+    border-color: rgba(190, 242, 100, 0.24);
+    border-radius: 1rem;
+    background: linear-gradient(
+      180deg,
+      rgba(190, 242, 100, 0.08),
+      rgba(0, 240, 255, 0.045)
+    );
+    padding: 1rem;
+  }
+
+  .site-footer__main {
+    gap: 1.5rem;
+    padding-top: 1.75rem;
+    padding-bottom: 1.75rem;
+  }
+
+  .site-footer__bottom {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
   }
 }
