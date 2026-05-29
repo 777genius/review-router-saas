@@ -5,7 +5,7 @@ import { getServerSession } from "next-auth";
 import { GitBranch, LifeBuoy, Mail, ShieldCheck } from "lucide-react";
 import { AppToaster } from "./app-toaster";
 import { LogoMark } from "./logo-mark";
-import { PrimaryNav } from "./primary-nav";
+import { MobilePrimaryNav, PrimaryNav } from "./primary-nav";
 import { HeaderProfileMenu } from "./header-profile-menu";
 import { ThemeToggle } from "./theme-toggle";
 import "./globals.css";
@@ -149,7 +149,7 @@ export default async function RootLayout({
             aria-hidden="true"
             className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-cyan-200/55 to-transparent"
           />
-          <div className="mx-auto grid min-h-20 w-full min-w-0 max-w-7xl gap-3 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(240px,auto)_minmax(0,1fr)_auto] lg:items-center lg:py-0">
+          <div className="mx-auto grid min-h-16 w-full min-w-0 max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 sm:px-6 lg:min-h-20 lg:grid-cols-[minmax(240px,auto)_minmax(0,1fr)_auto] lg:py-0">
             <a
               href="/"
               className="group flex min-w-0 items-center gap-3 rounded-2xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
@@ -159,22 +159,22 @@ export default async function RootLayout({
                 className="shadow-[0_0_34px_-10px_rgba(0,240,255,0.9)]"
               />
               <span className="min-w-0">
-                <span className="block font-mono text-base font-semibold tracking-[0.16em] text-cyan-50">
+                <span className="block truncate font-mono text-sm font-semibold tracking-[0.14em] text-cyan-50 sm:text-base sm:tracking-[0.16em]">
                   ReviewRouter
                 </span>
-                <span className="block text-xs text-slate-500">
+                <span className="hidden text-xs text-slate-500 sm:block">
                   Private AI review control plane
                 </span>
               </span>
             </a>
-            <div className="relative min-w-0 lg:justify-self-center">
+            <div className="relative hidden min-w-0 lg:block lg:justify-self-center">
               <div
                 aria-hidden="true"
                 className="pointer-events-none absolute left-1/2 top-1/2 hidden h-px w-[min(38rem,52vw)] -translate-x-1/2 bg-gradient-to-r from-transparent via-cyan-300/15 to-transparent lg:block"
               />
               <PrimaryNav signedIn={profile.signedIn} />
             </div>
-            <div className="flex min-w-0 items-center gap-3 lg:justify-end">
+            <div className="flex min-w-0 items-center justify-end gap-2 sm:gap-3 lg:justify-end">
               <ThemeToggle />
               <div className="hidden items-center gap-3 border-r border-cyan-200/10 pr-3 xl:flex">
                 <span className="relative grid h-9 w-9 place-items-center rounded-xl border border-lime-300/20 bg-lime-300/[0.07] text-lime-300">
@@ -194,6 +194,7 @@ export default async function RootLayout({
                 githubLogin={profile.githubLogin}
                 githubAvatarUrl={profile.githubAvatarUrl}
               />
+              <MobilePrimaryNav signedIn={profile.signedIn} />
             </div>
           </div>
         </header>
