@@ -191,7 +191,9 @@ export default async function HomePage(): Promise<React.ReactElement> {
                   {item.badge}
                   <span aria-hidden="true" />
                 </p>
-                <h2>{item.title}</h2>
+                <div className="setup-blueprint__mobile-step-title">
+                  {item.title}
+                </div>
                 <p>{item.body}</p>
               </div>
             </article>

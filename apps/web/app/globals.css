@@ -1018,7 +1018,7 @@ canvas {
       0 0 2px #fff;
   }
 
-  .setup-blueprint__mobile-step h2 {
+  .setup-blueprint__mobile-step-title {
     margin: 1rem 0 0;
     color: #f1f7ff;
     font-family: var(--font-mono), "JetBrains Mono", monospace;
@@ -1250,7 +1250,7 @@ canvas {
     text-shadow: 0 0 18px rgba(16, 185, 129, 0.28);
   }
 
-  .setup-blueprint__mobile-step h2 {
+  .setup-blueprint__mobile-step-title {
     color: #effff9;
     margin-top: 0.55rem;
     font-size: clamp(1.25rem, 6.4vw, 1.75rem);

@@ -159,7 +159,15 @@ const boundaryRows = [
   },
 ] as const;
 
-export function CompareSection(): React.ReactElement {
+type CompareSectionProps = {
+  readonly headingLevel?: 1 | 2;
+};
+
+export function CompareSection({
+  headingLevel = 2,
+}: CompareSectionProps = {}): React.ReactElement {
+  const Heading = headingLevel === 1 ? "h1" : "h2";
+
   return (
     <section
       id="compare"
@@ -170,12 +178,12 @@ export function CompareSection(): React.ReactElement {
         <div className="grid gap-6 lg:grid-cols-[minmax(0,0.82fr)_minmax(430px,1.18fr)] lg:items-stretch">
           <div className="flex min-w-0 flex-col justify-center py-2 lg:py-4">
             <Badge tone="accent">Comparison</Badge>
-            <h2
+            <Heading
               id="compare-title"
               className="mt-6 max-w-3xl text-4xl font-semibold tracking-tight text-cyan-50 sm:text-5xl lg:text-6xl"
             >
               ReviewRouter vs AI code review apps
-            </h2>
+            </Heading>
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg sm:leading-8 lg:max-w-xl">
               Compare concrete reviewers first, then compare the cloud boundary
               that decides where code, credentials, and model prompts travel.
