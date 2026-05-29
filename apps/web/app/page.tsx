@@ -155,6 +155,29 @@ export default async function HomePage(): Promise<React.ReactElement> {
           </p>
         </div>
 
+        <div className="setup-blueprint__mobile-cta">
+          {!hasConnectedApp && appInstallUrl ? (
+            <GitHubAppInstallPermissionDialog
+              href={appInstallUrl}
+              size="lg"
+              className="home-install-cta setup-blueprint__install-cta"
+            >
+              {primaryLabel}
+            </GitHubAppInstallPermissionDialog>
+          ) : (
+            <LoadingLinkButton
+              href={primaryHref}
+              size="lg"
+              className="home-install-cta setup-blueprint__install-cta"
+              pendingLabel={
+                hasConnectedApp ? "Opening dashboard..." : "Opening setup..."
+              }
+            >
+              {primaryLabel}
+            </LoadingLinkButton>
+          )}
+        </div>
+
         {setupSteps.map((item) => (
           <div
             className={`setup-blueprint__node ${item.nodeClassName}`}

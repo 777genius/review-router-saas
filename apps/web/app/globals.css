@@ -278,6 +278,10 @@ canvas {
   display: none;
 }
 
+.setup-blueprint__mobile-cta {
+  display: none;
+}
+
 .setup-blueprint__intro,
 .setup-blueprint__step,
 .setup-blueprint__node,
@@ -1059,16 +1063,166 @@ canvas {
 }
 
 @media (max-width: 640px) {
+  .home-shell {
+    gap: 1.5rem;
+    padding-bottom: 1.5rem;
+  }
+
   .setup-blueprint {
+    width: calc(100% - 1rem);
+    padding: 1.25rem 1rem 1.4rem;
     border-radius: 1.5rem;
+    border: 1px solid rgba(103, 232, 249, 0.12);
+    background:
+      linear-gradient(180deg, rgba(7, 12, 23, 0.9), rgba(2, 6, 11, 0.76)),
+      linear-gradient(135deg, rgba(0, 240, 255, 0.065), rgba(217, 70, 239, 0.05));
+  }
+
+  .setup-blueprint__lines {
+    opacity: 0.18;
+  }
+
+  .setup-blueprint::after {
+    background: linear-gradient(
+      180deg,
+      rgba(2, 6, 11, 0.12),
+      rgba(2, 6, 11, 0.86)
+    );
+  }
+
+  .setup-blueprint__intro {
+    width: 100%;
+    min-height: 19rem;
+    display: grid;
+    align-content: center;
+  }
+
+  .setup-blueprint__intro h1 {
+    max-width: 21rem;
+    margin-top: 0.9rem;
+    font-size: clamp(2.15rem, 10.8vw, 3.1rem);
+    line-height: 0.98;
+  }
+
+  .setup-blueprint__intro p:not(.setup-blueprint__eyebrow) {
+    max-width: 20rem;
+    padding: 0;
+    background: transparent;
+    font-size: 1rem;
+    line-height: 1.62;
+  }
+
+  .setup-blueprint__intro-rule {
+    margin-top: 1.25rem;
+    background: linear-gradient(90deg, #64e1ff, #e83cff, transparent);
+  }
+
+  .setup-blueprint__mobile-cta {
+    position: relative;
+    z-index: 3;
+    display: flex;
+    margin-top: -1.5rem;
+  }
+
+  .setup-blueprint__mobile-cta .setup-blueprint__install-cta {
+    width: 100%;
+    min-height: 3.55rem;
+    min-width: 0;
+    border-radius: 1rem;
+    padding-inline: 1rem;
+    font-size: 0.98rem;
+  }
+
+  .setup-blueprint__mobile-steps {
+    width: 100%;
+    gap: 0.85rem;
+    margin-top: 1.5rem;
   }
 
   .setup-blueprint__mobile-step {
-    grid-template-columns: 5rem minmax(0, 1fr);
-    gap: 1.05rem;
+    position: relative;
+    overflow: hidden;
+    grid-template-columns: 3.65rem minmax(0, 1fr);
+    gap: 0.9rem;
+    min-height: 8rem;
+    border: 1px solid rgba(103, 232, 249, 0.12);
+    border-radius: 1.15rem;
+    background: rgba(255, 255, 255, 0.025);
+    padding: 0.9rem;
   }
 
   .setup-blueprint__mobile-node {
-    width: 4.5rem;
+    width: 3rem;
+    border-radius: 1rem;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.05),
+      0 0 26px color-mix(in srgb, var(--node-color) 24%, transparent);
+  }
+
+  .setup-blueprint__mobile-node::before,
+  .setup-blueprint__mobile-node::after {
+    display: none;
+  }
+
+  .setup-blueprint__mobile-node span {
+    font-size: 1.6rem;
+  }
+
+  .setup-blueprint__mobile-step h2 {
+    margin-top: 0.55rem;
+    font-size: clamp(1.25rem, 6.8vw, 1.8rem);
+  }
+
+  .setup-blueprint__mobile-step p:not(.setup-blueprint__step-label) {
+    margin-top: 0.55rem;
+    font-size: 0.9rem;
+    line-height: 1.58;
+  }
+
+  .setup-blueprint__signal {
+    width: 100%;
+    margin: 0.8rem 0 0;
+    border: 1px solid rgba(103, 232, 249, 0.1);
+    border-radius: 1rem;
+    background: rgba(255, 255, 255, 0.02);
+    padding: 0.85rem;
+  }
+
+  .setup-blueprint__signal--data {
+    margin-top: 1.25rem;
+  }
+
+  .setup-blueprint__cta {
+    display: none;
+  }
+
+  .setup-blueprint__version {
+    display: none;
+  }
+
+  #compare {
+    width: calc(100% - 1rem);
+    scroll-margin-top: 6rem;
+  }
+
+  #compare h2 {
+    font-size: clamp(2rem, 9vw, 2.6rem);
+    line-height: 1.02;
+  }
+
+  #compare .rr-accent-callout {
+    border-radius: 1.25rem;
+    padding: 1rem;
+  }
+
+  .site-footer__main {
+    gap: 1.5rem;
+    padding-top: 1.75rem;
+    padding-bottom: 1.75rem;
+  }
+
+  .site-footer__bottom {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
   }
 }

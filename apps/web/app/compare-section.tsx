@@ -361,7 +361,74 @@ function BoundaryConnector(): React.ReactElement {
 
 function CompetitorTable(): React.ReactElement {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)]">
+    <>
+      <div className="grid gap-3 md:hidden">
+        {competitorRows.map((row, index) => {
+          const isAccent = row.product === "ReviewRouter";
+
+          return (
+            <article
+              className={cx(
+                "relative overflow-hidden rounded-2xl border p-4",
+                isAccent
+                  ? "border-cyan-300/40 bg-[linear-gradient(135deg,rgba(0,240,255,0.13),rgba(163,230,53,0.08))]"
+                  : "border-cyan-200/10 bg-[var(--rr-surface-panel)]",
+              )}
+              key={row.product}
+            >
+              <div
+                aria-hidden="true"
+                className="absolute right-4 top-4 font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-slate-600"
+              >
+                {String(index + 1).padStart(2, "0")}
+              </div>
+              <div className="flex items-center gap-3 pr-8">
+                <ServiceIcon
+                  accent={isAccent}
+                  iconSrc={row.iconSrc}
+                  mark={row.mark}
+                  product={row.product}
+                />
+                <div className="min-w-0">
+                  <h4 className="truncate font-semibold text-cyan-50">
+                    {row.product}
+                  </h4>
+                  <p className="mt-1 text-sm text-slate-400">
+                    {row.bestFit}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-2 text-sm">
+                <div className="rounded-xl bg-white/[0.035] px-3 py-2">
+                  <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    Execution
+                  </p>
+                  <p className="mt-1 text-slate-300">{row.execution}</p>
+                </div>
+                <div
+                  className={cx(
+                    "rounded-xl px-3 py-2",
+                    isAccent ? "bg-lime-300/[0.08]" : "bg-fuchsia-300/[0.05]",
+                  )}
+                >
+                  <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    Control
+                  </p>
+                  <p
+                    className={cx(
+                      "mt-1 font-semibold",
+                      isAccent ? "text-lime-300" : "text-fuchsia-300",
+                    )}
+                  >
+                    {row.control} - {row.codePath}
+                  </p>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <div className="hidden overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)] md:block">
       <table className="w-full min-w-[1040px] border-collapse text-left">
         <thead>
           <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">
@@ -437,7 +504,8 @@ function CompetitorTable(): React.ReactElement {
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -514,7 +582,52 @@ function TablePill({
 
 function BoundaryTable(): React.ReactElement {
   return (
-    <div className="overflow-x-auto rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)]">
+    <>
+      <div className="grid gap-3 md:hidden">
+        {boundaryRows.map((row) => {
+          const Icon = row.icon;
+          const reviewRouterIndex = boundaryColumns.indexOf("ReviewRouter");
+          const hostedIndex = boundaryColumns.indexOf("Hosted reviewer");
+
+          return (
+            <article
+              className="rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] p-4"
+              key={row.label}
+            >
+              <div className="flex items-start gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-cyan-300/25 bg-cyan-300/[0.08] text-cyan-200">
+                  <Icon aria-hidden="true" className="size-4" />
+                </span>
+                <div className="min-w-0">
+                  <h4 className="font-semibold text-cyan-50">{row.label}</h4>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    {row.hint}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-xl bg-white/[0.03] px-3 py-2">
+                  <p className="font-mono text-[0.6rem] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                    Hosted
+                  </p>
+                  <p className="mt-1 text-slate-300">
+                    {row.values[hostedIndex]}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-lime-300/[0.07] px-3 py-2">
+                  <p className="font-mono text-[0.6rem] font-semibold uppercase tracking-[0.14em] text-lime-300">
+                    ReviewRouter
+                  </p>
+                  <p className="mt-1 font-semibold text-cyan-50">
+                    {row.values[reviewRouterIndex]}
+                  </p>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <div className="hidden overflow-x-auto rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] md:block">
       <table className="w-full min-w-[940px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.16em] text-slate-400">
@@ -573,7 +686,8 @@ function BoundaryTable(): React.ReactElement {
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 
