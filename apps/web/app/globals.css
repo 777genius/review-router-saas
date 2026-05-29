@@ -1060,25 +1060,50 @@ canvas {
 
 @media (max-width: 640px) {
   body {
-    background: #080d0f;
+    background: #060b0d;
     color: #e8f3ef;
   }
 
   .home-shell {
+    position: relative;
+    isolation: isolate;
     gap: 1.5rem;
     padding-bottom: 1.5rem;
     background:
       linear-gradient(rgba(20, 184, 166, 0.04) 1px, transparent 1px),
       linear-gradient(90deg, rgba(20, 184, 166, 0.035) 1px, transparent 1px),
-      radial-gradient(circle at 76% 4%, rgba(16, 185, 129, 0.16), transparent 14rem),
-      radial-gradient(circle at 0% 88%, rgba(245, 158, 11, 0.1), transparent 15rem),
+      conic-gradient(
+        from 145deg at 66% 7%,
+        rgba(52, 211, 153, 0.24),
+        rgba(34, 211, 238, 0.1),
+        rgba(245, 158, 11, 0.12),
+        rgba(52, 211, 153, 0.24)
+      ),
+      linear-gradient(128deg, rgba(45, 212, 191, 0.14), transparent 36%),
+      linear-gradient(312deg, rgba(251, 146, 60, 0.11), transparent 42%),
       linear-gradient(180deg, #101718 0%, #080d0f 55%, #05080a 100%);
     background-size:
       34px 34px,
       34px 34px,
+      180% 180%,
       auto,
       auto,
       auto;
+  }
+
+  .home-shell::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    content: "";
+    background:
+      linear-gradient(105deg, transparent 0 18%, rgba(52, 211, 153, 0.1) 26%, transparent 42%),
+      linear-gradient(245deg, transparent 0 28%, rgba(34, 211, 238, 0.08) 36%, transparent 52%),
+      linear-gradient(20deg, transparent 0 54%, rgba(245, 158, 11, 0.07) 66%, transparent 82%);
+    background-size: 160% 160%;
+    mix-blend-mode: screen;
+    opacity: 0.9;
   }
 
   .setup-blueprint {
@@ -1087,8 +1112,27 @@ canvas {
     border-radius: 1.5rem;
     border-bottom: 1px solid rgba(45, 212, 191, 0.12);
     background:
-      linear-gradient(180deg, rgba(18, 27, 28, 0.96), rgba(8, 13, 15, 0.9)),
-      radial-gradient(circle at 86% 2%, rgba(16, 185, 129, 0.18), transparent 13rem);
+      linear-gradient(
+        120deg,
+        rgba(52, 211, 153, 0.18),
+        transparent 34%,
+        rgba(34, 211, 238, 0.1) 58%,
+        rgba(245, 158, 11, 0.13)
+      ),
+      linear-gradient(180deg, rgba(18, 27, 28, 0.92), rgba(8, 13, 15, 0.86)),
+      conic-gradient(
+        from 35deg at 88% 0%,
+        rgba(52, 211, 153, 0.22),
+        rgba(34, 211, 238, 0.08),
+        rgba(245, 158, 11, 0.09),
+        rgba(52, 211, 153, 0.22)
+      ),
+      #080d0f;
+    background-size:
+      190% 190%,
+      auto,
+      180% 180%,
+      auto;
     box-shadow:
       inset 0 0 0 1px rgba(94, 234, 212, 0.06),
       0 26px 70px -56px rgba(16, 185, 129, 0.75);
@@ -1113,7 +1157,25 @@ canvas {
     text-shadow: 0 0 28px rgba(16, 185, 129, 0.12);
   }
 
+  @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+    .setup-blueprint__intro h1 {
+      background: linear-gradient(112deg, #ffffff 0%, #bfffea 38%, #7dd3fc 66%, #fcd34d 100%);
+      background-clip: text;
+      background-size: 180% auto;
+      color: transparent;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: none;
+    }
+  }
+
   .setup-blueprint__eyebrow {
+    display: inline-flex;
+    width: fit-content;
+    border: 1px solid rgba(52, 211, 153, 0.24);
+    border-radius: 999px;
+    background: rgba(52, 211, 153, 0.08);
+    padding: 0.42rem 0.65rem;
     color: #6ee7b7;
   }
 
@@ -1121,7 +1183,7 @@ canvas {
     width: 100%;
     max-width: 18rem;
     margin-top: 1.15rem;
-    background: linear-gradient(90deg, #34d399, #f59e0b, transparent);
+    background: linear-gradient(90deg, #34d399, #22d3ee, #f59e0b, transparent);
   }
 
   .setup-blueprint__intro p:not(.setup-blueprint__eyebrow) {
@@ -1142,8 +1204,13 @@ canvas {
     border: 1px solid rgba(45, 212, 191, 0.14);
     border-radius: 1.25rem;
     background:
+      linear-gradient(135deg, rgba(52, 211, 153, 0.12), transparent 46%, rgba(34, 211, 238, 0.08)),
       linear-gradient(180deg, rgba(18, 27, 28, 0.94), rgba(10, 15, 17, 0.94)),
       rgba(8, 13, 15, 0.96);
+    background-size:
+      170% 170%,
+      auto,
+      auto;
     box-shadow: 0 18px 60px -48px rgba(16, 185, 129, 0.65);
   }
 
@@ -1152,6 +1219,7 @@ canvas {
     gap: 0.9rem;
     min-height: 8.5rem;
     border-bottom: 1px solid rgba(45, 212, 191, 0.1);
+    background: linear-gradient(110deg, rgba(45, 212, 191, 0.085), transparent 46%, rgba(245, 158, 11, 0.045));
     padding: 1rem;
   }
 
@@ -1222,9 +1290,16 @@ canvas {
   .setup-blueprint__install-cta {
     width: 100%;
     min-height: 3.4rem;
+    border-color: rgba(190, 242, 100, 0.36) !important;
     border-radius: 0.9rem;
+    background:
+      linear-gradient(135deg, #34d399 0%, #22d3ee 46%, #f59e0b 100%) !important;
+    color: #03110f !important;
     padding-inline: 1rem;
     font-size: 0.95rem;
+    box-shadow:
+      0 18px 48px -30px rgba(52, 211, 153, 0.95),
+      0 12px 42px -32px rgba(245, 158, 11, 0.95) !important;
   }
 
   .setup-blueprint__version {
@@ -1258,6 +1333,7 @@ canvas {
   #compare [class*="bg-[var(--rr-surface-panel)]"] {
     border-color: rgba(45, 212, 191, 0.13);
     background:
+      linear-gradient(125deg, rgba(45, 212, 191, 0.075), transparent 38%),
       linear-gradient(180deg, rgba(19, 30, 31, 0.95), rgba(9, 14, 16, 0.95)),
       #0b1113;
     box-shadow: 0 18px 60px -50px rgba(16, 185, 129, 0.68);
@@ -1276,6 +1352,7 @@ canvas {
 
   .site-footer {
     background:
+      linear-gradient(120deg, rgba(45, 212, 191, 0.08), transparent 42%),
       linear-gradient(180deg, rgba(8, 13, 15, 0.92), #05080a),
       #05080a;
   }
@@ -1302,5 +1379,65 @@ canvas {
   .site-footer__bottom {
     padding-top: 1rem;
     padding-bottom: 1rem;
+  }
+}
+
+@keyframes security-mobile-gradient-flow {
+  0%,
+  100% {
+    background-position:
+      0 0,
+      0 0,
+      0% 32%,
+      0 0,
+      0 0,
+      0 0;
+  }
+
+  50% {
+    background-position:
+      16px 22px,
+      22px 16px,
+      100% 68%,
+      0 0,
+      0 0,
+      0 0;
+  }
+}
+
+@keyframes security-mobile-sheen {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@media (max-width: 640px) and (prefers-reduced-motion: no-preference) {
+  .home-shell {
+    animation: security-mobile-gradient-flow 14s ease-in-out infinite;
+  }
+
+  .home-shell::before {
+    animation: security-mobile-sheen 11s ease-in-out infinite;
+  }
+
+  .setup-blueprint,
+  .setup-blueprint__mobile-steps,
+  #compare article,
+  #compare [class*="bg-[var(--rr-surface-panel)]"] {
+    animation: security-mobile-sheen 13s ease-in-out infinite;
+  }
+
+  .setup-blueprint__intro h1 {
+    animation: security-mobile-sheen 9s ease-in-out infinite;
+  }
+
+  #compare article,
+  #compare [class*="bg-[var(--rr-surface-panel)]"] {
+    background-size: 180% 180%, auto, auto;
   }
 }
