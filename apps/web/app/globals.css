@@ -1059,16 +1059,146 @@ canvas {
 }
 
 @media (max-width: 640px) {
+  .home-shell {
+    gap: 1.75rem;
+    padding-bottom: 1.75rem;
+  }
+
   .setup-blueprint {
+    width: calc(100% - 1rem);
+    margin-top: 0.5rem;
+    padding: 2rem 1rem 1.5rem;
     border-radius: 1.5rem;
+    border: 1px solid rgba(103, 232, 249, 0.12);
+    background:
+      linear-gradient(180deg, rgba(8, 13, 24, 0.86), rgba(3, 7, 18, 0.62)),
+      radial-gradient(circle at 82% 8%, rgba(163, 230, 53, 0.08), transparent 15rem);
+  }
+
+  .setup-blueprint::after {
+    background: linear-gradient(
+      180deg,
+      rgba(2, 6, 11, 0.16),
+      rgba(2, 6, 11, 0.72)
+    );
+  }
+
+  .setup-blueprint__intro {
+    width: 100%;
+  }
+
+  .setup-blueprint__intro h1 {
+    max-width: 20rem;
+    margin-top: 0.9rem;
+    font-size: clamp(2rem, 10.2vw, 2.95rem);
+    line-height: 0.98;
+  }
+
+  .setup-blueprint__intro p:not(.setup-blueprint__eyebrow) {
+    max-width: 19rem;
+    padding-right: 0;
+    background: transparent;
+    font-size: 0.98rem;
+    line-height: 1.65;
+  }
+
+  .setup-blueprint__intro-rule {
+    margin-top: 1.35rem;
+  }
+
+  .setup-blueprint__mobile-steps {
+    width: 100%;
+    gap: 1rem;
+    margin-top: 2rem;
   }
 
   .setup-blueprint__mobile-step {
-    grid-template-columns: 5rem minmax(0, 1fr);
-    gap: 1.05rem;
+    grid-template-columns: 4.25rem minmax(0, 1fr);
+    gap: 0.95rem;
+    align-items: center;
+    min-height: 8.25rem;
+    border-top: 1px solid rgba(103, 232, 249, 0.12);
+    padding-top: 1rem;
   }
 
   .setup-blueprint__mobile-node {
-    width: 4.5rem;
+    width: 3.75rem;
+  }
+
+  .setup-blueprint__mobile-node span {
+    font-size: 2.2rem;
+  }
+
+  .setup-blueprint__mobile-step h2 {
+    margin-top: 0.65rem;
+    font-size: clamp(1.35rem, 7vw, 1.9rem);
+  }
+
+  .setup-blueprint__mobile-step p:not(.setup-blueprint__step-label) {
+    margin-top: 0.65rem;
+    font-size: 0.92rem;
+    line-height: 1.58;
+  }
+
+  .setup-blueprint__signal {
+    width: 100%;
+    margin: 1rem 0 0;
+    border-top: 1px solid rgba(103, 232, 249, 0.1);
+    padding-top: 1rem;
+  }
+
+  .setup-blueprint__signal:first-of-type {
+    margin-top: 1.75rem;
+  }
+
+  .setup-blueprint__signal svg {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  .setup-blueprint__cta {
+    margin-top: 1.75rem;
+  }
+
+  .setup-blueprint__install-cta {
+    width: 100%;
+    min-height: 3.55rem;
+    border-radius: 1rem;
+    padding-inline: 1.25rem;
+    font-size: 0.98rem;
+  }
+
+  .setup-blueprint__version {
+    display: none;
+  }
+
+  #compare {
+    width: calc(100% - 1rem);
+    scroll-margin-top: 6rem;
+  }
+
+  #compare > div {
+    padding-top: 0.25rem;
+  }
+
+  #compare h2 {
+    font-size: clamp(2rem, 9vw, 2.65rem);
+    line-height: 1.02;
+  }
+
+  #compare .rr-accent-callout {
+    border-radius: 1.25rem;
+    padding: 1rem;
+  }
+
+  .site-footer__main {
+    gap: 1.75rem;
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+  }
+
+  .site-footer__bottom {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
   }
 }

@@ -200,7 +200,7 @@ export default async function RootLayout({
         </header>
         <div id="content">{children}</div>
         <AppToaster />
-        <footer className="relative isolate overflow-hidden border-t border-cyan-200/10 bg-[var(--rr-footer-bg)]">
+        <footer className="site-footer relative isolate overflow-hidden border-t border-cyan-200/10 bg-[var(--rr-footer-bg)]">
           <div
             aria-hidden="true"
             className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-200/45 to-transparent"
@@ -209,7 +209,7 @@ export default async function RootLayout({
             aria-hidden="true"
             className="absolute inset-0 -z-10 bg-[linear-gradient(var(--rr-page-grid)_1px,transparent_1px),linear-gradient(90deg,var(--rr-page-grid)_1px,transparent_1px),linear-gradient(180deg,var(--rr-surface-panel-muted),var(--rr-surface-card-strong))] bg-[size:56px_56px,56px_56px,auto]"
           />
-          <div className="mx-auto grid w-full max-w-6xl gap-8 px-4 py-10 text-sm text-slate-400 sm:px-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)] lg:items-start">
+          <div className="site-footer__main mx-auto grid w-full max-w-6xl gap-8 px-4 py-10 text-sm text-slate-400 sm:px-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)] lg:items-start">
             <div className="max-w-2xl">
               <a href="/" className="inline-flex min-w-0 items-center gap-3">
                 <LogoMark size="sm" />
@@ -303,7 +303,7 @@ export default async function RootLayout({
               </div>
             </div>
           </div>
-          <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 border-t border-cyan-200/10 px-4 py-5 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="site-footer__bottom mx-auto flex w-full max-w-6xl flex-col gap-3 border-t border-cyan-200/10 px-4 py-5 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between sm:px-6">
             <p>© 2026 ReviewRouter. Built for repository-owned CI.</p>
             <a
               className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-cyan-100 transition hover:bg-cyan-300/[0.07] hover:text-white"
