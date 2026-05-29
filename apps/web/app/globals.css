@@ -1060,34 +1060,47 @@ canvas {
 
 @media (max-width: 640px) {
   body {
-    background: #f5f8fb;
-    color: #102033;
+    background: #080d0f;
+    color: #e8f3ef;
   }
 
   .home-shell {
     gap: 1.5rem;
     padding-bottom: 1.5rem;
     background:
-      linear-gradient(180deg, #f8fbff 0%, #eef5f9 54%, #e8f1f5 100%);
+      linear-gradient(rgba(20, 184, 166, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(20, 184, 166, 0.035) 1px, transparent 1px),
+      radial-gradient(circle at 76% 4%, rgba(16, 185, 129, 0.16), transparent 14rem),
+      radial-gradient(circle at 0% 88%, rgba(245, 158, 11, 0.1), transparent 15rem),
+      linear-gradient(180deg, #101718 0%, #080d0f 55%, #05080a 100%);
+    background-size:
+      34px 34px,
+      34px 34px,
+      auto,
+      auto,
+      auto;
   }
 
   .setup-blueprint {
     width: 100%;
     padding: 1.5rem 1rem 1.25rem;
     border-radius: 1.5rem;
-    border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+    border-bottom: 1px solid rgba(45, 212, 191, 0.12);
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 250, 252, 0.94)),
-      radial-gradient(circle at 85% 0%, rgba(20, 184, 166, 0.14), transparent 13rem);
+      linear-gradient(180deg, rgba(18, 27, 28, 0.96), rgba(8, 13, 15, 0.9)),
+      radial-gradient(circle at 86% 2%, rgba(16, 185, 129, 0.18), transparent 13rem);
+    box-shadow:
+      inset 0 0 0 1px rgba(94, 234, 212, 0.06),
+      0 26px 70px -56px rgba(16, 185, 129, 0.75);
   }
 
   .setup-blueprint__lines {
-    opacity: 0.08;
+    opacity: 0.14;
   }
 
   .setup-blueprint__intro {
     width: 100%;
-    border-left: 2px solid rgba(20, 184, 166, 0.52);
+    border-left: 2px solid rgba(16, 185, 129, 0.62);
     padding-left: 1rem;
   }
 
@@ -1096,29 +1109,29 @@ canvas {
     margin-top: 0.85rem;
     font-size: clamp(2rem, 9.8vw, 2.8rem);
     line-height: 1.02;
-    color: #102033;
-    text-shadow: none;
+    color: #effff9;
+    text-shadow: 0 0 28px rgba(16, 185, 129, 0.12);
   }
 
   .setup-blueprint__eyebrow {
-    color: #0f766e;
+    color: #6ee7b7;
   }
 
   .setup-blueprint__intro-rule {
     width: 100%;
     max-width: 18rem;
     margin-top: 1.15rem;
-    background: linear-gradient(90deg, #0f766e, #2563eb, transparent);
+    background: linear-gradient(90deg, #34d399, #f59e0b, transparent);
   }
 
   .setup-blueprint__intro p:not(.setup-blueprint__eyebrow) {
     max-width: 20rem;
     padding: 0;
     background: transparent;
-    color: #475569;
+    color: #a7b8b2;
     font-size: 0.95rem;
     line-height: 1.65;
-    text-shadow: none;
+    text-shadow: 0 1px 12px rgba(0, 0, 0, 0.28);
   }
 
   .setup-blueprint__mobile-steps {
@@ -1126,17 +1139,19 @@ canvas {
     gap: 0;
     margin-top: 1.75rem;
     overflow: hidden;
-    border: 1px solid rgba(15, 23, 42, 0.1);
+    border: 1px solid rgba(45, 212, 191, 0.14);
     border-radius: 1.25rem;
-    background: #ffffff;
-    box-shadow: 0 16px 42px -34px rgba(15, 23, 42, 0.4);
+    background:
+      linear-gradient(180deg, rgba(18, 27, 28, 0.94), rgba(10, 15, 17, 0.94)),
+      rgba(8, 13, 15, 0.96);
+    box-shadow: 0 18px 60px -48px rgba(16, 185, 129, 0.65);
   }
 
   .setup-blueprint__mobile-step {
     grid-template-columns: 3.75rem minmax(0, 1fr);
     gap: 0.9rem;
     min-height: 8.5rem;
-    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    border-bottom: 1px solid rgba(45, 212, 191, 0.1);
     padding: 1rem;
   }
 
@@ -1146,12 +1161,14 @@ canvas {
 
   .setup-blueprint__mobile-node {
     width: 3rem;
-    border-color: rgba(20, 184, 166, 0.42);
+    border-color: rgba(52, 211, 153, 0.52);
     border-radius: 1rem;
-    background: #ecfeff;
+    background:
+      linear-gradient(180deg, rgba(16, 185, 129, 0.2), rgba(15, 23, 42, 0.76)),
+      #0f1718;
     box-shadow:
-      0 0 0 1px rgba(15, 23, 42, 0.04),
-      inset 0 0 18px rgba(20, 184, 166, 0.12);
+      0 0 0 1px rgba(45, 212, 191, 0.08),
+      inset 0 0 18px rgba(16, 185, 129, 0.16);
   }
 
   .setup-blueprint__mobile-node::before,
@@ -1160,19 +1177,19 @@ canvas {
   }
 
   .setup-blueprint__mobile-node span {
-    color: #0f172a;
+    color: #dcfce7;
     font-size: 1.55rem;
-    text-shadow: none;
+    text-shadow: 0 0 18px rgba(16, 185, 129, 0.28);
   }
 
   .setup-blueprint__mobile-step h2 {
-    color: #102033;
+    color: #effff9;
     margin-top: 0.55rem;
     font-size: clamp(1.25rem, 6.4vw, 1.75rem);
   }
 
   .setup-blueprint__mobile-step p:not(.setup-blueprint__step-label) {
-    color: #475569;
+    color: #a7b8b2;
     margin-top: 0.55rem;
     font-size: 0.9rem;
     line-height: 1.58;
@@ -1181,13 +1198,13 @@ canvas {
   .setup-blueprint__signal {
     width: 100%;
     margin: 0;
-    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
-    color: #0f766e;
+    border-bottom: 1px solid rgba(45, 212, 191, 0.1);
+    color: #34d399;
     padding: 0.9rem 0;
   }
 
   .setup-blueprint__signal small {
-    color: #64748b;
+    color: #96aaa2;
   }
 
   .setup-blueprint__signal--data {
@@ -1220,7 +1237,7 @@ canvas {
   }
 
   #compare h2 {
-    color: #102033;
+    color: #effff9;
     font-size: clamp(1.95rem, 8.8vw, 2.55rem);
     line-height: 1.04;
   }
@@ -1228,34 +1245,39 @@ canvas {
   #compare h3,
   #compare h4,
   #compare .text-cyan-50 {
-    color: #102033;
+    color: #effff9;
   }
 
   #compare p,
   #compare .text-slate-300,
   #compare .text-slate-400 {
-    color: #475569;
+    color: #a7b8b2;
   }
 
   #compare article,
   #compare [class*="bg-[var(--rr-surface-panel)]"] {
-    background: #ffffff;
-    box-shadow: 0 16px 42px -34px rgba(15, 23, 42, 0.38);
+    border-color: rgba(45, 212, 191, 0.13);
+    background:
+      linear-gradient(180deg, rgba(19, 30, 31, 0.95), rgba(9, 14, 16, 0.95)),
+      #0b1113;
+    box-shadow: 0 18px 60px -50px rgba(16, 185, 129, 0.68);
   }
 
   #compare .rr-accent-callout {
-    border-color: rgba(20, 184, 166, 0.24);
+    border-color: rgba(52, 211, 153, 0.24);
     border-radius: 1rem;
     background: linear-gradient(
       180deg,
-      rgba(20, 184, 166, 0.12),
-      rgba(37, 99, 235, 0.06)
+      rgba(16, 185, 129, 0.12),
+      rgba(245, 158, 11, 0.055)
     );
     padding: 1rem;
   }
 
   .site-footer {
-    background: #ffffff;
+    background:
+      linear-gradient(180deg, rgba(8, 13, 15, 0.92), #05080a),
+      #05080a;
   }
 
   .site-footer__main {
@@ -1269,12 +1291,12 @@ canvas {
   .site-footer .text-slate-300,
   .site-footer .text-slate-400,
   .site-footer .text-slate-500 {
-    color: #475569;
+    color: #96aaa2;
   }
 
   .site-footer .text-cyan-50,
   .site-footer .text-cyan-100 {
-    color: #102033;
+    color: #effff9;
   }
 
   .site-footer__bottom {
