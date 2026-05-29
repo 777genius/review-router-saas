@@ -79,6 +79,10 @@ import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-
 import { refreshGitHubUserRepositoryAccess } from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
 import { inspectSetupPullRequestStatus } from "../../src/server/setup-pull-request-status";
+import {
+  AppFirstWorkflowSetupGateway,
+  safeWorkflowSetupFallbackReason,
+} from "../../src/server/workflow-setup-gateway-fallback";
 import { resolveWorkflowPublicApiUrl } from "../../src/server/workflow-public-api-url";
 import { isWorkflowSetupAlreadyCurrent } from "../../src/server/workflow-setup-readiness";
 import {
@@ -567,10 +571,33 @@ async function createSetupPullRequestMutation(
         section: "repositories",
       };
     } else {
-      const setupOctokit =
-        actor.accessSource?.source === "repo_manager"
-          ? await createGitHubUserOctokit(actor)
-          : octokit;
+      const setupGateway = new AppFirstWorkflowSetupGateway({
+        primary: new OctokitWorkflowSetupGateway(octokit),
+        ...(actor.accessSource?.source === "repo_manager"
+          ? {
+              fallback: async () =>
+                new OctokitWorkflowSetupGateway(
+                  await createGitHubUserOctokit(actor),
+                ),
+              onFallback: async ({ error }) => {
+                await recordAuditEvent(
+                  {
+                    workspaceId,
+                    actor: actor.actor,
+                    action: "workflow.setup_pr_app_fallback",
+                    targetType: "repository",
+                    targetId: repositoryId,
+                    metadata: {
+                      reason: safeWorkflowSetupFallbackReason(error),
+                      ...dashboardMutationAccessAuditMetadata(actor),
+                    },
+                  },
+                  { auditLog: new PrismaAuditLogRepository(prisma) },
+                );
+              },
+            }
+          : {}),
+      });
       const pullRequest = await new PostgresLeaseLock(prisma).withLock(
         `repo:${repositoryId}:workflow-provision`,
         5 * 60_000,
@@ -591,7 +618,7 @@ async function createSetupPullRequestMutation(
             },
             {
               targets: new PrismaWorkflowProvisioningTarget(prisma),
-              setupGateway: new OctokitWorkflowSetupGateway(setupOctokit),
+              setupGateway,
               provisioning: new PrismaWorkflowProvisioningRepository(prisma),
               auditLog: new PrismaAuditLogRepository(prisma),
               enabled: isWorkflowProvisioningEnabled(),

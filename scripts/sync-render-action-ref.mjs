@@ -20,7 +20,7 @@ function usage() {
   pnpm ops:sync-action-ref [options]
 
 Options:
-  --action-ref owner/repo@40-char-sha  Use an explicit trusted action ref.
+  --action-ref owner/repo@ref          Use an explicit action ref. Hosted refs support v1, v1.x.y, or a full SHA.
   --action-repo owner/repo             Resolve refs/heads/main from this action repo. Default: ${defaultActionRepository}
   --branch name                        Branch to resolve when --action-ref is omitted. Default: ${defaultBranch}
   --services a,b,c                     Render service names. Default: ${defaultServiceNames.join(",")}
@@ -199,7 +199,7 @@ function envVarValue(data) {
 
 async function resolveActionRef(input) {
   if (input.actionRef) {
-    return normalizeFullShaActionRef(input.actionRef, "--action-ref");
+    return normalizeHostedActionRef(input.actionRef, "--action-ref");
   }
   const { stdout } = await execFileAsync("git", [
     "ls-remote",
@@ -222,9 +222,11 @@ function buildTrustedRefs(input) {
     ...input.currentAllowedActionRefs.flatMap((value) =>
       value.split(/[\s,]+/).filter(Boolean),
     ),
-  ].map((actionRef) =>
-    normalizeFullShaActionRef(actionRef, "REVIEW_ROUTER_ALLOWED_ACTION_REFS"),
-  );
+  ]
+    .filter((actionRef) => isFullShaActionRef(actionRef))
+    .map((actionRef) =>
+      normalizeFullShaActionRef(actionRef, "REVIEW_ROUTER_ALLOWED_ACTION_REFS"),
+    );
   const ownerRepo = input.nextActionRef.split("@", 1)[0];
   const unique = [];
   for (const actionRef of candidates) {
@@ -244,10 +246,38 @@ function normalizeFullShaActionRef(actionRef, source) {
   const normalized = String(actionRef ?? "")
     .trim()
     .toLowerCase();
-  if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+@[a-f0-9]{40}$/.test(normalized)) {
+  if (!isFullShaActionRef(normalized)) {
     throw new Error(`${source} must be owner/repo@40-character-sha`);
   }
   return normalized;
+}
+
+function normalizeHostedActionRef(actionRef, source) {
+  const normalized = String(actionRef ?? "")
+    .trim()
+    .toLowerCase();
+  if (!isHostedActionRef(normalized)) {
+    throw new Error(
+      `${source} must be owner/repo@v1, owner/repo@v1.x.y, or owner/repo@40-character-sha`,
+    );
+  }
+  return normalized;
+}
+
+function isHostedActionRef(actionRef) {
+  return /^[a-z0-9_.-]+\/[a-z0-9_.-]+@(v1|v1\.[0-9]+\.[0-9]+|[a-f0-9]{40})$/.test(
+    String(actionRef ?? "")
+      .trim()
+      .toLowerCase(),
+  );
+}
+
+function isFullShaActionRef(actionRef) {
+  return /^[a-z0-9_.-]+\/[a-z0-9_.-]+@[a-f0-9]{40}$/.test(
+    String(actionRef ?? "")
+      .trim()
+      .toLowerCase(),
+  );
 }
 
 function assertOwnerRepo(ownerRepo, source) {

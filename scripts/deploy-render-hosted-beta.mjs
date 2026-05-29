@@ -36,6 +36,19 @@ function requiredEnv(name, source) {
   return value;
 }
 
+function resolveHostedActionRef(source) {
+  const actionRef =
+    source.REVIEW_ROUTER_ACTION_REF ?? process.env.REVIEW_ROUTER_ACTION_REF;
+  if (actionRef) {
+    return actionRef;
+  }
+  const version =
+    source.REVIEW_ROUTER_ACTION_VERSION ??
+    process.env.REVIEW_ROUTER_ACTION_VERSION ??
+    "v1";
+  return `777genius/review-router@${version}`;
+}
+
 function readRenderApiKey() {
   if (process.env.RENDER_API_KEY) return process.env.RENDER_API_KEY;
   const keyPath = path.join(
@@ -189,7 +202,7 @@ function buildServiceEnv({
     GITHUB_WEBHOOK_SECRET: requiredEnv("GITHUB_WEBHOOK_SECRET", env),
     NODE_ENV: "production",
     NODE_VERSION: "24",
-    REVIEW_ROUTER_ACTION_REF: requiredEnv("REVIEW_ROUTER_ACTION_REF", env),
+    REVIEW_ROUTER_ACTION_REF: resolveHostedActionRef(env),
     REVIEW_ROUTER_ALLOWED_ACTION_REFS:
       env.REVIEW_ROUTER_ALLOWED_ACTION_REFS ?? "",
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
