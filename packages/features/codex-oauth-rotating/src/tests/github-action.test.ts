@@ -930,6 +930,13 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  providers: process.env.REVIEW_PROVIDERS,",
         "  runtimeMode: process.env.REVIEWROUTER_RUNTIME_CONFIG_MODE,",
         "  commentTokenMode: process.env.REVIEWROUTER_COMMENT_TOKEN_MODE,",
+        "  scmProvider: process.env.REVIEWROUTER_SCM_PROVIDER,",
+        "  findingsArtifactPath: process.env.REVIEWROUTER_FINDINGS_ARTIFACT_PATH,",
+        "  repositoryFullName: process.env.REVIEWROUTER_REPOSITORY_FULL_NAME,",
+        "  changeRequestExternalId: process.env.REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID,",
+        "  reviewHeadSha: process.env.REVIEWROUTER_HEAD_SHA,",
+        "  reviewBaseSha: process.env.REVIEWROUTER_BASE_SHA,",
+        "  reviewMarker: process.env.REVIEWROUTER_REVIEW_MARKER,",
         "  runtimeConfigVersion: process.env.REVIEWROUTER_CONFIG_VERSION,",
         "}));",
         "process.stdout.write('runtime marker visible\\n');",
@@ -1121,6 +1128,14 @@ describe("Codex rotating GitHub Action runtime", () => {
           "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
         runtimeMode: "static",
         commentTokenMode: "github-token",
+        scmProvider: "github",
+        findingsArtifactPath: "reviewrouter-findings.json",
+        repositoryFullName: "777genius/agent-teams-ai",
+        changeRequestExternalId: "118",
+        reviewHeadSha: "0123456789abcdef0123456789abcdef01234567",
+        reviewBaseSha: "abcdef0123456789abcdef0123456789abcdef01",
+        reviewMarker:
+          "reviewrouter:codex-oauth-rotating head=0123456789abcdef0123456789abcdef01234567",
         runtimeConfigVersion: "7",
       });
       expect(reviewEnv.inheritedOpenAi).toBeUndefined();

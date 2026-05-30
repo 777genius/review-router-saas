@@ -72,6 +72,7 @@ import type {
   WebhookDeliveryRepositoryPort,
 } from "@reviewrouter/features-github-installations";
 import { signGitHubWebhookPayload } from "@reviewrouter/features-github-installations";
+import type { RegisterGitLabIntegrationRoutesDependencies } from "@reviewrouter/features-gitlab-integration";
 import type { Clock } from "@reviewrouter/shared";
 import { createApiApp } from "./app.js";
 
@@ -3310,6 +3311,144 @@ describe("API app", () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({ error: "action_control_plane_disabled" });
+  });
+
+  it("registers GitLab integration routes through the API composition root", async () => {
+    const headSha = "a".repeat(40);
+    const gitLabIntegrationDependencies: RegisterGitLabIntegrationRoutesDependencies =
+      {
+        exchange: {
+          verifier: {
+            async verify() {
+              return {
+                iss: "https://gitlab.com",
+                sub: "project_path:group/project:ref_type:branch:ref:feature",
+                aud: "reviewrouter",
+                namespace_id: "12",
+                namespace_path: "group",
+                project_id: "123",
+                project_path: "group/project",
+                job_project_id: "123",
+                job_project_path: "group/project",
+                user_id: "7",
+                user_login: "ilya",
+                pipeline_id: "1001",
+                pipeline_source: "merge_request_event",
+                job_id: "2002",
+                ref: "feature",
+                ref_type: "branch",
+                sha: headSha,
+              };
+            },
+          },
+          repositories: {
+            async findSelectedRepositoryByGitLabProjectId() {
+              return {
+                workspaceId: "workspace_1",
+                repositoryId: "repo_1",
+                gitlabProjectId: "123",
+                fullName: "group/project",
+                owner: "group",
+                selected: true,
+                installationStatus: "active",
+              };
+            },
+          },
+          mergeRequests: {
+            async getMergeRequest() {
+              return {
+                projectId: "123",
+                mergeRequestIid: "5",
+                headSha,
+                sourceProjectId: "123",
+                targetProjectId: "123",
+                state: "opened",
+              };
+            },
+          },
+          sessions: {
+            async sign(input) {
+              return {
+                token: `gitlab-session:${input.claims.repositoryFullName}`,
+                expiresAt: new Date(
+                  input.issuedAt.getTime() + input.expiresInSeconds * 1000,
+                ),
+              };
+            },
+            async verify() {
+              throw new Error("not_needed");
+            },
+          },
+        },
+        clock: fixedClock,
+      };
+    const app = await createApiApp({ gitLabIntegrationDependencies });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/action/v1/session/exchange",
+      payload: {
+        idToken: "gitlab-id-token",
+        mergeRequestIid: "5",
+        headSha,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      protocolVersion: 1,
+      sessionToken: "gitlab-session:group/project",
+      repository: "group/project",
+    });
+  });
+
+  it("registers the GitLab control CI config route with only an installer admin token", async () => {
+    const envKeys = [
+      "REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN",
+      "REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN",
+      "REVIEW_ROUTER_GITLAB_API_TOKEN",
+      "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+      "REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE",
+    ] as const;
+    const previousEnv = Object.fromEntries(
+      envKeys.map((key) => [key, process.env[key]]),
+    );
+    process.env.REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN =
+      "gitlab-installer-admin";
+    delete process.env.REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN;
+    delete process.env.REVIEW_ROUTER_GITLAB_API_TOKEN;
+    delete process.env.REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON;
+    process.env.REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE =
+      "registry.test/reviewrouter/gitlab-runtime:v1";
+
+    try {
+      const app = await createApiApp({});
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/gitlab/install/v1/control-ci-config",
+        headers: {
+          authorization: "Bearer gitlab-installer-admin",
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        protocolVersion: 1,
+        path: ".gitlab/reviewrouter.yml",
+      });
+      expect(response.json().content).toContain(
+        "registry.test/reviewrouter/gitlab-runtime:v1",
+      );
+    } finally {
+      for (const key of envKeys) {
+        const previous = previousEnv[key];
+        if (previous === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = previous;
+        }
+      }
+    }
   });
 
   it("maps action control plane entitlement denial to a safe error", async () => {

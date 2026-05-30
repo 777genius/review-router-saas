@@ -168,6 +168,9 @@ importers:
       '@reviewrouter/features-github-installations':
         specifier: workspace:*
         version: link:../../packages/features/github-installations
+      '@reviewrouter/features-gitlab-integration':
+        specifier: workspace:*
+        version: link:../../packages/features/gitlab-integration
       '@reviewrouter/features-memory':
         specifier: workspace:*
         version: link:../../packages/features/memory
@@ -502,6 +505,21 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/features/gitlab-integration:
+    dependencies:
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      fastify:
+        specifier: ^5.8.5
+        version: 5.8.5
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
   packages/features/memory:
     dependencies:
       '@prisma/client':
@@ -615,6 +633,12 @@ importers:
       zod:
         specifier: ^4.4.2
         version: 4.4.2
+
+  packages/features/review-publishing:
+    dependencies:
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
 
   packages/features/support-diagnostics:
     dependencies:
