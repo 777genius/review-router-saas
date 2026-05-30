@@ -64,6 +64,10 @@ type GitLabDiscussionNote = {
   readonly position?:
     | {
         readonly head_sha?: string | null | undefined;
+        readonly old_path?: string | null | undefined;
+        readonly new_path?: string | null | undefined;
+        readonly old_line?: number | null | undefined;
+        readonly new_line?: number | null | undefined;
       }
     | null
     | undefined;
@@ -151,6 +155,7 @@ export class GitLabReviewPublisher implements ReviewPublisherPort {
     externalIds.push(`gitlab:summary:${summaryId}`);
 
     let inlineCommentCount = 0;
+    const claimedExistingInlineNotes = new Set<string>();
     for (const finding of effectivePlan.findings) {
       const skipReason = reviewFindingInlineSkipReason({
         finding,
@@ -179,17 +184,18 @@ export class GitLabReviewPublisher implements ReviewPublisherPort {
 
       const inlineId = await this.upsertDiscussionNote({
         target: effectivePlan.target,
-        existing: findExistingNote({
+        existing: findExistingInlineNote({
           discussions: existingDiscussions,
-          marker: reviewFindingMarker({
-            marker: effectivePlan.marker,
-            fingerprint: finding.fingerprint,
-          }),
+          marker: effectivePlan.marker,
+          fingerprint: finding.fingerprint,
           headSha: effectivePlan.target.headSha,
+          position,
+          claimed: claimedExistingInlineNotes,
         }),
         body: renderReviewFindingMarkdown({ plan: effectivePlan, finding }),
         position,
       });
+      claimedExistingInlineNotes.add(inlineId);
       inlineCommentCount += 1;
       externalIds.push(`gitlab:inline:${finding.fingerprint}:${inlineId}`);
     }
@@ -480,9 +486,14 @@ function findExistingNote(input: {
   readonly discussions: readonly GitLabDiscussion[];
   readonly marker: string;
   readonly headSha?: string | undefined;
+  readonly claimed?: ReadonlySet<string> | undefined;
 }): ExistingReviewNote | null {
   for (const discussion of input.discussions) {
     for (const note of discussion.notes ?? []) {
+      const noteKey = `${discussion.id}:${note.id}`;
+      if (input.claimed?.has(noteKey)) {
+        continue;
+      }
       if (
         typeof note.body === "string" &&
         note.body.startsWith(input.marker) &&
@@ -494,6 +505,87 @@ function findExistingNote(input: {
     }
   }
   return null;
+}
+
+function findExistingInlineNote(input: {
+  readonly discussions: readonly GitLabDiscussion[];
+  readonly marker: string;
+  readonly fingerprint: string;
+  readonly headSha: string;
+  readonly position: GitLabDiffPosition;
+  readonly claimed: ReadonlySet<string>;
+}): ExistingReviewNote | null {
+  return (
+    findExistingNote({
+      discussions: input.discussions,
+      marker: reviewFindingMarker({
+        marker: input.marker,
+        fingerprint: input.fingerprint,
+      }),
+      headSha: input.headSha,
+      claimed: input.claimed,
+    }) ??
+    findExistingNoteAtPosition({
+      discussions: input.discussions,
+      markerPrefix: `<!-- ${input.marker} finding=`,
+      headSha: input.headSha,
+      position: input.position,
+      claimed: input.claimed,
+    })
+  );
+}
+
+function findExistingNoteAtPosition(input: {
+  readonly discussions: readonly GitLabDiscussion[];
+  readonly markerPrefix: string;
+  readonly headSha: string;
+  readonly position: GitLabDiffPosition;
+  readonly claimed: ReadonlySet<string>;
+}): ExistingReviewNote | null {
+  for (const discussion of input.discussions) {
+    for (const note of discussion.notes ?? []) {
+      const noteKey = `${discussion.id}:${note.id}`;
+      if (
+        input.claimed.has(noteKey) ||
+        typeof note.body !== "string" ||
+        !note.body.startsWith(input.markerPrefix) ||
+        !gitLabNotePositionMatches({
+          note,
+          headSha: input.headSha,
+          position: input.position,
+        })
+      ) {
+        continue;
+      }
+      return { discussionId: discussion.id, noteId: note.id };
+    }
+  }
+  return null;
+}
+
+function gitLabNotePositionMatches(input: {
+  readonly note: GitLabDiscussionNote;
+  readonly headSha: string;
+  readonly position: GitLabDiffPosition;
+}): boolean {
+  const position = input.note.position;
+  if (!position || position.head_sha?.toLowerCase() !== input.headSha) {
+    return false;
+  }
+  return (
+    position.old_path === input.position.oldPath &&
+    position.new_path === input.position.newPath &&
+    normalizeOptionalLine(position.old_line) ===
+      normalizeOptionalLine(input.position.oldLine) &&
+    normalizeOptionalLine(position.new_line) ===
+      normalizeOptionalLine(input.position.newLine)
+  );
+}
+
+function normalizeOptionalLine(
+  value: number | null | undefined,
+): number | null {
+  return typeof value === "number" ? value : null;
 }
 
 function requireSha(value: string | undefined): string {

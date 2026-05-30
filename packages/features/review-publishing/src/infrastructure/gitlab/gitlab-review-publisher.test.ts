@@ -300,6 +300,122 @@ describe("GitLabReviewPublisher", () => {
     ).toBe(false);
   });
 
+  it("reuses same-position inline notes when model wording changes the fingerprint", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      methods.push(`${init?.method ?? "GET"} ${href}`);
+      if (href.endsWith("/projects/123/merge_requests/7")) {
+        return jsonResponse({
+          iid: 7,
+          project_id: 123,
+          source_project_id: 123,
+          target_project_id: 123,
+          state: "opened",
+          sha: headSha,
+        });
+      }
+      if (href.endsWith("/projects/123/merge_requests/7/versions")) {
+        return jsonResponse([
+          {
+            head_commit_sha: headSha,
+            base_commit_sha: baseSha,
+            start_commit_sha: startSha,
+          },
+        ]);
+      }
+      if (href.endsWith("/projects/123/merge_requests/7/diffs?per_page=100")) {
+        return jsonResponse([
+          {
+            old_path: "src/new.ts",
+            new_path: "src/new.ts",
+            diff: ["@@ -0,0 +1,2 @@", "+first", "+second"].join("\n"),
+          },
+        ]);
+      }
+      if (
+        href.endsWith(
+          "/projects/123/merge_requests/7/discussions?per_page=100&page=1",
+        )
+      ) {
+        return jsonResponse([
+          {
+            id: "summary-discussion",
+            notes: [
+              {
+                id: 11,
+                body: "<!-- reviewrouter:review:v1 summary -->\nOld",
+              },
+            ],
+          },
+          {
+            id: "old-inline",
+            notes: [
+              {
+                id: 44,
+                body: "<!-- reviewrouter:review:v1 finding=old-fingerprint -->\nOld",
+                position: {
+                  head_sha: headSha,
+                  old_path: "src/new.ts",
+                  new_path: "src/new.ts",
+                  new_line: 2,
+                },
+              },
+            ],
+          },
+        ]);
+      }
+      if (href.includes("/discussions/summary-discussion/notes/11")) {
+        return jsonResponse({ id: 11 });
+      }
+      if (href.includes("/discussions/old-inline/notes/44")) {
+        return jsonResponse({ id: 44 });
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+
+    const publisher = new GitLabReviewPublisher({
+      token: "glpat-token",
+      apiBaseUrl: "https://gitlab.test/api/v4",
+      fetchImpl,
+    });
+    const result = await publisher.publishReview(
+      createReviewPublicationPlan({
+        target: {
+          provider: "gitlab",
+          repositoryExternalId: "123",
+          repositoryFullName: "group/project",
+          changeRequestExternalId: "7",
+          headSha,
+          baseSha,
+          startSha,
+        },
+        marker: "reviewrouter:review:v1",
+        findings: [
+          {
+            fingerprint: "new-fingerprint",
+            severity: "major",
+            title: "New wording for the same line",
+            body: "New body",
+            location: { filePath: "src/new.ts", newLine: 2 },
+          },
+        ],
+      }),
+    );
+
+    expect(result.inlineCommentCount).toBe(1);
+    expect(methods).toContain(
+      "PUT https://gitlab.test/api/v4/projects/123/merge_requests/7/discussions/old-inline/notes/44",
+    );
+    expect(
+      methods.some(
+        (method) =>
+          method ===
+          "POST https://gitlab.test/api/v4/projects/123/merge_requests/7/discussions",
+      ),
+    ).toBe(false);
+  });
+
   it("rejects fork merge requests before posting comments", async () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const href = String(url);
