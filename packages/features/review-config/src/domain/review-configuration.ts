@@ -35,7 +35,7 @@ export const reviewProviderConfigurationSchema = z
 function sanitizeReviewLanguage(value: string): string | undefined {
   const firstLine = value.split(/[\r\n]/)[0] ?? "";
   const cleaned = firstLine
-    .replace(/[^\p{L}\p{M}\s()\-\/]/gu, "")
+    .replace(/[^\p{L}\p{M}\s()\-/]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 40);
