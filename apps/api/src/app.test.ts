@@ -3439,6 +3439,37 @@ describe("API app", () => {
       expect(response.json().content).toContain(
         "registry.test/reviewrouter/gitlab-runtime:v1",
       );
+
+      const statusResponse = await app.inject({
+        method: "GET",
+        url: "/api/gitlab/install/v1/status",
+        headers: {
+          authorization: "Bearer gitlab-installer-admin",
+        },
+      });
+
+      expect(statusResponse.statusCode).toBe(200);
+      expect(statusResponse.json()).toMatchObject({
+        protocolVersion: 1,
+        installation: {
+          available: false,
+          missingEnv: ["REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN"],
+        },
+        exchange: {
+          available: false,
+          missingEnv: [
+            "REVIEW_ROUTER_ACTION_SESSION_SECRET",
+            "REVIEW_ROUTER_GITLAB_API_TOKEN",
+            "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+          ],
+          registeredRepositoryCount: 0,
+        },
+        defaults: {
+          audience: "reviewrouter",
+          runtimeImage: "registry.test/reviewrouter/gitlab-runtime:v1",
+          runtimeImageConfigured: true,
+        },
+      });
     } finally {
       for (const key of envKeys) {
         const previous = previousEnv[key];

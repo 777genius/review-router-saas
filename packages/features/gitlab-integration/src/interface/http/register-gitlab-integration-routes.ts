@@ -20,10 +20,22 @@ type GitLabExchangeRouteDependencies = Omit<
   "clock"
 >;
 
+export type GitLabIntegrationEnvironmentStatus = {
+  readonly actionSessionSecretConfigured: boolean;
+  readonly installerAdminTokenConfigured: boolean;
+  readonly installerTokenConfigured: boolean;
+  readonly apiTokenConfigured: boolean;
+  readonly staticRepositoriesConfigured: boolean;
+  readonly registeredRepositoryCount: number | null;
+  readonly oidcAudienceConfigured: boolean;
+  readonly runtimeImageConfigured: boolean;
+};
+
 export type RegisterGitLabIntegrationRoutesDependencies = {
   readonly clock: Clock;
   readonly exchange?: GitLabExchangeRouteDependencies | undefined;
   readonly installation?: GitLabInstallationPort | undefined;
+  readonly environmentStatus?: GitLabIntegrationEnvironmentStatus | undefined;
   readonly defaultAudience?: string | undefined;
   readonly defaultRuntimeImage?: string | undefined;
   readonly installerAdminToken?: string | undefined;
@@ -102,6 +114,43 @@ export async function registerGitLabIntegrationRoutes(
   app: FastifyInstance,
   dependencies: RegisterGitLabIntegrationRoutesDependencies,
 ): Promise<void> {
+  app.get("/api/gitlab/install/v1/status", async (request, reply) => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return sendGitLabErrorCode(reply, "gitlab_control_plane_disabled", 503);
+    }
+    if (!dependencies.installerAdminToken) {
+      return sendGitLabErrorCode(reply, "gitlab_installation_unavailable", 503);
+    }
+    if (readBearerToken(request) !== dependencies.installerAdminToken) {
+      return sendGitLabErrorCode(
+        reply,
+        "gitlab_installation_unauthorized",
+        401,
+      );
+    }
+
+    const environmentStatus = buildEnvironmentStatus(dependencies);
+    return reply.send({
+      protocolVersion: 1,
+      controlPlaneEnabled: true,
+      installation: {
+        available: Boolean(dependencies.installation),
+        missingEnv: missingInstallationEnv(environmentStatus),
+      },
+      exchange: {
+        available: Boolean(dependencies.exchange),
+        missingEnv: missingExchangeEnv(environmentStatus),
+        registeredRepositoryCount: environmentStatus.registeredRepositoryCount,
+      },
+      defaults: {
+        audience: dependencies.defaultAudience ?? defaultGitLabAudience,
+        runtimeImage: dependencies.defaultRuntimeImage ?? null,
+        oidcAudienceConfigured: environmentStatus.oidcAudienceConfigured,
+        runtimeImageConfigured: environmentStatus.runtimeImageConfigured,
+      },
+    });
+  });
+
   app.post(
     "/api/gitlab/action/v1/session/exchange",
     { bodyLimit: 64 * 1024 },
@@ -408,4 +457,50 @@ function safeGitLabErrorMessage(code: string): string {
 
 function isRetryableGitLabError(code: string): boolean {
   return code.endsWith("_unavailable") || code.includes("_timeout");
+}
+
+function buildEnvironmentStatus(
+  dependencies: RegisterGitLabIntegrationRoutesDependencies,
+): GitLabIntegrationEnvironmentStatus {
+  return (
+    dependencies.environmentStatus ?? {
+      actionSessionSecretConfigured: Boolean(dependencies.exchange),
+      installerAdminTokenConfigured: Boolean(dependencies.installerAdminToken),
+      installerTokenConfigured: Boolean(dependencies.installation),
+      apiTokenConfigured: Boolean(dependencies.exchange),
+      staticRepositoriesConfigured: Boolean(dependencies.exchange),
+      registeredRepositoryCount: dependencies.exchange ? null : 0,
+      oidcAudienceConfigured: Boolean(dependencies.defaultAudience),
+      runtimeImageConfigured: Boolean(dependencies.defaultRuntimeImage),
+    }
+  );
+}
+
+function missingInstallationEnv(
+  status: GitLabIntegrationEnvironmentStatus,
+): readonly string[] {
+  const missing: string[] = [];
+  if (!status.installerAdminTokenConfigured) {
+    missing.push("REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN");
+  }
+  if (!status.installerTokenConfigured) {
+    missing.push("REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN");
+  }
+  return missing;
+}
+
+function missingExchangeEnv(
+  status: GitLabIntegrationEnvironmentStatus,
+): readonly string[] {
+  const missing: string[] = [];
+  if (!status.actionSessionSecretConfigured) {
+    missing.push("REVIEW_ROUTER_ACTION_SESSION_SECRET");
+  }
+  if (!status.apiTokenConfigured) {
+    missing.push("REVIEW_ROUTER_GITLAB_API_TOKEN");
+  }
+  if (!status.staticRepositoriesConfigured) {
+    missing.push("REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON");
+  }
+  return missing;
 }

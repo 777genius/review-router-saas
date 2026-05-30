@@ -384,6 +384,59 @@ describe("registerGitLabIntegrationRoutes", () => {
     });
   });
 
+  it("reports GitLab setup status behind the install admin bearer", async () => {
+    const app = await createApp({
+      exchange: false,
+      installerAdminToken: "installer-admin",
+      environmentStatus: {
+        actionSessionSecretConfigured: true,
+        installerAdminTokenConfigured: true,
+        installerTokenConfigured: false,
+        apiTokenConfigured: false,
+        staticRepositoriesConfigured: false,
+        registeredRepositoryCount: 0,
+        oidcAudienceConfigured: true,
+        runtimeImageConfigured: false,
+      },
+    });
+
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/status",
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/status",
+      headers: { authorization: "Bearer installer-admin" },
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      protocolVersion: 1,
+      controlPlaneEnabled: true,
+      installation: {
+        available: false,
+        missingEnv: ["REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN"],
+      },
+      exchange: {
+        available: false,
+        missingEnv: [
+          "REVIEW_ROUTER_GITLAB_API_TOKEN",
+          "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+        ],
+        registeredRepositoryCount: 0,
+      },
+      defaults: {
+        audience: "reviewrouter",
+        runtimeImage: null,
+        oidcAudienceConfigured: true,
+        runtimeImageConfigured: false,
+      },
+    });
+  });
+
   it("checks install admin auth before reporting unavailable provisioning", async () => {
     const app = await createApp({
       exchange: false,
@@ -501,6 +554,11 @@ async function createApp(
     readonly installation?: GitLabInstallationPort | undefined;
     readonly exchange?: boolean | undefined;
     readonly installerAdminToken?: string | undefined;
+    readonly environmentStatus?:
+      | Parameters<
+          typeof registerGitLabIntegrationRoutes
+        >[1]["environmentStatus"]
+      | undefined;
   } = {},
 ) {
   const app = Fastify({ logger: false });
@@ -517,6 +575,9 @@ async function createApp(
         }
       : {}),
     installation: input.installation,
+    ...(input.environmentStatus
+      ? { environmentStatus: input.environmentStatus }
+      : {}),
     installerAdminToken:
       input.installerAdminToken ??
       (input.installation ? "installer-admin" : undefined),

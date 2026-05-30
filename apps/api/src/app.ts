@@ -478,6 +478,20 @@ function createDefaultGitLabIntegrationDependencies(input: {
   const installerToken = input.env.REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN;
   const installerAdminToken =
     input.env.REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN;
+  const environmentStatus = {
+    actionSessionSecretConfigured: Boolean(input.actionSessionSecret),
+    installerAdminTokenConfigured: Boolean(installerAdminToken),
+    installerTokenConfigured: Boolean(installerToken),
+    apiTokenConfigured: Boolean(apiToken),
+    staticRepositoriesConfigured: repositories.length > 0,
+    registeredRepositoryCount: repositories.length,
+    oidcAudienceConfigured: Boolean(
+      input.env.REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE,
+    ),
+    runtimeImageConfigured: Boolean(
+      input.env.REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE,
+    ),
+  };
   const exchange =
     input.actionSessionSecret && apiToken && repositories.length > 0
       ? {
@@ -512,6 +526,7 @@ function createDefaultGitLabIntegrationDependencies(input: {
 
   return {
     clock: input.clock,
+    environmentStatus,
     ...(exchange ? { exchange } : {}),
     ...(input.env.REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE
       ? { defaultAudience: input.env.REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE }

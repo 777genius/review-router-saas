@@ -112,6 +112,16 @@ Project provisioning additionally requires `REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN
 Runtime session exchange additionally requires `REVIEW_ROUTER_GITLAB_API_TOKEN`
 and `REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON`.
 
+Check the live GitLab setup without exposing secret values:
+
+```bash
+curl -fsS "$REVIEW_ROUTER_API_URL/api/gitlab/install/v1/status" \
+  -H "Authorization: Bearer $REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN"
+```
+
+The response reports whether provisioning and CI session exchange are available
+and lists missing environment variable names.
+
 Bulk GitLab provisioning uses the same single-project installer rules per
 project and returns per-project results instead of aborting the whole batch.
 When `variableTarget.kind` is `group`, the shared GitLab CI variables are
