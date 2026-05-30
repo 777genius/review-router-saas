@@ -2,6 +2,8 @@
 import { spawn, execFile as execFileCallback } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { clearInterval, setInterval } from "node:timers";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
@@ -226,12 +228,14 @@ async function runAppServerConcurrentJobs({ client, input, startup }) {
       while (queue.length > 0) {
         const jobIndex = queue.shift();
         if (jobIndex === undefined) break;
-        results.push(await runAppServerConcurrentJob({
-          client,
-          input,
-          jobIndex,
-          workerIndex,
-        }));
+        results.push(
+          await runAppServerConcurrentJob({
+            client,
+            input,
+            jobIndex,
+            workerIndex,
+          }),
+        );
       }
       return results;
     },
@@ -293,7 +297,12 @@ async function runAppServerConcurrentJobs({ client, input, startup }) {
   });
 }
 
-async function runAppServerConcurrentJob({ client, input, jobIndex, workerIndex }) {
+async function runAppServerConcurrentJob({
+  client,
+  input,
+  jobIndex,
+  workerIndex,
+}) {
   const startedAt = performance.now();
   try {
     const threadId = await client.startThread(input);
@@ -438,7 +447,9 @@ class AppServerClient {
       input.timeoutMs,
     );
     if (response.error) {
-      throw new Error(`app_server_thread_start_failed:${response.error.message}`);
+      throw new Error(
+        `app_server_thread_start_failed:${response.error.message}`,
+      );
     }
     const threadId = response.result?.thread?.id;
     if (!threadId) throw new Error("app_server_thread_id_missing");
@@ -551,7 +562,10 @@ class AppServerClient {
   }
 
   onMessage(message) {
-    if (message.id !== undefined && (message.result !== undefined || message.error)) {
+    if (
+      message.id !== undefined &&
+      (message.result !== undefined || message.error)
+    ) {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       clearTimeout(pending.timer);
@@ -724,7 +738,12 @@ async function readProcessTreeRss(rootPid) {
   let totalKb = 0;
   for (const pid of pids) {
     try {
-      const { stdout } = await execFile("ps", ["-o", "rss=", "-p", String(pid)]);
+      const { stdout } = await execFile("ps", [
+        "-o",
+        "rss=",
+        "-p",
+        String(pid),
+      ]);
       const kb = Number(stdout.trim());
       if (Number.isFinite(kb)) totalKb += kb;
     } catch {
@@ -791,9 +810,16 @@ function extractExecOutputText(stdout) {
 function extractText(value) {
   if (!value) return "";
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(extractText).filter(Boolean).join("");
+  if (Array.isArray(value))
+    return value.map(extractText).filter(Boolean).join("");
   if (typeof value !== "object") return "";
-  for (const key of ["message", "text", "output_text", "last_message", "content"]) {
+  for (const key of [
+    "message",
+    "text",
+    "output_text",
+    "last_message",
+    "content",
+  ]) {
     const text = extractText(value[key]);
     if (text) return text;
   }
@@ -824,7 +850,8 @@ function printSummary(input) {
     event: "summary",
     engine: input.engine,
     count: sorted.length,
-    startupMs: input.startupMs === undefined ? undefined : roundMs(input.startupMs),
+    startupMs:
+      input.startupMs === undefined ? undefined : roundMs(input.startupMs),
     avgMs: sorted.length ? roundMs(avg(sorted)) : null,
     minMs: sorted.length ? roundMs(sorted[0]) : null,
     p50Ms: sorted.length ? roundMs(percentile(sorted, 0.5)) : null,
