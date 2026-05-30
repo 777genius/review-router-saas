@@ -281,6 +281,55 @@ describe("registerGitLabIntegrationRoutes", () => {
     });
   });
 
+  it("checks install admin auth before reporting unavailable provisioning", async () => {
+    const app = await createApp({
+      exchange: false,
+      installerAdminToken: "installer-admin",
+    });
+
+    const unauthorizedSingle = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/projects/123/provision",
+      payload: provisionPayload(),
+    });
+    const unauthorizedBulk = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123"],
+      },
+    });
+
+    expect(unauthorizedSingle.statusCode).toBe(401);
+    expect(unauthorizedBulk.statusCode).toBe(401);
+
+    const authorizedSingle = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/projects/123/provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: provisionPayload(),
+    });
+    const authorizedBulk = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123"],
+      },
+    });
+
+    expect(authorizedSingle.statusCode).toBe(503);
+    expect(authorizedSingle.json()).toMatchObject({
+      error: { code: "gitlab_installation_unavailable" },
+    });
+    expect(authorizedBulk.statusCode).toBe(503);
+    expect(authorizedBulk.json()).toMatchObject({
+      error: { code: "gitlab_installation_unavailable" },
+    });
+  });
+
   it("reports exchange unavailable without blocking install-only route setup", async () => {
     const app = await createApp({ exchange: false });
 

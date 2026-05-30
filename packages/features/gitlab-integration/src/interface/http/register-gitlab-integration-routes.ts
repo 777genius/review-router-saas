@@ -117,7 +117,7 @@ export async function registerGitLabIntegrationRoutes(
       if (dependencies.controlPlaneEnabled === false) {
         return sendGitLabErrorCode(reply, "gitlab_control_plane_disabled", 503);
       }
-      if (!dependencies.installation || !dependencies.installerAdminToken) {
+      if (!dependencies.installerAdminToken) {
         return sendGitLabErrorCode(
           reply,
           "gitlab_installation_unavailable",
@@ -129,6 +129,13 @@ export async function registerGitLabIntegrationRoutes(
           reply,
           "gitlab_installation_unauthorized",
           401,
+        );
+      }
+      if (!dependencies.installation) {
+        return sendGitLabErrorCode(
+          reply,
+          "gitlab_installation_unavailable",
+          503,
         );
       }
       try {
@@ -172,7 +179,7 @@ export async function registerGitLabIntegrationRoutes(
       if (dependencies.controlPlaneEnabled === false) {
         return sendGitLabErrorCode(reply, "gitlab_control_plane_disabled", 503);
       }
-      if (!dependencies.installation || !dependencies.installerAdminToken) {
+      if (!dependencies.installerAdminToken) {
         return sendGitLabErrorCode(
           reply,
           "gitlab_installation_unavailable",
@@ -184,6 +191,13 @@ export async function registerGitLabIntegrationRoutes(
           reply,
           "gitlab_installation_unauthorized",
           401,
+        );
+      }
+      if (!dependencies.installation) {
+        return sendGitLabErrorCode(
+          reply,
+          "gitlab_installation_unavailable",
+          503,
         );
       }
       try {
