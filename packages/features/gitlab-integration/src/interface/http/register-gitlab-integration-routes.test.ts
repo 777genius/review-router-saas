@@ -105,11 +105,18 @@ class StaticSessions implements GitLabActionSessionTokenServicePort {
 class StaticInstallation implements GitLabInstallationPort {
   public variables: GitLabCiVariableSpec[] = [];
   public updatedCiConfigPath: string | null = null;
+  public updatedProjectIds: string[] = [];
+  public failingProjectIds = new Set<string>();
 
-  async getProjectSettings(): Promise<GitLabProjectInstallationSettings> {
+  async getProjectSettings(input: {
+    readonly projectId: string;
+  }): Promise<GitLabProjectInstallationSettings> {
+    if (this.failingProjectIds.has(input.projectId)) {
+      throw new Error("gitlab_api_error_503");
+    }
     return {
-      projectId: "123",
-      fullName: "group/project",
+      projectId: input.projectId,
+      fullName: `group/project-${input.projectId}`,
       defaultBranch: "main",
       ciConfigPath: null,
       canEditProjectSettings: true,
@@ -122,8 +129,10 @@ class StaticInstallation implements GitLabInstallationPort {
   }
 
   async updateProjectCiConfigPath(input: {
+    readonly projectId: string;
     readonly ciConfigPath: string;
   }): Promise<void> {
+    this.updatedProjectIds.push(input.projectId);
     this.updatedCiConfigPath = input.ciConfigPath;
   }
 
@@ -193,6 +202,67 @@ describe("registerGitLabIntegrationRoutes", () => {
     expect(installation.updatedCiConfigPath).toBe(
       ".gitlab/reviewrouter.yml@reviewrouter/control:main",
     );
+  });
+
+  it("bulk provisions GitLab projects behind the same admin bearer", async () => {
+    const installation = new StaticInstallation();
+    installation.failingProjectIds.add("456");
+    const app = await createApp({ installation, exchange: false });
+
+    const unauthorized = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123"],
+      },
+    });
+
+    expect(unauthorized.statusCode).toBe(401);
+    expect(installation.updatedProjectIds).toEqual([]);
+
+    const authorized = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123", "456", "123"],
+      },
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      protocolVersion: 1,
+      requested: 2,
+      succeeded: 1,
+      failed: 1,
+      sharedVariablesConfigured: 2,
+      results: [
+        {
+          projectId: "123",
+          status: "fulfilled",
+          result: {
+            mode: "ci_config_path",
+            ciConfigPath: ".gitlab/reviewrouter.yml@reviewrouter/control:main",
+            variablesConfigured: 0,
+          },
+        },
+        {
+          projectId: "456",
+          status: "rejected",
+          error: {
+            code: "gitlab_api_error_503",
+            retryable: true,
+          },
+        },
+      ],
+    });
+    expect(installation.updatedProjectIds).toEqual(["123"]);
+    expect(installation.variables.map((variable) => variable.key)).toEqual([
+      "REVIEWROUTER_API_URL",
+      "REVIEWROUTER_ID_TOKEN_AUDIENCE",
+    ]);
   });
 
   it("does not expose provisioning when installation dependencies are absent", async () => {

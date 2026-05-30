@@ -106,6 +106,24 @@ REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE=reviewrouter
 REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE=ghcr.io/777genius/review-router-gitlab-runtime:v1
 ```
 
+`REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN` by itself enables only the
+operator install endpoints, including the control-project CI config download.
+Project provisioning additionally requires `REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN`.
+Runtime session exchange additionally requires `REVIEW_ROUTER_GITLAB_API_TOKEN`
+and `REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON`.
+
+Bulk GitLab provisioning uses the same single-project installer rules per
+project and returns per-project results instead of aborting the whole batch.
+When `variableTarget.kind` is `group`, the shared GitLab CI variables are
+configured once for the group before the project loop:
+
+```bash
+curl -fsS -X POST "$REVIEW_ROUTER_API_URL/api/gitlab/install/v1/bulk-provision" \
+  -H "Authorization: Bearer $REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data @gitlab-bulk-provision.json
+```
+
 Keep runtime/model credentials out of Render:
 
 ```text

@@ -7,6 +7,7 @@ import {
   type ExchangeGitLabCiIdTokenDependencies,
 } from "../../application/use-cases/exchange-gitlab-ci-id-token";
 import { provisionGitLabReviewRouterProject } from "../../application/use-cases/provision-gitlab-reviewrouter-project";
+import { provisionGitLabReviewRouterProjects } from "../../application/use-cases/provision-gitlab-reviewrouter-projects";
 import {
   defaultReviewRouterControlProjectConfigPath,
   renderGitLabReviewRouterControlCiConfig,
@@ -61,6 +62,13 @@ const provisionBodySchema = z
   })
   .strict();
 
+const bulkProvisionBodySchema = provisionBodySchema.extend({
+  projectIds: z
+    .array(z.string().regex(/^[1-9][0-9]*$/))
+    .min(1)
+    .max(100),
+});
+
 const controlCiConfigQuerySchema = z
   .object({
     runtimeImage: z.string().min(1).optional(),
@@ -94,6 +102,61 @@ export async function registerGitLabIntegrationRoutes(
             headSha: body.headSha,
           },
           { ...dependencies.exchange, clock: dependencies.clock },
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendGitLabError(reply, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/gitlab/install/v1/bulk-provision",
+    { bodyLimit: 128 * 1024 },
+    async (request, reply) => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendGitLabErrorCode(reply, "gitlab_control_plane_disabled", 503);
+      }
+      if (!dependencies.installation || !dependencies.installerAdminToken) {
+        return sendGitLabErrorCode(
+          reply,
+          "gitlab_installation_unavailable",
+          503,
+        );
+      }
+      if (readBearerToken(request) !== dependencies.installerAdminToken) {
+        return sendGitLabErrorCode(
+          reply,
+          "gitlab_installation_unauthorized",
+          401,
+        );
+      }
+      try {
+        const body = bulkProvisionBodySchema.parse(request.body);
+        const result = await provisionGitLabReviewRouterProjects(
+          {
+            projectIds: body.projectIds,
+            controlProjectPath: body.controlProjectPath,
+            ...(body.controlProjectConfigPath
+              ? { controlProjectConfigPath: body.controlProjectConfigPath }
+              : {}),
+            ...(body.controlProjectRef
+              ? { controlProjectRef: body.controlProjectRef }
+              : {}),
+            reviewRouterApiBaseUrl: body.reviewRouterApiBaseUrl,
+            idTokenAudience:
+              body.idTokenAudience ??
+              dependencies.defaultAudience ??
+              defaultGitLabAudience,
+            ...(body.variableTarget
+              ? { variableTarget: body.variableTarget }
+              : {}),
+            ...(body.reviewToken ? { reviewToken: body.reviewToken } : {}),
+          },
+          {
+            installation: dependencies.installation,
+            clock: dependencies.clock,
+          },
         );
         return reply.send(result);
       } catch (error) {

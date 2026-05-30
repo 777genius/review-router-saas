@@ -8,6 +8,7 @@ import {
   type GitLabSetupMergeRequestFile,
 } from "../../domain/gitlab-installation";
 import { provisionGitLabReviewRouterProject } from "./provision-gitlab-reviewrouter-project";
+import { provisionGitLabReviewRouterProjects } from "./provision-gitlab-reviewrouter-projects";
 
 const fixedNow = new Date("2026-05-30T12:00:00.000Z");
 const clock: Clock = { now: () => fixedNow };
@@ -23,17 +24,27 @@ const project: GitLabProjectInstallationSettings = {
 
 class InMemoryInstallation implements GitLabInstallationPort {
   public project: GitLabProjectInstallationSettings = project;
+  public failingProjectIds = new Set<string>();
   public lint: GitLabCiLintResult = { valid: true, errors: [] };
   public lintCalls = 0;
   public updatedCiConfigPath: string | null = null;
+  public updatedProjectIds: string[] = [];
   public variables: GitLabCiVariableSpec[] = [];
   public setupMergeRequest: {
     readonly sourceBranch: string;
     readonly files: readonly GitLabSetupMergeRequestFile[];
   } | null = null;
 
-  async getProjectSettings(): Promise<GitLabProjectInstallationSettings> {
-    return this.project;
+  async getProjectSettings(input: {
+    readonly projectId: string;
+  }): Promise<GitLabProjectInstallationSettings> {
+    if (this.failingProjectIds.has(input.projectId)) {
+      throw new Error("gitlab_api_error_503");
+    }
+    return {
+      ...this.project,
+      projectId: input.projectId,
+    };
   }
 
   async lintCiConfig(): Promise<GitLabCiLintResult> {
@@ -42,8 +53,10 @@ class InMemoryInstallation implements GitLabInstallationPort {
   }
 
   async updateProjectCiConfigPath(input: {
+    readonly projectId: string;
     readonly ciConfigPath: string;
   }): Promise<void> {
+    this.updatedProjectIds.push(input.projectId);
     this.updatedCiConfigPath = input.ciConfigPath;
   }
 
@@ -183,5 +196,88 @@ describe("provisionGitLabReviewRouterProject", () => {
     });
     expect(installation.variables).toEqual([]);
     expect(installation.updatedCiConfigPath).toBeNull();
+  });
+});
+
+describe("provisionGitLabReviewRouterProjects", () => {
+  it("provisions unique project ids and returns per-project failures", async () => {
+    const installation = new InMemoryInstallation();
+    installation.failingProjectIds.add("456");
+
+    const result = await provisionGitLabReviewRouterProjects(
+      {
+        projectIds: ["123", "456", "123"],
+        controlProjectPath: "reviewrouter/control",
+        controlProjectRef: "main",
+        reviewRouterApiBaseUrl: "https://reviewrouter.example.com",
+        idTokenAudience: "reviewrouter",
+        variableTarget: { kind: "group", id: "12" },
+      },
+      { installation, clock },
+    );
+
+    expect(result).toEqual({
+      protocolVersion: 1,
+      requested: 2,
+      succeeded: 1,
+      failed: 1,
+      sharedVariablesConfigured: 2,
+      results: [
+        {
+          projectId: "123",
+          status: "fulfilled",
+          result: {
+            mode: "ci_config_path",
+            ciConfigPath: ".gitlab/reviewrouter.yml@reviewrouter/control:main",
+            variablesConfigured: 0,
+          },
+        },
+        {
+          projectId: "456",
+          status: "rejected",
+          error: {
+            code: "gitlab_api_error_503",
+            retryable: true,
+          },
+        },
+      ],
+    });
+    expect(installation.updatedProjectIds).toEqual(["123"]);
+    expect(installation.variables.map((variable) => variable.key)).toEqual([
+      "REVIEWROUTER_API_URL",
+      "REVIEWROUTER_ID_TOKEN_AUDIENCE",
+    ]);
+  });
+
+  it("rejects invalid or excessive project id lists before provisioning", async () => {
+    const installation = new InMemoryInstallation();
+
+    await expect(
+      provisionGitLabReviewRouterProjects(
+        {
+          projectIds: ["123", "bad"],
+          controlProjectPath: "reviewrouter/control",
+          reviewRouterApiBaseUrl: "https://reviewrouter.example.com",
+          idTokenAudience: "reviewrouter",
+        },
+        { installation, clock },
+      ),
+    ).rejects.toThrow("gitlab_bulk_project_id_invalid");
+
+    await expect(
+      provisionGitLabReviewRouterProjects(
+        {
+          projectIds: Array.from({ length: 101 }, (_, index) =>
+            String(index + 1),
+          ),
+          controlProjectPath: "reviewrouter/control",
+          reviewRouterApiBaseUrl: "https://reviewrouter.example.com",
+          idTokenAudience: "reviewrouter",
+        },
+        { installation, clock },
+      ),
+    ).rejects.toThrow("gitlab_bulk_project_limit_exceeded");
+
+    expect(installation.updatedProjectIds).toEqual([]);
   });
 });

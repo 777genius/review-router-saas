@@ -6,6 +6,7 @@ export * from "./application/ports/gitlab-installation-port";
 export * from "./application/ports/gitlab-repository-port";
 export * from "./application/use-cases/exchange-gitlab-ci-id-token";
 export * from "./application/use-cases/provision-gitlab-reviewrouter-project";
+export * from "./application/use-cases/provision-gitlab-reviewrouter-projects";
 export * from "./infrastructure/gitlab/gitlab-installation-gateway";
 export * from "./infrastructure/gitlab/gitlab-merge-request-gateway";
 export * from "./infrastructure/memory/static-gitlab-repository-registry";
