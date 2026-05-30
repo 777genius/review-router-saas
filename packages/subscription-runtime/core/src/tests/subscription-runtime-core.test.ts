@@ -13,13 +13,21 @@ import {
 } from "../index";
 import {
   FakeAgentDriver,
+  FakeNoSessionAgentDriver,
+  FakeNoSessionDriver,
   FakeProviderSessionDriver,
+  FakeStaticAgentDriver,
+  FakeStaticProviderSessionDriver,
   InMemorySessionStore,
   MemoryObservability,
   agentDriverContract,
   fakeAgentCapabilities,
   fakeProviderCapabilities,
+  fakeNoSessionAgentCapabilities,
+  fakeNoSessionProviderCapabilities,
   fakeRunnerCapabilities,
+  fakeStaticAgentCapabilities,
+  fakeStaticProviderCapabilities,
   fakeStoreCapabilities,
   makeFakeArtifact,
   makeFakeRuntimeDeps,
@@ -77,7 +85,93 @@ describe("subscription runtime core policy", () => {
     expect(decision.status).toBe("accepted");
     if (decision.status === "accepted") {
       expect(decision.compiledPolicy.trustMode).toBe("no-plaintext-backend");
+      expect(decision.executionPlan.kind).toBe("rotating-session");
     }
+  });
+
+  it("compiles a static session plan without durable writeback", () => {
+    const decision = negotiateCapabilities({
+      requested: {
+        ...makeFakeRuntimeDeps({
+          provider: new FakeStaticProviderSessionDriver(),
+          agent: new FakeStaticAgentDriver(),
+        }).policy,
+        requireWritebackBeforeTask: false,
+      },
+      provider: fakeStaticProviderCapabilities,
+      agent: fakeStaticAgentCapabilities,
+      store: fakeStoreCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+
+    expect(decision.status).toBe("accepted");
+    if (decision.status === "accepted") {
+      expect(decision.executionPlan).toMatchObject({
+        kind: "static-session",
+        refresh: "validate-only",
+        writeback: "never",
+      });
+      expect(decision.compiledPolicy.requiresDurableWriteback).toBe(false);
+      expect(decision.compiledPolicy.requiresLease).toBe(false);
+    }
+  });
+
+  it("compiles a no-session plan without requiring a session store", () => {
+    const decision = negotiateCapabilities({
+      requested: makeFakeRuntimeDeps({
+        provider: new FakeNoSessionDriver(),
+        agent: new FakeNoSessionAgentDriver(),
+      }).policy,
+      provider: fakeNoSessionProviderCapabilities,
+      agent: fakeNoSessionAgentCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+
+    expect(decision.status).toBe("accepted");
+    if (decision.status === "accepted") {
+      expect(decision.executionPlan).toMatchObject({
+        kind: "no-session",
+        readSession: false,
+        writeback: "never",
+      });
+      expect(decision.compiledPolicy.storeId).toBeNull();
+      expect(decision.compiledPolicy.maxSessionBytes).toBe(0);
+    }
+  });
+
+  it("rejects unsupported task and history modes before session storage checks", () => {
+    const taskDecision = negotiateCapabilities({
+      requested: {
+        ...makeFakeRuntimeDeps().policy,
+        requestedTaskMode: "health-check",
+      },
+      provider: fakeProviderCapabilities,
+      agent: {
+        ...fakeAgentCapabilities,
+        taskModes: ["review"],
+      },
+      store: fakeStoreCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+    expect(taskDecision).toMatchObject({
+      status: "rejected",
+      code: "task_mode_unsupported",
+    });
+
+    const historyDecision = negotiateCapabilities({
+      requested: {
+        ...makeFakeRuntimeDeps().policy,
+        requestedHistoryMode: "provider-thread",
+      },
+      provider: fakeProviderCapabilities,
+      agent: fakeAgentCapabilities,
+      store: fakeStoreCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+    expect(historyDecision).toMatchObject({
+      status: "rejected",
+      code: "history_mode_unsupported",
+    });
   });
 
   it("rejects backend plaintext when policy requires no-custody", () => {
@@ -310,6 +404,41 @@ describe("subscription runtime use cases", () => {
     expect(agent.lastPrompt).toBeNull();
   });
 
+  it("rejects unsupported task mode before reading session storage", async () => {
+    const agent = new FakeAgentDriver();
+    const store = new (class extends InMemorySessionStore {
+      override async read(): Promise<null> {
+        throw new Error("task_mode_check_must_happen_before_session_read");
+      }
+    })();
+    const runtime = createSubscriptionRuntime(
+      makeFakeRuntimeDeps({
+        agent: Object.assign(agent, {
+          capabilities: {
+            ...agent.capabilities,
+            taskModes: ["review"],
+          },
+        }),
+        store,
+      }),
+    );
+
+    const result = await runtime.refreshThenRunTask({
+      providerInstanceId: "provider-instance-1",
+      task: { kind: "health-check", prompt: "ping" },
+      runContext: {
+        runId: "run-task-mode",
+        attempt: 1,
+        abortSignal: new AbortController().signal,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      reason: "task_mode_unsupported",
+    });
+  });
+
   it("surfaces provider reconnect instead of retrying in a loop", async () => {
     const provider = new FakeProviderSessionDriver();
     provider.refreshedState = "needs-reconnect";
@@ -372,6 +501,83 @@ describe("subscription runtime use cases", () => {
       purpose: "health-check",
     });
     expect(current?.generation).toBe(1);
+  });
+
+  it("runs a static provider without refreshing, leasing, or writing back", async () => {
+    const provider = new FakeStaticProviderSessionDriver();
+    const agent = new FakeStaticAgentDriver();
+    const store = new InMemorySessionStore();
+    store.seed({
+      providerInstanceId: "provider-instance-static",
+      artifact: makeFakeArtifact("static-session-v1", "fake-static"),
+    });
+    const leaseStore = {
+      leaseStoreId: "forbidden-lease-store",
+      capabilities: {
+        leaseStoreId: "forbidden-lease-store",
+        supportsTtl: true,
+        supportsFinalize: true,
+        supportsWritebackCommit: true,
+      },
+      async acquire() {
+        throw new Error("static_provider_must_not_acquire_lease");
+      },
+      async finalize() {
+        throw new Error("static_provider_must_not_finalize_lease");
+      },
+      async markWritebackStarted() {
+        throw new Error("static_provider_must_not_writeback");
+      },
+      async markWritebackCommitted() {
+        throw new Error("static_provider_must_not_writeback");
+      },
+    };
+    const runtime = createSubscriptionRuntime(
+      makeFakeRuntimeDeps({ provider, agent, store, leaseStore }),
+    );
+
+    expect(runtime.executionPlan.kind).toBe("static-session");
+    const result = await runtime.refreshThenRunTask({
+      providerInstanceId: "provider-instance-static",
+      task: { kind: "review", prompt: "inspect static" },
+      runContext: {
+        runId: "run-static",
+        attempt: 1,
+        abortSignal: new AbortController().signal,
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(agent.lastPrompt).toBe("inspect static");
+    const current = await store.read({
+      providerInstanceId: "provider-instance-static",
+      expectedProviderId: "fake-static",
+      purpose: "health-check",
+    });
+    expect(current?.generation).toBe(1);
+  });
+
+  it("runs a no-session provider without session store or lease store", async () => {
+    const provider = new FakeNoSessionDriver();
+    const agent = new FakeNoSessionAgentDriver();
+    const runtime = createSubscriptionRuntime(
+      makeFakeRuntimeDeps({ provider, agent }),
+    );
+
+    expect(runtime.executionPlan.kind).toBe("no-session");
+    const result = await runtime.refreshThenRunTask({
+      providerInstanceId: "provider-instance-none",
+      task: { kind: "review", prompt: "compute without credentials" },
+      runContext: {
+        runId: "run-none",
+        attempt: 1,
+        abortSignal: new AbortController().signal,
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(agent.lastPrompt).toBe("compute without credentials");
+    expect(agent.lastSessionWasNull).toBe(true);
   });
 });
 

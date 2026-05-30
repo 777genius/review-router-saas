@@ -9,16 +9,18 @@ import type {
   RunContext,
   RuntimeHealthCheckResult,
   RuntimeEvent,
+  RuntimeExecutionPlan,
   RuntimeWarning,
   SessionArtifact,
   SessionEnvelope,
   SessionWriteResult,
 } from "../domain/types";
 import type { RuntimeDeps } from "../ports";
-import { compileRuntimePolicy, negotiateCapabilities } from "./policy";
+import { negotiateCapabilities } from "./policy";
 
 export type SubscriptionRuntime = {
   readonly capabilities: CompiledRuntimePolicy;
+  readonly executionPlan: RuntimeExecutionPlan;
   refreshSession(input: {
     readonly providerInstanceId: string;
     readonly runContext: RunContext;
@@ -45,17 +47,24 @@ export function createSubscriptionRuntime(
     requested: deps.policy,
     provider: deps.sessionDriver.capabilities,
     agent: deps.agentDriver.capabilities,
-    store: deps.sessionStore.capabilities,
     runner: deps.runner.capabilities,
+    ...(deps.sessionStore
+      ? { store: deps.sessionStore.capabilities }
+      : {}),
   });
 
   if (decision.status === "rejected") {
     throw new Error(decision.code);
   }
 
-  const kernel = new RuntimeKernel(deps, decision.compiledPolicy);
+  const kernel = new RuntimeKernel(
+    deps,
+    decision.compiledPolicy,
+    decision.executionPlan,
+  );
   return {
     capabilities: decision.compiledPolicy,
+    executionPlan: decision.executionPlan,
     refreshSession: (input) => kernel.refreshSession(input),
     runTask: (input) => kernel.runTask(input),
     refreshThenRunTask: (input) => kernel.refreshThenRunTask(input),
@@ -67,19 +76,39 @@ class RuntimeKernel {
   constructor(
     private readonly deps: RuntimeDeps,
     private readonly policy: CompiledRuntimePolicy,
+    private readonly executionPlan: RuntimeExecutionPlan,
   ) {}
 
   async refreshSession(input: {
     readonly providerInstanceId: string;
     readonly runContext: RunContext;
   }): Promise<RefreshSessionResult> {
+    if (this.executionPlan.kind === "no-session") {
+      this.emit("provider.refresh.skipped", input.runContext.runId, {
+        reason: "no_session",
+      });
+      return {
+        status: "skipped",
+        reason: "refresh_not_required",
+        warnings: [],
+      };
+    }
+
+    if (this.executionPlan.kind === "static-session") {
+      return this.validateStaticSession(input);
+    }
+
+    const sessionStore = this.requireSessionStore();
+    const leaseStore = this.requireLeaseStore();
+    const sessionDriver = this.requireRefreshableSessionDriver();
+
     const readStartedAt = this.deps.clock.monotonicMs();
     this.emit("session.read.started", input.runContext.runId, {
       purpose: "refresh",
     });
-    const session = await this.deps.sessionStore.read({
+    const session = await sessionStore.read({
       providerInstanceId: input.providerInstanceId,
-      expectedProviderId: this.deps.sessionDriver.providerId,
+      expectedProviderId: sessionDriver.providerId,
       purpose: "refresh",
     });
     this.emit(
@@ -107,7 +136,7 @@ class RuntimeKernel {
     this.emit("lease.acquire.started", input.runContext.runId, {
       generation: String(session.generation),
     });
-    const lease = await this.deps.leaseStore.acquire({
+    const lease = await leaseStore.acquire({
       providerInstanceId: input.providerInstanceId,
       runId: input.runContext.runId,
       attempt: input.runContext.attempt,
@@ -138,7 +167,7 @@ class RuntimeKernel {
       return blocked("permission_required", lease.safeMessage);
     }
 
-    const validation = await this.deps.sessionDriver.validateSession({
+    const validation = await sessionDriver.validateSession({
       session: session.artifact,
       redactor: this.deps.redactor,
     });
@@ -163,7 +192,7 @@ class RuntimeKernel {
       this.emit("provider.refresh.started", input.runContext.runId, {
         generation: String(session.generation),
       });
-      const refreshed = await this.deps.sessionDriver.refreshSession({
+      const refreshed = await sessionDriver.refreshSession({
         session: session.artifact,
         workspace,
         runner: this.deps.runner,
@@ -231,7 +260,7 @@ class RuntimeKernel {
         };
       }
 
-      await this.deps.leaseStore.finalize({
+      await leaseStore.finalize({
         leaseId: lease.leaseId,
         restoredGenerationHash: session.generationHash,
       });
@@ -239,7 +268,7 @@ class RuntimeKernel {
         leaseId: lease.leaseId,
         expectedGeneration: String(session.generation),
       });
-      await this.deps.leaseStore.markWritebackStarted({
+      await leaseStore.markWritebackStarted({
         leaseId: lease.leaseId,
       });
 
@@ -249,7 +278,7 @@ class RuntimeKernel {
         attempt: input.runContext.attempt,
         purpose: "writeback",
       });
-      const writeback = await this.deps.sessionStore.write({
+      const writeback = await sessionStore.write({
         providerInstanceId: input.providerInstanceId,
         expectedGeneration: session.generation,
         nextArtifact: refreshed.artifact,
@@ -272,7 +301,7 @@ class RuntimeKernel {
         };
       }
 
-      await this.deps.leaseStore.markWritebackCommitted({
+      await leaseStore.markWritebackCommitted({
         leaseId: lease.leaseId,
         nextGenerationHash: writeback.generationHash,
         idempotencyKey,
@@ -299,13 +328,29 @@ class RuntimeKernel {
     readonly task: ProviderTask;
     readonly runContext: RunContext;
   }): Promise<ProviderTaskResult> {
+    const unsupported = this.unsupportedTaskFailure(input.task);
+    if (unsupported) {
+      this.emitFailure("task_mode_unsupported", input.runContext.runId);
+      return unsupported;
+    }
+
+    if (this.executionPlan.kind === "no-session") {
+      return this.runTaskWithSession({
+        session: null,
+        task: input.task,
+        runContext: input.runContext,
+      });
+    }
+
+    const sessionStore = this.requireSessionStore();
+    const sessionDriver = this.requireSessionDriver();
     const readStartedAt = this.deps.clock.monotonicMs();
     this.emit("session.read.started", input.runContext.runId, {
       purpose: "run",
     });
-    const session = await this.deps.sessionStore.read({
+    const session = await sessionStore.read({
       providerInstanceId: input.providerInstanceId,
-      expectedProviderId: this.deps.sessionDriver.providerId,
+      expectedProviderId: sessionDriver.providerId,
       purpose: "run",
     });
     this.emit(
@@ -323,6 +368,22 @@ class RuntimeKernel {
       this.emitFailure("needs_reconnect", input.runContext.runId);
       return failedTask("needs_reconnect", "Provider session is missing.");
     }
+
+    if (this.executionPlan.kind === "static-session") {
+      const validation = await sessionDriver.validateSession({
+        session: session.artifact,
+        redactor: this.deps.redactor,
+      });
+      if (validation.status === "invalid") {
+        this.emitFailure(validation.failure.code, input.runContext.runId);
+        return {
+          status: "failed",
+          failure: validation.failure,
+          warnings: [],
+        };
+      }
+    }
+
     return this.runTaskWithSession({
       session: session.artifact,
       task: input.task,
@@ -335,7 +396,53 @@ class RuntimeKernel {
     readonly task: ProviderTask;
     readonly runContext: RunContext;
   }): Promise<RefreshThenRunResult> {
+    const unsupported = this.unsupportedTaskFailure(input.task);
+    if (unsupported) {
+      this.emitFailure("task_mode_unsupported", input.runContext.runId);
+      return {
+        status: "blocked",
+        reason: "task_mode_unsupported",
+        safeMessage: unsupported.failure.safeMessage,
+        warnings: [],
+      };
+    }
+
     const refresh = await this.refreshSession(input);
+
+    if (
+      this.executionPlan.kind === "no-session" &&
+      refresh.status === "skipped" &&
+      refresh.reason === "refresh_not_required"
+    ) {
+      const task = await this.runTaskWithSession({
+        session: null,
+        task: input.task,
+        runContext: input.runContext,
+      });
+      return {
+        status: "completed",
+        refresh,
+        task,
+      };
+    }
+
+    if (
+      this.executionPlan.kind === "static-session" &&
+      refresh.status === "skipped" &&
+      refresh.reason === "refresh_not_required" &&
+      refresh.session
+    ) {
+      const task = await this.runTaskWithSession({
+        session: refresh.session.artifact,
+        task: input.task,
+        runContext: input.runContext,
+      });
+      return {
+        status: "completed",
+        refresh,
+        task,
+      };
+    }
 
     if (refresh.status === "blocked") {
       return {
@@ -380,9 +487,19 @@ class RuntimeKernel {
   async healthCheck(input: {
     readonly providerInstanceId: string;
   }): Promise<RuntimeHealthCheckResult> {
-    const session = await this.deps.sessionStore.read({
+    if (this.executionPlan.kind === "no-session") {
+      return {
+        status: "healthy",
+        failures: [],
+        warnings: [],
+      };
+    }
+
+    const sessionStore = this.requireSessionStore();
+    const sessionDriver = this.requireSessionDriver();
+    const session = await sessionStore.read({
       providerInstanceId: input.providerInstanceId,
-      expectedProviderId: this.deps.sessionDriver.providerId,
+      expectedProviderId: sessionDriver.providerId,
       purpose: "health-check",
     });
 
@@ -394,7 +511,7 @@ class RuntimeKernel {
       };
     }
 
-    const validation = await this.deps.sessionDriver.validateSession({
+    const validation = await sessionDriver.validateSession({
       session: session.artifact,
       redactor: this.deps.redactor,
     });
@@ -415,11 +532,13 @@ class RuntimeKernel {
   }
 
   private async runTaskWithSession(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
     readonly task: ProviderTask;
     readonly runContext: RunContext;
   }): Promise<ProviderTaskResult> {
-    this.deps.redactor.registerSecret(input.session.bytes, "session");
+    if (input.session) {
+      this.deps.redactor.registerSecret(input.session.bytes, "session");
+    }
 
     const workspace = await this.deps.workspace.create({
       purpose: "run-task",
@@ -468,7 +587,7 @@ class RuntimeKernel {
       name,
       providerId: this.deps.sessionDriver.providerId,
       agentId: this.deps.agentDriver.agentId,
-      storeId: this.deps.sessionStore.storeId,
+      storeId: this.deps.sessionStore?.storeId ?? "none",
       metadata,
       ...(runId === undefined ? {} : { runId }),
       ...(durationMs === undefined ? {} : { durationMs }),
@@ -478,6 +597,104 @@ class RuntimeKernel {
 
   private emitFailure(code: string, runId: string | undefined): void {
     this.emit("runtime.failure.classified", runId, { code });
+  }
+
+  private unsupportedTaskFailure(
+    task: ProviderTask,
+  ): Extract<ProviderTaskResult, { readonly status: "failed" }> | null {
+    if (this.deps.agentDriver.capabilities.taskModes.includes(task.kind)) {
+      return null;
+    }
+
+    return failedTask(
+      "provider_output_invalid",
+      "Selected agent does not support the requested task mode.",
+    ) as Extract<ProviderTaskResult, { readonly status: "failed" }>;
+  }
+
+  private async validateStaticSession(input: {
+    readonly providerInstanceId: string;
+    readonly runContext: RunContext;
+  }): Promise<RefreshSessionResult> {
+    const sessionStore = this.requireSessionStore();
+    const sessionDriver = this.requireSessionDriver();
+    const session = await sessionStore.read({
+      providerInstanceId: input.providerInstanceId,
+      expectedProviderId: sessionDriver.providerId,
+      purpose: "refresh",
+    });
+
+    if (!session) {
+      this.emitFailure("provider_reconnect_required", input.runContext.runId);
+      return blocked(
+        "provider_reconnect_required",
+        "Provider session is missing.",
+      );
+    }
+
+    if (this.executionPlan.refresh === "validate-only") {
+      const validation = await sessionDriver.validateSession({
+        session: session.artifact,
+        redactor: this.deps.redactor,
+      });
+      if (validation.status === "invalid") {
+        this.emitFailure(validation.failure.code, input.runContext.runId);
+        return blocked(
+          validation.failure.reconnectRequired
+            ? "provider_reconnect_required"
+            : "permission_required",
+          validation.failure.safeMessage,
+        );
+      }
+      return {
+        status: "skipped",
+        reason: "refresh_not_required",
+        session,
+        warnings: validation.warnings,
+      };
+    }
+
+    return {
+      status: "skipped",
+      reason: "refresh_not_required",
+      session,
+      warnings: [],
+    };
+  }
+
+  private requireSessionStore(): NonNullable<RuntimeDeps["sessionStore"]> {
+    if (!this.deps.sessionStore) {
+      throw new Error("session_store_required");
+    }
+    return this.deps.sessionStore;
+  }
+
+  private requireLeaseStore(): NonNullable<RuntimeDeps["leaseStore"]> {
+    if (!this.deps.leaseStore) {
+      throw new Error("lease_store_required");
+    }
+    return this.deps.leaseStore;
+  }
+
+  private requireSessionDriver(): Extract<
+    RuntimeDeps["sessionDriver"],
+    { validateSession: unknown }
+  > {
+    if (!("validateSession" in this.deps.sessionDriver)) {
+      throw new Error("session_driver_required");
+    }
+    return this.deps.sessionDriver;
+  }
+
+  private requireRefreshableSessionDriver(): Extract<
+    RuntimeDeps["sessionDriver"],
+    { refreshSession: unknown }
+  > {
+    const sessionDriver = this.requireSessionDriver();
+    if (!("refreshSession" in sessionDriver)) {
+      throw new Error("refreshable_session_driver_required");
+    }
+    return sessionDriver;
   }
 }
 
@@ -571,5 +788,3 @@ function missingSessionFailure(): ProviderFailure {
     safeMessage: "Provider session is missing.",
   };
 }
-
-export { compileRuntimePolicy };

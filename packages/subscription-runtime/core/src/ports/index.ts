@@ -47,13 +47,22 @@ export interface ProviderSessionDriver {
   classifySessionFailure(error: unknown): ProviderFailure;
 }
 
+export interface NoSessionDriver {
+  readonly providerId: string;
+  readonly capabilities: ProviderCapabilities & {
+    readonly sessionRequirement: { readonly kind: "none" };
+  };
+
+  classifySessionFailure?(error: unknown): ProviderFailure;
+}
+
 export interface AgentDriver {
   readonly agentId: string;
   readonly providerId: string;
   readonly capabilities: AgentCapabilities;
 
   runTask(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
     readonly task: ProviderTask;
     readonly workspace: WorkspaceHandle;
     readonly runner: RunnerPort;
@@ -192,10 +201,10 @@ export interface IdGeneratorPort {
 
 export type RuntimeDeps = {
   readonly policy: import("../domain/types").RuntimePolicy;
-  readonly sessionDriver: ProviderSessionDriver;
+  readonly sessionDriver: ProviderSessionDriver | NoSessionDriver;
   readonly agentDriver: AgentDriver;
-  readonly sessionStore: SessionStorePort;
-  readonly leaseStore: LeaseStorePort;
+  readonly sessionStore?: SessionStorePort;
+  readonly leaseStore?: LeaseStorePort;
   readonly runner: RunnerPort;
   readonly workspace: WorkspacePort;
   readonly redactor: RedactorPort;
