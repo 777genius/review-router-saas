@@ -246,8 +246,23 @@ class RuntimeKernel {
       const nextHash = computeSessionGenerationHash({
         artifact: refreshed.artifact,
       });
+      const idempotencyKey = this.deps.idGenerator.idempotencyKey({
+        providerInstanceId: input.providerInstanceId,
+        runId: input.runContext.runId,
+        attempt: input.runContext.attempt,
+        purpose: "writeback",
+      });
 
       if (nextHash === session.generationHash) {
+        await leaseStore.finalize({
+          leaseId: lease.leaseId,
+          restoredGenerationHash: session.generationHash,
+        });
+        await leaseStore.markWritebackCommitted({
+          leaseId: lease.leaseId,
+          nextGenerationHash: session.generationHash,
+          idempotencyKey,
+        });
         this.emit("session.writeback.completed", input.runContext.runId, {
           status: "skipped_unchanged",
           generation: String(session.generation),
@@ -272,12 +287,6 @@ class RuntimeKernel {
         leaseId: lease.leaseId,
       });
 
-      const idempotencyKey = this.deps.idGenerator.idempotencyKey({
-        providerInstanceId: input.providerInstanceId,
-        runId: input.runContext.runId,
-        attempt: input.runContext.attempt,
-        purpose: "writeback",
-      });
       const writeback = await sessionStore.write({
         providerInstanceId: input.providerInstanceId,
         expectedGeneration: session.generation,

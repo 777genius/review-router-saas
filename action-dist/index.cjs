@@ -571,7 +571,22 @@ var RuntimeKernel = class {
       const nextHash = computeSessionGenerationHash({
         artifact: refreshed.artifact
       });
+      const idempotencyKey = this.deps.idGenerator.idempotencyKey({
+        providerInstanceId: input.providerInstanceId,
+        runId: input.runContext.runId,
+        attempt: input.runContext.attempt,
+        purpose: "writeback"
+      });
       if (nextHash === session.generationHash) {
+        await leaseStore.finalize({
+          leaseId: lease.leaseId,
+          restoredGenerationHash: session.generationHash
+        });
+        await leaseStore.markWritebackCommitted({
+          leaseId: lease.leaseId,
+          nextGenerationHash: session.generationHash,
+          idempotencyKey
+        });
         this.emit("session.writeback.completed", input.runContext.runId, {
           status: "skipped_unchanged",
           generation: String(session.generation)
@@ -593,12 +608,6 @@ var RuntimeKernel = class {
       });
       await leaseStore.markWritebackStarted({
         leaseId: lease.leaseId
-      });
-      const idempotencyKey = this.deps.idGenerator.idempotencyKey({
-        providerInstanceId: input.providerInstanceId,
-        runId: input.runContext.runId,
-        attempt: input.runContext.attempt,
-        purpose: "writeback"
       });
       const writeback = await sessionStore.write({
         providerInstanceId: input.providerInstanceId,
@@ -1543,6 +1552,7 @@ var CodexEphemeralSessionMaterializer = class {
     return {
       home,
       codexHome,
+      sessionHash: sessionArtifactHash(input.session),
       env: {
         HOME: home,
         CODEX_HOME: codexHome
@@ -1708,9 +1718,14 @@ var CodexJsonAgentDriver = class {
     }
   }
   async dispose() {
+    await this.engine.dispose?.();
     await this.sessionMaterializer.dispose?.();
   }
 };
+
+// packages/subscription-runtime/provider-codex/src/codex-app-server-execution-engine.ts
+var defaultTimeoutMs2 = 10 * 60 * 1e3;
+var defaultMaxOutputBytes2 = 512 * 1024;
 
 // packages/subscription-runtime/provider-codex/src/codex-cli-session-driver.ts
 var import_promises3 = require("node:fs/promises");

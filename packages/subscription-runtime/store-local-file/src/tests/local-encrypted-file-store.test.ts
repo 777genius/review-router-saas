@@ -17,6 +17,7 @@ const initialAuthJson = JSON.stringify({
   tokens: {
     refresh_token: "initial-refresh-token",
     access_token: "initial-access-token",
+    id_token: "initial-id-token",
   },
 });
 const refreshedAuthJson = JSON.stringify({
@@ -24,6 +25,7 @@ const refreshedAuthJson = JSON.stringify({
   tokens: {
     refresh_token: "refreshed-refresh-token",
     access_token: "refreshed-access-token",
+    id_token: "refreshed-id-token",
   },
 });
 
@@ -58,6 +60,7 @@ describe("Local encrypted file store", () => {
       const serialized = files.join("\n");
       expect(serialized).not.toContain("initial-refresh-token");
       expect(serialized).not.toContain("initial-access-token");
+      expect(serialized).not.toContain("initial-id-token");
 
       const envelope = await store.read({
         providerInstanceId,

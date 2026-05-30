@@ -69,6 +69,69 @@ Runtime config must never contain `auth.json`, refresh tokens, access tokens, or
 raw session bytes. Use `defineSubscriptionRuntimeConfig` to fail fast if a host
 app accidentally embeds session material in config.
 
+## Local File Backend Mode
+
+For a first backend-owned deployment without database migrations, use the local
+file adapters with a persistent volume. This mode is clean-architecture friendly:
+the host app wires ordinary `SessionStorePort` and `LeaseStorePort`
+implementations, while core and providers stay unaware of the filesystem.
+
+```ts
+import { createSubscriptionRuntime } from "@reviewrouter/subscription-runtime-core";
+import {
+  CodexCliSessionDriver,
+  CodexJsonAgentDriver,
+} from "@reviewrouter/subscription-runtime-provider-codex";
+import { createLocalFileBackendRuntimeAdapters } from "@reviewrouter/subscription-runtime-store-local-file";
+
+const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
+  providerId: "codex",
+  rootDir: "/var/lib/subscription-runtime",
+  // 32-byte base64/base64url key from the host secret manager.
+  encryptionKey: process.env.SUBSCRIPTION_RUNTIME_FILE_KEY!,
+  metadata: { service: "openai-service" },
+});
+
+const runtime = createSubscriptionRuntime({
+  policy: {
+    custodyMode: "local-only",
+    requireNoBackendPlaintext: false,
+    requireWritebackBeforeTask: true,
+    requireCompareAndSwap: true,
+    allowInteractiveSetupInRuntime: false,
+    allowedProviderIds: ["codex"],
+    allowedAgentIds: ["codex-json"],
+    allowedStoreIds: [sessionStore.storeId],
+    allowedRunnerIds: [runner.runnerId],
+  },
+  sessionDriver: new CodexCliSessionDriver({ codexBinaryPath }),
+  agentDriver: new CodexJsonAgentDriver({ codexBinaryPath }),
+  sessionStore,
+  leaseStore,
+  runner,
+  workspace,
+  redactor,
+  observability,
+  clock,
+  idGenerator,
+});
+```
+
+Operational constraints:
+
+- Mount `rootDir` on durable storage. Container-local ephemeral storage will lose
+  sessions on restart.
+- The file store encrypts session bytes at rest with AES-256-GCM, but the
+  backend process can decrypt them. This is `local-only`, not
+  `no-plaintext-backend`.
+- `LocalFileLeaseStore` is intended for one host or a reliable shared POSIX
+  volume. Multiple app replicas on independent disks need a future Postgres or
+  Redis lease/store adapter.
+- Lease files contain only run, generation, TTL, and writeback metadata. They
+  must never contain provider token plaintext.
+- Keep queue concurrency bounded to the number of warmed execution slots for a
+  provider account.
+
 ## Minimal Composition Shape
 
 ```ts
