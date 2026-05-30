@@ -78,6 +78,8 @@ const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
 const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
+const providerNeutralReviewFindingsArtifactFileName =
+  "reviewrouter-findings.json";
 
 type FetchLike = typeof fetch;
 
@@ -110,6 +112,7 @@ type ProviderSecretInputs = {
 
 type PullRequestEvent = {
   readonly number: number;
+  readonly repositoryId?: string | undefined;
   readonly repository: string;
   readonly owner: string;
   readonly repo: string;
@@ -570,7 +573,10 @@ async function readPullRequestEvent(
   }
   const event = JSON.parse(await readFile(eventPath, "utf8")) as {
     readonly number?: unknown;
-    readonly repository?: { readonly full_name?: unknown };
+    readonly repository?: {
+      readonly id?: unknown;
+      readonly full_name?: unknown;
+    };
     readonly pull_request?: {
       readonly draft?: unknown;
       readonly head?: {
@@ -597,6 +603,9 @@ async function readPullRequestEvent(
   }
   return {
     number: requireNumber(event.number, "pr_number"),
+    ...(isSafeGitHubNumericId(event.repository?.id)
+      ? { repositoryId: String(event.repository.id) }
+      : {}),
     repository,
     owner,
     repo,
@@ -1755,6 +1764,16 @@ function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
     REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
+    REVIEWROUTER_SCM_PROVIDER: "github",
+    REVIEWROUTER_FINDINGS_ARTIFACT_PATH:
+      providerNeutralReviewFindingsArtifactFileName,
+    REVIEWROUTER_REPOSITORY_EXTERNAL_ID:
+      input.event.repositoryId ?? input.event.repository,
+    REVIEWROUTER_REPOSITORY_FULL_NAME: input.event.repository,
+    REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID: String(input.event.number),
+    REVIEWROUTER_HEAD_SHA: input.event.headSha,
+    REVIEWROUTER_BASE_SHA: input.event.baseSha,
+    REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
   };
@@ -2419,6 +2438,13 @@ function requireNumber(value: unknown, field: string): number {
     throw new Error(`invalid_event_field:${field}`);
   }
   return value;
+}
+
+function isSafeGitHubNumericId(value: unknown): value is number | string {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0;
+  }
+  return typeof value === "string" && /^[0-9]+$/.test(value);
 }
 
 function requireSha(value: unknown, field: string): string {
