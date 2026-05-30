@@ -27,7 +27,8 @@ type LeaseState =
   | "active"
   | "finalized"
   | "writeback_started"
-  | "committed";
+  | "committed"
+  | "released";
 
 type PersistedLeaseRecord = {
   readonly storageVersion: typeof storageVersion;
@@ -42,6 +43,8 @@ type PersistedLeaseRecord = {
   readonly finalizedAt?: string;
   readonly writebackStartedAt?: string;
   readonly committedAt?: string;
+  readonly releasedAt?: string;
+  readonly releaseReason?: string;
   readonly keyId?: string;
   readonly nextGenerationHash?: string;
   readonly idempotencyKey?: string;
@@ -189,6 +192,25 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     return { status: "committed" };
   }
 
+  async release(input: {
+    readonly leaseId: string;
+    readonly reason: string;
+  }): Promise<void> {
+    const record = await this.readLeaseRecord(input.leaseId);
+    if (!record || record.state === "committed") {
+      return;
+    }
+
+    const released = {
+      ...record,
+      state: "released" as const,
+      releasedAt: this.now().toISOString(),
+      releaseReason: input.reason,
+    };
+    await this.persistLeaseTransition(released);
+    await this.removeActiveIfMatches(released);
+  }
+
   private async persistLeaseTransition(
     record: PersistedLeaseRecord,
   ): Promise<void> {
@@ -312,6 +334,7 @@ function makeLeaseRecord(input: {
         input.runId,
         String(input.attempt),
         input.restoredGenerationHash,
+        randomBytes(16).toString("hex"),
       ].join("\0"),
     ),
   ].join(":");
@@ -364,6 +387,12 @@ function parseLeaseRecord(value: string): PersistedLeaseRecord {
     ...(typeof parsed.committedAt === "string"
       ? { committedAt: parsed.committedAt }
       : {}),
+    ...(typeof parsed.releasedAt === "string"
+      ? { releasedAt: parsed.releasedAt }
+      : {}),
+    ...(typeof parsed.releaseReason === "string"
+      ? { releaseReason: parsed.releaseReason }
+      : {}),
     ...(typeof parsed.keyId === "string" ? { keyId: parsed.keyId } : {}),
     ...(typeof parsed.nextGenerationHash === "string"
       ? { nextGenerationHash: parsed.nextGenerationHash }
@@ -379,7 +408,8 @@ function isLeaseState(value: unknown): value is LeaseState {
     value === "active" ||
     value === "finalized" ||
     value === "writeback_started" ||
-    value === "committed"
+    value === "committed" ||
+    value === "released"
   );
 }
 

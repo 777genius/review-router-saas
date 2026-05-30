@@ -190,6 +190,57 @@ describe("Local file lease store", () => {
       await rm(rootDir, { recursive: true, force: true });
     }
   });
+
+  it("releases active leases without deleting committed records", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-lease-"));
+    const store = new LocalFileLeaseStore({ rootDir });
+
+    try {
+      const lease = await store.acquire({
+        providerInstanceId,
+        runId: "run-1",
+        attempt: 1,
+        ttlMs: 60_000,
+        restoredGenerationHash: "generation-1",
+      });
+      if (lease.status !== "granted") throw new Error("lease_not_granted");
+
+      await store.release?.({
+        leaseId: lease.leaseId,
+        reason: "validation_failed",
+      });
+      const reacquiredSameRun = await store.acquire({
+        providerInstanceId,
+        runId: "run-1",
+        attempt: 1,
+        ttlMs: 60_000,
+        restoredGenerationHash: "generation-1",
+      });
+      expect(reacquiredSameRun.status).toBe("granted");
+      if (reacquiredSameRun.status !== "granted") {
+        throw new Error("lease_not_granted");
+      }
+      await store.release?.({
+        leaseId: reacquiredSameRun.leaseId,
+        reason: "test-cleanup",
+      });
+      await expect(
+        store.acquire({
+          providerInstanceId,
+          runId: "run-2",
+          attempt: 1,
+          ttlMs: 60_000,
+          restoredGenerationHash: "generation-1",
+        }),
+      ).resolves.toMatchObject({ status: "granted" });
+
+      const serialized = (await readStoredFiles(rootDir)).join("\n");
+      expect(serialized).toContain("validation_failed");
+      expect(serialized).toContain("released");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Local file backend runtime adapters", () => {
@@ -374,6 +425,70 @@ describe("Local file backend runtime adapters", () => {
       await expect(run("run-2")).resolves.toMatchObject({
         status: "completed",
         refresh: { status: "skipped", reason: "session_unchanged" },
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("releases the local file lease when validation blocks refresh", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-local-"));
+    const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
+      providerId: "fake",
+      rootDir,
+      encryptionKey,
+    });
+    const provider = new FakeProviderSessionDriver();
+    provider.validation = {
+      status: "invalid",
+      failure: {
+        code: "needs_reconnect",
+        retryable: false,
+        reconnectRequired: true,
+        safeMessage: "Reconnect required.",
+      },
+    };
+
+    try {
+      await sessionStore.write({
+        providerInstanceId,
+        expectedGeneration: 0,
+        nextArtifact: makeArtifact("session-v1"),
+        idempotencyKey: "seed",
+        leaseId: "seed-lease",
+      });
+
+      const run = (runId: string) =>
+        createSubscriptionRuntime(
+          makeLocalRuntimeDeps({
+            provider,
+            agent: new FakeAgentDriver(),
+            sessionStore,
+            leaseStore,
+          }),
+        ).refreshThenRunTask({
+          providerInstanceId,
+          task: { kind: "review", prompt: runId },
+          runContext: {
+            runId,
+            attempt: 1,
+            abortSignal: new AbortController().signal,
+          },
+        });
+
+      await expect(run("run-1")).resolves.toMatchObject({
+        status: "blocked",
+        reason: "provider_reconnect_required",
+      });
+
+      provider.validation = { status: "valid", warnings: [] };
+      provider.refreshText = "session-v2";
+      await expect(run("run-2")).resolves.toMatchObject({
+        status: "completed",
+        refresh: {
+          status: "ready",
+          writeback: { status: "accepted", generation: 2 },
+        },
       });
     } finally {
       await rm(rootDir, { recursive: true, force: true });

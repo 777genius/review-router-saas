@@ -147,6 +147,11 @@ export interface LeaseStorePort {
     readonly nextGenerationHash: string;
     readonly idempotencyKey: string;
   }): Promise<WritebackCommitResult>;
+
+  release?(input: {
+    readonly leaseId: string;
+    readonly reason: string;
+  }): Promise<void>;
 }
 
 export interface RunnerPort {

@@ -305,6 +305,7 @@ class CodexAppServerClient {
     readonly outputText: string;
     readonly warnings: readonly AppServerWarning[];
   }> {
+    this.serverRequests.length = 0;
     const threadId = await this.startThread(input);
     const turn = await this.startTurn({ ...input, threadId });
     if (turn.error) throw turn.error;
@@ -313,7 +314,7 @@ class CodexAppServerClient {
     }
     return {
       outputText: turn.outputText,
-      warnings: this.serverRequests,
+      warnings: [...this.serverRequests],
     };
   }
 
@@ -494,10 +495,12 @@ class CodexAppServerClient {
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        this.turns.delete(turnId);
         reject(new Error(`codex_app_server_turn_timeout:${turnId}`));
       }, input.timeoutMs);
       const abort = () => {
         clearTimeout(timer);
+        this.turns.delete(turnId);
         reject(new Error(`codex_app_server_turn_aborted:${turnId}`));
       };
       input.abortSignal.addEventListener("abort", abort, { once: true });
@@ -505,6 +508,7 @@ class CodexAppServerClient {
       turn.waiters.push((state) => {
         clearTimeout(timer);
         input.abortSignal.removeEventListener("abort", abort);
+        this.turns.delete(turnId);
         resolve(state);
       });
       this.turns.set(turnId, turn);

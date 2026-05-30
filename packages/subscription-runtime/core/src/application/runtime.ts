@@ -167,27 +167,29 @@ class RuntimeKernel {
       return blocked("permission_required", lease.safeMessage);
     }
 
-    const validation = await sessionDriver.validateSession({
-      session: session.artifact,
-      redactor: this.deps.redactor,
-    });
-
-    if (validation.status === "invalid") {
-      this.emitFailure(validation.failure.code, input.runContext.runId);
-      return blocked(
-        validation.failure.reconnectRequired
-          ? "provider_reconnect_required"
-          : "permission_required",
-        validation.failure.safeMessage,
-      );
-    }
-
-    const workspace = await this.deps.workspace.create({
-      purpose: "refresh",
-      isolation: "temp-dir",
-    });
-
+    let leaseClosed = false;
     try {
+      const validation = await sessionDriver.validateSession({
+        session: session.artifact,
+        redactor: this.deps.redactor,
+      });
+
+      if (validation.status === "invalid") {
+        this.emitFailure(validation.failure.code, input.runContext.runId);
+        return blocked(
+          validation.failure.reconnectRequired
+            ? "provider_reconnect_required"
+            : "permission_required",
+          validation.failure.safeMessage,
+        );
+      }
+
+      const workspace = await this.deps.workspace.create({
+        purpose: "refresh",
+        isolation: "temp-dir",
+      });
+
+      try {
       const refreshStartedAt = this.deps.clock.monotonicMs();
       this.emit("provider.refresh.started", input.runContext.runId, {
         generation: String(session.generation),
@@ -263,6 +265,7 @@ class RuntimeKernel {
           nextGenerationHash: session.generationHash,
           idempotencyKey,
         });
+        leaseClosed = true;
         this.emit("session.writeback.completed", input.runContext.runId, {
           status: "skipped_unchanged",
           generation: String(session.generation),
@@ -315,6 +318,7 @@ class RuntimeKernel {
         nextGenerationHash: writeback.generationHash,
         idempotencyKey,
       });
+      leaseClosed = true;
       this.emit("session.writeback.completed", input.runContext.runId, {
         status: writeback.status,
         generation: String(writeback.generation),
@@ -327,8 +331,17 @@ class RuntimeKernel {
         writeback,
         warnings: refreshed.warnings,
       };
+      } finally {
+        await workspace.dispose?.();
+      }
     } finally {
-      await workspace.dispose?.();
+      if (!leaseClosed) {
+        await this.releaseLeaseQuietly({
+          leaseId: lease.leaseId,
+          runId: input.runContext.runId,
+          reason: "refresh_completed_without_committed_writeback",
+        });
+      }
     }
   }
 
@@ -606,6 +619,26 @@ class RuntimeKernel {
 
   private emitFailure(code: string, runId: string | undefined): void {
     this.emit("runtime.failure.classified", runId, { code });
+  }
+
+  private async releaseLeaseQuietly(input: {
+    readonly leaseId: string;
+    readonly runId: string;
+    readonly reason: string;
+  }): Promise<void> {
+    if (!this.deps.leaseStore?.release) return;
+    try {
+      await this.deps.leaseStore.release({
+        leaseId: input.leaseId,
+        reason: input.reason,
+      });
+    } catch (error) {
+      this.emit("lease.release.failed", input.runId, {
+        leaseId: input.leaseId,
+        reason: input.reason,
+        error: error instanceof Error ? error.message : "unknown",
+      });
+    }
   }
 
   private unsupportedTaskFailure(
