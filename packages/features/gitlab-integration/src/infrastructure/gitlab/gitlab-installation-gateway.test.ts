@@ -142,6 +142,44 @@ describe("GitLabInstallationGateway", () => {
     });
   });
 
+  it("uses static CI lint for MR-only ReviewRouter configs", async () => {
+    const requests: RecordedRequest[] = [];
+    const fetchImpl = async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requests.push({ url: String(url), init });
+      return jsonResponse({ valid: true, errors: [] });
+    };
+    const gateway = new GitLabInstallationGateway({
+      token: "token",
+      fetchImpl,
+    });
+
+    await expect(
+      gateway.lintCiConfig({
+        projectId: "123",
+        content: "reviewrouter:review:\n  script: reviewrouter-gitlab-review\n",
+        ref: "main",
+      }),
+    ).resolves.toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const body = JSON.parse(String(requests[0]?.init?.body)) as {
+      readonly content: string;
+      readonly dry_run?: boolean;
+      readonly include_jobs?: boolean;
+      readonly include_merged_yaml?: boolean;
+      readonly ref?: string;
+    };
+    expect(body.dry_run).toBeUndefined();
+    expect(body.include_jobs).toBe(false);
+    expect(body.include_merged_yaml).toBe(true);
+    expect(body.ref).toBe("main");
+  });
+
   it("appends the setup include instead of replacing an existing GitLab CI file", async () => {
     const requests: RecordedRequest[] = [];
     const fetchImpl = async (

@@ -175,7 +175,7 @@ export class GitLabInstallationGateway implements GitLabInstallationPort {
       path: `/projects/${encodeURIComponent(input.projectId)}/ci/lint`,
       body: {
         content: input.content,
-        dry_run: true,
+        include_merged_yaml: true,
         include_jobs: false,
         ref: input.ref,
       },
