@@ -145,6 +145,7 @@ describe("discoverGitLabGroupProjects", () => {
         {
           groupIdOrPath: "group/platform",
           search: "project",
+          workspaceId: "workspace_gitlab",
         },
         { installation },
       ),
@@ -158,6 +159,29 @@ describe("discoverGitLabGroupProjects", () => {
       totalPages: 1,
       projectIds: ["123", "456"],
       projects: installation.groupProjectsPage.projects,
+      staticRepositoriesEnvKey: "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+      staticRepositoriesJson:
+        '[{"workspaceId":"workspace_gitlab","repositoryId":"gitlab-project-123","gitlabProjectId":"123","fullName":"group/project-a","owner":"group","selected":true,"installationStatus":"active"},{"workspaceId":"workspace_gitlab","repositoryId":"gitlab-project-456","gitlabProjectId":"456","fullName":"group/sub/project-b","owner":"group/sub","selected":true,"installationStatus":"active"}]',
+      staticRepositories: [
+        {
+          workspaceId: "workspace_gitlab",
+          repositoryId: "gitlab-project-123",
+          gitlabProjectId: "123",
+          fullName: "group/project-a",
+          owner: "group",
+          selected: true,
+          installationStatus: "active",
+        },
+        {
+          workspaceId: "workspace_gitlab",
+          repositoryId: "gitlab-project-456",
+          gitlabProjectId: "456",
+          fullName: "group/sub/project-b",
+          owner: "group/sub",
+          selected: true,
+          installationStatus: "active",
+        },
+      ],
     });
     expect(installation.groupProjectsCalls).toEqual([
       {
@@ -195,6 +219,21 @@ describe("discoverGitLabGroupProjects", () => {
     ).rejects.toThrow("gitlab_group_projects_per_page_invalid");
 
     expect(installation.groupProjectsCalls).toEqual([]);
+  });
+
+  it("uses a deterministic GitLab workspace id when none is provided", async () => {
+    const installation = new InMemoryInstallation();
+
+    const result = await discoverGitLabGroupProjects(
+      {
+        groupIdOrPath: "group/platform",
+      },
+      { installation },
+    );
+
+    expect(result.staticRepositories[0]?.workspaceId).toBe(
+      "gitlab-group-platform",
+    );
   });
 });
 

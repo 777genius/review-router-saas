@@ -88,6 +88,7 @@ const discoverGroupProjectsQuerySchema = z
     page: positiveIntegerQuerySchema.optional(),
     perPage: positiveIntegerQuerySchema.optional(),
     search: z.string().min(1).max(128).optional(),
+    workspaceId: z.string().min(1).max(128).optional(),
   })
   .strict();
 
@@ -164,6 +165,7 @@ export async function registerGitLabIntegrationRoutes(
           ...(query.page !== undefined ? { page: query.page } : {}),
           ...(query.perPage !== undefined ? { perPage: query.perPage } : {}),
           ...(query.search ? { search: query.search } : {}),
+          ...(query.workspaceId ? { workspaceId: query.workspaceId } : {}),
         },
         { installation: dependencies.installation },
       );

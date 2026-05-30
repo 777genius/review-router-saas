@@ -325,7 +325,7 @@ describe("registerGitLabIntegrationRoutes", () => {
 
     const authorized = await app.inject({
       method: "GET",
-      url: "/api/gitlab/install/v1/group-projects?groupId=platform%2Freview&includeSubgroups=false&withShared=true&page=2&perPage=50&search=api",
+      url: "/api/gitlab/install/v1/group-projects?groupId=platform%2Freview&includeSubgroups=false&withShared=true&page=2&perPage=50&search=api&workspaceId=workspace_gitlab",
       headers: { authorization: "Bearer installer-admin" },
     });
 
@@ -340,6 +340,20 @@ describe("registerGitLabIntegrationRoutes", () => {
       totalPages: 1,
       projectIds: ["123"],
       projects: installation.groupProjectsPage.projects,
+      staticRepositoriesEnvKey: "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+      staticRepositoriesJson:
+        '[{"workspaceId":"workspace_gitlab","repositoryId":"gitlab-project-123","gitlabProjectId":"123","fullName":"group/project-123","owner":"group","selected":true,"installationStatus":"active"}]',
+      staticRepositories: [
+        {
+          workspaceId: "workspace_gitlab",
+          repositoryId: "gitlab-project-123",
+          gitlabProjectId: "123",
+          fullName: "group/project-123",
+          owner: "group",
+          selected: true,
+          installationStatus: "active",
+        },
+      ],
     });
     expect(installation.groupProjectsCalls).toEqual([
       {

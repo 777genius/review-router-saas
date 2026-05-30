@@ -1,9 +1,12 @@
 import type { GitLabInstallationPort } from "../ports/gitlab-installation-port";
+import type { GitLabRepositoryContext } from "../../domain/gitlab-ci-identity";
 import type { GitLabGroupProject } from "../../domain/gitlab-installation";
 
 const defaultProjectPage = 1;
 const defaultProjectsPerPage = 100;
 const maxProjectsPerPage = 100;
+const staticRepositoriesEnvKey =
+  "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON";
 
 export type DiscoverGitLabGroupProjectsResult = {
   readonly protocolVersion: 1;
@@ -15,6 +18,9 @@ export type DiscoverGitLabGroupProjectsResult = {
   readonly totalPages: number | null;
   readonly projectIds: readonly string[];
   readonly projects: readonly GitLabGroupProject[];
+  readonly staticRepositoriesEnvKey: typeof staticRepositoriesEnvKey;
+  readonly staticRepositoriesJson: string;
+  readonly staticRepositories: readonly GitLabRepositoryContext[];
 };
 
 export async function discoverGitLabGroupProjects(
@@ -26,6 +32,7 @@ export async function discoverGitLabGroupProjects(
     readonly page?: number | undefined;
     readonly perPage?: number | undefined;
     readonly search?: string | undefined;
+    readonly workspaceId?: string | undefined;
   },
   dependencies: {
     readonly installation: GitLabInstallationPort;
@@ -43,6 +50,9 @@ export async function discoverGitLabGroupProjects(
   if (perPage > maxProjectsPerPage) {
     throw new Error("gitlab_group_projects_per_page_invalid");
   }
+  const workspaceId = normalizeWorkspaceId(
+    input.workspaceId ?? defaultWorkspaceId(groupIdOrPath),
+  );
   const search = input.search?.trim();
   const projectsPage = await dependencies.installation.listGroupProjects({
     groupIdOrPath,
@@ -52,6 +62,10 @@ export async function discoverGitLabGroupProjects(
     page,
     perPage,
     ...(search ? { search } : {}),
+  });
+  const staticRepositories = buildStaticRepositories({
+    projects: projectsPage.projects,
+    workspaceId,
   });
 
   return {
@@ -64,6 +78,9 @@ export async function discoverGitLabGroupProjects(
     totalPages: projectsPage.totalPages,
     projectIds: projectsPage.projects.map((project) => project.projectId),
     projects: projectsPage.projects,
+    staticRepositoriesEnvKey,
+    staticRepositoriesJson: JSON.stringify(staticRepositories),
+    staticRepositories,
   };
 }
 
@@ -81,9 +98,54 @@ function normalizeGroupIdOrPath(value: string): string {
   return trimmed;
 }
 
+function normalizeWorkspaceId(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > 128 ||
+    trimmed.includes("\n") ||
+    trimmed.includes("\r")
+  ) {
+    throw new Error("gitlab_static_repositories_workspace_id_invalid");
+  }
+  return trimmed;
+}
+
+function defaultWorkspaceId(groupIdOrPath: string): string {
+  const slug = groupIdOrPath
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `gitlab-${slug || "group"}`;
+}
+
 function normalizePositiveInteger(value: number, errorCode: string): number {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(errorCode);
   }
   return value;
+}
+
+function buildStaticRepositories(input: {
+  readonly projects: readonly GitLabGroupProject[];
+  readonly workspaceId: string;
+}): readonly GitLabRepositoryContext[] {
+  return input.projects.map((project) => ({
+    workspaceId: input.workspaceId,
+    repositoryId: `gitlab-project-${project.projectId}`,
+    gitlabProjectId: project.projectId,
+    fullName: project.fullName,
+    owner: ownerFromFullName(project.fullName),
+    selected: true,
+    installationStatus: "active",
+  }));
+}
+
+function ownerFromFullName(fullName: string): string {
+  const lastSlash = fullName.lastIndexOf("/");
+  if (lastSlash <= 0) {
+    throw new Error("gitlab_project_path_invalid");
+  }
+  return fullName.slice(0, lastSlash);
 }
