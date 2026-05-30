@@ -185,6 +185,8 @@ const fieldHelp = {
     "Number of providers that should agree before an inline finding is treated as agreed.",
   requiredHealthy:
     "Required providers must pass health checks and return valid review output. They do not need to produce findings.",
+  reviewLanguage:
+    "Natural language for the review comments and summaries (free text, e.g. Russian). Leave empty to inherit the workspace default, which is English.",
 } as const;
 
 const defaultCodexProvider = {
@@ -1373,6 +1375,18 @@ export function ReviewConfigForm({
           </div>
         </section>
 
+        <section className="grid gap-3">
+          <div className="font-mono text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">
+            Output
+          </div>
+          <div className="grid gap-4 md:grid-cols-3 md:gap-x-8">
+            <DashboardReviewLanguageField
+              defaultValue={config.reviewLanguage ?? ""}
+              disabled={!mutationsEnabled}
+            />
+          </div>
+        </section>
+
         <div className="flex min-w-0 items-end border-t border-cyan-200/10 pt-4">
           <FormSubmitButton
             variant="solid"
@@ -1528,6 +1542,57 @@ function DashboardFieldHelp({
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
+  );
+}
+
+const reviewLanguageSuggestions = [
+  "English",
+  "Russian",
+  "Ukrainian",
+  "Spanish",
+  "Portuguese",
+  "French",
+  "German",
+  "Italian",
+  "Chinese",
+  "Japanese",
+  "Korean",
+] as const;
+
+function DashboardReviewLanguageField({
+  defaultValue,
+  disabled,
+}: {
+  readonly defaultValue: string;
+  readonly disabled: boolean;
+}): React.ReactElement {
+  const listId = "review-language-suggestions";
+  return (
+    <label className="grid min-w-0 gap-2 text-sm text-slate-300">
+      <span className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        <DashboardFieldLabel
+          label="Review language"
+          helpText={fieldHelp.reviewLanguage}
+        />
+      </span>
+      <input
+        name="reviewLanguage"
+        type="text"
+        defaultValue={defaultValue}
+        placeholder="English (default)"
+        maxLength={40}
+        autoComplete="off"
+        spellCheck={false}
+        list={listId}
+        disabled={disabled}
+        className={dashboardInputClassName}
+      />
+      <datalist id={listId}>
+        {reviewLanguageSuggestions.map((language) => (
+          <option key={language} value={language} />
+        ))}
+      </datalist>
+    </label>
   );
 }
 

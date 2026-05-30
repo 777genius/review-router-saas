@@ -149,6 +149,9 @@ function buildCodexConflictReviewPrompt(input: {
     "This is not a merge-result review. Do not claim branch protection passed or that the merge result was reviewed.",
     "Return only JSON that matches the provided schema.",
     "For findings without a file path or line range, set path, startLine, and endLine to null.",
+    ...conflictReviewLanguageDirective(
+      input.providerEnv.REVIEW_OUTPUT_LANGUAGE,
+    ),
     "",
     "Context:",
     JSON.stringify(
@@ -170,6 +173,46 @@ function buildCodexConflictReviewPrompt(input: {
     "Bounded diff packet:",
     JSON.stringify(input.diffPacket, null, 2),
   ].join("\n");
+}
+
+function conflictReviewLanguageDirective(
+  value: string | undefined,
+): readonly string[] {
+  const language = normalizeConflictReviewLanguage(value);
+  if (!language) {
+    return [];
+  }
+  return [
+    "",
+    `Write "summaryMarkdown" and every finding "message" in ${language}. Keep the JSON structure, field names, severity values, file paths, and code identifiers unchanged; never translate code or JSON keys.`,
+  ];
+}
+
+/**
+ * Mirror of the saas-side language sanitizer: keep a single line of
+ * letters/marks/spaces, cap the length, and skip English (the default) so the
+ * prompt stays byte-identical for English reviews.
+ */
+function normalizeConflictReviewLanguage(
+  value: string | undefined,
+): string | null {
+  if (!value) {
+    return null;
+  }
+  const firstLine = value.split(/[\r\n]/)[0] ?? "";
+  const cleaned = firstLine
+    .replace(/[^\p{L}\p{M}\s()\-\/]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+  if (!cleaned) {
+    return null;
+  }
+  const lower = cleaned.toLowerCase();
+  if (lower === "english" || lower === "en" || lower === "en-us") {
+    return null;
+  }
+  return cleaned;
 }
 
 async function prepareCodexHome(

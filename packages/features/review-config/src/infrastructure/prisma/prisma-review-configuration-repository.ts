@@ -96,6 +96,7 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
           providerMaxParallel: config.execution.providerMaxParallel,
           inlineMinAgreement: config.execution.inlineMinAgreement,
           targetTokensPerBatch: config.limits.targetTokensPerBatch,
+          reviewLanguage: config.reviewLanguage ?? null,
           providers: {
             create: config.providers.map((provider, index) => ({
               order: index,
@@ -143,6 +144,7 @@ const versionSelect = {
   providerMaxParallel: true,
   inlineMinAgreement: true,
   targetTokensPerBatch: true,
+  reviewLanguage: true,
   providers: {
     orderBy: { order: "asc" },
     select: {
@@ -172,6 +174,7 @@ type VersionRecord = {
   readonly providerMaxParallel: number;
   readonly inlineMinAgreement: number;
   readonly targetTokensPerBatch: number;
+  readonly reviewLanguage: string | null;
   readonly providers: readonly {
     readonly providerKind: string;
     readonly providerAuthMode: string;
@@ -230,6 +233,7 @@ function toPersistedConfiguration(
         inlineMaxComments: version.inlineMaxComments,
         targetTokensPerBatch: version.targetTokensPerBatch,
       },
+      reviewLanguage: version.reviewLanguage ?? undefined,
     }),
   };
 }

@@ -200,6 +200,7 @@ model ReviewConfigurationVersion {
   providerMaxParallel  Int      @default(1)
   inlineMinAgreement   Int      @default(1)
   targetTokensPerBatch Int
+  reviewLanguage       String?
   createdAt            DateTime @default(now())
 
   configuration ReviewConfiguration                  @relation(fields: [configurationId], references: [id], onDelete: Cascade)

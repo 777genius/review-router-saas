@@ -27,6 +27,26 @@ export const reviewProviderConfigurationSchema = z
     }
   });
 
+/**
+ * Sanitize a free-text language name before it is stored or sent to a model.
+ * Keeps a single line of letters/marks/spaces plus a few separators, caps the
+ * length, and drops everything else so the value cannot smuggle instructions.
+ */
+function sanitizeReviewLanguage(value: string): string | undefined {
+  const firstLine = value.split(/[\r\n]/)[0] ?? "";
+  const cleaned = firstLine
+    .replace(/[^\p{L}\p{M}\s()\-\/]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+const reviewLanguageSchema = z
+  .string()
+  .transform(sanitizeReviewLanguage)
+  .optional();
+
 const blockingPolicySchema = z.object({
   failOnSeverity: z.enum(["off", "critical", "major"]).default("critical"),
 });
@@ -58,6 +78,7 @@ const reviewConfigurationV2Schema = z.object({
   execution: reviewExecutionConfigurationSchema,
   blockingPolicy: blockingPolicySchema,
   limits: limitsSchema,
+  reviewLanguage: reviewLanguageSchema,
 });
 
 export type ReviewProviderConfiguration = z.infer<
@@ -77,6 +98,7 @@ export type ReviewConfiguration = {
   readonly execution: ReviewExecutionConfiguration;
   readonly blockingPolicy: z.infer<typeof blockingPolicySchema>;
   readonly limits: z.infer<typeof limitsSchema>;
+  readonly reviewLanguage?: string;
 };
 
 const reviewConfigurationInputSchema = z.union([
@@ -163,6 +185,9 @@ function normalizeReviewConfiguration(
     },
     blockingPolicy: input.blockingPolicy,
     limits: input.limits,
+    ...(input.schemaVersion === 2 && input.reviewLanguage !== undefined
+      ? { reviewLanguage: input.reviewLanguage }
+      : {}),
   };
 }
 
