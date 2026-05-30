@@ -22,7 +22,7 @@ import {
   type WorkspacePort,
 } from "@reviewrouter/subscription-runtime-core";
 import {
-  CodexCliAgentDriver,
+  CodexJsonAgentDriver,
   CodexCliSessionDriver,
   sessionArtifactFromCodexAuthJson,
 } from "@reviewrouter/subscription-runtime-provider-codex";
@@ -1189,7 +1189,7 @@ async function refreshCodexAuthJson(input: {
     codexBinaryPath: input.codexBinaryPath,
     sourceEnv: input.env,
   });
-  const agentDriver = new CodexCliAgentDriver({
+  const agentDriver = new CodexJsonAgentDriver({
     codexBinaryPath: input.codexBinaryPath,
     sourceEnv: input.env,
   });
