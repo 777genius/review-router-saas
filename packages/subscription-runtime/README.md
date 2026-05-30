@@ -7,7 +7,21 @@ The package family is intentionally split by responsibility:
 - `core` owns domain types, ports, runtime policy, adapter manifests, registry
   checks, redaction, and orchestration.
 - `provider-codex` owns Codex auth JSON validation, refresh, task execution, and
-  Codex failure classification.
+  Codex failure classification. Its recommended task engine is a single
+  packaged Codex JSON engine; production code must not depend on a stale global
+  `codex` binary.
+- Future providers such as Claude should plug in through the same core ports:
+  `ProviderSessionDriver`, `AgentDriver`, `SessionStorePort`, and
+  `RunnerPort`. Provider-specific refresh logic must stay inside each provider
+  adapter.
+- Core policy must use adapter-declared refresh, rotation, task, and history
+  modes. Do not special-case Codex in core, and do not force Claude/API-key/local
+  agents through Codex-style refresh/writeback.
+- Capability negotiation should compile one runtime plan before any session bytes
+  are read: `no-session`, `static-session`, or `rotating-session`.
+- Provider runners must use adapter-owned environment policies. Do not inherit
+  host env blindly; API-key variables can override subscription credentials for
+  some CLIs.
 - `store-github-actions-secret` owns no-custody GitHub Actions secret read and
   encrypted writeback request preparation.
 - `store-local-file` owns local-only encrypted file persistence for development
@@ -17,6 +31,21 @@ The package family is intentionally split by responsibility:
 
 ReviewRouter remains the host app. It owns repository policy, OIDC validation,
 workflow shape, PR comments, inline findings, and control-plane endpoints.
+
+The existing Codex refresh/writeback implementation is the baseline, not
+throwaway code. For Codex OAuth on GitHub-hosted Actions, durable refresh
+writeback is required because each job starts with the GitHub Secret value from
+job start. Future providers can use lighter plans only when their adapter
+declares and tests non-rotating or no-session behavior.
+
+Current extraction rule: keep the existing packages in production and migrate
+with a strangler path. `core`, `provider-codex`, `runner-github-action`,
+`store-github-actions-secret`, and `store-local-file` are the baseline package
+family. ReviewRouter feature code remains the host-app wrapper for OIDC,
+workflow shape, PR comments, inline findings, and SaaS endpoints. New execution
+engines, including SDK/JSON workers, should be added beside the current Codex
+refresh driver first; delete compatibility code only after live public/private
+E2E, stale-generation tests, redaction canaries, and rollback have passed.
 
 ## Custody Modes
 
@@ -47,9 +76,14 @@ import {
   createSubscriptionRuntime,
   defineSubscriptionRuntimeConfig,
 } from "@reviewrouter/subscription-runtime-core";
-import { CodexCliProviderDriver } from "@reviewrouter/subscription-runtime-provider-codex";
+import {
+  CodexCliSessionDriver,
+  CodexJsonAgentDriver,
+} from "@reviewrouter/subscription-runtime-provider-codex";
 import { GitHubActionsSecretStore } from "@reviewrouter/subscription-runtime-store-github-actions-secret";
 import { GitHubActionRunner } from "@reviewrouter/subscription-runtime-runner-github-action";
+
+declare function resolvePinnedCodexBinary(): string;
 
 const config = defineSubscriptionRuntimeConfig({
   custodyMode: "no-plaintext-backend",
@@ -60,12 +94,19 @@ const config = defineSubscriptionRuntimeConfig({
 
 void config;
 
-const provider = new CodexCliProviderDriver({ codexBinaryPath: "codex" });
+const codexSessionDriver = new CodexCliSessionDriver({
+  // Pass a pinned packaged Codex binary from the composition root; avoid
+  // resolving a stale global `codex` from PATH in production.
+  codexBinaryPath: resolvePinnedCodexBinary(),
+});
+const codexAgentDriver = new CodexJsonAgentDriver({
+  codexBinaryPath: resolvePinnedCodexBinary(),
+});
 
 const runtime = createSubscriptionRuntime({
   policy,
-  sessionDriver: provider,
-  agentDriver: provider,
+  sessionDriver: codexSessionDriver,
+  agentDriver: codexAgentDriver,
   sessionStore: new GitHubActionsSecretStore(storeOptions),
   leaseStore,
   runner: new GitHubActionRunner(),
@@ -82,6 +123,97 @@ await runtime.refreshThenRunTask({
   runContext,
 });
 ```
+
+## Backend Worker Cache
+
+Backend services that own custody or local encrypted storage can avoid creating
+a fresh `CODEX_HOME` for every task. Create one worker-cache materializer per
+provider account and worker slot, prewarm it at worker startup, and keep queue
+concurrency at `1` for that slot. Scale parallelism by creating more slots.
+
+```ts
+import {
+  CodexJsonAgentDriver,
+  CodexWorkerCacheSessionMaterializer,
+} from "@reviewrouter/subscription-runtime-provider-codex";
+
+const slot = 0;
+const materializer = new CodexWorkerCacheSessionMaterializer({
+  cacheKey: `codex:${providerAccountId}:slot:${slot}`,
+  rootDir: "/var/tmp/subscription-runtime/codex",
+});
+
+const agentDriver = new CodexJsonAgentDriver({
+  codexBinaryPath: resolvePinnedCodexBinary(),
+  sessionMaterializer: materializer,
+  model: "gpt-5.5",
+  reasoningEffort: "low",
+});
+
+await agentDriver.prewarmSession({
+  session: await sessionStore.readLatest(providerAccountId),
+  redactor,
+});
+
+// Bind this driver into the host queue processor. Do not share one warmed slot
+// across concurrent jobs; create slot:1, slot:2, ... for parallelism.
+```
+
+## Backend App-Server Pool
+
+For backend workloads where the process can keep local custody of a Codex
+session, prefer a bounded app-server slot pool. Each slot owns one reusable
+`CODEX_HOME` and one long-lived `codex app-server` process. Keep one active turn
+per slot and scale parallelism by increasing the slot count.
+
+`codex exec` remains the production fallback because app-server is an
+experimental Codex protocol. The queue and host app depend only on
+`CodexJsonAgentDriver`; replacing app-server with `exec`, SDK, or another
+provider-specific engine stays a composition-root change.
+
+```ts
+import {
+  CodexAppServerExecutionEngine,
+  CodexJsonAgentDriver,
+  CodexWorkerCacheSessionPoolMaterializer,
+  PackagedCodexJsonExecutionEngine,
+} from "@reviewrouter/subscription-runtime-provider-codex";
+
+const codexBinaryPath = resolvePinnedCodexBinary();
+
+const fallback = new PackagedCodexJsonExecutionEngine({
+  codexBinaryPath,
+});
+
+const agentDriver = new CodexJsonAgentDriver({
+  engine: new CodexAppServerExecutionEngine({
+    codexBinaryPath,
+    fallback,
+  }),
+  sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
+    cacheKey: `codex:${providerAccountId}`,
+    slots: 4,
+    rootDir: "/var/tmp/subscription-runtime/codex",
+  }),
+  model: "gpt-5.5",
+  reasoningEffort: "low",
+});
+
+await agentDriver.prewarmSession({
+  session: await sessionStore.readLatest(providerAccountId),
+  redactor,
+});
+```
+
+The host queue should set concurrency to the same value as `slots` for that
+provider account. If app-server fails for a job, the engine restarts that slot
+and falls back to `codex exec` for the same materialized session.
+
+This is the intended integration shape for services such as `openai-service`:
+the service keeps its existing Nest/Bull/queue stack, while the subscription
+runtime provides the warmed Codex session and execution driver. The cache is not
+durable storage; session persistence and refresh policy still belong to the
+selected `SessionStorePort` and provider session driver.
 
 Adapters publish manifests so host apps can validate compatibility before any
 session bytes are read. That is required for future providers like Claude,
