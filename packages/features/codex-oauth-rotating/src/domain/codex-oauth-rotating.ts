@@ -377,8 +377,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
-permissions:
-  id-token: write
+permissions: {}
 
 jobs:
   codex-review:
@@ -411,6 +410,19 @@ export type CodexRotatingWorkflowSourceMetadata = {
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
 };
+
+type WorkflowPermissionEntry = {
+  readonly name: string;
+  readonly value: string;
+};
+
+type ParsedWorkflowPermissions =
+  | { readonly kind: "missing" }
+  | { readonly kind: "invalid" }
+  | {
+      readonly kind: "entries";
+      readonly entries: readonly WorkflowPermissionEntry[];
+    };
 
 export function scanCodexRotatingAdvisoryWorkflow(
   workflow: string,
@@ -500,10 +512,26 @@ export function scanCodexRotatingAdvisoryWorkflow(
   if (source.mode !== codexRotatingRuntimeAuthMode) {
     errors.push("rotating_mode_required");
   }
-  if (!workflow.includes("permissions:\n  id-token: write\n\njobs:")) {
+  const workflowPermissions = parseWorkflowPermissions(workflow, 0);
+  const reviewJobPermissions = parseWorkflowPermissions(
+    extractWorkflowJobSection(workflow, "codex-review") ?? "",
+    4,
+  );
+  if (
+    !(
+      permissionsAreEmpty(workflowPermissions) ||
+      permissionsExactly(workflowPermissions, [
+        { name: "id-token", value: "write" },
+      ])
+    )
+  ) {
     errors.push("workflow_permissions_must_grant_id_token_only");
   }
-  if (!workflow.includes("id-token: write")) {
+  if (
+    !permissionsExactly(reviewJobPermissions, [
+      { name: "id-token", value: "write" },
+    ])
+  ) {
     errors.push("review_job_requires_id_token_write");
   }
   return { valid: errors.length === 0, errors };
@@ -988,6 +1016,106 @@ function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
     ...(workflowSchemaVersion !== undefined ? { workflowSchemaVersion } : {}),
     ...(mode ? { mode } : {}),
   };
+}
+
+function extractWorkflowJobSection(
+  workflow: string,
+  jobId: string,
+): string | undefined {
+  const jobMatch = new RegExp(`^ {2}${escapeRegExp(jobId)}:\\s*$`, "m").exec(
+    workflow,
+  );
+  if (!jobMatch) {
+    return undefined;
+  }
+  const start = jobMatch.index;
+  const afterStart = start + jobMatch[0].length;
+  const remainder = workflow.slice(afterStart);
+  const nextPeerMatch = /^(?: {2}[A-Za-z0-9_-]+:\s*$|[A-Za-z0-9_-]+:\s*)/m.exec(
+    remainder,
+  );
+  const end = nextPeerMatch
+    ? afterStart + nextPeerMatch.index
+    : workflow.length;
+  return workflow.slice(start, end);
+}
+
+function parseWorkflowPermissions(
+  workflowSection: string,
+  permissionsIndent: number,
+): ParsedWorkflowPermissions {
+  const lines = workflowSection.split("\n");
+  const permissionsLineIndex = lines.findIndex((line) => {
+    const match = /^(\s*)permissions:\s*(.*)$/.exec(line);
+    return match?.[1]?.length === permissionsIndent;
+  });
+  if (permissionsLineIndex === -1) {
+    return { kind: "missing" };
+  }
+
+  const permissionsLine = lines[permissionsLineIndex] ?? "";
+  const inlineValue = permissionsLine
+    .slice(permissionsIndent + "permissions:".length)
+    .trim();
+  if (inlineValue === "{}") {
+    return { kind: "entries", entries: [] };
+  }
+  if (inlineValue.length > 0) {
+    return { kind: "invalid" };
+  }
+
+  const childIndent = permissionsIndent + 2;
+  const entries: WorkflowPermissionEntry[] = [];
+  for (const line of lines.slice(permissionsLineIndex + 1)) {
+    if (/^\s*(#.*)?$/.test(line)) {
+      continue;
+    }
+    const indent = countLeadingSpaces(line);
+    if (indent <= permissionsIndent) {
+      break;
+    }
+    if (indent !== childIndent) {
+      return { kind: "invalid" };
+    }
+    const entryMatch = new RegExp(
+      `^ {${childIndent}}([A-Za-z0-9_-]+):\\s*([A-Za-z0-9_-]+)\\s*(?:#.*)?$`,
+    ).exec(line);
+    if (!entryMatch) {
+      return { kind: "invalid" };
+    }
+    entries.push({ name: entryMatch[1]!, value: entryMatch[2]! });
+  }
+
+  return { kind: "entries", entries };
+}
+
+function permissionsAreEmpty(permissions: ParsedWorkflowPermissions): boolean {
+  return permissions.kind === "entries" && permissions.entries.length === 0;
+}
+
+function permissionsExactly(
+  permissions: ParsedWorkflowPermissions,
+  expectedEntries: readonly WorkflowPermissionEntry[],
+): boolean {
+  if (
+    permissions.kind !== "entries" ||
+    permissions.entries.length !== expectedEntries.length
+  ) {
+    return false;
+  }
+  return expectedEntries.every((expected) =>
+    permissions.entries.some(
+      (entry) => entry.name === expected.name && entry.value === expected.value,
+    ),
+  );
+}
+
+function countLeadingSpaces(value: string): number {
+  return /^ */.exec(value)?.[0].length ?? 0;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function unquoteWorkflowScalar(value: string | undefined): string | undefined {

@@ -463,6 +463,81 @@ describe("Codex rotating OAuth local E2E", () => {
     await app.close();
   });
 
+  it("reports workflow source validation failures as workflow mismatches", async () => {
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId,
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const dependencies = {
+      oidcVerifier: {
+        verify: vi.fn().mockResolvedValue(
+          githubOidcClaims({
+            runId: "9001",
+            jti: "jti-workflow-invalid",
+            now: firstRunAt,
+          }),
+        ),
+      },
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn(),
+        recordHealthReport: vi.fn(),
+      },
+      codexRotatingOAuth,
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi
+          .fn()
+          .mockRejectedValue(
+            new Error(
+              "codex_rotating_workflow_invalid:workflow_permissions_must_grant_id_token_only",
+            ),
+          ),
+      },
+      replayNonces: {
+        tryConsumeNonce: vi.fn().mockResolvedValue(true),
+      },
+      ...buildTokenFakes(),
+      codexRotatingWritebackHmacKey: "writeback-key",
+      clock: { now: vi.fn(() => firstRunAt) },
+      sessions: {},
+      ledgerKeys: {},
+      compatibility: {},
+    };
+    const app = Fastify({ logger: false });
+    await registerActionControlPlaneRoutes(
+      app,
+      dependencies as unknown as Parameters<
+        typeof registerActionControlPlaneRoutes
+      >[1],
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/prelease",
+      payload: {
+        oidcToken: "oidc-jwt",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "workflow_schema_mismatch",
+        retryable: false,
+      },
+    });
+
+    await app.close();
+  });
+
   it("skips stale queued secrets before refresh starts", async () => {
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       {
