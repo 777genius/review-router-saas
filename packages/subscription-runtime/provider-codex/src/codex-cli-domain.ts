@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { codexEnvironmentPolicy } from "./capabilities";
 
 export const codexAuthJsonMaxBytes = 32 * 1024;
 
@@ -218,29 +219,22 @@ function collectCodexAuthJsonWarnings(input: {
 }
 
 function shouldDropChildEnvKey(key: string): boolean {
-  return (
-    key === "GITHUB_TOKEN" ||
-    key === "GH_TOKEN" ||
-    key === "ACTIONS_ID_TOKEN_REQUEST_URL" ||
-    key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" ||
-    key === "GITHUB_ENV" ||
-    key === "GITHUB_OUTPUT" ||
-    key === "GITHUB_PATH" ||
-    key === "GITHUB_STEP_SUMMARY" ||
-    key === "GITHUB_STATE" ||
-    key === "NODE_OPTIONS" ||
-    key === "BASH_ENV" ||
-    key === "ENV" ||
-    key.startsWith("GIT_") ||
-    key.startsWith("INPUT_AUTH") ||
-    key.includes("CODEX_AUTH_JSON") ||
-    key.includes("REVIEWROUTER_CODEX_AUTH_JSON") ||
-    key.includes("OPENAI_API_KEY") ||
-    key.includes("CLAUDE_CODE_OAUTH_TOKEN") ||
-    key.includes("OPENROUTER_API_KEY") ||
-    key.includes("REVIEW_ROUTER_COMMENT_TOKEN") ||
-    key.includes("REVIEWROUTER_PROXY_NONCE")
+  return codexEnvironmentPolicy.denylist.some((pattern) =>
+    matchesEnvPattern(key, pattern),
   );
+}
+
+function matchesEnvPattern(key: string, pattern: string): boolean {
+  if (pattern.endsWith("*") && pattern.startsWith("*")) {
+    return key.includes(pattern.slice(1, -1));
+  }
+  if (pattern.endsWith("*")) {
+    return key.startsWith(pattern.slice(0, -1));
+  }
+  if (pattern.startsWith("*")) {
+    return key.endsWith(pattern.slice(1));
+  }
+  return key === pattern;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
