@@ -120,6 +120,29 @@ function asEnvVars(values) {
   }));
 }
 
+const apiOnlyGitLabEnvKeys = [
+  "REVIEW_ROUTER_GITLAB_API_TOKEN",
+  "REVIEW_ROUTER_GITLAB_API_BASE_URL",
+  "REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN",
+  "REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN",
+  "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+  "REVIEW_ROUTER_GITLAB_OIDC_ISSUER",
+  "REVIEW_ROUTER_GITLAB_OIDC_JWKS_URL",
+  "REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE",
+  "REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE",
+];
+
+function readOptionalEnvVars(env, keys) {
+  const values = {};
+  for (const key of keys) {
+    const value = env[key];
+    if (value !== undefined && String(value).trim() !== "") {
+      values[key] = value;
+    }
+  }
+  return values;
+}
+
 class RenderClient {
   constructor(apiKey) {
     this.apiKey = apiKey;
@@ -236,6 +259,9 @@ function buildServiceEnv({
     REVIEW_ROUTER_WORKER_ERROR_MS: "5000",
     REVIEW_ROUTER_WORKER_IDLE_MS: "5000",
   };
+  if (role === "api") {
+    Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
+  }
   if (role !== "worker") values.PORT = "10000";
   return asEnvVars(values);
 }

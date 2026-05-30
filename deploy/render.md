@@ -95,7 +95,18 @@ Render and the GitHub App webhook settings:
 openssl rand -base64 32
 ```
 
-Do not add provider credentials to Render:
+For GitLab support, `reviewrouter-api` also needs API-side integration values:
+
+```text
+REVIEW_ROUTER_GITLAB_API_TOKEN=<GitLab token used by the API to read MR metadata>
+REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN=<optional GitLab token for provisioning projects>
+REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN=<operator-only bearer token for install APIs>
+REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON=<selected GitLab repositories JSON>
+REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE=reviewrouter
+REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE=ghcr.io/777genius/review-router-gitlab-runtime:v1
+```
+
+Keep runtime/model credentials out of Render:
 
 ```text
 CODEX_AUTH_JSON
@@ -104,8 +115,7 @@ OPENAI_API_KEY
 OPENROUTER_API_KEY
 ```
 
-Provider credentials stay in each customer repository or organization GitHub
-Actions secrets.
+Those stay in each customer repository, group, or organization CI/CD secrets.
 
 ## GitHub App Settings
 
