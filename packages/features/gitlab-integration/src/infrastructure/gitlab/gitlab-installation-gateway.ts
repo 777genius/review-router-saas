@@ -1,6 +1,7 @@
 import type { GitLabInstallationPort } from "../../application/ports/gitlab-installation-port";
 import type {
   GitLabCiLintResult,
+  GitLabGroupProjectsPage,
   GitLabCiVariableSpec,
   GitLabProjectInstallationSettings,
   GitLabSetupMergeRequestFile,
@@ -30,6 +31,15 @@ type GitLabProjectApiResponse = {
       }
     | null
     | undefined;
+};
+
+type GitLabGroupProjectApiResponse = {
+  readonly id: number;
+  readonly path_with_namespace: string;
+  readonly name: string;
+  readonly default_branch?: string | null | undefined;
+  readonly web_url?: string | null | undefined;
+  readonly archived?: boolean | undefined;
 };
 
 type GitLabCiLintApiResponse = {
@@ -79,6 +89,58 @@ export class GitLabInstallationGateway implements GitLabInstallationPort {
       "",
     );
     this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async listGroupProjects(input: {
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }): Promise<GitLabGroupProjectsPage> {
+    const params = new URLSearchParams({
+      simple: "true",
+      include_subgroups: String(input.includeSubgroups),
+      archived: String(input.archived),
+      with_shared: String(input.withShared),
+      page: String(input.page),
+      per_page: String(input.perPage),
+    });
+    if (input.search) {
+      params.set("search", input.search);
+    }
+    const response = await this.request({
+      method: "GET",
+      path: `/groups/${encodeURIComponent(input.groupIdOrPath)}/projects?${params.toString()}`,
+    });
+    await ensureOk(response);
+    const projects =
+      (await response.json()) as readonly GitLabGroupProjectApiResponse[];
+
+    return {
+      groupIdOrPath: input.groupIdOrPath,
+      page:
+        parsePositiveIntegerHeader(response.headers, "x-page") ?? input.page,
+      perPage:
+        parsePositiveIntegerHeader(response.headers, "x-per-page") ??
+        input.perPage,
+      nextPage: parsePositiveIntegerHeader(response.headers, "x-next-page"),
+      total: parseNonNegativeIntegerHeader(response.headers, "x-total"),
+      totalPages: parseNonNegativeIntegerHeader(
+        response.headers,
+        "x-total-pages",
+      ),
+      projects: projects.map((project) => ({
+        projectId: String(project.id),
+        fullName: project.path_with_namespace,
+        name: project.name,
+        defaultBranch: project.default_branch ?? null,
+        webUrl: project.web_url ?? null,
+        archived: project.archived ?? false,
+      })),
+    };
   }
 
   async getProjectSettings(input: {
@@ -348,4 +410,28 @@ async function ensureOk(response: Response): Promise<void> {
   if (!response.ok) {
     throw new Error(`gitlab_api_error_${response.status}`);
   }
+}
+
+function parsePositiveIntegerHeader(
+  headers: Headers,
+  name: string,
+): number | null {
+  const value = headers.get(name)?.trim();
+  if (!value) {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseNonNegativeIntegerHeader(
+  headers: Headers,
+  name: string,
+): number | null {
+  const value = headers.get(name)?.trim();
+  if (!value) {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }

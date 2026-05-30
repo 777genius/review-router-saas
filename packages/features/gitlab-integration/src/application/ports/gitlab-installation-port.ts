@@ -1,5 +1,6 @@
 import type {
   GitLabCiLintResult,
+  GitLabGroupProjectsPage,
   GitLabCiVariableSpec,
   GitLabProjectInstallationSettings,
   GitLabSetupMergeRequestFile,
@@ -11,6 +12,16 @@ export type GitLabSetupMergeRequestResult = {
 };
 
 export interface GitLabInstallationPort {
+  listGroupProjects(input: {
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }): Promise<GitLabGroupProjectsPage>;
+
   getProjectSettings(input: {
     readonly projectId: string;
   }): Promise<GitLabProjectInstallationSettings>;

@@ -6,6 +6,7 @@ import {
   exchangeGitLabCiIdToken,
   type ExchangeGitLabCiIdTokenDependencies,
 } from "../../application/use-cases/exchange-gitlab-ci-id-token";
+import { discoverGitLabGroupProjects } from "../../application/use-cases/discover-gitlab-group-projects";
 import { provisionGitLabReviewRouterProject } from "../../application/use-cases/provision-gitlab-reviewrouter-project";
 import { provisionGitLabReviewRouterProjects } from "../../application/use-cases/provision-gitlab-reviewrouter-projects";
 import {
@@ -69,6 +70,27 @@ const bulkProvisionBodySchema = provisionBodySchema.extend({
     .max(100),
 });
 
+const booleanQuerySchema = z.enum(["true", "false"]).transform((value) => {
+  return value === "true";
+});
+
+const positiveIntegerQuerySchema = z
+  .string()
+  .regex(/^[1-9][0-9]*$/)
+  .transform((value) => Number.parseInt(value, 10));
+
+const discoverGroupProjectsQuerySchema = z
+  .object({
+    groupId: z.string().min(1),
+    includeSubgroups: booleanQuerySchema.optional(),
+    archived: booleanQuerySchema.optional(),
+    withShared: booleanQuerySchema.optional(),
+    page: positiveIntegerQuerySchema.optional(),
+    perPage: positiveIntegerQuerySchema.optional(),
+    search: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+
 const controlCiConfigQuerySchema = z
   .object({
     runtimeImage: z.string().min(1).optional(),
@@ -109,6 +131,47 @@ export async function registerGitLabIntegrationRoutes(
       }
     },
   );
+
+  app.get("/api/gitlab/install/v1/group-projects", async (request, reply) => {
+    if (dependencies.controlPlaneEnabled === false) {
+      return sendGitLabErrorCode(reply, "gitlab_control_plane_disabled", 503);
+    }
+    if (!dependencies.installerAdminToken) {
+      return sendGitLabErrorCode(reply, "gitlab_installation_unavailable", 503);
+    }
+    if (readBearerToken(request) !== dependencies.installerAdminToken) {
+      return sendGitLabErrorCode(
+        reply,
+        "gitlab_installation_unauthorized",
+        401,
+      );
+    }
+    if (!dependencies.installation) {
+      return sendGitLabErrorCode(reply, "gitlab_installation_unavailable", 503);
+    }
+    try {
+      const query = discoverGroupProjectsQuerySchema.parse(request.query);
+      const result = await discoverGitLabGroupProjects(
+        {
+          groupIdOrPath: query.groupId,
+          ...(query.includeSubgroups !== undefined
+            ? { includeSubgroups: query.includeSubgroups }
+            : {}),
+          ...(query.archived !== undefined ? { archived: query.archived } : {}),
+          ...(query.withShared !== undefined
+            ? { withShared: query.withShared }
+            : {}),
+          ...(query.page !== undefined ? { page: query.page } : {}),
+          ...(query.perPage !== undefined ? { perPage: query.perPage } : {}),
+          ...(query.search ? { search: query.search } : {}),
+        },
+        { installation: dependencies.installation },
+      );
+      return reply.send(result);
+    } catch (error) {
+      return sendGitLabError(reply, error);
+    }
+  });
 
   app.post(
     "/api/gitlab/install/v1/bulk-provision",

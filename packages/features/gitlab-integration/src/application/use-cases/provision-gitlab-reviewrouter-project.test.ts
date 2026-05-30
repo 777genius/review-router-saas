@@ -4,9 +4,11 @@ import type { GitLabInstallationPort } from "../ports/gitlab-installation-port";
 import {
   type GitLabCiLintResult,
   type GitLabCiVariableSpec,
+  type GitLabGroupProjectsPage,
   type GitLabProjectInstallationSettings,
   type GitLabSetupMergeRequestFile,
 } from "../../domain/gitlab-installation";
+import { discoverGitLabGroupProjects } from "./discover-gitlab-group-projects";
 import { provisionGitLabReviewRouterProject } from "./provision-gitlab-reviewrouter-project";
 import { provisionGitLabReviewRouterProjects } from "./provision-gitlab-reviewrouter-projects";
 
@@ -30,10 +32,63 @@ class InMemoryInstallation implements GitLabInstallationPort {
   public updatedCiConfigPath: string | null = null;
   public updatedProjectIds: string[] = [];
   public variables: GitLabCiVariableSpec[] = [];
+  public groupProjectsCalls: Array<{
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }> = [];
+  public groupProjectsPage: GitLabGroupProjectsPage = {
+    groupIdOrPath: "12",
+    page: 1,
+    perPage: 100,
+    nextPage: null,
+    total: 2,
+    totalPages: 1,
+    projects: [
+      {
+        projectId: "123",
+        fullName: "group/project-a",
+        name: "project-a",
+        defaultBranch: "main",
+        webUrl: "https://gitlab.com/group/project-a",
+        archived: false,
+      },
+      {
+        projectId: "456",
+        fullName: "group/sub/project-b",
+        name: "project-b",
+        defaultBranch: "main",
+        webUrl: "https://gitlab.com/group/sub/project-b",
+        archived: false,
+      },
+    ],
+  };
   public setupMergeRequest: {
     readonly sourceBranch: string;
     readonly files: readonly GitLabSetupMergeRequestFile[];
   } | null = null;
+
+  async listGroupProjects(input: {
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }): Promise<GitLabGroupProjectsPage> {
+    this.groupProjectsCalls.push(input);
+    return {
+      ...this.groupProjectsPage,
+      groupIdOrPath: input.groupIdOrPath,
+      page: input.page,
+      perPage: input.perPage,
+    };
+  }
 
   async getProjectSettings(input: {
     readonly projectId: string;
@@ -80,6 +135,68 @@ class InMemoryInstallation implements GitLabInstallationPort {
     };
   }
 }
+
+describe("discoverGitLabGroupProjects", () => {
+  it("discovers GitLab group projects with safe onboarding defaults", async () => {
+    const installation = new InMemoryInstallation();
+
+    await expect(
+      discoverGitLabGroupProjects(
+        {
+          groupIdOrPath: "group/platform",
+          search: "project",
+        },
+        { installation },
+      ),
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      groupIdOrPath: "group/platform",
+      page: 1,
+      perPage: 100,
+      nextPage: null,
+      total: 2,
+      totalPages: 1,
+      projectIds: ["123", "456"],
+      projects: installation.groupProjectsPage.projects,
+    });
+    expect(installation.groupProjectsCalls).toEqual([
+      {
+        groupIdOrPath: "group/platform",
+        includeSubgroups: true,
+        archived: false,
+        withShared: false,
+        page: 1,
+        perPage: 100,
+        search: "project",
+      },
+    ]);
+  });
+
+  it("rejects invalid GitLab group discovery input before calling GitLab", async () => {
+    const installation = new InMemoryInstallation();
+
+    await expect(
+      discoverGitLabGroupProjects(
+        {
+          groupIdOrPath: "/group",
+        },
+        { installation },
+      ),
+    ).rejects.toThrow("gitlab_group_id_or_path_invalid");
+
+    await expect(
+      discoverGitLabGroupProjects(
+        {
+          groupIdOrPath: "group",
+          perPage: 101,
+        },
+        { installation },
+      ),
+    ).rejects.toThrow("gitlab_group_projects_per_page_invalid");
+
+    expect(installation.groupProjectsCalls).toEqual([]);
+  });
+});
 
 describe("provisionGitLabReviewRouterProject", () => {
   it("uses ci_config_path after CI lint dry-run succeeds", async () => {

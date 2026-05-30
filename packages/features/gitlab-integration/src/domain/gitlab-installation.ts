@@ -14,6 +14,25 @@ export type GitLabProjectInstallationSettings = {
   readonly canCreateMergeRequest: boolean;
 };
 
+export type GitLabGroupProject = {
+  readonly projectId: string;
+  readonly fullName: string;
+  readonly name: string;
+  readonly defaultBranch: string | null;
+  readonly webUrl: string | null;
+  readonly archived: boolean;
+};
+
+export type GitLabGroupProjectsPage = {
+  readonly groupIdOrPath: string;
+  readonly page: number;
+  readonly perPage: number;
+  readonly nextPage: number | null;
+  readonly total: number | null;
+  readonly totalPages: number | null;
+  readonly projects: readonly GitLabGroupProject[];
+};
+
 export type GitLabCiLintResult = {
   readonly valid: boolean;
   readonly errors: readonly string[];

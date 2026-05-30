@@ -118,6 +118,16 @@ When `variableTarget.kind` is `group`, the shared GitLab CI variables are
 configured once for the group before the project loop:
 
 ```bash
+curl -fsS "$REVIEW_ROUTER_API_URL/api/gitlab/install/v1/group-projects?groupId=my-group%2Fplatform&includeSubgroups=true&withShared=false&perPage=100" \
+  -H "Authorization: Bearer $REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN"
+```
+
+Use the returned `projectIds` as the input for bulk provisioning. `groupId` can
+be either a numeric group ID or a URL-encoded full group path. Discovery defaults
+to subgroups included, archived projects excluded, and shared-in projects
+excluded so the first rollout stays inside the group hierarchy.
+
+```bash
 curl -fsS -X POST "$REVIEW_ROUTER_API_URL/api/gitlab/install/v1/bulk-provision" \
   -H "Authorization: Bearer $REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \

@@ -17,6 +17,7 @@ import type {
 import type {
   GitLabCiLintResult,
   GitLabCiVariableSpec,
+  GitLabGroupProjectsPage,
   GitLabProjectInstallationSettings,
 } from "../../domain/gitlab-installation";
 import { registerGitLabIntegrationRoutes } from "./register-gitlab-integration-routes";
@@ -107,6 +108,51 @@ class StaticInstallation implements GitLabInstallationPort {
   public updatedCiConfigPath: string | null = null;
   public updatedProjectIds: string[] = [];
   public failingProjectIds = new Set<string>();
+  public groupProjectsCalls: Array<{
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }> = [];
+  public groupProjectsPage: GitLabGroupProjectsPage = {
+    groupIdOrPath: "12",
+    page: 1,
+    perPage: 100,
+    nextPage: null,
+    total: 1,
+    totalPages: 1,
+    projects: [
+      {
+        projectId: "123",
+        fullName: "group/project-123",
+        name: "project-123",
+        defaultBranch: "main",
+        webUrl: "https://gitlab.com/group/project-123",
+        archived: false,
+      },
+    ],
+  };
+
+  async listGroupProjects(input: {
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }): Promise<GitLabGroupProjectsPage> {
+    this.groupProjectsCalls.push(input);
+    return {
+      ...this.groupProjectsPage,
+      groupIdOrPath: input.groupIdOrPath,
+      page: input.page,
+      perPage: input.perPage,
+    };
+  }
 
   async getProjectSettings(input: {
     readonly projectId: string;
@@ -265,6 +311,49 @@ describe("registerGitLabIntegrationRoutes", () => {
     ]);
   });
 
+  it("discovers GitLab group projects behind the same admin bearer", async () => {
+    const installation = new StaticInstallation();
+    const app = await createApp({ installation, exchange: false });
+
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=platform%2Freview",
+    });
+
+    expect(unauthorized.statusCode).toBe(401);
+    expect(installation.groupProjectsCalls).toEqual([]);
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=platform%2Freview&includeSubgroups=false&withShared=true&page=2&perPage=50&search=api",
+      headers: { authorization: "Bearer installer-admin" },
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      protocolVersion: 1,
+      groupIdOrPath: "platform/review",
+      page: 2,
+      perPage: 50,
+      nextPage: null,
+      total: 1,
+      totalPages: 1,
+      projectIds: ["123"],
+      projects: installation.groupProjectsPage.projects,
+    });
+    expect(installation.groupProjectsCalls).toEqual([
+      {
+        groupIdOrPath: "platform/review",
+        includeSubgroups: false,
+        archived: false,
+        withShared: true,
+        page: 2,
+        perPage: 50,
+        search: "api",
+      },
+    ]);
+  });
+
   it("does not expose provisioning when installation dependencies are absent", async () => {
     const app = await createApp();
 
@@ -300,9 +389,14 @@ describe("registerGitLabIntegrationRoutes", () => {
         projectIds: ["123"],
       },
     });
+    const unauthorizedDiscover = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=12",
+    });
 
     expect(unauthorizedSingle.statusCode).toBe(401);
     expect(unauthorizedBulk.statusCode).toBe(401);
+    expect(unauthorizedDiscover.statusCode).toBe(401);
 
     const authorizedSingle = await app.inject({
       method: "POST",
@@ -319,6 +413,11 @@ describe("registerGitLabIntegrationRoutes", () => {
         projectIds: ["123"],
       },
     });
+    const authorizedDiscover = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=12",
+      headers: { authorization: "Bearer installer-admin" },
+    });
 
     expect(authorizedSingle.statusCode).toBe(503);
     expect(authorizedSingle.json()).toMatchObject({
@@ -326,6 +425,10 @@ describe("registerGitLabIntegrationRoutes", () => {
     });
     expect(authorizedBulk.statusCode).toBe(503);
     expect(authorizedBulk.json()).toMatchObject({
+      error: { code: "gitlab_installation_unavailable" },
+    });
+    expect(authorizedDiscover.statusCode).toBe(503);
+    expect(authorizedDiscover.json()).toMatchObject({
       error: { code: "gitlab_installation_unavailable" },
     });
   });
