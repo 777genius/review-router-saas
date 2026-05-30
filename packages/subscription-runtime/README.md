@@ -132,6 +132,9 @@ Operational constraints:
 - Keep queue concurrency bounded to the number of warmed execution slots for a
   provider account.
 
+See [`../../spikes/subscription-runtime-file-backend-worker`](../../spikes/subscription-runtime-file-backend-worker)
+for a host-neutral worker skeleton that can be wrapped by any queue framework.
+
 ## Minimal Composition Shape
 
 ```ts
