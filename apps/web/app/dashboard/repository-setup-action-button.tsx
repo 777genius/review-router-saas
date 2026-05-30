@@ -314,11 +314,13 @@ function setupActionErrorText(error: string): string {
     case "dashboard_action_failed":
       return "The dashboard action failed. Retry once, then inspect server logs if it repeats.";
     case "setup_pr_not_merged":
-      return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds.";
+      return "GitHub does not show the workflow on the setup PR target branch yet. If you just merged the setup PR, wait a few seconds.";
     case "setup_pr_closed":
       return "The saved setup PR was closed before it was merged. Recreate the setup PR, then merge the new one.";
     case "setup_pr_branch_deleted":
       return "The saved setup PR branch was deleted. Recreate the setup PR to continue.";
+    case "setup_pr_wrong_base_branch":
+      return "The saved setup PR was merged outside the allowed setup branches. Recreate the setup PR, then merge it into dev, develop, or the repository default branch.";
     case "github_operation_forbidden":
       return "GitHub refused the setup PR update. Check GitHub App Contents, Workflows, and Pull requests write permissions, then retry.";
     case "github_operation_not_found":

@@ -2,6 +2,7 @@ export type WorkflowSetupPullRequest = {
   readonly url: string;
   readonly number: number;
   readonly branch: string;
+  readonly baseBranch?: string;
 };
 
 export type WorkflowSetupFile = {

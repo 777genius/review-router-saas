@@ -585,6 +585,18 @@ describe("OctokitWorkflowSetupGateway", () => {
     expect(postPullCall?.parameters).toMatchObject({ base: "develop" });
   });
 
+  it("returns the selected setup pull request base branch", async () => {
+    const requester = new FakeRequester(null, {
+      existingBranches: ["main", "dev"],
+      pullRequestResponses: [[]],
+    });
+    const gateway = new OctokitWorkflowSetupGateway(requester);
+
+    await expect(
+      gateway.createOrUpdateSetupPullRequest(setupInput),
+    ).resolves.toMatchObject({ baseBranch: "dev" });
+  });
+
   it("writes every workflow file into the setup branch", async () => {
     const requester = new FakeRequester(null);
     const gateway = new OctokitWorkflowSetupGateway(requester);

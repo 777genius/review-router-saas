@@ -55,6 +55,7 @@ import {
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
   OctokitWorkflowSetupGateway,
+  preferredSetupBaseBranches,
   PrismaWorkflowProvisioningRepository,
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
@@ -78,7 +79,7 @@ import {
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
 import { refreshGitHubUserRepositoryAccess } from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
-import { inspectSetupPullRequestStatus } from "../../src/server/setup-pull-request-status";
+import { inspectSetupPullRequest } from "../../src/server/setup-pull-request-status";
 import {
   AppFirstWorkflowSetupGateway,
   safeWorkflowSetupFallbackReason,
@@ -495,6 +496,12 @@ async function createSetupPullRequestMutation(
       repository.installation.githubInstallationId.toString(),
     );
     const actionRef = resolveReviewRouterActionRef();
+    const setupBaseBranch = await resolveDashboardSetupBaseBranch({
+      octokit,
+      owner: repository.owner,
+      name: repository.name,
+      defaultBranch: repository.defaultBranch,
+    });
     const resolvedRuntime = await loadResolvedReviewRuntime({
       prisma,
       workspaceId,
@@ -527,7 +534,7 @@ async function createSetupPullRequestMutation(
           repository.installation.githubInstallationId.toString(),
         owner: repository.owner,
         name: repository.name,
-        defaultBranch: repository.defaultBranch,
+        defaultBranch: setupBaseBranch,
         actionRef,
         conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
         ...(codexRotatingProviderInstanceId
@@ -556,6 +563,7 @@ async function createSetupPullRequestMutation(
           metadata: {
             reason: "workflow_already_current",
             actionVersion: actionRef,
+            baseBranch: setupBaseBranch,
             workflowPath: codexRotatingProviderInstanceId
               ? defaultCodexRotatingWorkflowPath
               : defaultWorkflowPath,
@@ -631,6 +639,7 @@ async function createSetupPullRequestMutation(
         notice: "setup_pr_ready",
         repository: repository.fullName,
         pr: pullRequest.url,
+        branch: pullRequest.baseBranch ?? setupBaseBranch,
         workspace: workspaceId,
         section: "repositories",
       };
@@ -705,18 +714,40 @@ async function confirmSetupPullRequestMergedMutation(
     const pullRequestNumber = pullRequestNumberFromUrl(
       setupProvisioning?.pullRequestUrl ?? "",
     );
-    const setupPullRequestStatus = pullRequestNumber
-      ? await inspectSetupPullRequestStatus(
+    const setupPullRequestInspection = pullRequestNumber
+      ? await inspectSetupPullRequest(
           {
             owner: repository.owner,
             name: repository.name,
             pullRequestNumber,
             setupBranch: setupProvisioning?.branch ?? null,
+            allowedBaseBranches: preferredSetupBaseBranches(
+              repository.defaultBranch,
+            ),
           },
           octokit,
         )
       : null;
+    const setupPullRequestStatus = setupPullRequestInspection?.status ?? null;
     const setupPullRequestMerged = setupPullRequestStatus === "merged";
+    const setupBaseBranch =
+      setupPullRequestInspection?.baseBranch ??
+      (await resolveDashboardSetupBaseBranch({
+        octokit,
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+      }));
+    if (setupPullRequestStatus === "wrong_base_branch") {
+      await markRepositoryWorkflowSetupNeedsAttention({
+        prisma,
+        repositoryId,
+        setupBranch: setupProvisioning?.branch ?? null,
+        pullRequestNumber,
+        reason: "setup_pr_wrong_base_branch",
+      });
+      throw new Error("setup_pr_wrong_base_branch");
+    }
     const resolvedRuntime = setupPullRequestMerged
       ? null
       : await loadResolvedReviewRuntime({
@@ -759,7 +790,7 @@ async function confirmSetupPullRequestMergedMutation(
               repository.installation.githubInstallationId.toString(),
             owner: repository.owner,
             name: repository.name,
-            defaultBranch: repository.defaultBranch,
+            defaultBranch: setupBaseBranch,
             actionRef: resolveReviewRouterActionRef(),
             conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
             ...(codexRotatingProviderInstanceId
@@ -2075,6 +2106,50 @@ function githubApiStatus(error: unknown): number | null {
   return null;
 }
 
+type GitHubBranchRequester = {
+  request: (
+    route: string,
+    parameters?: Record<string, unknown>,
+  ) => Promise<{ readonly data: unknown }>;
+};
+
+async function resolveDashboardSetupBaseBranch(input: {
+  readonly octokit: GitHubBranchRequester;
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+}): Promise<string> {
+  for (const branch of preferredSetupBaseBranches(input.defaultBranch)) {
+    if (await dashboardBranchExists(input, branch)) {
+      return branch;
+    }
+  }
+  return input.defaultBranch;
+}
+
+async function dashboardBranchExists(
+  input: {
+    readonly octokit: GitHubBranchRequester;
+    readonly owner: string;
+    readonly name: string;
+  },
+  branch: string,
+): Promise<boolean> {
+  try {
+    await input.octokit.request("GET /repos/{owner}/{repo}/git/ref/{ref}", {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${branch}`,
+    });
+    return true;
+  } catch (error) {
+    if (githubApiStatus(error) === 404) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function readGitHubOrganizationPlanName(value: unknown): string | null {
   if (
     typeof value === "object" &&
@@ -2323,7 +2398,10 @@ async function markRepositoryWorkflowSetupNeedsAttention(input: {
   readonly repositoryId: string;
   readonly setupBranch: string | null;
   readonly pullRequestNumber: number | null;
-  readonly reason: "setup_pr_closed" | "setup_pr_branch_deleted";
+  readonly reason:
+    | "setup_pr_closed"
+    | "setup_pr_branch_deleted"
+    | "setup_pr_wrong_base_branch";
 }): Promise<void> {
   const provisioningWhere =
     input.setupBranch || input.pullRequestNumber
