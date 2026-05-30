@@ -131,16 +131,16 @@ Required behavior:
 ## Options
 
 1. Spike only, keep production on `codex exec`.
-   🎯 9   🛡️ 9   🧠 3, ~300-700 LOC.
+   🎯 9 🛡️ 9 🧠 3, ~300-700 LOC.
    Best for measuring real latency and protocol stability before committing.
 
 2. App-server adapter with JSON CLI fallback.
-   🎯 8   🛡️ 7   🧠 7, ~2.5k-4.5k LOC.
+   🎯 8 🛡️ 7 🧠 7, ~2.5k-4.5k LOC.
    Good next step if spike shows meaningful latency reduction. Production can
    turn it on by feature flag per repo/account and fall back on protocol failure.
 
 3. Full daemon worker pool for backend workloads.
-   🎯 7.5   🛡️ 8   🧠 8.5, ~5k-9k LOC.
+   🎯 7.5 🛡️ 8 🧠 8.5, ~5k-9k LOC.
    Needed for `openai-service` style high-throughput jobs: queue adapter, slot
    pool, backpressure, process recycling, metrics, health checks, and history
    routing.

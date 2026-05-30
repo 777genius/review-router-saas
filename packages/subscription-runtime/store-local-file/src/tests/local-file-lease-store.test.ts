@@ -36,7 +36,9 @@ describe("Local file lease store", () => {
   });
 
   it("acquires a lease and blocks another active lease until commit", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-lease-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
     const store = new LocalFileLeaseStore({ rootDir });
 
     try {
@@ -99,7 +101,9 @@ describe("Local file lease store", () => {
 
   it("replaces expired active leases", async () => {
     let nowMs = Date.parse("2026-05-30T00:00:00.000Z");
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-lease-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
     const store = new LocalFileLeaseStore({
       rootDir,
       now: () => new Date(nowMs),
@@ -131,7 +135,9 @@ describe("Local file lease store", () => {
   });
 
   it("validates generation hash and keeps committed metadata idempotent", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-lease-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
     const store = new LocalFileLeaseStore({ rootDir });
 
     try {
@@ -192,7 +198,9 @@ describe("Local file lease store", () => {
   });
 
   it("releases active leases without deleting committed records", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-lease-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
     const store = new LocalFileLeaseStore({ rootDir });
 
     try {
@@ -245,7 +253,9 @@ describe("Local file lease store", () => {
 
 describe("Local file backend runtime adapters", () => {
   it("creates session and lease stores from a single backend config", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-local-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-local-"),
+    );
     const encodedKey = Buffer.from(encryptionKey).toString("base64url");
     const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
       providerId: "fake",
@@ -264,7 +274,9 @@ describe("Local file backend runtime adapters", () => {
   });
 
   it("runs refresh and writeback through local file session and lease stores", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-local-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-local-"),
+    );
     const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
       providerId: "fake",
       rootDir,
@@ -323,7 +335,9 @@ describe("Local file backend runtime adapters", () => {
   });
 
   it("allows only one concurrent local file refresh writeback", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-local-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-local-"),
+    );
     const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
       providerId: "fake",
       rootDir,
@@ -382,7 +396,9 @@ describe("Local file backend runtime adapters", () => {
   });
 
   it("releases the local file lease when refresh leaves the session unchanged", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-local-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-local-"),
+    );
     const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
       providerId: "fake",
       rootDir,
@@ -432,7 +448,9 @@ describe("Local file backend runtime adapters", () => {
   });
 
   it("releases the local file lease when validation blocks refresh", async () => {
-    const rootDir = await mkdtemp(join(tmpdir(), "subscription-runtime-local-"));
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-local-"),
+    );
     const { sessionStore, leaseStore } = createLocalFileBackendRuntimeAdapters({
       providerId: "fake",
       rootDir,

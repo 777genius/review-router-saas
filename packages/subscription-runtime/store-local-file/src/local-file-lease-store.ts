@@ -176,7 +176,8 @@ export class LocalFileLeaseStore implements LeaseStorePort {
       }
       return {
         status: "stale_generation",
-        safeMessage: "Lease was already committed with different writeback metadata.",
+        safeMessage:
+          "Lease was already committed with different writeback metadata.",
       };
     }
 
@@ -256,14 +257,22 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     record: PersistedLeaseRecord,
     options: { readonly exclusive: boolean },
   ): Promise<void> {
-    await this.writeRecord(this.activePath(record.providerInstanceId), record, options);
+    await this.writeRecord(
+      this.activePath(record.providerInstanceId),
+      record,
+      options,
+    );
   }
 
   private async writeLeaseRecord(
     record: PersistedLeaseRecord,
     options: { readonly exclusive: boolean },
   ): Promise<void> {
-    await this.writeRecord(this.leaseRecordPath(record.leaseId), record, options);
+    await this.writeRecord(
+      this.leaseRecordPath(record.leaseId),
+      record,
+      options,
+    );
   }
 
   private async writeRecord(

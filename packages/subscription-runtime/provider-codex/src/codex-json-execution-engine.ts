@@ -24,7 +24,10 @@ export type CodexMaterializedSession = {
 export type CodexExecutionResult = {
   readonly outputText: string;
   readonly structuredOutput?: unknown;
-  readonly warnings: readonly { readonly code: string; readonly safeMessage: string }[];
+  readonly warnings: readonly {
+    readonly code: string;
+    readonly safeMessage: string;
+  }[];
 };
 
 export type CodexExecutionEngine = {
@@ -60,9 +63,7 @@ export type PackagedCodexJsonExecutionEngineOptions = {
 const defaultTimeoutMs = 10 * 60 * 1000;
 const defaultMaxOutputBytes = 512 * 1024;
 
-export class PackagedCodexJsonExecutionEngine
-  implements CodexExecutionEngine
-{
+export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
   readonly kind = "packaged-json" as const;
   readonly capabilities = {
     supportsStructuredOutput: true,

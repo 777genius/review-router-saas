@@ -48,9 +48,7 @@ export function createSubscriptionRuntime(
     provider: deps.sessionDriver.capabilities,
     agent: deps.agentDriver.capabilities,
     runner: deps.runner.capabilities,
-    ...(deps.sessionStore
-      ? { store: deps.sessionStore.capabilities }
-      : {}),
+    ...(deps.sessionStore ? { store: deps.sessionStore.capabilities } : {}),
   });
 
   if (decision.status === "rejected") {
@@ -190,147 +188,147 @@ class RuntimeKernel {
       });
 
       try {
-      const refreshStartedAt = this.deps.clock.monotonicMs();
-      this.emit("provider.refresh.started", input.runContext.runId, {
-        generation: String(session.generation),
-      });
-      const refreshed = await sessionDriver.refreshSession({
-        session: session.artifact,
-        workspace,
-        runner: this.deps.runner,
-        redactor: this.deps.redactor,
-        abortSignal: input.runContext.abortSignal,
-      });
-      this.emit(
-        "provider.refresh.completed",
-        input.runContext.runId,
-        {
-          providerState: refreshed.providerState,
-        },
-        this.deps.clock.monotonicMs() - refreshStartedAt,
-      );
-      this.deps.observability.timing(
-        "subscription_runtime.provider_refresh_ms",
-        this.deps.clock.monotonicMs() - refreshStartedAt,
-      );
-
-      if (refreshed.providerState === "needs-reconnect") {
-        this.deps.observability.count(
-          "subscription_runtime.reconnect_required",
+        const refreshStartedAt = this.deps.clock.monotonicMs();
+        this.emit("provider.refresh.started", input.runContext.runId, {
+          generation: String(session.generation),
+        });
+        const refreshed = await sessionDriver.refreshSession({
+          session: session.artifact,
+          workspace,
+          runner: this.deps.runner,
+          redactor: this.deps.redactor,
+          abortSignal: input.runContext.abortSignal,
+        });
+        this.emit(
+          "provider.refresh.completed",
+          input.runContext.runId,
+          {
+            providerState: refreshed.providerState,
+          },
+          this.deps.clock.monotonicMs() - refreshStartedAt,
         );
-        this.emitFailure("needs_reconnect", input.runContext.runId);
-        return blocked(
-          "provider_reconnect_required",
-          "Provider session needs reconnect.",
-          refreshed.warnings,
+        this.deps.observability.timing(
+          "subscription_runtime.provider_refresh_ms",
+          this.deps.clock.monotonicMs() - refreshStartedAt,
         );
-      }
 
-      if (refreshed.providerState === "permission-required") {
-        this.emitFailure("permission_required", input.runContext.runId);
-        return blocked(
-          "permission_required",
-          "Provider permission is required.",
-          refreshed.warnings,
-        );
-      }
+        if (refreshed.providerState === "needs-reconnect") {
+          this.deps.observability.count(
+            "subscription_runtime.reconnect_required",
+          );
+          this.emitFailure("needs_reconnect", input.runContext.runId);
+          return blocked(
+            "provider_reconnect_required",
+            "Provider session needs reconnect.",
+            refreshed.warnings,
+          );
+        }
 
-      if (refreshed.providerState === "quota-limited") {
-        this.deps.observability.count("subscription_runtime.quota_limited");
-        this.emitFailure("quota_limited", input.runContext.runId);
-        return blocked(
-          "quota_limited",
-          "Provider quota is limited.",
-          refreshed.warnings,
-        );
-      }
+        if (refreshed.providerState === "permission-required") {
+          this.emitFailure("permission_required", input.runContext.runId);
+          return blocked(
+            "permission_required",
+            "Provider permission is required.",
+            refreshed.warnings,
+          );
+        }
 
-      const nextHash = computeSessionGenerationHash({
-        artifact: refreshed.artifact,
-      });
-      const idempotencyKey = this.deps.idGenerator.idempotencyKey({
-        providerInstanceId: input.providerInstanceId,
-        runId: input.runContext.runId,
-        attempt: input.runContext.attempt,
-        purpose: "writeback",
-      });
+        if (refreshed.providerState === "quota-limited") {
+          this.deps.observability.count("subscription_runtime.quota_limited");
+          this.emitFailure("quota_limited", input.runContext.runId);
+          return blocked(
+            "quota_limited",
+            "Provider quota is limited.",
+            refreshed.warnings,
+          );
+        }
 
-      if (nextHash === session.generationHash) {
+        const nextHash = computeSessionGenerationHash({
+          artifact: refreshed.artifact,
+        });
+        const idempotencyKey = this.deps.idGenerator.idempotencyKey({
+          providerInstanceId: input.providerInstanceId,
+          runId: input.runContext.runId,
+          attempt: input.runContext.attempt,
+          purpose: "writeback",
+        });
+
+        if (nextHash === session.generationHash) {
+          await leaseStore.finalize({
+            leaseId: lease.leaseId,
+            restoredGenerationHash: session.generationHash,
+          });
+          await leaseStore.markWritebackCommitted({
+            leaseId: lease.leaseId,
+            nextGenerationHash: session.generationHash,
+            idempotencyKey,
+          });
+          leaseClosed = true;
+          this.emit("session.writeback.completed", input.runContext.runId, {
+            status: "skipped_unchanged",
+            generation: String(session.generation),
+          });
+          return {
+            status: "skipped",
+            reason: "session_unchanged",
+            session,
+            warnings: refreshed.warnings,
+          };
+        }
+
         await leaseStore.finalize({
           leaseId: lease.leaseId,
           restoredGenerationHash: session.generationHash,
         });
+        this.emit("session.writeback.started", input.runContext.runId, {
+          leaseId: lease.leaseId,
+          expectedGeneration: String(session.generation),
+        });
+        await leaseStore.markWritebackStarted({
+          leaseId: lease.leaseId,
+        });
+
+        const writeback = await sessionStore.write({
+          providerInstanceId: input.providerInstanceId,
+          expectedGeneration: session.generation,
+          nextArtifact: refreshed.artifact,
+          idempotencyKey,
+          leaseId: lease.leaseId,
+        });
+
+        if (writeback.status === "stale_generation") {
+          this.deps.observability.count(
+            "subscription_runtime.writeback_conflict",
+          );
+          this.emit("session.writeback.completed", input.runContext.runId, {
+            status: writeback.status,
+          });
+          this.emitFailure("stale_generation", input.runContext.runId);
+          return {
+            status: "skipped",
+            reason: "stale_generation",
+            warnings: refreshed.warnings,
+          };
+        }
+
         await leaseStore.markWritebackCommitted({
           leaseId: lease.leaseId,
-          nextGenerationHash: session.generationHash,
+          nextGenerationHash: writeback.generationHash,
           idempotencyKey,
         });
         leaseClosed = true;
         this.emit("session.writeback.completed", input.runContext.runId, {
-          status: "skipped_unchanged",
-          generation: String(session.generation),
-        });
-        return {
-          status: "skipped",
-          reason: "session_unchanged",
-          session,
-          warnings: refreshed.warnings,
-        };
-      }
-
-      await leaseStore.finalize({
-        leaseId: lease.leaseId,
-        restoredGenerationHash: session.generationHash,
-      });
-      this.emit("session.writeback.started", input.runContext.runId, {
-        leaseId: lease.leaseId,
-        expectedGeneration: String(session.generation),
-      });
-      await leaseStore.markWritebackStarted({
-        leaseId: lease.leaseId,
-      });
-
-      const writeback = await sessionStore.write({
-        providerInstanceId: input.providerInstanceId,
-        expectedGeneration: session.generation,
-        nextArtifact: refreshed.artifact,
-        idempotencyKey,
-        leaseId: lease.leaseId,
-      });
-
-      if (writeback.status === "stale_generation") {
-        this.deps.observability.count(
-          "subscription_runtime.writeback_conflict",
-        );
-        this.emit("session.writeback.completed", input.runContext.runId, {
           status: writeback.status,
+          generation: String(writeback.generation),
         });
-        this.emitFailure("stale_generation", input.runContext.runId);
+        this.deps.observability.count("subscription_runtime.refresh_success");
+
         return {
-          status: "skipped",
-          reason: "stale_generation",
+          status: "ready",
+          session: nextEnvelope(session, refreshed.artifact, writeback),
+          writeback,
           warnings: refreshed.warnings,
         };
-      }
-
-      await leaseStore.markWritebackCommitted({
-        leaseId: lease.leaseId,
-        nextGenerationHash: writeback.generationHash,
-        idempotencyKey,
-      });
-      leaseClosed = true;
-      this.emit("session.writeback.completed", input.runContext.runId, {
-        status: writeback.status,
-        generation: String(writeback.generation),
-      });
-      this.deps.observability.count("subscription_runtime.refresh_success");
-
-      return {
-        status: "ready",
-        session: nextEnvelope(session, refreshed.artifact, writeback),
-        writeback,
-        warnings: refreshed.warnings,
-      };
       } finally {
         await workspace.dispose?.();
       }

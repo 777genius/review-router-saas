@@ -32,18 +32,17 @@ type CodexJsonAgentDriverBaseOptions = {
   readonly sessionMaterializer?: CodexSessionMaterializer;
 };
 
-export type CodexJsonAgentDriverOptions =
-  CodexJsonAgentDriverBaseOptions &
-    (
-      | {
-          readonly engine: CodexExecutionEngine;
-        }
-      | {
-          readonly codexBinaryPath: string;
-          readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
-          readonly timeoutMs?: number;
-        }
-    );
+export type CodexJsonAgentDriverOptions = CodexJsonAgentDriverBaseOptions &
+  (
+    | {
+        readonly engine: CodexExecutionEngine;
+      }
+    | {
+        readonly codexBinaryPath: string;
+        readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+        readonly timeoutMs?: number;
+      }
+  );
 
 export class CodexJsonAgentDriver implements AgentDriver {
   readonly agentId = codexJsonAgentId;
@@ -90,9 +89,9 @@ export class CodexJsonAgentDriver implements AgentDriver {
       };
     }
 
-    let materialized:
-      | Awaited<ReturnType<CodexSessionMaterializer["materialize"]>>
-      | null = null;
+    let materialized: Awaited<
+      ReturnType<CodexSessionMaterializer["materialize"]>
+    > | null = null;
     try {
       materialized = await this.sessionMaterializer.materialize({
         session: input.session,

@@ -43,7 +43,10 @@ export type CodexAppServerChildProcess = {
     on(event: "data", listener: (chunk: unknown) => void): unknown;
     setEncoding(encoding: BufferEncoding): unknown;
   };
-  on(event: "exit", listener: (code: number | null, signal: string | null) => void): unknown;
+  on(
+    event: "exit",
+    listener: (code: number | null, signal: string | null) => void,
+  ): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
   kill(signal?: NodeJS.Signals): boolean;
 };
@@ -73,9 +76,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
 
   private readonly slots = new Map<string, AppServerSlot>();
 
-  constructor(
-    private readonly options: CodexAppServerExecutionEngineOptions,
-  ) {
+  constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
@@ -108,10 +109,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       const fallbackResult = await this.options.fallback.run(input);
       return {
         ...fallbackResult,
-        warnings: [
-          appServerFallbackWarning(error),
-          ...fallbackResult.warnings,
-        ],
+        warnings: [appServerFallbackWarning(error), ...fallbackResult.warnings],
       };
     }
   }
@@ -491,7 +489,8 @@ class CodexAppServerClient {
     },
   ): Promise<TurnState> {
     const existing = this.turns.get(turnId);
-    if (existing?.completed || existing?.error) return Promise.resolve(existing);
+    if (existing?.completed || existing?.error)
+      return Promise.resolve(existing);
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

@@ -204,9 +204,10 @@ export class FakeStaticProviderSessionDriver
 
 export class FakeNoSessionDriver implements NoSessionDriver {
   readonly providerId = "fake-no-session";
-  readonly capabilities = fakeNoSessionProviderCapabilities as ProviderCapabilities & {
-    readonly sessionRequirement: { readonly kind: "none" };
-  };
+  readonly capabilities =
+    fakeNoSessionProviderCapabilities as ProviderCapabilities & {
+      readonly sessionRequirement: { readonly kind: "none" };
+    };
 
   classifySessionFailure(): ProviderFailure {
     return fakeFailure("unknown_runtime_failure", "Fake provider failure.");

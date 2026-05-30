@@ -3,13 +3,7 @@ import type {
   SessionArtifact,
 } from "@reviewrouter/subscription-runtime-core";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  mkdir,
-  mkdtemp,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexAuthJsonFromArtifact } from "./codex-auth-json-codec";
@@ -38,9 +32,7 @@ export type CodexSessionMaterializer = {
   dispose?(): Promise<void>;
 };
 
-export class CodexEphemeralSessionMaterializer
-  implements CodexSessionMaterializer
-{
+export class CodexEphemeralSessionMaterializer implements CodexSessionMaterializer {
   readonly mode = "ephemeral" as const;
 
   async materialize(input: {
@@ -129,9 +121,7 @@ type WorkerCacheEntry = {
   initialized: boolean;
 };
 
-export class CodexWorkerCacheSessionMaterializer
-  implements CodexSessionMaterializer
-{
+export class CodexWorkerCacheSessionMaterializer implements CodexSessionMaterializer {
   readonly mode = "worker-cache" as const;
   private readonly cacheKeyHash: string;
   private entry: WorkerCacheEntry | null = null;
@@ -215,7 +205,10 @@ export class CodexWorkerCacheSessionMaterializer
     if (!entry.initialized) {
       await mkdir(entry.home, { recursive: true, mode: 0o700 });
       await mkdir(entry.codexHome, { recursive: true, mode: 0o700 });
-      await writeCodexJsonHomeSnapshot({ codexHome: entry.codexHome, authJson });
+      await writeCodexJsonHomeSnapshot({
+        codexHome: entry.codexHome,
+        authJson,
+      });
       entry.sessionHash = sessionHash;
       entry.initialized = true;
       return entry;
@@ -274,9 +267,7 @@ export type CodexWorkerCacheSessionPoolMaterializerOptions = {
   readonly preserveOnDispose?: boolean;
 };
 
-export class CodexWorkerCacheSessionPoolMaterializer
-  implements CodexSessionMaterializer
-{
+export class CodexWorkerCacheSessionPoolMaterializer implements CodexSessionMaterializer {
   readonly mode = "worker-cache" as const;
   private readonly slots: readonly CodexWorkerCacheSessionMaterializer[];
   private readonly idleSlotIndexes: number[];

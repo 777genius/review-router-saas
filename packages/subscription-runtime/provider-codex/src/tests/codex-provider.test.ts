@@ -431,12 +431,14 @@ describe("Codex provider adapter", () => {
       });
 
       expect(engine.codexHomes[2]).toBe(prewarm.codexHome);
-      await expect(readFile(join(prewarm.codexHome, "auth.json"), "utf8"))
-        .resolves.toContain("refreshed-refresh-token");
+      await expect(
+        readFile(join(prewarm.codexHome, "auth.json"), "utf8"),
+      ).resolves.toContain("refreshed-refresh-token");
 
       await driver.dispose();
-      await expect(readFile(join(prewarm.codexHome, "auth.json"), "utf8"))
-        .rejects.toThrow();
+      await expect(
+        readFile(join(prewarm.codexHome, "auth.json"), "utf8"),
+      ).rejects.toThrow();
     } finally {
       await rm(workspace, { recursive: true, force: true });
       await rm(cacheRoot, { recursive: true, force: true });
@@ -566,9 +568,7 @@ class StaticRunner implements RunnerPort {
   }): Promise<ProcessResult> {
     this.lastArgs = input.args;
     this.lastEnv = input.env;
-    this.lastStdin = input.stdin
-      ? new TextDecoder().decode(input.stdin)
-      : null;
+    this.lastStdin = input.stdin ? new TextDecoder().decode(input.stdin) : null;
     return {
       exitCode: 0,
       stdout: this.stdout,
@@ -713,10 +713,7 @@ class FakeAppServerProcess extends EventEmitter {
   }
 
   private respondError(id: number, message: string): void {
-    this.stdout.emit(
-      "data",
-      `${JSON.stringify({ id, error: { message } })}\n`,
-    );
+    this.stdout.emit("data", `${JSON.stringify({ id, error: { message } })}\n`);
   }
 
   private notify(method: string, params: Record<string, unknown>): void {
@@ -730,7 +727,9 @@ class FakeReadable extends EventEmitter {
   }
 }
 
-function extractFakePrompt(params: Record<string, unknown> | undefined): string {
+function extractFakePrompt(
+  params: Record<string, unknown> | undefined,
+): string {
   const input = params?.input;
   if (!Array.isArray(input)) return "";
   const first = input[0] as { text?: unknown } | undefined;
