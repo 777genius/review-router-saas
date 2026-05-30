@@ -125,7 +125,7 @@ export function pruneCodexChildEnv(
   const allowed: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
-    if (shouldDropChildEnvKey(key)) continue;
+    if (!shouldAllowChildEnvKey(key)) continue;
     allowed[key] = value;
   }
   return allowed;
@@ -220,6 +220,18 @@ function collectCodexAuthJsonWarnings(input: {
 
 function shouldDropChildEnvKey(key: string): boolean {
   return codexEnvironmentPolicy.denylist.some((pattern) =>
+    matchesEnvPattern(key, pattern),
+  );
+}
+
+function shouldAllowChildEnvKey(key: string): boolean {
+  if (shouldDropChildEnvKey(key)) {
+    return false;
+  }
+  if (codexEnvironmentPolicy.inheritHostEnvironment) {
+    return true;
+  }
+  return codexEnvironmentPolicy.allowlist.some((pattern) =>
     matchesEnvPattern(key, pattern),
   );
 }

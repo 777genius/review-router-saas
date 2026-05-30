@@ -695,16 +695,22 @@ function spawnCodex(input, args) {
 
 async function waitForChild(child, timeoutMs) {
   return new Promise((resolve, reject) => {
+    let forceKillTimer = null;
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      signalChildGroup(child, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        signalChildGroup(child, "SIGKILL");
+      }, 5_000);
       reject(new Error("child_timeout"));
     }, timeoutMs);
     child.on("error", (error) => {
       clearTimeout(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       reject(error);
     });
     child.on("exit", (code, signal) => {
       clearTimeout(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       resolve({ code, signal });
     });
   });

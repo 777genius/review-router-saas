@@ -152,7 +152,23 @@ export class CodexJsonAgentDriver implements AgentDriver {
   }
 
   async dispose(): Promise<void> {
-    await this.engine.dispose?.();
-    await this.sessionMaterializer.dispose?.();
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => this.engine.dispose?.()),
+      Promise.resolve().then(() => this.sessionMaterializer.dispose?.()),
+    ]);
+    const errors = results
+      .filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      )
+      .map((result) => result.reason);
+    if (errors.length > 0) {
+      const error = new AggregateError(
+        errors,
+        "codex_json_agent_dispose_failed",
+      ) as AggregateError & { code: string };
+      error.code = "codex_json_agent_dispose_failed";
+      throw error;
+    }
   }
 }

@@ -647,7 +647,7 @@ class RuntimeKernel {
     }
 
     return failedTask(
-      "provider_output_invalid",
+      "task_mode_unsupported",
       "Selected agent does not support the requested task mode.",
     ) as Extract<ProviderTaskResult, { readonly status: "failed" }>;
   }
