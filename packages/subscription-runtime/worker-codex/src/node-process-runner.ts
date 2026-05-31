@@ -36,6 +36,9 @@ export class NodeProcessRunner implements RunnerPort {
     readonly stderr?: OutputSink;
     readonly abortSignal: AbortSignal;
   }): Promise<ProcessResult> {
+    if (input.abortSignal.aborted) {
+      throw new Error("node_process_runner_aborted");
+    }
     const startedAt = Date.now();
     const child = spawn(input.command, [...input.args], {
       cwd: input.cwd,
@@ -55,6 +58,7 @@ export class NodeProcessRunner implements RunnerPort {
     });
 
     let forceKillTimer: NodeJS.Timeout | null = null;
+    let abortError: Error | null = null;
     const terminate = () => {
       if (child.exitCode !== null || child.signalCode !== null) return;
       child.kill("SIGTERM");
@@ -65,7 +69,10 @@ export class NodeProcessRunner implements RunnerPort {
       }, this.options.killGraceMs ?? 5_000);
     };
     const timeout = setTimeout(terminate, input.timeoutMs);
-    const abort = () => terminate();
+    const abort = () => {
+      abortError = new Error("node_process_runner_aborted");
+      terminate();
+    };
     input.abortSignal.addEventListener("abort", abort, { once: true });
 
     if (input.stdin) {
@@ -81,6 +88,7 @@ export class NodeProcessRunner implements RunnerPort {
         child.on("error", reject);
         child.on("close", (code) => resolve({ exitCode: code ?? 1 }));
       });
+      if (abortError) throw abortError;
       return {
         exitCode: exit.exitCode,
         stdout: Buffer.concat(stdout).toString("utf8"),

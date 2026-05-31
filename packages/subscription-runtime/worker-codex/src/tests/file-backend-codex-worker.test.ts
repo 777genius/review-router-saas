@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FileBackendCodexWorker } from "../index";
+import { NodeProcessRunner } from "../node-process-runner";
 
 const validAuthJson = JSON.stringify({
   auth_mode: "chatgpt",
@@ -67,5 +68,24 @@ describe("FileBackendCodexWorker", () => {
       await worker.dispose();
       await rm(rootDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("NodeProcessRunner", () => {
+  it("does not spawn work for an already-aborted signal", async () => {
+    const runner = new NodeProcessRunner();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      runner.run({
+        command: "/path/that/must/not/spawn",
+        args: [],
+        cwd: process.cwd(),
+        env: {},
+        timeoutMs: 1_000,
+        abortSignal: controller.signal,
+      }),
+    ).rejects.toThrow("node_process_runner_aborted");
   });
 });

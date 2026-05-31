@@ -9,9 +9,11 @@ export type SubscriptionWorkerErrorCode =
   | "subscription_worker_shutdown_timeout"
   | "subscription_worker_pool_draining"
   | "subscription_worker_pool_queue_full"
+  | "subscription_worker_pool_run_aborted"
   | "subscription_worker_pool_empty"
   | "subscription_worker_pool_slot_busy"
   | "subscription_worker_pool_slot_not_found"
+  | "subscription_worker_pool_slot_restart_failed"
   | "subscription_worker_pool_slot_failed";
 
 export class SubscriptionWorkerError extends Error {

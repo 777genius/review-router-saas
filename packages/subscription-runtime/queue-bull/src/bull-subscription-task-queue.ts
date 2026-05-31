@@ -24,8 +24,9 @@ export class BullSubscriptionTaskQueue<Job> {
     const delay = input.runAfter
       ? Math.max(0, input.runAfter.getTime() - Date.now())
       : undefined;
+    const jobId = input.taskId ?? input.idempotencyKey;
     const options = {
-      ...(input.taskId ? { jobId: input.taskId } : {}),
+      ...(jobId ? { jobId } : {}),
       attempts: input.maxAttempts ?? this.options.retryPolicy?.maxAttempts ?? 3,
       ...(delay !== undefined ? { delay } : {}),
       ...(this.options.retryPolicy
@@ -46,7 +47,7 @@ export class BullSubscriptionTaskQueue<Job> {
     );
     return {
       status: "accepted",
-      taskId: String(job.id ?? input.taskId ?? input.idempotencyKey ?? ""),
+      taskId: String(job.id ?? jobId ?? ""),
     };
   }
 

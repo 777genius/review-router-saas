@@ -104,6 +104,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       return result;
     } catch (error) {
       await this.disposeSessionSlot(input.session);
+      if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (!this.options.fallback) throw error;
 
       const fallbackResult = await this.options.fallback.run(input);
@@ -718,6 +719,15 @@ function assertOutputWithinBounds(
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new Error("codex_app_server_aborted");
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes("codex_app_server_aborted") ||
+      error.message.includes("codex_app_server_turn_aborted") ||
+      error.message.includes("node_process_runner_aborted"))
+  );
 }
 
 function safeMessage(error: unknown): string {

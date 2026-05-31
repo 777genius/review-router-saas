@@ -1,4 +1,12 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -126,6 +134,91 @@ describe("Local file lease store", () => {
           runId: "run-2",
           attempt: 1,
           ttlMs: 1_000,
+          restoredGenerationHash: "generation-1",
+        }),
+      ).resolves.toMatchObject({ status: "granted" });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when another process holds the provider lock", async () => {
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
+    const store = new LocalFileLeaseStore({
+      rootDir,
+      lockAcquireTimeoutMs: 20,
+      lockPollMs: 5,
+    });
+    const lockDir = join(rootDir, "leases", "locks");
+    const lockPath = join(
+      lockDir,
+      `${hashTextForTest(providerInstanceId)}.lock`,
+    );
+
+    try {
+      await mkdir(lockDir, { recursive: true });
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({
+          storageVersion: "local-file-lease-lock-v1",
+          lockId: "other-process",
+          providerInstanceIdHash: hashTextForTest(providerInstanceId),
+          pid: 999_999,
+          acquiredAt: "2026-05-30T00:00:00.000Z",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        })}\n`,
+      );
+
+      await expect(
+        store.acquire({
+          providerInstanceId,
+          runId: "run-locked",
+          attempt: 1,
+          ttlMs: 60_000,
+          restoredGenerationHash: "generation-1",
+        }),
+      ).rejects.toThrow("local_file_lease_lock_timeout");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces stale provider lock files", async () => {
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
+    const store = new LocalFileLeaseStore({
+      rootDir,
+      now: () => new Date("2026-05-30T00:00:00.000Z"),
+    });
+    const lockDir = join(rootDir, "leases", "locks");
+    const lockPath = join(
+      lockDir,
+      `${hashTextForTest(providerInstanceId)}.lock`,
+    );
+
+    try {
+      await mkdir(lockDir, { recursive: true });
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({
+          storageVersion: "local-file-lease-lock-v1",
+          lockId: "stale-process",
+          providerInstanceIdHash: hashTextForTest(providerInstanceId),
+          pid: 999_999,
+          acquiredAt: "2026-05-29T23:00:00.000Z",
+          expiresAt: "2026-05-29T23:00:01.000Z",
+        })}\n`,
+      );
+
+      await expect(
+        store.acquire({
+          providerInstanceId,
+          runId: "run-after-stale-lock",
+          attempt: 1,
+          ttlMs: 60_000,
           restoredGenerationHash: "generation-1",
         }),
       ).resolves.toMatchObject({ status: "granted" });
@@ -563,6 +656,10 @@ function makeArtifact(value: string): SessionArtifact {
     bytes: new TextEncoder().encode(value),
     contentType: "application/json",
   };
+}
+
+function hashTextForTest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 async function readStoredFiles(rootDir: string): Promise<readonly string[]> {

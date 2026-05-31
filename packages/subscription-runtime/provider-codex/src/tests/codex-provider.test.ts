@@ -539,6 +539,40 @@ describe("Codex provider adapter", () => {
     }
   });
 
+  it("does not fall back to packaged Codex exec after abort", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-abort-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const fallback = new RecordingJsonEngine("fallback output");
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        fallback,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "must not fallback" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: controller.signal,
+      });
+
+      expect(result.status).toBe("failed");
+      expect(fallback.prompts).toEqual([]);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("prewarms and reuses worker-cache CODEX_HOME across tasks", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-worker-cache-test-"));
     const cacheRoot = await mkdtemp(join(tmpdir(), "codex-worker-cache-root-"));

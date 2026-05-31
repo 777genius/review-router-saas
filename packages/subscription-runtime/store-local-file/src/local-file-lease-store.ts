@@ -21,6 +21,9 @@ export const localFileLeaseStoreCapabilities: LeaseStoreCapabilities = {
 export type LocalFileLeaseStoreOptions = {
   readonly rootDir: string;
   readonly now?: () => Date;
+  readonly lockTtlMs?: number;
+  readonly lockAcquireTimeoutMs?: number;
+  readonly lockPollMs?: number;
 };
 
 type LeaseState =
@@ -50,6 +53,19 @@ type PersistedLeaseRecord = {
   readonly idempotencyKey?: string;
 };
 
+type PersistedLockRecord = {
+  readonly storageVersion: "local-file-lease-lock-v1";
+  readonly lockId: string;
+  readonly providerInstanceIdHash: string;
+  readonly pid: number;
+  readonly acquiredAt: string;
+  readonly expiresAt: string;
+};
+
+const defaultLockTtlMs = 30_000;
+const defaultLockAcquireTimeoutMs = 5_000;
+const defaultLockPollMs = 25;
+
 export class LocalFileLeaseStore implements LeaseStorePort {
   readonly leaseStoreId = localFileLeaseStoreCapabilities.leaseStoreId;
   readonly capabilities = localFileLeaseStoreCapabilities;
@@ -67,97 +83,105 @@ export class LocalFileLeaseStore implements LeaseStorePort {
       throw new Error("local_file_lease_invalid_ttl");
     }
 
-    await this.ensureDirs();
-    const now = this.now();
-    const active = await this.readActive(input.providerInstanceId);
-    if (active && !isExpired(active, now)) {
-      if (active.restoredGenerationHash !== input.restoredGenerationHash) {
-        return {
-          status: "stale",
-          safeMessage: "A newer provider session generation is already leased.",
-        };
-      }
-      return {
-        status: "denied",
-        safeMessage: "Provider session refresh is already leased.",
-      };
-    }
-
-    if (active) {
-      await this.removeActiveIfMatches(active);
-    }
-
-    const record = makeLeaseRecord({
-      providerInstanceId: input.providerInstanceId,
-      runId: input.runId,
-      attempt: input.attempt,
-      restoredGenerationHash: input.restoredGenerationHash,
-      now,
-      expiresAt: new Date(now.getTime() + input.ttlMs),
-    });
-
-    await this.writeLeaseRecord(record, { exclusive: true });
-    try {
-      await this.writeActiveRecord(record, { exclusive: true });
-    } catch (error) {
-      await rm(this.leaseRecordPath(record.leaseId), { force: true });
-      if (isAlreadyExistsError(error)) {
+    return this.withProviderLock(input.providerInstanceId, async () => {
+      const now = this.now();
+      const active = await this.readActive(input.providerInstanceId);
+      if (active && !isExpired(active, now)) {
+        if (active.restoredGenerationHash !== input.restoredGenerationHash) {
+          return {
+            status: "stale",
+            safeMessage:
+              "A newer provider session generation is already leased.",
+          };
+        }
         return {
           status: "denied",
           safeMessage: "Provider session refresh is already leased.",
         };
       }
-      throw error;
-    }
 
-    return {
-      status: "granted",
-      leaseId: record.leaseId,
-      expiresAt: new Date(record.expiresAt),
-    };
+      if (active) {
+        await this.removeActiveIfMatchesLocked(active);
+      }
+
+      const record = makeLeaseRecord({
+        providerInstanceId: input.providerInstanceId,
+        runId: input.runId,
+        attempt: input.attempt,
+        restoredGenerationHash: input.restoredGenerationHash,
+        now,
+        expiresAt: new Date(now.getTime() + input.ttlMs),
+      });
+
+      await this.writeLeaseRecord(record, { exclusive: true });
+      try {
+        await this.writeActiveRecord(record, { exclusive: true });
+      } catch (error) {
+        await rm(this.leaseRecordPath(record.leaseId), { force: true });
+        if (isAlreadyExistsError(error)) {
+          return {
+            status: "denied",
+            safeMessage: "Provider session refresh is already leased.",
+          };
+        }
+        throw error;
+      }
+
+      return {
+        status: "granted",
+        leaseId: record.leaseId,
+        expiresAt: new Date(record.expiresAt),
+      };
+    });
   }
 
   async finalize(input: {
     readonly leaseId: string;
     readonly restoredGenerationHash: string;
   }): Promise<FinalizedLease> {
-    const record = await this.requireLeaseRecord(input.leaseId);
-    if (record.restoredGenerationHash !== input.restoredGenerationHash) {
-      throw new Error("local_file_lease_generation_hash_mismatch");
-    }
-    if (record.state === "committed") {
+    const initial = await this.requireLeaseRecord(input.leaseId);
+    return this.withProviderLock(initial.providerInstanceId, async () => {
+      const record = await this.requireLeaseRecord(input.leaseId);
+      if (record.restoredGenerationHash !== input.restoredGenerationHash) {
+        throw new Error("local_file_lease_generation_hash_mismatch");
+      }
+      if (record.state === "committed") {
+        return {
+          leaseId: record.leaseId,
+          restoredGenerationHash: record.restoredGenerationHash,
+        };
+      }
+
+      await this.persistLeaseTransitionLocked({
+        ...record,
+        state: "finalized",
+        finalizedAt: this.now().toISOString(),
+      });
+
       return {
         leaseId: record.leaseId,
         restoredGenerationHash: record.restoredGenerationHash,
       };
-    }
-
-    await this.persistLeaseTransition({
-      ...record,
-      state: "finalized",
-      finalizedAt: this.now().toISOString(),
     });
-
-    return {
-      leaseId: record.leaseId,
-      restoredGenerationHash: record.restoredGenerationHash,
-    };
   }
 
   async markWritebackStarted(input: {
     readonly leaseId: string;
     readonly keyId?: string;
   }): Promise<void> {
-    const record = await this.requireLeaseRecord(input.leaseId);
-    if (record.state === "committed") {
-      return;
-    }
+    const initial = await this.requireLeaseRecord(input.leaseId);
+    await this.withProviderLock(initial.providerInstanceId, async () => {
+      const record = await this.requireLeaseRecord(input.leaseId);
+      if (record.state === "committed") {
+        return;
+      }
 
-    await this.persistLeaseTransition({
-      ...record,
-      state: "writeback_started",
-      writebackStartedAt: this.now().toISOString(),
-      ...(input.keyId ? { keyId: input.keyId } : {}),
+      await this.persistLeaseTransitionLocked({
+        ...record,
+        state: "writeback_started",
+        writebackStartedAt: this.now().toISOString(),
+        ...(input.keyId ? { keyId: input.keyId } : {}),
+      });
     });
   }
 
@@ -166,53 +190,60 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     readonly nextGenerationHash: string;
     readonly idempotencyKey: string;
   }): Promise<WritebackCommitResult> {
-    const record = await this.requireLeaseRecord(input.leaseId);
-    if (record.state === "committed") {
-      if (
-        record.nextGenerationHash === input.nextGenerationHash &&
-        record.idempotencyKey === input.idempotencyKey
-      ) {
-        return { status: "idempotent_replay" };
+    const initial = await this.requireLeaseRecord(input.leaseId);
+    return this.withProviderLock(initial.providerInstanceId, async () => {
+      const record = await this.requireLeaseRecord(input.leaseId);
+      if (record.state === "committed") {
+        if (
+          record.nextGenerationHash === input.nextGenerationHash &&
+          record.idempotencyKey === input.idempotencyKey
+        ) {
+          return { status: "idempotent_replay" };
+        }
+        return {
+          status: "stale_generation",
+          safeMessage:
+            "Lease was already committed with different writeback metadata.",
+        };
       }
-      return {
-        status: "stale_generation",
-        safeMessage:
-          "Lease was already committed with different writeback metadata.",
-      };
-    }
 
-    const committed = {
-      ...record,
-      state: "committed" as const,
-      committedAt: this.now().toISOString(),
-      nextGenerationHash: input.nextGenerationHash,
-      idempotencyKey: input.idempotencyKey,
-    };
-    await this.persistLeaseTransition(committed);
-    await this.removeActiveIfMatches(committed);
-    return { status: "committed" };
+      const committed = {
+        ...record,
+        state: "committed" as const,
+        committedAt: this.now().toISOString(),
+        nextGenerationHash: input.nextGenerationHash,
+        idempotencyKey: input.idempotencyKey,
+      };
+      await this.persistLeaseTransitionLocked(committed);
+      await this.removeActiveIfMatchesLocked(committed);
+      return { status: "committed" };
+    });
   }
 
   async release(input: {
     readonly leaseId: string;
     readonly reason: string;
   }): Promise<void> {
-    const record = await this.readLeaseRecord(input.leaseId);
-    if (!record || record.state === "committed") {
-      return;
-    }
+    const initial = await this.readLeaseRecord(input.leaseId);
+    if (!initial) return;
+    await this.withProviderLock(initial.providerInstanceId, async () => {
+      const record = await this.readLeaseRecord(input.leaseId);
+      if (!record || record.state === "committed") {
+        return;
+      }
 
-    const released = {
-      ...record,
-      state: "released" as const,
-      releasedAt: this.now().toISOString(),
-      releaseReason: input.reason,
-    };
-    await this.persistLeaseTransition(released);
-    await this.removeActiveIfMatches(released);
+      const released = {
+        ...record,
+        state: "released" as const,
+        releasedAt: this.now().toISOString(),
+        releaseReason: input.reason,
+      };
+      await this.persistLeaseTransitionLocked(released);
+      await this.removeActiveIfMatchesLocked(released);
+    });
   }
 
-  private async persistLeaseTransition(
+  private async persistLeaseTransitionLocked(
     record: PersistedLeaseRecord,
   ): Promise<void> {
     await this.writeLeaseRecord(record, { exclusive: false });
@@ -292,7 +323,7 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     await rename(tempPath, path);
   }
 
-  private async removeActiveIfMatches(
+  private async removeActiveIfMatchesLocked(
     record: Pick<PersistedLeaseRecord, "providerInstanceId" | "leaseId">,
   ): Promise<void> {
     const active = await this.readActive(record.providerInstanceId);
@@ -304,6 +335,7 @@ export class LocalFileLeaseStore implements LeaseStorePort {
   private async ensureDirs(): Promise<void> {
     await mkdir(this.activeDir(), { recursive: true, mode: 0o700 });
     await mkdir(this.leaseRecordDir(), { recursive: true, mode: 0o700 });
+    await mkdir(this.lockDir(), { recursive: true, mode: 0o700 });
   }
 
   private now(): Date {
@@ -318,12 +350,147 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     return join(this.options.rootDir, "leases", "records");
   }
 
+  private lockDir(): string {
+    return join(this.options.rootDir, "leases", "locks");
+  }
+
   private activePath(providerInstanceId: string): string {
     return join(this.activeDir(), `${hashText(providerInstanceId)}.json`);
   }
 
   private leaseRecordPath(leaseId: string): string {
     return join(this.leaseRecordDir(), `${hashText(leaseId)}.json`);
+  }
+
+  private lockPath(providerInstanceId: string): string {
+    return join(this.lockDir(), `${hashText(providerInstanceId)}.lock`);
+  }
+
+  private async withProviderLock<T>(
+    providerInstanceId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    await this.ensureDirs();
+    const lockId = `local-file-lock:${randomBytes(16).toString("hex")}`;
+    const lockPath = this.lockPath(providerInstanceId);
+    const deadline =
+      Date.now() +
+      (this.options.lockAcquireTimeoutMs ?? defaultLockAcquireTimeoutMs);
+    await this.acquireProviderLock({
+      providerInstanceId,
+      lockId,
+      lockPath,
+      deadline,
+    });
+    try {
+      return await operation();
+    } finally {
+      await this.releaseProviderLock({ lockId, lockPath });
+    }
+  }
+
+  private async acquireProviderLock(input: {
+    readonly providerInstanceId: string;
+    readonly lockId: string;
+    readonly lockPath: string;
+    readonly deadline: number;
+  }): Promise<void> {
+    const pollMs = this.options.lockPollMs ?? defaultLockPollMs;
+    while (true) {
+      const now = this.now();
+      const record: PersistedLockRecord = {
+        storageVersion: "local-file-lease-lock-v1",
+        lockId: input.lockId,
+        providerInstanceIdHash: hashText(input.providerInstanceId),
+        pid: process.pid,
+        acquiredAt: now.toISOString(),
+        expiresAt: new Date(
+          now.getTime() + (this.options.lockTtlMs ?? defaultLockTtlMs),
+        ).toISOString(),
+      };
+      try {
+        await writeFile(
+          input.lockPath,
+          `${JSON.stringify(record, null, 2)}\n`,
+          {
+            flag: "wx",
+            mode: 0o600,
+          },
+        );
+        return;
+      } catch (error) {
+        if (!isAlreadyExistsError(error)) throw error;
+      }
+
+      const existing = await this.readLockRecord(input.lockPath);
+      if (!existing) {
+        if (Date.now() >= input.deadline) {
+          throw new Error("local_file_lease_lock_timeout");
+        }
+        await delay(pollMs);
+        continue;
+      }
+      if (isLockExpired(existing, this.now())) {
+        await this.removeLockIfMatches({
+          lockId: existing.lockId,
+          lockPath: input.lockPath,
+        });
+        continue;
+      }
+
+      if (Date.now() >= input.deadline) {
+        throw new Error("local_file_lease_lock_timeout");
+      }
+      await delay(pollMs);
+    }
+  }
+
+  private async releaseProviderLock(input: {
+    readonly lockId: string;
+    readonly lockPath: string;
+  }): Promise<void> {
+    await this.removeLockIfMatches(input);
+  }
+
+  private async removeLockIfMatches(input: {
+    readonly lockId: string;
+    readonly lockPath: string;
+  }): Promise<void> {
+    const existing = await this.readLockRecord(input.lockPath);
+    if (existing?.lockId === input.lockId) {
+      await rm(input.lockPath, { force: true });
+    }
+  }
+
+  private async readLockRecord(
+    path: string,
+  ): Promise<PersistedLockRecord | null> {
+    try {
+      const parsed = JSON.parse(
+        await readFile(path, "utf8"),
+      ) as Partial<PersistedLockRecord>;
+      if (
+        parsed.storageVersion !== "local-file-lease-lock-v1" ||
+        typeof parsed.lockId !== "string" ||
+        typeof parsed.providerInstanceIdHash !== "string" ||
+        typeof parsed.pid !== "number" ||
+        typeof parsed.acquiredAt !== "string" ||
+        typeof parsed.expiresAt !== "string"
+      ) {
+        return null;
+      }
+      return {
+        storageVersion: "local-file-lease-lock-v1",
+        lockId: parsed.lockId,
+        providerInstanceIdHash: parsed.providerInstanceIdHash,
+        pid: parsed.pid,
+        acquiredAt: parsed.acquiredAt,
+        expiresAt: parsed.expiresAt,
+      };
+    } catch (error) {
+      if (isMissingFileError(error)) return null;
+      return null;
+    }
   }
 }
 
@@ -426,6 +593,10 @@ function isExpired(record: PersistedLeaseRecord, now: Date): boolean {
   return new Date(record.expiresAt).getTime() <= now.getTime();
 }
 
+function isLockExpired(record: PersistedLockRecord, now: Date): boolean {
+  return new Date(record.expiresAt).getTime() <= now.getTime();
+}
+
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -444,4 +615,8 @@ function isAlreadyExistsError(error: unknown): boolean {
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "EEXIST"
   );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

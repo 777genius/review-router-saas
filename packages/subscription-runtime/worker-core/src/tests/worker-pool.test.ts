@@ -64,6 +64,70 @@ describe("BoundedSubscriptionWorkerPool", () => {
     await pool.dispose();
   });
 
+  it("removes aborted queued work before it reaches a worker", async () => {
+    const seen: string[] = [];
+    let releaseFirst: () => void = () => {
+      throw new Error("first_job_release_missing");
+    };
+    let resolveFirstStarted: (() => void) | null = null;
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveFirstStarted = resolve;
+    });
+    const pool = new BoundedSubscriptionWorkerPool<string, string>({
+      poolId: "abort-queued",
+      slots: 1,
+      workerFactory: ({ workerId }) =>
+        new FakeWorker(workerId, async (job) => {
+          seen.push(job);
+          if (job === "first") {
+            resolveFirstStarted?.();
+            await new Promise<void>((release) => {
+              releaseFirst = release;
+            });
+          }
+          return job;
+        }),
+    });
+
+    await pool.start();
+    const first = pool.run("first");
+    await firstStarted;
+    const controller = new AbortController();
+    const aborted = pool.run("aborted", {
+      abortSignal: controller.signal,
+    });
+    const next = pool.run("next");
+    controller.abort();
+    releaseFirst();
+    await expect(aborted).rejects.toThrow("Worker pool run was aborted");
+    await expect(first).resolves.toBe("first");
+    await expect(next).resolves.toBe("next");
+    await pool.dispose();
+    expect(seen).toEqual(["first", "next"]);
+  });
+
+  it("rejects already-aborted work without entering the worker", async () => {
+    const seen: string[] = [];
+    const pool = new BoundedSubscriptionWorkerPool<string, string>({
+      poolId: "already-aborted",
+      slots: 1,
+      workerFactory: ({ workerId }) =>
+        new FakeWorker(workerId, async (job) => {
+          seen.push(job);
+          return job;
+        }),
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await pool.start();
+    await expect(
+      pool.run("aborted", { abortSignal: controller.signal }),
+    ).rejects.toThrow("Worker pool run was aborted");
+    await pool.dispose();
+    expect(seen).toEqual([]);
+  });
+
   it("prewarms all slots and aggregates health", async () => {
     const pool = new BoundedSubscriptionWorkerPool<string, string>({
       poolId: "health",
@@ -112,11 +176,43 @@ describe("BoundedSubscriptionWorkerPool", () => {
     expect(workers[2]?.prewarmed).toBe(true);
     expect(pool.stats().restarted).toBe(1);
   });
+
+  it("does not leave a disposed slot runnable after restart failure", async () => {
+    const workers: FakeWorker[] = [];
+    const pool = new BoundedSubscriptionWorkerPool<string, string>({
+      poolId: "restart-failure",
+      slots: 1,
+      workerFactory: ({ workerId }) => {
+        const worker = new FakeWorker(workerId, async (job) => job);
+        workers.push(worker);
+        if (workers.length === 2) {
+          worker.failStart = true;
+        }
+        return worker;
+      },
+    });
+
+    await pool.start();
+    await expect(pool.restartSlot(0)).rejects.toThrow(
+      "Worker pool slot failed to restart.",
+    );
+    expect(workers[0]?.state).toBe("disposed");
+    expect(pool.stats().slots).toBe(0);
+    await expect(pool.health()).resolves.toMatchObject({
+      status: "degraded",
+      state: "failed",
+    });
+    expect(() => pool.run("must-not-run")).toThrow(
+      "Worker pool has not been started.",
+    );
+    await pool.dispose();
+  });
 });
 
 class FakeWorker implements SubscriptionWorker<string, string> {
   state: SubscriptionWorkerState = "created";
   prewarmed = false;
+  failStart = false;
 
   constructor(
     readonly workerId: string,
@@ -127,6 +223,7 @@ class FakeWorker implements SubscriptionWorker<string, string> {
   onDispose: (() => void) | null = null;
 
   async start(): Promise<void> {
+    if (this.failStart) throw new Error("fake_start_failed");
     this.state = "started";
   }
 

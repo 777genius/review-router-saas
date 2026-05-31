@@ -40,6 +40,58 @@ describe("Bull subscription queue adapter", () => {
     ]);
   });
 
+  it("uses idempotency key as Bull job id when task id is absent", async () => {
+    const calls: unknown[] = [];
+    const queue = new BullSubscriptionTaskQueue<string>({
+      queue: {
+        async add(name, data, options) {
+          calls.push({ name, data, options });
+          return { id: options?.jobId ?? "missing-job-id" };
+        },
+      },
+    });
+
+    await expect(
+      queue.enqueue({ job: "work", idempotencyKey: "idem-1" }),
+    ).resolves.toEqual({
+      status: "accepted",
+      taskId: "idem-1",
+    });
+    expect(calls).toEqual([
+      expect.objectContaining({
+        options: expect.objectContaining({ jobId: "idem-1" }),
+      }),
+    ]);
+  });
+
+  it("keeps explicit task id ahead of idempotency key for Bull job id", async () => {
+    const calls: unknown[] = [];
+    const queue = new BullSubscriptionTaskQueue<string>({
+      queue: {
+        async add(name, data, options) {
+          calls.push({ name, data, options });
+          return { id: options?.jobId ?? "missing-job-id" };
+        },
+      },
+    });
+
+    await expect(
+      queue.enqueue({
+        job: "work",
+        taskId: "task-1",
+        idempotencyKey: "idem-1",
+      }),
+    ).resolves.toEqual({
+      status: "accepted",
+      taskId: "task-1",
+    });
+    expect(calls).toEqual([
+      expect.objectContaining({
+        options: expect.objectContaining({ jobId: "task-1" }),
+      }),
+    ]);
+  });
+
   it("runs Bull jobs through a worker pool without importing Bull", async () => {
     const handler = createBullSubscriptionProcessor<string, string>({
       workerPool: {
@@ -51,6 +103,7 @@ describe("Bull subscription queue adapter", () => {
           inFlight: 0,
           completed: 0,
           failed: 0,
+          restarted: 0,
         }),
         run: async (job) => `ok:${job}`,
       },

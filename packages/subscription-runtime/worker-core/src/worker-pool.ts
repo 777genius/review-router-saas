@@ -118,6 +118,9 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
 
   run(job: Job, options: WorkerPoolRunOptions = {}): Promise<Result> {
     this.assertRunnable();
+    if (options.abortSignal?.aborted) {
+      return Promise.reject(runAbortedError());
+    }
     if (this.poolState === "draining") {
       return Promise.reject(
         new SubscriptionWorkerError(
@@ -144,24 +147,32 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
     }
 
     return new Promise((resolve, reject) => {
-      const abort = () => {
-        const index = this.queue.findIndex((item) => item.reject === reject);
-        if (index >= 0) this.queue.splice(index, 1);
-        reject(new Error("subscription_worker_pool_run_aborted"));
+      let settled = false;
+      const resolveOnce = (result: Result) => {
+        if (settled) return;
+        settled = true;
+        options.abortSignal?.removeEventListener("abort", abort);
+        resolve(result);
       };
-      options.abortSignal?.addEventListener("abort", abort, { once: true });
-      this.queue.push({
+      const rejectOnce = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        options.abortSignal?.removeEventListener("abort", abort);
+        reject(error);
+      };
+      const abort = () => {
+        const index = this.queue.indexOf(queued);
+        if (index >= 0) this.queue.splice(index, 1);
+        rejectOnce(runAbortedError());
+      };
+      const queued: QueuedRun<Job, Result> = {
         job,
         options,
-        resolve: (result) => {
-          options.abortSignal?.removeEventListener("abort", abort);
-          resolve(result);
-        },
-        reject: (error) => {
-          options.abortSignal?.removeEventListener("abort", abort);
-          reject(error);
-        },
-      });
+        resolve: resolveOnce,
+        reject: rejectOnce,
+      };
+      options.abortSignal?.addEventListener("abort", abort, { once: true });
+      this.queue.push(queued);
       this.drainQueue();
     });
   }
@@ -191,13 +202,32 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
       slotIndex: String(slotIndex),
       workerId: slot.worker.workerId,
     });
-    await slot.worker.dispose();
     const next = this.createSlot(slotIndex);
-    await next.worker.start();
-    if (options.prewarm) {
-      await next.worker.prewarm();
-    }
     this.slots[slotIndex] = next;
+    try {
+      await slot.worker.dispose();
+      await next.worker.start();
+      if (options.prewarm) {
+        await next.worker.prewarm();
+      }
+    } catch (error) {
+      this.slots.splice(slotIndex, 1);
+      this.poolState = "failed";
+      await next.worker.dispose().catch(() => {
+        // Best-effort cleanup after a failed replacement.
+      });
+      throw new SubscriptionWorkerError(
+        "subscription_worker_pool_slot_restart_failed",
+        "Worker pool slot failed to restart.",
+        {
+          cause: error,
+          details: {
+            slotIndex: String(slotIndex),
+            workerId: next.worker.workerId,
+          },
+        },
+      );
+    }
     this.restartedCount += 1;
     this.emit("subscription_worker_pool.slot_restart.completed", {
       slotIndex: String(slotIndex),
@@ -406,4 +436,11 @@ async function safeHealth<Job, Result>(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runAbortedError(): SubscriptionWorkerError {
+  return new SubscriptionWorkerError(
+    "subscription_worker_pool_run_aborted",
+    "Worker pool run was aborted before it started.",
+  );
 }
