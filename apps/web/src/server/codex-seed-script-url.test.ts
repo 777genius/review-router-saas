@@ -94,8 +94,38 @@ describe("resolveGitLabCodexSeedScriptUrl", () => {
     );
   });
 
-  it("falls back to main for the GitLab seed script redirect when no SHA is pinned", () => {
+  it("pins the GitLab seed script redirect to a release tag", () => {
+    expect(
+      resolveGitLabCodexInstallRedirect({
+        REVIEW_ROUTER_ACTION_REF: "777genius/review-router@v1",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(
+      "https://raw.githubusercontent.com/777genius/review-router/v1/scripts/seed-codex-gitlab-auth.sh",
+    );
+  });
+
+  it("uses the configured action version for the GitLab seed script redirect", () => {
+    expect(
+      resolveGitLabCodexInstallRedirect({
+        REVIEW_ROUTER_ACTION_VERSION: "v1.0.4",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(
+      "https://raw.githubusercontent.com/777genius/review-router/v1.0.4/scripts/seed-codex-gitlab-auth.sh",
+    );
+  });
+
+  it("defaults the GitLab seed script redirect to the stable action version", () => {
     expect(resolveGitLabCodexInstallRedirect({} as NodeJS.ProcessEnv)).toBe(
+      "https://raw.githubusercontent.com/777genius/review-router/v1/scripts/seed-codex-gitlab-auth.sh",
+    );
+  });
+
+  it("falls back to main when the action ref is not a safe raw GitHub segment", () => {
+    expect(
+      resolveGitLabCodexInstallRedirect({
+        REVIEW_ROUTER_ACTION_REF: "777genius/review-router@feature/test",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(
       "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-gitlab-auth.sh",
     );
   });

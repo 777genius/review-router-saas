@@ -27,7 +27,9 @@ describe("HeaderProfileMenu", () => {
   it("shows a sign-in action when no source session is present", () => {
     render(<HeaderProfileMenu login={null} avatarUrl={null} provider={null} />);
 
-    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Sign in" }).getAttribute("href"),
+    ).toBe("/auth/signin?callbackUrl=%2Fdashboard");
   });
 
   it("opens a profile menu with sign-out for signed-in users", () => {

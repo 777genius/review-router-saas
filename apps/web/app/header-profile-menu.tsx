@@ -1,11 +1,9 @@
 "use client";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { LinkButton } from "@reviewrouter/ui";
 import { GitHubAccountAvatar } from "./github-account-avatar";
-import {
-  GitHubSignInButton,
-  GitHubSignOutButton,
-} from "./github-sign-in-button";
+import { GitHubSignOutButton } from "./github-sign-in-button";
 
 type HeaderProfileMenuProps = {
   readonly login: string | null;
@@ -20,14 +18,14 @@ export function HeaderProfileMenu({
 }: HeaderProfileMenuProps): React.ReactElement {
   if (!login) {
     return (
-      <GitHubSignInButton
-        callbackUrl="/dashboard"
+      <LinkButton
+        href="/auth/signin?callbackUrl=%2Fdashboard"
         variant="ghost"
         size="sm"
         className="rounded-xl border border-cyan-200/20 bg-white/[0.035] px-3 font-mono text-[0.68rem] uppercase tracking-[0.14em] text-cyan-100"
       >
         Sign in
-      </GitHubSignInButton>
+      </LinkButton>
     );
   }
 
