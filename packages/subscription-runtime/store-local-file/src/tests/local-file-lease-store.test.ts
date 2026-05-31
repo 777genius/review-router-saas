@@ -1,4 +1,12 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -129,6 +137,156 @@ describe("Local file lease store", () => {
           restoredGenerationHash: "generation-1",
         }),
       ).resolves.toMatchObject({ status: "granted" });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when another process holds the provider lock", async () => {
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
+    const store = new LocalFileLeaseStore({
+      rootDir,
+      lockAcquireTimeoutMs: 20,
+      lockPollMs: 5,
+    });
+    const lockDir = join(rootDir, "leases", "locks");
+    const lockPath = join(
+      lockDir,
+      `${hashTextForTest(providerInstanceId)}.lock`,
+    );
+
+    try {
+      await mkdir(lockDir, { recursive: true });
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({
+          storageVersion: "local-file-lease-lock-v1",
+          lockId: "other-process",
+          providerInstanceIdHash: hashTextForTest(providerInstanceId),
+          pid: 999_999,
+          acquiredAt: "2026-05-30T00:00:00.000Z",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        })}\n`,
+      );
+
+      await expect(
+        store.acquire({
+          providerInstanceId,
+          runId: "run-locked",
+          attempt: 1,
+          ttlMs: 60_000,
+          restoredGenerationHash: "generation-1",
+        }),
+      ).rejects.toThrow("local_file_lease_lock_timeout");
+      await expect(readFile(lockPath, "utf8")).resolves.toContain(
+        "other-process",
+      );
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces stale provider lock files", async () => {
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
+    const store = new LocalFileLeaseStore({
+      rootDir,
+      now: () => new Date("2026-05-30T00:00:00.000Z"),
+    });
+    const lockDir = join(rootDir, "leases", "locks");
+    const lockPath = join(
+      lockDir,
+      `${hashTextForTest(providerInstanceId)}.lock`,
+    );
+
+    try {
+      await mkdir(lockDir, { recursive: true });
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({
+          storageVersion: "local-file-lease-lock-v1",
+          lockId: "stale-process",
+          providerInstanceIdHash: hashTextForTest(providerInstanceId),
+          pid: 999_999,
+          acquiredAt: "2026-05-29T23:00:00.000Z",
+          expiresAt: "2026-05-29T23:00:01.000Z",
+        })}\n`,
+      );
+
+      await expect(
+        store.acquire({
+          providerInstanceId,
+          runId: "run-after-stale-lock",
+          attempt: 1,
+          ttlMs: 60_000,
+          restoredGenerationHash: "generation-1",
+        }),
+      ).resolves.toMatchObject({ status: "granted" });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not remove a newer provider lock after waiting on stale cleanup", async () => {
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
+    const now = "2026-05-30T00:00:00.000Z";
+    const store = new LocalFileLeaseStore({
+      rootDir,
+      now: () => new Date(now),
+      lockAcquireTimeoutMs: 120,
+      lockPollMs: 5,
+    });
+    const lockDir = join(rootDir, "leases", "locks");
+    const lockPath = join(
+      lockDir,
+      `${hashTextForTest(providerInstanceId)}.lock`,
+    );
+    const staleLockId = "stale-process";
+    const freshLockId = "fresh-process";
+    const cleanupLockPath = `${lockPath}.${hashTextForTest(staleLockId)}.cleanup.lock`;
+
+    try {
+      await mkdir(lockDir, { recursive: true });
+      await writeLockRecordForTest({
+        path: lockPath,
+        lockId: staleLockId,
+        providerInstanceId,
+        acquiredAt: "2026-05-29T23:00:00.000Z",
+        expiresAt: "2026-05-29T23:00:01.000Z",
+      });
+      await writeLockRecordForTest({
+        path: cleanupLockPath,
+        lockId: "cleanup-holder",
+        providerInstanceId: `${providerInstanceId}:lock-cleanup:${staleLockId}`,
+        acquiredAt: now,
+        expiresAt: "2026-05-30T00:01:00.000Z",
+      });
+
+      const acquire = store.acquire({
+        providerInstanceId,
+        runId: "run-after-stale-cleanup-race",
+        attempt: 1,
+        ttlMs: 60_000,
+        restoredGenerationHash: "generation-1",
+      });
+
+      await delayForTest(25);
+      await writeLockRecordForTest({
+        path: lockPath,
+        lockId: freshLockId,
+        providerInstanceId,
+        acquiredAt: now,
+        expiresAt: "2026-05-30T00:01:00.000Z",
+      });
+      await rm(cleanupLockPath, { force: true });
+
+      await expect(acquire).rejects.toThrow("local_file_lease_lock_timeout");
+      await expect(readFile(lockPath, "utf8")).resolves.toContain(freshLockId);
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
@@ -563,6 +721,34 @@ function makeArtifact(value: string): SessionArtifact {
     bytes: new TextEncoder().encode(value),
     contentType: "application/json",
   };
+}
+
+function hashTextForTest(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function writeLockRecordForTest(input: {
+  readonly path: string;
+  readonly lockId: string;
+  readonly providerInstanceId: string;
+  readonly acquiredAt: string;
+  readonly expiresAt: string;
+}): Promise<void> {
+  await writeFile(
+    input.path,
+    `${JSON.stringify({
+      storageVersion: "local-file-lease-lock-v1",
+      lockId: input.lockId,
+      providerInstanceIdHash: hashTextForTest(input.providerInstanceId),
+      pid: 999_999,
+      acquiredAt: input.acquiredAt,
+      expiresAt: input.expiresAt,
+    })}\n`,
+  );
+}
+
+function delayForTest(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function readStoredFiles(rootDir: string): Promise<readonly string[]> {

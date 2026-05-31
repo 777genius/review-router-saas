@@ -37,6 +37,20 @@ describe("auth env", () => {
     });
   });
 
+  it("requests repository OAuth scope for review thread resolution", () => {
+    const provider = authOptions.providers[0] as {
+      readonly options?: {
+        readonly authorization?: {
+          readonly params?: { readonly scope?: string };
+        };
+      };
+    };
+
+    expect(provider.options?.authorization?.params?.scope?.split(" ")).toEqual(
+      expect.arrayContaining(["read:user", "user:email", "repo"]),
+    );
+  });
+
   it("downgrades stale JWT session cookie noise to a warning", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});

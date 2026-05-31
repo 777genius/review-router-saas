@@ -18,10 +18,10 @@ const bundledCodexOutfile = "action-dist/codex/linux-x64/codex";
 const bundledCodexArchiveOutfile =
   "action-dist/codex/linux-x64/codex-linux-x64.tgz";
 const bundledCodexManifestOutfile = "action-dist/codex/linux-x64/manifest.json";
-const codexPackageVersion = "0.125.0";
+const codexPackageVersion = "0.135.0";
 const codexPlatform = "linux-x64";
 const codexBinaryPathInArchive =
-  "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+  "package/vendor/x86_64-unknown-linux-musl/bin/codex";
 
 mkdirSync(dirname(outfile), { recursive: true });
 

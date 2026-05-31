@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "paths": {
+      "@reviewrouter/subscription-runtime-core": ["../core/dist/index.d.ts"],
+      "@reviewrouter/subscription-runtime-provider-codex": [
+        "../provider-codex/dist/index.d.ts"
+      ],
+      "@reviewrouter/subscription-runtime-store-local-file": [
+        "../store-local-file/dist/index.d.ts"
+      ],
+      "@reviewrouter/subscription-runtime-worker-core": [
+        "../worker-core/dist/index.d.ts"
+      ]
+    }
+  },
+  "exclude": ["src/**/*.test.ts", "src/tests/**", "src/testing/**"]
+}

@@ -10,6 +10,7 @@ import {
   createSubscriptionRuntime,
   defineSubscriptionRuntimeConfig,
   negotiateCapabilities,
+  type SessionFreshnessAssessment,
 } from "../index";
 import {
   FakeAgentDriver,
@@ -86,6 +87,47 @@ describe("subscription runtime core policy", () => {
     if (decision.status === "accepted") {
       expect(decision.compiledPolicy.trustMode).toBe("no-plaintext-backend");
       expect(decision.executionPlan.kind).toBe("rotating-session");
+    }
+  });
+
+  it("compiles refresh policy defaults and overrides", () => {
+    const defaultDecision = negotiateCapabilities({
+      requested: makeFakeRuntimeDeps().policy,
+      provider: fakeProviderCapabilities,
+      agent: new FakeAgentDriver().capabilities,
+      store: fakeStoreCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+    expect(defaultDecision.status).toBe("accepted");
+    if (defaultDecision.status === "accepted") {
+      expect(defaultDecision.compiledPolicy.refreshPolicy).toEqual({
+        minFreshMs: 15 * 60 * 1000,
+        refreshBeforeExpiryMs: 5 * 60 * 1000,
+        maxSessionAgeMs: 24 * 60 * 60 * 1000,
+      });
+    }
+
+    const overrideDecision = negotiateCapabilities({
+      requested: {
+        ...makeFakeRuntimeDeps().policy,
+        refreshPolicy: {
+          minFreshMs: 1_000,
+          refreshBeforeExpiryMs: 2_000,
+          maxSessionAgeMs: 3_000,
+        },
+      },
+      provider: fakeProviderCapabilities,
+      agent: new FakeAgentDriver().capabilities,
+      store: fakeStoreCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+    expect(overrideDecision.status).toBe("accepted");
+    if (overrideDecision.status === "accepted") {
+      expect(overrideDecision.compiledPolicy.refreshPolicy).toEqual({
+        minFreshMs: 1_000,
+        refreshBeforeExpiryMs: 2_000,
+        maxSessionAgeMs: 3_000,
+      });
     }
   });
 
@@ -579,7 +621,157 @@ describe("subscription runtime use cases", () => {
     expect(agent.lastPrompt).toBe("compute without credentials");
     expect(agent.lastSessionWasNull).toBe(true);
   });
+
+  it("skips refresh for fresh lazy rotating sessions", async () => {
+    const store = new InMemorySessionStore();
+    store.seed({
+      providerInstanceId: "provider-instance-lazy",
+      artifact: makeFakeArtifact("session-v1"),
+    });
+    const provider = new LazyFakeProviderSessionDriver({
+      status: "fresh",
+      reason: "recent_refresh",
+      warnings: [],
+    });
+    const agent = new FakeAgentDriver();
+    const runtime = createSubscriptionRuntime(
+      makeFakeRuntimeDeps({ provider, agent, store }),
+    );
+
+    expect(runtime.executionPlan).toMatchObject({
+      kind: "rotating-session",
+      refresh: "lazy",
+    });
+    const result = await runtime.refreshThenRunTask({
+      providerInstanceId: "provider-instance-lazy",
+      task: { kind: "review", prompt: "inspect fresh" },
+      runContext: {
+        runId: "run-lazy-fresh",
+        attempt: 1,
+        abortSignal: new AbortController().signal,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      refresh: { status: "skipped", reason: "refresh_not_required" },
+      task: { status: "completed", outputText: "review:inspect fresh" },
+    });
+    expect(provider.refreshCount).toBe(0);
+  });
+
+  it("refreshes stale lazy rotating sessions before running tasks", async () => {
+    const store = new InMemorySessionStore();
+    store.seed({
+      providerInstanceId: "provider-instance-lazy-stale",
+      artifact: makeFakeArtifact("session-v1"),
+    });
+    const provider = new LazyFakeProviderSessionDriver({
+      status: "refresh_recommended",
+      reason: "max_age_exceeded",
+      warnings: [],
+    });
+    provider.refreshText = "session-v2";
+    const runtime = createSubscriptionRuntime(
+      makeFakeRuntimeDeps({ provider, store }),
+    );
+
+    const result = await runtime.refreshThenRunTask({
+      providerInstanceId: "provider-instance-lazy-stale",
+      task: { kind: "review", prompt: "inspect stale" },
+      runContext: {
+        runId: "run-lazy-stale",
+        attempt: 1,
+        abortSignal: new AbortController().signal,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      refresh: {
+        status: "ready",
+        writeback: { status: "accepted", generation: 2 },
+      },
+    });
+    expect(provider.refreshCount).toBe(1);
+  });
+
+  it("does one guarded refresh and retry after lazy auth failure", async () => {
+    const store = new InMemorySessionStore();
+    store.seed({
+      providerInstanceId: "provider-instance-lazy-guard",
+      artifact: makeFakeArtifact("session-v1"),
+    });
+    const provider = new LazyFakeProviderSessionDriver({
+      status: "fresh",
+      reason: "recent_refresh",
+      warnings: [],
+    });
+    provider.refreshText = "session-v2";
+    const agent = new FailsAuthOnceAgentDriver();
+    const runtime = createSubscriptionRuntime(
+      makeFakeRuntimeDeps({ provider, agent, store }),
+    );
+
+    const result = await runtime.refreshThenRunTask({
+      providerInstanceId: "provider-instance-lazy-guard",
+      task: { kind: "review", prompt: "inspect guarded" },
+      runContext: {
+        runId: "run-lazy-guard",
+        attempt: 1,
+        abortSignal: new AbortController().signal,
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      refresh: { status: "ready" },
+      task: {
+        status: "completed",
+        outputText: "review:inspect guarded",
+      },
+    });
+    expect(provider.refreshCount).toBe(1);
+    expect(agent.runCount).toBe(2);
+  });
 });
+
+class LazyFakeProviderSessionDriver extends FakeProviderSessionDriver {
+  override readonly capabilities = {
+    ...fakeProviderCapabilities,
+    refreshMode: "lazy-refresh" as const,
+  };
+
+  constructor(private readonly freshness: SessionFreshnessAssessment) {
+    super();
+  }
+
+  async inspectSessionFreshness() {
+    return this.freshness;
+  }
+}
+
+class FailsAuthOnceAgentDriver extends FakeAgentDriver {
+  runCount = 0;
+
+  override async runTask(input: Parameters<FakeAgentDriver["runTask"]>[0]) {
+    this.runCount += 1;
+    if (this.runCount === 1) {
+      return {
+        status: "failed" as const,
+        failure: {
+          code: "needs_reconnect" as const,
+          retryable: false,
+          reconnectRequired: true,
+          safeMessage: "Session expired.",
+          causeCategory: "needs_reconnect",
+        },
+        warnings: [],
+      };
+    }
+    return super.runTask(input);
+  }
+}
 
 providerSessionDriverContract("fake", () => ({
   driver: new FakeProviderSessionDriver(),

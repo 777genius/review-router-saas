@@ -254,7 +254,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain("uses: actions/setup-node@v6");
     expect(workflow).toContain('node-version: "24"');
-    expect(workflow).toContain("npm install -g @openai/codex@0.125.0");
+    expect(workflow).toContain("npm install -g @openai/codex@0.135.0");
     expect(workflow).toContain("env.OPENROUTER_API_KEY_PRESENT == '1'");
     expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
     expect(workflow).toContain(

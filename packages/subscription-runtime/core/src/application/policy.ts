@@ -289,6 +289,13 @@ export function compileRuntimePolicy(input: {
       input.provider.defaultTimeoutMs,
       input.agent.maxRuntimeMs,
     ),
+    refreshPolicy: {
+      minFreshMs: input.requested.refreshPolicy?.minFreshMs ?? 15 * 60 * 1000,
+      refreshBeforeExpiryMs:
+        input.requested.refreshPolicy?.refreshBeforeExpiryMs ?? 5 * 60 * 1000,
+      maxSessionAgeMs:
+        input.requested.refreshPolicy?.maxSessionAgeMs ?? 24 * 60 * 60 * 1000,
+    },
   };
 }
 

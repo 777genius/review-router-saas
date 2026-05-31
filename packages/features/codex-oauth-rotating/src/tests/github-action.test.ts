@@ -827,6 +827,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         "      configIncludesProxy: config.includes('model_provider = \"reviewrouter_proxy\"'),",
         "      configIncludesApprovalNever: config.includes('approval_policy = \"never\"'),",
         "      configIncludesReadOnly: config.includes('sandbox_mode = \"read-only\"'),",
+        "      configIncludesShellSnapshotDisabled: config.includes('shell_snapshot = false'),",
         "      configIncludesToken: config.includes('refreshed-access-token'),",
         "      inheritedOpenAi: process.env.OPENAI_API_KEY,",
         "    }));",
@@ -913,6 +914,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  configIncludesProxy: config.includes('model_provider = \"reviewrouter_proxy\"'),",
         "  configIncludesApprovalNever: config.includes('approval_policy = \"never\"'),",
         "  configIncludesReadOnly: config.includes('sandbox_mode = \"read-only\"'),",
+        "  configIncludesShellSnapshotDisabled: config.includes('shell_snapshot = false'),",
         "  configIncludesToken: config.includes('refreshed-access-token'),",
         "  inheritedOpenAi: process.env.OPENAI_API_KEY,",
         "  claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,",
@@ -1117,6 +1119,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         configIncludesProxy: false,
         configIncludesApprovalNever: true,
         configIncludesReadOnly: true,
+        configIncludesShellSnapshotDisabled: true,
         configIncludesToken: false,
         githubToken: "ghs_comment_token",
         githubOutputInsideHome: true,
@@ -1637,7 +1640,7 @@ async function writeCodexManifest(binaryPath: string): Promise<void> {
   const archivePath = join(bundleDir, "codex-linux-x64.tgz");
   const stagingDir = await mkdtemp(join(tmpdir(), "reviewrouter-codex-tar-"));
   const binaryPathInArchive =
-    "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+    "package/vendor/x86_64-unknown-linux-musl/bin/codex";
   const stagedBinary = join(stagingDir, binaryPathInArchive);
   await mkdir(join(stagedBinary, ".."), { recursive: true });
   await writeFile(stagedBinary, bytes, { mode: 0o700 });
@@ -1650,7 +1653,7 @@ async function writeCodexManifest(binaryPath: string): Promise<void> {
       {
         protocolVersion: 1,
         packageName: "@openai/codex",
-        version: "0.125.0",
+        version: "0.135.0",
         platform: "linux-x64",
         archive: "codex-linux-x64.tgz",
         archiveSize: archiveBytes.byteLength,

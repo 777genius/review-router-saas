@@ -30,6 +30,16 @@ export type CodexExecutionResult = {
   }[];
 };
 
+export type CodexExecutionPrewarmResult = {
+  readonly kind: string;
+  readonly reusable: boolean;
+  readonly warmedAt: Date;
+  readonly warnings: readonly {
+    readonly code: string;
+    readonly safeMessage: string;
+  }[];
+};
+
 export type CodexExecutionEngine = {
   readonly kind: string;
   readonly capabilities: {
@@ -49,6 +59,16 @@ export type CodexExecutionEngine = {
     readonly outputSchema?: unknown;
     readonly abortSignal: AbortSignal;
   }): Promise<CodexExecutionResult>;
+  prewarm?(input: {
+    readonly session: CodexMaterializedSession;
+    readonly workspacePath: string;
+    readonly runner: RunnerPort;
+    readonly redactor: RedactorPort;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly warmupPrompt?: string;
+    readonly abortSignal: AbortSignal;
+  }): Promise<CodexExecutionPrewarmResult>;
   dispose?(): Promise<void>;
 };
 
@@ -138,6 +158,21 @@ export class PackagedCodexJsonExecutionEngine implements CodexExecutionEngine {
       warnings: [],
     };
   }
+
+  async prewarm(): Promise<CodexExecutionPrewarmResult> {
+    return {
+      kind: this.kind,
+      reusable: false,
+      warmedAt: new Date(),
+      warnings: [
+        {
+          code: "codex_packaged_exec_prewarm_skipped",
+          safeMessage:
+            "Packaged Codex exec starts a fresh process for every task.",
+        },
+      ],
+    };
+  }
 }
 
 export function buildCodexJsonExecArgs(input: {
@@ -156,6 +191,22 @@ export function buildCodexJsonExecArgs(input: {
     'approval_policy="never"',
     "--config",
     `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`,
+    "--config",
+    'model_verbosity="low"',
+    "--config",
+    'web_search="disabled"',
+    "--config",
+    "features.apps=false",
+    "--config",
+    "features.hooks=false",
+    "--config",
+    "features.memories=false",
+    "--config",
+    "features.multi_agent=false",
+    "--config",
+    "features.shell_snapshot=false",
+    "--config",
+    "features.skill_mcp_dependency_install=false",
     "--ephemeral",
     "--ignore-user-config",
     "--ignore-rules",

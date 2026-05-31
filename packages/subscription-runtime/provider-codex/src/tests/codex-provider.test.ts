@@ -119,6 +119,72 @@ describe("Codex provider adapter", () => {
     expect(codexJsonAgentCapabilities.providerId).toBe("codex");
   });
 
+  it("supports lazy refresh freshness checks from Codex auth metadata", async () => {
+    const driver = new CodexCliSessionDriver({ refreshMode: "lazy-refresh" });
+    const session = sessionArtifactFromCodexAuthJson(
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          refresh_token: "refresh-token",
+          access_token: "access-token",
+          expiry: "2026-05-30T00:20:00.000Z",
+        },
+        last_refresh: "2026-05-30T00:00:00.000Z",
+      }),
+    );
+
+    expect(driver.capabilities.refreshMode).toBe("lazy-refresh");
+    await expect(
+      driver.inspectSessionFreshness({
+        session,
+        redactor: new DefaultRedactor(),
+        now: new Date("2026-05-30T00:05:00.000Z"),
+        policy: {
+          minFreshMs: 60_000,
+          refreshBeforeExpiryMs: 5 * 60_000,
+          maxSessionAgeMs: 24 * 60 * 60_000,
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: "fresh",
+      reason: "expires_later",
+    });
+
+    await expect(
+      driver.inspectSessionFreshness({
+        session,
+        redactor: new DefaultRedactor(),
+        now: new Date("2026-05-30T00:05:00.000Z"),
+        policy: {
+          minFreshMs: 60_000,
+          refreshBeforeExpiryMs: 5 * 60_000,
+          maxSessionAgeMs: 4 * 60_000,
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: "refresh_recommended",
+      reason: "max_age_exceeded",
+      expiresAt: new Date("2026-05-30T00:20:00.000Z"),
+      refreshedAt: new Date("2026-05-30T00:00:00.000Z"),
+    });
+
+    await expect(
+      driver.inspectSessionFreshness({
+        session,
+        redactor: new DefaultRedactor(),
+        now: new Date("2026-05-30T00:16:00.000Z"),
+        policy: {
+          minFreshMs: 60_000,
+          refreshBeforeExpiryMs: 5 * 60_000,
+          maxSessionAgeMs: 24 * 60 * 60_000,
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: "refresh_recommended",
+      reason: "expires_soon",
+    });
+  });
+
   it("applies the provider-owned environment policy before Codex subprocesses", () => {
     const env = pruneCodexChildEnv({
       PATH: "/usr/bin",
@@ -248,6 +314,22 @@ describe("Codex provider adapter", () => {
       'approval_policy="never"',
       "--config",
       'model_reasoning_effort="low"',
+      "--config",
+      'model_verbosity="low"',
+      "--config",
+      'web_search="disabled"',
+      "--config",
+      "features.apps=false",
+      "--config",
+      "features.hooks=false",
+      "--config",
+      "features.memories=false",
+      "--config",
+      "features.multi_agent=false",
+      "--config",
+      "features.shell_snapshot=false",
+      "--config",
+      "features.skill_mcp_dependency_install=false",
       "--ephemeral",
       "--ignore-user-config",
       "--ignore-rules",
@@ -411,6 +493,7 @@ describe("Codex provider adapter", () => {
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
         processFactory: fakeFactory.create,
+        executionProfile: "stateless-completion",
       }),
       sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
         cacheKey: "provider-account:codex-test",
@@ -444,6 +527,192 @@ describe("Codex provider adapter", () => {
       });
       expect(fakeFactory.spawnCount).toBe(2);
       expect(new Set(fakeFactory.codexHomes)).toHaveLength(2);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+      await rm(cacheRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fully prewarms reusable app-server slots before the first task", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-warm-test-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "codex-app-warm-root-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        executionProfile: "stateless-completion",
+      }),
+      sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
+        cacheKey: "provider-account:codex-warm-test",
+        slots: 1,
+        rootDir: cacheRoot,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+      warmupPrompt: "warm slot",
+    });
+
+    try {
+      const prewarm = await driver.prewarmSession({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        redactor: new DefaultRedactor(),
+        workspacePath: workspace,
+        runner: new StaticRunner(""),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(prewarm).toMatchObject({
+        reusable: true,
+        engine: {
+          kind: "app-server-pool",
+          reusable: true,
+        },
+      });
+      expect(fakeFactory.spawnCount).toBe(1);
+      expect(fakeFactory.cwds).toEqual([prewarm.home]);
+      expect(fakeFactory.prompts).toEqual(["warm slot"]);
+      expect(
+        fakeFactory.requests.find(
+          (request) => request.method === "thread/start",
+        )?.params,
+      ).toMatchObject({
+        baseInstructions: expect.stringContaining(
+          "fast backend inference worker",
+        ),
+        developerInstructions: null,
+        dynamicTools: [],
+        environments: [],
+        config: {
+          web_search: "disabled",
+          model_verbosity: "low",
+          features: {
+            apps: false,
+            hooks: false,
+            memories: false,
+            multi_agent: false,
+            shell_snapshot: false,
+            skill_mcp_dependency_install: false,
+          },
+        },
+      });
+      const prewarmThreadStarts = fakeFactory.requests.filter(
+        (request) => request.method === "thread/start",
+      );
+      expect(prewarmThreadStarts).toHaveLength(2);
+
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "real task" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "completed",
+        outputText: "app-server output:real task",
+      });
+      expect(fakeFactory.spawnCount).toBe(1);
+      expect(fakeFactory.prompts).toEqual(["warm slot", "real task"]);
+      const realTaskTurn = fakeFactory.requests
+        .filter((request) => request.method === "turn/start")
+        .find((request) => extractFakePrompt(request.params) === "real task");
+      expect(realTaskTurn?.params?.threadId).toBe("thread-2");
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+      await rm(cacheRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults direct app-server use to the previous subscription-worker profile", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-profile-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        cleanThreadPrewarm: false,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "profile task" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      const threadStart = fakeFactory.requests.find(
+        (request) => request.method === "thread/start",
+      );
+      expect(threadStart?.params).toMatchObject({
+        baseInstructions: null,
+        developerInstructions: expect.stringContaining(
+          "non-interactive subscription runtime worker",
+        ),
+      });
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fail a task when clean-thread prewarm fails", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-clean-thread-test-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "codex-clean-thread-root-"));
+    const fakeFactory = new FakeAppServerFactory({
+      failThreadStartNumbers: [2],
+    });
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+      }),
+      sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
+        cacheKey: "provider-account:codex-clean-thread-test",
+        slots: 1,
+        rootDir: cacheRoot,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+      warmupPrompt: "warm slot",
+    });
+
+    try {
+      const prewarm = await driver.prewarmSession({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        redactor: new DefaultRedactor(),
+        workspacePath: workspace,
+        runner: new StaticRunner(""),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect((prewarm.warnings ?? []).map((warning) => warning.code)).toContain(
+        "codex_app_server_clean_thread_prewarm_failed",
+      );
+
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "real task" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "completed",
+        outputText: "app-server output:real task",
+      });
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
@@ -485,6 +754,77 @@ describe("Codex provider adapter", () => {
         "codex_app_server_fallback",
       );
       expect(fallback.prompts).toEqual(["fallback please"]);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fall back to packaged Codex exec after abort", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-abort-test-"));
+    const fakeFactory = new FakeAppServerFactory();
+    const fallback = new RecordingJsonEngine("fallback output");
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+        fallback,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "must not fallback" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: controller.signal,
+      });
+
+      expect(result.status).toBe("failed");
+      expect(fallback.prompts).toEqual([]);
+    } finally {
+      await driver.dispose();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies top-level app-server error messages", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "codex-app-error-test-"));
+    const fakeFactory = new FakeAppServerFactory({
+      emitTopLevelErrorOnTurn: "You've hit your usage limit.",
+    });
+    const driver = new CodexJsonAgentDriver({
+      engine: new CodexAppServerExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+        processFactory: fakeFactory.create,
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "fail clearly" },
+        workspace: { path: workspace },
+        runner: new StaticRunner(""),
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "quota_limited",
+          safeMessage: "Codex quota or billing limit was reached.",
+        },
+      });
     } finally {
       await driver.dispose();
       await rm(workspace, { recursive: true, force: true });
@@ -734,25 +1074,44 @@ class SlowRecordingJsonEngine extends RecordingJsonEngine {
 
 type FakeAppServerFactoryOptions = {
   readonly failThreadStart?: boolean;
+  readonly failThreadStartNumbers?: readonly number[];
+  readonly emitTopLevelErrorOnTurn?: string;
+  readonly onPrompt?: (prompt: string) => void;
+  readonly onRequest?: (request: FakeAppServerRequest) => void;
+};
+
+type FakeAppServerRequest = {
+  readonly id: number;
+  readonly method: string;
+  readonly params?: Record<string, unknown>;
 };
 
 class FakeAppServerFactory {
   spawnCount = 0;
   readonly codexHomes: string[] = [];
+  readonly cwds: string[] = [];
+  readonly prompts: string[] = [];
+  readonly requests: FakeAppServerRequest[] = [];
 
   constructor(private readonly options: FakeAppServerFactoryOptions = {}) {}
 
   readonly create = (input: {
     readonly env: Readonly<Record<string, string>>;
+    readonly cwd: string;
   }) => {
     this.spawnCount += 1;
     this.codexHomes.push(input.env.CODEX_HOME ?? "");
-    return new FakeAppServerProcess(this.options);
+    this.cwds.push(input.cwd);
+    return new FakeAppServerProcess({
+      ...this.options,
+      onPrompt: (prompt) => this.prompts.push(prompt),
+      onRequest: (request) => this.requests.push(request),
+    });
   };
 }
 
 class FakeAppServerProcess extends EventEmitter {
-  readonly pid = Math.floor(Math.random() * 100_000) + 1;
+  readonly pid = undefined;
   readonly stdout = new FakeReadable();
   readonly stderr = new FakeReadable();
   readonly stdin = {
@@ -764,6 +1123,7 @@ class FakeAppServerProcess extends EventEmitter {
   };
   private nextThreadId = 1;
   private nextTurnId = 1;
+  private threadStartCount = 0;
 
   constructor(private readonly options: FakeAppServerFactoryOptions) {
     super();
@@ -777,11 +1137,8 @@ class FakeAppServerProcess extends EventEmitter {
   private handleRequest(chunk: string): void {
     for (const line of chunk.split(/\n/)) {
       if (!line.trim()) continue;
-      const request = JSON.parse(line) as {
-        id: number;
-        method: string;
-        params?: Record<string, unknown>;
-      };
+      const request = JSON.parse(line) as FakeAppServerRequest;
+      this.options.onRequest?.(request);
       if (request.method === "initialize") {
         this.respond(request.id, {
           userAgent: "fake-codex",
@@ -790,7 +1147,11 @@ class FakeAppServerProcess extends EventEmitter {
         continue;
       }
       if (request.method === "thread/start") {
-        if (this.options.failThreadStart) {
+        this.threadStartCount += 1;
+        if (
+          this.options.failThreadStart ||
+          this.options.failThreadStartNumbers?.includes(this.threadStartCount)
+        ) {
           this.respondError(request.id, "fake thread start failure");
           continue;
         }
@@ -805,10 +1166,21 @@ class FakeAppServerProcess extends EventEmitter {
         const turnId = `turn-${this.nextTurnId}`;
         this.nextTurnId += 1;
         const prompt = extractFakePrompt(request.params);
+        this.options.onPrompt?.(prompt);
         this.respond(request.id, {
           turn: { id: turnId },
         });
         setTimeout(() => {
+          if (this.options.emitTopLevelErrorOnTurn) {
+            this.stdout.emit(
+              "data",
+              `${JSON.stringify({
+                method: "error",
+                message: this.options.emitTopLevelErrorOnTurn,
+              })}\n`,
+            );
+            return;
+          }
           this.notify("item/agentMessage/delta", {
             turnId,
             delta: `app-server output:${prompt}`,
