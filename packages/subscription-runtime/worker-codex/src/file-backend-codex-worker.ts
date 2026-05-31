@@ -140,7 +140,9 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
         ...(options.appServerProcessFactory
           ? { processFactory: options.appServerProcessFactory }
           : {}),
-        executionProfile: options.executionProfile ?? "stateless-completion",
+        ...(options.executionProfile
+          ? { executionProfile: options.executionProfile }
+          : {}),
         cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
         fallback,
       }),

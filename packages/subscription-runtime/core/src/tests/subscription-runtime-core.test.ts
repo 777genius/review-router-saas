@@ -90,6 +90,47 @@ describe("subscription runtime core policy", () => {
     }
   });
 
+  it("compiles refresh policy defaults and overrides", () => {
+    const defaultDecision = negotiateCapabilities({
+      requested: makeFakeRuntimeDeps().policy,
+      provider: fakeProviderCapabilities,
+      agent: new FakeAgentDriver().capabilities,
+      store: fakeStoreCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+    expect(defaultDecision.status).toBe("accepted");
+    if (defaultDecision.status === "accepted") {
+      expect(defaultDecision.compiledPolicy.refreshPolicy).toEqual({
+        minFreshMs: 15 * 60 * 1000,
+        refreshBeforeExpiryMs: 5 * 60 * 1000,
+        maxSessionAgeMs: 24 * 60 * 60 * 1000,
+      });
+    }
+
+    const overrideDecision = negotiateCapabilities({
+      requested: {
+        ...makeFakeRuntimeDeps().policy,
+        refreshPolicy: {
+          minFreshMs: 1_000,
+          refreshBeforeExpiryMs: 2_000,
+          maxSessionAgeMs: 3_000,
+        },
+      },
+      provider: fakeProviderCapabilities,
+      agent: new FakeAgentDriver().capabilities,
+      store: fakeStoreCapabilities,
+      runner: fakeRunnerCapabilities,
+    });
+    expect(overrideDecision.status).toBe("accepted");
+    if (overrideDecision.status === "accepted") {
+      expect(overrideDecision.compiledPolicy.refreshPolicy).toEqual({
+        minFreshMs: 1_000,
+        refreshBeforeExpiryMs: 2_000,
+        maxSessionAgeMs: 3_000,
+      });
+    }
+  });
+
   it("compiles a static session plan without durable writeback", () => {
     const decision = negotiateCapabilities({
       requested: {

@@ -352,12 +352,12 @@ adds startup and prompt overhead.
 For API-like batch workloads such as match rating, use
 `executionProfile: "stateless-completion"`. It sends minimal app-server
 `baseInstructions`, disables tools, keeps history off, and treats every job as
-a clean prompt-response operation. This is the default for
-`FileBackendCodexWorker`.
+a clean prompt-response operation.
 
-Use `executionProfile: "subscription-worker"` only when preserving the previous
-generic subscription worker behavior is more important than latency. Future
-chat/dialog workloads should add a separate session mode based on
+When `executionProfile` is omitted, direct app-server and file-backend workers
+use the compatible `subscription-worker` profile so repository-aware jobs are
+not accidentally told to avoid file inspection. Future chat/dialog workloads
+should add a separate session mode based on
 `thread/resume` or `thread/fork`; do not use that path for independent match
 scoring jobs.
 
