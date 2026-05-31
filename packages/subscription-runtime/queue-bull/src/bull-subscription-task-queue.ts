@@ -3,6 +3,7 @@ import type {
   SubscriptionQueueEnqueueResult,
   SubscriptionRetryPolicy,
 } from "@reviewrouter/subscription-runtime-queue-core";
+import { encodeBullSubscriptionRuntimeJob } from "./bull-runtime-envelope";
 import type { BullLikeQueue } from "./bull-types";
 
 export type BullSubscriptionTaskQueueOptions<Job> = {
@@ -42,7 +43,7 @@ export class BullSubscriptionTaskQueue<Job> {
     };
     const job = await this.options.queue.add(
       this.options.jobName ?? "subscription-runtime-task",
-      input.job,
+      encodeBullSubscriptionRuntimeJob(input) as Job,
       options,
     );
     return {

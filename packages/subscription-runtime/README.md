@@ -374,6 +374,13 @@ const processor = createBullSubscriptionProcessor({
 // new Worker("subscription-runtime", processor, { connection, concurrency: 4 })
 ```
 
+If you enqueue through `BullSubscriptionTaskQueue`, also process through
+`createBullSubscriptionProcessor`. The queue adapter stores subscription
+runtime metadata inside the Bull payload when an explicit `idempotencyKey` is
+present, and the processor unwraps it before calling the worker pool. This
+keeps `taskId` available as Bull's `jobId` while preserving the real worker
+idempotency key.
+
 Core does not know about Nest, Bull, Prisma, or app-specific schemas. That keeps
 the library reusable for Codex today and Claude or another subscription agent
 later.

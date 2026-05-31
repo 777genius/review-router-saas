@@ -59,6 +59,13 @@ describe("Bull subscription queue adapter", () => {
     });
     expect(calls).toEqual([
       expect.objectContaining({
+        data: {
+          __subscriptionRuntime: {
+            version: 1,
+            job: "work",
+            idempotencyKey: "idem-1",
+          },
+        },
         options: expect.objectContaining({ jobId: "idem-1" }),
       }),
     ]);
@@ -87,6 +94,13 @@ describe("Bull subscription queue adapter", () => {
     });
     expect(calls).toEqual([
       expect.objectContaining({
+        data: {
+          __subscriptionRuntime: {
+            version: 1,
+            job: "work",
+            idempotencyKey: "idem-1",
+          },
+        },
         options: expect.objectContaining({ jobId: "task-1" }),
       }),
     ]);
@@ -110,5 +124,106 @@ describe("Bull subscription queue adapter", () => {
     });
 
     await expect(handler({ id: "1", data: "job" })).resolves.toBe("ok:job");
+  });
+
+  it("preserves explicit idempotency key separately from Bull job id", async () => {
+    let queuedData: unknown;
+    const queue = new BullSubscriptionTaskQueue<string>({
+      queue: {
+        async add(_name, data, options) {
+          queuedData = data;
+          return { id: options?.jobId ?? "missing-job-id" };
+        },
+      },
+    });
+    await expect(
+      queue.enqueue({
+        job: "work",
+        taskId: "task-1",
+        idempotencyKey: "idem-1",
+      }),
+    ).resolves.toEqual({
+      status: "accepted",
+      taskId: "task-1",
+    });
+    const runs: unknown[] = [];
+    const handler = createBullSubscriptionProcessor<string, string>({
+      workerPool: {
+        stats: () => ({
+          poolId: "pool",
+          state: "ready",
+          slots: 1,
+          queued: 0,
+          inFlight: 0,
+          completed: 0,
+          failed: 0,
+          restarted: 0,
+        }),
+        run: async (job, options) => {
+          runs.push({ job, options });
+          return `ok:${job}`;
+        },
+      },
+    });
+
+    await expect(
+      handler({ id: "task-1", data: queuedData as string }),
+    ).resolves.toBe("ok:work");
+    expect(runs).toEqual([
+      {
+        job: "work",
+        options: {
+          idempotencyKey: "idem-1",
+        },
+      },
+    ]);
+  });
+
+  it("passes decoded job data to custom Bull job mappers", async () => {
+    let queuedData: unknown;
+    const queue = new BullSubscriptionTaskQueue<{ readonly value: string }>({
+      queue: {
+        async add(_name, data, options) {
+          queuedData = data;
+          return { id: options?.jobId ?? "missing-job-id" };
+        },
+      },
+    });
+    await queue.enqueue({
+      job: { value: "work" },
+      taskId: "task-1",
+      idempotencyKey: "idem-1",
+    });
+    const mappedData: unknown[] = [];
+    const handler = createBullSubscriptionProcessor<
+      { readonly value: string },
+      string
+    >({
+      mapJob: (job) => {
+        mappedData.push(job.data);
+        return { value: `mapped:${job.data.value}` };
+      },
+      workerPool: {
+        stats: () => ({
+          poolId: "pool",
+          state: "ready",
+          slots: 1,
+          queued: 0,
+          inFlight: 0,
+          completed: 0,
+          failed: 0,
+          restarted: 0,
+        }),
+        run: async (job) => `ok:${job.value}`,
+      },
+    });
+
+    await expect(
+      handler({
+        id: "task-1",
+        data: queuedData as { readonly value: string },
+      }),
+    ).resolves.toBe("ok:mapped:work");
+    expect(mappedData).toEqual([{ value: "work" }]);
   });
 });
