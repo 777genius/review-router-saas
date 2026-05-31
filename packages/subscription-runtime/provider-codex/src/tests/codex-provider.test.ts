@@ -154,6 +154,24 @@ describe("Codex provider adapter", () => {
       driver.inspectSessionFreshness({
         session,
         redactor: new DefaultRedactor(),
+        now: new Date("2026-05-30T00:05:00.000Z"),
+        policy: {
+          minFreshMs: 60_000,
+          refreshBeforeExpiryMs: 5 * 60_000,
+          maxSessionAgeMs: 4 * 60_000,
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: "refresh_recommended",
+      reason: "max_age_exceeded",
+      expiresAt: new Date("2026-05-30T00:20:00.000Z"),
+      refreshedAt: new Date("2026-05-30T00:00:00.000Z"),
+    });
+
+    await expect(
+      driver.inspectSessionFreshness({
+        session,
+        redactor: new DefaultRedactor(),
         now: new Date("2026-05-30T00:16:00.000Z"),
         policy: {
           minFreshMs: 60_000,

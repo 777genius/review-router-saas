@@ -163,6 +163,19 @@ export class CodexCliSessionDriver implements ProviderSessionDriver {
       safeMessage: `Codex auth freshness warning: ${warning}`,
     }));
 
+    if (freshness.lastRefreshAt) {
+      const ageMs = input.now.getTime() - freshness.lastRefreshAt.getTime();
+      if (ageMs >= input.policy.maxSessionAgeMs) {
+        return {
+          status: "refresh_recommended",
+          reason: "max_age_exceeded",
+          refreshedAt: freshness.lastRefreshAt,
+          ...(freshness.expiresAt ? { expiresAt: freshness.expiresAt } : {}),
+          warnings,
+        };
+      }
+    }
+
     if (freshness.expiresAt) {
       const refreshAt =
         freshness.expiresAt.getTime() - input.policy.refreshBeforeExpiryMs;
@@ -201,14 +214,6 @@ export class CodexCliSessionDriver implements ProviderSessionDriver {
 
     if (freshness.lastRefreshAt) {
       const ageMs = input.now.getTime() - freshness.lastRefreshAt.getTime();
-      if (ageMs >= input.policy.maxSessionAgeMs) {
-        return {
-          status: "refresh_recommended",
-          reason: "max_age_exceeded",
-          refreshedAt: freshness.lastRefreshAt,
-          warnings,
-        };
-      }
       if (ageMs <= input.policy.minFreshMs) {
         return {
           status: "fresh",
