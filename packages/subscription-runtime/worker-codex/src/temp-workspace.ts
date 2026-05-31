@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -23,5 +23,28 @@ export class TempWorkspace implements WorkspacePort {
       path,
       dispose: () => rm(path, { recursive: true, force: true }),
     };
+  }
+}
+
+export class StableWorkerWorkspace implements WorkspacePort {
+  readonly workspaceId = "stable-worker-workspace";
+  readonly capabilities = {
+    workspaceId: this.workspaceId,
+    supportsTempDir: true,
+    supportsExistingCheckout: true,
+    supportsContainer: false,
+  };
+
+  constructor(private readonly rootDir: string) {}
+
+  async create(): Promise<WorkspaceHandle> {
+    await mkdir(this.rootDir, { recursive: true, mode: 0o700 });
+    return {
+      path: this.rootDir,
+    };
+  }
+
+  async dispose(): Promise<void> {
+    await rm(this.rootDir, { recursive: true, force: true });
   }
 }

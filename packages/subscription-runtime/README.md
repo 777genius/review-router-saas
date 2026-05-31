@@ -219,6 +219,8 @@ const agentDriver = new CodexJsonAgentDriver({
 await agentDriver.prewarmSession({
   session: await sessionStore.readLatest(providerAccountId),
   redactor,
+  workspacePath: "/var/tmp/subscription-runtime/warmup-workspace",
+  runner,
 });
 
 // Bind this driver into the host queue processor. Do not share one warmed slot
@@ -255,6 +257,8 @@ const agentDriver = new CodexJsonAgentDriver({
   engine: new CodexAppServerExecutionEngine({
     codexBinaryPath,
     fallback,
+    executionProfile: "stateless-completion",
+    cleanThreadPrewarm: true,
   }),
   sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
     cacheKey: `codex:${providerAccountId}`,
@@ -263,17 +267,24 @@ const agentDriver = new CodexJsonAgentDriver({
   }),
   model: "gpt-5.5",
   reasoningEffort: "low",
+  warmupPrompt: "Return exactly OK.",
 });
 
 await agentDriver.prewarmSession({
   session: await sessionStore.readLatest(providerAccountId),
   redactor,
+  workspacePath: "/var/tmp/subscription-runtime/warmup-workspace",
+  runner,
 });
 ```
 
-The host queue should set concurrency to the same value as `slots` for that
-provider account. If app-server fails for a job, the engine restarts that slot
-and falls back to `codex exec` for the same materialized session.
+With `workspacePath` and `runner`, `prewarmSession` starts the reusable
+`codex app-server` for the materialized session. With `warmupPrompt`, it also
+runs a cheap hidden turn to warm the model path before the first user job. The
+host queue should set concurrency to the same value as the number of warmed
+worker slots for that provider account. If app-server fails for a job, the
+engine restarts that slot and falls back to `codex exec` for the same
+materialized session.
 
 This is the intended integration shape for services such as `openai-service`:
 the service keeps its existing Nest/Bull/queue stack, while the subscription
@@ -303,16 +314,20 @@ import { FileBackendCodexWorker } from "@reviewrouter/subscription-runtime-worke
 const pool = new BoundedSubscriptionWorkerPool({
   poolId: "codex-ratings",
   slots: 4,
-  prewarmOnStart: false,
+  prewarmOnStart: true,
   workerFactory: ({ workerId }) =>
     new FileBackendCodexWorker({
       workerId,
       providerInstanceId: "codex:ratings",
       stateRootDir: "/var/lib/subscription-runtime",
-      codexBinaryPath: "/usr/local/bin/codex",
+      // Pin a recent Codex binary. Do not rely on a stale global PATH install.
+      codexBinaryPath: "/opt/reviewrouter/codex-0.135.0/codex",
       encryptionKey: fileKey32Bytes,
       model: "gpt-5.5",
-      reasoningEffort: "low",
+      reasoningEffort: "medium",
+      executionProfile: "stateless-completion",
+      cleanThreadPrewarm: true,
+      warmupPrompt: "Return exactly OK.",
       sessionCacheSlots: 1,
       refreshFreshnessMs: 15 * 60_000,
       maxSessionAgeMs: 24 * 60 * 60_000,
@@ -320,7 +335,6 @@ const pool = new BoundedSubscriptionWorkerPool({
 });
 
 await pool.start();
-await pool.prewarm();
 
 const result = await pool.run({
   runId: "match-rating-123",
@@ -328,6 +342,24 @@ const result = await pool.run({
   outputSchemaName: "rating-v1",
 });
 ```
+
+The Codex adapters write a minimal backend `CODEX_HOME` by default:
+subscription auth is file-backed, web search and response storage are disabled,
+shell snapshot is disabled, and optional UI/app/memory features are disabled.
+Keep those defaults for background workers; enabling interactive Codex features
+adds startup and prompt overhead.
+
+For API-like batch workloads such as match rating, use
+`executionProfile: "stateless-completion"`. It sends minimal app-server
+`baseInstructions`, disables tools, keeps history off, and treats every job as
+a clean prompt-response operation. This is the default for
+`FileBackendCodexWorker`.
+
+Use `executionProfile: "subscription-worker"` only when preserving the previous
+generic subscription worker behavior is more important than latency. Future
+chat/dialog workloads should add a separate session mode based on
+`thread/resume` or `thread/fork`; do not use that path for independent match
+scoring jobs.
 
 For an existing Bull/BullMQ deployment, keep the queue in the host service and
 only map jobs into the worker pool:

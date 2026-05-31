@@ -61,3 +61,50 @@ Recommended beta defaults:
 - Allow 4 slots behind an explicit host config flag.
 - Treat 8 slots as experimental until a 50-100 task soak is green on the target
   host type, not only on a local developer machine.
+
+## API-Like Stateless Profile - Codex 0.135.0
+
+Environment:
+
+- Host: local macOS developer machine
+- Codex CLI: `codex-cli 0.135.0` from temporary `@openai/codex@0.135.0`
+  install
+- Auth: local `~/.codex/auth.json`
+- Model: `gpt-5.5`
+- Reasoning: `low`
+- Profile: `stateless-completion`
+- Clean thread prewarm: enabled
+- Prompt profiles: `ok-smoke`, `match-rating-json`
+
+Smoke:
+
+| slots | tasks |  ok | failed | total ms | prewarm ms | first task ms | p50 ms | p95 ms | max ms | restart slot ms | fallback |
+| ----: | ----: | --: | -----: | -------: | ---------: | ------------: | -----: | -----: | -----: | --------------: | -------- |
+|     1 |     1 |   1 |      0 |   24,255 |      4,310 |         9,458 |  9,458 |  9,458 |  9,458 |           9,561 | ok       |
+
+Match rating JSON load:
+
+| slots | tasks |  ok | failed | total ms | prewarm ms | first task ms | p50 ms | p95 ms | max ms | RSS delta MB | heap delta MB |
+| ----: | ----: | --: | -----: | -------: | ---------: | ------------: | -----: | -----: | -----: | -----------: | ------------: |
+|     2 |     8 |   8 |      0 |   57,030 |      5,115 |        10,948 | 24,016 | 42,876 | 42,876 |          3.4 |           5.6 |
+|     4 |     8 |   8 |      0 |   33,206 |      5,275 |        10,719 | 12,333 | 21,675 | 21,675 |         23.2 |           9.3 |
+
+Findings:
+
+- `stateless-completion` is safe for API-like jobs: no failed tasks in smoke or
+  load runs, and fallback probe completed through `codex exec`.
+- Clean-thread prewarm keeps first task near 10-11 seconds without `/fast`.
+- Four slots are faster than two for the compact match-rating prompt on this
+  machine, but memory grows more. Keep two slots as conservative default and
+  allow four slots for batch throughput.
+
+Same prompt, without restart-slot probe:
+
+| slots | tasks |  ok | failed | total ms | prewarm ms | first task ms | p50 ms | p95 ms | max ms | RSS delta MB | CPU system ms |
+| ----: | ----: | --: | -----: | -------: | ---------: | ------------: | -----: | -----: | -----: | -----------: | ------------: |
+|     4 |     8 |   8 |      0 |   29,190 |     13,629 |         6,557 |  6,557 | 12,319 | 12,319 |          0.6 |         2,343 |
+|     6 |     8 |   8 |      0 |   28,613 |      9,843 |         7,731 |  6,653 | 11,888 | 11,888 |         12.4 |         3,849 |
+
+Six slots are not worse on task latency in this small run, but the latency
+gain is within local-run noise while resource cost is higher. Treat four slots
+as the production default and six slots as an optional burst setting.

@@ -15,6 +15,7 @@ import {
 import {
   CodexAppServerExecutionEngine,
   CodexCliSessionDriver,
+  type CodexExecutionProfile,
   CodexJsonAgentDriver,
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
@@ -32,7 +33,7 @@ import {
 } from "@reviewrouter/subscription-runtime-worker-core";
 import { NodeProcessRunner } from "./node-process-runner";
 import { NullWorkerObservability } from "./observability";
-import { TempWorkspace } from "./temp-workspace";
+import { StableWorkerWorkspace } from "./temp-workspace";
 
 export type FileBackendCodexWorkerOptions = {
   readonly workerId?: string;
@@ -43,12 +44,19 @@ export type FileBackendCodexWorkerOptions = {
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
   readonly sessionCacheSlots?: number;
+  /**
+   * Prompt used to fully warm the Codex app-server and model path.
+   * Set to false to warm only the daemon process.
+   */
+  readonly warmupPrompt?: string | false;
   readonly taskTimeoutMs?: number;
   readonly refreshFreshnessMs?: number;
   readonly refreshBeforeExpiryMs?: number;
   readonly maxSessionAgeMs?: number;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   readonly appServerProcessFactory?: CodexAppServerProcessFactory;
+  readonly executionProfile?: CodexExecutionProfile;
+  readonly cleanThreadPrewarm?: boolean;
   readonly observability?: ObservabilityPort;
   readonly runner?: RuntimeDeps["runner"];
   readonly workspace?: RuntimeDeps["workspace"];
@@ -88,6 +96,7 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
   private readonly agentDriver: CodexJsonAgentDriver;
   private readonly sessionStore: NonNullable<RuntimeDeps["sessionStore"]>;
   private readonly runtime;
+  private readonly ownedWorkspace: StableWorkerWorkspace | null;
 
   constructor(private readonly options: FileBackendCodexWorkerOptions) {
     this.workerId =
@@ -95,7 +104,12 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
       `file-backend-codex:${hashText(options.providerInstanceId).slice(0, 12)}`;
     assertWorkerOptions(options);
     this.runner = options.runner ?? new NodeProcessRunner();
-    this.workspace = options.workspace ?? new TempWorkspace();
+    this.ownedWorkspace = options.workspace
+      ? null
+      : new StableWorkerWorkspace(
+          join(options.stateRootDir, "workspaces", hashText(this.workerId)),
+        );
+    this.workspace = options.workspace ?? this.ownedWorkspace!;
     this.observability = options.observability ?? new NullWorkerObservability();
     this.clock = options.clock ?? systemClock;
 
@@ -126,6 +140,8 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
         ...(options.appServerProcessFactory
           ? { processFactory: options.appServerProcessFactory }
           : {}),
+        executionProfile: options.executionProfile ?? "stateless-completion",
+        cleanThreadPrewarm: options.cleanThreadPrewarm ?? true,
         fallback,
       }),
       sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
@@ -135,6 +151,9 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
       }),
       model: options.model ?? "gpt-5.5",
       reasoningEffort: options.reasoningEffort ?? "low",
+      ...(options.warmupPrompt === false
+        ? {}
+        : { warmupPrompt: options.warmupPrompt ?? defaultWarmupPrompt }),
     });
 
     this.runtime = createSubscriptionRuntime({
@@ -227,20 +246,40 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
       );
     }
 
-    const result = await this.agentDriver.prewarmSession({
-      session: session.artifact,
-      redactor: this.redactor,
+    const workspace = await this.workspace.create({
+      purpose: "run-task",
+      isolation: "temp-dir",
     });
-    this.workerState = "ready";
-    return {
-      status: result.reusable ? "ready" : "skipped",
-      warmedAt: result.warmedAt,
-      warnings: [],
-      details: {
-        mode: result.mode,
-        reusable: String(result.reusable),
-      },
-    };
+    try {
+      const result = await this.agentDriver.prewarmSession({
+        session: session.artifact,
+        redactor: this.redactor,
+        workspacePath: workspace.path,
+        runner: this.runner,
+        abortSignal: new AbortController().signal,
+      });
+      this.workerState = "ready";
+      return {
+        status: result.reusable ? "ready" : "skipped",
+        warmedAt: result.warmedAt,
+        warnings: result.warnings ?? [],
+        details: {
+          mode: result.mode,
+          reusable: String(result.reusable),
+          ...(result.engine
+            ? {
+                engine: result.engine.kind,
+                engineReusable: String(result.engine.reusable),
+              }
+            : {}),
+        },
+      };
+    } catch (error) {
+      this.workerState = "failed";
+      throw error;
+    } finally {
+      await workspace.dispose?.();
+    }
   }
 
   async run(
@@ -320,6 +359,7 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
     try {
       await this.agentDriver.dispose();
     } finally {
+      await this.ownedWorkspace?.dispose();
       this.workerState = "disposed";
     }
   }
@@ -377,3 +417,5 @@ const systemClock: ClockPort = {
   now: () => new Date(),
   monotonicMs: () => performance.now(),
 };
+
+const defaultWarmupPrompt = "Return exactly OK.";

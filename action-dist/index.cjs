@@ -252,7 +252,12 @@ function compileRuntimePolicy(input) {
     timeoutMs: Math.min(
       input.provider.defaultTimeoutMs,
       input.agent.maxRuntimeMs
-    )
+    ),
+    refreshPolicy: {
+      minFreshMs: input.requested.refreshPolicy?.minFreshMs ?? 15 * 60 * 1e3,
+      refreshBeforeExpiryMs: input.requested.refreshPolicy?.refreshBeforeExpiryMs ?? 5 * 60 * 1e3,
+      maxSessionAgeMs: input.requested.refreshPolicy?.maxSessionAgeMs ?? 24 * 60 * 60 * 1e3
+    }
   };
 }
 function compileRuntimeExecutionPlan(input) {
@@ -469,6 +474,28 @@ var RuntimeKernel = class {
       );
     }
     this.deps.redactor.registerSecret(session.artifact.bytes, "session");
+    if (this.executionPlan.kind === "rotating-session" && this.executionPlan.refresh === "lazy" && !input.forceRefresh) {
+      const freshness = await this.inspectFreshness({
+        session: session.artifact,
+        runId: input.runContext.runId
+      });
+      if (freshness.status === "fresh") {
+        this.emit("provider.refresh.skipped", input.runContext.runId, {
+          reason: freshness.reason,
+          generation: String(session.generation)
+        });
+        return {
+          status: "skipped",
+          reason: "refresh_not_required",
+          session,
+          warnings: freshness.warnings
+        };
+      }
+      this.emit("provider.refresh.recommended", input.runContext.runId, {
+        reason: freshness.reason,
+        generation: String(session.generation)
+      });
+    }
     const leaseStartedAt = this.deps.clock.monotonicMs();
     this.emit("lease.acquire.started", input.runContext.runId, {
       generation: String(session.generation)
@@ -773,6 +800,63 @@ var RuntimeKernel = class {
         warnings: refresh.warnings
       };
     }
+    if (this.executionPlan.kind === "rotating-session" && refresh.status === "skipped" && refresh.reason === "refresh_not_required" && refresh.session) {
+      const task2 = await this.runTaskWithSession({
+        session: refresh.session.artifact,
+        task: input.task,
+        runContext: input.runContext
+      });
+      if (task2.status === "failed" && shouldGuardedRefresh(task2.failure)) {
+        this.emit("provider.refresh.guard.started", input.runContext.runId, {
+          reason: task2.failure.code
+        });
+        const guardedRefresh = await this.refreshSession({
+          providerInstanceId: input.providerInstanceId,
+          runContext: input.runContext,
+          forceRefresh: true
+        });
+        if (guardedRefresh.status === "blocked") {
+          return {
+            status: "blocked",
+            reason: guardedRefresh.reason,
+            safeMessage: guardedRefresh.safeMessage,
+            warnings: guardedRefresh.warnings
+          };
+        }
+        if (guardedRefresh.status === "skipped" && guardedRefresh.reason === "stale_generation") {
+          return {
+            status: "blocked",
+            reason: "stale_generation",
+            safeMessage: "A newer provider session generation already exists.",
+            warnings: guardedRefresh.warnings
+          };
+        }
+        const guardedSession = sessionForPostRefreshTask(guardedRefresh);
+        if (!guardedSession) {
+          return {
+            status: "blocked",
+            reason: "provider_reconnect_required",
+            safeMessage: "Provider session is missing after guarded refresh.",
+            warnings: guardedRefresh.warnings
+          };
+        }
+        const retriedTask = await this.runTaskWithSession({
+          session: guardedSession.artifact,
+          task: input.task,
+          runContext: input.runContext
+        });
+        return {
+          status: "completed",
+          refresh: guardedRefresh,
+          task: retriedTask
+        };
+      }
+      return {
+        status: "completed",
+        refresh,
+        task: task2
+      };
+    }
     const session = sessionForPostRefreshTask(refresh);
     if (!session) {
       return {
@@ -869,6 +953,38 @@ var RuntimeKernel = class {
       return result;
     } finally {
       await workspace.dispose?.();
+    }
+  }
+  async inspectFreshness(input) {
+    const sessionDriver = this.requireSessionDriver();
+    if (!sessionDriver.inspectSessionFreshness) {
+      return {
+        status: "refresh_recommended",
+        reason: "freshness_unknown",
+        warnings: []
+      };
+    }
+    try {
+      return await sessionDriver.inspectSessionFreshness({
+        session: input.session,
+        policy: this.policy.refreshPolicy,
+        now: this.deps.clock.now(),
+        redactor: this.deps.redactor
+      });
+    } catch (error51) {
+      this.emit("provider.refresh.freshness_failed", input.runId, {
+        reason: error51 instanceof Error ? error51.message.slice(0, 120) : "unknown"
+      });
+      return {
+        status: "refresh_recommended",
+        reason: "freshness_unknown",
+        warnings: [
+          {
+            code: "session_freshness_unknown",
+            safeMessage: "Session freshness could not be determined."
+          }
+        ]
+      };
     }
   }
   emit(name, runId, metadata = {}, durationMs) {
@@ -989,10 +1105,13 @@ function sessionForPostRefreshTask(refresh) {
   if (refresh.status === "ready") {
     return refresh.session;
   }
-  if (refresh.status === "skipped" && refresh.reason === "session_unchanged") {
+  if (refresh.status === "skipped" && (refresh.reason === "session_unchanged" || refresh.reason === "refresh_not_required")) {
     return refresh.session ?? null;
   }
   return null;
+}
+function shouldGuardedRefresh(failure) {
+  return failure.code === "needs_reconnect" || failure.code === "provider_session_invalid" || failure.causeCategory === "needs_reconnect";
 }
 function blocked(reason, safeMessage, warnings = []) {
   return {
@@ -1133,6 +1252,27 @@ function compactCodexAuthJson(input) {
   }
   return { compactAuthJsonBytes, byteLength };
 }
+function readCodexAuthJsonFreshness(input) {
+  const validation = validateCodexAuthJsonBytes({
+    authJsonBytes: input.authJsonBytes,
+    ...input.now ? { now: input.now } : {}
+  });
+  const warnings = [...validation.warnings];
+  const lastRefreshAt = parseOptionalDate(
+    validation.parsed.last_refresh,
+    "last_refresh_unparseable",
+    warnings
+  );
+  const expiresAt = parseOptionalExpiry(
+    validation.parsed.tokens.expiry,
+    warnings
+  );
+  return {
+    lastRefreshAt,
+    expiresAt,
+    warnings
+  };
+}
 function classifyCodexRuntimeFailure(message) {
   const normalized = message.toLowerCase();
   if (isCodexQuotaOrRateLimitFailure(normalized)) {
@@ -1210,6 +1350,9 @@ function parseCodexAuthJson(value) {
   if (value.last_refresh !== void 0 && typeof value.last_refresh !== "string") {
     throw new Error("codex_auth_json_invalid_last_refresh");
   }
+  if (value.tokens.expiry !== void 0 && typeof value.tokens.expiry !== "string" && typeof value.tokens.expiry !== "number") {
+    throw new Error("codex_auth_json_invalid_expiry");
+  }
   return value;
 }
 function collectCodexAuthJsonWarnings(input) {
@@ -1228,6 +1371,27 @@ function collectCodexAuthJsonWarnings(input) {
     warnings.push("last_refresh_stale");
   }
   return warnings;
+}
+function parseOptionalDate(value, warning, warnings) {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    if (!warnings.includes(warning)) warnings.push(warning);
+    return null;
+  }
+  return new Date(parsed);
+}
+function parseOptionalExpiry(value, warnings) {
+  if (value === void 0) return null;
+  const ms = typeof value === "number" ? normalizeEpochToMs(value) : Number.isFinite(Number(value)) ? normalizeEpochToMs(Number(value)) : Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    warnings.push("expiry_unparseable");
+    return null;
+  }
+  return new Date(ms);
+}
+function normalizeEpochToMs(value) {
+  return value < 1e10 ? value * 1e3 : value;
 }
 function shouldDropChildEnvKey(key) {
   return codexEnvironmentPolicy.denylist.some(
@@ -1407,6 +1571,15 @@ function classifyCodexFailure(error51) {
   }
 }
 
+// packages/subscription-runtime/provider-codex/src/codex-execution-profile.ts
+var statelessCompletionBaseInstructions = [
+  "You are a fast backend inference worker.",
+  "Return only the requested final answer.",
+  "Do not inspect files.",
+  "Do not use tools unless explicitly allowed.",
+  "If JSON is requested, return valid JSON only."
+].join(" ");
+
 // packages/subscription-runtime/provider-codex/src/codex-json-execution-engine.ts
 var defaultTimeoutMs = 10 * 60 * 1e3;
 var defaultMaxOutputBytes = 512 * 1024;
@@ -1469,6 +1642,19 @@ ${stderr}`)}`
       warnings: []
     };
   }
+  async prewarm() {
+    return {
+      kind: this.kind,
+      reusable: false,
+      warmedAt: /* @__PURE__ */ new Date(),
+      warnings: [
+        {
+          code: "codex_packaged_exec_prewarm_skipped",
+          safeMessage: "Packaged Codex exec starts a fresh process for every task."
+        }
+      ]
+    };
+  }
 };
 function buildCodexJsonExecArgs(input) {
   return [
@@ -1482,6 +1668,22 @@ function buildCodexJsonExecArgs(input) {
     'approval_policy="never"',
     "--config",
     `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`,
+    "--config",
+    'model_verbosity="low"',
+    "--config",
+    'web_search="disabled"',
+    "--config",
+    "features.apps=false",
+    "--config",
+    "features.hooks=false",
+    "--config",
+    "features.memories=false",
+    "--config",
+    "features.multi_agent=false",
+    "--config",
+    "features.shell_snapshot=false",
+    "--config",
+    "features.skill_mcp_dependency_install=false",
     "--ephemeral",
     "--ignore-user-config",
     "--ignore-rules",
@@ -1637,6 +1839,15 @@ async function writeCodexJsonHomeSnapshot(input) {
     'sandbox_mode = "read-only"',
     'web_search = "disabled"',
     "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
     "",
     "[history]",
     'persistence = "none"',
@@ -1745,9 +1956,36 @@ var CodexJsonAgentDriver = class {
     return classifyCodexFailure(error51);
   }
   async prewarmSession(input) {
-    if (this.sessionMaterializer.prewarm) {
-      return this.sessionMaterializer.prewarm(input);
+    const sessionPrewarm = this.sessionMaterializer.prewarm ? await this.sessionMaterializer.prewarm(input) : await this.prewarmMaterializerFallback(input);
+    if (!sessionPrewarm.reusable || !this.engine.prewarm || !input.workspacePath || !input.runner) {
+      return sessionPrewarm;
     }
+    const materialized = await this.sessionMaterializer.materialize(input);
+    try {
+      const enginePrewarm = await this.engine.prewarm({
+        session: materialized,
+        workspacePath: input.workspacePath,
+        runner: input.runner,
+        redactor: input.redactor,
+        model: this.model,
+        reasoningEffort: this.reasoningEffort,
+        ...this.options.warmupPrompt ? { warmupPrompt: this.options.warmupPrompt } : {},
+        abortSignal: input.abortSignal ?? new AbortController().signal
+      });
+      return {
+        ...sessionPrewarm,
+        engine: {
+          kind: enginePrewarm.kind,
+          reusable: enginePrewarm.reusable
+        },
+        warmedAt: enginePrewarm.warmedAt,
+        warnings: enginePrewarm.warnings
+      };
+    } finally {
+      await materialized.release();
+    }
+  }
+  async prewarmMaterializerFallback(input) {
     const materialized = await this.sessionMaterializer.materialize(input);
     try {
       return {
@@ -1792,11 +2030,15 @@ var import_node_path3 = require("node:path");
 var CodexCliSessionDriver = class {
   constructor(options = {}) {
     this.options = options;
+    this.capabilities = options.refreshMode ? {
+      ...codexSessionCapabilities,
+      refreshMode: options.refreshMode
+    } : codexSessionCapabilities;
   }
   options;
   providerId = codexProviderId;
   supportedArtifactKinds = ["json-file"];
-  capabilities = codexSessionCapabilities;
+  capabilities;
   async validateSession(input) {
     return validateCodexSessionArtifact(input.session);
   }
@@ -1872,6 +2114,70 @@ var CodexCliSessionDriver = class {
     } finally {
       await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
     }
+  }
+  async inspectSessionFreshness(input) {
+    const authJson = codexAuthJsonFromArtifact(input.session);
+    const freshness = readCodexAuthJsonFreshness({
+      authJsonBytes: authJson,
+      now: input.now
+    });
+    const warnings = freshness.warnings.map((warning) => ({
+      code: warning,
+      safeMessage: `Codex auth freshness warning: ${warning}`
+    }));
+    if (freshness.expiresAt) {
+      const refreshAt = freshness.expiresAt.getTime() - input.policy.refreshBeforeExpiryMs;
+      if (freshness.expiresAt.getTime() <= input.now.getTime()) {
+        return {
+          status: "refresh_recommended",
+          reason: "expired",
+          expiresAt: freshness.expiresAt,
+          ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+          warnings
+        };
+      }
+      if (refreshAt <= input.now.getTime()) {
+        return {
+          status: "refresh_recommended",
+          reason: "expires_soon",
+          expiresAt: freshness.expiresAt,
+          ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+          warnings
+        };
+      }
+      return {
+        status: "fresh",
+        reason: "expires_later",
+        expiresAt: freshness.expiresAt,
+        ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+        warnings
+      };
+    }
+    if (freshness.lastRefreshAt) {
+      const ageMs = input.now.getTime() - freshness.lastRefreshAt.getTime();
+      if (ageMs >= input.policy.maxSessionAgeMs) {
+        return {
+          status: "refresh_recommended",
+          reason: "max_age_exceeded",
+          refreshedAt: freshness.lastRefreshAt,
+          warnings
+        };
+      }
+      if (ageMs <= input.policy.minFreshMs) {
+        return {
+          status: "fresh",
+          reason: "recent_refresh",
+          refreshedAt: freshness.lastRefreshAt,
+          warnings
+        };
+      }
+    }
+    return {
+      status: "refresh_recommended",
+      reason: "freshness_unknown",
+      ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+      warnings
+    };
   }
   classifySessionFailure(error51) {
     return classifyCodexFailure(error51);
@@ -20220,10 +20526,10 @@ function decodeBase64OrBase64Url(value) {
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var defaultOidcAudience = "reviewrouter";
 var bundledCodexPlatform = "linux-x64";
-var bundledCodexVersion = "0.125.0";
+var bundledCodexVersion = "0.135.0";
 var bundledCodexPackageName = ["@openai", "codex"].join("/");
 var bundledCodexArchiveName = "codex-linux-x64.tgz";
-var bundledCodexBinaryPathInArchive = "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+var bundledCodexBinaryPathInArchive = "package/vendor/x86_64-unknown-linux-musl/bin/codex";
 var maxCommentBytes = 6e4;
 var maxCapturedProcessOutputBytes = 256e3;
 var maxProxyRequestBodyBytes = 2e6;
@@ -20948,6 +21254,15 @@ async function writeCodexAuthSnapshot(codexHome, authJson) {
     'sandbox_mode = "read-only"',
     'web_search = "disabled"',
     "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
     "",
     "[history]",
     'persistence = "none"',

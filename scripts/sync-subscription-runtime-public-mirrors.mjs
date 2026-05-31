@@ -76,7 +76,7 @@ const owner = args.owner ?? "777genius";
 const branch = args.branch ?? "main";
 const push = args.push === true;
 const selected = new Set(
-  (args.packages ?? packageSpecs.map((spec) => spec.id))
+  (args.packages ?? packageSpecs.map((spec) => spec.id).join(","))
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean),

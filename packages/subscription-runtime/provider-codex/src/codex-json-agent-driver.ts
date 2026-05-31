@@ -29,6 +29,7 @@ import {
 type CodexJsonAgentDriverBaseOptions = {
   readonly model?: string;
   readonly reasoningEffort?: CodexReasoningEffort;
+  readonly warmupPrompt?: string;
   readonly sessionMaterializer?: CodexSessionMaterializer;
 };
 
@@ -131,11 +132,55 @@ export class CodexJsonAgentDriver implements AgentDriver {
   async prewarmSession(input: {
     readonly session: SessionArtifact;
     readonly redactor: RedactorPort;
+    readonly workspacePath?: string;
+    readonly runner?: Parameters<AgentDriver["runTask"]>[0]["runner"];
+    readonly abortSignal?: AbortSignal;
   }): Promise<CodexSessionPrewarmResult> {
-    if (this.sessionMaterializer.prewarm) {
-      return this.sessionMaterializer.prewarm(input);
+    const sessionPrewarm = this.sessionMaterializer.prewarm
+      ? await this.sessionMaterializer.prewarm(input)
+      : await this.prewarmMaterializerFallback(input);
+
+    if (
+      !sessionPrewarm.reusable ||
+      !this.engine.prewarm ||
+      !input.workspacePath ||
+      !input.runner
+    ) {
+      return sessionPrewarm;
     }
 
+    const materialized = await this.sessionMaterializer.materialize(input);
+    try {
+      const enginePrewarm = await this.engine.prewarm({
+        session: materialized,
+        workspacePath: input.workspacePath,
+        runner: input.runner,
+        redactor: input.redactor,
+        model: this.model,
+        reasoningEffort: this.reasoningEffort,
+        ...(this.options.warmupPrompt
+          ? { warmupPrompt: this.options.warmupPrompt }
+          : {}),
+        abortSignal: input.abortSignal ?? new AbortController().signal,
+      });
+      return {
+        ...sessionPrewarm,
+        engine: {
+          kind: enginePrewarm.kind,
+          reusable: enginePrewarm.reusable,
+        },
+        warmedAt: enginePrewarm.warmedAt,
+        warnings: enginePrewarm.warnings,
+      };
+    } finally {
+      await materialized.release();
+    }
+  }
+
+  private async prewarmMaterializerFallback(input: {
+    readonly session: SessionArtifact;
+    readonly redactor: RedactorPort;
+  }): Promise<CodexSessionPrewarmResult> {
     const materialized = await this.sessionMaterializer.materialize(input);
     try {
       return {

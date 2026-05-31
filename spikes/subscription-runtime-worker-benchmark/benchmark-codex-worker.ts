@@ -12,6 +12,8 @@ type BenchmarkSample = {
   readonly successCount: number;
   readonly failureCount: number;
   readonly totalMs: number;
+  readonly prewarmMs: number;
+  readonly firstTaskMs: number;
   readonly p50Ms: number;
   readonly p95Ms: number;
   readonly maxMs: number;
@@ -47,6 +49,8 @@ async function main(): Promise<void> {
       ok: sample.successCount,
       failed: sample.failureCount,
       totalMs: Math.round(sample.totalMs),
+      prewarmMs: Math.round(sample.prewarmMs),
+      firstTaskMs: Math.round(sample.firstTaskMs),
       p50Ms: Math.round(sample.p50Ms),
       p95Ms: Math.round(sample.p95Ms),
       maxMs: Math.round(sample.maxMs),
@@ -81,6 +85,11 @@ async function runSlots(input: {
   readonly model: string;
   readonly reasoningEffort: "low" | "medium" | "high" | "xhigh";
   readonly prompt: string;
+  readonly executionProfile:
+    | "stateless-completion"
+    | "subscription-worker"
+    | { readonly kind: "custom"; readonly baseInstructions?: string };
+  readonly cleanThreadPrewarm: boolean;
   readonly restartSlotProbe: boolean;
 }): Promise<BenchmarkSample> {
   const rootDir = await mkdtemp(join(tmpdir(), "rr-codex-worker-bench-"));
@@ -90,6 +99,8 @@ async function runSlots(input: {
   const durations: number[] = [];
   let successCount = 0;
   let failureCount = 0;
+  let prewarmMs = 0;
+  let firstTaskMs = 0;
   let restartSlotMs: number | null = null;
   const workers: FileBackendCodexWorker[] = [];
 
@@ -108,6 +119,8 @@ async function runSlots(input: {
         encryptionKey: input.encryptionKey,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
+        executionProfile: input.executionProfile,
+        cleanThreadPrewarm: input.cleanThreadPrewarm,
         sessionCacheSlots: 1,
         taskTimeoutMs: 10 * 60_000,
         sourceEnv: process.env,
@@ -121,7 +134,9 @@ async function runSlots(input: {
         await workers[index]?.seedCodexAuthJson(input.authJson);
       }),
     );
-    await pool.prewarm();
+    prewarmMs = await timed(async () => {
+      await pool.prewarm();
+    });
     if (input.restartSlotProbe && input.slots > 0) {
       restartSlotMs = await timed(async () => {
         await pool.restartSlot(0, { prewarm: true });
@@ -137,13 +152,14 @@ async function runSlots(input: {
         if (!result.outputText.trim()) {
           throw new Error("empty_output");
         }
-      }),
+      }).then((durationMs) => ({ index, durationMs })),
     );
     const results = await Promise.allSettled(tasks);
     for (const result of results) {
       if (result.status === "fulfilled") {
         successCount += 1;
-        durations.push(result.value);
+        durations.push(result.value.durationMs);
+        if (result.value.index === 0) firstTaskMs = result.value.durationMs;
       } else {
         failureCount += 1;
       }
@@ -162,6 +178,8 @@ async function runSlots(input: {
     successCount,
     failureCount,
     totalMs: performance.now() - startedAt,
+    prewarmMs,
+    firstTaskMs,
     p50Ms: percentile(durations, 0.5),
     p95Ms: percentile(durations, 0.95),
     maxMs: durations.at(-1) ?? 0,
@@ -180,6 +198,11 @@ async function runFallbackProbe(input: {
   readonly model: string;
   readonly reasoningEffort: "low" | "medium" | "high" | "xhigh";
   readonly prompt: string;
+  readonly executionProfile:
+    | "stateless-completion"
+    | "subscription-worker"
+    | { readonly kind: "custom"; readonly baseInstructions?: string };
+  readonly cleanThreadPrewarm: boolean;
 }): Promise<FallbackSample> {
   const rootDir = await mkdtemp(join(tmpdir(), "rr-codex-worker-fallback-"));
   const worker = createWorker({
@@ -191,6 +214,8 @@ async function runFallbackProbe(input: {
     encryptionKey: input.encryptionKey,
     model: input.model,
     reasoningEffort: input.reasoningEffort,
+    executionProfile: input.executionProfile,
+    cleanThreadPrewarm: input.cleanThreadPrewarm,
     sessionCacheSlots: 1,
     taskTimeoutMs: 10 * 60_000,
     sourceEnv: process.env,
@@ -250,6 +275,11 @@ function readConfig(): {
   readonly model: string;
   readonly reasoningEffort: "low" | "medium" | "high" | "xhigh";
   readonly prompt: string;
+  readonly executionProfile:
+    | "stateless-completion"
+    | "subscription-worker"
+    | { readonly kind: "custom"; readonly baseInstructions?: string };
+  readonly cleanThreadPrewarm: boolean;
   readonly restartSlotProbe: boolean;
   readonly runFallbackProbe: boolean;
 } {
@@ -264,6 +294,8 @@ function readConfig(): {
       ].join(" "),
     );
   }
+  const promptKind =
+    process.env.SUBSCRIPTION_RUNTIME_BENCH_PROMPT_KIND ?? "ok-smoke";
   return {
     authJsonPath,
     codexBinaryPath: process.env.CODEX_BINARY ?? "codex",
@@ -283,12 +315,51 @@ function readConfig(): {
         | undefined) ?? "low",
     prompt:
       process.env.SUBSCRIPTION_RUNTIME_BENCH_PROMPT ??
-      "Return exactly one short sentence with the word OK.",
+      promptForKind(promptKind),
+    executionProfile: readExecutionProfile(),
+    cleanThreadPrewarm:
+      process.env.SUBSCRIPTION_RUNTIME_BENCH_CLEAN_THREAD_PREWARM !== "0",
     restartSlotProbe:
       process.env.SUBSCRIPTION_RUNTIME_BENCH_RESTART_SLOT !== "0",
     runFallbackProbe:
       process.env.SUBSCRIPTION_RUNTIME_BENCH_FALLBACK_PROBE !== "0",
   };
+}
+
+function readExecutionProfile():
+  | "stateless-completion"
+  | "subscription-worker"
+  | { readonly kind: "custom"; readonly baseInstructions?: string } {
+  const profile =
+    process.env.SUBSCRIPTION_RUNTIME_BENCH_PROFILE ?? "stateless-completion";
+  if (profile === "subscription-worker") return "subscription-worker";
+  if (profile === "stateless-completion") return "stateless-completion";
+  if (profile === "custom") {
+    const baseInstructions =
+      process.env.SUBSCRIPTION_RUNTIME_BENCH_BASE_INSTRUCTIONS;
+    return baseInstructions
+      ? { kind: "custom", baseInstructions }
+      : { kind: "custom" };
+  }
+  throw new Error(
+    "SUBSCRIPTION_RUNTIME_BENCH_PROFILE must be stateless-completion, subscription-worker, or custom.",
+  );
+}
+
+function promptForKind(kind: string): string {
+  if (kind === "ok-smoke") {
+    return "Return exactly one short sentence with the word OK.";
+  }
+  if (kind === "match-rating-json") {
+    return [
+      "Calculate a player rating delta for this padel match.",
+      "Return JSON only with keys playerId, ratingDelta, confidence, reason.",
+      'Input: {"playerId":"p1","playerRating":1520,"partnerRating":1480,"opponentRatings":[1510,1490],"score":"6-4 3-6 10-8","result":"win"}',
+    ].join(" ");
+  }
+  throw new Error(
+    "SUBSCRIPTION_RUNTIME_BENCH_PROMPT_KIND must be ok-smoke or match-rating-json.",
+  );
 }
 
 function decodeKey(value: string): Uint8Array {

@@ -57,11 +57,11 @@ declare const __dirname: string | undefined;
 
 const defaultOidcAudience = "reviewrouter";
 const bundledCodexPlatform = "linux-x64";
-const bundledCodexVersion = "0.125.0";
+const bundledCodexVersion = "0.135.0";
 const bundledCodexPackageName = ["@openai", "codex"].join("/");
 const bundledCodexArchiveName = "codex-linux-x64.tgz";
 const bundledCodexBinaryPathInArchive =
-  "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+  "package/vendor/x86_64-unknown-linux-musl/bin/codex";
 const maxCommentBytes = 60_000;
 const maxCapturedProcessOutputBytes = 256_000;
 const maxProxyRequestBodyBytes = 2_000_000;
@@ -1117,6 +1117,15 @@ async function writeCodexAuthSnapshot(
     'sandbox_mode = "read-only"',
     'web_search = "disabled"',
     "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
     "",
     "[history]",
     'persistence = "none"',
