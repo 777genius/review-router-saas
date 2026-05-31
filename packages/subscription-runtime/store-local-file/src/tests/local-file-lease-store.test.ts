@@ -230,6 +230,68 @@ describe("Local file lease store", () => {
     }
   });
 
+  it("does not remove a newer provider lock after waiting on stale cleanup", async () => {
+    const rootDir = await mkdtemp(
+      join(tmpdir(), "subscription-runtime-lease-"),
+    );
+    const now = "2026-05-30T00:00:00.000Z";
+    const store = new LocalFileLeaseStore({
+      rootDir,
+      now: () => new Date(now),
+      lockAcquireTimeoutMs: 120,
+      lockPollMs: 5,
+    });
+    const lockDir = join(rootDir, "leases", "locks");
+    const lockPath = join(
+      lockDir,
+      `${hashTextForTest(providerInstanceId)}.lock`,
+    );
+    const staleLockId = "stale-process";
+    const freshLockId = "fresh-process";
+    const cleanupLockPath = `${lockPath}.${hashTextForTest(staleLockId)}.cleanup.lock`;
+
+    try {
+      await mkdir(lockDir, { recursive: true });
+      await writeLockRecordForTest({
+        path: lockPath,
+        lockId: staleLockId,
+        providerInstanceId,
+        acquiredAt: "2026-05-29T23:00:00.000Z",
+        expiresAt: "2026-05-29T23:00:01.000Z",
+      });
+      await writeLockRecordForTest({
+        path: cleanupLockPath,
+        lockId: "cleanup-holder",
+        providerInstanceId: `${providerInstanceId}:lock-cleanup:${staleLockId}`,
+        acquiredAt: now,
+        expiresAt: "2026-05-30T00:01:00.000Z",
+      });
+
+      const acquire = store.acquire({
+        providerInstanceId,
+        runId: "run-after-stale-cleanup-race",
+        attempt: 1,
+        ttlMs: 60_000,
+        restoredGenerationHash: "generation-1",
+      });
+
+      await delayForTest(25);
+      await writeLockRecordForTest({
+        path: lockPath,
+        lockId: freshLockId,
+        providerInstanceId,
+        acquiredAt: now,
+        expiresAt: "2026-05-30T00:01:00.000Z",
+      });
+      await rm(cleanupLockPath, { force: true });
+
+      await expect(acquire).rejects.toThrow("local_file_lease_lock_timeout");
+      await expect(readFile(lockPath, "utf8")).resolves.toContain(freshLockId);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("validates generation hash and keeps committed metadata idempotent", async () => {
     const rootDir = await mkdtemp(
       join(tmpdir(), "subscription-runtime-lease-"),
@@ -663,6 +725,30 @@ function makeArtifact(value: string): SessionArtifact {
 
 function hashTextForTest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function writeLockRecordForTest(input: {
+  readonly path: string;
+  readonly lockId: string;
+  readonly providerInstanceId: string;
+  readonly acquiredAt: string;
+  readonly expiresAt: string;
+}): Promise<void> {
+  await writeFile(
+    input.path,
+    `${JSON.stringify({
+      storageVersion: "local-file-lease-lock-v1",
+      lockId: input.lockId,
+      providerInstanceIdHash: hashTextForTest(input.providerInstanceId),
+      pid: 999_999,
+      acquiredAt: input.acquiredAt,
+      expiresAt: input.expiresAt,
+    })}\n`,
+  );
+}
+
+function delayForTest(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function readStoredFiles(rootDir: string): Promise<readonly string[]> {

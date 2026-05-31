@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execPath } from "node:process";
 import { describe, expect, it } from "vitest";
 import { FileBackendCodexWorker } from "../index";
 import { NodeProcessRunner } from "../node-process-runner";
@@ -177,6 +178,21 @@ function extractFakePrompt(
 }
 
 describe("NodeProcessRunner", () => {
+  it("rejects non-zero process exits with a safe error", async () => {
+    const runner = new NodeProcessRunner();
+
+    await expect(
+      runner.run({
+        command: execPath,
+        args: ["-e", "process.stderr.write('bad exit'); process.exit(7)"],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH ?? "" },
+        timeoutMs: 30_000,
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("node_process_runner_failed:7:bad exit");
+  });
+
   it("does not spawn work for an already-aborted signal", async () => {
     const runner = new NodeProcessRunner();
     const controller = new AbortController();

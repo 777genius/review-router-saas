@@ -44,7 +44,7 @@ Current successful Docker smoke output:
 {
   "status": "completed",
   "prewarmStatus": "ready",
-  "durationMs": 2597,
+  "durationMs": 4933,
   "outputText": "OK.",
   "warnings": []
 }

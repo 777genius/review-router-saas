@@ -385,7 +385,11 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     try {
       return await operation();
     } finally {
-      await this.releaseProviderLock({ lockId, lockPath });
+      await this.releaseProviderLock({
+        providerInstanceId,
+        lockId,
+        lockPath,
+      });
     }
   }
 
@@ -394,6 +398,7 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     readonly lockId: string;
     readonly lockPath: string;
     readonly deadline: number;
+    readonly guardedStaleRemoval?: boolean;
   }): Promise<void> {
     const pollMs = this.options.lockPollMs ?? defaultLockPollMs;
     while (true) {
@@ -431,10 +436,19 @@ export class LocalFileLeaseStore implements LeaseStorePort {
         continue;
       }
       if (isLockExpired(existing, this.now())) {
-        await this.removeLockIfMatches({
-          lockId: existing.lockId,
-          lockPath: input.lockPath,
-        });
+        if (input.guardedStaleRemoval === false) {
+          await this.removeLockIfMatches({
+            lockId: existing.lockId,
+            lockPath: input.lockPath,
+          });
+        } else {
+          await this.removeLockIfMatchesGuarded({
+            providerInstanceId: input.providerInstanceId,
+            lockId: existing.lockId,
+            lockPath: input.lockPath,
+            deadline: input.deadline,
+          });
+        }
         continue;
       }
 
@@ -446,10 +460,57 @@ export class LocalFileLeaseStore implements LeaseStorePort {
   }
 
   private async releaseProviderLock(input: {
+    readonly providerInstanceId: string;
     readonly lockId: string;
     readonly lockPath: string;
+    readonly guarded?: boolean;
   }): Promise<void> {
-    await this.removeLockIfMatches(input);
+    if (input.guarded === false) {
+      await this.removeLockIfMatches(input);
+      return;
+    }
+
+    await this.removeLockIfMatchesGuarded({
+      providerInstanceId: input.providerInstanceId,
+      lockId: input.lockId,
+      lockPath: input.lockPath,
+      deadline:
+        Date.now() +
+        (this.options.lockAcquireTimeoutMs ?? defaultLockAcquireTimeoutMs),
+    });
+  }
+
+  private async removeLockIfMatchesGuarded(input: {
+    readonly providerInstanceId: string;
+    readonly lockId: string;
+    readonly lockPath: string;
+    readonly deadline: number;
+  }): Promise<void> {
+    const removalLockId = `local-file-lock-cleanup:${randomBytes(16).toString("hex")}`;
+    const removalLockPath = this.lockRemovalGuardPath(
+      input.lockPath,
+      input.lockId,
+    );
+    const removalProviderInstanceId = `${input.providerInstanceId}:lock-cleanup:${input.lockId}`;
+    await this.acquireProviderLock({
+      providerInstanceId: removalProviderInstanceId,
+      lockId: removalLockId,
+      lockPath: removalLockPath,
+      deadline: input.deadline,
+      guardedStaleRemoval: false,
+    });
+    try {
+      const candidate = await this.readLockRecord(input.lockPath);
+      if (candidate?.lockId !== input.lockId) return;
+      await this.removeLockIfMatches(input);
+    } finally {
+      await this.releaseProviderLock({
+        providerInstanceId: removalProviderInstanceId,
+        lockId: removalLockId,
+        lockPath: removalLockPath,
+        guarded: false,
+      });
+    }
   }
 
   private async removeLockIfMatches(input: {
@@ -481,6 +542,10 @@ export class LocalFileLeaseStore implements LeaseStorePort {
         throw error;
       }
     }
+  }
+
+  private lockRemovalGuardPath(lockPath: string, lockId: string): string {
+    return `${lockPath}.${hashText(lockId)}.cleanup.lock`;
   }
 
   private async readLockRecord(

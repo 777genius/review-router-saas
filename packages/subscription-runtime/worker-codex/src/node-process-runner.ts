@@ -89,16 +89,29 @@ export class NodeProcessRunner implements RunnerPort {
         child.on("close", (code) => resolve({ exitCode: code ?? 1 }));
       });
       if (abortError) throw abortError;
-      return {
+      const result = {
         exitCode: exit.exitCode,
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         durationMs: Date.now() - startedAt,
       };
+      if (exit.exitCode !== 0) {
+        throw new Error(
+          `node_process_runner_failed:${exit.exitCode}:${safeFailureOutput(
+            `${result.stdout}\n${result.stderr}`,
+          )}`,
+        );
+      }
+      return result;
     } finally {
       clearTimeout(timeout);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       input.abortSignal.removeEventListener("abort", abort);
     }
   }
+}
+
+function safeFailureOutput(output: string): string {
+  const compact = output.replace(/\s+/g, " ").trim();
+  return compact ? compact.slice(-1000) : "empty_process_output";
 }
