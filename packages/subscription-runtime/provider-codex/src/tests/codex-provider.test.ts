@@ -119,6 +119,54 @@ describe("Codex provider adapter", () => {
     expect(codexJsonAgentCapabilities.providerId).toBe("codex");
   });
 
+  it("supports lazy refresh freshness checks from Codex auth metadata", async () => {
+    const driver = new CodexCliSessionDriver({ refreshMode: "lazy-refresh" });
+    const session = sessionArtifactFromCodexAuthJson(
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          refresh_token: "refresh-token",
+          access_token: "access-token",
+          expiry: "2026-05-30T00:20:00.000Z",
+        },
+        last_refresh: "2026-05-30T00:00:00.000Z",
+      }),
+    );
+
+    expect(driver.capabilities.refreshMode).toBe("lazy-refresh");
+    await expect(
+      driver.inspectSessionFreshness({
+        session,
+        redactor: new DefaultRedactor(),
+        now: new Date("2026-05-30T00:05:00.000Z"),
+        policy: {
+          minFreshMs: 60_000,
+          refreshBeforeExpiryMs: 5 * 60_000,
+          maxSessionAgeMs: 24 * 60 * 60_000,
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: "fresh",
+      reason: "expires_later",
+    });
+
+    await expect(
+      driver.inspectSessionFreshness({
+        session,
+        redactor: new DefaultRedactor(),
+        now: new Date("2026-05-30T00:16:00.000Z"),
+        policy: {
+          minFreshMs: 60_000,
+          refreshBeforeExpiryMs: 5 * 60_000,
+          maxSessionAgeMs: 24 * 60 * 60_000,
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: "refresh_recommended",
+      reason: "expires_soon",
+    });
+  });
+
   it("applies the provider-owned environment policy before Codex subprocesses", () => {
     const env = pruneCodexChildEnv({
       PATH: "/usr/bin",

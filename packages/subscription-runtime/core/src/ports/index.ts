@@ -14,8 +14,10 @@ import type {
   RuntimeEvent,
   RuntimeMetric,
   RunnerCapabilities,
+  SessionFreshnessAssessment,
   SessionArtifact,
   SessionEnvelope,
+  SessionRefreshPolicy,
   SessionReadPurpose,
   SessionStoreCapabilities,
   SessionValidationResult,
@@ -43,6 +45,13 @@ export interface ProviderSessionDriver {
     readonly redactor: RedactorPort;
     readonly abortSignal: AbortSignal;
   }): Promise<RefreshedSession>;
+
+  inspectSessionFreshness?(input: {
+    readonly session: SessionArtifact;
+    readonly policy: Required<SessionRefreshPolicy>;
+    readonly now: Date;
+    readonly redactor: RedactorPort;
+  }): Promise<SessionFreshnessAssessment>;
 
   classifySessionFailure(error: unknown): ProviderFailure;
 }

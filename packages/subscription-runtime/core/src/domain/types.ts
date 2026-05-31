@@ -186,6 +186,7 @@ export type RuntimePolicy = {
   readonly requireNoBackendPlaintext: boolean;
   readonly requireWritebackBeforeTask: boolean;
   readonly requireCompareAndSwap: boolean;
+  readonly refreshPolicy?: SessionRefreshPolicy;
   readonly requestedTaskMode?: AgentTaskMode;
   readonly requestedHistoryMode?: AgentHistoryMode | "unsupported";
   readonly allowInteractiveSetupInRuntime: false;
@@ -194,6 +195,12 @@ export type RuntimePolicy = {
   readonly allowedStoreIds: readonly string[];
   readonly allowedRunnerIds: readonly string[];
   readonly maxTaskOutputBytes?: number;
+};
+
+export type SessionRefreshPolicy = {
+  readonly minFreshMs?: number;
+  readonly refreshBeforeExpiryMs?: number;
+  readonly maxSessionAgeMs?: number;
 };
 
 export type CompiledRuntimePolicy = {
@@ -209,6 +216,7 @@ export type CompiledRuntimePolicy = {
   readonly maxSessionBytes: number;
   readonly maxTaskOutputBytes: number;
   readonly timeoutMs: number;
+  readonly refreshPolicy: Required<SessionRefreshPolicy>;
 };
 
 export type RuntimeExecutionPlan =
@@ -303,6 +311,30 @@ export type RunContext = {
   readonly attempt: number;
   readonly abortSignal: AbortSignal;
 };
+
+export type SessionFreshnessAssessment =
+  | {
+      readonly status: "fresh";
+      readonly reason:
+        | "recent_refresh"
+        | "expires_later"
+        | "provider_considers_fresh";
+      readonly refreshedAt?: Date;
+      readonly expiresAt?: Date;
+      readonly warnings: readonly RuntimeWarning[];
+    }
+  | {
+      readonly status: "refresh_recommended";
+      readonly reason:
+        | "expires_soon"
+        | "expired"
+        | "max_age_exceeded"
+        | "freshness_unknown"
+        | "provider_considers_stale";
+      readonly refreshedAt?: Date;
+      readonly expiresAt?: Date;
+      readonly warnings: readonly RuntimeWarning[];
+    };
 
 export type SessionReadPurpose = "refresh" | "run" | "health-check";
 
