@@ -475,6 +475,7 @@ describe("Codex provider adapter", () => {
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
         processFactory: fakeFactory.create,
+        executionProfile: "stateless-completion",
       }),
       sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
         cacheKey: "provider-account:codex-test",
@@ -523,6 +524,7 @@ describe("Codex provider adapter", () => {
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
         processFactory: fakeFactory.create,
+        executionProfile: "stateless-completion",
       }),
       sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
         cacheKey: "provider-account:codex-warm-test",
@@ -608,14 +610,13 @@ describe("Codex provider adapter", () => {
     }
   });
 
-  it("can preserve the previous subscription-worker app-server profile", async () => {
+  it("defaults direct app-server use to the previous subscription-worker profile", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "codex-app-profile-test-"));
     const fakeFactory = new FakeAppServerFactory();
     const driver = new CodexJsonAgentDriver({
       engine: new CodexAppServerExecutionEngine({
         codexBinaryPath: "/bin/codex-test",
         processFactory: fakeFactory.create,
-        executionProfile: "subscription-worker",
         cleanThreadPrewarm: false,
       }),
       model: "gpt-test",

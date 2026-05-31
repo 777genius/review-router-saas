@@ -36,17 +36,7 @@ const subscriptionWorkerDeveloperInstructions =
 export function resolveCodexExecutionProfile(
   profile: CodexExecutionProfile | undefined,
 ): ResolvedCodexExecutionProfile {
-  if (!profile || profile === "stateless-completion") {
-    return {
-      kind: "stateless-completion",
-      baseInstructions: statelessCompletionBaseInstructions,
-      developerInstructions: null,
-      disableTools: true,
-      historyMode: "none",
-    };
-  }
-
-  if (profile === "subscription-worker") {
+  if (!profile || profile === "subscription-worker") {
     return {
       kind: "subscription-worker",
       baseInstructions: null,
@@ -56,11 +46,21 @@ export function resolveCodexExecutionProfile(
     };
   }
 
+  if (profile === "stateless-completion") {
+    return {
+      kind: "stateless-completion",
+      baseInstructions: statelessCompletionBaseInstructions,
+      developerInstructions: null,
+      disableTools: true,
+      historyMode: "none",
+    };
+  }
+
   return {
     kind: "custom",
     baseInstructions:
       profile.baseInstructions === undefined
-        ? statelessCompletionBaseInstructions
+        ? null
         : emptyToNull(profile.baseInstructions),
     developerInstructions:
       profile.developerInstructions === undefined
