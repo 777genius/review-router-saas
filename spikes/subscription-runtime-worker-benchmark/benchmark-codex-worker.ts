@@ -99,7 +99,6 @@ async function runSlots(input: {
   const durations: number[] = [];
   let successCount = 0;
   let failureCount = 0;
-  let prewarmMs = 0;
   let firstTaskMs = 0;
   let restartSlotMs: number | null = null;
   const workers: FileBackendCodexWorker[] = [];
@@ -134,7 +133,7 @@ async function runSlots(input: {
         await workers[index]?.seedCodexAuthJson(input.authJson);
       }),
     );
-    prewarmMs = await timed(async () => {
+    const prewarmMs = await timed(async () => {
       await pool.prewarm();
     });
     if (input.restartSlotProbe && input.slots > 0) {
@@ -164,31 +163,31 @@ async function runSlots(input: {
         failureCount += 1;
       }
     }
+
+    const endedMemory = process.memoryUsage();
+    const endedCpu = process.cpuUsage(startedCpu);
+    durations.sort((a, b) => a - b);
+    return {
+      slots: input.slots,
+      taskCount: input.taskCount,
+      successCount,
+      failureCount,
+      totalMs: performance.now() - startedAt,
+      prewarmMs,
+      firstTaskMs,
+      p50Ms: percentile(durations, 0.5),
+      p95Ms: percentile(durations, 0.95),
+      maxMs: durations.at(-1) ?? 0,
+      rssDeltaMb: bytesToMb(endedMemory.rss - startedMemory.rss),
+      heapDeltaMb: bytesToMb(endedMemory.heapUsed - startedMemory.heapUsed),
+      cpuUserMs: endedCpu.user / 1000,
+      cpuSystemMs: endedCpu.system / 1000,
+      restartSlotMs,
+    };
   } finally {
     await pool.dispose();
     await rm(rootDir, { recursive: true, force: true });
   }
-
-  const endedMemory = process.memoryUsage();
-  const endedCpu = process.cpuUsage(startedCpu);
-  durations.sort((a, b) => a - b);
-  return {
-    slots: input.slots,
-    taskCount: input.taskCount,
-    successCount,
-    failureCount,
-    totalMs: performance.now() - startedAt,
-    prewarmMs,
-    firstTaskMs,
-    p50Ms: percentile(durations, 0.5),
-    p95Ms: percentile(durations, 0.95),
-    maxMs: durations.at(-1) ?? 0,
-    rssDeltaMb: bytesToMb(endedMemory.rss - startedMemory.rss),
-    heapDeltaMb: bytesToMb(endedMemory.heapUsed - startedMemory.heapUsed),
-    cpuUserMs: endedCpu.user / 1000,
-    cpuSystemMs: endedCpu.system / 1000,
-    restartSlotMs,
-  };
 }
 
 async function runFallbackProbe(input: {

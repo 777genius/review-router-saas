@@ -390,7 +390,7 @@ class CodexAppServerClient {
     const preparedThread = this.takePreparedThread(input);
     const threadId =
       preparedThread?.threadId ?? (await this.startThread(input));
-    let turn = await this.startTurn({ ...input, threadId }).catch(
+    const turn = await this.startTurn({ ...input, threadId }).catch(
       async (error: unknown) => {
         if (!preparedThread) throw error;
         warnings.push({
