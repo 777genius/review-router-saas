@@ -456,9 +456,30 @@ export class LocalFileLeaseStore implements LeaseStorePort {
     readonly lockId: string;
     readonly lockPath: string;
   }): Promise<void> {
-    const existing = await this.readLockRecord(input.lockPath);
+    const candidate = await this.readLockRecord(input.lockPath);
+    if (candidate?.lockId !== input.lockId) return;
+
+    const tombstonePath = `${input.lockPath}.${process.pid}.${randomBytes(6).toString("hex")}.removing`;
+    try {
+      await rename(input.lockPath, tombstonePath);
+    } catch (error) {
+      if (isMissingFileError(error)) return;
+      throw error;
+    }
+
+    const existing = await this.readLockRecord(tombstonePath);
     if (existing?.lockId === input.lockId) {
-      await rm(input.lockPath, { force: true });
+      await rm(tombstonePath, { force: true });
+      return;
+    }
+
+    try {
+      await rename(tombstonePath, input.lockPath);
+    } catch (error) {
+      await rm(tombstonePath, { force: true }).catch(() => {});
+      if (!isAlreadyExistsError(error)) {
+        throw error;
+      }
     }
   }
 

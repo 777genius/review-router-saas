@@ -177,6 +177,43 @@ describe("BoundedSubscriptionWorkerPool", () => {
     expect(pool.stats().restarted).toBe(1);
   });
 
+  it("does not run queued work on a replacement slot before restart completes", async () => {
+    const seen: string[] = [];
+    const workers: FakeWorker[] = [];
+    const replacementStarted = deferred<void>();
+    const releaseReplacement = deferred<void>();
+    const pool = new BoundedSubscriptionWorkerPool<string, string>({
+      poolId: "restart-publish",
+      slots: 1,
+      workerFactory: ({ workerId }) => {
+        const worker = new FakeWorker(workerId, async (job) => {
+          seen.push(job);
+          return job;
+        });
+        workers.push(worker);
+        if (workers.length === 2) {
+          worker.onStart = () => replacementStarted.resolve();
+          worker.startGate = releaseReplacement.promise;
+        }
+        return worker;
+      },
+    });
+
+    await pool.start();
+    const restart = pool.restartSlot(0);
+    await replacementStarted.promise;
+    const queued = pool.run("queued");
+
+    await delay(20);
+    expect(seen).toEqual([]);
+
+    releaseReplacement.resolve();
+    await restart;
+    await expect(queued).resolves.toBe("queued");
+    await pool.dispose();
+    expect(seen).toEqual(["queued"]);
+  });
+
   it("does not leave a disposed slot runnable after restart failure", async () => {
     const workers: FakeWorker[] = [];
     const pool = new BoundedSubscriptionWorkerPool<string, string>({
@@ -213,6 +250,7 @@ class FakeWorker implements SubscriptionWorker<string, string> {
   state: SubscriptionWorkerState = "created";
   prewarmed = false;
   failStart = false;
+  startGate: Promise<void> | null = null;
 
   constructor(
     readonly workerId: string,
@@ -221,9 +259,12 @@ class FakeWorker implements SubscriptionWorker<string, string> {
   ) {}
 
   onDispose: (() => void) | null = null;
+  onStart: (() => void) | null = null;
 
   async start(): Promise<void> {
     if (this.failStart) throw new Error("fake_start_failed");
+    this.onStart?.();
+    await this.startGate;
     this.state = "started";
   }
 
@@ -258,4 +299,18 @@ class FakeWorker implements SubscriptionWorker<string, string> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (reason?: unknown) => void;
+} {
+  let resolve: (value: T | PromiseLike<T>) => void = () => {};
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }

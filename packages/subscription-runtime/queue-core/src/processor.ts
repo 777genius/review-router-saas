@@ -17,13 +17,18 @@ export type SubscriptionQueueProcessorOptions<Job, Result> = {
   readonly retryPolicy?: SubscriptionRetryPolicy;
   readonly leaseTtlMs?: number;
   readonly idleDelayMs?: number;
+  readonly shutdownGraceMs?: number;
   readonly abortSignal?: AbortSignal;
 };
+
+const defaultShutdownGraceMs = 30_000;
 
 export class SubscriptionQueueProcessor<Job, Result> {
   private processorState: QueueProcessorState = "created";
   private loop: Promise<void> | null = null;
   private stopController: AbortController | null = null;
+  private currentTaskController: AbortController | null = null;
+  private shutdownGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly counters = {
     claimed: 0,
     completed: 0,
@@ -59,9 +64,14 @@ export class SubscriptionQueueProcessor<Job, Result> {
       );
     }
     this.processorState = "stopping";
+    this.armCurrentTaskShutdownGrace();
     this.stopController.abort();
-    await this.loop;
-    this.processorState = "stopped";
+    try {
+      await this.loop;
+    } finally {
+      this.clearShutdownGraceTimer();
+      this.processorState = "stopped";
+    }
   }
 
   stats(): QueueProcessorStats {
@@ -81,12 +91,21 @@ export class SubscriptionQueueProcessor<Job, Result> {
         continue;
       }
       this.counters.claimed += 1;
+      const taskController = new AbortController();
+      const abortTask = () => taskController.abort();
+      this.options.abortSignal?.addEventListener("abort", abortTask, {
+        once: true,
+      });
+      this.currentTaskController = taskController;
+      if (this.processorState === "stopping") {
+        this.armCurrentTaskShutdownGrace();
+      }
       try {
         const result = await this.options.workerPool.run(claimed.task.job, {
           ...(claimed.task.idempotencyKey
             ? { idempotencyKey: claimed.task.idempotencyKey }
             : {}),
-          abortSignal: signal,
+          abortSignal: taskController.signal,
         });
         await this.options.queue.complete({
           taskId: claimed.task.taskId,
@@ -108,8 +127,32 @@ export class SubscriptionQueueProcessor<Job, Result> {
         } else {
           this.counters.deadLettered += 1;
         }
+      } finally {
+        this.options.abortSignal?.removeEventListener("abort", abortTask);
+        if (this.processorState === "stopping") {
+          this.clearShutdownGraceTimer();
+        }
+        if (this.currentTaskController === taskController) {
+          this.currentTaskController = null;
+        }
       }
     }
+  }
+
+  private armCurrentTaskShutdownGrace(): void {
+    if (this.shutdownGraceTimer) return;
+    const currentTaskController = this.currentTaskController;
+    if (!currentTaskController || currentTaskController.signal.aborted) return;
+
+    this.shutdownGraceTimer = setTimeout(() => {
+      currentTaskController.abort();
+    }, this.options.shutdownGraceMs ?? defaultShutdownGraceMs);
+  }
+
+  private clearShutdownGraceTimer(): void {
+    if (!this.shutdownGraceTimer) return;
+    clearTimeout(this.shutdownGraceTimer);
+    this.shutdownGraceTimer = null;
   }
 }
 

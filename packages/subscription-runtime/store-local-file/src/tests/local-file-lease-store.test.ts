@@ -180,6 +180,9 @@ describe("Local file lease store", () => {
           restoredGenerationHash: "generation-1",
         }),
       ).rejects.toThrow("local_file_lease_lock_timeout");
+      await expect(readFile(lockPath, "utf8")).resolves.toContain(
+        "other-process",
+      );
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

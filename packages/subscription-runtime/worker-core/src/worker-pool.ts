@@ -202,21 +202,19 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
       slotIndex: String(slotIndex),
       workerId: slot.worker.workerId,
     });
+    slot.busy = true;
     const next = this.createSlot(slotIndex);
-    this.slots[slotIndex] = next;
     try {
       await slot.worker.dispose();
       await next.worker.start();
       if (options.prewarm) {
         await next.worker.prewarm();
       }
+      this.slots[slotIndex] = next;
     } catch (error) {
       this.slots.splice(slotIndex, 1);
       this.poolState = "failed";
-      await next.worker.dispose().catch(() => {
-        // Best-effort cleanup after a failed replacement.
-      });
-      throw new SubscriptionWorkerError(
+      const restartError = new SubscriptionWorkerError(
         "subscription_worker_pool_slot_restart_failed",
         "Worker pool slot failed to restart.",
         {
@@ -227,12 +225,22 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
           },
         },
       );
+      await next.worker.dispose().catch(() => {
+        // Best-effort cleanup after a failed replacement.
+      });
+      if (this.slots.length === 0) {
+        this.rejectQueued(restartError);
+      } else {
+        this.drainQueue();
+      }
+      throw restartError;
     }
     this.restartedCount += 1;
     this.emit("subscription_worker_pool.slot_restart.completed", {
       slotIndex: String(slotIndex),
       workerId: next.worker.workerId,
     });
+    this.drainQueue();
   }
 
   async health(): Promise<WorkerPoolHealth> {
