@@ -32,6 +32,7 @@ export async function POST(request: Request): Promise<
       select: {
         id: true,
         workspaceId: true,
+        provider: true,
         githubRepositoryId: true,
         owner: true,
         name: true,
@@ -50,16 +51,31 @@ export async function POST(request: Request): Promise<
     if (!repository || repository.workspaceId !== workspaceId) {
       throw new Error("repository_not_found");
     }
+    if (
+      repository.provider !== "github" ||
+      !repository.githubRepositoryId ||
+      !repository.installation
+    ) {
+      throw new Error("repository_not_found");
+    }
+    const githubRepository = {
+      ...repository,
+      githubRepositoryId: repository.githubRepositoryId,
+      installation: repository.installation,
+    };
     if (!repository.selected) throw new Error("repository_not_selected");
     if (repository.archived) throw new Error("repository_archived");
-    if (repository.installation.status !== "active") {
+    if (githubRepository.installation.status !== "active") {
       throw new Error("installation_not_active");
     }
     if (!isCodexRotatingOAuthAllowedForRepository(repository.fullName)) {
       throw new Error("codex_rotating_not_enabled");
     }
 
-    await assertDashboardRepositoryMutationAllowed(workspaceId, repository);
+    await assertDashboardRepositoryMutationAllowed(
+      workspaceId,
+      githubRepository,
+    );
     await createDashboardRateLimitPolicy(prisma).assertReviewConfigSaveAllowed({
       workspaceId,
       resourceId: `codex-rotating-setup:${repositoryId}`,
@@ -80,7 +96,7 @@ export async function POST(request: Request): Promise<
       workspaceId,
       repositoryId,
       repositoryFullName: repository.fullName,
-      githubRepositoryId: repository.githubRepositoryId.toString(),
+      githubRepositoryId: githubRepository.githubRepositoryId.toString(),
       installer,
       setupManifestUrl,
       setupConfirmUrl,

@@ -287,10 +287,20 @@ export function isSetupRecoveryIssue(
 
 export function workspaceInstallSummary(workspace: {
   readonly installations: readonly DashboardWorkspaceInstallation[];
+  readonly gitLabInstallations?: readonly {
+    readonly namespacePath: string;
+    readonly selectedProjects: number;
+  }[];
 }): string {
   const installation = workspace.installations[0];
   if (!installation) {
-    return "Signed-in GitHub user workspace - install the App to connect repositories.";
+    const gitLabInstallation = workspace.gitLabInstallations?.[0];
+    if (gitLabInstallation) {
+      const projectLabel =
+        gitLabInstallation.selectedProjects === 1 ? "project" : "projects";
+      return `GitLab connection - ${gitLabInstallation.selectedProjects} selected ${projectLabel}`;
+    }
+    return "Signed-in source workspace - connect repositories to continue.";
   }
 
   const accountType = formatAccountTypeLabel(installation.accountType);

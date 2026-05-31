@@ -93,12 +93,21 @@ class InMemoryInstallation implements GitLabInstallationPort {
   async getProjectSettings(input: {
     readonly projectId: string;
   }): Promise<GitLabProjectInstallationSettings> {
-    if (this.failingProjectIds.has(input.projectId)) {
+    return this.getProjectSettingsByPathOrId({
+      projectPathOrId: input.projectId,
+    });
+  }
+
+  async getProjectSettingsByPathOrId(input: {
+    readonly projectPathOrId: string;
+  }): Promise<GitLabProjectInstallationSettings> {
+    const projectId = input.projectPathOrId;
+    if (this.failingProjectIds.has(projectId)) {
       throw new Error("gitlab_api_error_503");
     }
     return {
       ...this.project,
-      projectId: input.projectId,
+      projectId,
     };
   }
 
@@ -402,6 +411,41 @@ describe("provisionGitLabReviewRouterProjects", () => {
     expect(installation.variables.map((variable) => variable.key)).toEqual([
       "REVIEWROUTER_API_URL",
       "REVIEWROUTER_ID_TOKEN_AUDIENCE",
+    ]);
+  });
+
+  it("writes variables per project when group variables are not available", async () => {
+    const installation = new InMemoryInstallation();
+
+    const result = await provisionGitLabReviewRouterProjects(
+      {
+        projectIds: ["123", "456"],
+        controlProjectPath: "reviewrouter/control",
+        controlProjectRef: "main",
+        reviewRouterApiBaseUrl: "https://reviewrouter.example.com",
+        idTokenAudience: "reviewrouter",
+        variableTarget: { kind: "project", id: "unused" },
+        reviewToken: "glpat-review-token",
+      },
+      { installation, clock },
+    );
+
+    expect(result.sharedVariablesConfigured).toBe(0);
+    expect(installation.variables.map((variable) => variable.target)).toEqual([
+      { kind: "project", id: "123" },
+      { kind: "project", id: "123" },
+      { kind: "project", id: "123" },
+      { kind: "project", id: "456" },
+      { kind: "project", id: "456" },
+      { kind: "project", id: "456" },
+    ]);
+    expect(installation.variables.map((variable) => variable.key)).toEqual([
+      "REVIEWROUTER_API_URL",
+      "REVIEWROUTER_ID_TOKEN_AUDIENCE",
+      "REVIEWROUTER_GITLAB_TOKEN",
+      "REVIEWROUTER_API_URL",
+      "REVIEWROUTER_ID_TOKEN_AUDIENCE",
+      "REVIEWROUTER_GITLAB_TOKEN",
     ]);
   });
 

@@ -191,8 +191,9 @@ export default async function RootLayout({
                 </span>
               </div>
               <HeaderProfileMenu
-                githubLogin={profile.githubLogin}
-                githubAvatarUrl={profile.githubAvatarUrl}
+                login={profile.login}
+                avatarUrl={profile.avatarUrl}
+                provider={profile.provider}
               />
             </div>
           </div>
@@ -320,18 +321,28 @@ export default async function RootLayout({
 
 async function loadHeaderProfile(): Promise<{
   readonly signedIn: boolean;
-  readonly githubLogin: string | null;
-  readonly githubAvatarUrl: string | null;
+  readonly login: string | null;
+  readonly avatarUrl: string | null;
+  readonly provider: "github" | "gitlab" | null;
 }> {
   try {
     const session = await getServerSession(authOptions);
     return {
       signedIn: Boolean(session?.user),
-      githubLogin: session?.user?.githubLogin ?? null,
-      githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
+      login: session?.user?.sourceLogin ?? session?.user?.githubLogin ?? null,
+      avatarUrl:
+        session?.user?.sourceAvatarUrl ??
+        session?.user?.githubAvatarUrl ??
+        null,
+      provider: session?.user?.sourceProvider ?? null,
     };
   } catch (error) {
     unstable_rethrow(error);
-    return { signedIn: false, githubLogin: null, githubAvatarUrl: null };
+    return {
+      signedIn: false,
+      login: null,
+      avatarUrl: null,
+      provider: null,
+    };
   }
 }

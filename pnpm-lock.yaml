@@ -231,6 +231,9 @@ importers:
       '@reviewrouter/features-github-installations':
         specifier: workspace:*
         version: link:../../packages/features/github-installations
+      '@reviewrouter/features-gitlab-integration':
+        specifier: workspace:*
+        version: link:../../packages/features/gitlab-integration
       '@reviewrouter/features-memory':
         specifier: workspace:*
         version: link:../../packages/features/memory

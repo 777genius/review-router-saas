@@ -58,12 +58,17 @@ import {
 import {
   canDashboardActorConfigureRepository,
   canDashboardActorMutateRepository,
+  asDashboardGitHubActor,
   createGitHubAppInstallationOctokit,
   getDashboardMutationStatus,
   getDashboardSignedInActor,
   getDashboardWorkspaceScope,
   type DashboardMutationActor,
 } from "../../src/server/dashboard-mutations";
+import {
+  buildDashboardMemoryActor,
+  type DashboardMemoryActorInput,
+} from "../../src/server/dashboard-memory";
 import {
   listGitHubUserRepositoryAccess,
   type GitHubUserRepositoryAccessStatus,
@@ -105,6 +110,7 @@ import { GitHubAppInstallPermissionDialog } from "../github-app-install-permissi
 import { GitHubAccountAvatar } from "../github-account-avatar";
 import { GitHubSignInButton } from "../github-sign-in-button";
 import { ActionToast } from "../action-toast";
+import { ConnectSourceDialog } from "../connect-source-dialog";
 import { RepositoryVisibilityBadge } from "../repository-visibility-badge";
 import { DashboardInstallRequestToast } from "./dashboard-install-request-toast";
 import { DashboardSectionTabs } from "./dashboard-section-tabs";
@@ -134,6 +140,7 @@ import {
 } from "./memory-management-panel";
 import { DashboardCollapsibleShell } from "./dashboard-collapsible-shell";
 import { DashboardActionForm } from "./dashboard-action-form";
+import { repositorySourceUrl } from "./repository-source-url";
 import {
   buildInstallationSettingsUrl,
   dashboardErrorText,
@@ -172,6 +179,15 @@ type DashboardWorkspace = {
     readonly repositorySelection: string;
     readonly organizationSecretPolicy: DashboardOrganizationSecretPolicy | null;
   }[];
+  readonly gitLabInstallations: readonly {
+    readonly id: string;
+    readonly sourceBaseUrl: string;
+    readonly namespacePath: string;
+    readonly sourceKind: string;
+    readonly status: string;
+    readonly selectedProjects: number;
+    readonly lastInstalledAt: Date | null;
+  }[];
   readonly auditEvents: readonly {
     readonly action: string;
     readonly actor: string;
@@ -193,10 +209,7 @@ async function loadDashboardData(
     readonly actor: string;
     readonly reason: "local_admin_override" | "workspace_admin";
   },
-  currentActor?: {
-    readonly githubUserId: string;
-    readonly githubLogin: string;
-  } | null,
+  currentActor?: DashboardMemoryActorInput | null,
 ) {
   if (scope.kind === "none" && repositoryAccess.workspaceIds.length === 0) {
     return [];
@@ -231,6 +244,19 @@ async function loadDashboardData(
           githubInstallationId: true,
           status: true,
           repositorySelection: true,
+        },
+      },
+      gitLabInstallations: {
+        orderBy: { updatedAt: "desc" },
+        take: 5,
+        select: {
+          id: true,
+          sourceBaseUrl: true,
+          namespacePath: true,
+          sourceKind: true,
+          status: true,
+          selectedProjects: true,
+          lastInstalledAt: true,
         },
       },
       auditEvents: {
@@ -456,6 +482,9 @@ async function loadDashboardData(
             name: workspace.name,
             slug: workspace.slug,
             installations: dashboardInstallations,
+            gitLabInstallations: hasWorkspaceWideAccess
+              ? workspace.gitLabInstallations
+              : [],
             auditEvents: hasWorkspaceWideAccess ? workspace.auditEvents : [],
           },
           repositoryCount: hasWorkspaceWideAccess
@@ -491,8 +520,11 @@ async function buildMemoryPolicySimulation(input: {
     readonly archived: boolean;
   }[];
   readonly actor: {
-    readonly githubUserId: string;
-    readonly githubLogin: string;
+    readonly userId: string;
+    readonly sourceProvider: "github" | "gitlab";
+    readonly sourceLogin: string;
+    readonly githubUserId: string | null;
+    readonly githubLogin: string | null;
   } | null;
   readonly memoryPolicyConfig: EntitlementMemoryPolicyConfig;
   readonly memoryPermission: PrismaMemoryPermission;
@@ -502,12 +534,7 @@ async function buildMemoryPolicySimulation(input: {
 }): Promise<readonly MemoryPolicySimulationDecision[] | null> {
   if (!input.actor) return null;
 
-  const actor: MemoryActor = {
-    kind: "github_user",
-    id: `github:${input.actor.githubUserId}`,
-    githubUserId: input.actor.githubUserId,
-    login: input.actor.githubLogin,
-  };
+  const actor: MemoryActor = buildDashboardMemoryActor(input.actor);
   const adminDecision = await input.memoryPermission.canConfirmMemory({
     workspaceId: input.workspaceId,
     repositoryId: null,
@@ -655,6 +682,7 @@ type SortableDashboardWorkspace = {
   readonly workspace: {
     readonly name: string;
     readonly installations: readonly { readonly status: string }[];
+    readonly gitLabInstallations: readonly { readonly status: string }[];
   };
 };
 
@@ -672,7 +700,14 @@ function workspaceSortScore(data: SortableDashboardWorkspace): number {
   const activeInstallations = data.workspace.installations.filter(
     (installation) => installation.status === "active",
   ).length;
-  return data.repositoryCount * 100 + activeInstallations * 10;
+  const activeGitLabInstallations = data.workspace.gitLabInstallations.filter(
+    (installation) => installation.status === "active",
+  ).length;
+  return (
+    data.repositoryCount * 100 +
+    activeInstallations * 10 +
+    activeGitLabInstallations * 10
+  );
 }
 
 type DashboardWorkspaceData = Awaited<
@@ -699,6 +734,10 @@ async function listDashboardRepositoryAccess(input: {
   if (!actor || input.workspaceScope.kind === "all") {
     return emptyDashboardRepositoryAccess();
   }
+  const githubActor = asDashboardGitHubActor(actor);
+  if (!githubActor) {
+    return emptyDashboardRepositoryAccess();
+  }
 
   const fullAccessWorkspaceIds =
     input.workspaceScope.kind === "workspace_ids"
@@ -707,7 +746,7 @@ async function listDashboardRepositoryAccess(input: {
   const prisma = getPrisma();
   const discovered = await listGitHubUserRepositoryAccess({
     prisma,
-    actor,
+    actor: githubActor,
     excludedWorkspaceIds: fullAccessWorkspaceIds,
   });
   const requestedRepositoryFullName = normalizeRequestedRepositoryFullName(
@@ -718,9 +757,11 @@ async function listDashboardRepositoryAccess(input: {
   }
 
   const candidateWhere = {
+    provider: "github" as const,
     selected: true,
     archived: false,
     installation: { status: "active" },
+    githubRepositoryId: { not: null },
     ...(fullAccessWorkspaceIds.length > 0
       ? { workspaceId: { notIn: [...fullAccessWorkspaceIds] } }
       : {}),
@@ -741,7 +782,19 @@ async function listDashboardRepositoryAccess(input: {
         },
       })
     : [];
-  const candidates = dedupeRepositoryAccessCandidates(requestedCandidates);
+  const candidates = dedupeRepositoryAccessCandidates(
+    requestedCandidates,
+  ).flatMap((repository) =>
+    repository.githubRepositoryId && repository.installation
+      ? [
+          {
+            ...repository,
+            githubRepositoryId: repository.githubRepositoryId,
+            installation: repository.installation,
+          },
+        ]
+      : [],
+  );
   const allowed = await Promise.all(
     candidates.map(async (repository) => {
       const allowed = await canDashboardActorMutateRepository({
@@ -833,7 +886,8 @@ function filterVisibleDashboardWorkspaces(
   const actionableWorkspaces = workspaces.filter(
     (workspace) =>
       workspace.repositoryCount > 0 ||
-      workspace.workspace.installations.length > 0,
+      workspace.workspace.installations.length > 0 ||
+      workspace.workspace.gitLabInstallations.length > 0,
   );
 
   return actionableWorkspaces.length > 0 ? actionableWorkspaces : workspaces;
@@ -932,9 +986,7 @@ function workspaceAvatarUrl(
     return fallbackUser.githubAvatarUrl;
   }
 
-  return githubAvatarUrlForLogin(
-    workspace.installations[0]?.accountLogin ?? workspace.name,
-  );
+  return githubAvatarUrlForLogin(workspace.installations[0]?.accountLogin);
 }
 
 function githubAvatarUrlForLogin(
@@ -1037,9 +1089,9 @@ export default async function DashboardPage({
   const supportAudit =
     workspaceScope.kind === "all" &&
     workspaceScope.reason === "local_admin_override" &&
-    mutationStatus.githubLogin
+    mutationStatus.sourceLogin
       ? {
-          actor: `support:${mutationStatus.githubLogin}`,
+          actor: `support:${mutationStatus.sourceLogin}`,
           reason: "local_admin_override" as const,
         }
       : undefined;
@@ -1048,12 +1100,7 @@ export default async function DashboardPage({
       workspaceScope,
       repositoryAccess,
       supportAudit,
-      mutationStatus.githubUserId && mutationStatus.githubLogin
-        ? {
-            githubUserId: mutationStatus.githubUserId,
-            githubLogin: mutationStatus.githubLogin,
-          }
-        : null,
+      signedInActor ? dashboardMemoryActorInput(signedInActor) : null,
     ),
     getReviewModelOptions(),
   ]);
@@ -1073,8 +1120,8 @@ export default async function DashboardPage({
           <DashboardActionToast params={params} />
           <DashboardEmptyAccessState
             repositoryAccess={repositoryAccess}
-            githubLogin={mutationStatus.githubLogin}
-            githubAvatarUrl={mutationStatus.githubAvatarUrl}
+            githubLogin={mutationStatus.sourceLogin}
+            githubAvatarUrl={mutationStatus.sourceAvatarUrl}
             appInstallUrl={appInstallUrl}
           />
         </>
@@ -1104,8 +1151,8 @@ export default async function DashboardPage({
         appInstallUrl={appInstallUrl}
         pendingOrganizationInstallRequest={pendingOrganizationInstallRequest}
         fallbackUser={{
-          githubLogin: mutationStatus.githubLogin,
-          githubAvatarUrl: mutationStatus.githubAvatarUrl,
+          githubLogin: mutationStatus.sourceLogin,
+          githubAvatarUrl: mutationStatus.sourceAvatarUrl,
         }}
       />
 
@@ -1121,13 +1168,25 @@ export default async function DashboardPage({
           modelOptions={modelOptions}
           claudeCodeProviderEnabled={claudeCodeProviderEnabled}
           fallbackUser={{
-            githubLogin: mutationStatus.githubLogin,
-            githubAvatarUrl: mutationStatus.githubAvatarUrl,
+            githubLogin: mutationStatus.sourceLogin,
+            githubAvatarUrl: mutationStatus.sourceAvatarUrl,
           }}
         />
       </section>
     </main>
   );
+}
+
+function dashboardMemoryActorInput(
+  actor: DashboardMutationActor,
+): DashboardMemoryActorInput {
+  return {
+    userId: actor.userId,
+    sourceProvider: actor.sourceProvider,
+    sourceLogin: actor.sourceLogin,
+    githubUserId: actor.githubUserId,
+    githubLogin: actor.githubLogin,
+  };
 }
 
 function DashboardEmptyAccessState({
@@ -1180,16 +1239,13 @@ function DashboardEmptyAccessState({
               Reconnect GitHub
             </GitHubSignInButton>
           ) : null}
-          {appInstallUrl ? (
-            <LinkButton
-              href={appInstallUrl}
-              variant={copy.reconnect ? "outline" : "solid"}
-              size="lg"
-              className="rounded-2xl"
-            >
-              Install GitHub App
-            </LinkButton>
-          ) : null}
+          <ConnectSourceDialog
+            appInstallUrl={appInstallUrl}
+            triggerLabel="Connect source"
+            triggerVariant={copy.reconnect ? "outline" : "solid"}
+            triggerSize="lg"
+            triggerClassName="rounded-2xl"
+          />
           <RepositoryAccessRefreshForm
             triggerLabel="Refresh GitHub access"
             size="lg"
@@ -1396,8 +1452,8 @@ function dashboardRepositoryAccessEmptyCopy(
 
   return {
     badge: "No repositories found",
-    title: "No installed repositories with write access found.",
-    body: "Install the GitHub App on a repository where your GitHub account has write, maintain, or admin access, then return to the dashboard.",
+    title: "No connected repositories found.",
+    body: "Connect GitHub or GitLab repositories, then return to the dashboard to finish setup.",
     reconnect: false,
     tone: "accent",
   };
@@ -1421,12 +1477,21 @@ function WorkspaceSwitcher({
     readonly githubAvatarUrl: string | null;
   };
 }): React.ReactElement | null {
-  if (
-    workspaces.length < 2 &&
-    !appInstallUrl &&
-    !pendingOrganizationInstallRequest
-  ) {
-    return null;
+  if (workspaces.length < 2 && !pendingOrganizationInstallRequest) {
+    return (
+      <section className="py-3">
+        <div className="flex justify-end px-1">
+          <ConnectSourceDialog
+            appInstallUrl={appInstallUrl}
+            workspaceId={selectedWorkspaceId}
+            triggerLabel="Add repos"
+            triggerVariant="outline"
+            triggerSize="sm"
+            triggerClassName="inline-flex w-auto items-center gap-2 px-3"
+          />
+        </div>
+      </section>
+    );
   }
 
   const items = workspaces.map((workspace) => {
@@ -1466,23 +1531,14 @@ function WorkspaceSwitcher({
               Personal accounts and organizations stay isolated.
             </p>
           </div>
-          {appInstallUrl ? (
-            <GitHubAppInstallPermissionDialog
-              href={appInstallUrl}
-              variant="outline"
-              size="sm"
-              className="inline-flex w-auto items-center gap-2 px-3"
-            >
-              <span
-                aria-hidden="true"
-                className="relative h-4 w-4 rounded-full border border-cyan-100/35 text-cyan-100"
-              >
-                <span className="absolute left-1/2 top-1/2 h-0.5 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
-                <span className="absolute left-1/2 top-1/2 h-2 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
-              </span>
-              Add repos
-            </GitHubAppInstallPermissionDialog>
-          ) : null}
+          <ConnectSourceDialog
+            appInstallUrl={appInstallUrl}
+            workspaceId={selectedWorkspaceId}
+            triggerLabel="Add repos"
+            triggerVariant="outline"
+            triggerSize="sm"
+            triggerClassName="inline-flex w-auto items-center gap-2 px-3"
+          />
         </div>
         {items.length > 1 || pendingTab ? (
           <DashboardWorkspaceTabs
@@ -1621,7 +1677,7 @@ function WorkspaceCard({
     : undefined;
   const selectedRepository = requestedRepository ?? null;
   const selectedInstallation = selectedRepository
-    ? findInstallationForRepository(workspace, selectedRepository.fullName)
+    ? findInstallationForRepository(workspace, selectedRepository)
     : null;
   const providerGuidanceSet =
     selectedRepository && selectedInstallation
@@ -1909,6 +1965,67 @@ function WorkspaceCard({
                 })}
               </div>
             </details>
+
+            {workspace.gitLabInstallations.length > 0 ? (
+              <details
+                open
+                className="rounded-[1.5rem] border border-cyan-200/10 bg-slate-950/60 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]"
+              >
+                <summary className="cursor-pointer list-none">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <Badge tone="accent">GitLab connection</Badge>
+                      <p className="mt-2 text-sm text-slate-400">
+                        Group and project rollout metadata.
+                      </p>
+                    </div>
+                    <span className="font-mono text-xs uppercase tracking-[0.16em] text-cyan-100">
+                      {workspace.gitLabInstallations.length} connected
+                    </span>
+                  </div>
+                </summary>
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {workspace.gitLabInstallations.map((installation) => (
+                    <div
+                      key={installation.id}
+                      className="grid gap-4 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4"
+                    >
+                      <div>
+                        <p className="truncate text-sm font-semibold text-cyan-50">
+                          {installation.namespacePath}
+                        </p>
+                        <p className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-400">
+                          GitLab {installation.sourceKind} /{" "}
+                          {installation.status}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-cyan-200/10 bg-slate-950/55 p-3">
+                        <p className="font-mono text-[0.6rem] uppercase tracking-[0.14em] text-cyan-100/70">
+                          Selected projects
+                        </p>
+                        <p className="mt-2 text-xs leading-5 text-slate-300">
+                          {installation.selectedProjects} project
+                          {installation.selectedProjects === 1 ? "" : "s"}{" "}
+                          selected. GitLab token and Codex auth are not stored
+                          in ReviewRouter.
+                        </p>
+                      </div>
+                      <LinkButton
+                        href={gitLabSetupHref({
+                          workspaceId: workspace.id,
+                          installationId: installation.id,
+                        })}
+                        variant="outline"
+                        size="sm"
+                        className="w-fit rounded-xl"
+                      >
+                        Add GitLab repos
+                      </LinkButton>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
 
             {hasWorkspaceWideAccess ? (
               <OrgRulesetAdvancedCard
@@ -2539,9 +2656,9 @@ function RepositoryTable({
       <div className="rounded-2xl border border-cyan-200/10 bg-slate-950/60 p-5">
         <Badge tone="warning">No repositories yet</Badge>
         <p className="mt-3 text-sm leading-6 text-slate-300">
-          GitHub has not delivered selected repositories to ReviewRouter yet.
-          Use sync after the installation webhook arrives, or update App access
-          if no repositories were selected.
+          No source repositories are connected to this workspace yet. Use
+          Connect source to add GitHub App repositories or install GitLab CI
+          wiring.
         </p>
       </div>
     );
@@ -2749,7 +2866,7 @@ function RepositoryTable({
             const canEditRepositorySettings =
               directConfigRepositoryIds === null ||
               directConfigRepositoryIds.has(repository.id);
-            const repositoryUrl = githubRepositoryUrl(repository.fullName);
+            const repositoryUrl = repositorySourceUrl(repository);
             const setupDisclosureId = `repo-setup-${repository.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
             const isSelectedRepository =
               repository.fullName === selectedRepositoryFullName;
@@ -2802,9 +2919,14 @@ function RepositoryTable({
                       repositoryUrl={repositoryUrl}
                       className="min-w-0 break-words text-xl font-semibold leading-tight text-cyan-50 sm:text-2xl xl:text-[1.65rem]"
                     />
-                    <RepositoryStarsBadge
-                      stargazersCount={repository.stargazersCount}
-                    />
+                    <Badge tone="neutral">
+                      {repository.provider === "gitlab" ? "GitLab" : "GitHub"}
+                    </Badge>
+                    {repository.provider === "github" ? (
+                      <RepositoryStarsBadge
+                        stargazersCount={repository.stargazersCount}
+                      />
+                    ) : null}
                   </div>
                   <div className="repository-setup-toggle-row flex flex-wrap items-center gap-2 peer-focus-visible:[&_.setup-toggle]:outline peer-focus-visible:[&_.setup-toggle]:outline-2 peer-focus-visible:[&_.setup-toggle]:outline-offset-2 peer-focus-visible:[&_.setup-toggle]:outline-cyan-200 sm:justify-end">
                     <RepositoryVisibilityBadge
@@ -2878,17 +3000,6 @@ function RepositoryTable({
         )}
       </div>
     </div>
-  );
-}
-
-function githubRepositoryUrl(fullName: string): string | null {
-  const parts = fullName.split("/");
-  if (parts.length !== 2) return null;
-  const [owner, repo] = parts;
-  if (!owner || !repo) return null;
-
-  return safeGitHubDashboardLink(
-    `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
   );
 }
 
@@ -2995,10 +3106,7 @@ function RepositorySetupProgressPanel({
 }): React.ReactElement {
   const canManage =
     mutationsEnabled && repository.selected && !repository.archived;
-  const installation = findInstallationForRepository(
-    workspace,
-    repository.fullName,
-  );
+  const installation = findInstallationForRepository(workspace, repository);
   const enableReviewAction = installation ? (
     <RepositoryProviderSecretsAction
       workspace={workspace}
@@ -3066,10 +3174,7 @@ function RepositoryProviderSecretsAction({
   readonly triggerVariant?: "solid" | "soft" | "outline" | "ghost";
   readonly triggerClassName?: string;
 }): React.ReactElement | null {
-  const installation = findInstallationForRepository(
-    workspace,
-    repository.fullName,
-  );
+  const installation = findInstallationForRepository(workspace, repository);
   if (!installation) {
     return null;
   }
@@ -3178,9 +3283,11 @@ function RepositoryProviderSecretsDialog({
 
 function findInstallationForRepository(
   workspace: DashboardWorkspace,
-  repositoryFullName: string,
+  repository: DashboardWorkspaceData["repositories"][number],
 ): DashboardInstallation | undefined {
-  const owner = repositoryFullName.split("/")[0]?.toLowerCase();
+  if (repository.provider !== "github") return undefined;
+
+  const owner = repository.fullName.split("/")[0]?.toLowerCase();
   return (
     workspace.installations.find(
       (installation) => installation.accountLogin.toLowerCase() === owner,
@@ -3773,6 +3880,17 @@ function dashboardSectionHref(
   const query = new URLSearchParams({ section });
   if (workspaceKey) query.set("workspace", workspaceKey);
   return `/dashboard?${query.toString()}#dashboard-section-content`;
+}
+
+function gitLabSetupHref(input: {
+  readonly workspaceId: string;
+  readonly installationId: string;
+}): string {
+  const query = new URLSearchParams({
+    workspaceId: input.workspaceId,
+    installationId: input.installationId,
+  });
+  return `/setup/gitlab?${query.toString()}`;
 }
 
 function resolveMemoryManagementMode(

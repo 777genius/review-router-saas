@@ -82,6 +82,7 @@ import { PrismaGitHubUserReviewThreadResolver } from "./github/prisma-github-use
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
+import { PrismaGitLabRepositoryRegistry } from "./gitlab/prisma-gitlab-repository-registry.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
 import {
   registerActionMemoryRoutes,
@@ -168,6 +169,7 @@ export async function createApiApp(
       actionSessionSecret: options.actionSessionSecret,
       clock,
       env: process.env,
+      prisma,
     });
 
   if (gitLabIntegrationDependencies) {
@@ -469,6 +471,7 @@ function createDefaultGitLabIntegrationDependencies(input: {
   readonly actionSessionSecret?: string | undefined;
   readonly clock: SystemClock;
   readonly env: NodeJS.ProcessEnv;
+  readonly prisma?: PrismaClient | undefined;
 }): RegisterGitLabIntegrationRoutesDependencies | undefined {
   const repositories = readGitLabStaticRepositories(
     input.env.REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON,
@@ -483,8 +486,9 @@ function createDefaultGitLabIntegrationDependencies(input: {
     installerAdminTokenConfigured: Boolean(installerAdminToken),
     installerTokenConfigured: Boolean(installerToken),
     apiTokenConfigured: Boolean(apiToken),
-    staticRepositoriesConfigured: repositories.length > 0,
-    registeredRepositoryCount: repositories.length,
+    staticRepositoriesConfigured:
+      repositories.length > 0 || Boolean(input.prisma),
+    registeredRepositoryCount: input.prisma ? null : repositories.length,
     oidcAudienceConfigured: Boolean(
       input.env.REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE,
     ),
@@ -492,8 +496,13 @@ function createDefaultGitLabIntegrationDependencies(input: {
       input.env.REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE,
     ),
   };
+  const repositoryRegistry = input.prisma
+    ? new PrismaGitLabRepositoryRegistry(input.prisma)
+    : repositories.length > 0
+      ? new StaticGitLabRepositoryRegistry(repositories)
+      : undefined;
   const exchange =
-    input.actionSessionSecret && apiToken && repositories.length > 0
+    input.actionSessionSecret && apiToken && repositoryRegistry
       ? {
           verifier: new JoseGitLabCiIdTokenVerifier({
             ...(input.env.REVIEW_ROUTER_GITLAB_OIDC_ISSUER
@@ -503,7 +512,7 @@ function createDefaultGitLabIntegrationDependencies(input: {
               ? { jwksUrl: input.env.REVIEW_ROUTER_GITLAB_OIDC_JWKS_URL }
               : {}),
           }),
-          repositories: new StaticGitLabRepositoryRegistry(repositories),
+          repositories: repositoryRegistry,
           mergeRequests: new GitLabMergeRequestGateway({
             token: apiToken,
             ...(apiBaseUrl ? { apiBaseUrl } : {}),

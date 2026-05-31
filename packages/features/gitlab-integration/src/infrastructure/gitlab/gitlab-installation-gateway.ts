@@ -17,6 +17,7 @@ type GitLabProjectApiResponse = {
   readonly id: number;
   readonly path_with_namespace: string;
   readonly default_branch: string | null;
+  readonly visibility?: "public" | "internal" | "private" | undefined;
   readonly ci_config_path?: string | null | undefined;
   readonly permissions?:
     | {
@@ -39,6 +40,7 @@ type GitLabGroupProjectApiResponse = {
   readonly name: string;
   readonly default_branch?: string | null | undefined;
   readonly web_url?: string | null | undefined;
+  readonly visibility?: "public" | "internal" | "private" | undefined;
   readonly archived?: boolean | undefined;
 };
 
@@ -138,6 +140,7 @@ export class GitLabInstallationGateway implements GitLabInstallationPort {
         name: project.name,
         defaultBranch: project.default_branch ?? null,
         webUrl: project.web_url ?? null,
+        visibility: project.visibility ?? "private",
         archived: project.archived ?? false,
       })),
     };
@@ -146,9 +149,17 @@ export class GitLabInstallationGateway implements GitLabInstallationPort {
   async getProjectSettings(input: {
     readonly projectId: string;
   }): Promise<GitLabProjectInstallationSettings> {
+    return this.getProjectSettingsByPathOrId({
+      projectPathOrId: input.projectId,
+    });
+  }
+
+  async getProjectSettingsByPathOrId(input: {
+    readonly projectPathOrId: string;
+  }): Promise<GitLabProjectInstallationSettings> {
     const project = await this.requestJson<GitLabProjectApiResponse>({
       method: "GET",
-      path: `/projects/${encodeURIComponent(input.projectId)}`,
+      path: `/projects/${encodeURIComponent(input.projectPathOrId)}`,
     });
     const accessLevel = Math.max(
       project.permissions?.project_access?.access_level ?? 0,
@@ -159,6 +170,7 @@ export class GitLabInstallationGateway implements GitLabInstallationPort {
       projectId: String(project.id),
       fullName: project.path_with_namespace,
       defaultBranch: project.default_branch ?? "main",
+      visibility: project.visibility ?? "private",
       ciConfigPath: project.ci_config_path?.trim() || null,
       canEditProjectSettings: accessLevel >= maintainerAccessLevel,
       canCreateMergeRequest: accessLevel >= developerAccessLevel,

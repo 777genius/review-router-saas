@@ -63,6 +63,7 @@ import {
 import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import {
+  asDashboardGitHubActor,
   assertDashboardMutationAllowed,
   assertDashboardRepositoryConfigMutationAllowed,
   assertDashboardRepositoryMutationAllowed,
@@ -71,6 +72,7 @@ import {
   dashboardMutationAccessAuditMetadata,
   getDashboardSignedInActor,
   getDashboardWorkspaceScope,
+  type DashboardMutationActor,
 } from "../../src/server/dashboard-mutations";
 import {
   createDashboardMemoryDependencies,
@@ -228,13 +230,17 @@ async function refreshRepositoryAccessMutation(
     if (!actor) {
       throw new Error("dashboard_mutation_requires_sign_in");
     }
+    const githubActor = asDashboardGitHubActor(actor);
+    if (!githubActor) {
+      throw new Error("github_user_identity_required");
+    }
     await createDashboardRateLimitPolicy(
       prisma,
-    ).assertRepositoryAccessRefreshAllowed({ userId: actor.userId });
+    ).assertRepositoryAccessRefreshAllowed({ userId: githubActor.userId });
     const workspaceScope = await getDashboardWorkspaceScope();
     const result = await refreshGitHubUserRepositoryAccess({
       prisma,
-      actor,
+      actor: githubActor,
       excludedWorkspaceIds:
         workspaceScope.kind === "workspace_ids"
           ? workspaceScope.workspaceIds
@@ -463,6 +469,7 @@ async function createSetupPullRequestMutation(
       where: { id: repositoryId },
       select: {
         workspaceId: true,
+        provider: true,
         githubRepositoryId: true,
         owner: true,
         name: true,
@@ -477,10 +484,22 @@ async function createSetupPullRequestMutation(
     if (!repository || repository.workspaceId !== workspaceId) {
       throw new Error("repository_not_found");
     }
+    if (
+      repository.provider !== "github" ||
+      !repository.githubRepositoryId ||
+      !repository.installation
+    ) {
+      throw new Error("repository_not_found");
+    }
+    const githubRepository = {
+      ...repository,
+      githubRepositoryId: repository.githubRepositoryId,
+      installation: repository.installation,
+    };
 
     const actor = await assertDashboardRepositoryMutationAllowed(
       workspaceId,
-      repository,
+      githubRepository,
     );
     await assertDashboardEntitlement({
       prisma,
@@ -493,7 +512,7 @@ async function createSetupPullRequestMutation(
       repositoryId,
     });
     const octokit = await createGitHubAppInstallationOctokit(
-      repository.installation.githubInstallationId.toString(),
+      githubRepository.installation.githubInstallationId.toString(),
     );
     const actionRef = resolveReviewRouterActionRef();
     const setupBaseBranch = await resolveDashboardSetupBaseBranch({
@@ -510,7 +529,7 @@ async function createSetupPullRequestMutation(
     assertCodexProductionReviewConfigAllowed(resolvedRuntime.config);
     assertCodexRotatingReviewConfigAllowed({
       config: resolvedRuntime.config,
-      repository,
+      repository: githubRepository,
     });
     const workflowProviderKind = workflowReadinessProviderKind(
       resolvedRuntime.config,
@@ -518,7 +537,7 @@ async function createSetupPullRequestMutation(
     const codexRotatingProviderInstanceId =
       resolveCodexRotatingProviderInstanceId({
         config: resolvedRuntime.config,
-        githubRepositoryId: repository.githubRepositoryId.toString(),
+        githubRepositoryId: githubRepository.githubRepositoryId.toString(),
         repositoryFullName: repository.fullName,
         repositoryVisibility: repository.visibility,
       });
@@ -531,7 +550,7 @@ async function createSetupPullRequestMutation(
     const workflowReady = await isWorkflowSetupAlreadyCurrent(
       {
         githubInstallationId:
-          repository.installation.githubInstallationId.toString(),
+          githubRepository.installation.githubInstallationId.toString(),
         owner: repository.owner,
         name: repository.name,
         defaultBranch: setupBaseBranch,
@@ -669,6 +688,7 @@ async function confirmSetupPullRequestMergedMutation(
       select: {
         id: true,
         workspaceId: true,
+        provider: true,
         githubRepositoryId: true,
         owner: true,
         name: true,
@@ -694,11 +714,23 @@ async function confirmSetupPullRequestMergedMutation(
     if (!repository || repository.workspaceId !== workspaceId) {
       throw new Error("repository_not_found");
     }
-    assertRepositoryConfigMutable(repository);
+    if (
+      repository.provider !== "github" ||
+      !repository.githubRepositoryId ||
+      !repository.installation
+    ) {
+      throw new Error("repository_not_found");
+    }
+    const githubRepository = {
+      ...repository,
+      githubRepositoryId: repository.githubRepositoryId,
+      installation: repository.installation,
+    };
+    assertRepositoryConfigMutable(githubRepository);
 
     const actor = await assertDashboardRepositoryMutationAllowed(
       workspaceId,
-      repository,
+      githubRepository,
     );
     await assertDashboardEntitlement({
       prisma,
@@ -708,7 +740,7 @@ async function confirmSetupPullRequestMergedMutation(
     });
 
     const octokit = await createGitHubAppInstallationOctokit(
-      repository.installation.githubInstallationId.toString(),
+      githubRepository.installation.githubInstallationId.toString(),
     );
     const setupProvisioning = repository.provisioning[0] ?? null;
     const pullRequestNumber = pullRequestNumberFromUrl(
@@ -763,7 +795,7 @@ async function confirmSetupPullRequestMergedMutation(
       assertCodexProductionReviewConfigAllowed(resolvedRuntime.config);
       assertCodexRotatingReviewConfigAllowed({
         config: resolvedRuntime.config,
-        repository,
+        repository: githubRepository,
       });
     }
     const codexRotatingProviderInstanceId =
@@ -771,7 +803,7 @@ async function confirmSetupPullRequestMergedMutation(
         ? undefined
         : resolveCodexRotatingProviderInstanceId({
             config: resolvedRuntime.config,
-            githubRepositoryId: repository.githubRepositoryId.toString(),
+            githubRepositoryId: githubRepository.githubRepositoryId.toString(),
             repositoryFullName: repository.fullName,
             repositoryVisibility: repository.visibility,
           });
@@ -787,7 +819,7 @@ async function confirmSetupPullRequestMergedMutation(
       : await isWorkflowSetupAlreadyCurrent(
           {
             githubInstallationId:
-              repository.installation.githubInstallationId.toString(),
+              githubRepository.installation.githubInstallationId.toString(),
             owner: repository.owner,
             name: repository.name,
             defaultBranch: setupBaseBranch,
@@ -1746,10 +1778,7 @@ async function createMemoryActionContext(input: {
   });
 
   const memoryActor = await resolveDashboardMemoryActor(
-    {
-      githubUserId: dashboardActor.githubUserId,
-      githubLogin: dashboardActor.githubLogin,
-    },
+    dashboardMemoryActorInput(dashboardActor),
     input.prisma,
   );
 
@@ -1758,11 +1787,20 @@ async function createMemoryActionContext(input: {
     memoryActor,
     dependencies: createDashboardMemoryDependencies({
       prisma: input.prisma,
-      actor: {
-        githubUserId: dashboardActor.githubUserId,
-        githubLogin: dashboardActor.githubLogin,
-      },
+      actor: dashboardMemoryActorInput(dashboardActor),
     }),
+  };
+}
+
+function dashboardMemoryActorInput(
+  actor: DashboardMutationActor,
+): Parameters<typeof resolveDashboardMemoryActor>[0] {
+  return {
+    userId: actor.userId,
+    sourceProvider: actor.sourceProvider,
+    sourceLogin: actor.sourceLogin,
+    githubUserId: actor.githubUserId,
+    githubLogin: actor.githubLogin,
   };
 }
 
@@ -1817,6 +1855,7 @@ async function loadRepositoryForWorkspace(input: {
     select: {
       id: true,
       workspaceId: true,
+      provider: true,
       githubRepositoryId: true,
       owner: true,
       name: true,
@@ -1830,8 +1869,19 @@ async function loadRepositoryForWorkspace(input: {
   if (!repository || repository.workspaceId !== input.workspaceId) {
     throw new Error("repository_not_found");
   }
+  if (
+    repository.provider !== "github" ||
+    !repository.githubRepositoryId ||
+    !repository.installation
+  ) {
+    throw new Error("repository_not_found");
+  }
 
-  return repository;
+  return {
+    ...repository,
+    githubRepositoryId: repository.githubRepositoryId,
+    installation: repository.installation,
+  };
 }
 
 async function verifyProviderSecrets(input: {

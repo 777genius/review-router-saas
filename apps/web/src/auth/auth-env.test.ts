@@ -3,23 +3,35 @@ import { authOptions } from "./auth-options";
 import { getAuthEnvironmentStatus, readOptionalAuthEnv } from "./auth-env";
 
 describe("auth env", () => {
-  it("reports missing required GitHub OAuth env without throwing during build", () => {
+  it("requires Auth secret and at least one source OAuth provider", () => {
     expect(getAuthEnvironmentStatus({})).toEqual({
       configured: false,
       missing: [
         "AUTH_SECRET",
         "GITHUB_APP_CLIENT_ID",
         "GITHUB_APP_CLIENT_SECRET",
+        "GITLAB_OAUTH_CLIENT_ID",
+        "GITLAB_OAUTH_CLIENT_SECRET",
       ],
     });
   });
 
-  it("reports configured auth env when all required values are present", () => {
+  it("reports configured auth env with GitHub OAuth", () => {
     expect(
       getAuthEnvironmentStatus({
         AUTH_SECRET: "secret",
         GITHUB_APP_CLIENT_ID: "client",
         GITHUB_APP_CLIENT_SECRET: "client-secret",
+      }),
+    ).toEqual({ configured: true, missing: [] });
+  });
+
+  it("reports configured auth env with GitLab OAuth only", () => {
+    expect(
+      getAuthEnvironmentStatus({
+        AUTH_SECRET: "secret",
+        GITLAB_OAUTH_CLIENT_ID: "client",
+        GITLAB_OAUTH_CLIENT_SECRET: "client-secret",
       }),
     ).toEqual({ configured: true, missing: [] });
   });

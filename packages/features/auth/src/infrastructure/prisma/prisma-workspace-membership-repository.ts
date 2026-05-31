@@ -6,7 +6,11 @@ import type {
 } from "../../application/ports/workspace-membership-repository-port";
 
 function personalWorkspaceSlug(principal: AuthenticatedPrincipal): string {
-  return `gh-user-${principal.githubUserId}`;
+  if (principal.provider === "github") {
+    return `gh-user-${principal.githubUserId ?? principal.externalUserId}`;
+  }
+
+  return `${principal.provider}-user-${principal.externalUserId}`;
 }
 
 export class PrismaWorkspaceMembershipRepository implements WorkspaceMembershipRepositoryPort {
@@ -15,12 +19,14 @@ export class PrismaWorkspaceMembershipRepository implements WorkspaceMembershipR
   async ensurePersonalWorkspaceOwner(
     principal: AuthenticatedPrincipal,
   ): Promise<WorkspaceMembership> {
+    const githubLogin =
+      principal.provider === "github" ? (principal.githubLogin ?? null) : null;
     const workspace = await this.prisma.workspace.upsert({
       where: { slug: personalWorkspaceSlug(principal) },
-      update: { name: `@${principal.githubLogin}` },
+      update: { name: `@${principal.login}` },
       create: {
         slug: personalWorkspaceSlug(principal),
-        name: `@${principal.githubLogin}`,
+        name: `@${principal.login}`,
       },
     });
 
@@ -32,13 +38,13 @@ export class PrismaWorkspaceMembershipRepository implements WorkspaceMembershipR
         },
       },
       update: {
-        githubLogin: principal.githubLogin,
+        githubLogin,
         role: "owner",
       },
       create: {
         workspaceId: workspace.id,
         userId: principal.userId,
-        githubLogin: principal.githubLogin,
+        githubLogin,
         role: "owner",
       },
     });
@@ -54,6 +60,9 @@ export class PrismaWorkspaceMembershipRepository implements WorkspaceMembershipR
   async ensureGitHubUserInstallationWorkspaceOwners(
     principal: AuthenticatedPrincipal,
   ): Promise<readonly WorkspaceMembership[]> {
+    if (principal.provider !== "github" || !principal.githubLogin) {
+      return [];
+    }
     const installations = await this.prisma.gitHubInstallation.findMany({
       where: {
         accountType: "User",

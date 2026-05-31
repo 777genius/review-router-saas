@@ -53,9 +53,11 @@ vi.mock("./prisma", () => ({
 }));
 
 import {
+  assertDashboardMutationAllowed,
   assertDashboardRepositoryConfigMutationAllowed,
   assertDashboardRepositoryMutationAllowed,
   createGitHubUserOctokit,
+  getDashboardSignedInActor,
 } from "./dashboard-mutations";
 
 const repository = {
@@ -72,13 +74,16 @@ describe("dashboard repository mutations", () => {
     vi.stubEnv("REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS", "1");
     mocks.getServerSession.mockResolvedValue({
       user: {
+        sourceProvider: "github",
+        externalUserId: "123",
+        sourceLogin: "maintainer",
         githubUserId: "123",
         githubLogin: "maintainer",
       },
     });
     mocks.getPrisma.mockReturnValue({
-      user: {
-        findUnique: vi.fn().mockResolvedValue({ id: "user_1" }),
+      userExternalIdentity: {
+        findUnique: vi.fn().mockResolvedValue({ userId: "user_1" }),
       },
     });
     mocks.assertWorkspaceMutationAllowed.mockRejectedValue(
@@ -287,9 +292,12 @@ describe("dashboard repository mutations", () => {
 
     const octokit = await createGitHubUserOctokit({
       userId: "user_1",
+      sourceProvider: "github",
+      externalUserId: "123",
+      sourceLogin: "maintainer",
       githubUserId: "123",
       githubLogin: "maintainer",
-      actor: "user:maintainer",
+      actor: "user:github:maintainer",
     });
 
     await expect(
@@ -323,6 +331,62 @@ describe("dashboard repository mutations", () => {
           content: "Y29udGVudA==",
         }),
       }),
+    );
+  });
+
+  it("derives source identity from legacy GitHub-only session fields", async () => {
+    mocks.getServerSession.mockResolvedValue({
+      user: {
+        githubUserId: "123",
+        githubLogin: "maintainer",
+        githubAvatarUrl: "https://avatars.githubusercontent.com/u/123",
+      },
+    });
+
+    await expect(getDashboardSignedInActor()).resolves.toMatchObject({
+      userId: "user_1",
+      sourceProvider: "github",
+      externalUserId: "123",
+      sourceLogin: "maintainer",
+      githubUserId: "123",
+      githubLogin: "maintainer",
+    });
+  });
+
+  it("does not copy GitLab external ids into GitHub actor fields", async () => {
+    mocks.getServerSession.mockResolvedValue({
+      user: {
+        sourceProvider: "gitlab",
+        externalUserId: "456",
+        sourceLogin: "gitlab-maintainer",
+        gitlabUserId: "456",
+        gitlabLogin: "gitlab-maintainer",
+      },
+    });
+    mocks.assertWorkspaceMutationAllowed.mockResolvedValue({
+      allowed: true,
+      reason: "allowed",
+    });
+
+    await expect(
+      assertDashboardMutationAllowed("workspace_1"),
+    ).resolves.toMatchObject({
+      userId: "user_1",
+      sourceProvider: "gitlab",
+      externalUserId: "456",
+      sourceLogin: "gitlab-maintainer",
+      githubUserId: null,
+      githubLogin: null,
+      accessSource: { source: "workspace_admin" },
+    });
+    expect(mocks.assertWorkspaceMutationAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: "workspace_1",
+        userId: "user_1",
+        githubUserId: "",
+        githubLogin: "",
+      }),
+      expect.any(Object),
     );
   });
 });

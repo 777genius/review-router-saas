@@ -24,8 +24,8 @@ afterEach(() => {
 });
 
 describe("HeaderProfileMenu", () => {
-  it("shows a sign-in action when no GitHub session is present", () => {
-    render(<HeaderProfileMenu githubLogin={null} githubAvatarUrl={null} />);
+  it("shows a sign-in action when no source session is present", () => {
+    render(<HeaderProfileMenu login={null} avatarUrl={null} provider={null} />);
 
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
   });
@@ -33,8 +33,9 @@ describe("HeaderProfileMenu", () => {
   it("opens a profile menu with sign-out for signed-in users", () => {
     render(
       <HeaderProfileMenu
-        githubLogin="777genius"
-        githubAvatarUrl="https://avatars.githubusercontent.com/u/1?v=4"
+        login="777genius"
+        avatarUrl="https://avatars.githubusercontent.com/u/1?v=4"
+        provider="github"
       />,
     );
 
@@ -54,5 +55,17 @@ describe("HeaderProfileMenu", () => {
     expect(profileButton.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getAllByText("777genius")).toHaveLength(2);
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
+  });
+
+  it("uses provider-aware avatar alt text", () => {
+    render(
+      <HeaderProfileMenu
+        login="gitlab-user"
+        avatarUrl="https://gitlab.com/uploads/avatar.png"
+        provider="gitlab"
+      />,
+    );
+
+    expect(screen.getByAltText("gitlab-user GitLab avatar")).toBeTruthy();
   });
 });
