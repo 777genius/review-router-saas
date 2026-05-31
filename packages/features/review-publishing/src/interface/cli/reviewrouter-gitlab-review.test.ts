@@ -180,6 +180,162 @@ describe("reviewrouter-gitlab-review CLI", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    [
+      "the merge request ref path",
+      { CI_COMMIT_REF_NAME: "refs/merge-requests/5/head" },
+    ],
+    [
+      "the open merge request list",
+      { CI_OPEN_MERGE_REQUESTS: "other/project!3,group/project!5" },
+    ],
+  ])(
+    "falls back to %s when GitLab omits MR env vars",
+    async (_label, fallbackEnv) => {
+      const cwd = await mkdtemp(join(tmpdir(), "reviewrouter-gitlab-review-"));
+      const artifactPath = join(cwd, "reviewrouter-findings.json");
+      const modelOutputPath = join(cwd, "model-output.json");
+      const runCommand = vi.fn(async (input) => {
+        if (input.command !== "git") {
+          throw new Error(`unexpected_command:${input.command}`);
+        }
+        if (input.args[0] === "merge-base") {
+          expect(input.args).toEqual(["merge-base", "origin/main", headSha]);
+          return { stdout: `${baseSha}\n`, stderr: "" };
+        }
+        expect(input.args).toEqual([
+          "diff",
+          "--no-ext-diff",
+          "--unified=80",
+          baseSha,
+          headSha,
+          "--",
+        ]);
+        return {
+          stdout: "@@ -1,1 +1,2 @@\n const old = true;\n+const added = true;\n",
+          stderr: "",
+        };
+      });
+      const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const href = String(url);
+        if (
+          href ===
+          "https://reviewrouter.test/api/gitlab/action/v1/session/exchange"
+        ) {
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            mergeRequestIid: "5",
+            headSha,
+          });
+          return jsonResponse({
+            protocolVersion: 1,
+            sessionToken: "gitlab-session-secret",
+            expiresAt: "2026-05-30T12:15:00.000Z",
+            repository: "group/project",
+          });
+        }
+        if (href.endsWith("/projects/123/merge_requests/5")) {
+          return jsonResponse({
+            iid: 5,
+            project_id: 123,
+            source_project_id: 123,
+            target_project_id: 123,
+            state: "opened",
+            sha: headSha,
+          });
+        }
+        if (href.endsWith("/projects/123/merge_requests/5/versions")) {
+          return jsonResponse([
+            {
+              head_commit_sha: headSha,
+              base_commit_sha: baseSha,
+              start_commit_sha: startSha,
+            },
+          ]);
+        }
+        if (
+          href.endsWith(
+            "/projects/123/merge_requests/5/discussions?per_page=100&page=1",
+          )
+        ) {
+          return jsonResponse([]);
+        }
+        if (
+          href.endsWith("/projects/123/merge_requests/5/diffs?per_page=100")
+        ) {
+          return jsonResponse([
+            {
+              old_path: "src/app.ts",
+              new_path: "src/app.ts",
+              diff: "@@ -1,1 +1,2 @@\n const old = true;\n+const added = true;\n",
+            },
+          ]);
+        }
+        if (
+          href.endsWith("/projects/123/merge_requests/5/discussions") &&
+          init?.method === "POST"
+        ) {
+          return jsonResponse({
+            id: "discussion-1",
+            notes: [{ id: 1 }],
+          });
+        }
+        throw new Error(`unexpected_fetch:${href}`);
+      }) as unknown as typeof fetch;
+      let output = "";
+
+      try {
+        await writeFile(
+          modelOutputPath,
+          JSON.stringify({
+            protocolVersion: 1,
+            summaryMarkdown: "Review completed.",
+            findings: [
+              {
+                severity: "major",
+                title: "Added branch needs guard",
+                body: "The added branch should validate input first.",
+                path: "src/app.ts",
+                startLine: 2,
+                endLine: 2,
+              },
+            ],
+          }),
+        );
+
+        await runGitLabReviewCli({
+          argv: ["--artifact", artifactPath, "--model-output", modelOutputPath],
+          cwd,
+          env: {
+            PATH: process.env.PATH,
+            REVIEWROUTER_API_URL: "https://reviewrouter.test",
+            REVIEWROUTER_ID_TOKEN: "gitlab-id-token",
+            REVIEWROUTER_ID_TOKEN_AUDIENCE: "reviewrouter",
+            REVIEWROUTER_GITLAB_TOKEN: "glpat-test",
+            REVIEWROUTER_GITLAB_API_BASE_URL: "https://gitlab.test/api/v4",
+            CI_PROJECT_ID: "123",
+            CI_PROJECT_PATH: "group/project",
+            ...fallbackEnv,
+            CI_DEFAULT_BRANCH: "main",
+            CI_COMMIT_SHA: headSha,
+          },
+          fetchImpl,
+          runCommand,
+          now: new Date("2026-05-30T12:00:00.000Z"),
+          stdout: { write: (chunk) => (output += chunk) },
+        });
+
+        const result = JSON.parse(output) as {
+          readonly status: string;
+          readonly inlineCommentCount: number;
+        };
+        expect(result.status).toBe("published");
+        expect(result.inlineCommentCount).toBe(1);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 function jsonResponse(body: unknown): Response {

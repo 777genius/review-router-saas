@@ -264,12 +264,18 @@ async function readDiff(input: {
       "utf8",
     );
   }
-  const baseSha =
-    readOptionalEnv(input.env, "REVIEWROUTER_BASE_SHA") ??
-    readRequiredEnv(input.env, "CI_MERGE_REQUEST_DIFF_BASE_SHA");
   const headSha =
     readOptionalEnv(input.env, "REVIEWROUTER_HEAD_SHA") ??
     readRequiredEnv(input.env, "CI_COMMIT_SHA");
+  const baseSha =
+    readOptionalEnv(input.env, "REVIEWROUTER_BASE_SHA") ??
+    readOptionalEnv(input.env, "CI_MERGE_REQUEST_DIFF_BASE_SHA") ??
+    (await resolveFallbackMergeRequestBaseSha({
+      cwd: input.cwd,
+      env: input.env,
+      headSha,
+      runCommand: input.runCommand,
+    }));
   const diff = await input.runCommand({
     command: "git",
     args: ["diff", "--no-ext-diff", "--unified=80", baseSha, headSha, "--"],
@@ -396,7 +402,7 @@ function buildGitLabReviewPrompt(input: {
       {
         provider: "gitlab",
         projectPath: readOptionalEnv(input.env, "CI_PROJECT_PATH"),
-        mergeRequestIid: readOptionalEnv(input.env, "CI_MERGE_REQUEST_IID"),
+        mergeRequestIid: readMergeRequestIid(input.env),
         headSha:
           readOptionalEnv(input.env, "REVIEWROUTER_HEAD_SHA") ??
           readOptionalEnv(input.env, "CI_COMMIT_SHA"),
@@ -475,17 +481,45 @@ function buildGitLabTargetFromEnv(
     repositoryFullName:
       readOptionalEnv(env, "REVIEWROUTER_REPOSITORY_FULL_NAME") ??
       readRequiredEnv(env, "CI_PROJECT_PATH"),
-    changeRequestExternalId:
-      readOptionalEnv(env, "REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID") ??
-      readRequiredEnv(env, "CI_MERGE_REQUEST_IID"),
+    changeRequestExternalId: readRequiredMergeRequestIid(env),
     headSha:
       readOptionalEnv(env, "REVIEWROUTER_HEAD_SHA") ??
       readRequiredEnv(env, "CI_COMMIT_SHA"),
     baseSha:
       readOptionalEnv(env, "REVIEWROUTER_BASE_SHA") ??
-      readRequiredEnv(env, "CI_MERGE_REQUEST_DIFF_BASE_SHA"),
+      readOptionalEnv(env, "CI_MERGE_REQUEST_DIFF_BASE_SHA"),
     ...(startSha ? { startSha } : {}),
   };
+}
+
+async function resolveFallbackMergeRequestBaseSha(input: {
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly headSha: string;
+  readonly runCommand: CommandRunner;
+}): Promise<string> {
+  readRequiredMergeRequestIid(input.env);
+  const targetBranch =
+    readOptionalEnv(input.env, "CI_MERGE_REQUEST_TARGET_BRANCH_NAME") ??
+    readOptionalEnv(input.env, "CI_DEFAULT_BRANCH") ??
+    "main";
+  const result = await input.runCommand({
+    command: "git",
+    args: ["merge-base", `origin/${targetBranch}`, input.headSha],
+    cwd: input.cwd,
+    timeoutMs: readPositiveIntegerEnv(
+      input.env,
+      "REVIEWROUTER_GIT_DIFF_TIMEOUT_MS",
+      60_000,
+    ),
+    maxStdoutBytes: 4_096,
+    maxStderrBytes: 128_000,
+  });
+  const baseSha = result.stdout.trim();
+  if (!/^[a-fA-F0-9]{40}$/.test(baseSha)) {
+    throw new Error("gitlab_review_diff_base_sha_unavailable");
+  }
+  return baseSha;
 }
 
 async function maybeExchangeGitLabControlPlaneSession(input: {
@@ -513,7 +547,7 @@ async function maybeExchangeGitLabControlPlaneSession(input: {
       body: JSON.stringify({
         idToken,
         ...(audience ? { audience } : {}),
-        mergeRequestIid: readRequiredEnv(input.env, "CI_MERGE_REQUEST_IID"),
+        mergeRequestIid: readRequiredMergeRequestIid(input.env),
         headSha: readRequiredEnv(input.env, "CI_COMMIT_SHA"),
       }),
     },
@@ -582,6 +616,50 @@ function readRequiredEnv(
     throw new Error(`gitlab_review_env_missing:${key}`);
   }
   return value;
+}
+
+function readRequiredMergeRequestIid(
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  const mergeRequestIid = readMergeRequestIid(env);
+  if (!mergeRequestIid) {
+    throw new Error("gitlab_review_env_missing:CI_MERGE_REQUEST_IID");
+  }
+  return mergeRequestIid;
+}
+
+function readMergeRequestIid(
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const explicit =
+    readOptionalEnv(env, "REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID") ??
+    readOptionalEnv(env, "CI_MERGE_REQUEST_IID");
+  if (explicit) {
+    return explicit;
+  }
+  for (const key of ["CI_MERGE_REQUEST_REF_PATH", "CI_COMMIT_REF_NAME"]) {
+    const value = readOptionalEnv(env, key);
+    const match = value?.match(
+      /^refs\/merge-requests\/([1-9][0-9]*)\/(?:head|merge)$/,
+    );
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  const openMergeRequests = readOptionalEnv(env, "CI_OPEN_MERGE_REQUESTS");
+  if (openMergeRequests) {
+    const projectPath = readOptionalEnv(env, "CI_PROJECT_PATH");
+    const matches = openMergeRequests
+      .split(",")
+      .map((entry) => entry.trim())
+      .map((entry) => entry.match(/^(.+)!([1-9][0-9]*)$/))
+      .filter((match): match is RegExpMatchArray => Boolean(match))
+      .filter((match) => !projectPath || match[1] === projectPath);
+    if (matches.length === 1 && matches[0]?.[2]) {
+      return matches[0][2];
+    }
+  }
+  return undefined;
 }
 
 function readOptionalEnv(
