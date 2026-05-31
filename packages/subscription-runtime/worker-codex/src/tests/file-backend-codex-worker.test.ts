@@ -193,6 +193,27 @@ describe("NodeProcessRunner", () => {
     ).rejects.toThrow("node_process_runner_failed:7:bad exit");
   });
 
+  it("rejects timed-out work even when the process exits zero after SIGTERM", async () => {
+    const runner = new NodeProcessRunner({ killGraceMs: 500 });
+
+    await expect(
+      runner.run({
+        command: execPath,
+        args: [
+          "-e",
+          [
+            "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 20));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH ?? "" },
+        timeoutMs: 50,
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("node_process_runner_timeout:50");
+  });
+
   it("does not spawn work for an already-aborted signal", async () => {
     const runner = new NodeProcessRunner();
     const controller = new AbortController();
