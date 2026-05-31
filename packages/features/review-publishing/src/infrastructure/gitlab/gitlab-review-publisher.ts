@@ -187,6 +187,7 @@ export class GitLabReviewPublisher implements ReviewPublisherPort {
         existing: findExistingInlineNote({
           discussions: existingDiscussions,
           marker: effectivePlan.marker,
+          finding,
           fingerprint: finding.fingerprint,
           headSha: effectivePlan.target.headSha,
           position,
@@ -529,6 +530,7 @@ function findExistingNote(input: {
 function findExistingInlineNote(input: {
   readonly discussions: readonly GitLabDiscussion[];
   readonly marker: string;
+  readonly finding: ReviewFinding;
   readonly fingerprint: string;
   readonly headSha: string;
   readonly position: GitLabDiffPosition;
@@ -547,6 +549,14 @@ function findExistingInlineNote(input: {
     findExistingNoteAtPosition({
       discussions: input.discussions,
       markerPrefix: `<!-- ${input.marker} finding=`,
+      headSha: input.headSha,
+      position: input.position,
+      claimed: input.claimed,
+    }) ??
+    findExistingNearbyInlineNote({
+      discussions: input.discussions,
+      markerPrefix: `<!-- ${input.marker} finding=`,
+      finding: input.finding,
       headSha: input.headSha,
       position: input.position,
       claimed: input.claimed,
@@ -582,6 +592,38 @@ function findExistingNoteAtPosition(input: {
   return null;
 }
 
+function findExistingNearbyInlineNote(input: {
+  readonly discussions: readonly GitLabDiscussion[];
+  readonly markerPrefix: string;
+  readonly finding: ReviewFinding;
+  readonly headSha: string;
+  readonly position: GitLabDiffPosition;
+  readonly claimed: ReadonlySet<string>;
+}): ExistingReviewNote | null {
+  for (const discussion of input.discussions) {
+    for (const note of discussion.notes ?? []) {
+      const noteKey = `${discussion.id}:${note.id}`;
+      if (
+        input.claimed.has(noteKey) ||
+        !gitLabReviewFindingNoteMatches({
+          note,
+          markerPrefix: input.markerPrefix,
+          finding: input.finding,
+        }) ||
+        !gitLabNotePositionIsNear({
+          note,
+          headSha: input.headSha,
+          position: input.position,
+        })
+      ) {
+        continue;
+      }
+      return { discussionId: discussion.id, noteId: note.id };
+    }
+  }
+  return null;
+}
+
 function gitLabNotePositionMatches(input: {
   readonly note: GitLabDiscussionNote;
   readonly headSha: string;
@@ -598,6 +640,52 @@ function gitLabNotePositionMatches(input: {
       normalizeOptionalLine(input.position.oldLine) &&
     normalizeOptionalLine(position.new_line) ===
       normalizeOptionalLine(input.position.newLine)
+  );
+}
+
+function gitLabReviewFindingNoteMatches(input: {
+  readonly note: GitLabDiscussionNote;
+  readonly markerPrefix: string;
+  readonly finding: ReviewFinding;
+}): boolean {
+  return (
+    typeof input.note.body === "string" &&
+    input.note.body.startsWith(input.markerPrefix) &&
+    input.note.body.includes(
+      `**[${input.finding.severity}] ${input.finding.title}**`,
+    )
+  );
+}
+
+function gitLabNotePositionIsNear(input: {
+  readonly note: GitLabDiscussionNote;
+  readonly headSha: string;
+  readonly position: GitLabDiffPosition;
+}): boolean {
+  const position = input.note.position;
+  if (!position || position.head_sha?.toLowerCase() !== input.headSha) {
+    return false;
+  }
+  if (
+    position.old_path !== input.position.oldPath ||
+    position.new_path !== input.position.newPath
+  ) {
+    return false;
+  }
+  return (
+    linesAreNear(position.old_line, input.position.oldLine) ||
+    linesAreNear(position.new_line, input.position.newLine)
+  );
+}
+
+function linesAreNear(
+  existing: number | null | undefined,
+  next: number | undefined,
+): boolean {
+  return (
+    typeof existing === "number" &&
+    typeof next === "number" &&
+    Math.abs(existing - next) <= 1
   );
 }
 
