@@ -16,7 +16,15 @@ export type CodexSessionPrewarmResult = {
   readonly codexHome: string;
   readonly sessionHash: string;
   readonly reusable: boolean;
+  readonly engine?: {
+    readonly kind: string;
+    readonly reusable: boolean;
+  };
   readonly warmedAt: Date;
+  readonly warnings?: readonly {
+    readonly code: string;
+    readonly safeMessage: string;
+  }[];
 };
 
 export type CodexSessionMaterializer = {
@@ -371,6 +379,15 @@ export async function writeCodexJsonHomeSnapshot(input: {
     'sandbox_mode = "read-only"',
     'web_search = "disabled"',
     "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
     "",
     "[history]",
     'persistence = "none"',

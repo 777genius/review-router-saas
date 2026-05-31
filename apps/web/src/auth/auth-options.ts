@@ -140,7 +140,7 @@ function buildAuthProviders(): NextAuthOptions["providers"] {
         clientSecret: readOptionalAuthEnv("GITHUB_APP_CLIENT_SECRET"),
         authorization: {
           params: {
-            scope: "read:user user:email",
+            scope: "read:user user:email repo",
           },
         },
       }),

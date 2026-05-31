@@ -170,6 +170,7 @@ export class FakeProviderSessionDriver implements ProviderSessionDriver {
   readonly supportedArtifactKinds = ["json-file"] as const;
   readonly capabilities = fakeProviderCapabilities;
   refreshText = "session-v2";
+  refreshCount = 0;
   validation: SessionValidationResult = { status: "valid", warnings: [] };
   refreshedState: RefreshedSession["providerState"] = "refreshed";
 
@@ -178,6 +179,7 @@ export class FakeProviderSessionDriver implements ProviderSessionDriver {
   }
 
   async refreshSession(): Promise<RefreshedSession> {
+    this.refreshCount += 1;
     return {
       artifact: makeFakeArtifact(this.refreshText),
       providerState: this.refreshedState,

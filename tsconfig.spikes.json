@@ -22,6 +22,12 @@
       "@reviewrouter/subscription-runtime-store-local-file": [
         "./packages/subscription-runtime/store-local-file/src/index.ts"
       ],
+      "@reviewrouter/subscription-runtime-worker-core": [
+        "./packages/subscription-runtime/worker-core/src/index.ts"
+      ],
+      "@reviewrouter/subscription-runtime-worker-codex": [
+        "./packages/subscription-runtime/worker-codex/src/index.ts"
+      ],
       "@reviewrouter/platform-db": ["./packages/platform/db/src/index.ts"],
       "@reviewrouter/shared": ["./packages/shared/src/index.ts"]
     }

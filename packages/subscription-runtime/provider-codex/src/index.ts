@@ -2,6 +2,7 @@ export * from "./capabilities";
 export * from "./codex-auth-json-codec";
 export * from "./codex-cli-domain";
 export * from "./codex-cli-agent-driver";
+export * from "./codex-execution-profile";
 export * from "./codex-json-agent-driver";
 export * from "./codex-app-server-execution-engine";
 export * from "./codex-json-execution-engine";

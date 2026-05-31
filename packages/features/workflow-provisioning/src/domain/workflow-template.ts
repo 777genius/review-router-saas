@@ -138,7 +138,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
@@ -270,7 +270,7 @@ jobs:
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -382,7 +382,7 @@ jobs:
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -615,7 +615,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}

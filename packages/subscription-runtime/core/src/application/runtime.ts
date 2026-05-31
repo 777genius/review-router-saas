@@ -24,6 +24,7 @@ export type SubscriptionRuntime = {
   refreshSession(input: {
     readonly providerInstanceId: string;
     readonly runContext: RunContext;
+    readonly forceRefresh?: boolean;
   }): Promise<RefreshSessionResult>;
   runTask(input: {
     readonly providerInstanceId: string;
@@ -80,6 +81,7 @@ class RuntimeKernel {
   async refreshSession(input: {
     readonly providerInstanceId: string;
     readonly runContext: RunContext;
+    readonly forceRefresh?: boolean;
   }): Promise<RefreshSessionResult> {
     if (this.executionPlan.kind === "no-session") {
       this.emit("provider.refresh.skipped", input.runContext.runId, {
@@ -129,6 +131,33 @@ class RuntimeKernel {
     }
 
     this.deps.redactor.registerSecret(session.artifact.bytes, "session");
+
+    if (
+      this.executionPlan.kind === "rotating-session" &&
+      this.executionPlan.refresh === "lazy" &&
+      !input.forceRefresh
+    ) {
+      const freshness = await this.inspectFreshness({
+        session: session.artifact,
+        runId: input.runContext.runId,
+      });
+      if (freshness.status === "fresh") {
+        this.emit("provider.refresh.skipped", input.runContext.runId, {
+          reason: freshness.reason,
+          generation: String(session.generation),
+        });
+        return {
+          status: "skipped",
+          reason: "refresh_not_required",
+          session,
+          warnings: freshness.warnings,
+        };
+      }
+      this.emit("provider.refresh.recommended", input.runContext.runId, {
+        reason: freshness.reason,
+        generation: String(session.generation),
+      });
+    }
 
     const leaseStartedAt = this.deps.clock.monotonicMs();
     this.emit("lease.acquire.started", input.runContext.runId, {
@@ -482,6 +511,72 @@ class RuntimeKernel {
       };
     }
 
+    if (
+      this.executionPlan.kind === "rotating-session" &&
+      refresh.status === "skipped" &&
+      refresh.reason === "refresh_not_required" &&
+      refresh.session
+    ) {
+      const task = await this.runTaskWithSession({
+        session: refresh.session.artifact,
+        task: input.task,
+        runContext: input.runContext,
+      });
+      if (task.status === "failed" && shouldGuardedRefresh(task.failure)) {
+        this.emit("provider.refresh.guard.started", input.runContext.runId, {
+          reason: task.failure.code,
+        });
+        const guardedRefresh = await this.refreshSession({
+          providerInstanceId: input.providerInstanceId,
+          runContext: input.runContext,
+          forceRefresh: true,
+        });
+        if (guardedRefresh.status === "blocked") {
+          return {
+            status: "blocked",
+            reason: guardedRefresh.reason,
+            safeMessage: guardedRefresh.safeMessage,
+            warnings: guardedRefresh.warnings,
+          };
+        }
+        if (
+          guardedRefresh.status === "skipped" &&
+          guardedRefresh.reason === "stale_generation"
+        ) {
+          return {
+            status: "blocked",
+            reason: "stale_generation",
+            safeMessage: "A newer provider session generation already exists.",
+            warnings: guardedRefresh.warnings,
+          };
+        }
+        const guardedSession = sessionForPostRefreshTask(guardedRefresh);
+        if (!guardedSession) {
+          return {
+            status: "blocked",
+            reason: "provider_reconnect_required",
+            safeMessage: "Provider session is missing after guarded refresh.",
+            warnings: guardedRefresh.warnings,
+          };
+        }
+        const retriedTask = await this.runTaskWithSession({
+          session: guardedSession.artifact,
+          task: input.task,
+          runContext: input.runContext,
+        });
+        return {
+          status: "completed",
+          refresh: guardedRefresh,
+          task: retriedTask,
+        };
+      }
+      return {
+        status: "completed",
+        refresh,
+        task,
+      };
+    }
+
     const session = sessionForPostRefreshTask(refresh);
     if (!session) {
       return {
@@ -594,6 +689,43 @@ class RuntimeKernel {
       return result;
     } finally {
       await workspace.dispose?.();
+    }
+  }
+
+  private async inspectFreshness(input: {
+    readonly session: SessionArtifact;
+    readonly runId: string | undefined;
+  }) {
+    const sessionDriver = this.requireSessionDriver();
+    if (!sessionDriver.inspectSessionFreshness) {
+      return {
+        status: "refresh_recommended" as const,
+        reason: "freshness_unknown" as const,
+        warnings: [],
+      };
+    }
+    try {
+      return await sessionDriver.inspectSessionFreshness({
+        session: input.session,
+        policy: this.policy.refreshPolicy,
+        now: this.deps.clock.now(),
+        redactor: this.deps.redactor,
+      });
+    } catch (error) {
+      this.emit("provider.refresh.freshness_failed", input.runId, {
+        reason:
+          error instanceof Error ? error.message.slice(0, 120) : "unknown",
+      });
+      return {
+        status: "refresh_recommended" as const,
+        reason: "freshness_unknown" as const,
+        warnings: [
+          {
+            code: "session_freshness_unknown",
+            safeMessage: "Session freshness could not be determined.",
+          },
+        ],
+      };
     }
   }
 
@@ -782,10 +914,22 @@ function sessionForPostRefreshTask(
   if (refresh.status === "ready") {
     return refresh.session;
   }
-  if (refresh.status === "skipped" && refresh.reason === "session_unchanged") {
+  if (
+    refresh.status === "skipped" &&
+    (refresh.reason === "session_unchanged" ||
+      refresh.reason === "refresh_not_required")
+  ) {
     return refresh.session ?? null;
   }
   return null;
+}
+
+function shouldGuardedRefresh(failure: ProviderFailure): boolean {
+  return (
+    failure.code === "needs_reconnect" ||
+    failure.code === "provider_session_invalid" ||
+    failure.causeCategory === "needs_reconnect"
+  );
 }
 
 function blocked(

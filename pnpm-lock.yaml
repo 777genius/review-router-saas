@@ -716,6 +716,21 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/subscription-runtime/queue-bull:
+    dependencies:
+      '@reviewrouter/subscription-runtime-queue-core':
+        specifier: workspace:*
+        version: link:../queue-core
+      '@reviewrouter/subscription-runtime-worker-core':
+        specifier: workspace:*
+        version: link:../worker-core
+
+  packages/subscription-runtime/queue-core:
+    dependencies:
+      '@reviewrouter/subscription-runtime-worker-core':
+        specifier: workspace:*
+        version: link:../worker-core
+
   packages/subscription-runtime/runner-github-action:
     dependencies:
       '@reviewrouter/subscription-runtime-core':
@@ -732,6 +747,27 @@ importers:
         version: 0.8.4
 
   packages/subscription-runtime/store-local-file:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/subscription-runtime/worker-codex:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
+      '@reviewrouter/subscription-runtime-provider-codex':
+        specifier: workspace:*
+        version: link:../provider-codex
+      '@reviewrouter/subscription-runtime-store-local-file':
+        specifier: workspace:*
+        version: link:../store-local-file
+      '@reviewrouter/subscription-runtime-worker-core':
+        specifier: workspace:*
+        version: link:../worker-core
+
+  packages/subscription-runtime/worker-core:
     dependencies:
       '@reviewrouter/subscription-runtime-core':
         specifier: workspace:*

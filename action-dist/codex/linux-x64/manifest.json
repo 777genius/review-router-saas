@@ -1,13 +1,13 @@
 {
   "protocolVersion": 1,
   "packageName": "@openai/codex",
-  "version": "0.125.0",
+  "version": "0.135.0",
   "platform": "linux-x64",
   "archive": "codex-linux-x64.tgz",
-  "archiveSize": 82843253,
-  "archiveSha256": "211f4733719c4058f28f89e73a1282307b70449314784eab16b54973393843ff",
-  "binaryPathInArchive": "package/vendor/x86_64-unknown-linux-musl/codex/codex",
+  "archiveSize": 90523651,
+  "archiveSha256": "015b01a54ed3495190bba391096791949b68c60e0f147a88c389a042cbaacbbf",
+  "binaryPathInArchive": "package/vendor/x86_64-unknown-linux-musl/bin/codex",
   "binary": "codex",
-  "size": 205640008,
-  "sha256": "86dc42ac5823f25233d6dc4ec5ff34693afd8c32ff2d17b54c5eb0d15bc7d902"
+  "size": 223605056,
+  "sha256": "4f2033dede4ba85eafa504928d1fe089c1da2a21a2bfdad17f6e6c8c6fded6bb"
 }

@@ -219,6 +219,8 @@ const agentDriver = new CodexJsonAgentDriver({
 await agentDriver.prewarmSession({
   session: await sessionStore.readLatest(providerAccountId),
   redactor,
+  workspacePath: "/var/tmp/subscription-runtime/warmup-workspace",
+  runner,
 });
 
 // Bind this driver into the host queue processor. Do not share one warmed slot
@@ -255,6 +257,8 @@ const agentDriver = new CodexJsonAgentDriver({
   engine: new CodexAppServerExecutionEngine({
     codexBinaryPath,
     fallback,
+    executionProfile: "stateless-completion",
+    cleanThreadPrewarm: true,
   }),
   sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({
     cacheKey: `codex:${providerAccountId}`,
@@ -263,23 +267,172 @@ const agentDriver = new CodexJsonAgentDriver({
   }),
   model: "gpt-5.5",
   reasoningEffort: "low",
+  warmupPrompt: "Return exactly OK.",
 });
 
 await agentDriver.prewarmSession({
   session: await sessionStore.readLatest(providerAccountId),
   redactor,
+  workspacePath: "/var/tmp/subscription-runtime/warmup-workspace",
+  runner,
 });
 ```
 
-The host queue should set concurrency to the same value as `slots` for that
-provider account. If app-server fails for a job, the engine restarts that slot
-and falls back to `codex exec` for the same materialized session.
+With `workspacePath` and `runner`, `prewarmSession` starts the reusable
+`codex app-server` for the materialized session. With `warmupPrompt`, it also
+runs a cheap hidden turn to warm the model path before the first user job. The
+host queue should set concurrency to the same value as the number of warmed
+worker slots for that provider account. If app-server fails for a job, the
+engine restarts that slot and falls back to `codex exec` for the same
+materialized session.
 
 This is the intended integration shape for services such as `openai-service`:
 the service keeps its existing Nest/Bull/queue stack, while the subscription
 runtime provides the warmed Codex session and execution driver. The cache is not
 durable storage; session persistence and refresh policy still belong to the
 selected `SessionStorePort` and provider session driver.
+
+## Production Worker Package API
+
+The spike worker has been promoted into package APIs:
+
+- `@reviewrouter/subscription-runtime-worker-core` - provider-neutral worker
+  lifecycle and bounded slot pool.
+- `@reviewrouter/subscription-runtime-worker-codex` - file-backend Codex worker
+  using local encrypted storage, local file leases, lazy refresh, app-server,
+  and `codex exec` fallback.
+- `@reviewrouter/subscription-runtime-queue-core` - host-neutral queue port,
+  retry/backoff/idempotency, in-memory contract implementation, and queue
+  processor.
+- `@reviewrouter/subscription-runtime-queue-bull` - Bull/BullMQ-compatible
+  adapter that does not import Bull. The host app provides its queue instance.
+
+```ts
+import { BoundedSubscriptionWorkerPool } from "@reviewrouter/subscription-runtime-worker-core";
+import { FileBackendCodexWorker } from "@reviewrouter/subscription-runtime-worker-codex";
+
+const pool = new BoundedSubscriptionWorkerPool({
+  poolId: "codex-ratings",
+  slots: 4,
+  prewarmOnStart: true,
+  workerFactory: ({ workerId }) =>
+    new FileBackendCodexWorker({
+      workerId,
+      providerInstanceId: "codex:ratings",
+      stateRootDir: "/var/lib/subscription-runtime",
+      // Pin a recent Codex binary. Do not rely on a stale global PATH install.
+      codexBinaryPath: "/opt/reviewrouter/codex-0.135.0/codex",
+      encryptionKey: fileKey32Bytes,
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+      executionProfile: "stateless-completion",
+      cleanThreadPrewarm: true,
+      warmupPrompt: "Return exactly OK.",
+      sessionCacheSlots: 1,
+      refreshFreshnessMs: 15 * 60_000,
+      maxSessionAgeMs: 24 * 60 * 60_000,
+    }),
+});
+
+await pool.start();
+
+const result = await pool.run({
+  runId: "match-rating-123",
+  prompt: "Calculate this player rating and return JSON only.",
+  outputSchemaName: "rating-v1",
+});
+```
+
+The Codex adapters write a minimal backend `CODEX_HOME` by default:
+subscription auth is file-backed, web search and response storage are disabled,
+shell snapshot is disabled, and optional UI/app/memory features are disabled.
+Keep those defaults for background workers; enabling interactive Codex features
+adds startup and prompt overhead.
+
+For API-like batch workloads such as match rating, use
+`executionProfile: "stateless-completion"`. It sends minimal app-server
+`baseInstructions`, disables tools, keeps history off, and treats every job as
+a clean prompt-response operation.
+
+When `executionProfile` is omitted, direct app-server and file-backend workers
+use the compatible `subscription-worker` profile so repository-aware jobs are
+not accidentally told to avoid file inspection. Future chat/dialog workloads
+should add a separate session mode based on
+`thread/resume` or `thread/fork`; do not use that path for independent match
+scoring jobs.
+
+For an existing Bull/BullMQ deployment, keep the queue in the host service and
+only map jobs into the worker pool:
+
+```ts
+import { createBullSubscriptionProcessor } from "@reviewrouter/subscription-runtime-queue-bull";
+
+const processor = createBullSubscriptionProcessor({
+  workerPool: pool,
+});
+
+// new Worker("subscription-runtime", processor, { connection, concurrency: 4 })
+```
+
+If you enqueue through `BullSubscriptionTaskQueue`, also process through
+`createBullSubscriptionProcessor`. The queue adapter stores subscription
+runtime metadata inside the Bull payload when an explicit `idempotencyKey` is
+present, and the processor unwraps it before calling the worker pool. This
+keeps `taskId` available as Bull's `jobId` while preserving the real worker
+idempotency key.
+
+Core does not know about Nest, Bull, Prisma, or app-specific schemas. That keeps
+the library reusable for Codex today and Claude or another subscription agent
+later.
+
+## Temporary Public GitHub Main Install
+
+For early backend integrations where registry auth is not worth the friction,
+publish generated public mirrors from this monorepo and install them directly
+from GitHub `main`.
+
+Run a dry run first:
+
+```bash
+pnpm subscription-runtime:sync-public-mirrors
+```
+
+Create or update public mirror repositories:
+
+```bash
+pnpm subscription-runtime:sync-public-mirrors -- --push
+```
+
+The sync script builds each package, copies only the package source/dist into a
+generated repository, rewrites `workspace:*` dependencies to public GitHub
+dependencies, and force-pushes the mirror `main` branch. Do not edit mirror
+repositories directly.
+
+Backend services can then install the packages without GitHub Packages or npm
+registry auth:
+
+```json
+{
+  "dependencies": {
+    "@reviewrouter/subscription-runtime-worker-codex": "git+https://github.com/777genius/subscription-runtime-worker-codex.git#main",
+    "@reviewrouter/subscription-runtime-queue-bull": "git+https://github.com/777genius/subscription-runtime-queue-bull.git#main"
+  }
+}
+```
+
+This is intentionally a convenience path, not the final release process. It
+tracks `main`, so every install can pick up new code. For stable production
+rollouts, pin a commit SHA or move to versioned packages.
+
+Backend mode uses lazy refresh. A fresh session runs immediately. A stale or
+nearly expired session refreshes before the task. If the first task fails with
+an auth-shaped failure, the runtime performs one guarded refresh and retries
+once, then returns the real provider failure.
+
+Load benchmarking lives in
+[`../../spikes/subscription-runtime-worker-benchmark`](../../spikes/subscription-runtime-worker-benchmark).
+Run `pnpm subscription-runtime:worker-benchmark` with a local Codex `auth.json`
+and file key before claiming a slot count as production capacity.
 
 Adapters publish manifests so host apps can validate compatibility before any
 session bytes are read. That is required for future providers like Claude,

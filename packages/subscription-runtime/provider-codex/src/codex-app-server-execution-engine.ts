@@ -7,7 +7,13 @@ import type {
 } from "@reviewrouter/subscription-runtime-core";
 import { pruneCodexChildEnv } from "./codex-cli-domain";
 import type {
+  CodexExecutionProfile,
+  ResolvedCodexExecutionProfile,
+} from "./codex-execution-profile";
+import { resolveCodexExecutionProfile } from "./codex-execution-profile";
+import type {
   CodexExecutionEngine,
+  CodexExecutionPrewarmResult,
   CodexExecutionResult,
   CodexMaterializedSession,
   CodexReasoningEffort,
@@ -20,6 +26,8 @@ export type CodexAppServerExecutionEngineOptions = {
   readonly maxOutputBytes?: number;
   readonly fallback?: CodexExecutionEngine;
   readonly processFactory?: CodexAppServerProcessFactory;
+  readonly executionProfile?: CodexExecutionProfile;
+  readonly cleanThreadPrewarm?: boolean;
 };
 
 export type CodexAppServerProcessFactory = (input: {
@@ -62,6 +70,13 @@ type AppServerWarning = {
   readonly safeMessage: string;
 };
 
+type PreparedThread = {
+  readonly threadId: string;
+  readonly workspacePath: string;
+  readonly model: string;
+  readonly reasoningEffort: CodexReasoningEffort;
+};
+
 const defaultTimeoutMs = 10 * 60 * 1000;
 const defaultMaxOutputBytes = 512 * 1024;
 
@@ -74,12 +89,17 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     requiresSchemaFile: false,
   } as const;
 
+  private readonly executionProfile: ResolvedCodexExecutionProfile;
+
   private readonly slots = new Map<string, AppServerSlot>();
 
   constructor(private readonly options: CodexAppServerExecutionEngineOptions) {
     if (!options.codexBinaryPath.trim()) {
       throw new Error("codex_app_server_binary_required");
     }
+    this.executionProfile = resolveCodexExecutionProfile(
+      options.executionProfile,
+    );
   }
 
   async run(input: {
@@ -104,6 +124,7 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       return result;
     } catch (error) {
       await this.disposeSessionSlot(input.session);
+      if (input.abortSignal.aborted || isAbortLikeError(error)) throw error;
       if (!this.options.fallback) throw error;
 
       const fallbackResult = await this.options.fallback.run(input);
@@ -119,6 +140,60 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
     this.slots.clear();
     await Promise.all(slots.map((slot) => slot.client.stop()));
     await this.options.fallback?.dispose?.();
+  }
+
+  async prewarm(input: {
+    readonly session: CodexMaterializedSession;
+    readonly workspacePath: string;
+    readonly runner: RunnerPort;
+    readonly redactor: RedactorPort;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly warmupPrompt?: string;
+    readonly abortSignal: AbortSignal;
+  }): Promise<CodexExecutionPrewarmResult> {
+    try {
+      const slot = await this.ensureSlot(input);
+      const warmupPrompt = input.warmupPrompt?.trim();
+      const warnings: AppServerWarning[] = [];
+      if (warmupPrompt) {
+        const result = await slot.client.runCleanTurn({
+          prompt: warmupPrompt,
+          workspacePath: input.workspacePath,
+          model: input.model,
+          reasoningEffort: input.reasoningEffort,
+          timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
+          abortSignal: input.abortSignal,
+          prepareNext: false,
+        });
+        const outputText = input.redactor.redact(result.outputText);
+        input.redactor.assertNoKnownSecret(
+          outputText,
+          "codex-app-server-prewarm-output",
+        );
+        assertOutputWithinBounds(outputText, this.options.maxOutputBytes);
+        warnings.push(...result.warnings);
+      }
+
+      warnings.push(
+        ...(await slot.client.prewarmCleanThread({
+          workspacePath: input.workspacePath,
+          model: input.model,
+          reasoningEffort: input.reasoningEffort,
+          timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
+          abortSignal: input.abortSignal,
+        })),
+      );
+      return {
+        kind: this.kind,
+        reusable: true,
+        warmedAt: new Date(),
+        warnings,
+      };
+    } catch (error) {
+      await this.disposeSessionSlot(input.session);
+      throw error;
+    }
   }
 
   private async runViaAppServer(input: {
@@ -174,6 +249,8 @@ export class CodexAppServerExecutionEngine implements CodexExecutionEngine {
       processFactory: this.options.processFactory ?? spawnCodexAppServerProcess,
       session: input.session,
       workspacePath: input.workspacePath,
+      executionProfile: this.executionProfile,
+      cleanThreadPrewarm: this.options.cleanThreadPrewarm ?? true,
       timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
       abortSignal: input.abortSignal,
     });
@@ -220,6 +297,9 @@ class CodexAppServerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly turns = new Map<string, TurnState>();
   private readonly serverRequests: AppServerWarning[] = [];
+  private readonly backgroundWarnings: AppServerWarning[] = [];
+  private preparedThread: PreparedThread | null = null;
+  private prepareThreadInFlight: Promise<void> | null = null;
   private exited = false;
 
   constructor(
@@ -229,6 +309,8 @@ class CodexAppServerClient {
       readonly processFactory: CodexAppServerProcessFactory;
       readonly session: CodexMaterializedSession;
       readonly workspacePath: string;
+      readonly executionProfile: ResolvedCodexExecutionProfile;
+      readonly cleanThreadPrewarm: boolean;
       readonly timeoutMs: number;
       readonly abortSignal: AbortSignal;
     },
@@ -244,7 +326,7 @@ class CodexAppServerClient {
     this.child = this.options.processFactory({
       command: this.options.codexBinaryPath,
       args: ["app-server", "--listen", "stdio://"],
-      cwd: this.options.workspacePath,
+      cwd: this.options.session.home,
       env,
     });
     this.child.stdout.setEncoding("utf8");
@@ -299,21 +381,55 @@ class CodexAppServerClient {
     readonly reasoningEffort: CodexReasoningEffort;
     readonly timeoutMs: number;
     readonly abortSignal: AbortSignal;
+    readonly prepareNext?: boolean;
   }): Promise<{
     readonly outputText: string;
     readonly warnings: readonly AppServerWarning[];
   }> {
-    this.serverRequests.length = 0;
-    const threadId = await this.startThread(input);
-    const turn = await this.startTurn({ ...input, threadId });
+    const warnings = this.drainWarnings();
+    const preparedThread = this.takePreparedThread(input);
+    const threadId =
+      preparedThread?.threadId ?? (await this.startThread(input));
+    const turn = await this.startTurn({ ...input, threadId }).catch(
+      async (error: unknown) => {
+        if (!preparedThread) throw error;
+        warnings.push({
+          code: "codex_app_server_prepared_thread_failed",
+          safeMessage:
+            "Codex app-server prepared thread failed; retried with a fresh thread.",
+        });
+        const retryThreadId = await this.startThread(input);
+        return await this.startTurn({ ...input, threadId: retryThreadId });
+      },
+    );
     if (turn.error) throw turn.error;
     if (!turn.outputText.trim()) {
       throw new Error("codex_app_server_final_message_missing");
     }
+    if (input.prepareNext ?? true) {
+      this.prepareCleanThreadBestEffort(input);
+    }
+    warnings.push(...this.drainWarnings());
     return {
       outputText: turn.outputText,
-      warnings: [...this.serverRequests],
+      warnings,
     };
+  }
+
+  async prewarmCleanThread(input: {
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly timeoutMs: number;
+    readonly abortSignal: AbortSignal;
+  }): Promise<readonly AppServerWarning[]> {
+    if (!this.cleanThreadPrewarmEnabled()) return [];
+    try {
+      await this.prepareCleanThreadNow(input);
+      return this.drainWarnings();
+    } catch (error) {
+      return [cleanThreadPrewarmWarning(error)];
+    }
   }
 
   async stop(): Promise<void> {
@@ -333,6 +449,91 @@ class CodexAppServerClient {
       clearTimeout(timeout);
       signalChildGroup(child, "SIGKILL");
     }
+  }
+
+  private drainWarnings(): AppServerWarning[] {
+    const warnings = [...this.backgroundWarnings, ...this.serverRequests];
+    this.backgroundWarnings.length = 0;
+    this.serverRequests.length = 0;
+    return warnings;
+  }
+
+  private takePreparedThread(input: {
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+  }): PreparedThread | null {
+    const prepared = this.preparedThread;
+    if (!prepared) return null;
+    this.preparedThread = null;
+    if (
+      prepared.workspacePath !== input.workspacePath ||
+      prepared.model !== input.model ||
+      prepared.reasoningEffort !== input.reasoningEffort
+    ) {
+      this.backgroundWarnings.push({
+        code: "codex_app_server_prepared_thread_discarded",
+        safeMessage:
+          "Codex app-server discarded a prepared thread because the next task used a different runtime context.",
+      });
+      return null;
+    }
+    return prepared;
+  }
+
+  private prepareCleanThreadBestEffort(input: {
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly timeoutMs: number;
+    readonly abortSignal: AbortSignal;
+  }): void {
+    if (!this.cleanThreadPrewarmEnabled() || input.abortSignal.aborted) return;
+    void this.prepareCleanThreadNow(input).catch((error: unknown) => {
+      this.backgroundWarnings.push(cleanThreadPrewarmWarning(error));
+    });
+  }
+
+  private async prepareCleanThreadNow(input: {
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+    readonly timeoutMs: number;
+    readonly abortSignal: AbortSignal;
+  }): Promise<void> {
+    if (!this.cleanThreadPrewarmEnabled()) return;
+    if (this.preparedThread && this.preparedThreadMatches(input)) return;
+    if (this.prepareThreadInFlight) return await this.prepareThreadInFlight;
+
+    this.prepareThreadInFlight = this.startThread(input)
+      .then((threadId) => {
+        this.preparedThread = {
+          threadId,
+          workspacePath: input.workspacePath,
+          model: input.model,
+          reasoningEffort: input.reasoningEffort,
+        };
+      })
+      .finally(() => {
+        this.prepareThreadInFlight = null;
+      });
+    await this.prepareThreadInFlight;
+  }
+
+  private preparedThreadMatches(input: {
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: CodexReasoningEffort;
+  }): boolean {
+    return (
+      this.preparedThread?.workspacePath === input.workspacePath &&
+      this.preparedThread.model === input.model &&
+      this.preparedThread.reasoningEffort === input.reasoningEffort
+    );
+  }
+
+  private cleanThreadPrewarmEnabled(): boolean {
+    return this.options.cleanThreadPrewarm ?? true;
   }
 
   private async startThread(input: {
@@ -356,9 +557,18 @@ class CodexAppServerClient {
         permissions: null,
         config: {
           model_reasoning_effort: input.reasoningEffort,
+          model_verbosity: "low",
           approval_policy: "never",
           sandbox_mode: "read-only",
           web_search: "disabled",
+          features: {
+            apps: false,
+            hooks: false,
+            memories: false,
+            multi_agent: false,
+            shell_snapshot: false,
+            skill_mcp_dependency_install: false,
+          },
           apps: {
             _default: {
               enabled: false,
@@ -368,9 +578,9 @@ class CodexAppServerClient {
           },
         },
         serviceName: "review-router-subscription-runtime",
-        baseInstructions: null,
+        baseInstructions: this.options.executionProfile.baseInstructions,
         developerInstructions:
-          "You are a non-interactive subscription runtime worker. Do not run tools unless explicitly required by the prompt. Return the requested final answer only.",
+          this.options.executionProfile.developerInstructions,
         personality: null,
         ephemeral: true,
         sessionStartSource: "startup",
@@ -581,10 +791,18 @@ class CodexAppServerClient {
     }
     if (record.method === "error") {
       const turnId = stringField(params, "turnId");
-      const turn = this.ensureTurn(turnId);
-      turn.error = new Error(
-        `codex_app_server_error:${safeMessage(params?.error)}`,
+      const error = new Error(
+        `codex_app_server_error:${safeMessage(params?.error ?? params ?? record)}`,
       );
+      if (!turnId) {
+        for (const turn of this.turns.values()) {
+          turn.error = error;
+          this.resolveTurn(turn);
+        }
+        return;
+      }
+      const turn = this.ensureTurn(turnId);
+      turn.error = error;
       this.resolveTurn(turn);
     }
   }
@@ -649,6 +867,13 @@ function appServerFallbackWarning(error: unknown): AppServerWarning {
   return {
     code: "codex_app_server_fallback",
     safeMessage: `Codex app-server failed; used codex exec fallback: ${safeMessage(error)}`,
+  };
+}
+
+function cleanThreadPrewarmWarning(error: unknown): AppServerWarning {
+  return {
+    code: "codex_app_server_clean_thread_prewarm_failed",
+    safeMessage: `Codex app-server clean thread prewarm failed: ${safeMessage(error)}`,
   };
 }
 
@@ -720,10 +945,20 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new Error("codex_app_server_aborted");
 }
 
+function isAbortLikeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes("codex_app_server_aborted") ||
+      error.message.includes("codex_app_server_turn_aborted") ||
+      error.message.includes("node_process_runner_aborted"))
+  );
+}
+
 function safeMessage(error: unknown): string {
   if (error instanceof Error) return error.message.slice(-1000);
   if (typeof error === "string") return error.slice(-1000);
   const record = readRecord(error);
+  if (typeof record?.message === "string") return record.message.slice(-1000);
   const nested = record ? readRecord(record.error) : null;
   if (typeof nested?.message === "string") return nested.message.slice(-1000);
   return "unknown";

@@ -23,6 +23,12 @@ export type CodexAuthJsonValidationResult = {
   readonly warnings: readonly string[];
 };
 
+export type CodexAuthJsonFreshness = {
+  readonly lastRefreshAt: Date | null;
+  readonly expiresAt: Date | null;
+  readonly warnings: readonly string[];
+};
+
 export function validateCodexAuthJsonBytes(input: {
   readonly authJsonBytes: string;
   readonly maxBytes?: number;
@@ -74,6 +80,31 @@ export function compactCodexAuthJson(input: {
     throw new Error("codex_auth_json_too_large_after_compact");
   }
   return { compactAuthJsonBytes, byteLength };
+}
+
+export function readCodexAuthJsonFreshness(input: {
+  readonly authJsonBytes: string;
+  readonly now?: Date;
+}): CodexAuthJsonFreshness {
+  const validation = validateCodexAuthJsonBytes({
+    authJsonBytes: input.authJsonBytes,
+    ...(input.now ? { now: input.now } : {}),
+  });
+  const warnings: string[] = [...validation.warnings];
+  const lastRefreshAt = parseOptionalDate(
+    validation.parsed.last_refresh,
+    "last_refresh_unparseable",
+    warnings,
+  );
+  const expiresAt = parseOptionalExpiry(
+    validation.parsed.tokens.expiry,
+    warnings,
+  );
+  return {
+    lastRefreshAt,
+    expiresAt,
+    warnings,
+  };
 }
 
 export function classifyCodexRuntimeFailure(message: string): string {
@@ -193,6 +224,13 @@ function parseCodexAuthJson(value: unknown): ValidatedCodexAuthJson {
   ) {
     throw new Error("codex_auth_json_invalid_last_refresh");
   }
+  if (
+    value.tokens.expiry !== undefined &&
+    typeof value.tokens.expiry !== "string" &&
+    typeof value.tokens.expiry !== "number"
+  ) {
+    throw new Error("codex_auth_json_invalid_expiry");
+  }
   return value as ValidatedCodexAuthJson;
 }
 
@@ -216,6 +254,42 @@ function collectCodexAuthJsonWarnings(input: {
     warnings.push("last_refresh_stale");
   }
   return warnings;
+}
+
+function parseOptionalDate(
+  value: string | undefined,
+  warning: string,
+  warnings: string[],
+): Date | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    if (!warnings.includes(warning)) warnings.push(warning);
+    return null;
+  }
+  return new Date(parsed);
+}
+
+function parseOptionalExpiry(
+  value: string | number | undefined,
+  warnings: string[],
+): Date | null {
+  if (value === undefined) return null;
+  const ms =
+    typeof value === "number"
+      ? normalizeEpochToMs(value)
+      : Number.isFinite(Number(value))
+        ? normalizeEpochToMs(Number(value))
+        : Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    warnings.push("expiry_unparseable");
+    return null;
+  }
+  return new Date(ms);
+}
+
+function normalizeEpochToMs(value: number): number {
+  return value < 10_000_000_000 ? value * 1000 : value;
 }
 
 function shouldDropChildEnvKey(key: string): boolean {
