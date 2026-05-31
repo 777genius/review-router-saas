@@ -182,6 +182,7 @@ type LocalProviderProxyFactory = (input: {
 
 type FullReviewRuntimeRunner = (input: {
   readonly inputs: ActionInputs;
+  readonly leaseId: string;
   readonly codexBinaryPath: string;
   readonly env: NodeJS.ProcessEnv;
   readonly io: ActionIO;
@@ -370,6 +371,7 @@ export async function runCodexRotatingGitHubAction(
         try {
           await fullReviewRuntimeRunner({
             inputs,
+            leaseId: prelease.leaseId,
             codexBinaryPath,
             env,
             io,
@@ -1675,6 +1677,7 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input: {
 
 async function runFullReviewRouterRuntime(input: {
   readonly inputs: ActionInputs;
+  readonly leaseId: string;
   readonly codexBinaryPath: string;
   readonly env: NodeJS.ProcessEnv;
   readonly io: ActionIO;
@@ -1696,6 +1699,7 @@ async function runFullReviewRouterRuntime(input: {
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
       inputs: input.inputs,
+      leaseId: input.leaseId,
       event: input.event,
       tempHome: input.tempHome,
       tempCodexHome: input.tempCodexHome,
@@ -1728,6 +1732,7 @@ async function runFullReviewRouterRuntime(input: {
 function buildFullReviewRuntimeEnv(input: {
   readonly sourceEnv: NodeJS.ProcessEnv;
   readonly inputs: ActionInputs;
+  readonly leaseId: string;
   readonly event: PullRequestEvent;
   readonly tempHome: string;
   readonly tempCodexHome: string;
@@ -1764,6 +1769,10 @@ function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
     REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
+    REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: input.leaseId,
+    REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID:
+      input.inputs.providerInstanceId,
     REVIEWROUTER_SCM_PROVIDER: "github",
     REVIEWROUTER_FINDINGS_ARTIFACT_PATH:
       providerNeutralReviewFindingsArtifactFileName,

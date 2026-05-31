@@ -21,6 +21,12 @@ type CliStream = {
 
 type ReadFileLike = (path: string, encoding: "utf8") => Promise<string>;
 
+type GitHubCommentTokenResponse = {
+  readonly token?: unknown;
+  readonly repository?: unknown;
+  readonly permissions?: unknown;
+};
+
 export type ReviewPublisherCliInput = {
   readonly argv?: readonly string[] | undefined;
   readonly env?: Readonly<Record<string, string | undefined>> | undefined;
@@ -251,6 +257,7 @@ function buildPublisherFromEnv(input: {
         token:
           readOptionalEnv(input.env, "REVIEWROUTER_GITHUB_TOKEN") ??
           readRequiredEnv(input.env, "GITHUB_TOKEN"),
+        ...optionalGitHubTokenRefresh(input.env, input.fetchImpl),
         ...(readOptionalEnv(input.env, "REVIEWROUTER_GITHUB_API_BASE_URL")
           ? {
               apiBaseUrl: readOptionalEnv(
@@ -275,6 +282,70 @@ function buildPublisherFromEnv(input: {
         fetchImpl: input.fetchImpl,
       });
   }
+}
+
+function optionalGitHubTokenRefresh(
+  env: Readonly<Record<string, string | undefined>>,
+  fetchImpl: FetchLike,
+):
+  | {
+      readonly tokenRefresh: { refreshToken(): Promise<string> };
+    }
+  | Record<string, never> {
+  const refreshUrl = readOptionalEnv(
+    env,
+    "REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL",
+  );
+  const leaseId = readOptionalEnv(env, "REVIEWROUTER_COMMENT_TOKEN_LEASE_ID");
+  const providerInstanceId = readOptionalEnv(
+    env,
+    "REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID",
+  );
+  if (!refreshUrl && !leaseId && !providerInstanceId) return {};
+  if (!refreshUrl || !leaseId || !providerInstanceId) {
+    throw new Error("github_comment_token_refresh_config_incomplete");
+  }
+
+  return {
+    tokenRefresh: {
+      refreshToken: () =>
+        refreshGitHubCommentToken({
+          fetchImpl,
+          refreshUrl,
+          leaseId,
+          providerInstanceId,
+        }),
+    },
+  };
+}
+
+async function refreshGitHubCommentToken(input: {
+  readonly fetchImpl: FetchLike;
+  readonly refreshUrl: string;
+  readonly leaseId: string;
+  readonly providerInstanceId: string;
+}): Promise<string> {
+  const response = await input.fetchImpl(input.refreshUrl, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      leaseId: input.leaseId,
+      providerInstanceId: input.providerInstanceId,
+      authCleared: true,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`github_comment_token_refresh_failed:${response.status}`);
+  }
+
+  const payload = (await response.json()) as GitHubCommentTokenResponse;
+  if (typeof payload.token !== "string" || payload.token.trim().length === 0) {
+    throw new Error("github_comment_token_refresh_invalid");
+  }
+  return payload.token;
 }
 
 function readMaxInlineCommentsFromEnv(

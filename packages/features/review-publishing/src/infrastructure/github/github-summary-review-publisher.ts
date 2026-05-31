@@ -17,6 +17,7 @@ export type GitHubSummaryReviewPublisherOptions = {
   readonly token: string;
   readonly apiBaseUrl?: string | undefined;
   readonly fetchImpl?: FetchLike | undefined;
+  readonly tokenRefresh?: GitHubCommentTokenRefresh | undefined;
 };
 
 type GitHubIssueComment = {
@@ -24,12 +25,18 @@ type GitHubIssueComment = {
   readonly body?: string | null | undefined;
 };
 
+export type GitHubCommentTokenRefresh = {
+  refreshToken(): Promise<string>;
+};
+
 const defaultGitHubApiBaseUrl = "https://api.github.com";
 
 export class GitHubSummaryReviewPublisher implements ReviewPublisherPort {
-  private readonly token: string;
+  private token: string;
   private readonly apiBaseUrl: string;
   private readonly fetchImpl: FetchLike;
+  private readonly tokenRefresh: GitHubCommentTokenRefresh | null;
+  private tokenRefreshAttempted = false;
 
   constructor(options: GitHubSummaryReviewPublisherOptions) {
     const token = options.token.trim();
@@ -42,6 +49,7 @@ export class GitHubSummaryReviewPublisher implements ReviewPublisherPort {
       "",
     );
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.tokenRefresh = options.tokenRefresh ?? null;
   }
 
   async publishReview(plan: ReviewPublicationPlan) {
@@ -148,6 +156,32 @@ export class GitHubSummaryReviewPublisher implements ReviewPublisherPort {
     readonly label: string;
     readonly body?: string | undefined;
   }): Promise<T> {
+    const response = await this.fetchJson(input);
+    if (
+      response.status === 401 &&
+      this.tokenRefresh &&
+      !this.tokenRefreshAttempted
+    ) {
+      this.tokenRefreshAttempted = true;
+      this.token = await this.refreshToken();
+      const retryResponse = await this.fetchJson(input);
+      if (!retryResponse.ok) {
+        throw new Error(`${input.label}_failed:${retryResponse.status}`);
+      }
+      return (await retryResponse.json()) as T;
+    }
+
+    if (!response.ok) {
+      throw new Error(`${input.label}_failed:${response.status}`);
+    }
+    return (await response.json()) as T;
+  }
+
+  private async fetchJson(input: {
+    readonly method: string;
+    readonly path: string;
+    readonly body?: string | undefined;
+  }): Promise<Response> {
     const response = await this.fetchImpl(`${this.apiBaseUrl}${input.path}`, {
       method: input.method,
       headers: {
@@ -158,10 +192,15 @@ export class GitHubSummaryReviewPublisher implements ReviewPublisherPort {
       },
       ...(input.body ? { body: input.body } : {}),
     });
-    if (!response.ok) {
-      throw new Error(`${input.label}_failed:${response.status}`);
+    return response;
+  }
+
+  private async refreshToken(): Promise<string> {
+    const token = (await this.tokenRefresh?.refreshToken())?.trim() ?? "";
+    if (!token) {
+      throw new Error("github_review_publisher_token_refresh_invalid");
     }
-    return (await response.json()) as T;
+    return token;
   }
 }
 
