@@ -184,7 +184,10 @@ function extractFinalAssistantText(stdout: string): string {
     try {
       event = JSON.parse(trimmed);
     } catch (error) {
-      throw new Error("codex_json_event_invalid", { cause: error });
+      if (looksLikeJsonLine(trimmed)) {
+        throw new Error("codex_json_event_invalid", { cause: error });
+      }
+      continue;
     }
 
     const text = extractTextFromEvent(event);
@@ -197,6 +200,10 @@ function extractFinalAssistantText(stdout: string): string {
     throw new Error("codex_json_final_message_missing");
   }
   return finalText;
+}
+
+function looksLikeJsonLine(value: string): boolean {
+  return value.startsWith("{") || value.startsWith("[");
 }
 
 function extractTextFromEvent(event: unknown): string | null {

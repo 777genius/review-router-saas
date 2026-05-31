@@ -32,6 +32,7 @@ import {
   validateCodexSessionArtifact,
 } from "../index";
 import type { CodexExecutionEngine } from "../codex-json-execution-engine";
+import type { CodexSessionMaterializer } from "../codex-session-materializer";
 import { classifyCodexRuntimeFailure } from "../codex-cli-domain";
 import { pruneCodexChildEnv } from "../codex-cli-domain";
 import { isTransientCodexTempCleanupError } from "../codex-cli-temp-cleanup";
@@ -121,6 +122,9 @@ describe("Codex provider adapter", () => {
   it("applies the provider-owned environment policy before Codex subprocesses", () => {
     const env = pruneCodexChildEnv({
       PATH: "/usr/bin",
+      HOME: "/tmp/home",
+      CI: "true",
+      CODEX_HOME: "/tmp/codex-home",
       GITHUB_TOKEN: "must-not-pass",
       OPENAI_API_KEY: "must-not-pass",
       REVIEWROUTER_CODEX_AUTH_JSON: "must-not-pass",
@@ -129,7 +133,9 @@ describe("Codex provider adapter", () => {
 
     expect(env).toEqual({
       PATH: "/usr/bin",
-      SAFE_PUBLIC_FLAG: "ok",
+      HOME: "/tmp/home",
+      CI: "true",
+      CODEX_HOME: "/tmp/codex-home",
     });
   });
 
@@ -286,6 +292,115 @@ describe("Codex provider adapter", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("ignores non-JSON stdout lines before Codex JSON events", async () => {
+    const runner = new StaticRunner(
+      [
+        "warning: codex wrote a non-json diagnostic",
+        JSON.stringify({ type: "agent_message", message: "json output" }),
+        "",
+      ].join("\n"),
+    );
+    const workspace = await mkdtemp(join(tmpdir(), "codex-json-agent-test-"));
+    const driver = new CodexJsonAgentDriver({
+      engine: new PackagedCodexJsonExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "inspect diff" },
+        workspace: { path: workspace },
+        runner,
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "completed",
+        outputText: "json output",
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("fails malformed JSON-looking Codex JSON events", async () => {
+    const runner = new StaticRunner(
+      [
+        JSON.stringify({ type: "agent_message", message: "partial output" }),
+        '{"type":"agent_message"',
+        "",
+      ].join("\n"),
+    );
+    const workspace = await mkdtemp(join(tmpdir(), "codex-json-agent-test-"));
+    const driver = new CodexJsonAgentDriver({
+      engine: new PackagedCodexJsonExecutionEngine({
+        codexBinaryPath: "/bin/codex-test",
+      }),
+      model: "gpt-test",
+      reasoningEffort: "low",
+    });
+
+    try {
+      const result = await driver.runTask({
+        session: sessionArtifactFromCodexAuthJson(validAuthJson),
+        task: { kind: "review", prompt: "inspect diff" },
+        workspace: { path: workspace },
+        runner,
+        redactor: new DefaultRedactor(),
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        status: "failed",
+        failure: {
+          code: "unknown_runtime_failure",
+        },
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("disposes the engine and materializer even when one disposal fails", async () => {
+    let materializerDisposed = false;
+    const driver = new CodexJsonAgentDriver({
+      engine: {
+        kind: "packaged-json",
+        capabilities: {
+          supportsStructuredOutput: true,
+          supportsJsonEvents: true,
+          supportsThreadResume: false,
+          requiresSchemaFile: false,
+        },
+        async run() {
+          return { outputText: "unused", warnings: [] };
+        },
+        dispose(): Promise<void> {
+          throw new Error("engine_dispose_failed");
+        },
+      },
+      sessionMaterializer: {
+        mode: "ephemeral",
+        async materialize() {
+          throw new Error("unused");
+        },
+        async dispose() {
+          materializerDisposed = true;
+        },
+      } satisfies CodexSessionMaterializer,
+    });
+
+    const error = await driver.dispose().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error).toMatchObject({ code: "codex_json_agent_dispose_failed" });
+    expect(materializerDisposed).toBe(true);
   });
 
   it("runs Codex JSON tasks through reusable app-server slots", async () => {

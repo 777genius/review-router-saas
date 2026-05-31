@@ -243,6 +243,7 @@ export type ProviderFailureCode =
   | "permission_required"
   | "provider_session_invalid"
   | "provider_output_invalid"
+  | "task_mode_unsupported"
   | "stale_generation"
   | "backend_unavailable"
   | "unknown_runtime_failure";

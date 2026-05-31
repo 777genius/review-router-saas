@@ -906,7 +906,7 @@ var RuntimeKernel = class {
       return null;
     }
     return failedTask(
-      "provider_output_invalid",
+      "task_mode_unsupported",
       "Selected agent does not support the requested task mode."
     );
   }
@@ -1161,7 +1161,7 @@ function pruneCodexChildEnv(env) {
   const allowed = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === void 0) continue;
-    if (shouldDropChildEnvKey(key)) continue;
+    if (!shouldAllowChildEnvKey(key)) continue;
     allowed[key] = value;
   }
   return allowed;
@@ -1231,6 +1231,17 @@ function collectCodexAuthJsonWarnings(input) {
 }
 function shouldDropChildEnvKey(key) {
   return codexEnvironmentPolicy.denylist.some(
+    (pattern) => matchesEnvPattern(key, pattern)
+  );
+}
+function shouldAllowChildEnvKey(key) {
+  if (shouldDropChildEnvKey(key)) {
+    return false;
+  }
+  if (codexEnvironmentPolicy.inheritHostEnvironment) {
+    return true;
+  }
+  return codexEnvironmentPolicy.allowlist.some(
     (pattern) => matchesEnvPattern(key, pattern)
   );
 }
@@ -1496,7 +1507,10 @@ function extractFinalAssistantText(stdout) {
     try {
       event = JSON.parse(trimmed);
     } catch (error51) {
-      throw new Error("codex_json_event_invalid", { cause: error51 });
+      if (looksLikeJsonLine(trimmed)) {
+        throw new Error("codex_json_event_invalid", { cause: error51 });
+      }
+      continue;
     }
     const text = extractTextFromEvent(event);
     if (text) {
@@ -1507,6 +1521,9 @@ function extractFinalAssistantText(stdout) {
     throw new Error("codex_json_final_message_missing");
   }
   return finalText;
+}
+function looksLikeJsonLine(value) {
+  return value.startsWith("{") || value.startsWith("[");
 }
 function extractTextFromEvent(event) {
   if (!event || typeof event !== "object") return null;
@@ -1746,8 +1763,21 @@ var CodexJsonAgentDriver = class {
     }
   }
   async dispose() {
-    await this.engine.dispose?.();
-    await this.sessionMaterializer.dispose?.();
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => this.engine.dispose?.()),
+      Promise.resolve().then(() => this.sessionMaterializer.dispose?.())
+    ]);
+    const errors = results.filter(
+      (result) => result.status === "rejected"
+    ).map((result) => result.reason);
+    if (errors.length > 0) {
+      const error51 = new AggregateError(
+        errors,
+        "codex_json_agent_dispose_failed"
+      );
+      error51.code = "codex_json_agent_dispose_failed";
+      throw error51;
+    }
   }
 };
 

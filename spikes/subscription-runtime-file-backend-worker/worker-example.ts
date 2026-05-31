@@ -244,8 +244,18 @@ class NodeProcessRunner implements RunnerPort {
       input.stderr?.write(chunk);
     });
 
-    const timeout = setTimeout(() => child.kill("SIGTERM"), input.timeoutMs);
-    const abort = () => child.kill("SIGTERM");
+    let forceKillTimer: NodeJS.Timeout | null = null;
+    const terminate = () => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGTERM");
+      forceKillTimer ??= setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }, 5_000);
+    };
+    const timeout = setTimeout(terminate, input.timeoutMs);
+    const abort = () => terminate();
     input.abortSignal.addEventListener("abort", abort, { once: true });
 
     if (input.stdin) {
@@ -269,6 +279,7 @@ class NodeProcessRunner implements RunnerPort {
       };
     } finally {
       clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       input.abortSignal.removeEventListener("abort", abort);
     }
   }
