@@ -346,6 +346,45 @@ Core does not know about Nest, Bull, Prisma, or app-specific schemas. That keeps
 the library reusable for Codex today and Claude or another subscription agent
 later.
 
+## Temporary Public GitHub Main Install
+
+For early backend integrations where registry auth is not worth the friction,
+publish generated public mirrors from this monorepo and install them directly
+from GitHub `main`.
+
+Run a dry run first:
+
+```bash
+pnpm subscription-runtime:sync-public-mirrors
+```
+
+Create or update public mirror repositories:
+
+```bash
+pnpm subscription-runtime:sync-public-mirrors -- --push
+```
+
+The sync script builds each package, copies only the package source/dist into a
+generated repository, rewrites `workspace:*` dependencies to public GitHub
+dependencies, and force-pushes the mirror `main` branch. Do not edit mirror
+repositories directly.
+
+Backend services can then install the packages without GitHub Packages or npm
+registry auth:
+
+```json
+{
+  "dependencies": {
+    "@reviewrouter/subscription-runtime-worker-codex": "git+https://github.com/777genius/subscription-runtime-worker-codex.git#main",
+    "@reviewrouter/subscription-runtime-queue-bull": "git+https://github.com/777genius/subscription-runtime-queue-bull.git#main"
+  }
+}
+```
+
+This is intentionally a convenience path, not the final release process. It
+tracks `main`, so every install can pick up new code. For stable production
+rollouts, pin a commit SHA or move to versioned packages.
+
 Backend mode uses lazy refresh. A fresh session runs immediately. A stale or
 nearly expired session refreshes before the task. If the first task fails with
 an auth-shaped failure, the runtime performs one guarded refresh and retries
