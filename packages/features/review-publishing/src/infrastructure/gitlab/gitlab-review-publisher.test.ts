@@ -512,7 +512,7 @@ describe("GitLabReviewPublisher", () => {
     ).toBe(false);
   });
 
-  it("reuses nearby same-title inline notes when model line numbers drift on retry", async () => {
+  it("reuses nearby inline notes when model wording and line numbers drift on retry", async () => {
     const methods: string[] = [];
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
@@ -574,7 +574,7 @@ describe("GitLabReviewPublisher", () => {
             notes: [
               {
                 id: 44,
-                body: "<!-- reviewrouter:review:v1 finding=old-line-fingerprint -->\n**[major] Discount application increases the order total**\n\nOld body",
+                body: "<!-- reviewrouter:review:v1 finding=old-line-fingerprint -->\n**[major] Discount calculation now increases totals**\n\nOld body",
                 position: {
                   head_sha: headSha,
                   old_path: "src/discount.ts",
@@ -617,7 +617,8 @@ describe("GitLabReviewPublisher", () => {
           {
             fingerprint: "new-line-fingerprint",
             severity: "major",
-            title: "Discount application increases the order total",
+            title:
+              "Discount calculation increases totals instead of reducing them",
             body: "New body",
             location: { filePath: "src/discount.ts", newLine: 6 },
           },

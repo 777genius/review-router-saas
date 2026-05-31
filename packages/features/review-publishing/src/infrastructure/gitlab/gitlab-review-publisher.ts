@@ -560,6 +560,13 @@ function findExistingInlineNote(input: {
       headSha: input.headSha,
       position: input.position,
       claimed: input.claimed,
+    }) ??
+    findExistingNearbyInlineNoteAtPosition({
+      discussions: input.discussions,
+      markerPrefix: `<!-- ${input.marker} finding=`,
+      headSha: input.headSha,
+      position: input.position,
+      claimed: input.claimed,
     })
   );
 }
@@ -610,6 +617,34 @@ function findExistingNearbyInlineNote(input: {
           markerPrefix: input.markerPrefix,
           finding: input.finding,
         }) ||
+        !gitLabNotePositionIsNear({
+          note,
+          headSha: input.headSha,
+          position: input.position,
+        })
+      ) {
+        continue;
+      }
+      return { discussionId: discussion.id, noteId: note.id };
+    }
+  }
+  return null;
+}
+
+function findExistingNearbyInlineNoteAtPosition(input: {
+  readonly discussions: readonly GitLabDiscussion[];
+  readonly markerPrefix: string;
+  readonly headSha: string;
+  readonly position: GitLabDiffPosition;
+  readonly claimed: ReadonlySet<string>;
+}): ExistingReviewNote | null {
+  for (const discussion of input.discussions) {
+    for (const note of discussion.notes ?? []) {
+      const noteKey = `${discussion.id}:${note.id}`;
+      if (
+        input.claimed.has(noteKey) ||
+        typeof note.body !== "string" ||
+        !note.body.startsWith(input.markerPrefix) ||
         !gitLabNotePositionIsNear({
           note,
           headSha: input.headSha,
