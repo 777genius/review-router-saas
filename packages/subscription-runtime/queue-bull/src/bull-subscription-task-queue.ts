@@ -1,0 +1,56 @@
+import type {
+  SubscriptionQueueEnqueueInput,
+  SubscriptionQueueEnqueueResult,
+  SubscriptionRetryPolicy,
+} from "@reviewrouter/subscription-runtime-queue-core";
+import type { BullLikeQueue } from "./bull-types";
+
+export type BullSubscriptionTaskQueueOptions<Job> = {
+  readonly queue: BullLikeQueue<Job>;
+  readonly jobName?: string;
+  readonly retryPolicy?: SubscriptionRetryPolicy;
+  readonly removeOnComplete?: boolean | number;
+  readonly removeOnFail?: boolean | number;
+};
+
+export class BullSubscriptionTaskQueue<Job> {
+  constructor(
+    private readonly options: BullSubscriptionTaskQueueOptions<Job>,
+  ) {}
+
+  async enqueue(
+    input: SubscriptionQueueEnqueueInput<Job>,
+  ): Promise<SubscriptionQueueEnqueueResult> {
+    const delay = input.runAfter
+      ? Math.max(0, input.runAfter.getTime() - Date.now())
+      : undefined;
+    const options = {
+      ...(input.taskId ? { jobId: input.taskId } : {}),
+      attempts: input.maxAttempts ?? this.options.retryPolicy?.maxAttempts ?? 3,
+      ...(delay !== undefined ? { delay } : {}),
+      ...(this.options.retryPolicy
+        ? {
+            backoff: {
+              type: "exponential" as const,
+              delay: this.options.retryPolicy.baseDelayMs,
+            },
+          }
+        : {}),
+      removeOnComplete: this.options.removeOnComplete ?? true,
+      removeOnFail: this.options.removeOnFail ?? false,
+    };
+    const job = await this.options.queue.add(
+      this.options.jobName ?? "subscription-runtime-task",
+      input.job,
+      options,
+    );
+    return {
+      status: "accepted",
+      taskId: String(job.id ?? input.taskId ?? input.idempotencyKey ?? ""),
+    };
+  }
+
+  async size(): Promise<number | null> {
+    return this.options.queue.count ? this.options.queue.count() : null;
+  }
+}
