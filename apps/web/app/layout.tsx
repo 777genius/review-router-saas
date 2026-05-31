@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import type { ComponentProps } from "react";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { unstable_rethrow } from "next/navigation";
 import { getServerSession } from "next-auth";
@@ -126,6 +127,11 @@ export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>): Promise<React.ReactElement> {
   const profile = await loadHeaderProfile();
+  const headerProfileMenuProps = {
+    login: profile.login,
+    avatarUrl: profile.avatarUrl,
+    provider: profile.provider,
+  } satisfies ComponentProps<typeof HeaderProfileMenu>;
 
   return (
     <html
@@ -190,11 +196,7 @@ export default async function RootLayout({
                   </span>
                 </span>
               </div>
-              <HeaderProfileMenu
-                login={profile.login}
-                avatarUrl={profile.avatarUrl}
-                provider={profile.provider}
-              />
+              <HeaderProfileMenu {...headerProfileMenuProps} />
             </div>
           </div>
         </header>

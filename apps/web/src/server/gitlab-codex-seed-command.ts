@@ -21,8 +21,6 @@ export async function buildGitLabCodexSeedCommand(input: {
     orderBy: { updatedAt: "desc" },
     select: {
       id: true,
-      namespacePath: true,
-      sourceKind: true,
       repositories: {
         where: { provider: "gitlab", selected: true },
         orderBy: { fullName: "asc" },
@@ -33,10 +31,7 @@ export async function buildGitLabCodexSeedCommand(input: {
   if (!installation) {
     throw new Error("gitlab_installation_not_found");
   }
-  if (
-    installation.sourceKind !== "group" &&
-    installation.repositories.length === 0
-  ) {
+  if (installation.repositories.length === 0) {
     throw new Error("gitlab_installation_projects_missing");
   }
 
@@ -46,16 +41,12 @@ export async function buildGitLabCodexSeedCommand(input: {
     (repository) => repository.externalRepositoryId,
   );
   assertGitLabProjectIds(projectIds);
-  const targetArgs =
-    installation.sourceKind === "group"
-      ? `--scope group --group ${shellQuote(installation.namespacePath)}`
-      : `--scope project --project-ids ${shellQuote(projectIds.join(","))}`;
-  const targetLabel =
-    installation.sourceKind === "group"
-      ? `group ${installation.namespacePath}`
-      : `${installation.repositories.length} GitLab project${
-          installation.repositories.length === 1 ? "" : "s"
-        }`;
+  const targetArgs = `--scope project --project-ids ${shellQuote(
+    projectIds.join(","),
+  )}`;
+  const targetLabel = `${installation.repositories.length} GitLab project${
+    installation.repositories.length === 1 ? "" : "s"
+  }`;
 
   return {
     command: [

@@ -44,6 +44,27 @@ describe("buildGitLabCodexSeedCommand", () => {
     });
   });
 
+  it("keeps group installations scoped to their selected projects", async () => {
+    mocks.findFirst.mockResolvedValueOnce({
+      id: "gitlab_install_1",
+      namespacePath: "acme/platform",
+      sourceKind: "group",
+      repositories: [
+        { externalRepositoryId: "101", fullName: "acme/platform/api" },
+        { externalRepositoryId: "102", fullName: "acme/platform/web" },
+      ],
+    });
+
+    await expect(
+      buildGitLabCodexSeedCommand({ workspaceId: "workspace_1" }),
+    ).resolves.toMatchObject({
+      targetLabel: "2 GitLab projects",
+      command: expect.stringContaining(
+        "--scope project --project-ids '101,102'",
+      ),
+    });
+  });
+
   it("rejects malformed GitLab project ids before joining shell args", async () => {
     mocks.findFirst.mockResolvedValueOnce({
       id: "gitlab_install_1",
