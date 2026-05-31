@@ -2,6 +2,7 @@ import type { BoundedSubscriptionWorkerPool } from "@reviewrouter/subscription-r
 import type {
   QueueProcessorState,
   QueueProcessorStats,
+  SubscriptionQueueClaim,
   SubscriptionRetryPolicy,
   SubscriptionTaskQueuePort,
 } from "./types";
@@ -90,6 +91,10 @@ export class SubscriptionQueueProcessor<Job, Result> {
         await delay(this.options.idleDelayMs ?? 250, signal);
         continue;
       }
+      if (signal.aborted || this.options.abortSignal?.aborted) {
+        await this.releaseClaim(claimed);
+        break;
+      }
       this.counters.claimed += 1;
       const taskController = new AbortController();
       const abortTask = () => taskController.abort();
@@ -137,6 +142,16 @@ export class SubscriptionQueueProcessor<Job, Result> {
         }
       }
     }
+  }
+
+  private async releaseClaim(
+    claimed: SubscriptionQueueClaim<Job>,
+  ): Promise<void> {
+    if (!this.options.queue.release) return;
+    await this.options.queue.release({
+      taskId: claimed.task.taskId,
+      leaseId: claimed.leaseId,
+    });
   }
 
   private armCurrentTaskShutdownGrace(): void {

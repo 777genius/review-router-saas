@@ -70,6 +70,11 @@ export interface SubscriptionTaskQueuePort<Job, Result = unknown> {
     readonly now?: Date;
   }): Promise<SubscriptionQueueClaim<Job> | null>;
 
+  release?(input: {
+    readonly taskId: string;
+    readonly leaseId: string;
+  }): Promise<void>;
+
   complete(input: {
     readonly taskId: string;
     readonly leaseId: string;

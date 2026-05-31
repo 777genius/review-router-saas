@@ -115,6 +115,16 @@ export class InMemorySubscriptionTaskQueue<
     record.leaseExpiresAt = null;
   }
 
+  async release(input: {
+    readonly taskId: string;
+    readonly leaseId: string;
+  }): Promise<void> {
+    const record = this.requireLeased(input.taskId, input.leaseId);
+    record.status = "queued";
+    record.leaseId = null;
+    record.leaseExpiresAt = null;
+  }
+
   async fail(input: {
     readonly taskId: string;
     readonly leaseId: string;

@@ -4,6 +4,8 @@ import {
   InMemorySubscriptionTaskQueue,
   SubscriptionQueueProcessor,
   computeBackoffDelayMs,
+  type SubscriptionQueueClaim,
+  type SubscriptionTaskQueuePort,
 } from "../index";
 import type {
   SubscriptionWorker,
@@ -181,6 +183,48 @@ describe("subscription queue core", () => {
     await expect(queue.size({ includeDelayed: true })).resolves.toBe(1);
   });
 
+  it("releases claims that resolve after stop without starting new work", async () => {
+    const queue = new DeferredClaimQueue();
+    const runs: unknown[] = [];
+    const processor = new SubscriptionQueueProcessor<string, string>({
+      queue,
+      workerPool: {
+        stats: () => ({
+          poolId: "pool",
+          state: "ready",
+          slots: 1,
+          queued: 0,
+          inFlight: 0,
+          completed: 0,
+          failed: 0,
+          restarted: 0,
+        }),
+        run: async (job) => {
+          runs.push(job);
+          return `ok:${job}`;
+        },
+      },
+      idleDelayMs: 5,
+    });
+    processor.start();
+
+    await queue.claimStarted.promise;
+    const stopping = processor.stop();
+    queue.resolveClaim();
+    await stopping;
+
+    expect(runs).toEqual([]);
+    expect(queue.releases).toEqual([{ taskId: "task-1", leaseId: "lease-1" }]);
+    expect(processor.stats()).toMatchObject({
+      state: "stopped",
+      claimed: 0,
+      completed: 0,
+      failed: 0,
+      retried: 0,
+      deadLettered: 0,
+    });
+  });
+
   it("computes bounded exponential backoff", () => {
     expect(
       computeBackoffDelayMs({
@@ -195,6 +239,55 @@ describe("subscription queue core", () => {
     ).toBe(250);
   });
 });
+
+class DeferredClaimQueue implements SubscriptionTaskQueuePort<string, string> {
+  readonly queueId = "deferred-claim";
+  readonly claimStarted = deferred<void>();
+  readonly releases: unknown[] = [];
+  private readonly claimResult =
+    deferred<SubscriptionQueueClaim<string> | null>();
+
+  async enqueue() {
+    return { status: "accepted" as const, taskId: "task-1" };
+  }
+
+  async claim(): Promise<SubscriptionQueueClaim<string> | null> {
+    this.claimStarted.resolve();
+    return this.claimResult.promise;
+  }
+
+  resolveClaim(): void {
+    this.claimResult.resolve({
+      task: {
+        taskId: "task-1",
+        job: "job",
+        attempt: 1,
+        maxAttempts: 1,
+        runAfter: new Date(),
+        createdAt: new Date(),
+        metadata: {},
+      },
+      leaseId: "lease-1",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    });
+  }
+
+  async release(input: { readonly taskId: string; readonly leaseId: string }) {
+    this.releases.push(input);
+  }
+
+  async complete(): Promise<void> {
+    throw new Error("unexpected_complete");
+  }
+
+  async fail(): Promise<never> {
+    throw new Error("unexpected_fail");
+  }
+
+  async size(): Promise<number> {
+    return 0;
+  }
+}
 
 class EchoWorker implements SubscriptionWorker<string, string> {
   state = "created" as const;
