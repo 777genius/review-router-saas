@@ -63,7 +63,10 @@ function normalizeBaseUrl(value: string): string {
   } catch {
     throw new Error("gitlab_base_url_invalid");
   }
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") {
+  const localhostHttp =
+    parsed.hostname === "localhost" &&
+    (parsed.protocol === "http:" || parsed.protocol === "https:");
+  if (parsed.protocol !== "https:" && !localhostHttp) {
     throw new Error("gitlab_base_url_invalid");
   }
   parsed.pathname = "";

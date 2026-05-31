@@ -45,6 +45,18 @@ describe("parseGitLabSourceUrl", () => {
     });
   });
 
+  it("supports local GitLab development URLs", () => {
+    expect(
+      parseGitLabSourceUrl({
+        value: "platform/api",
+        defaultBaseUrl: "http://localhost:8080/",
+      }),
+    ).toEqual({
+      baseUrl: "http://localhost:8080",
+      path: "platform/api",
+    });
+  });
+
   it("rejects invalid or unsupported URLs before GitLab API calls", () => {
     expect(() =>
       parseGitLabSourceUrl({ value: "https://example.com/acme/api" }),
@@ -65,5 +77,12 @@ describe("parseGitLabSourceUrl", () => {
     expect(() =>
       parseGitLabSourceUrl({ value: "https://gitlab.com/acme/%2E%2E/api" }),
     ).toThrow("gitlab_source_url_path_invalid");
+
+    expect(() =>
+      parseGitLabSourceUrl({
+        value: "platform/api",
+        defaultBaseUrl: "javascript://localhost/alert",
+      }),
+    ).toThrow("gitlab_base_url_invalid");
   });
 });
