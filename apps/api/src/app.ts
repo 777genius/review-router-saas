@@ -82,6 +82,7 @@ import { PrismaGitHubUserReviewThreadResolver } from "./github/prisma-github-use
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
+import { FallbackGitLabRepositoryRegistry } from "./gitlab/fallback-gitlab-repository-registry.js";
 import { PrismaGitLabRepositoryRegistry } from "./gitlab/prisma-gitlab-repository-registry.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
 import {
@@ -496,11 +497,20 @@ function createDefaultGitLabIntegrationDependencies(input: {
       input.env.REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE,
     ),
   };
-  const repositoryRegistry = input.prisma
-    ? new PrismaGitLabRepositoryRegistry(input.prisma)
-    : repositories.length > 0
+  const staticRepositoryRegistry =
+    repositories.length > 0
       ? new StaticGitLabRepositoryRegistry(repositories)
       : undefined;
+  const prismaRepositoryRegistry = input.prisma
+    ? new PrismaGitLabRepositoryRegistry(input.prisma)
+    : undefined;
+  const repositoryRegistry =
+    prismaRepositoryRegistry && staticRepositoryRegistry
+      ? new FallbackGitLabRepositoryRegistry([
+          prismaRepositoryRegistry,
+          staticRepositoryRegistry,
+        ])
+      : (prismaRepositoryRegistry ?? staticRepositoryRegistry);
   const exchange =
     input.actionSessionSecret && apiToken && repositoryRegistry
       ? {
