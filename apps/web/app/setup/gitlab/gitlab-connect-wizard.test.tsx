@@ -131,6 +131,44 @@ describe("GitLabConnectWizard", () => {
     ).toBe("https://gitlab.com/acme/platform/api/-/merge_requests/8");
   });
 
+  it("returns to token input when install rejects the token", async () => {
+    mockGitLabWizardFetch({
+      installError: { code: "gitlab_api_error_403", status: 403 },
+    });
+
+    render(<GitLabConnectWizard workspaceId="workspace_1" />);
+
+    fireEvent.change(
+      screen.getByLabelText("Paste your GitLab group or project URL"),
+      { target: { value: "https://gitlab.com/acme/platform" } },
+    );
+    fireEvent.change(screen.getByLabelText("GitLab access token"), {
+      target: { value: "glpat-old-secret" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Discover repositories" }),
+    );
+    await screen.findByText("Select repositories");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Install ReviewRouter" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "GitLab refused the token. Check token scopes and permissions.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("GitLab access token")).toBeTruthy();
+    expect(
+      (
+        screen.getByLabelText(
+          "Paste your GitLab group or project URL",
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("https://gitlab.com/acme/platform");
+  });
+
   it("prefills the source URL for an existing GitLab installation", () => {
     render(
       <GitLabConnectWizard
@@ -150,7 +188,7 @@ describe("GitLabConnectWizard", () => {
 });
 
 function mockGitLabWizardFetch(input: {
-  readonly installResult: {
+  readonly installResult?: {
     readonly installationId: string;
     readonly namespacePath: string;
     readonly requested: number;
@@ -160,6 +198,10 @@ function mockGitLabWizardFetch(input: {
       readonly projectId: string;
       readonly mergeRequestUrl: string;
     }[];
+  };
+  readonly installError?: {
+    readonly code: string;
+    readonly status: number;
   };
 }) {
   const fetchMock = vi.fn(
@@ -188,6 +230,12 @@ function mockGitLabWizardFetch(input: {
         });
       }
       if (pathname === "/api/dashboard/gitlab/install") {
+        if (input.installError) {
+          return Response.json(
+            { error: { code: input.installError.code } },
+            { status: input.installError.status },
+          );
+        }
         return Response.json(input.installResult);
       }
       if (pathname === "/api/dashboard/gitlab/codex-command") {

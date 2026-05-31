@@ -112,7 +112,7 @@ export function GitLabConnectWizard({
       setPhase("result");
       void loadCodexCommand(result.installationId);
     } catch (caught) {
-      setPhase("select");
+      setPhase(shouldReturnToTokenInput(caught) ? "discover" : "select");
       setError(errorText(caught));
     }
   }
@@ -512,4 +512,13 @@ function errorText(error: unknown): string {
     default:
       return code.replaceAll("_", " ");
   }
+}
+
+function shouldReturnToTokenInput(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message === "gitlab_api_error_401" ||
+    error.message === "gitlab_api_error_403" ||
+    error.message === "gitlab_api_error_404"
+  );
 }
