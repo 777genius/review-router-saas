@@ -471,8 +471,7 @@ function findLocationInUnifiedDiff(input: {
       continue;
     }
     if (
-      input.location.oldLine === oldLine &&
-      input.location.newLine === newLine
+      contextLineMatchesLocation({ location: input.location, oldLine, newLine })
     ) {
       return { oldLine, newLine };
     }
@@ -480,6 +479,26 @@ function findLocationInUnifiedDiff(input: {
     newLine += 1;
   }
   return null;
+}
+
+function contextLineMatchesLocation(input: {
+  readonly location: ReviewFindingLocation;
+  readonly oldLine: number;
+  readonly newLine: number;
+}): boolean {
+  if (
+    input.location.oldLine !== undefined &&
+    input.location.newLine !== undefined
+  ) {
+    return (
+      input.location.oldLine === input.oldLine &&
+      input.location.newLine === input.newLine
+    );
+  }
+  if (input.location.oldLine !== undefined) {
+    return input.location.oldLine === input.oldLine;
+  }
+  return input.location.newLine === input.newLine;
 }
 
 function findExistingNote(input: {

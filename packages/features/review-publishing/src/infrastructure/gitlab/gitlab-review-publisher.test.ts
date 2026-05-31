@@ -124,6 +124,102 @@ describe("GitLabReviewPublisher", () => {
     expect(postedBodies[1]?.get("body")).toContain("finding=added-line");
   });
 
+  it("maps new-line-only findings on unchanged context lines to GitLab context positions", async () => {
+    const postedBodies: URLSearchParams[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.endsWith("/projects/123/merge_requests/7")) {
+        return jsonResponse({
+          iid: 7,
+          project_id: 123,
+          source_project_id: 123,
+          target_project_id: 123,
+          state: "opened",
+          sha: headSha,
+        });
+      }
+      if (href.endsWith("/projects/123/merge_requests/7/versions")) {
+        return jsonResponse([
+          {
+            head_commit_sha: headSha,
+            base_commit_sha: baseSha,
+            start_commit_sha: startSha,
+            state: "collected",
+          },
+        ]);
+      }
+      if (href.endsWith("/projects/123/merge_requests/7/diffs?per_page=100")) {
+        return jsonResponse([
+          {
+            old_path: "src/discount.ts",
+            new_path: "src/discount.ts",
+            diff: [
+              "@@ -2,5 +2,6 @@ export function applyDiscount(total: number, percent: number): number {",
+              "   if (percent < 0 || percent > 100) {",
+              '     throw new Error("invalid_percent");',
+              "   }",
+              "-  return total - (total * percent) / 100;",
+              "+  // Intentional smoke bug: discount increases the total.",
+              "+  return total + (total * percent) / 100;",
+              " }",
+            ].join("\n"),
+          },
+        ]);
+      }
+      if (
+        href.endsWith(
+          "/projects/123/merge_requests/7/discussions?per_page=100&page=1",
+        )
+      ) {
+        return jsonResponse([]);
+      }
+      if (href.endsWith("/projects/123/merge_requests/7/discussions")) {
+        postedBodies.push(init?.body as URLSearchParams);
+        return jsonResponse({
+          id: `discussion-${postedBodies.length}`,
+          notes: [{ id: postedBodies.length }],
+        });
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+
+    const publisher = new GitLabReviewPublisher({
+      token: "glpat-token",
+      apiBaseUrl: "https://gitlab.test/api/v4",
+      fetchImpl,
+    });
+
+    const result = await publisher.publishReview(
+      createReviewPublicationPlan({
+        target: {
+          provider: "gitlab",
+          repositoryExternalId: "123",
+          repositoryFullName: "group/project",
+          changeRequestExternalId: "7",
+          headSha,
+          baseSha,
+          startSha,
+        },
+        marker: "reviewrouter:review:v1",
+        findings: [
+          {
+            fingerprint: "context-new-line-only",
+            severity: "major",
+            title: "Context line finding",
+            body: "Context body",
+            location: { filePath: "src/discount.ts", newLine: 7 },
+          },
+        ],
+      }),
+    );
+
+    expect(result.inlineCommentCount).toBe(1);
+    expect(result.skippedInlineFindings).toEqual([]);
+    expect(postedBodies).toHaveLength(2);
+    expect(postedBodies[1]?.get("position[old_line]")).toBe("6");
+    expect(postedBodies[1]?.get("position[new_line]")).toBe("7");
+  });
+
   it("updates existing ReviewRouter notes instead of duplicating them", async () => {
     const methods: string[] = [];
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
