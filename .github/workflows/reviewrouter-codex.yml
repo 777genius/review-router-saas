@@ -13,10 +13,7 @@ jobs:
     timeout-minutes: 30
     if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
     permissions:
-      contents: read
       id-token: write
-      issues: write
-      pull-requests: write
     steps:
       - name: ReviewRouter Codex OAuth review
         id: run_codex
