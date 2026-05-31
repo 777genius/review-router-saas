@@ -5,6 +5,7 @@ import type {
   SubscriptionWorkerState,
   WorkerPoolHealth,
   WorkerPoolOptions,
+  WorkerPoolRestartOptions,
   WorkerPoolRunOptions,
   WorkerPoolStats,
 } from "./types";
@@ -32,6 +33,7 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
   private poolState: SubscriptionWorkerState = "created";
   private completedCount = 0;
   private failedCount = 0;
+  private restartedCount = 0;
   private inFlightCount = 0;
 
   constructor(private readonly options: WorkerPoolOptions<Job, Result>) {
@@ -74,13 +76,9 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
     this.poolState = "starting";
     try {
       for (let index = 0; index < this.options.slots; index += 1) {
-        const workerId = `${this.options.poolId}:slot-${index + 1}`;
-        const worker = this.options.workerFactory({
-          slotIndex: index,
-          workerId,
-        });
-        await worker.start();
-        this.slots.push({ index, worker, busy: false });
+        const slot = this.createSlot(index);
+        await slot.worker.start();
+        this.slots.push(slot);
       }
       this.poolState = "started";
       if (this.options.prewarmOnStart) {
@@ -168,6 +166,45 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
     });
   }
 
+  async restartSlot(
+    slotIndex: number,
+    options: WorkerPoolRestartOptions = {},
+  ): Promise<void> {
+    this.assertRunnable();
+    const slot = this.slots[slotIndex];
+    if (!slot) {
+      throw new SubscriptionWorkerError(
+        "subscription_worker_pool_slot_not_found",
+        "Worker pool slot was not found.",
+        { details: { slotIndex: String(slotIndex) } },
+      );
+    }
+    if (slot.busy) {
+      throw new SubscriptionWorkerError(
+        "subscription_worker_pool_slot_busy",
+        "Worker pool slot is busy and cannot be restarted.",
+        { details: { slotIndex: String(slotIndex) } },
+      );
+    }
+
+    this.emit("subscription_worker_pool.slot_restart.started", {
+      slotIndex: String(slotIndex),
+      workerId: slot.worker.workerId,
+    });
+    await slot.worker.dispose();
+    const next = this.createSlot(slotIndex);
+    await next.worker.start();
+    if (options.prewarm) {
+      await next.worker.prewarm();
+    }
+    this.slots[slotIndex] = next;
+    this.restartedCount += 1;
+    this.emit("subscription_worker_pool.slot_restart.completed", {
+      slotIndex: String(slotIndex),
+      workerId: next.worker.workerId,
+    });
+  }
+
   async health(): Promise<WorkerPoolHealth> {
     const slotHealth = await Promise.all(
       this.slots.map((slot) => safeHealth(slot.worker)),
@@ -204,6 +241,7 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
       inFlight: this.inFlightCount,
       completed: this.completedCount,
       failed: this.failedCount,
+      restarted: this.restartedCount,
     };
   }
 
@@ -269,6 +307,18 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
       });
   }
 
+  private createSlot(index: number): Slot<Job, Result> {
+    const workerId = `${this.options.poolId}:slot-${index + 1}`;
+    return {
+      index,
+      worker: this.options.workerFactory({
+        slotIndex: index,
+        workerId,
+      }),
+      busy: false,
+    };
+  }
+
   private drainQueue(): void {
     if (this.poolState === "draining" || this.poolState === "disposed") return;
     for (const slot of this.slots) {
@@ -317,12 +367,16 @@ export class BoundedSubscriptionWorkerPool<Job, Result> {
     }
   }
 
-  private emit(name: string): void {
+  private emit(
+    name: string,
+    metadata: Readonly<Record<string, string>> = {},
+  ): void {
     this.options.observability?.emit({
       name,
       metadata: {
         poolId: this.options.poolId,
         slots: String(this.options.slots),
+        ...metadata,
       },
     });
   }

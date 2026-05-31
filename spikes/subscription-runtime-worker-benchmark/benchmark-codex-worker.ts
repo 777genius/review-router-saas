@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoundedSubscriptionWorkerPool } from "@reviewrouter/subscription-runtime-worker-core";
 import { FileBackendCodexWorker } from "@reviewrouter/subscription-runtime-worker-codex";
+import type { CodexAppServerProcessFactory } from "@reviewrouter/subscription-runtime-provider-codex";
 
 type BenchmarkSample = {
   readonly slots: number;
@@ -18,6 +19,13 @@ type BenchmarkSample = {
   readonly heapDeltaMb: number;
   readonly cpuUserMs: number;
   readonly cpuSystemMs: number;
+  readonly restartSlotMs: number | null;
+};
+
+type FallbackSample = {
+  readonly status: "ok" | "failed";
+  readonly durationMs: number;
+  readonly safeMessage?: string;
 };
 
 async function main(): Promise<void> {
@@ -28,6 +36,9 @@ async function main(): Promise<void> {
   for (const slots of config.slots) {
     samples.push(await runSlots({ ...config, slots, authJson }));
   }
+  const fallback = config.runFallbackProbe
+    ? await runFallbackProbe({ ...config, authJson })
+    : null;
 
   console.table(
     samples.map((sample) => ({
@@ -43,8 +54,22 @@ async function main(): Promise<void> {
       heapDeltaMb: sample.heapDeltaMb.toFixed(1),
       cpuUserMs: Math.round(sample.cpuUserMs),
       cpuSystemMs: Math.round(sample.cpuSystemMs),
+      restartSlotMs:
+        sample.restartSlotMs === null
+          ? "n/a"
+          : Math.round(sample.restartSlotMs),
     })),
   );
+  if (fallback) {
+    console.table([
+      {
+        probe: "forced app-server failure -> codex exec fallback",
+        status: fallback.status,
+        durationMs: Math.round(fallback.durationMs),
+        safeMessage: fallback.safeMessage ?? "",
+      },
+    ]);
+  }
 }
 
 async function runSlots(input: {
@@ -56,6 +81,7 @@ async function runSlots(input: {
   readonly model: string;
   readonly reasoningEffort: "low" | "medium" | "high" | "xhigh";
   readonly prompt: string;
+  readonly restartSlotProbe: boolean;
 }): Promise<BenchmarkSample> {
   const rootDir = await mkdtemp(join(tmpdir(), "rr-codex-worker-bench-"));
   const startedMemory = process.memoryUsage();
@@ -64,6 +90,8 @@ async function runSlots(input: {
   const durations: number[] = [];
   let successCount = 0;
   let failureCount = 0;
+  let restartSlotMs: number | null = null;
+  const workers: FileBackendCodexWorker[] = [];
 
   const pool = new BoundedSubscriptionWorkerPool({
     poolId: `codex-bench-${input.slots}`,
@@ -71,7 +99,8 @@ async function runSlots(input: {
     prewarmOnStart: false,
     shutdownTimeoutMs: 120_000,
     workerFactory: ({ workerId }) =>
-      new FileBackendCodexWorker({
+      createWorker({
+        workers,
         workerId,
         providerInstanceId: `codex:bench:${input.slots}:${workerId}`,
         stateRootDir: rootDir,
@@ -89,12 +118,15 @@ async function runSlots(input: {
     await pool.start();
     await Promise.all(
       Array.from({ length: input.slots }, async (_, index) => {
-        const worker = (pool as unknown as { slots?: unknown }).slots;
-        void worker;
-        await seedWorker(pool, index, input.authJson);
+        await workers[index]?.seedCodexAuthJson(input.authJson);
       }),
     );
     await pool.prewarm();
+    if (input.restartSlotProbe && input.slots > 0) {
+      restartSlotMs = await timed(async () => {
+        await pool.restartSlot(0, { prewarm: true });
+      });
+    }
 
     const tasks = Array.from({ length: input.taskCount }, (_, index) =>
       timed(async () => {
@@ -137,21 +169,70 @@ async function runSlots(input: {
     heapDeltaMb: bytesToMb(endedMemory.heapUsed - startedMemory.heapUsed),
     cpuUserMs: endedCpu.user / 1000,
     cpuSystemMs: endedCpu.system / 1000,
+    restartSlotMs,
   };
 }
 
-async function seedWorker(
-  pool: BoundedSubscriptionWorkerPool<
-    Parameters<FileBackendCodexWorker["run"]>[0],
-    Awaited<ReturnType<FileBackendCodexWorker["run"]>>
-  >,
-  slotIndex: number,
-  authJson: string,
-): Promise<void> {
-  const internals = pool as unknown as {
-    readonly slots: readonly { readonly worker: FileBackendCodexWorker }[];
-  };
-  await internals.slots[slotIndex]?.worker.seedCodexAuthJson(authJson);
+async function runFallbackProbe(input: {
+  readonly authJson: string;
+  readonly codexBinaryPath: string;
+  readonly encryptionKey: Uint8Array;
+  readonly model: string;
+  readonly reasoningEffort: "low" | "medium" | "high" | "xhigh";
+  readonly prompt: string;
+}): Promise<FallbackSample> {
+  const rootDir = await mkdtemp(join(tmpdir(), "rr-codex-worker-fallback-"));
+  const worker = createWorker({
+    workers: [],
+    workerId: "fallback-probe",
+    providerInstanceId: "codex:bench:fallback-probe",
+    stateRootDir: rootDir,
+    codexBinaryPath: input.codexBinaryPath,
+    encryptionKey: input.encryptionKey,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    sessionCacheSlots: 1,
+    taskTimeoutMs: 10 * 60_000,
+    sourceEnv: process.env,
+    appServerProcessFactory: (() => {
+      throw new Error("forced_app_server_failure");
+    }) as CodexAppServerProcessFactory,
+  });
+
+  const startedAt = performance.now();
+  try {
+    await worker.start();
+    await worker.seedCodexAuthJson(input.authJson);
+    const result = await worker.run({
+      runId: "fallback-probe",
+      prompt: input.prompt,
+    });
+    if (!result.outputText.trim()) throw new Error("empty_output");
+    return {
+      status: "ok",
+      durationMs: performance.now() - startedAt,
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      durationMs: performance.now() - startedAt,
+      safeMessage: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    await worker.dispose();
+    await rm(rootDir, { recursive: true, force: true });
+  }
+}
+
+function createWorker(
+  input: ConstructorParameters<typeof FileBackendCodexWorker>[0] & {
+    readonly workers: FileBackendCodexWorker[];
+  },
+): FileBackendCodexWorker {
+  const { workers, ...options } = input;
+  const worker = new FileBackendCodexWorker(options);
+  workers.push(worker);
+  return worker;
 }
 
 async function timed(fn: () => Promise<void>): Promise<number> {
@@ -169,6 +250,8 @@ function readConfig(): {
   readonly model: string;
   readonly reasoningEffort: "low" | "medium" | "high" | "xhigh";
   readonly prompt: string;
+  readonly restartSlotProbe: boolean;
+  readonly runFallbackProbe: boolean;
 } {
   const authJsonPath = process.env.SUBSCRIPTION_RUNTIME_CODEX_AUTH_JSON_PATH;
   const key = process.env.SUBSCRIPTION_RUNTIME_FILE_KEY;
@@ -201,6 +284,10 @@ function readConfig(): {
     prompt:
       process.env.SUBSCRIPTION_RUNTIME_BENCH_PROMPT ??
       "Return exactly one short sentence with the word OK.",
+    restartSlotProbe:
+      process.env.SUBSCRIPTION_RUNTIME_BENCH_RESTART_SLOT !== "0",
+    runFallbackProbe:
+      process.env.SUBSCRIPTION_RUNTIME_BENCH_FALLBACK_PROBE !== "0",
   };
 }
 

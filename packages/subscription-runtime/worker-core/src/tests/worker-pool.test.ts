@@ -85,6 +85,33 @@ describe("BoundedSubscriptionWorkerPool", () => {
       ],
     });
   });
+
+  it("restarts an idle slot and prewarms the replacement", async () => {
+    const disposed: string[] = [];
+    const workers: FakeWorker[] = [];
+    const pool = new BoundedSubscriptionWorkerPool<string, string>({
+      poolId: "restart",
+      slots: 2,
+      workerFactory: ({ workerId }) => {
+        const worker = new FakeWorker(workerId, async (job) => job);
+        worker.onDispose = () => disposed.push(workerId);
+        workers.push(worker);
+        return worker;
+      },
+    });
+
+    await pool.start();
+    await pool.restartSlot(0, { prewarm: true });
+    const result = await pool.run("ok");
+    await pool.dispose();
+
+    expect(result).toBe("ok");
+    expect(disposed).toContain("restart:slot-1");
+    expect(workers).toHaveLength(3);
+    expect(workers[2]?.workerId).toBe("restart:slot-1");
+    expect(workers[2]?.prewarmed).toBe(true);
+    expect(pool.stats().restarted).toBe(1);
+  });
 });
 
 class FakeWorker implements SubscriptionWorker<string, string> {
@@ -96,6 +123,8 @@ class FakeWorker implements SubscriptionWorker<string, string> {
     private readonly handler: (job: string) => Promise<string> = async (job) =>
       `ok:${job}`,
   ) {}
+
+  onDispose: (() => void) | null = null;
 
   async start(): Promise<void> {
     this.state = "started";
@@ -126,6 +155,7 @@ class FakeWorker implements SubscriptionWorker<string, string> {
 
   async dispose(): Promise<void> {
     this.state = "disposed";
+    this.onDispose?.();
   }
 }
 

@@ -21,7 +21,16 @@ pnpm exec tsx spikes/subscription-runtime-worker-benchmark/benchmark-codex-worke
 ```
 
 Expected output is a table with total latency, p50, p95, max latency, RSS/heap
-delta, and CPU user/system time per slot count.
+delta, CPU user/system time, and restart-slot timing per slot count. By
+default the script also runs a forced app-server failure probe and verifies that
+the same worker can complete through the `codex exec` fallback.
+
+Useful toggles:
+
+- `SUBSCRIPTION_RUNTIME_BENCH_RESTART_SLOT=0` disables the restart-slot probe.
+- `SUBSCRIPTION_RUNTIME_BENCH_FALLBACK_PROBE=0` disables the fallback probe.
+- `SUBSCRIPTION_RUNTIME_BENCH_TASKS=50` or `100` runs a soak batch for memory
+  inspection.
 
 Operational notes:
 

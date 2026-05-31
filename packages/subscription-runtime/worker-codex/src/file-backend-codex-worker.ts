@@ -18,6 +18,7 @@ import {
   CodexJsonAgentDriver,
   CodexWorkerCacheSessionPoolMaterializer,
   PackagedCodexJsonExecutionEngine,
+  type CodexAppServerProcessFactory,
   type CodexReasoningEffort,
   sessionArtifactFromCodexAuthJson,
 } from "@reviewrouter/subscription-runtime-provider-codex";
@@ -47,6 +48,7 @@ export type FileBackendCodexWorkerOptions = {
   readonly refreshBeforeExpiryMs?: number;
   readonly maxSessionAgeMs?: number;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly appServerProcessFactory?: CodexAppServerProcessFactory;
   readonly observability?: ObservabilityPort;
   readonly runner?: RuntimeDeps["runner"];
   readonly workspace?: RuntimeDeps["workspace"];
@@ -121,6 +123,9 @@ export class FileBackendCodexWorker implements SubscriptionWorker<
         codexBinaryPath: options.codexBinaryPath,
         ...(options.sourceEnv ? { sourceEnv: options.sourceEnv } : {}),
         ...(options.taskTimeoutMs ? { timeoutMs: options.taskTimeoutMs } : {}),
+        ...(options.appServerProcessFactory
+          ? { processFactory: options.appServerProcessFactory }
+          : {}),
         fallback,
       }),
       sessionMaterializer: new CodexWorkerCacheSessionPoolMaterializer({

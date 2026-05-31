@@ -97,6 +97,11 @@ export type WorkerPoolStats = {
   readonly inFlight: number;
   readonly completed: number;
   readonly failed: number;
+  readonly restarted: number;
+};
+
+export type WorkerPoolRestartOptions = {
+  readonly prewarm?: boolean;
 };
 
 export type WorkerTaskEnvelope<Job> = {
