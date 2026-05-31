@@ -281,6 +281,81 @@ runtime provides the warmed Codex session and execution driver. The cache is not
 durable storage; session persistence and refresh policy still belong to the
 selected `SessionStorePort` and provider session driver.
 
+## Production Worker Package API
+
+The spike worker has been promoted into package APIs:
+
+- `@reviewrouter/subscription-runtime-worker-core` - provider-neutral worker
+  lifecycle and bounded slot pool.
+- `@reviewrouter/subscription-runtime-worker-codex` - file-backend Codex worker
+  using local encrypted storage, local file leases, lazy refresh, app-server,
+  and `codex exec` fallback.
+- `@reviewrouter/subscription-runtime-queue-core` - host-neutral queue port,
+  retry/backoff/idempotency, in-memory contract implementation, and queue
+  processor.
+- `@reviewrouter/subscription-runtime-queue-bull` - Bull/BullMQ-compatible
+  adapter that does not import Bull. The host app provides its queue instance.
+
+```ts
+import { BoundedSubscriptionWorkerPool } from "@reviewrouter/subscription-runtime-worker-core";
+import { FileBackendCodexWorker } from "@reviewrouter/subscription-runtime-worker-codex";
+
+const pool = new BoundedSubscriptionWorkerPool({
+  poolId: "codex-ratings",
+  slots: 4,
+  prewarmOnStart: false,
+  workerFactory: ({ workerId }) =>
+    new FileBackendCodexWorker({
+      workerId,
+      providerInstanceId: "codex:ratings",
+      stateRootDir: "/var/lib/subscription-runtime",
+      codexBinaryPath: "/usr/local/bin/codex",
+      encryptionKey: fileKey32Bytes,
+      model: "gpt-5.5",
+      reasoningEffort: "low",
+      sessionCacheSlots: 1,
+      refreshFreshnessMs: 15 * 60_000,
+      maxSessionAgeMs: 24 * 60 * 60_000,
+    }),
+});
+
+await pool.start();
+await pool.prewarm();
+
+const result = await pool.run({
+  runId: "match-rating-123",
+  prompt: "Calculate this player rating and return JSON only.",
+  outputSchemaName: "rating-v1",
+});
+```
+
+For an existing Bull/BullMQ deployment, keep the queue in the host service and
+only map jobs into the worker pool:
+
+```ts
+import { createBullSubscriptionProcessor } from "@reviewrouter/subscription-runtime-queue-bull";
+
+const processor = createBullSubscriptionProcessor({
+  workerPool: pool,
+});
+
+// new Worker("subscription-runtime", processor, { connection, concurrency: 4 })
+```
+
+Core does not know about Nest, Bull, Prisma, or app-specific schemas. That keeps
+the library reusable for Codex today and Claude or another subscription agent
+later.
+
+Backend mode uses lazy refresh. A fresh session runs immediately. A stale or
+nearly expired session refreshes before the task. If the first task fails with
+an auth-shaped failure, the runtime performs one guarded refresh and retries
+once, then returns the real provider failure.
+
+Load benchmarking lives in
+[`../../spikes/subscription-runtime-worker-benchmark`](../../spikes/subscription-runtime-worker-benchmark).
+Run `pnpm subscription-runtime:worker-benchmark` with a local Codex `auth.json`
+and file key before claiming a slot count as production capacity.
+
 Adapters publish manifests so host apps can validate compatibility before any
 session bytes are read. That is required for future providers like Claude,
 Gemini, or local agents without editing core runtime code.
