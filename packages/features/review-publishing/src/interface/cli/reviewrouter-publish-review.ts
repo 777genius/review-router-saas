@@ -27,6 +27,8 @@ type GitHubCommentTokenResponse = {
   readonly permissions?: unknown;
 };
 
+const GITHUB_COMMENT_TOKEN_REFRESH_TIMEOUT_MS = 10_000;
+
 export type ReviewPublisherCliInput = {
   readonly argv?: readonly string[] | undefined;
   readonly env?: Readonly<Record<string, string | undefined>> | undefined;
@@ -325,18 +327,37 @@ async function refreshGitHubCommentToken(input: {
   readonly leaseId: string;
   readonly providerInstanceId: string;
 }): Promise<string> {
-  const response = await input.fetchImpl(input.refreshUrl, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      leaseId: input.leaseId,
-      providerInstanceId: input.providerInstanceId,
-      authCleared: true,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    GITHUB_COMMENT_TOKEN_REFRESH_TIMEOUT_MS,
+  );
+  let response: Response;
+  try {
+    response = await input.fetchImpl(input.refreshUrl, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        leaseId: input.leaseId,
+        providerInstanceId: input.providerInstanceId,
+        authCleared: true,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error("github_comment_token_refresh_timeout", {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+
   if (!response.ok) {
     throw new Error(`github_comment_token_refresh_failed:${response.status}`);
   }
@@ -346,6 +367,14 @@ async function refreshGitHubCommentToken(input: {
     throw new Error("github_comment_token_refresh_invalid");
   }
   return payload.token;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException ||
+      (typeof error === "object" && error !== null && "name" in error)) &&
+    (error as { readonly name?: unknown }).name === "AbortError"
+  );
 }
 
 function readMaxInlineCommentsFromEnv(
