@@ -13,6 +13,7 @@ class DiscoveryInstallation implements GitLabInstallationPort {
     GitLabProjectInstallationSettings
   >();
   public listedGroups: string[] = [];
+  public projectNotFoundMessage = "gitlab_api_error_404";
 
   async listGroupProjects(input: {
     readonly groupIdOrPath: string;
@@ -63,7 +64,7 @@ class DiscoveryInstallation implements GitLabInstallationPort {
     readonly projectPathOrId: string;
   }): Promise<GitLabProjectInstallationSettings> {
     const project = this.projectSettingsByPath.get(input.projectPathOrId);
-    if (!project) throw new Error("gitlab_api_error_404");
+    if (!project) throw new Error(this.projectNotFoundMessage);
     return project;
   }
 
@@ -137,6 +138,23 @@ describe("discoverGitLabSourceProjects", () => {
     expect(result.source.resolvedKind).toBe("group");
     expect(result.projectIds).toEqual(["101", "102"]);
     expect(result.parentGroupPath).toBe("acme/platform");
+    expect(installation.listedGroups).toEqual(["acme/platform"]);
+  });
+
+  it("falls back to group discovery when project lookup returns a detailed GitLab 404", async () => {
+    const installation = new DiscoveryInstallation();
+    installation.projectNotFoundMessage = "gitlab_api_error_404: Not Found";
+
+    const result = await discoverGitLabSourceProjects(
+      {
+        sourceUrl: "https://gitlab.com/acme/platform",
+        workspaceId: "workspace_1",
+      },
+      { installation },
+    );
+
+    expect(result.source.resolvedKind).toBe("group");
+    expect(result.projectIds).toEqual(["101", "102"]);
     expect(installation.listedGroups).toEqual(["acme/platform"]);
   });
 });

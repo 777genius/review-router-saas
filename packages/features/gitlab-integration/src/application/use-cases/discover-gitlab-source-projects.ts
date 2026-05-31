@@ -107,7 +107,9 @@ async function tryGetProject(
 }
 
 function isGitLabNotFound(error: unknown): boolean {
-  return error instanceof Error && error.message === "gitlab_api_error_404";
+  return (
+    error instanceof Error && error.message.startsWith("gitlab_api_error_404")
+  );
 }
 
 function parentPath(fullName: string): string | null {
