@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -336,6 +336,52 @@ describe("reviewrouter-gitlab-review CLI", () => {
       }
     },
   );
+
+  it("includes redacted stderr when the Codex command fails", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "reviewrouter-gitlab-review-"));
+    const diffPath = join(cwd, "diff.patch");
+    const codexCommandPath = join(cwd, "codex-fail.sh");
+    const openAiApiKey = "sk-test-secret-openai-key";
+
+    try {
+      await writeFile(
+        diffPath,
+        "@@ -1,1 +1,2 @@\n const old = true;\n+const added = true;\n",
+      );
+      await writeFile(
+        codexCommandPath,
+        [
+          "#!/bin/sh",
+          'echo "codex diagnostic: $OPENAI_API_KEY" >&2',
+          "exit 1",
+          "",
+        ].join("\n"),
+      );
+      await chmod(codexCommandPath, 0o700);
+
+      await expect(
+        runGitLabReviewCli({
+          argv: ["--diff-file", diffPath, "--skip-publish"],
+          cwd,
+          env: {
+            PATH: process.env.PATH,
+            OPENAI_API_KEY: openAiApiKey,
+            REVIEWROUTER_CODEX_COMMAND: codexCommandPath,
+            CI_PROJECT_PATH: "group/project",
+            CI_COMMIT_SHA: headSha,
+          },
+          stdout: { write: () => undefined },
+        }),
+      ).rejects.toThrow(
+        /gitlab_review_command_failed:.*codex diagnostic: \[redacted:OPENAI_API_KEY\]/,
+      );
+    } catch (error) {
+      expect(String(error)).not.toContain(openAiApiKey);
+      throw error;
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 function jsonResponse(body: unknown): Response {

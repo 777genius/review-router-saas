@@ -730,7 +730,14 @@ async function nodeCommandRunner(
       clearTimeout(timer);
       if (code !== 0) {
         reject(
-          new Error(`gitlab_review_command_failed:${input.command}:${code}`),
+          new Error(
+            buildCommandFailureMessage({
+              command: input.command,
+              code,
+              stderr,
+              env: { ...process.env, ...input.env },
+            }),
+          ),
         );
         return;
       }
@@ -742,6 +749,45 @@ async function nodeCommandRunner(
       child.stdin.end();
     }
   });
+}
+
+function buildCommandFailureMessage(input: {
+  readonly command: string;
+  readonly code: number | null;
+  readonly stderr: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+}): string {
+  const stderrTail = redactCommandDiagnostic(input.stderr, input.env)
+    .trim()
+    .slice(-1_600);
+  const base = `gitlab_review_command_failed:${input.command}:${input.code ?? "unknown"}`;
+  return stderrTail ? `${base}:${stderrTail}` : base;
+}
+
+function redactCommandDiagnostic(
+  value: string,
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  let redacted = value
+    .replace(/glpat-[A-Za-z0-9_-]+/g, "[redacted-gitlab-token]")
+    .replace(/glft-[A-Za-z0-9_-]+/g, "[redacted-gitlab-token]")
+    .replace(
+      /eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}/g,
+      "[redacted-jwt]",
+    );
+  for (const [key, secret] of Object.entries(env)) {
+    if (!isSecretLikeEnvKey(key) || !secret || secret.length < 8) {
+      continue;
+    }
+    redacted = redacted.split(secret).join(`[redacted:${key}]`);
+  }
+  return redacted;
+}
+
+function isSecretLikeEnvKey(key: string): boolean {
+  return /(?:TOKEN|SECRET|PASSWORD|AUTH|API_KEY|PRIVATE_KEY|SESSION|COOKIE)/i.test(
+    key,
+  );
 }
 
 function appendBounded(
