@@ -46,6 +46,7 @@ export default defineConfig({
       "apps/**/*.test.tsx",
       "packages/**/*.test.ts",
       "packages/**/*.test.tsx",
+      "scripts/**/*.test.ts",
       "spikes/**/*.test.ts",
     ],
     environment: "node",
