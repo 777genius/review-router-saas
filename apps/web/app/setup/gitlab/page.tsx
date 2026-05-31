@@ -42,6 +42,9 @@ export default async function GitLabSetupPage({
   if (!mutationStatus.signedIn) {
     redirect(`/auth/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`);
   }
+  if (!mutationStatus.enabled) {
+    redirect("/dashboard?error=dashboard_mutations_disabled");
+  }
 
   const workspaceId = await resolveWorkspaceId({
     requestedWorkspaceId,
