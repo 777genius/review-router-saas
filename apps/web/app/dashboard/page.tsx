@@ -150,6 +150,10 @@ import {
   workspaceInstallSummary,
 } from "./dashboard-copy";
 import { createNoIndexPageMetadata } from "../seo";
+import {
+  SourceProviderLabel,
+  SourceProviderLogo,
+} from "../source-provider-logo";
 
 export const dynamic = "force-dynamic";
 
@@ -1177,7 +1181,7 @@ function DashboardEmptyAccessState({
               size="lg"
               className="rounded-2xl"
             >
-              Reconnect GitHub
+              <SourceProviderLabel provider="github" label="Reconnect GitHub" />
             </GitHubSignInButton>
           ) : null}
           {appInstallUrl ? (
@@ -1187,9 +1191,20 @@ function DashboardEmptyAccessState({
               size="lg"
               className="rounded-2xl"
             >
-              Install GitHub App
+              <SourceProviderLabel
+                provider="github"
+                label="Install GitHub App"
+              />
             </LinkButton>
           ) : null}
+          <LinkButton
+            href="/setup?source=gitlab"
+            variant="outline"
+            size="lg"
+            className="rounded-2xl border-orange-300/35"
+          >
+            <SourceProviderLabel provider="gitlab" label="Connect GitLab" />
+          </LinkButton>
           <RepositoryAccessRefreshForm
             triggerLabel="Refresh GitHub access"
             size="lg"
@@ -1473,16 +1488,17 @@ function WorkspaceSwitcher({
               size="sm"
               className="inline-flex w-auto items-center gap-2 px-3"
             >
-              <span
-                aria-hidden="true"
-                className="relative h-4 w-4 rounded-full border border-cyan-100/35 text-cyan-100"
-              >
-                <span className="absolute left-1/2 top-1/2 h-0.5 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
-                <span className="absolute left-1/2 top-1/2 h-2 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-current" />
-              </span>
-              Add repos
+              <SourceProviderLabel provider="github" label="Add GitHub repos" />
             </GitHubAppInstallPermissionDialog>
           ) : null}
+          <LinkButton
+            href="/setup?source=gitlab"
+            variant="outline"
+            size="sm"
+            className="inline-flex w-auto items-center gap-2 border-orange-300/35 px-3"
+          >
+            <SourceProviderLabel provider="gitlab" label="Add GitLab repos" />
+          </LinkButton>
         </div>
         {items.length > 1 || pendingTab ? (
           <DashboardWorkspaceTabs
@@ -1755,7 +1771,12 @@ function WorkspaceCard({
               <summary className="cursor-pointer list-none">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <Badge tone="accent">GitHub App connection</Badge>
+                    <Badge tone="accent">
+                      <SourceProviderLabel
+                        provider="github"
+                        label="GitHub App connection"
+                      />
+                    </Badge>
                     <p className="mt-2 text-sm text-slate-400">
                       Installation sync and repository selection.
                     </p>
@@ -1765,16 +1786,41 @@ function WorkspaceCard({
                   </span>
                 </div>
               </summary>
-              <div className="mt-5 rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm leading-6 text-slate-300">
-                <p className="font-semibold text-cyan-50">
-                  Personal account vs organization
-                </p>
-                <p className="mt-1">
-                  To connect a personal repository, install the GitHub App on
-                  your username in GitHub. To connect organization repositories,
-                  install it on the organization. Each install appears as a
-                  separate workspace in the left switcher.
-                </p>
+              <div className="mt-5 grid gap-3 lg:grid-cols-2">
+                <div className="rounded-2xl border border-cyan-200/10 bg-cyan-300/[0.04] p-4 text-sm leading-6 text-slate-300">
+                  <p className="inline-flex items-center gap-2 font-semibold text-cyan-50">
+                    <SourceProviderLogo provider="github" className="h-4 w-4" />
+                    GitHub personal account vs organization
+                  </p>
+                  <p className="mt-1">
+                    To connect a personal repository, install the GitHub App on
+                    your username in GitHub. To connect organization
+                    repositories, install it on the organization. Each install
+                    appears as a separate workspace in the left switcher.
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-orange-300/20 bg-orange-300/[0.045] p-4 text-sm leading-6 text-slate-300">
+                  <p className="inline-flex items-center gap-2 font-semibold text-cyan-50">
+                    <SourceProviderLogo provider="gitlab" className="h-4 w-4" />
+                    GitLab group or project
+                  </p>
+                  <p className="mt-1">
+                    Connect GitLab from a group or project URL. ReviewRouter
+                    keeps GitLab tokens in GitLab CI/CD variables, not in the
+                    dashboard.
+                  </p>
+                  <LinkButton
+                    href="/setup?source=gitlab"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3 border-orange-300/35"
+                  >
+                    <SourceProviderLabel
+                      provider="gitlab"
+                      label="Connect GitLab"
+                    />
+                  </LinkButton>
+                </div>
               </div>
               <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {activeInstallations.map((installation) => {
@@ -1808,8 +1854,18 @@ function WorkspaceCard({
                           <p className="truncate text-sm font-semibold text-cyan-50">
                             {installation.accountLogin}
                           </p>
-                          <p className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                            {formatAccountTypeLabel(installation.accountType)} /{" "}
+                          <p className="inline-flex flex-wrap items-center gap-1.5 text-xs uppercase tracking-[0.16em] text-slate-400">
+                            <SourceProviderLabel
+                              provider="github"
+                              label="GitHub"
+                              className="inline-flex items-center gap-1.5"
+                              logoClassName="h-3.5 w-3.5"
+                            />
+                            <span>/</span>
+                            {formatAccountTypeLabel(
+                              installation.accountType,
+                            )}{" "}
+                            <span>/</span>
                             {installation.status} /{" "}
                             {installation.repositorySelection}
                           </p>
@@ -2797,6 +2853,15 @@ function RepositoryTable({
                 ) : null}
                 <div className="repository-setup-row-header grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span
+                      title="GitHub repository"
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-200/15 bg-cyan-300/[0.07]"
+                    >
+                      <SourceProviderLogo
+                        provider="github"
+                        className="h-[1.125rem] w-[1.125rem]"
+                      />
+                    </span>
                     <RepositoryNameLink
                       fullName={repository.fullName}
                       repositoryUrl={repositoryUrl}
