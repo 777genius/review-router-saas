@@ -345,7 +345,7 @@ export function buildApiDemoDocument(input: {
       ],
       knownLimitations: [
         "GitHub App lifecycle events must be enabled in the App settings before full install sync works.",
-        "Hosted production requires REVIEW_ROUTER_ACTION_REF to be pinned to a full 40-character commit SHA.",
+        "Hosted production should use the stable ReviewRouter v1 action channel, with full-SHA refs kept only for rollback allowlists.",
       ],
     },
     links: {

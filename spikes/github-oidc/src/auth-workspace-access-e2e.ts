@@ -66,7 +66,7 @@ try {
   }
 
   const installationMember = installationWorkspace.members.find(
-    (member) => member.user?.githubUserId.toString() === githubUserId,
+    (member) => member.user?.githubUserId?.toString() === githubUserId,
   );
   if (installationMember?.role !== "owner") {
     throw new Error(
@@ -83,7 +83,7 @@ try {
     },
   });
   const organizationMember = organizationWorkspace?.members.find(
-    (member) => member.user?.githubUserId.toString() === githubUserId,
+    (member) => member.user?.githubUserId?.toString() === githubUserId,
   );
   if (organizationMember) {
     throw new Error(

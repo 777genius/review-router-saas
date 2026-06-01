@@ -147,6 +147,9 @@ try {
 
   trace("find-synced-repository");
   const repository = await findSyncedRepository(targetRepo);
+  if (!repository.githubRepositoryId) {
+    throw new Error("synced repository is missing GitHub id");
+  }
   trace("seed-rotating-codex-auth");
   const setup = await seedRotatingCodexAuth({
     workspaceId: repository.workspaceId,

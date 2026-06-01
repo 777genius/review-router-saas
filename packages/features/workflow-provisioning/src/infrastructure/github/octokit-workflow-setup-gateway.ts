@@ -75,6 +75,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
       url: pullRequest.html_url,
       number: pullRequest.number,
       branch: input.setupBranch,
+      baseBranch,
     };
   }
 
@@ -290,6 +291,7 @@ export class OctokitWorkflowSetupGateway implements WorkflowSetupGatewayPort {
         pull_number: pullRequest.number,
         title: setupPullRequestTitle,
         body: setupPullRequestBody,
+        base: input.baseBranch,
         state: "open",
       },
     );
@@ -345,7 +347,9 @@ type GitHubPullRequest = {
 
 const setupPullRequestTitle = "chore: add ReviewRouter workflow";
 
-function preferredSetupBaseBranches(defaultBranch: string): readonly string[] {
+export function preferredSetupBaseBranches(
+  defaultBranch: string,
+): readonly string[] {
   return [
     ...new Set(["dev", "develop", defaultBranch].filter(Boolean)),
   ] as const;

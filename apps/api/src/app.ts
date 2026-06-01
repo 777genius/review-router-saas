@@ -26,6 +26,16 @@ import {
   registerGitHubWebhookRoutes,
   type RegisterGitHubWebhookRoutesDependencies,
 } from "@reviewrouter/features-github-installations";
+import {
+  GitLabInstallationGateway,
+  GitLabMergeRequestGateway,
+  JoseGitLabActionSessionTokenService,
+  JoseGitLabCiIdTokenVerifier,
+  registerGitLabIntegrationRoutes,
+  StaticGitLabRepositoryRegistry,
+  type GitLabRepositoryContext,
+  type RegisterGitLabIntegrationRoutesDependencies,
+} from "@reviewrouter/features-gitlab-integration";
 import { PrismaOutboxEventRepository } from "@reviewrouter/features-outbox";
 import {
   registerSystemHealthRoutes,
@@ -72,6 +82,8 @@ import { PrismaGitHubUserReviewThreadResolver } from "./github/prisma-github-use
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
+import { FallbackGitLabRepositoryRegistry } from "./gitlab/fallback-gitlab-repository-registry.js";
+import { PrismaGitLabRepositoryRegistry } from "./gitlab/prisma-gitlab-repository-registry.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
 import {
   registerActionMemoryRoutes,
@@ -82,6 +94,7 @@ import { appRouter } from "./trpc.js";
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
   readonly githubWebhookDependencies?: RegisterGitHubWebhookRoutesDependencies;
+  readonly gitLabIntegrationDependencies?: RegisterGitLabIntegrationRoutesDependencies;
   readonly actionControlPlaneDependencies?: RegisterActionControlPlaneRoutesDependencies;
   readonly actionMemoryDependencies?: RegisterActionMemoryRoutesDependencies;
   readonly actionSessionSecret?: string;
@@ -149,6 +162,19 @@ export async function createApiApp(
 
   if (githubWebhookDependencies) {
     await registerGitHubWebhookRoutes(app, githubWebhookDependencies);
+  }
+
+  const gitLabIntegrationDependencies =
+    options.gitLabIntegrationDependencies ??
+    createDefaultGitLabIntegrationDependencies({
+      actionSessionSecret: options.actionSessionSecret,
+      clock,
+      env: process.env,
+      prisma,
+    });
+
+  if (gitLabIntegrationDependencies) {
+    await registerGitLabIntegrationRoutes(app, gitLabIntegrationDependencies);
   }
 
   const actionControlPlaneDependencies =
@@ -440,6 +466,148 @@ function parseCommaSeparatedEnv(value: string | undefined): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+function createDefaultGitLabIntegrationDependencies(input: {
+  readonly actionSessionSecret?: string | undefined;
+  readonly clock: SystemClock;
+  readonly env: NodeJS.ProcessEnv;
+  readonly prisma?: PrismaClient | undefined;
+}): RegisterGitLabIntegrationRoutesDependencies | undefined {
+  const repositories = readGitLabStaticRepositories(
+    input.env.REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON,
+  );
+  const apiToken = input.env.REVIEW_ROUTER_GITLAB_API_TOKEN;
+  const apiBaseUrl = input.env.REVIEW_ROUTER_GITLAB_API_BASE_URL;
+  const installerToken = input.env.REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN;
+  const installerAdminToken =
+    input.env.REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN;
+  const environmentStatus = {
+    actionSessionSecretConfigured: Boolean(input.actionSessionSecret),
+    installerAdminTokenConfigured: Boolean(installerAdminToken),
+    installerTokenConfigured: Boolean(installerToken),
+    apiTokenConfigured: Boolean(apiToken),
+    staticRepositoriesConfigured:
+      repositories.length > 0 || Boolean(input.prisma),
+    registeredRepositoryCount: input.prisma ? null : repositories.length,
+    oidcAudienceConfigured: Boolean(
+      input.env.REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE,
+    ),
+    runtimeImageConfigured: Boolean(
+      input.env.REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE,
+    ),
+  };
+  const staticRepositoryRegistry =
+    repositories.length > 0
+      ? new StaticGitLabRepositoryRegistry(repositories)
+      : undefined;
+  const prismaRepositoryRegistry = input.prisma
+    ? new PrismaGitLabRepositoryRegistry(input.prisma)
+    : undefined;
+  const repositoryRegistry =
+    prismaRepositoryRegistry && staticRepositoryRegistry
+      ? new FallbackGitLabRepositoryRegistry([
+          prismaRepositoryRegistry,
+          staticRepositoryRegistry,
+        ])
+      : (prismaRepositoryRegistry ?? staticRepositoryRegistry);
+  const exchange =
+    input.actionSessionSecret && apiToken && repositoryRegistry
+      ? {
+          verifier: new JoseGitLabCiIdTokenVerifier({
+            ...(input.env.REVIEW_ROUTER_GITLAB_OIDC_ISSUER
+              ? { issuer: input.env.REVIEW_ROUTER_GITLAB_OIDC_ISSUER }
+              : {}),
+            ...(input.env.REVIEW_ROUTER_GITLAB_OIDC_JWKS_URL
+              ? { jwksUrl: input.env.REVIEW_ROUTER_GITLAB_OIDC_JWKS_URL }
+              : {}),
+          }),
+          repositories: repositoryRegistry,
+          mergeRequests: new GitLabMergeRequestGateway({
+            token: apiToken,
+            ...(apiBaseUrl ? { apiBaseUrl } : {}),
+          }),
+          sessions: new JoseGitLabActionSessionTokenService(
+            input.actionSessionSecret,
+          ),
+        }
+      : undefined;
+  const installation =
+    installerToken && installerAdminToken
+      ? new GitLabInstallationGateway({
+          token: installerToken,
+          ...(apiBaseUrl ? { apiBaseUrl } : {}),
+        })
+      : undefined;
+  if (!exchange && !installation && !installerAdminToken) {
+    return undefined;
+  }
+
+  return {
+    clock: input.clock,
+    environmentStatus,
+    ...(exchange ? { exchange } : {}),
+    ...(input.env.REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE
+      ? { defaultAudience: input.env.REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE }
+      : {}),
+    ...(input.env.REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE
+      ? { defaultRuntimeImage: input.env.REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE }
+      : {}),
+    ...(installation ? { installation } : {}),
+    ...(installerAdminToken ? { installerAdminToken } : {}),
+  };
+}
+
+function readGitLabStaticRepositories(
+  raw: string | undefined,
+): readonly GitLabRepositoryContext[] {
+  if (!raw?.trim()) {
+    return [];
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error("gitlab_static_repositories_invalid");
+  }
+  return parsed.map((repository) => {
+    if (!isRecord(repository)) {
+      throw new Error("gitlab_static_repository_invalid");
+    }
+    return {
+      workspaceId: readString(repository.workspaceId, "workspaceId"),
+      repositoryId: readString(repository.repositoryId, "repositoryId"),
+      gitlabProjectId: readNumericString(
+        repository.gitlabProjectId,
+        "gitlabProjectId",
+      ),
+      fullName: readString(repository.fullName, "fullName"),
+      owner: readString(repository.owner, "owner"),
+      selected: repository.selected !== false,
+      installationStatus:
+        typeof repository.installationStatus === "string"
+          ? repository.installationStatus
+          : "active",
+    };
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`gitlab_static_repository_${field}_invalid`);
+  }
+  return value.trim();
+}
+
+function readNumericString(value: unknown, field: string): string {
+  const normalized = typeof value === "number" ? String(value) : value;
+  const stringValue = readString(normalized, field);
+  if (!/^[1-9][0-9]*$/.test(stringValue)) {
+    throw new Error(`gitlab_static_repository_${field}_invalid`);
+  }
+  return stringValue;
 }
 
 function resolveActionOwnerRepo(actionRef: string | undefined): string {

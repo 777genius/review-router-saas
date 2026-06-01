@@ -1,8 +1,13 @@
 import type {
   ProviderFailure,
+  ProviderCapabilities,
   ProviderSessionDriver,
+  RedactorPort,
   RefreshedSession,
+  RuntimeWarning,
+  SessionFreshnessAssessment,
   SessionArtifact,
+  SessionRefreshPolicy,
   SessionValidationResult,
   WorkspaceHandle,
 } from "@reviewrouter/subscription-runtime-core";
@@ -16,6 +21,7 @@ import {
 } from "./codex-auth-json-codec";
 import {
   buildCodexRefreshBootstrapPlan,
+  readCodexAuthJsonFreshness,
   pruneCodexChildEnv,
 } from "./codex-cli-domain";
 import { cleanupCodexRuntimeTempRoot } from "./codex-cli-temp-cleanup";
@@ -29,14 +35,22 @@ import { classifyCodexFailure } from "./failure-classifier";
 export type CodexCliSessionDriverOptions = {
   readonly codexBinaryPath?: string;
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
+  readonly refreshMode?: ProviderCapabilities["refreshMode"];
 };
 
 export class CodexCliSessionDriver implements ProviderSessionDriver {
   readonly providerId = codexProviderId;
   readonly supportedArtifactKinds = ["json-file"] as const;
-  readonly capabilities = codexSessionCapabilities;
+  readonly capabilities: ProviderCapabilities;
 
-  constructor(private readonly options: CodexCliSessionDriverOptions = {}) {}
+  constructor(private readonly options: CodexCliSessionDriverOptions = {}) {
+    this.capabilities = options.refreshMode
+      ? {
+          ...codexSessionCapabilities,
+          refreshMode: options.refreshMode,
+        }
+      : codexSessionCapabilities;
+  }
 
   async validateSession(input: {
     readonly session: SessionArtifact;
@@ -131,6 +145,93 @@ export class CodexCliSessionDriver implements ProviderSessionDriver {
     } finally {
       await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
     }
+  }
+
+  async inspectSessionFreshness(input: {
+    readonly session: SessionArtifact;
+    readonly policy: Required<SessionRefreshPolicy>;
+    readonly now: Date;
+    readonly redactor: RedactorPort;
+  }): Promise<SessionFreshnessAssessment> {
+    const authJson = codexAuthJsonFromArtifact(input.session);
+    const freshness = readCodexAuthJsonFreshness({
+      authJsonBytes: authJson,
+      now: input.now,
+    });
+    const warnings: RuntimeWarning[] = freshness.warnings.map((warning) => ({
+      code: warning,
+      safeMessage: `Codex auth freshness warning: ${warning}`,
+    }));
+
+    if (freshness.lastRefreshAt) {
+      const ageMs = input.now.getTime() - freshness.lastRefreshAt.getTime();
+      if (ageMs >= input.policy.maxSessionAgeMs) {
+        return {
+          status: "refresh_recommended",
+          reason: "max_age_exceeded",
+          refreshedAt: freshness.lastRefreshAt,
+          ...(freshness.expiresAt ? { expiresAt: freshness.expiresAt } : {}),
+          warnings,
+        };
+      }
+    }
+
+    if (freshness.expiresAt) {
+      const refreshAt =
+        freshness.expiresAt.getTime() - input.policy.refreshBeforeExpiryMs;
+      if (freshness.expiresAt.getTime() <= input.now.getTime()) {
+        return {
+          status: "refresh_recommended",
+          reason: "expired",
+          expiresAt: freshness.expiresAt,
+          ...(freshness.lastRefreshAt
+            ? { refreshedAt: freshness.lastRefreshAt }
+            : {}),
+          warnings,
+        };
+      }
+      if (refreshAt <= input.now.getTime()) {
+        return {
+          status: "refresh_recommended",
+          reason: "expires_soon",
+          expiresAt: freshness.expiresAt,
+          ...(freshness.lastRefreshAt
+            ? { refreshedAt: freshness.lastRefreshAt }
+            : {}),
+          warnings,
+        };
+      }
+      return {
+        status: "fresh",
+        reason: "expires_later",
+        expiresAt: freshness.expiresAt,
+        ...(freshness.lastRefreshAt
+          ? { refreshedAt: freshness.lastRefreshAt }
+          : {}),
+        warnings,
+      };
+    }
+
+    if (freshness.lastRefreshAt) {
+      const ageMs = input.now.getTime() - freshness.lastRefreshAt.getTime();
+      if (ageMs <= input.policy.minFreshMs) {
+        return {
+          status: "fresh",
+          reason: "recent_refresh",
+          refreshedAt: freshness.lastRefreshAt,
+          warnings,
+        };
+      }
+    }
+
+    return {
+      status: "refresh_recommended",
+      reason: "freshness_unknown",
+      ...(freshness.lastRefreshAt
+        ? { refreshedAt: freshness.lastRefreshAt }
+        : {}),
+      warnings,
+    };
   }
 
   classifySessionFailure(error: unknown): ProviderFailure {

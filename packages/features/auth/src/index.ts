@@ -1,9 +1,11 @@
 export * from "./domain/authenticated-principal";
+export * from "./domain/external-identity";
 export * from "./domain/github-external-identity";
 export * from "./domain/workspace-access";
 export * from "./application/ports/user-repository-port";
 export * from "./application/ports/workspace-membership-repository-port";
 export * from "./application/ports/workspace-access-repository-port";
+export * from "./application/use-cases/link-external-identity";
 export * from "./application/use-cases/link-github-identity";
 export * from "./application/use-cases/assert-workspace-admin-allowed";
 export * from "./application/use-cases/assert-workspace-mutation-allowed";
@@ -14,3 +16,4 @@ export * from "./infrastructure/prisma/prisma-workspace-access-repository";
 export * from "./infrastructure/github/token-crypto";
 export * from "./infrastructure/github/github-user-authorization";
 export * from "./interface/next/github-profile";
+export * from "./interface/next/gitlab-profile";

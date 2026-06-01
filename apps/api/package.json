@@ -13,6 +13,7 @@
     "@reviewrouter/features-conflict-review": "workspace:*",
     "@reviewrouter/features-entitlements": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
+    "@reviewrouter/features-gitlab-integration": "workspace:*",
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",

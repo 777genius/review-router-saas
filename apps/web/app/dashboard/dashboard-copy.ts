@@ -278,15 +278,29 @@ export function isMemoryError(error: string): boolean {
 export function isSetupRecoveryIssue(
   value: string | null | undefined,
 ): boolean {
-  return value === "setup_pr_closed" || value === "setup_pr_branch_deleted";
+  return (
+    value === "setup_pr_closed" ||
+    value === "setup_pr_branch_deleted" ||
+    value === "setup_pr_wrong_base_branch"
+  );
 }
 
 export function workspaceInstallSummary(workspace: {
   readonly installations: readonly DashboardWorkspaceInstallation[];
+  readonly gitLabInstallations?: readonly {
+    readonly namespacePath: string;
+    readonly selectedProjects: number;
+  }[];
 }): string {
   const installation = workspace.installations[0];
   if (!installation) {
-    return "Signed-in GitHub user workspace - install the App to connect repositories.";
+    const gitLabInstallation = workspace.gitLabInstallations?.[0];
+    if (gitLabInstallation) {
+      const projectLabel =
+        gitLabInstallation.selectedProjects === 1 ? "project" : "projects";
+      return `GitLab connection - ${gitLabInstallation.selectedProjects} selected ${projectLabel}`;
+    }
+    return "Signed-in source workspace - connect repositories to continue.";
   }
 
   const accountType = formatAccountTypeLabel(installation.accountType);
@@ -395,11 +409,13 @@ export function dashboardErrorText(error: string): string {
     case "installation_not_active":
       return "The GitHub App installation is not active.";
     case "setup_pr_not_merged":
-      return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
+      return "GitHub does not show the workflow on the setup PR target branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
     case "setup_pr_closed":
       return "The saved setup PR was closed before it was merged. Recreate the setup PR, then merge the new one.";
     case "setup_pr_branch_deleted":
       return "The saved setup PR branch was deleted, so GitHub cannot merge that PR anymore. Recreate the setup PR to continue.";
+    case "setup_pr_wrong_base_branch":
+      return "The saved setup PR was merged outside the allowed setup branches. Recreate the setup PR, then merge it into dev, develop, or the repository default branch.";
     case "repository_not_visible_to_github_app":
       return "The GitHub App installation cannot read this repository. Update App repository access or sync repositories, then try again.";
     case "provider_secret_not_found":

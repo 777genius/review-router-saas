@@ -29,7 +29,10 @@ type SetupToast = {
   readonly actionLabel?: string;
 };
 
-type SetupIssue = "setup_pr_closed" | "setup_pr_branch_deleted";
+type SetupIssue =
+  | "setup_pr_closed"
+  | "setup_pr_branch_deleted"
+  | "setup_pr_wrong_base_branch";
 
 export function RepositorySetupProgressPanel({
   workspaceId,
@@ -634,11 +637,13 @@ function dashboardErrorText(error: string): string {
     case "dashboard_action_stale":
       return "The dashboard was updated while this page was open. Refresh the page, then click again.";
     case "setup_pr_not_merged":
-      return "GitHub does not show the workflow on the default branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
+      return "GitHub does not show the workflow on the setup PR target branch yet. If you just merged the setup PR, wait a few seconds; the dashboard will advance automatically when GitHub metadata catches up.";
     case "setup_pr_closed":
       return "The saved setup PR was closed before it was merged. Recreate the setup PR, then merge the new one.";
     case "setup_pr_branch_deleted":
       return "The saved setup PR branch was deleted, so GitHub cannot merge that PR anymore. Recreate the setup PR to continue.";
+    case "setup_pr_wrong_base_branch":
+      return "The saved setup PR was merged outside the allowed setup branches. Recreate the setup PR, then merge it into dev, develop, or the repository default branch.";
     case "dashboard_action_failed":
       return "The dashboard action failed. Retry once, then inspect server logs if it repeats.";
     case "github_operation_forbidden":
@@ -661,7 +666,9 @@ function dashboardErrorText(error: string): string {
 function normalizeSetupIssue(
   value: string | null | undefined,
 ): SetupIssue | null {
-  return value === "setup_pr_closed" || value === "setup_pr_branch_deleted"
+  return value === "setup_pr_closed" ||
+    value === "setup_pr_branch_deleted" ||
+    value === "setup_pr_wrong_base_branch"
     ? value
     : null;
 }
@@ -672,5 +679,7 @@ function setupIssueHelperText(issue: SetupIssue): string {
       return "Previous setup PR was closed. Recreate it.";
     case "setup_pr_branch_deleted":
       return "Setup PR branch was deleted. Recreate it.";
+    case "setup_pr_wrong_base_branch":
+      return "Setup PR was merged outside the allowed setup branches. Recreate it.";
   }
 }

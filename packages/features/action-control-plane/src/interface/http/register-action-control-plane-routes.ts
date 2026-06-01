@@ -808,6 +808,9 @@ function statusCodeForActionError(message: string): number {
   if (message.includes("conflict_review_")) {
     return 403;
   }
+  if (isCodexRotatingWorkflowSourceError(message)) {
+    return 403;
+  }
   if (
     message.startsWith("oidc_jti_required") ||
     message.startsWith("oidc_replay_detected") ||
@@ -922,6 +925,9 @@ function safeActionErrorCode(message: string): string {
   if (message.includes("codex_rotating_provider_permission_required")) {
     return "permission_required";
   }
+  if (isCodexRotatingWorkflowSourceError(message)) {
+    return "workflow_schema_mismatch";
+  }
   if (message.includes("mismatch")) {
     return "action_repository_mismatch";
   }
@@ -988,6 +994,8 @@ function safeActionErrorMessage(code: string): string {
       return "GitHub App installation is not active for this repository.";
     case "workflow_ref_not_allowed":
       return "Workflow file is not allowed to fetch ReviewRouter runtime config.";
+    case "workflow_schema_mismatch":
+      return "Installed ReviewRouter workflow does not match the expected secure Codex OAuth workflow.";
     case "conflict_review_runtime_disabled":
       return "Conflict review runtime is temporarily disabled.";
     case "conflict_review_posting_unavailable":
@@ -1031,4 +1039,8 @@ function isRetryableActionError(code: string): boolean {
     code === "codex_rotating_lease_conflict" ||
     code === "conflict_review_runtime_disabled"
   );
+}
+
+function isCodexRotatingWorkflowSourceError(message: string): boolean {
+  return message.includes("codex_rotating_workflow_");
 }

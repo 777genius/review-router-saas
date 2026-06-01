@@ -42,9 +42,9 @@ export function describeRepositoryHealth(
         tone: "warning",
         label: "Setup PR open",
         summary:
-          "The workflow setup pull request exists but is not on the default branch yet.",
+          "The workflow setup pull request exists but is not on the setup PR target branch yet.",
         nextAction:
-          "Open and merge the setup PR, then rerun repository health.",
+          "Open and merge the setup PR into its target branch, then rerun repository health.",
         blocksReview: true,
       };
     case "missing_workflow":
@@ -53,7 +53,7 @@ export function describeRepositoryHealth(
         label: "Workflow missing",
         summary: fallbackSummary,
         nextAction:
-          "Create or update the setup PR and merge it into the default branch.",
+          "Create or update the setup PR and merge it into its target branch.",
         blocksReview: true,
       };
     case "version_mismatch":

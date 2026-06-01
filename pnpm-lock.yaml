@@ -168,6 +168,9 @@ importers:
       '@reviewrouter/features-github-installations':
         specifier: workspace:*
         version: link:../../packages/features/github-installations
+      '@reviewrouter/features-gitlab-integration':
+        specifier: workspace:*
+        version: link:../../packages/features/gitlab-integration
       '@reviewrouter/features-memory':
         specifier: workspace:*
         version: link:../../packages/features/memory
@@ -228,6 +231,9 @@ importers:
       '@reviewrouter/features-github-installations':
         specifier: workspace:*
         version: link:../../packages/features/github-installations
+      '@reviewrouter/features-gitlab-integration':
+        specifier: workspace:*
+        version: link:../../packages/features/gitlab-integration
       '@reviewrouter/features-memory':
         specifier: workspace:*
         version: link:../../packages/features/memory
@@ -502,6 +508,21 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/features/gitlab-integration:
+    dependencies:
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      fastify:
+        specifier: ^5.8.5
+        version: 5.8.5
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
+      zod:
+        specifier: ^4.4.2
+        version: 4.4.2
+
   packages/features/memory:
     dependencies:
       '@prisma/client':
@@ -616,6 +637,12 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/features/review-publishing:
+    dependencies:
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
+
   packages/features/support-diagnostics:
     dependencies:
       '@prisma/client':
@@ -689,6 +716,21 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/subscription-runtime/queue-bull:
+    dependencies:
+      '@reviewrouter/subscription-runtime-queue-core':
+        specifier: workspace:*
+        version: link:../queue-core
+      '@reviewrouter/subscription-runtime-worker-core':
+        specifier: workspace:*
+        version: link:../worker-core
+
+  packages/subscription-runtime/queue-core:
+    dependencies:
+      '@reviewrouter/subscription-runtime-worker-core':
+        specifier: workspace:*
+        version: link:../worker-core
+
   packages/subscription-runtime/runner-github-action:
     dependencies:
       '@reviewrouter/subscription-runtime-core':
@@ -705,6 +747,27 @@ importers:
         version: 0.8.4
 
   packages/subscription-runtime/store-local-file:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/subscription-runtime/worker-codex:
+    dependencies:
+      '@reviewrouter/subscription-runtime-core':
+        specifier: workspace:*
+        version: link:../core
+      '@reviewrouter/subscription-runtime-provider-codex':
+        specifier: workspace:*
+        version: link:../provider-codex
+      '@reviewrouter/subscription-runtime-store-local-file':
+        specifier: workspace:*
+        version: link:../store-local-file
+      '@reviewrouter/subscription-runtime-worker-core':
+        specifier: workspace:*
+        version: link:../worker-core
+
+  packages/subscription-runtime/worker-core:
     dependencies:
       '@reviewrouter/subscription-runtime-core':
         specifier: workspace:*

@@ -20,6 +20,11 @@ import type { ActionRuntimeCompatibilityPolicyPort } from "../ports/action-runti
 import type { ActionLedgerKeyPort } from "../ports/action-ledger-key-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
 
+const codexRotatingRuntimeWorkflowPaths = new Set([
+  ".github/workflows/reviewrouter-codex.yml",
+  ".github/workflows/reviewrouter-interaction.yml",
+]);
+
 export type GetActionRuntimeConfigDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
   readonly sessions: ActionSessionTokenServicePort;
@@ -170,7 +175,8 @@ function assertStandardRuntimeProviderSupport(
   }
   if (
     codexProvider.authMode === "codex_subscription_oauth_rotating" &&
-    session.workflowPath === ".github/workflows/reviewrouter-codex.yml"
+    session.workflowPath &&
+    codexRotatingRuntimeWorkflowPaths.has(session.workflowPath)
   ) {
     return;
   }
