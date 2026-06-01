@@ -5,6 +5,7 @@ import {
   defaultWorkflowPath,
   getCodexRotatingWorkflowSetupContentMarkerGroups,
   getWorkflowSetupContentMarkerGroups,
+  type ReviewRouterDiscussionMode,
 } from "@reviewrouter/features-workflow-provisioning";
 
 export type WorkflowSetupReadinessInput = {
@@ -14,6 +15,7 @@ export type WorkflowSetupReadinessInput = {
   readonly defaultBranch: string;
   readonly actionRef: string;
   readonly providerKind?: ProviderKind;
+  readonly discussionMode?: ReviewRouterDiscussionMode;
   readonly conflictReviewFallbackEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingClaudeCodeOAuthTokenSecret?: boolean;
@@ -26,6 +28,10 @@ export async function isWorkflowSetupAlreadyCurrent(
     readonly workflowProbe: RepositoryWorkflowProbePort;
   },
 ): Promise<boolean> {
+  if (input.discussionMode === "suggest") {
+    return false;
+  }
+
   const workflowCheck = await dependencies.workflowProbe.probeWorkflow({
     githubInstallationId: input.githubInstallationId,
     owner: input.owner,
