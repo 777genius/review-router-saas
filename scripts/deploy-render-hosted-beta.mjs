@@ -36,6 +36,19 @@ function requiredEnv(name, source) {
   return value;
 }
 
+function resolveHostedActionRef(source) {
+  const actionRef =
+    source.REVIEW_ROUTER_ACTION_REF ?? process.env.REVIEW_ROUTER_ACTION_REF;
+  if (actionRef) {
+    return actionRef;
+  }
+  const version =
+    source.REVIEW_ROUTER_ACTION_VERSION ??
+    process.env.REVIEW_ROUTER_ACTION_VERSION ??
+    "main";
+  return `777genius/review-router@${version}`;
+}
+
 function readRenderApiKey() {
   if (process.env.RENDER_API_KEY) return process.env.RENDER_API_KEY;
   const keyPath = path.join(
@@ -105,6 +118,29 @@ function asEnvVars(values) {
     key,
     value: String(value),
   }));
+}
+
+const apiOnlyGitLabEnvKeys = [
+  "REVIEW_ROUTER_GITLAB_API_TOKEN",
+  "REVIEW_ROUTER_GITLAB_API_BASE_URL",
+  "REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN",
+  "REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN",
+  "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+  "REVIEW_ROUTER_GITLAB_OIDC_ISSUER",
+  "REVIEW_ROUTER_GITLAB_OIDC_JWKS_URL",
+  "REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE",
+  "REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE",
+];
+
+function readOptionalEnvVars(env, keys) {
+  const values = {};
+  for (const key of keys) {
+    const value = env[key];
+    if (value !== undefined && String(value).trim() !== "") {
+      values[key] = value;
+    }
+  }
+  return values;
 }
 
 class RenderClient {
@@ -189,7 +225,7 @@ function buildServiceEnv({
     GITHUB_WEBHOOK_SECRET: requiredEnv("GITHUB_WEBHOOK_SECRET", env),
     NODE_ENV: "production",
     NODE_VERSION: "24",
-    REVIEW_ROUTER_ACTION_REF: requiredEnv("REVIEW_ROUTER_ACTION_REF", env),
+    REVIEW_ROUTER_ACTION_REF: resolveHostedActionRef(env),
     REVIEW_ROUTER_ALLOWED_ACTION_REFS:
       env.REVIEW_ROUTER_ALLOWED_ACTION_REFS ?? "",
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
@@ -223,6 +259,9 @@ function buildServiceEnv({
     REVIEW_ROUTER_WORKER_ERROR_MS: "5000",
     REVIEW_ROUTER_WORKER_IDLE_MS: "5000",
   };
+  if (role === "api") {
+    Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
+  }
   if (role !== "worker") values.PORT = "10000";
   return asEnvVars(values);
 }

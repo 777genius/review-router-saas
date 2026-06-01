@@ -1334,6 +1334,8 @@ async function createRepositoryFixture(input: {
   const repository = await prisma.repositoryConnection.create({
     data: {
       workspaceId: workspace.id,
+      provider: "github",
+      externalRepositoryId: input.repositoryGithubId.toString(),
       installationId: installation.id,
       githubRepositoryId: input.repositoryGithubId,
       owner: input.owner,
@@ -1360,7 +1362,7 @@ async function createRepositoryFixture(input: {
     repositoryId: repository.id,
     owner: repository.owner,
     fullName: repository.fullName,
-    githubRepositoryId: repository.githubRepositoryId,
+    githubRepositoryId: input.repositoryGithubId,
   };
 }
 

@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   codexRotatingAuthMode,
   codexRotatingSecretName,
@@ -17,6 +17,7 @@ import type {
 const codexRotatingRepositoryContextSelect = {
   id: true,
   workspaceId: true,
+  provider: true,
   githubRepositoryId: true,
   fullName: true,
   owner: true,
@@ -285,7 +286,9 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
         return {
           leaseId: input.leaseId,
           nextGeneration,
-          repository: toActionRepositoryContext(provider.repository),
+          repository: toActionRepositoryContext(
+            requireGitHubRepositoryContext(provider.repository),
+          ),
           status: "stale_queued_secret" as const,
         };
       }
@@ -302,7 +305,9 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
       return {
         leaseId: input.leaseId,
         nextGeneration,
-        repository: toActionRepositoryContext(provider.repository),
+        repository: toActionRepositoryContext(
+          requireGitHubRepositoryContext(provider.repository),
+        ),
         status: "finalized" as const,
       };
     });
@@ -373,7 +378,9 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
 
       return {
         status: "ready" as const,
-        writeTarget: toSecretWriteTarget(provider.repository),
+        writeTarget: toSecretWriteTarget(
+          requireGitHubRepositoryContext(provider.repository),
+        ),
       };
     });
   }
@@ -420,7 +427,9 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
             status: "ready" as const,
             intentId: existing.id,
             writeTarget: toSecretWriteTarget(
-              existing.providerInstance.repository,
+              requireGitHubRepositoryContext(
+                existing.providerInstance.repository,
+              ),
             ),
           };
         }
@@ -485,7 +494,9 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
       return {
         status: "ready" as const,
         intentId: intent.id,
-        writeTarget: toSecretWriteTarget(provider.repository),
+        writeTarget: toSecretWriteTarget(
+          requireGitHubRepositoryContext(provider.repository),
+        ),
       };
     });
   }
@@ -527,7 +538,9 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
     }
     return {
       status: "ready" as const,
-      writeTarget: toSecretWriteTarget(provider.repository),
+      writeTarget: toSecretWriteTarget(
+        requireGitHubRepositoryContext(provider.repository),
+      ),
     };
   }
 
@@ -640,22 +653,34 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
   }
 }
 
-type CodexRotatingRepositoryContextRow = {
-  readonly id: string;
-  readonly workspaceId: string;
-  readonly githubRepositoryId: bigint;
-  readonly fullName: string;
-  readonly owner: string;
-  readonly name: string;
-  readonly selected: boolean;
-  readonly installation: {
-    readonly githubInstallationId: bigint;
-    readonly status: string;
+type CodexRotatingRepositoryContextRow = Prisma.RepositoryConnectionGetPayload<{
+  select: typeof codexRotatingRepositoryContextSelect;
+}>;
+
+type GitHubCodexRotatingRepositoryContextRow =
+  CodexRotatingRepositoryContextRow & {
+    readonly provider: "github";
+    readonly githubRepositoryId: bigint;
+    readonly installation: NonNullable<
+      CodexRotatingRepositoryContextRow["installation"]
+    >;
   };
-};
+
+function requireGitHubRepositoryContext(
+  repository: CodexRotatingRepositoryContextRow,
+): GitHubCodexRotatingRepositoryContextRow {
+  if (
+    repository.provider !== "github" ||
+    !repository.githubRepositoryId ||
+    !repository.installation
+  ) {
+    throw new Error("codex_rotating_repository_not_github");
+  }
+  return repository as GitHubCodexRotatingRepositoryContextRow;
+}
 
 function toActionRepositoryContext(
-  repository: CodexRotatingRepositoryContextRow,
+  repository: GitHubCodexRotatingRepositoryContextRow,
 ): ActionRepositoryContext {
   return {
     workspaceId: repository.workspaceId,
@@ -671,7 +696,7 @@ function toActionRepositoryContext(
 }
 
 function toSecretWriteTarget(
-  repository: CodexRotatingRepositoryContextRow,
+  repository: GitHubCodexRotatingRepositoryContextRow,
 ): CodexRotatingSecretWriteTarget {
   return {
     githubInstallationId:

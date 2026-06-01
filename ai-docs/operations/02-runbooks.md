@@ -203,7 +203,7 @@ Normal recovery:
 
 ```bash
 pnpm ops:sync-action-ref --dry-run --no-deploy
-pnpm ops:sync-action-ref
+pnpm ops:sync-action-ref --wait
 ```
 
 Expected sync output:
@@ -213,6 +213,7 @@ Expected sync output:
 3. services are exactly `reviewrouter-web`, `reviewrouter-api`, and
    `reviewrouter-worker`
 4. deploy ids are printed for all three services
+5. with `--wait`, each requested deploy reaches `live`
 
 Post-sync verification:
 

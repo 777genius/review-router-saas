@@ -20,7 +20,7 @@ const safeReport = `To: ${reviewRouterContactEmail}
 Repository: owner/repo
 Pull request: https://github.com/owner/repo/pull/123
 Workflow run: https://github.com/owner/repo/actions/runs/123456
-ReviewRouter action ref: 777genius/review-router@v1
+ReviewRouter action ref: 777genius/review-router@main
 Safe error category: provider_auth_missing | codex_failed | no_inline_comments
 What changed recently: setup PR merged, secret reseeded, config changed`;
 

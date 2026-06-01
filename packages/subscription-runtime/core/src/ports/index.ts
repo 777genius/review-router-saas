@@ -14,8 +14,10 @@ import type {
   RuntimeEvent,
   RuntimeMetric,
   RunnerCapabilities,
+  SessionFreshnessAssessment,
   SessionArtifact,
   SessionEnvelope,
+  SessionRefreshPolicy,
   SessionReadPurpose,
   SessionStoreCapabilities,
   SessionValidationResult,
@@ -44,7 +46,23 @@ export interface ProviderSessionDriver {
     readonly abortSignal: AbortSignal;
   }): Promise<RefreshedSession>;
 
+  inspectSessionFreshness?(input: {
+    readonly session: SessionArtifact;
+    readonly policy: Required<SessionRefreshPolicy>;
+    readonly now: Date;
+    readonly redactor: RedactorPort;
+  }): Promise<SessionFreshnessAssessment>;
+
   classifySessionFailure(error: unknown): ProviderFailure;
+}
+
+export interface NoSessionDriver {
+  readonly providerId: string;
+  readonly capabilities: ProviderCapabilities & {
+    readonly sessionRequirement: { readonly kind: "none" };
+  };
+
+  classifySessionFailure?(error: unknown): ProviderFailure;
 }
 
 export interface AgentDriver {
@@ -53,7 +71,7 @@ export interface AgentDriver {
   readonly capabilities: AgentCapabilities;
 
   runTask(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
     readonly task: ProviderTask;
     readonly workspace: WorkspaceHandle;
     readonly runner: RunnerPort;
@@ -138,6 +156,11 @@ export interface LeaseStorePort {
     readonly nextGenerationHash: string;
     readonly idempotencyKey: string;
   }): Promise<WritebackCommitResult>;
+
+  release?(input: {
+    readonly leaseId: string;
+    readonly reason: string;
+  }): Promise<void>;
 }
 
 export interface RunnerPort {
@@ -192,10 +215,10 @@ export interface IdGeneratorPort {
 
 export type RuntimeDeps = {
   readonly policy: import("../domain/types").RuntimePolicy;
-  readonly sessionDriver: ProviderSessionDriver;
+  readonly sessionDriver: ProviderSessionDriver | NoSessionDriver;
   readonly agentDriver: AgentDriver;
-  readonly sessionStore: SessionStorePort;
-  readonly leaseStore: LeaseStorePort;
+  readonly sessionStore?: SessionStorePort;
+  readonly leaseStore?: LeaseStorePort;
   readonly runner: RunnerPort;
   readonly workspace: WorkspacePort;
   readonly redactor: RedactorPort;

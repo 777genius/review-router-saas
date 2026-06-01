@@ -39,7 +39,7 @@ describe("repository health view", () => {
     ).toMatchObject({
       summary: "ReviewRouter workflow file is missing from the default branch",
       nextAction:
-        "Create or update the setup PR and merge it into the default branch.",
+        "Create or update the setup PR and merge it into its target branch.",
     });
   });
 

@@ -19,6 +19,48 @@ export function GitHubSignInButton({
   pendingLabel = "Opening GitHub...",
   ...props
 }: GitHubSignInButtonProps): React.ReactElement {
+  return (
+    <SourceSignInButton
+      {...props}
+      provider="github"
+      callbackUrl={callbackUrl}
+      pendingLabel={pendingLabel}
+    >
+      {children}
+    </SourceSignInButton>
+  );
+}
+
+export function GitLabSignInButton({
+  callbackUrl,
+  children,
+  pendingLabel = "Opening GitLab...",
+  ...props
+}: GitHubSignInButtonProps): React.ReactElement {
+  return (
+    <SourceSignInButton
+      {...props}
+      provider="gitlab"
+      callbackUrl={callbackUrl}
+      pendingLabel={pendingLabel}
+    >
+      {children}
+    </SourceSignInButton>
+  );
+}
+
+type SourceSignInButtonProps = Omit<GitHubSignInButtonProps, "pendingLabel"> & {
+  readonly provider: "github" | "gitlab";
+  readonly pendingLabel: string;
+};
+
+function SourceSignInButton({
+  provider,
+  callbackUrl,
+  children,
+  pendingLabel,
+  ...props
+}: SourceSignInButtonProps): React.ReactElement {
   const [pending, setPending] = useState(false);
 
   return (
@@ -29,7 +71,7 @@ export function GitHubSignInButton({
       aria-busy={pending}
       onClick={() => {
         setPending(true);
-        startGitHubSignIn(callbackUrl, () => {
+        startSourceSignIn(provider, callbackUrl, () => {
           setPending(false);
         });
       }}
@@ -65,7 +107,7 @@ export function GitHubSignInInlineButton({
         .join(" ")}
       onClick={() => {
         setPending(true);
-        startGitHubSignIn(callbackUrl, () => {
+        startSourceSignIn("github", callbackUrl, () => {
           setPending(false);
         });
       }}
@@ -131,9 +173,13 @@ function ButtonPendingLabel({ label }: { readonly label: string }) {
   );
 }
 
-function startGitHubSignIn(callbackUrl: string, onSettled: () => void): void {
+function startSourceSignIn(
+  provider: "github" | "gitlab",
+  callbackUrl: string,
+  onSettled: () => void,
+): void {
   const start = () => {
-    void signIn("github", { callbackUrl }).finally(onSettled);
+    void signIn(provider, { callbackUrl }).finally(onSettled);
   };
 
   if (typeof window === "undefined") {

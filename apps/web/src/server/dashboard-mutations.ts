@@ -1,4 +1,5 @@
 import { App } from "@octokit/app";
+import type { Session } from "next-auth";
 import { getServerSession } from "next-auth";
 import {
   assertWorkspaceAdminAllowed,
@@ -21,13 +22,21 @@ import { getPrisma } from "./prisma";
 
 export type DashboardMutationActor = {
   readonly userId: string;
-  readonly githubUserId: string;
-  readonly githubLogin: string;
+  readonly sourceProvider: "github" | "gitlab";
+  readonly externalUserId: string;
+  readonly sourceLogin: string;
+  readonly githubUserId: string | null;
+  readonly githubLogin: string | null;
   readonly actor: string;
   readonly accessSource?: DashboardMutationAccessSource;
 };
 
 export type DashboardWorkspaceAdminActor = DashboardMutationActor;
+export type DashboardGitHubMutationActor = DashboardMutationActor & {
+  readonly sourceProvider: "github";
+  readonly githubUserId: string;
+  readonly githubLogin: string;
+};
 
 export type DashboardMutationAccessSource =
   | { readonly source: "workspace_admin" }
@@ -41,6 +50,10 @@ export type DashboardMutationAccessSource =
 export type DashboardMutationStatus = {
   readonly enabled: boolean;
   readonly signedIn: boolean;
+  readonly sourceProvider: "github" | "gitlab" | null;
+  readonly externalUserId: string | null;
+  readonly sourceLogin: string | null;
+  readonly sourceAvatarUrl: string | null;
   readonly githubUserId: string | null;
   readonly githubLogin: string | null;
   readonly githubAvatarUrl: string | null;
@@ -63,6 +76,10 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
     return {
       enabled: false,
       signedIn: false,
+      sourceProvider: null,
+      externalUserId: null,
+      sourceLogin: null,
+      sourceAvatarUrl: null,
       githubUserId: null,
       githubLogin: null,
       githubAvatarUrl: null,
@@ -71,13 +88,16 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
   }
 
   const session = await getServerSession(authOptions);
-  const signedIn = Boolean(
-    session?.user?.githubUserId && session.user.githubLogin,
-  );
+  const identity = readSessionSourceIdentity(session);
+  const signedIn = Boolean(identity);
   if (!dashboardMutationsEnabled()) {
     return {
       enabled: false,
       signedIn,
+      sourceProvider: identity?.sourceProvider ?? null,
+      externalUserId: identity?.externalUserId ?? null,
+      sourceLogin: identity?.sourceLogin ?? null,
+      sourceAvatarUrl: identity?.sourceAvatarUrl ?? null,
       githubUserId: session?.user?.githubUserId ?? null,
       githubLogin: session?.user?.githubLogin ?? null,
       githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
@@ -88,6 +108,10 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
     return {
       enabled: false,
       signedIn: false,
+      sourceProvider: null,
+      externalUserId: null,
+      sourceLogin: null,
+      sourceAvatarUrl: null,
       githubUserId: null,
       githubLogin: null,
       githubAvatarUrl: null,
@@ -98,6 +122,10 @@ export async function getDashboardMutationStatus(): Promise<DashboardMutationSta
   return {
     enabled: true,
     signedIn: true,
+    sourceProvider: identity?.sourceProvider ?? null,
+    externalUserId: identity?.externalUserId ?? null,
+    sourceLogin: identity?.sourceLogin ?? null,
+    sourceAvatarUrl: identity?.sourceAvatarUrl ?? null,
     githubUserId: session?.user?.githubUserId ?? null,
     githubLogin: session?.user?.githubLogin ?? null,
     githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
@@ -185,23 +213,22 @@ export async function getDashboardSignedInActor(): Promise<DashboardMutationActo
   }
 
   const session = await getServerSession(authOptions);
-  const githubUserId = session?.user?.githubUserId;
-  const githubLogin = session?.user?.githubLogin;
-  if (!githubUserId || !githubLogin) {
+  const identity = readSessionSourceIdentity(session);
+  if (!identity) {
     return null;
   }
 
-  const user = await getPrisma().user.findUnique({
-    where: { githubUserId: BigInt(githubUserId) },
-    select: { id: true },
-  });
+  const user = await findUserForSourceIdentity(identity);
   if (!user) return null;
 
   return {
     userId: user.id,
-    githubUserId,
-    githubLogin,
-    actor: `user:${githubLogin}`,
+    sourceProvider: identity.sourceProvider,
+    externalUserId: identity.externalUserId,
+    sourceLogin: identity.sourceLogin,
+    githubUserId: githubUserIdForIdentity(identity),
+    githubLogin: githubLoginForIdentity(identity),
+    actor: `user:${identity.sourceProvider}:${identity.sourceLogin}`,
   };
 }
 
@@ -265,6 +292,21 @@ export async function canDashboardActorConfigureRepository(input: {
   }
 }
 
+export function asDashboardGitHubActor(
+  actor: DashboardMutationActor | null,
+): DashboardGitHubMutationActor | null {
+  if (
+    !actor ||
+    actor.sourceProvider !== "github" ||
+    !actor.githubUserId ||
+    !actor.githubLogin
+  ) {
+    return null;
+  }
+
+  return actor as DashboardGitHubMutationActor;
+}
+
 async function readDashboardMutationActor(): Promise<DashboardMutationActor> {
   if (!getAuthEnvironmentStatus().configured) {
     throw new Error("dashboard_auth_misconfigured");
@@ -275,25 +317,24 @@ async function readDashboardMutationActor(): Promise<DashboardMutationActor> {
   }
 
   const session = await getServerSession(authOptions);
-  const githubUserId = session?.user?.githubUserId;
-  const githubLogin = session?.user?.githubLogin;
-  if (!githubUserId || !githubLogin) {
+  const identity = readSessionSourceIdentity(session);
+  if (!identity) {
     throw new Error("dashboard_mutation_requires_sign_in");
   }
 
-  const user = await getPrisma().user.findUnique({
-    where: { githubUserId: BigInt(githubUserId) },
-    select: { id: true },
-  });
+  const user = await findUserForSourceIdentity(identity);
   if (!user) {
     throw new Error("dashboard_mutation_requires_sign_in");
   }
 
   return {
     userId: user.id,
-    githubUserId,
-    githubLogin,
-    actor: `user:${githubLogin}`,
+    sourceProvider: identity.sourceProvider,
+    externalUserId: identity.externalUserId,
+    sourceLogin: identity.sourceLogin,
+    githubUserId: githubUserIdForIdentity(identity),
+    githubLogin: githubLoginForIdentity(identity),
+    actor: `user:${identity.sourceProvider}:${identity.sourceLogin}`,
   };
 }
 
@@ -304,8 +345,9 @@ async function assertWorkspaceMutationAllowedForActor(
   await assertWorkspaceMutationAllowed(
     {
       workspaceId,
-      githubUserId: actor.githubUserId,
-      githubLogin: actor.githubLogin,
+      userId: actor.userId,
+      githubUserId: actor.githubUserId ?? "",
+      githubLogin: actor.githubLogin ?? "",
       localAdminGithubLogins: readCsvEnv(
         "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
       ),
@@ -349,6 +391,11 @@ async function assertRepositoryPermissionForActor(input: {
 }): Promise<
   Extract<DashboardMutationAccessSource, { source: "repo_manager" }>
 > {
+  const githubActor = asDashboardGitHubActor(input.actor);
+  if (!githubActor) {
+    throw new Error("repository_mutation_forbidden");
+  }
+
   const octokit = await createGitHubAppInstallationOctokit(
     input.repository.installation.githubInstallationId.toString(),
   );
@@ -359,7 +406,7 @@ async function assertRepositoryPermissionForActor(input: {
       {
         owner: input.repository.owner,
         repo: input.repository.name,
-        username: input.actor.githubLogin,
+        username: githubActor.githubLogin,
       },
     );
     const data = response.data as {
@@ -375,7 +422,7 @@ async function assertRepositoryPermissionForActor(input: {
       typeof data.user?.id === "number" || typeof data.user?.id === "string"
         ? String(data.user.id)
         : null;
-    if (responseUserId && responseUserId !== input.actor.githubUserId) {
+    if (responseUserId && responseUserId !== githubActor.githubUserId) {
       throw new Error("repository_mutation_forbidden");
     }
 
@@ -389,7 +436,7 @@ async function assertRepositoryPermissionForActor(input: {
     if (input.repository.id) {
       await updateRepositoryPermissionCacheFromLiveCheck({
         prisma: getPrisma(),
-        actor: input.actor,
+        actor: githubActor,
         repositoryId: input.repository.id,
         githubInstallationId:
           input.repository.installation.githubInstallationId,
@@ -431,7 +478,7 @@ async function assertRepositoryPermissionForActor(input: {
       if (input.repository.id) {
         await updateRepositoryPermissionCacheFromLiveCheck({
           prisma: getPrisma(),
-          actor: input.actor,
+          actor: githubActor,
           repositoryId: input.repository.id,
           githubInstallationId:
             input.repository.installation.githubInstallationId,
@@ -491,16 +538,12 @@ export async function assertDashboardWorkspaceAdminAllowed(
   }
 
   const session = await getServerSession(authOptions);
-  const githubUserId = session?.user?.githubUserId;
-  const githubLogin = session?.user?.githubLogin;
-  if (!githubUserId || !githubLogin) {
+  const identity = readSessionSourceIdentity(session);
+  if (!identity) {
     throw new Error("dashboard_admin_requires_sign_in");
   }
 
-  const user = await getPrisma().user.findUnique({
-    where: { githubUserId: BigInt(githubUserId) },
-    select: { id: true },
-  });
+  const user = await findUserForSourceIdentity(identity);
   if (!user) {
     throw new Error("dashboard_admin_requires_sign_in");
   }
@@ -508,8 +551,9 @@ export async function assertDashboardWorkspaceAdminAllowed(
   await assertWorkspaceAdminAllowed(
     {
       workspaceId,
-      githubUserId,
-      githubLogin,
+      userId: user.id,
+      githubUserId: githubUserIdForIdentity(identity) ?? "",
+      githubLogin: githubLoginForIdentity(identity) ?? "",
       localAdminGithubLogins: readCsvEnv(
         "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
       ),
@@ -521,9 +565,12 @@ export async function assertDashboardWorkspaceAdminAllowed(
 
   return {
     userId: user.id,
-    githubUserId,
-    githubLogin,
-    actor: `user:${githubLogin}`,
+    sourceProvider: identity.sourceProvider,
+    externalUserId: identity.externalUserId,
+    sourceLogin: identity.sourceLogin,
+    githubUserId: githubUserIdForIdentity(identity),
+    githubLogin: githubLoginForIdentity(identity),
+    actor: `user:${identity.sourceProvider}:${identity.sourceLogin}`,
   };
 }
 
@@ -533,16 +580,20 @@ export async function getDashboardWorkspaceScope(): Promise<DashboardWorkspaceSc
   }
 
   const session = await getServerSession(authOptions);
-  const githubUserId = session?.user?.githubUserId;
-  const githubLogin = session?.user?.githubLogin;
-  if (!githubUserId || !githubLogin) {
+  const identity = readSessionSourceIdentity(session);
+  if (!identity) {
+    return { kind: "none", reason: "signed_out" };
+  }
+  const user = await findUserForSourceIdentity(identity);
+  if (!user) {
     return { kind: "none", reason: "signed_out" };
   }
 
   return listVisibleWorkspaceScope(
     {
-      githubUserId,
-      githubLogin,
+      userId: user.id,
+      githubUserId: githubUserIdForIdentity(identity) ?? "",
+      githubLogin: githubLoginForIdentity(identity) ?? "",
       localAdminGithubLogins: readCsvEnv(
         "REVIEW_ROUTER_LOCAL_ADMIN_GITHUB_LOGINS",
       ),
@@ -566,9 +617,14 @@ export async function createGitHubAppInstallationOctokit(
 export async function createGitHubUserOctokit(
   actor: DashboardMutationActor,
 ): Promise<GitHubRequester> {
+  const githubActor = asDashboardGitHubActor(actor);
+  if (!githubActor) {
+    throw new Error("github_user_identity_required");
+  }
+
   const token = await getValidGitHubUserAccessToken({
     prisma: getPrisma(),
-    userId: actor.userId,
+    userId: githubActor.userId,
   });
   if (token.status !== "ready") {
     throw new Error(githubUserTokenStatusToDashboardError(token.status));
@@ -696,6 +752,86 @@ class GitHubUserTokenRequestError extends Error {
   ) {
     super(`github_user_token_request_failed:${status}`);
   }
+}
+
+type SessionSourceIdentity = {
+  readonly sourceProvider: "github" | "gitlab";
+  readonly externalUserId: string;
+  readonly sourceLogin: string;
+  readonly sourceAvatarUrl: string | null;
+  readonly githubUserId: string | null;
+  readonly githubLogin: string | null;
+};
+
+function readSessionSourceIdentity(
+  session: Session | null,
+): SessionSourceIdentity | null {
+  const user = session?.user;
+  const sourceProvider = user?.sourceProvider;
+  const externalUserId = user?.externalUserId;
+  const sourceLogin = user?.sourceLogin;
+  if (
+    (sourceProvider !== "github" && sourceProvider !== "gitlab") ||
+    !externalUserId ||
+    !sourceLogin
+  ) {
+    if (user?.githubUserId && user.githubLogin) {
+      return {
+        sourceProvider: "github",
+        externalUserId: user.githubUserId,
+        sourceLogin: user.githubLogin,
+        sourceAvatarUrl: user.githubAvatarUrl ?? null,
+        githubUserId: user.githubUserId,
+        githubLogin: user.githubLogin,
+      };
+    }
+    return null;
+  }
+  return {
+    sourceProvider,
+    externalUserId,
+    sourceLogin,
+    sourceAvatarUrl:
+      user.sourceAvatarUrl ??
+      (sourceProvider === "github"
+        ? user.githubAvatarUrl
+        : user.gitlabAvatarUrl) ??
+      null,
+    githubUserId: user.githubUserId ?? null,
+    githubLogin: user.githubLogin ?? null,
+  };
+}
+
+function githubUserIdForIdentity(
+  identity: SessionSourceIdentity,
+): string | null {
+  return identity.sourceProvider === "github"
+    ? (identity.githubUserId ?? identity.externalUserId)
+    : null;
+}
+
+function githubLoginForIdentity(
+  identity: SessionSourceIdentity,
+): string | null {
+  return identity.sourceProvider === "github"
+    ? (identity.githubLogin ?? identity.sourceLogin)
+    : null;
+}
+
+async function findUserForSourceIdentity(input: {
+  readonly sourceProvider: "github" | "gitlab";
+  readonly externalUserId: string;
+}): Promise<{ readonly id: string } | null> {
+  const identity = await getPrisma().userExternalIdentity.findUnique({
+    where: {
+      provider_externalUserId: {
+        provider: input.sourceProvider,
+        externalUserId: input.externalUserId,
+      },
+    },
+    select: { userId: true },
+  });
+  return identity ? { id: identity.userId } : null;
 }
 
 function dashboardMutationsEnabled(): boolean {

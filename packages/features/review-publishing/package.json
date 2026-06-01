@@ -1,0 +1,24 @@
+{
+  "name": "@reviewrouter/features-review-publishing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    }
+  },
+  "bin": {
+    "reviewrouter-publish-review": "./bin/reviewrouter-publish-review.mjs",
+    "reviewrouter-gitlab-review": "./bin/reviewrouter-gitlab-review.mjs"
+  },
+  "dependencies": {
+    "@reviewrouter/shared": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

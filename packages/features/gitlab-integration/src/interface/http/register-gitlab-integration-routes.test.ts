@@ -1,0 +1,605 @@
+import Fastify from "fastify";
+import { describe, expect, it } from "vitest";
+import type { Clock } from "@reviewrouter/shared";
+import type { GitLabActionSessionTokenServicePort } from "../../application/ports/gitlab-action-session-token-service-port";
+import type { GitLabCiIdTokenVerifierPort } from "../../application/ports/gitlab-ci-id-token-verifier-port";
+import type { GitLabInstallationPort } from "../../application/ports/gitlab-installation-port";
+import type {
+  GitLabMergeRequestPort,
+  GitLabRepositoryPort,
+} from "../../application/ports/gitlab-repository-port";
+import type {
+  GitLabActionSessionClaims,
+  GitLabCiIdTokenClaims,
+  GitLabMergeRequestIdentity,
+  GitLabRepositoryContext,
+} from "../../domain/gitlab-ci-identity";
+import type {
+  GitLabCiLintResult,
+  GitLabCiVariableSpec,
+  GitLabGroupProjectsPage,
+  GitLabProjectInstallationSettings,
+} from "../../domain/gitlab-installation";
+import { registerGitLabIntegrationRoutes } from "./register-gitlab-integration-routes";
+
+const fixedNow = new Date("2026-05-30T12:00:00.000Z");
+const clock: Clock = { now: () => fixedNow };
+const headSha = "a".repeat(40);
+
+const claims: GitLabCiIdTokenClaims = {
+  iss: "https://gitlab.com",
+  sub: "project_path:group/project:ref_type:branch:ref:feature",
+  aud: "reviewrouter",
+  namespace_id: "12",
+  namespace_path: "group",
+  project_id: "123",
+  project_path: "group/project",
+  job_project_id: "123",
+  job_project_path: "group/project",
+  user_id: "7",
+  user_login: "ilya",
+  pipeline_id: "1001",
+  pipeline_source: "merge_request_event",
+  job_id: "2002",
+  ref: "feature",
+  ref_type: "branch",
+  sha: headSha,
+};
+
+const repository: GitLabRepositoryContext = {
+  workspaceId: "workspace_1",
+  repositoryId: "repo_1",
+  gitlabProjectId: "123",
+  fullName: "group/project",
+  owner: "group",
+  selected: true,
+  installationStatus: "active",
+};
+
+const mergeRequest: GitLabMergeRequestIdentity = {
+  projectId: "123",
+  mergeRequestIid: "5",
+  headSha,
+  sourceProjectId: "123",
+  targetProjectId: "123",
+  state: "opened",
+};
+
+class StaticVerifier implements GitLabCiIdTokenVerifierPort {
+  async verify(): Promise<GitLabCiIdTokenClaims> {
+    return claims;
+  }
+}
+
+class StaticRepositories implements GitLabRepositoryPort {
+  async findSelectedRepositoryByGitLabProjectId(): Promise<GitLabRepositoryContext> {
+    return repository;
+  }
+}
+
+class StaticMergeRequests implements GitLabMergeRequestPort {
+  async getMergeRequest(): Promise<GitLabMergeRequestIdentity> {
+    return mergeRequest;
+  }
+}
+
+class StaticSessions implements GitLabActionSessionTokenServicePort {
+  async sign(input: {
+    readonly claims: GitLabActionSessionClaims;
+    readonly expiresInSeconds: number;
+    readonly issuedAt: Date;
+  }) {
+    expect(input.claims.provider).toBe("gitlab");
+    return {
+      token: "gitlab-session",
+      expiresAt: new Date(
+        input.issuedAt.getTime() + input.expiresInSeconds * 1000,
+      ),
+    };
+  }
+
+  async verify(): Promise<GitLabActionSessionClaims> {
+    throw new Error("not_needed");
+  }
+}
+
+class StaticInstallation implements GitLabInstallationPort {
+  public variables: GitLabCiVariableSpec[] = [];
+  public updatedCiConfigPath: string | null = null;
+  public updatedProjectIds: string[] = [];
+  public failingProjectIds = new Set<string>();
+  public groupProjectsCalls: Array<{
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }> = [];
+  public groupProjectsPage: GitLabGroupProjectsPage = {
+    groupIdOrPath: "12",
+    page: 1,
+    perPage: 100,
+    nextPage: null,
+    total: 1,
+    totalPages: 1,
+    projects: [
+      {
+        projectId: "123",
+        fullName: "group/project-123",
+        name: "project-123",
+        defaultBranch: "main",
+        webUrl: "https://gitlab.com/group/project-123",
+        archived: false,
+      },
+    ],
+  };
+
+  async listGroupProjects(input: {
+    readonly groupIdOrPath: string;
+    readonly includeSubgroups: boolean;
+    readonly archived: boolean;
+    readonly withShared: boolean;
+    readonly page: number;
+    readonly perPage: number;
+    readonly search?: string | undefined;
+  }): Promise<GitLabGroupProjectsPage> {
+    this.groupProjectsCalls.push(input);
+    return {
+      ...this.groupProjectsPage,
+      groupIdOrPath: input.groupIdOrPath,
+      page: input.page,
+      perPage: input.perPage,
+    };
+  }
+
+  async getProjectSettings(input: {
+    readonly projectId: string;
+  }): Promise<GitLabProjectInstallationSettings> {
+    return this.getProjectSettingsByPathOrId({
+      projectPathOrId: input.projectId,
+    });
+  }
+
+  async getProjectSettingsByPathOrId(input: {
+    readonly projectPathOrId: string;
+  }): Promise<GitLabProjectInstallationSettings> {
+    const projectId = input.projectPathOrId;
+    if (this.failingProjectIds.has(projectId)) {
+      throw new Error("gitlab_api_error_503");
+    }
+    return {
+      projectId,
+      fullName: `group/project-${projectId}`,
+      defaultBranch: "main",
+      ciConfigPath: null,
+      canEditProjectSettings: true,
+      canCreateMergeRequest: true,
+    };
+  }
+
+  async lintCiConfig(): Promise<GitLabCiLintResult> {
+    return { valid: true, errors: [] };
+  }
+
+  async updateProjectCiConfigPath(input: {
+    readonly projectId: string;
+    readonly ciConfigPath: string;
+  }): Promise<void> {
+    this.updatedProjectIds.push(input.projectId);
+    this.updatedCiConfigPath = input.ciConfigPath;
+  }
+
+  async upsertCiVariable(input: {
+    readonly variable: GitLabCiVariableSpec;
+  }): Promise<void> {
+    this.variables.push(input.variable);
+  }
+
+  async createSetupMergeRequest() {
+    return {
+      iid: "8",
+      webUrl: "https://gitlab.com/group/project/-/merge_requests/8",
+    };
+  }
+}
+
+describe("registerGitLabIntegrationRoutes", () => {
+  it("exchanges GitLab CI ID tokens through the GitLab route", async () => {
+    const app = await createApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/action/v1/session/exchange",
+      payload: {
+        idToken: "id-token",
+        mergeRequestIid: "5",
+        headSha,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      protocolVersion: 1,
+      sessionToken: "gitlab-session",
+      expiresAt: "2026-05-30T12:15:00.000Z",
+      repository: "group/project",
+    });
+  });
+
+  it("requires an admin bearer token before provisioning GitLab projects", async () => {
+    const installation = new StaticInstallation();
+    const app = await createApp({ installation, exchange: false });
+
+    const unauthorized = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/projects/123/provision",
+      payload: provisionPayload(),
+    });
+
+    expect(unauthorized.statusCode).toBe(401);
+    expect(installation.updatedCiConfigPath).toBeNull();
+
+    const authorized = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/projects/123/provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: provisionPayload(),
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      mode: "ci_config_path",
+      ciConfigPath: ".gitlab/reviewrouter.yml@reviewrouter/control:main",
+      variablesConfigured: 2,
+    });
+    expect(installation.updatedCiConfigPath).toBe(
+      ".gitlab/reviewrouter.yml@reviewrouter/control:main",
+    );
+  });
+
+  it("bulk provisions GitLab projects behind the same admin bearer", async () => {
+    const installation = new StaticInstallation();
+    installation.failingProjectIds.add("456");
+    const app = await createApp({ installation, exchange: false });
+
+    const unauthorized = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123"],
+      },
+    });
+
+    expect(unauthorized.statusCode).toBe(401);
+    expect(installation.updatedProjectIds).toEqual([]);
+
+    const authorized = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123", "456", "123"],
+      },
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      protocolVersion: 1,
+      requested: 2,
+      succeeded: 1,
+      failed: 1,
+      sharedVariablesConfigured: 2,
+      results: [
+        {
+          projectId: "123",
+          status: "fulfilled",
+          result: {
+            mode: "ci_config_path",
+            ciConfigPath: ".gitlab/reviewrouter.yml@reviewrouter/control:main",
+            variablesConfigured: 0,
+          },
+        },
+        {
+          projectId: "456",
+          status: "rejected",
+          error: {
+            code: "gitlab_api_error_503",
+            retryable: true,
+          },
+        },
+      ],
+    });
+    expect(installation.updatedProjectIds).toEqual(["123"]);
+    expect(installation.variables.map((variable) => variable.key)).toEqual([
+      "REVIEWROUTER_API_URL",
+      "REVIEWROUTER_ID_TOKEN_AUDIENCE",
+    ]);
+  });
+
+  it("discovers GitLab group projects behind the same admin bearer", async () => {
+    const installation = new StaticInstallation();
+    const app = await createApp({ installation, exchange: false });
+
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=platform%2Freview",
+    });
+
+    expect(unauthorized.statusCode).toBe(401);
+    expect(installation.groupProjectsCalls).toEqual([]);
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=platform%2Freview&includeSubgroups=false&withShared=true&page=2&perPage=50&search=api&workspaceId=workspace_gitlab",
+      headers: { authorization: "Bearer installer-admin" },
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      protocolVersion: 1,
+      groupIdOrPath: "platform/review",
+      page: 2,
+      perPage: 50,
+      nextPage: null,
+      total: 1,
+      totalPages: 1,
+      projectIds: ["123"],
+      projects: installation.groupProjectsPage.projects,
+      staticRepositoriesEnvKey: "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+      staticRepositoriesJson:
+        '[{"workspaceId":"workspace_gitlab","repositoryId":"gitlab-project-123","gitlabProjectId":"123","fullName":"group/project-123","owner":"group","selected":true,"installationStatus":"active"}]',
+      staticRepositories: [
+        {
+          workspaceId: "workspace_gitlab",
+          repositoryId: "gitlab-project-123",
+          gitlabProjectId: "123",
+          fullName: "group/project-123",
+          owner: "group",
+          selected: true,
+          installationStatus: "active",
+        },
+      ],
+    });
+    expect(installation.groupProjectsCalls).toEqual([
+      {
+        groupIdOrPath: "platform/review",
+        includeSubgroups: false,
+        archived: false,
+        withShared: true,
+        page: 2,
+        perPage: 50,
+        search: "api",
+      },
+    ]);
+  });
+
+  it("does not expose provisioning when installation dependencies are absent", async () => {
+    const app = await createApp();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/projects/123/provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: provisionPayload(),
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      error: { code: "gitlab_installation_unavailable" },
+    });
+  });
+
+  it("reports GitLab setup status behind the install admin bearer", async () => {
+    const app = await createApp({
+      exchange: false,
+      installerAdminToken: "installer-admin",
+      environmentStatus: {
+        actionSessionSecretConfigured: true,
+        installerAdminTokenConfigured: true,
+        installerTokenConfigured: false,
+        apiTokenConfigured: false,
+        staticRepositoriesConfigured: false,
+        registeredRepositoryCount: 0,
+        oidcAudienceConfigured: true,
+        runtimeImageConfigured: false,
+      },
+    });
+
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/status",
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/status",
+      headers: { authorization: "Bearer installer-admin" },
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toEqual({
+      protocolVersion: 1,
+      controlPlaneEnabled: true,
+      installation: {
+        available: false,
+        missingEnv: ["REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN"],
+      },
+      exchange: {
+        available: false,
+        missingEnv: [
+          "REVIEW_ROUTER_GITLAB_API_TOKEN",
+          "REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON",
+        ],
+        registeredRepositoryCount: 0,
+      },
+      defaults: {
+        audience: "reviewrouter",
+        runtimeImage: null,
+        oidcAudienceConfigured: true,
+        runtimeImageConfigured: false,
+      },
+    });
+  });
+
+  it("checks install admin auth before reporting unavailable provisioning", async () => {
+    const app = await createApp({
+      exchange: false,
+      installerAdminToken: "installer-admin",
+    });
+
+    const unauthorizedSingle = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/projects/123/provision",
+      payload: provisionPayload(),
+    });
+    const unauthorizedBulk = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123"],
+      },
+    });
+    const unauthorizedDiscover = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=12",
+    });
+
+    expect(unauthorizedSingle.statusCode).toBe(401);
+    expect(unauthorizedBulk.statusCode).toBe(401);
+    expect(unauthorizedDiscover.statusCode).toBe(401);
+
+    const authorizedSingle = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/projects/123/provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: provisionPayload(),
+    });
+    const authorizedBulk = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/install/v1/bulk-provision",
+      headers: { authorization: "Bearer installer-admin" },
+      payload: {
+        ...provisionPayload(),
+        projectIds: ["123"],
+      },
+    });
+    const authorizedDiscover = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/group-projects?groupId=12",
+      headers: { authorization: "Bearer installer-admin" },
+    });
+
+    expect(authorizedSingle.statusCode).toBe(503);
+    expect(authorizedSingle.json()).toMatchObject({
+      error: { code: "gitlab_installation_unavailable" },
+    });
+    expect(authorizedBulk.statusCode).toBe(503);
+    expect(authorizedBulk.json()).toMatchObject({
+      error: { code: "gitlab_installation_unavailable" },
+    });
+    expect(authorizedDiscover.statusCode).toBe(503);
+    expect(authorizedDiscover.json()).toMatchObject({
+      error: { code: "gitlab_installation_unavailable" },
+    });
+  });
+
+  it("reports exchange unavailable without blocking install-only route setup", async () => {
+    const app = await createApp({ exchange: false });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/gitlab/action/v1/session/exchange",
+      payload: {
+        idToken: "id-token",
+        mergeRequestIid: "5",
+        headSha,
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      error: { code: "gitlab_exchange_unavailable" },
+    });
+  });
+
+  it("returns the control project CI config behind the install admin bearer", async () => {
+    const app = await createApp({
+      exchange: false,
+      installerAdminToken: "installer-admin",
+    });
+
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/control-ci-config",
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const authorized = await app.inject({
+      method: "GET",
+      url: "/api/gitlab/install/v1/control-ci-config?runtimeImage=registry.example.com%2Freviewrouter%2Fgitlab-runtime%3Av1",
+      headers: { authorization: "Bearer installer-admin" },
+    });
+
+    expect(authorized.statusCode).toBe(200);
+    expect(authorized.json()).toMatchObject({
+      protocolVersion: 1,
+      path: ".gitlab/reviewrouter.yml",
+    });
+    expect(authorized.json().content).toContain("reviewrouter:review:");
+    expect(authorized.json().content).toContain(
+      "registry.example.com/reviewrouter/gitlab-runtime:v1",
+    );
+  });
+});
+
+async function createApp(
+  input: {
+    readonly installation?: GitLabInstallationPort | undefined;
+    readonly exchange?: boolean | undefined;
+    readonly installerAdminToken?: string | undefined;
+    readonly environmentStatus?:
+      | Parameters<
+          typeof registerGitLabIntegrationRoutes
+        >[1]["environmentStatus"]
+      | undefined;
+  } = {},
+) {
+  const app = Fastify({ logger: false });
+  const includeExchange = input.exchange ?? true;
+  await registerGitLabIntegrationRoutes(app, {
+    ...(includeExchange
+      ? {
+          exchange: {
+            verifier: new StaticVerifier(),
+            repositories: new StaticRepositories(),
+            mergeRequests: new StaticMergeRequests(),
+            sessions: new StaticSessions(),
+          },
+        }
+      : {}),
+    installation: input.installation,
+    ...(input.environmentStatus
+      ? { environmentStatus: input.environmentStatus }
+      : {}),
+    installerAdminToken:
+      input.installerAdminToken ??
+      (input.installation ? "installer-admin" : undefined),
+    clock,
+  });
+  return app;
+}
+
+function provisionPayload() {
+  return {
+    controlProjectPath: "reviewrouter/control",
+    controlProjectRef: "main",
+    reviewRouterApiBaseUrl: "https://reviewrouter.example.com",
+    variableTarget: { kind: "group", id: "12" },
+  };
+}

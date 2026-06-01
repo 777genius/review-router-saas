@@ -8,7 +8,10 @@ import {
   exportMemoryItems,
   stringifyMemoryExport,
 } from "@reviewrouter/features-memory";
-import { assertDashboardWorkspaceAdminAllowed } from "../../../../../src/server/dashboard-mutations";
+import {
+  assertDashboardWorkspaceAdminAllowed,
+  type DashboardMutationActor,
+} from "../../../../../src/server/dashboard-mutations";
 import {
   createDashboardMemoryDependencies,
   resolveDashboardMemoryActor,
@@ -39,20 +42,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       },
     );
     const memoryActor = await resolveDashboardMemoryActor(
-      {
-        githubUserId: dashboardActor.githubUserId,
-        githubLogin: dashboardActor.githubLogin,
-      },
+      dashboardMemoryActorInput(dashboardActor),
       prisma,
     );
     const result = await exportMemoryItems(
       { workspaceId, actor: memoryActor },
       createDashboardMemoryDependencies({
         prisma,
-        actor: {
-          githubUserId: dashboardActor.githubUserId,
-          githubLogin: dashboardActor.githubLogin,
-        },
+        actor: dashboardMemoryActorInput(dashboardActor),
       }),
     );
     if (result.status === "rejected") {
@@ -81,6 +78,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       { status: 403 },
     );
   }
+}
+
+function dashboardMemoryActorInput(
+  actor: DashboardMutationActor,
+): Parameters<typeof resolveDashboardMemoryActor>[0] {
+  return {
+    userId: actor.userId,
+    sourceProvider: actor.sourceProvider,
+    sourceLogin: actor.sourceLogin,
+    githubUserId: actor.githubUserId,
+    githubLogin: actor.githubLogin,
+  };
 }
 
 function memoryExportRejectionStatus(

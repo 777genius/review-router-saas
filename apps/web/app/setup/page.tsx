@@ -11,6 +11,7 @@ import { getGitHubAppInstallUrl } from "../../src/server/github-app-install-url"
 import { buildGitHubAppSetupNotice } from "../../src/server/github-app-setup-notice";
 import { getPrisma } from "../../src/server/prisma";
 import { ActionToast } from "../action-toast";
+import { ConnectSourceDialog } from "../connect-source-dialog";
 import { GitHubAppInstallPermissionDialog } from "../github-app-install-permission-dialog";
 import { GitHubSignInButton } from "../github-sign-in-button";
 import { LoadingLinkButton } from "../loading-link-button";
@@ -265,22 +266,14 @@ function buildPrimarySetupAction(input: {
     );
   }
 
-  if (input.appInstallUrl) {
-    return (
-      <GitHubAppInstallPermissionDialog
-        href={input.appInstallUrl}
-        size="lg"
-        className="w-full rounded-2xl sm:min-w-52 sm:w-auto"
-      >
-        Install GitHub App
-      </GitHubAppInstallPermissionDialog>
-    );
-  }
-
   return (
-    <span className="inline-flex min-h-14 w-full items-center justify-center rounded-2xl border border-amber-300/25 bg-amber-300/[0.06] px-6 py-3 text-center font-mono text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-amber-100 sm:min-w-52 sm:w-auto">
-      Install URL not configured
-    </span>
+    <ConnectSourceDialog
+      appInstallUrl={input.appInstallUrl}
+      triggerLabel="Connect source"
+      triggerVariant="solid"
+      triggerSize="lg"
+      triggerClassName="w-full rounded-2xl sm:min-w-52 sm:w-auto"
+    />
   );
 }
 
@@ -424,11 +417,13 @@ function SetupStartCard({
             >
               Open dashboard
             </LoadingLinkButton>
-          ) : appInstallUrl ? (
-            <GitHubAppInstallPermissionDialog href={appInstallUrl} size="lg">
-              Install GitHub App
-            </GitHubAppInstallPermissionDialog>
-          ) : null}
+          ) : (
+            <ConnectSourceDialog
+              appInstallUrl={appInstallUrl}
+              triggerLabel="Connect source"
+              triggerSize="lg"
+            />
+          )}
           {appInstallUrl ? (
             <GitHubAppInstallPermissionDialog
               href={appInstallUrl}

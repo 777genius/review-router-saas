@@ -13,40 +13,61 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members                WorkspaceMember[]
-  installations          GitHubInstallation[]
-  repositories           RepositoryConnection[]
-  provisioning           WorkflowProvisioning[]
-  orgRulesets            OrgRulesetProvisioning[]
-  reviewConfigs          ReviewConfiguration[]
-  providerSetup          ProviderSetupState[]
-  actionHealth           ActionRunHealthReport[]
-  conflictReviewAttempts ConflictReviewAttempt[]
-  auditEvents            AuditEvent[]
-  entitlement            WorkspaceEntitlement?
-  memoryItems            MemoryItem[]
-  memorySuggestions      MemorySuggestion[]
-  memoryUsageEvents      MemoryUsageEvent[]
-  codexOAuthProviders    CodexOAuthProviderInstance[]
+  members                  WorkspaceMember[]
+  installations            GitHubInstallation[]
+  gitLabInstallations      GitLabInstallation[]
+  repositories             RepositoryConnection[]
+  provisioning             WorkflowProvisioning[]
+  orgRulesets              OrgRulesetProvisioning[]
+  reviewConfigs            ReviewConfiguration[]
+  providerSetup            ProviderSetupState[]
+  actionHealth             ActionRunHealthReport[]
+  conflictReviewAttempts   ConflictReviewAttempt[]
+  auditEvents              AuditEvent[]
+  entitlement              WorkspaceEntitlement?
+  memoryItems              MemoryItem[]
+  memorySuggestions        MemorySuggestion[]
+  memoryUsageEvents        MemoryUsageEvent[]
+  codexOAuthProviders      CodexOAuthProviderInstance[]
   codexOAuthSetupManifests CodexOAuthSetupManifest[]
 }
 
 model User {
   id           String   @id @default(cuid())
-  githubUserId BigInt   @unique
-  githubLogin  String
+  githubUserId BigInt?  @unique
+  githubLogin  String?
   primaryEmail String?
   avatarUrl    String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   memberships                WorkspaceMember[]
+  externalIdentities         UserExternalIdentity[]
   githubAuthorizations       GitHubUserAuthorization[]
+  gitLabInstallations        GitLabInstallation[]
   repositoryPermissionCaches RepositoryPermissionCache[]
   memoryItems                MemoryItem[]
   memorySuggestions          MemorySuggestion[]
 
   @@index([githubLogin])
+}
+
+model UserExternalIdentity {
+  id             String      @id @default(cuid())
+  userId         String
+  provider       ScmProvider
+  externalUserId String
+  login          String
+  primaryEmail   String?
+  avatarUrl      String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalUserId])
+  @@unique([userId, provider])
+  @@index([provider, login])
 }
 
 model GitHubUserAuthorization {
@@ -106,43 +127,74 @@ model GitHubInstallation {
   @@index([workspaceId, status])
 }
 
-model RepositoryConnection {
-  id                 String                @id @default(cuid())
-  workspaceId        String
-  installationId     String
-  githubRepositoryId BigInt                @unique
-  owner              String
-  name               String
-  fullName           String
-  defaultBranch      String
-  visibility         RepositoryVisibility
-  selected           Boolean               @default(true)
-  archived           Boolean               @default(false)
-  stargazersCount    Int                   @default(0)
-  setupStatus        RepositorySetupStatus @default(not_configured)
-  lastSyncedAt       DateTime?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
+model GitLabInstallation {
+  id                String                   @id @default(cuid())
+  workspaceId       String
+  namespaceId       String?
+  sourceBaseUrl     String                   @default("https://gitlab.com")
+  namespacePath     String
+  sourceKind        String
+  status            GitLabInstallationStatus @default(active)
+  installedByUserId String?
+  selectedProjects  Int                      @default(0)
+  installSummary    Json?
+  lastInstalledAt   DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
 
-  workspace              Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation           GitHubInstallation          @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  provisioning           WorkflowProvisioning[]
-  reviewConfigs          ReviewConfiguration[]
-  providerSetup          ProviderSetupState[]
-  actionHealth           ActionRunHealthReport[]
-  conflictReviewAttempts ConflictReviewAttempt[]
-  rulesetSources         OrgRulesetProvisioning[]    @relation("OrgRulesetSourceRepository")
-  permissionCache        RepositoryPermissionCache[]
-  memoryItems            MemoryItem[]
-  memorySuggestions      MemorySuggestion[]
-  memoryUsageEvents      MemoryUsageEvent[]
-  codexOAuthProviders    CodexOAuthProviderInstance[]
+  workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installedBy  User?                  @relation(fields: [installedByUserId], references: [id], onDelete: SetNull)
+  repositories RepositoryConnection[]
+
+  @@unique([workspaceId, sourceBaseUrl, namespacePath])
+  @@index([workspaceId, status])
+  @@index([namespaceId])
+}
+
+model RepositoryConnection {
+  id                   String                @id @default(cuid())
+  workspaceId          String
+  provider             ScmProvider           @default(github)
+  sourceBaseUrl        String                @default("https://github.com")
+  externalRepositoryId String
+  installationId       String?
+  githubRepositoryId   BigInt?               @unique
+  gitlabInstallationId String?
+  owner                String
+  name                 String
+  fullName             String
+  defaultBranch        String
+  visibility           RepositoryVisibility
+  selected             Boolean               @default(true)
+  archived             Boolean               @default(false)
+  stargazersCount      Int                   @default(0)
+  setupStatus          RepositorySetupStatus @default(not_configured)
+  lastSyncedAt         DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  workspace                Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation             GitHubInstallation?          @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  gitlabInstallation       GitLabInstallation?          @relation(fields: [gitlabInstallationId], references: [id], onDelete: Cascade)
+  provisioning             WorkflowProvisioning[]
+  reviewConfigs            ReviewConfiguration[]
+  providerSetup            ProviderSetupState[]
+  actionHealth             ActionRunHealthReport[]
+  conflictReviewAttempts   ConflictReviewAttempt[]
+  rulesetSources           OrgRulesetProvisioning[]     @relation("OrgRulesetSourceRepository")
+  permissionCache          RepositoryPermissionCache[]
+  memoryItems              MemoryItem[]
+  memorySuggestions        MemorySuggestion[]
+  memoryUsageEvents        MemoryUsageEvent[]
+  codexOAuthProviders      CodexOAuthProviderInstance[]
   codexOAuthSetupManifests CodexOAuthSetupManifest[]
 
-  @@unique([workspaceId, fullName])
+  @@unique([provider, externalRepositoryId, sourceBaseUrl])
+  @@unique([workspaceId, provider, fullName, sourceBaseUrl])
   @@index([installationId])
+  @@index([gitlabInstallationId])
   @@index([workspaceId, setupStatus])
-  @@index([workspaceId, selected, fullName])
+  @@index([workspaceId, provider, sourceBaseUrl, selected, fullName])
 }
 
 model RepositoryPermissionCache {
@@ -200,6 +252,7 @@ model ReviewConfigurationVersion {
   providerMaxParallel  Int      @default(1)
   inlineMinAgreement   Int      @default(1)
   targetTokensPerBatch Int
+  reviewLanguage       String?
   createdAt            DateTime @default(now())
 
   configuration ReviewConfiguration                  @relation(fields: [configurationId], references: [id], onDelete: Cascade)
@@ -246,21 +299,21 @@ model ProviderSetupState {
 }
 
 model CodexOAuthProviderInstance {
-  id                     String   @id @default(cuid())
+  id                     String    @id @default(cuid())
   workspaceId            String
   repositoryId           String
-  providerInstanceId     String   @unique
+  providerInstanceId     String    @unique
   authMode               String
   secretName             String
-  state                  String   @default("setup_pending")
-  latestGeneration       Int      @default(1)
+  state                  String    @default("setup_pending")
+  latestGeneration       Int       @default(1)
   latestGenerationHash   String?
   generationHashSalt     String
   accountFingerprintSalt String
   activeLeaseId          String?
   activeLeaseExpiresAt   DateTime?
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository       RepositoryConnection        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -298,23 +351,23 @@ model CodexOAuthSetupManifest {
 }
 
 model CodexOAuthLease {
-  id                    String    @id @default(cuid())
-  providerInstanceRowId String
-  providerInstanceId    String
-  githubRunId           String
-  githubRunAttempt      String
-  leaseKey              String    @unique
-  status                String    @default("preleased")
-  restoredGenerationHash String?
-  nextGeneration        Int?
+  id                      String    @id @default(cuid())
+  providerInstanceRowId   String
+  providerInstanceId      String
+  githubRunId             String
+  githubRunAttempt        String
+  leaseKey                String    @unique
+  status                  String    @default("preleased")
+  restoredGenerationHash  String?
+  nextGeneration          Int?
   writebackPreflightKeyId String?
-  writebackPreflightedAt DateTime?
-  expiresAt             DateTime
-  createdAt             DateTime  @default(now())
-  finalizedAt           DateTime?
-  completedAt           DateTime?
+  writebackPreflightedAt  DateTime?
+  expiresAt               DateTime
+  createdAt               DateTime  @default(now())
+  finalizedAt             DateTime?
+  completedAt             DateTime?
 
-  providerInstance CodexOAuthProviderInstance @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  providerInstance CodexOAuthProviderInstance  @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
   writebackIntents CodexOAuthWritebackIntent[]
 
   @@index([providerInstanceId, status])
@@ -729,6 +782,19 @@ enum GitHubInstallationStatus {
   removed
   permission_error
   sync_error
+}
+
+enum GitLabInstallationStatus {
+  pending
+  active
+  removed
+  permission_error
+  sync_error
+}
+
+enum ScmProvider {
+  github
+  gitlab
 }
 
 enum RepositoryVisibility {
