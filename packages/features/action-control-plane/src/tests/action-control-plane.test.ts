@@ -1894,6 +1894,46 @@ describe("action control plane", () => {
     });
   });
 
+  it("returns Codex rotating runtime config for interaction workflows", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = parseReviewConfiguration({
+      ...safeDefaultReviewConfiguration,
+      providers: [
+        {
+          kind: "codex",
+          authMode: "codex_subscription_oauth_rotating",
+          model: "gpt-5.5",
+          reasoningEffort: "medium",
+          agenticContext: true,
+          fastMode: false,
+        },
+      ],
+    });
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService({
+          ...sessionClaims,
+          eventName: "pull_request_review_comment",
+          workflowPath: ".github/workflows/reviewrouter-interaction.yml",
+        }),
+        clock,
+      },
+    );
+
+    expect(config).toMatchObject({
+      provider: {
+        kind: "codex",
+        authMode: "codex_subscription_oauth_rotating",
+      },
+      runtimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth-rotating",
+      },
+    });
+  });
+
   it("returns Claude runtime config without provider secrets", async () => {
     const repositories = new InMemoryActionControlPlaneRepository();
     repositories.runtimeConfig = parseReviewConfiguration({
