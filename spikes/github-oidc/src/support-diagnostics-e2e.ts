@@ -37,6 +37,8 @@ try {
   const repository = await prisma.repositoryConnection.create({
     data: {
       workspaceId: workspace.id,
+      provider: "github",
+      externalRepositoryId: BigInt(`94${String(marker).slice(-10)}`).toString(),
       installationId: installation.id,
       githubRepositoryId: BigInt(`94${String(marker).slice(-10)}`),
       owner: "review-router-e2e",

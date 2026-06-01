@@ -15,29 +15,53 @@ import { PrismaEntitlementRepository } from "@reviewrouter/features-entitlements
 import type { PrismaClient } from "@reviewrouter/platform-db";
 
 export type DashboardMemoryActorInput = {
-  readonly githubUserId: string;
-  readonly githubLogin: string;
+  readonly userId: string;
+  readonly sourceProvider: "github" | "gitlab";
+  readonly sourceLogin: string;
+  readonly githubUserId: string | null;
+  readonly githubLogin: string | null;
 };
 
 export async function resolveDashboardMemoryActor(
   input: DashboardMemoryActorInput,
   prisma: PrismaClient,
 ): Promise<MemoryActor> {
-  const user = await prisma.user.upsert({
-    where: { githubUserId: BigInt(input.githubUserId) },
-    update: { githubLogin: input.githubLogin },
-    create: {
-      githubUserId: BigInt(input.githubUserId),
-      githubLogin: input.githubLogin,
-    },
+  const user = await prisma.user.findUnique({
+    where: { id: input.userId },
     select: { id: true, githubUserId: true, githubLogin: true },
   });
+  if (!user) {
+    throw new Error("memory_actor_not_found");
+  }
+
+  return buildDashboardMemoryActor({
+    ...input,
+    githubUserId: input.githubUserId ?? user.githubUserId?.toString() ?? null,
+    githubLogin: input.githubLogin ?? user.githubLogin,
+  });
+}
+
+export function buildDashboardMemoryActor(
+  input: DashboardMemoryActorInput,
+): MemoryActor {
+  if (input.sourceProvider === "gitlab") {
+    return {
+      kind: "workspace_user",
+      id: input.userId,
+      githubUserId: null,
+      login: input.sourceLogin,
+    };
+  }
+
+  if (!input.githubUserId) {
+    throw new Error("github_user_id_required");
+  }
 
   return {
     kind: "github_user",
-    id: user.id,
-    githubUserId: user.githubUserId.toString(),
-    login: user.githubLogin,
+    id: input.userId,
+    githubUserId: input.githubUserId,
+    login: input.githubLogin ?? input.sourceLogin,
   };
 }
 

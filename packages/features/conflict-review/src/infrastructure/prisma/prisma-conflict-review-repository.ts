@@ -19,6 +19,7 @@ export class PrismaConflictReviewRepository implements ConflictReviewRepositoryP
   }): Promise<ConflictReviewRepository | null> {
     const repository = await this.prisma.repositoryConnection.findFirst({
       where: {
+        provider: "github",
         githubRepositoryId: BigInt(input.githubRepositoryId),
         installation: {
           githubInstallationId: BigInt(input.githubInstallationId),
@@ -41,7 +42,11 @@ export class PrismaConflictReviewRepository implements ConflictReviewRepositoryP
         },
       },
     });
-    if (!repository) {
+    if (
+      !repository ||
+      !repository.githubRepositoryId ||
+      !repository.installation
+    ) {
       return null;
     }
     return {

@@ -21,7 +21,7 @@ import {
 } from "./index";
 
 describe("platform config", () => {
-  it("defaults workflow provisioning to the live ReviewRouter main branch", () => {
+  it("defaults workflow provisioning to the live ReviewRouter main channel", () => {
     expect(resolveReviewRouterActionRef({})).toBe(
       "777genius/review-router@main",
     );

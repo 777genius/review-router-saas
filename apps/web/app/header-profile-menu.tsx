@@ -2,34 +2,33 @@
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { LogIn } from "lucide-react";
+import { LinkButton } from "@reviewrouter/ui";
 import { GitHubAccountAvatar } from "./github-account-avatar";
-import {
-  GitHubSignInButton,
-  GitHubSignOutButton,
-} from "./github-sign-in-button";
+import { GitHubSignOutButton } from "./github-sign-in-button";
 
 type HeaderProfileMenuProps = {
-  readonly githubLogin: string | null;
-  readonly githubAvatarUrl: string | null;
+  readonly login: string | null;
+  readonly avatarUrl: string | null;
+  readonly provider: "github" | "gitlab" | null;
 };
 
 export function HeaderProfileMenu({
-  githubLogin,
-  githubAvatarUrl,
+  login,
+  avatarUrl,
+  provider,
 }: HeaderProfileMenuProps): React.ReactElement {
-  if (!githubLogin) {
+  if (!login) {
     return (
-      <GitHubSignInButton
-        callbackUrl="/dashboard"
+      <LinkButton
+        href="/auth/signin?callbackUrl=%2Fdashboard"
         variant="ghost"
         size="sm"
-        pendingLabel="Opening"
-        aria-label="Sign in with GitHub"
+        aria-label="Sign in"
         className="h-11 w-11 overflow-hidden rounded-xl border border-cyan-200/20 bg-white/[0.035] p-0 font-mono text-[0.68rem] uppercase tracking-[0.14em] text-cyan-100 sm:w-auto sm:px-3"
       >
         <LogIn aria-hidden="true" className="size-4 sm:hidden" />
         <span className="hidden sm:inline">Sign in</span>
-      </GitHubSignInButton>
+      </LinkButton>
     );
   }
 
@@ -38,15 +37,16 @@ export function HeaderProfileMenu({
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          aria-label={`Open profile menu for ${githubLogin}`}
+          aria-label={`Open profile menu for ${login}`}
           className="group inline-flex h-11 w-11 shrink-0 items-center justify-center gap-2 rounded-xl border border-cyan-200/15 bg-white/[0.035] p-1.5 text-left transition hover:border-cyan-200/40 hover:bg-cyan-300/[0.08] hover:shadow-[0_0_28px_-18px_rgba(0,240,255,0.95)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 data-[state=open]:border-cyan-200/40 data-[state=open]:bg-cyan-300/[0.08] sm:w-auto sm:justify-start sm:rounded-2xl sm:px-2.5 sm:py-2"
         >
           <span className="hidden max-w-32 truncate font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-cyan-100 sm:inline">
-            {githubLogin}
+            {login}
           </span>
           <ProfileAvatar
-            githubLogin={githubLogin}
-            avatarUrl={githubAvatarUrl}
+            login={login}
+            avatarUrl={avatarUrl}
+            provider={provider}
           />
           <ProfileMenuChevron />
         </button>
@@ -60,15 +60,16 @@ export function HeaderProfileMenu({
         >
           <div className="flex items-center gap-3 rounded-xl bg-cyan-300/[0.055] p-3">
             <ProfileAvatar
-              githubLogin={githubLogin}
-              avatarUrl={githubAvatarUrl}
+              login={login}
+              avatarUrl={avatarUrl}
+              provider={provider}
             />
             <div className="min-w-0">
               <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
-                Signed in as
+                Signed in{provider ? ` with ${providerLabel(provider)}` : ""}
               </p>
               <p className="truncate text-sm font-semibold text-cyan-50">
-                {githubLogin}
+                {login}
               </p>
             </div>
           </div>
@@ -106,25 +107,32 @@ function ProfileMenuChevron(): React.ReactElement {
 }
 
 function ProfileAvatar({
-  githubLogin,
+  login,
   avatarUrl,
+  provider,
 }: {
-  readonly githubLogin: string;
+  readonly login: string;
   readonly avatarUrl: string | null;
+  readonly provider: "github" | "gitlab" | null;
 }): React.ReactElement {
   if (avatarUrl) {
     return (
       <GitHubAccountAvatar
         avatarUrl={avatarUrl}
-        login={githubLogin}
+        login={login}
         size="profile"
+        altText={`${login} ${provider ? providerLabel(provider) : "source"} avatar`}
       />
     );
   }
 
   return (
     <span className="grid h-8 w-8 shrink-0 place-items-center rounded-2xl border border-cyan-200/15 bg-cyan-300/[0.08] font-mono text-xs font-bold uppercase text-cyan-100 shadow-[0_0_24px_rgba(0,240,255,0.12)]">
-      {githubLogin.slice(0, 1)}
+      {login.slice(0, 1)}
     </span>
   );
+}
+
+function providerLabel(provider: "github" | "gitlab"): string {
+  return provider === "github" ? "GitHub" : "GitLab";
 }

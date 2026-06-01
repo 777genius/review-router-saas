@@ -38,7 +38,7 @@ forbidSet("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH_BETA");
 forbidSet("REVIEW_ROUTER_CODEX_ROTATING_OAUTH_BETA_REPOSITORIES");
 requireGitHubAppPrivateKey();
 forbidProviderSecretsInSaaS();
-requireFullShaActionRef();
+requireHostedActionRef();
 
 if (errors.length > 0) {
   console.error("ReviewRouter hosted readiness failed:");
@@ -199,15 +199,17 @@ function forbidProviderSecretsInSaaS() {
   }
 }
 
-function requireFullShaActionRef() {
-  const explicitRef = read("REVIEW_ROUTER_ACTION_REF");
+function requireHostedActionRef() {
+  const explicitRef = resolveHostedActionRef();
   if (!explicitRef) {
-    errors.push("REVIEW_ROUTER_ACTION_REF is required in hosted production.");
+    errors.push(
+      "REVIEW_ROUTER_ACTION_REF or REVIEW_ROUTER_ACTION_VERSION is required in hosted production.",
+    );
     return;
   }
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/i.test(explicitRef)) {
+  if (!isHostedActionRef(explicitRef)) {
     errors.push(
-      "REVIEW_ROUTER_ACTION_REF must be pinned to a full 40-character commit SHA in hosted production.",
+      "REVIEW_ROUTER_ACTION_REF must be 777genius/review-router@main, 777genius/review-router@v1, a v1.x.y release tag, or a full 40-character commit SHA in hosted production.",
     );
   }
   const expectedOwnerRepo = explicitRef.split("@", 1)[0]?.toLowerCase();
@@ -228,6 +230,21 @@ function requireFullShaActionRef() {
       );
     }
   }
+}
+
+function resolveHostedActionRef() {
+  const actionRef = read("REVIEW_ROUTER_ACTION_REF");
+  if (actionRef) {
+    return actionRef;
+  }
+  const version = read("REVIEW_ROUTER_ACTION_VERSION");
+  return version ? `777genius/review-router@${version}` : "";
+}
+
+function isHostedActionRef(actionRef) {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@(main|v1|v1\.[0-9]+\.[0-9]+|[a-f0-9]{40})$/i.test(
+    actionRef,
+  );
 }
 
 function read(name) {

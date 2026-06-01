@@ -2,6 +2,7 @@ import { computeSessionGenerationHash } from "../domain/generation-hash";
 import type {
   AgentCapabilities,
   LeaseStoreCapabilities,
+  ProviderTask,
   ProcessResult,
   ProviderCapabilities,
   ProviderFailure,
@@ -21,10 +22,12 @@ import type {
 import type {
   AgentDriver,
   LeaseStorePort,
+  NoSessionDriver,
   ObservabilityPort,
   ProviderSessionDriver,
   RedactorPort,
   RunnerPort,
+  RuntimeDeps,
   SessionStorePort,
   WorkspacePort,
 } from "../ports";
@@ -37,7 +40,19 @@ import {
 export const fakeProviderCapabilities: ProviderCapabilities = {
   providerId: "fake",
   displayName: "Fake Provider",
+  sessionRequirement: {
+    kind: "required",
+    artifactKinds: ["json-file"],
+  },
   sessionArtifactKinds: ["json-file"],
+  refreshMode: "always-before-run",
+  sessionRotationMode: "may-rotate",
+  environmentPolicy: {
+    inheritHostEnvironment: false,
+    allowlist: ["PATH", "HOME", "CI"],
+    denylist: ["*_TOKEN", "*_SECRET", "*_API_KEY"],
+    credentialSourceOrder: ["session-artifact"],
+  },
   supportsRefresh: true,
   refreshMayRotateSession: true,
   supportsNonInteractiveRuntime: true,
@@ -52,6 +67,8 @@ export const fakeProviderCapabilities: ProviderCapabilities = {
 export const fakeAgentCapabilities: AgentCapabilities = {
   agentId: "fake-agent",
   providerId: "fake",
+  taskModes: ["review", "structured-prompt", "health-check"],
+  historyMode: "none",
   supportsReviewTasks: true,
   supportsStructuredOutput: true,
   supportsToolCalling: false,
@@ -59,6 +76,40 @@ export const fakeAgentCapabilities: AgentCapabilities = {
   supportsInlineFindings: true,
   requiresWritableWorkspace: false,
   maxRuntimeMs: 60_000,
+};
+
+export const fakeStaticProviderCapabilities: ProviderCapabilities = {
+  ...fakeProviderCapabilities,
+  providerId: "fake-static",
+  displayName: "Fake Static Provider",
+  refreshMode: "validate-only",
+  sessionRotationMode: "never-rotates",
+  supportsRefresh: false,
+  refreshMayRotateSession: false,
+};
+
+export const fakeStaticAgentCapabilities: AgentCapabilities = {
+  ...fakeAgentCapabilities,
+  agentId: "fake-static-agent",
+  providerId: "fake-static",
+};
+
+export const fakeNoSessionProviderCapabilities: ProviderCapabilities = {
+  ...fakeProviderCapabilities,
+  providerId: "fake-no-session",
+  displayName: "Fake No-Session Provider",
+  sessionRequirement: { kind: "none" },
+  sessionArtifactKinds: [],
+  refreshMode: "none",
+  sessionRotationMode: "never-rotates",
+  supportsRefresh: false,
+  refreshMayRotateSession: false,
+};
+
+export const fakeNoSessionAgentCapabilities: AgentCapabilities = {
+  ...fakeAgentCapabilities,
+  agentId: "fake-no-session-agent",
+  providerId: "fake-no-session",
 };
 
 export const fakeStoreCapabilities: SessionStoreCapabilities = {
@@ -101,10 +152,13 @@ export const fakeWorkspaceCapabilities: WorkspaceCapabilities = {
   supportsContainer: false,
 };
 
-export function makeFakeArtifact(text = "session-v1"): SessionArtifact {
+export function makeFakeArtifact(
+  text = "session-v1",
+  providerId = "fake",
+): SessionArtifact {
   return {
     kind: "json-file",
-    providerId: "fake",
+    providerId,
     formatVersion: "fake-session-v1",
     bytes: new TextEncoder().encode(text),
     contentType: "application/json",
@@ -112,10 +166,11 @@ export function makeFakeArtifact(text = "session-v1"): SessionArtifact {
 }
 
 export class FakeProviderSessionDriver implements ProviderSessionDriver {
-  readonly providerId = "fake";
+  readonly providerId: string = "fake";
   readonly supportedArtifactKinds = ["json-file"] as const;
   readonly capabilities = fakeProviderCapabilities;
   refreshText = "session-v2";
+  refreshCount = 0;
   validation: SessionValidationResult = { status: "valid", warnings: [] };
   refreshedState: RefreshedSession["providerState"] = "refreshed";
 
@@ -124,6 +179,7 @@ export class FakeProviderSessionDriver implements ProviderSessionDriver {
   }
 
   async refreshSession(): Promise<RefreshedSession> {
+    this.refreshCount += 1;
     return {
       artifact: makeFakeArtifact(this.refreshText),
       providerState: this.refreshedState,
@@ -136,9 +192,33 @@ export class FakeProviderSessionDriver implements ProviderSessionDriver {
   }
 }
 
+export class FakeStaticProviderSessionDriver
+  extends FakeProviderSessionDriver
+  implements ProviderSessionDriver
+{
+  override readonly providerId = "fake-static";
+  override readonly capabilities = fakeStaticProviderCapabilities;
+
+  override async refreshSession(): Promise<RefreshedSession> {
+    throw new Error("static_provider_must_not_refresh");
+  }
+}
+
+export class FakeNoSessionDriver implements NoSessionDriver {
+  readonly providerId = "fake-no-session";
+  readonly capabilities =
+    fakeNoSessionProviderCapabilities as ProviderCapabilities & {
+      readonly sessionRequirement: { readonly kind: "none" };
+    };
+
+  classifySessionFailure(): ProviderFailure {
+    return fakeFailure("unknown_runtime_failure", "Fake provider failure.");
+  }
+}
+
 export class FakeAgentDriver implements AgentDriver {
-  readonly agentId = "fake-agent";
-  readonly providerId = "fake";
+  readonly agentId: string = "fake-agent";
+  readonly providerId: string = "fake";
   readonly capabilities = fakeAgentCapabilities;
   lastPrompt: string | null = null;
 
@@ -149,6 +229,37 @@ export class FakeAgentDriver implements AgentDriver {
     return {
       status: "completed",
       outputText: `review:${input.task.prompt}`,
+      warnings: [],
+    };
+  }
+
+  classifyRunFailure(): ProviderFailure {
+    return fakeFailure("unknown_runtime_failure", "Fake agent failure.");
+  }
+}
+
+export class FakeStaticAgentDriver extends FakeAgentDriver {
+  override readonly agentId = "fake-static-agent";
+  override readonly providerId = "fake-static";
+  override readonly capabilities = fakeStaticAgentCapabilities;
+}
+
+export class FakeNoSessionAgentDriver implements AgentDriver {
+  readonly agentId = "fake-no-session-agent";
+  readonly providerId = "fake-no-session";
+  readonly capabilities = fakeNoSessionAgentCapabilities;
+  lastPrompt: string | null = null;
+  lastSessionWasNull = false;
+
+  async runTask(input: {
+    readonly session: SessionArtifact | null;
+    readonly task: ProviderTask;
+  }): Promise<ProviderTaskResult> {
+    this.lastPrompt = input.task.prompt;
+    this.lastSessionWasNull = input.session === null;
+    return {
+      status: "completed",
+      outputText: `no-session:${input.task.prompt}`,
       warnings: [],
     };
   }
@@ -337,29 +448,31 @@ export class MemoryObservability implements ObservabilityPort {
 
 export function makeFakeRuntimeDeps(
   overrides: {
-    readonly provider?: ProviderSessionDriver;
+    readonly provider?: ProviderSessionDriver | NoSessionDriver;
     readonly agent?: AgentDriver;
     readonly store?: SessionStorePort;
-    readonly leaseStore?: InMemoryLeaseStore;
+    readonly leaseStore?: LeaseStorePort;
     readonly observability?: ObservabilityPort;
   } = {},
-) {
-  return {
+): RuntimeDeps {
+  const provider = overrides.provider ?? new FakeProviderSessionDriver();
+  const agent = overrides.agent ?? new FakeAgentDriver();
+  const store = overrides.store ?? new InMemorySessionStore();
+  const leaseStore = overrides.leaseStore ?? new InMemoryLeaseStore();
+  const base = {
     policy: {
       custodyMode: "no-plaintext-backend" as const,
       requireNoBackendPlaintext: true,
       requireWritebackBeforeTask: true,
       requireCompareAndSwap: true,
       allowInteractiveSetupInRuntime: false as const,
-      allowedProviderIds: ["fake"],
-      allowedAgentIds: ["fake-agent"],
-      allowedStoreIds: ["memory-store"],
+      allowedProviderIds: [provider.providerId],
+      allowedAgentIds: [agent.agentId],
+      allowedStoreIds: [store.storeId],
       allowedRunnerIds: ["memory-runner"],
     },
-    sessionDriver: overrides.provider ?? new FakeProviderSessionDriver(),
-    agentDriver: overrides.agent ?? new FakeAgentDriver(),
-    sessionStore: overrides.store ?? new InMemorySessionStore(),
-    leaseStore: overrides.leaseStore ?? new InMemoryLeaseStore(),
+    sessionDriver: provider,
+    agentDriver: agent,
     runner: new FakeRunner(),
     workspace: new FakeWorkspace(),
     redactor: new DefaultRedactor() as RedactorPort,
@@ -369,6 +482,20 @@ export function makeFakeRuntimeDeps(
       monotonicMs: () => 1,
     },
     idGenerator: new DeterministicIdGenerator(),
+  };
+
+  if (provider.capabilities.sessionRequirement.kind === "none") {
+    return {
+      ...base,
+      ...(overrides.store ? { sessionStore: overrides.store } : {}),
+      ...(overrides.leaseStore ? { leaseStore: overrides.leaseStore } : {}),
+    };
+  }
+
+  return {
+    ...base,
+    sessionStore: store,
+    leaseStore,
   };
 }
 

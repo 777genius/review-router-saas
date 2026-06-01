@@ -10,6 +10,7 @@ import {
 } from "@reviewrouter/features-repo-health";
 import { resolveReviewRouterActionRef } from "@reviewrouter/platform-config";
 import {
+  asDashboardGitHubActor,
   getDashboardSignedInActor,
   getDashboardWorkspaceScope,
 } from "../../../../../src/server/dashboard-mutations";
@@ -53,13 +54,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const filter = readRepositorySearchFilter(request.nextUrl.searchParams);
   const prisma = getPrisma();
   const signedInActor = await getDashboardSignedInActor();
+  const signedInGitHubActor = asDashboardGitHubActor(signedInActor);
   const fullAccessWorkspaceIds =
     scope.kind === "workspace_ids" ? scope.workspaceIds : [];
   const repositoryAccess =
-    signedInActor && scope.kind !== "all"
+    signedInGitHubActor && scope.kind !== "all"
       ? await listGitHubUserRepositoryAccess({
           prisma,
-          actor: signedInActor,
+          actor: signedInGitHubActor,
           excludedWorkspaceIds: fullAccessWorkspaceIds,
         })
       : {

@@ -95,7 +95,59 @@ Render and the GitHub App webhook settings:
 openssl rand -base64 32
 ```
 
-Do not add provider credentials to Render:
+For GitLab support, `reviewrouter-api` also needs API-side integration values:
+
+```text
+REVIEW_ROUTER_GITLAB_API_TOKEN=<GitLab token used by the API to read MR metadata>
+REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN=<optional GitLab token for provisioning projects>
+REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN=<operator-only bearer token for install APIs>
+REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON=<selected GitLab repositories JSON>
+REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE=reviewrouter
+REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE=ghcr.io/777genius/review-router-gitlab-runtime:v1
+```
+
+`REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN` by itself enables only the
+operator install endpoints, including the control-project CI config download.
+Project provisioning additionally requires `REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN`.
+Runtime session exchange additionally requires `REVIEW_ROUTER_GITLAB_API_TOKEN`
+and `REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON`.
+
+Check the live GitLab setup without exposing secret values:
+
+```bash
+curl -fsS "$REVIEW_ROUTER_API_URL/api/gitlab/install/v1/status" \
+  -H "Authorization: Bearer $REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN"
+```
+
+The response reports whether provisioning and CI session exchange are available
+and lists missing environment variable names.
+
+Bulk GitLab provisioning uses the same single-project installer rules per
+project and returns per-project results instead of aborting the whole batch.
+When `variableTarget.kind` is `group`, the shared GitLab CI variables are
+configured once for the group before the project loop:
+
+```bash
+curl -fsS "$REVIEW_ROUTER_API_URL/api/gitlab/install/v1/group-projects?groupId=my-group%2Fplatform&includeSubgroups=true&withShared=false&perPage=100&workspaceId=gitlab-my-group" \
+  -H "Authorization: Bearer $REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN"
+```
+
+Use the returned `projectIds` as the input for bulk provisioning. `groupId` can
+be either a numeric group ID or a URL-encoded full group path. Discovery defaults
+to subgroups included, archived projects excluded, and shared-in projects
+excluded so the first rollout stays inside the group hierarchy. The same
+response includes `staticRepositoriesJson`; set it as
+`REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON` so CI session exchange accepts
+the newly provisioned GitLab projects.
+
+```bash
+curl -fsS -X POST "$REVIEW_ROUTER_API_URL/api/gitlab/install/v1/bulk-provision" \
+  -H "Authorization: Bearer $REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data @gitlab-bulk-provision.json
+```
+
+Keep runtime/model credentials out of Render:
 
 ```text
 CODEX_AUTH_JSON
@@ -104,8 +156,7 @@ OPENAI_API_KEY
 OPENROUTER_API_KEY
 ```
 
-Provider credentials stay in each customer repository or organization GitHub
-Actions secrets.
+Those stay in each customer repository, group, or organization CI/CD secrets.
 
 ## GitHub App Settings
 

@@ -12,6 +12,7 @@ export type VisibleWorkspaceScope =
 
 export async function listVisibleWorkspaceScope(
   input: {
+    readonly userId?: string | undefined;
     readonly githubUserId: string;
     readonly githubLogin: string;
     readonly localAdminGithubLogins?: readonly string[];
@@ -28,10 +29,13 @@ export async function listVisibleWorkspaceScope(
     return { kind: "all", reason: "local_admin_override" };
   }
 
-  const grants =
-    await dependencies.workspaceAccess.listWorkspaceRolesByGitHubUserId({
-      githubUserId: input.githubUserId,
-    });
+  const grants = input.userId
+    ? await dependencies.workspaceAccess.listWorkspaceRolesByUserId({
+        userId: input.userId,
+      })
+    : await dependencies.workspaceAccess.listWorkspaceRolesByGitHubUserId({
+        githubUserId: input.githubUserId,
+      });
 
   return {
     kind: "workspace_ids",

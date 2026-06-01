@@ -34,13 +34,26 @@ export class CodexCliAgentDriver implements AgentDriver {
   constructor(private readonly options: CodexCliAgentDriverOptions = {}) {}
 
   async runTask(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
     readonly task: ProviderTask;
     readonly workspace: WorkspaceHandle;
     readonly runner: Parameters<AgentDriver["runTask"]>[0]["runner"];
     readonly redactor: Parameters<AgentDriver["runTask"]>[0]["redactor"];
     readonly abortSignal: AbortSignal;
   }): Promise<ProviderTaskResult> {
+    if (!input.session) {
+      return {
+        status: "failed",
+        failure: {
+          code: "provider_session_invalid",
+          retryable: false,
+          reconnectRequired: true,
+          safeMessage: "Codex requires a session artifact.",
+        },
+        warnings: [],
+      };
+    }
+
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
 

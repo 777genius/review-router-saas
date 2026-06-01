@@ -48,6 +48,26 @@ services:
         fromDatabase:
           name: reviewrouter-db
           property: connectionString
+      # GitLab integration is API-only. Runtime/model credentials still stay in
+      # the user's GitLab CI/CD variables.
+      - key: REVIEW_ROUTER_GITLAB_API_TOKEN
+        sync: false
+      - key: REVIEW_ROUTER_GITLAB_API_BASE_URL
+        sync: false
+      - key: REVIEW_ROUTER_GITLAB_INSTALLER_TOKEN
+        sync: false
+      - key: REVIEW_ROUTER_GITLAB_INSTALLER_ADMIN_TOKEN
+        sync: false
+      - key: REVIEW_ROUTER_GITLAB_STATIC_REPOSITORIES_JSON
+        sync: false
+      - key: REVIEW_ROUTER_GITLAB_OIDC_ISSUER
+        sync: false
+      - key: REVIEW_ROUTER_GITLAB_OIDC_JWKS_URL
+        sync: false
+      - key: REVIEW_ROUTER_GITLAB_OIDC_AUDIENCE
+        value: reviewrouter
+      - key: REVIEW_ROUTER_GITLAB_RUNTIME_IMAGE
+        value: ghcr.io/777genius/review-router-gitlab-runtime:v1
 
   - type: worker
     name: reviewrouter-worker
