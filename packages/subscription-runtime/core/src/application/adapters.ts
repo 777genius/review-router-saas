@@ -80,14 +80,16 @@ export function assertCompatibleRuntimeManifests(input: {
     readonly session?: ProviderCapabilities;
     readonly agent?: AgentCapabilities;
   }>;
-  readonly store: RuntimeAdapterManifest<SessionStoreCapabilities>;
+  readonly store?: RuntimeAdapterManifest<SessionStoreCapabilities>;
   readonly runner: RuntimeAdapterManifest<RunnerCapabilities>;
   readonly policy: RuntimePolicy;
   readonly coreVersion?: string;
 }): void {
   const coreVersion = input.coreVersion ?? subscriptionRuntimeCoreVersion;
   assertRuntimeAdapterManifest(input.provider, coreVersion);
-  assertRuntimeAdapterManifest(input.store, coreVersion);
+  if (input.store) {
+    assertRuntimeAdapterManifest(input.store, coreVersion);
+  }
   assertRuntimeAdapterManifest(input.runner, coreVersion);
 
   const session = input.provider.capabilities.session;
@@ -102,8 +104,8 @@ export function assertCompatibleRuntimeManifests(input: {
     requested: input.policy,
     provider: session,
     agent,
-    store: input.store.capabilities,
     runner: input.runner.capabilities,
+    ...(input.store ? { store: input.store.capabilities } : {}),
   });
 
   if (decision.status === "rejected") {

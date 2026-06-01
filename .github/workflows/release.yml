@@ -12,6 +12,11 @@ on:
         required: true
         default: true
         type: boolean
+      sync_production_action_ref:
+        description: Sync production Action ref override after release
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -60,14 +65,31 @@ jobs:
             exit 1
           fi
 
+          VERSION_TAG_EXISTS=false
+          LOCAL_VERSION_SHA=""
           if git rev-parse --quiet --verify "refs/tags/$VERSION" >/dev/null; then
-            echo "::error::local tag $VERSION already exists"
-            exit 1
+            LOCAL_VERSION_SHA="$(git rev-parse "refs/tags/$VERSION^{}")"
           fi
 
-          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
-            echo "::error::remote tag $VERSION already exists"
+          REMOTE_VERSION_SHA="$(
+            git ls-remote --tags origin "refs/tags/$VERSION^{}" | awk 'NR == 1 { print $1 }'
+          )"
+          if [[ -z "$REMOTE_VERSION_SHA" ]]; then
+            REMOTE_VERSION_SHA="$(
+              git ls-remote --tags origin "refs/tags/$VERSION" | awk 'NR == 1 { print $1 }'
+            )"
+          fi
+
+          if [[ -n "$LOCAL_VERSION_SHA" && "$LOCAL_VERSION_SHA" != "$GITHUB_SHA" ]]; then
+            echo "::error::local tag $VERSION already exists at $LOCAL_VERSION_SHA"
             exit 1
+          fi
+          if [[ -n "$REMOTE_VERSION_SHA" && "$REMOTE_VERSION_SHA" != "$GITHUB_SHA" ]]; then
+            echo "::error::remote tag $VERSION already exists at $REMOTE_VERSION_SHA"
+            exit 1
+          fi
+          if [[ -n "$LOCAL_VERSION_SHA$REMOTE_VERSION_SHA" ]]; then
+            VERSION_TAG_EXISTS=true
           fi
 
           LATEST_TAG="$(git tag -l "$MAJOR_TAG.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1)"
@@ -79,14 +101,34 @@ jobs:
             fi
           fi
 
-          if ! git ls-remote --exit-code --tags "https://github.com/$ACTION_REPOSITORY.git" "refs/tags/$VERSION" >/dev/null 2>&1; then
+          ACTION_TAG_REF="$(
+            git ls-remote --tags "https://github.com/$ACTION_REPOSITORY.git" "refs/tags/$VERSION" \
+              | awk 'NR == 1 { print $1 }'
+          )"
+          if [[ -z "$ACTION_TAG_REF" ]]; then
             echo "::error::$ACTION_REPOSITORY tag $VERSION must exist before releasing the SaaS runtime"
             exit 1
           fi
 
+          ACTION_SHA="$(
+            git ls-remote --tags "https://github.com/$ACTION_REPOSITORY.git" "refs/tags/$VERSION^{}" \
+              | awk 'NR == 1 { print $1 }'
+          )"
+          if [[ -z "$ACTION_SHA" ]]; then
+            ACTION_SHA="$ACTION_TAG_REF"
+          fi
+          if [[ ! "$ACTION_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            echo "::error::could not resolve $ACTION_REPOSITORY $VERSION to a commit SHA"
+            exit 1
+          fi
+          ACTION_SHA="$(printf '%s' "$ACTION_SHA" | tr '[:upper:]' '[:lower:]')"
+
           {
             echo "version=$VERSION"
             echo "major_tag=$MAJOR_TAG"
+            echo "action_sha=$ACTION_SHA"
+            echo "action_ref=$ACTION_REPOSITORY@$ACTION_SHA"
+            echo "version_tag_exists=$VERSION_TAG_EXISTS"
           } >> "$GITHUB_OUTPUT"
 
       - name: Require successful CI on this commit
@@ -114,20 +156,57 @@ jobs:
 
           echo "Using CI gate: $CI_URL"
 
+      - name: Preflight production Action ref sync
+        if: ${{ inputs.sync_production_action_ref }}
+        shell: bash
+        env:
+          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RENDER_API_KEY:-}" ]]; then
+            echo "::error::RENDER_API_KEY secret is required when sync_production_action_ref override is enabled"
+            exit 1
+          fi
+
+          node scripts/sync-render-action-ref.mjs \
+            --action-ref "$ACTION_REF" \
+            --dry-run \
+            --no-deploy
+
       - name: Publish exact and stable tags
         shell: bash
         env:
           VERSION: ${{ steps.release.outputs.version }}
           MAJOR_TAG: ${{ steps.release.outputs.major_tag }}
+          VERSION_TAG_EXISTS: ${{ steps.release.outputs.version_tag_exists }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git tag "$VERSION" "$GITHUB_SHA"
+          if [[ "$VERSION_TAG_EXISTS" == "true" ]]; then
+            echo "Exact tag $VERSION already points to $GITHUB_SHA; reusing it"
+          else
+            git tag "$VERSION" "$GITHUB_SHA"
+            git push origin "refs/tags/$VERSION"
+          fi
           git tag -f "$MAJOR_TAG" "$GITHUB_SHA"
-          git push origin "refs/tags/$VERSION"
           git push --force origin "refs/tags/$MAJOR_TAG"
+
+      - name: Sync production Action ref
+        if: ${{ inputs.sync_production_action_ref }}
+        shell: bash
+        env:
+          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          node scripts/sync-render-action-ref.mjs \
+            --action-ref "$ACTION_REF" \
+            --wait
 
       - name: Create GitHub Release
         if: ${{ inputs.create_github_release }}
@@ -135,18 +214,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          gh release create "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "ReviewRouter SaaS Runtime $VERSION" \
-            --generate-notes \
-            --latest
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $VERSION already exists; leaving it unchanged"
+          else
+            gh release create "$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "ReviewRouter SaaS Runtime $VERSION" \
+              --generate-notes \
+              --latest
+          fi
 
       - name: Summary
         shell: bash
         env:
           VERSION: ${{ steps.release.outputs.version }}
           MAJOR_TAG: ${{ steps.release.outputs.major_tag }}
+          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          SYNC_PRODUCTION_ACTION_REF: ${{ inputs.sync_production_action_ref }}
+          VERSION_TAG_EXISTS: ${{ steps.release.outputs.version_tag_exists }}
         run: |
           {
             echo "Released $VERSION"
@@ -154,4 +240,7 @@ jobs:
             echo "- Exact tag: $VERSION"
             echo "- Stable tag: $MAJOR_TAG"
             echo "- Target SHA: $GITHUB_SHA"
+            echo "- Exact tag pre-existed on target SHA: $VERSION_TAG_EXISTS"
+            echo "- Production Action ref sync: $SYNC_PRODUCTION_ACTION_REF"
+            echo "- Trusted Action ref: $ACTION_REF"
           } >> "$GITHUB_STEP_SUMMARY"

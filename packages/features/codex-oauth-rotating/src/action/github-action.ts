@@ -22,7 +22,7 @@ import {
   type WorkspacePort,
 } from "@reviewrouter/subscription-runtime-core";
 import {
-  CodexCliAgentDriver,
+  CodexJsonAgentDriver,
   CodexCliSessionDriver,
   sessionArtifactFromCodexAuthJson,
 } from "@reviewrouter/subscription-runtime-provider-codex";
@@ -57,11 +57,11 @@ declare const __dirname: string | undefined;
 
 const defaultOidcAudience = "reviewrouter";
 const bundledCodexPlatform = "linux-x64";
-const bundledCodexVersion = "0.125.0";
+const bundledCodexVersion = "0.135.0";
 const bundledCodexPackageName = ["@openai", "codex"].join("/");
 const bundledCodexArchiveName = "codex-linux-x64.tgz";
 const bundledCodexBinaryPathInArchive =
-  "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+  "package/vendor/x86_64-unknown-linux-musl/bin/codex";
 const maxCommentBytes = 60_000;
 const maxCapturedProcessOutputBytes = 256_000;
 const maxProxyRequestBodyBytes = 2_000_000;
@@ -78,6 +78,8 @@ const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
 const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
+const providerNeutralReviewFindingsArtifactFileName =
+  "reviewrouter-findings.json";
 
 type FetchLike = typeof fetch;
 
@@ -110,6 +112,7 @@ type ProviderSecretInputs = {
 
 type PullRequestEvent = {
   readonly number: number;
+  readonly repositoryId?: string | undefined;
   readonly repository: string;
   readonly owner: string;
   readonly repo: string;
@@ -179,6 +182,7 @@ type LocalProviderProxyFactory = (input: {
 
 type FullReviewRuntimeRunner = (input: {
   readonly inputs: ActionInputs;
+  readonly leaseId: string;
   readonly codexBinaryPath: string;
   readonly env: NodeJS.ProcessEnv;
   readonly io: ActionIO;
@@ -367,6 +371,7 @@ export async function runCodexRotatingGitHubAction(
         try {
           await fullReviewRuntimeRunner({
             inputs,
+            leaseId: prelease.leaseId,
             codexBinaryPath,
             env,
             io,
@@ -570,7 +575,10 @@ async function readPullRequestEvent(
   }
   const event = JSON.parse(await readFile(eventPath, "utf8")) as {
     readonly number?: unknown;
-    readonly repository?: { readonly full_name?: unknown };
+    readonly repository?: {
+      readonly id?: unknown;
+      readonly full_name?: unknown;
+    };
     readonly pull_request?: {
       readonly draft?: unknown;
       readonly head?: {
@@ -597,6 +605,9 @@ async function readPullRequestEvent(
   }
   return {
     number: requireNumber(event.number, "pr_number"),
+    ...(isSafeGitHubNumericId(event.repository?.id)
+      ? { repositoryId: String(event.repository.id) }
+      : {}),
     repository,
     owner,
     repo,
@@ -1108,6 +1119,15 @@ async function writeCodexAuthSnapshot(
     'sandbox_mode = "read-only"',
     'web_search = "disabled"',
     "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
     "",
     "[history]",
     'persistence = "none"',
@@ -1189,7 +1209,7 @@ async function refreshCodexAuthJson(input: {
     codexBinaryPath: input.codexBinaryPath,
     sourceEnv: input.env,
   });
-  const agentDriver = new CodexCliAgentDriver({
+  const agentDriver = new CodexJsonAgentDriver({
     codexBinaryPath: input.codexBinaryPath,
     sourceEnv: input.env,
   });
@@ -1666,6 +1686,7 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input: {
 
 async function runFullReviewRouterRuntime(input: {
   readonly inputs: ActionInputs;
+  readonly leaseId: string;
   readonly codexBinaryPath: string;
   readonly env: NodeJS.ProcessEnv;
   readonly io: ActionIO;
@@ -1687,6 +1708,7 @@ async function runFullReviewRouterRuntime(input: {
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
       inputs: input.inputs,
+      leaseId: input.leaseId,
       event: input.event,
       tempHome: input.tempHome,
       tempCodexHome: input.tempCodexHome,
@@ -1719,6 +1741,7 @@ async function runFullReviewRouterRuntime(input: {
 function buildFullReviewRuntimeEnv(input: {
   readonly sourceEnv: NodeJS.ProcessEnv;
   readonly inputs: ActionInputs;
+  readonly leaseId: string;
   readonly event: PullRequestEvent;
   readonly tempHome: string;
   readonly tempCodexHome: string;
@@ -1755,6 +1778,20 @@ function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
     REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
+    REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: input.leaseId,
+    REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID:
+      input.inputs.providerInstanceId,
+    REVIEWROUTER_SCM_PROVIDER: "github",
+    REVIEWROUTER_FINDINGS_ARTIFACT_PATH:
+      providerNeutralReviewFindingsArtifactFileName,
+    REVIEWROUTER_REPOSITORY_EXTERNAL_ID:
+      input.event.repositoryId ?? input.event.repository,
+    REVIEWROUTER_REPOSITORY_FULL_NAME: input.event.repository,
+    REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID: String(input.event.number),
+    REVIEWROUTER_HEAD_SHA: input.event.headSha,
+    REVIEWROUTER_BASE_SHA: input.event.baseSha,
+    REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
   };
@@ -2419,6 +2456,13 @@ function requireNumber(value: unknown, field: string): number {
     throw new Error(`invalid_event_field:${field}`);
   }
   return value;
+}
+
+function isSafeGitHubNumericId(value: unknown): value is number | string {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0;
+  }
+  return typeof value === "string" && /^[0-9]+$/.test(value);
 }
 
 function requireSha(value: unknown, field: string): string {

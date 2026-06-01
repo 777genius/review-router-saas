@@ -21,6 +21,18 @@ vi.mock("@reviewrouter/platform-config", () => ({
 }));
 
 vi.mock("../../../../../src/server/dashboard-mutations", () => ({
+  asDashboardGitHubActor: (
+    actor: {
+      readonly sourceProvider?: string;
+      readonly githubUserId?: string | null;
+      readonly githubLogin?: string | null;
+    } | null,
+  ) =>
+    actor?.sourceProvider === "github" &&
+    actor.githubUserId &&
+    actor.githubLogin
+      ? actor
+      : null,
   getDashboardSignedInActor: mocks.getDashboardSignedInActor,
   getDashboardWorkspaceScope: mocks.getDashboardWorkspaceScope,
 }));
@@ -45,6 +57,9 @@ describe("dashboard repository search route", () => {
     vi.clearAllMocks();
     mocks.getDashboardSignedInActor.mockResolvedValue({
       userId: "user_1",
+      sourceProvider: "github",
+      externalUserId: "123",
+      sourceLogin: "maintainer",
       githubUserId: "123",
       githubLogin: "maintainer",
       actor: "user:maintainer",

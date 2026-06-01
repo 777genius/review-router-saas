@@ -3,6 +3,7 @@ type GitHubAccountAvatarProps = {
   readonly login: string;
   readonly size?: "sm" | "md" | "profile";
   readonly className?: string;
+  readonly altText?: string | undefined;
 };
 
 const sizeClasses = {
@@ -16,6 +17,7 @@ export function GitHubAccountAvatar({
   login,
   size = "sm",
   className = "",
+  altText,
 }: GitHubAccountAvatarProps): React.ReactElement | null {
   if (!avatarUrl) return null;
 
@@ -31,7 +33,7 @@ export function GitHubAccountAvatar({
     >
       <img
         src={avatarUrl}
-        alt={`${login} GitHub avatar`}
+        alt={altText ?? `${login} GitHub avatar`}
         className="h-full w-full rounded-[inherit] object-cover"
         draggable={false}
         loading="lazy"

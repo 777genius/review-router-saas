@@ -58,6 +58,7 @@ export function safeDashboardErrorCode(error: unknown): string {
       "setup_pr_not_merged",
       "setup_pr_closed",
       "setup_pr_branch_deleted",
+      "setup_pr_wrong_base_branch",
       "repository_not_visible_to_github_app",
       "provider_secret_not_found",
       "provider_secret_not_available_to_repository",

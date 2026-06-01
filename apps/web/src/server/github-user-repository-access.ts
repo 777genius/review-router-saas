@@ -178,6 +178,7 @@ export async function refreshGitHubUserRepositoryAccess(input: {
       repositoryEntries.length > 0
         ? await input.prisma.repositoryConnection.findMany({
             where: {
+              provider: "github",
               githubRepositoryId: {
                 in: repositoryEntries.map((entry) => entry.githubRepositoryId),
               },
@@ -199,13 +200,20 @@ export async function refreshGitHubUserRepositoryAccess(input: {
           })
         : [];
     const connectedByKey = new Map(
-      connectedRepositories.map((repository) => [
-        repositoryAccessEntryKey({
-          githubInstallationId: repository.installation.githubInstallationId,
-          githubRepositoryId: repository.githubRepositoryId,
-        }),
-        repository,
-      ]),
+      connectedRepositories.flatMap((repository) =>
+        repository.githubRepositoryId && repository.installation
+          ? [
+              [
+                repositoryAccessEntryKey({
+                  githubInstallationId:
+                    repository.installation.githubInstallationId,
+                  githubRepositoryId: repository.githubRepositoryId,
+                }),
+                repository,
+              ] as const,
+            ]
+          : [],
+      ),
     );
     const checkedAt = now;
     const expiresAt = new Date(now.getTime() + repositoryAccessCacheTtlMs);

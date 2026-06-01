@@ -95,8 +95,11 @@ class RecordingAgentDriver implements AgentDriver {
   lastSessionText: string | null = null;
 
   async runTask(input: {
-    readonly session: SessionArtifact;
+    readonly session: SessionArtifact | null;
   }): Promise<ProviderTaskResult> {
+    if (!input.session) {
+      throw new Error("recording_agent_requires_session");
+    }
     this.lastSessionText = new TextDecoder().decode(input.session.bytes);
     return {
       status: "completed",

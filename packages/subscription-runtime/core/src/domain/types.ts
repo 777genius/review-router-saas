@@ -69,10 +69,46 @@ export type ProviderSetupMode =
   | "api-key"
   | "import-local-session";
 
+export type SessionRequirement =
+  | {
+      readonly kind: "required";
+      readonly artifactKinds: readonly SessionArtifactKind[];
+    }
+  | {
+      readonly kind: "optional";
+      readonly artifactKinds: readonly SessionArtifactKind[];
+    }
+  | {
+      readonly kind: "none";
+    };
+
+export type ProviderRefreshMode =
+  | "none"
+  | "validate-only"
+  | "always-before-run"
+  | "lazy-refresh";
+
+export type ProviderSessionRotationMode = "never-rotates" | "may-rotate";
+
+export type ProviderEnvironmentPolicy = {
+  readonly inheritHostEnvironment: false;
+  readonly allowlist: readonly string[];
+  readonly denylist: readonly string[];
+  readonly credentialSourceOrder: readonly string[];
+};
+
 export type ProviderCapabilities = {
   readonly providerId: string;
   readonly displayName: string;
+  readonly sessionRequirement: SessionRequirement;
+  /**
+   * Legacy compatibility field. New policy decisions must use
+   * sessionRequirement instead.
+   */
   readonly sessionArtifactKinds: readonly SessionArtifactKind[];
+  readonly refreshMode: ProviderRefreshMode;
+  readonly sessionRotationMode: ProviderSessionRotationMode;
+  readonly environmentPolicy: ProviderEnvironmentPolicy;
   readonly supportsRefresh: boolean;
   readonly refreshMayRotateSession: boolean;
   readonly supportsNonInteractiveRuntime: boolean;
@@ -84,9 +120,17 @@ export type ProviderCapabilities = {
   readonly setupModes: readonly ProviderSetupMode[];
 };
 
+export type AgentTaskMode = ProviderTaskKind;
+export type AgentHistoryMode =
+  | "none"
+  | "host-managed-thread"
+  | "provider-thread";
+
 export type AgentCapabilities = {
   readonly agentId: string;
   readonly providerId: string;
+  readonly taskModes: readonly AgentTaskMode[];
+  readonly historyMode: AgentHistoryMode;
   readonly supportsReviewTasks: boolean;
   readonly supportsStructuredOutput: boolean;
   readonly supportsToolCalling: boolean;
@@ -142,6 +186,9 @@ export type RuntimePolicy = {
   readonly requireNoBackendPlaintext: boolean;
   readonly requireWritebackBeforeTask: boolean;
   readonly requireCompareAndSwap: boolean;
+  readonly refreshPolicy?: SessionRefreshPolicy;
+  readonly requestedTaskMode?: AgentTaskMode;
+  readonly requestedHistoryMode?: AgentHistoryMode | "unsupported";
   readonly allowInteractiveSetupInRuntime: false;
   readonly allowedProviderIds: readonly string[];
   readonly allowedAgentIds: readonly string[];
@@ -150,11 +197,17 @@ export type RuntimePolicy = {
   readonly maxTaskOutputBytes?: number;
 };
 
+export type SessionRefreshPolicy = {
+  readonly minFreshMs?: number;
+  readonly refreshBeforeExpiryMs?: number;
+  readonly maxSessionAgeMs?: number;
+};
+
 export type CompiledRuntimePolicy = {
   readonly trustMode: CustodyMode;
   readonly providerId: string;
   readonly agentId: string;
-  readonly storeId: string;
+  readonly storeId: string | null;
   readonly runnerId: string;
   readonly requiresDurableWriteback: boolean;
   readonly requiresLease: boolean;
@@ -163,7 +216,34 @@ export type CompiledRuntimePolicy = {
   readonly maxSessionBytes: number;
   readonly maxTaskOutputBytes: number;
   readonly timeoutMs: number;
+  readonly refreshPolicy: Required<SessionRefreshPolicy>;
 };
+
+export type RuntimeExecutionPlan =
+  | {
+      readonly kind: "no-session";
+      readonly readSession: false;
+      readonly acquireLease: false;
+      readonly refresh: "never";
+      readonly writeback: "never";
+      readonly sessionForAgent: "absent";
+    }
+  | {
+      readonly kind: "static-session";
+      readonly readSession: true;
+      readonly acquireLease: boolean;
+      readonly refresh: "never" | "validate-only";
+      readonly writeback: "never";
+      readonly sessionForAgent: "stored";
+    }
+  | {
+      readonly kind: "rotating-session";
+      readonly readSession: true;
+      readonly acquireLease: true;
+      readonly refresh: "before-run" | "lazy";
+      readonly writeback: "before-task" | "after-successful-refresh";
+      readonly sessionForAgent: "refreshed";
+    };
 
 export type ProviderFailureCode =
   | "needs_reconnect"
@@ -171,6 +251,7 @@ export type ProviderFailureCode =
   | "permission_required"
   | "provider_session_invalid"
   | "provider_output_invalid"
+  | "task_mode_unsupported"
   | "stale_generation"
   | "backend_unavailable"
   | "unknown_runtime_failure";
@@ -230,6 +311,30 @@ export type RunContext = {
   readonly attempt: number;
   readonly abortSignal: AbortSignal;
 };
+
+export type SessionFreshnessAssessment =
+  | {
+      readonly status: "fresh";
+      readonly reason:
+        | "recent_refresh"
+        | "expires_later"
+        | "provider_considers_fresh";
+      readonly refreshedAt?: Date;
+      readonly expiresAt?: Date;
+      readonly warnings: readonly RuntimeWarning[];
+    }
+  | {
+      readonly status: "refresh_recommended";
+      readonly reason:
+        | "expires_soon"
+        | "expired"
+        | "max_age_exceeded"
+        | "freshness_unknown"
+        | "provider_considers_stale";
+      readonly refreshedAt?: Date;
+      readonly expiresAt?: Date;
+      readonly warnings: readonly RuntimeWarning[];
+    };
 
 export type SessionReadPurpose = "refresh" | "run" | "health-check";
 
@@ -317,7 +422,10 @@ export type RefreshSessionResult =
     }
   | {
       readonly status: "skipped";
-      readonly reason: "stale_generation" | "session_unchanged";
+      readonly reason:
+        | "stale_generation"
+        | "session_unchanged"
+        | "refresh_not_required";
       readonly session?: SessionEnvelope;
       readonly warnings: readonly RuntimeWarning[];
     };
@@ -334,7 +442,8 @@ export type RefreshThenRunResult =
         | "provider_reconnect_required"
         | "permission_required"
         | "quota_limited"
-        | "stale_generation";
+        | "stale_generation"
+        | "task_mode_unsupported";
       readonly safeMessage: string;
       readonly warnings: readonly RuntimeWarning[];
     };

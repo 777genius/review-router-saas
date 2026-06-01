@@ -30,6 +30,9 @@ describe("safeDashboardErrorCode", () => {
       "setup_pr_branch_deleted",
     );
     expect(
+      safeDashboardErrorCode(new Error("setup_pr_wrong_base_branch")),
+    ).toBe("setup_pr_wrong_base_branch");
+    expect(
       safeDashboardErrorCode(new Error("codex_rotating_not_enabled")),
     ).toBe("codex_rotating_not_enabled");
     expect(

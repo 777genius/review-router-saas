@@ -55,6 +55,7 @@ import {
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
   OctokitWorkflowSetupGateway,
+  preferredSetupBaseBranches,
   PrismaWorkflowProvisioningRepository,
   PrismaWorkflowProvisioningTarget,
   provisionRepositoryReviewRouterWorkflow,
@@ -62,6 +63,7 @@ import {
 import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
 import { PostgresLeaseLock } from "@reviewrouter/platform-locks";
 import {
+  asDashboardGitHubActor,
   assertDashboardMutationAllowed,
   assertDashboardRepositoryConfigMutationAllowed,
   assertDashboardRepositoryMutationAllowed,
@@ -70,6 +72,7 @@ import {
   dashboardMutationAccessAuditMetadata,
   getDashboardSignedInActor,
   getDashboardWorkspaceScope,
+  type DashboardMutationActor,
 } from "../../src/server/dashboard-mutations";
 import {
   createDashboardMemoryDependencies,
@@ -78,7 +81,7 @@ import {
 import { createDashboardRateLimitPolicy } from "../../src/server/dashboard-rate-limits";
 import { refreshGitHubUserRepositoryAccess } from "../../src/server/github-user-repository-access";
 import { getPrisma } from "../../src/server/prisma";
-import { inspectSetupPullRequestStatus } from "../../src/server/setup-pull-request-status";
+import { inspectSetupPullRequest } from "../../src/server/setup-pull-request-status";
 import {
   AppFirstWorkflowSetupGateway,
   safeWorkflowSetupFallbackReason,
@@ -227,13 +230,17 @@ async function refreshRepositoryAccessMutation(
     if (!actor) {
       throw new Error("dashboard_mutation_requires_sign_in");
     }
+    const githubActor = asDashboardGitHubActor(actor);
+    if (!githubActor) {
+      throw new Error("github_user_identity_required");
+    }
     await createDashboardRateLimitPolicy(
       prisma,
-    ).assertRepositoryAccessRefreshAllowed({ userId: actor.userId });
+    ).assertRepositoryAccessRefreshAllowed({ userId: githubActor.userId });
     const workspaceScope = await getDashboardWorkspaceScope();
     const result = await refreshGitHubUserRepositoryAccess({
       prisma,
-      actor,
+      actor: githubActor,
       excludedWorkspaceIds:
         workspaceScope.kind === "workspace_ids"
           ? workspaceScope.workspaceIds
@@ -462,6 +469,7 @@ async function createSetupPullRequestMutation(
       where: { id: repositoryId },
       select: {
         workspaceId: true,
+        provider: true,
         githubRepositoryId: true,
         owner: true,
         name: true,
@@ -476,10 +484,22 @@ async function createSetupPullRequestMutation(
     if (!repository || repository.workspaceId !== workspaceId) {
       throw new Error("repository_not_found");
     }
+    if (
+      repository.provider !== "github" ||
+      !repository.githubRepositoryId ||
+      !repository.installation
+    ) {
+      throw new Error("repository_not_found");
+    }
+    const githubRepository = {
+      ...repository,
+      githubRepositoryId: repository.githubRepositoryId,
+      installation: repository.installation,
+    };
 
     const actor = await assertDashboardRepositoryMutationAllowed(
       workspaceId,
-      repository,
+      githubRepository,
     );
     await assertDashboardEntitlement({
       prisma,
@@ -492,9 +512,15 @@ async function createSetupPullRequestMutation(
       repositoryId,
     });
     const octokit = await createGitHubAppInstallationOctokit(
-      repository.installation.githubInstallationId.toString(),
+      githubRepository.installation.githubInstallationId.toString(),
     );
     const actionRef = resolveReviewRouterActionRef();
+    const setupBaseBranch = await resolveDashboardSetupBaseBranch({
+      octokit,
+      owner: repository.owner,
+      name: repository.name,
+      defaultBranch: repository.defaultBranch,
+    });
     const resolvedRuntime = await loadResolvedReviewRuntime({
       prisma,
       workspaceId,
@@ -503,7 +529,7 @@ async function createSetupPullRequestMutation(
     assertCodexProductionReviewConfigAllowed(resolvedRuntime.config);
     assertCodexRotatingReviewConfigAllowed({
       config: resolvedRuntime.config,
-      repository,
+      repository: githubRepository,
     });
     const workflowProviderKind = workflowReadinessProviderKind(
       resolvedRuntime.config,
@@ -511,7 +537,7 @@ async function createSetupPullRequestMutation(
     const codexRotatingProviderInstanceId =
       resolveCodexRotatingProviderInstanceId({
         config: resolvedRuntime.config,
-        githubRepositoryId: repository.githubRepositoryId.toString(),
+        githubRepositoryId: githubRepository.githubRepositoryId.toString(),
         repositoryFullName: repository.fullName,
         repositoryVisibility: repository.visibility,
       });
@@ -524,10 +550,10 @@ async function createSetupPullRequestMutation(
     const workflowReady = await isWorkflowSetupAlreadyCurrent(
       {
         githubInstallationId:
-          repository.installation.githubInstallationId.toString(),
+          githubRepository.installation.githubInstallationId.toString(),
         owner: repository.owner,
         name: repository.name,
-        defaultBranch: repository.defaultBranch,
+        defaultBranch: setupBaseBranch,
         actionRef,
         conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
         ...(codexRotatingProviderInstanceId
@@ -556,6 +582,7 @@ async function createSetupPullRequestMutation(
           metadata: {
             reason: "workflow_already_current",
             actionVersion: actionRef,
+            baseBranch: setupBaseBranch,
             workflowPath: codexRotatingProviderInstanceId
               ? defaultCodexRotatingWorkflowPath
               : defaultWorkflowPath,
@@ -631,6 +658,7 @@ async function createSetupPullRequestMutation(
         notice: "setup_pr_ready",
         repository: repository.fullName,
         pr: pullRequest.url,
+        branch: pullRequest.baseBranch ?? setupBaseBranch,
         workspace: workspaceId,
         section: "repositories",
       };
@@ -660,6 +688,7 @@ async function confirmSetupPullRequestMergedMutation(
       select: {
         id: true,
         workspaceId: true,
+        provider: true,
         githubRepositoryId: true,
         owner: true,
         name: true,
@@ -685,11 +714,23 @@ async function confirmSetupPullRequestMergedMutation(
     if (!repository || repository.workspaceId !== workspaceId) {
       throw new Error("repository_not_found");
     }
-    assertRepositoryConfigMutable(repository);
+    if (
+      repository.provider !== "github" ||
+      !repository.githubRepositoryId ||
+      !repository.installation
+    ) {
+      throw new Error("repository_not_found");
+    }
+    const githubRepository = {
+      ...repository,
+      githubRepositoryId: repository.githubRepositoryId,
+      installation: repository.installation,
+    };
+    assertRepositoryConfigMutable(githubRepository);
 
     const actor = await assertDashboardRepositoryMutationAllowed(
       workspaceId,
-      repository,
+      githubRepository,
     );
     await assertDashboardEntitlement({
       prisma,
@@ -699,24 +740,46 @@ async function confirmSetupPullRequestMergedMutation(
     });
 
     const octokit = await createGitHubAppInstallationOctokit(
-      repository.installation.githubInstallationId.toString(),
+      githubRepository.installation.githubInstallationId.toString(),
     );
     const setupProvisioning = repository.provisioning[0] ?? null;
     const pullRequestNumber = pullRequestNumberFromUrl(
       setupProvisioning?.pullRequestUrl ?? "",
     );
-    const setupPullRequestStatus = pullRequestNumber
-      ? await inspectSetupPullRequestStatus(
+    const setupPullRequestInspection = pullRequestNumber
+      ? await inspectSetupPullRequest(
           {
             owner: repository.owner,
             name: repository.name,
             pullRequestNumber,
             setupBranch: setupProvisioning?.branch ?? null,
+            allowedBaseBranches: preferredSetupBaseBranches(
+              repository.defaultBranch,
+            ),
           },
           octokit,
         )
       : null;
+    const setupPullRequestStatus = setupPullRequestInspection?.status ?? null;
     const setupPullRequestMerged = setupPullRequestStatus === "merged";
+    const setupBaseBranch =
+      setupPullRequestInspection?.baseBranch ??
+      (await resolveDashboardSetupBaseBranch({
+        octokit,
+        owner: repository.owner,
+        name: repository.name,
+        defaultBranch: repository.defaultBranch,
+      }));
+    if (setupPullRequestStatus === "wrong_base_branch") {
+      await markRepositoryWorkflowSetupNeedsAttention({
+        prisma,
+        repositoryId,
+        setupBranch: setupProvisioning?.branch ?? null,
+        pullRequestNumber,
+        reason: "setup_pr_wrong_base_branch",
+      });
+      throw new Error("setup_pr_wrong_base_branch");
+    }
     const resolvedRuntime = setupPullRequestMerged
       ? null
       : await loadResolvedReviewRuntime({
@@ -732,7 +795,7 @@ async function confirmSetupPullRequestMergedMutation(
       assertCodexProductionReviewConfigAllowed(resolvedRuntime.config);
       assertCodexRotatingReviewConfigAllowed({
         config: resolvedRuntime.config,
-        repository,
+        repository: githubRepository,
       });
     }
     const codexRotatingProviderInstanceId =
@@ -740,7 +803,7 @@ async function confirmSetupPullRequestMergedMutation(
         ? undefined
         : resolveCodexRotatingProviderInstanceId({
             config: resolvedRuntime.config,
-            githubRepositoryId: repository.githubRepositoryId.toString(),
+            githubRepositoryId: githubRepository.githubRepositoryId.toString(),
             repositoryFullName: repository.fullName,
             repositoryVisibility: repository.visibility,
           });
@@ -756,10 +819,10 @@ async function confirmSetupPullRequestMergedMutation(
       : await isWorkflowSetupAlreadyCurrent(
           {
             githubInstallationId:
-              repository.installation.githubInstallationId.toString(),
+              githubRepository.installation.githubInstallationId.toString(),
             owner: repository.owner,
             name: repository.name,
-            defaultBranch: repository.defaultBranch,
+            defaultBranch: setupBaseBranch,
             actionRef: resolveReviewRouterActionRef(),
             conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
             ...(codexRotatingProviderInstanceId
@@ -1715,10 +1778,7 @@ async function createMemoryActionContext(input: {
   });
 
   const memoryActor = await resolveDashboardMemoryActor(
-    {
-      githubUserId: dashboardActor.githubUserId,
-      githubLogin: dashboardActor.githubLogin,
-    },
+    dashboardMemoryActorInput(dashboardActor),
     input.prisma,
   );
 
@@ -1727,11 +1787,20 @@ async function createMemoryActionContext(input: {
     memoryActor,
     dependencies: createDashboardMemoryDependencies({
       prisma: input.prisma,
-      actor: {
-        githubUserId: dashboardActor.githubUserId,
-        githubLogin: dashboardActor.githubLogin,
-      },
+      actor: dashboardMemoryActorInput(dashboardActor),
     }),
+  };
+}
+
+function dashboardMemoryActorInput(
+  actor: DashboardMutationActor,
+): Parameters<typeof resolveDashboardMemoryActor>[0] {
+  return {
+    userId: actor.userId,
+    sourceProvider: actor.sourceProvider,
+    sourceLogin: actor.sourceLogin,
+    githubUserId: actor.githubUserId,
+    githubLogin: actor.githubLogin,
   };
 }
 
@@ -1786,6 +1855,7 @@ async function loadRepositoryForWorkspace(input: {
     select: {
       id: true,
       workspaceId: true,
+      provider: true,
       githubRepositoryId: true,
       owner: true,
       name: true,
@@ -1799,8 +1869,19 @@ async function loadRepositoryForWorkspace(input: {
   if (!repository || repository.workspaceId !== input.workspaceId) {
     throw new Error("repository_not_found");
   }
+  if (
+    repository.provider !== "github" ||
+    !repository.githubRepositoryId ||
+    !repository.installation
+  ) {
+    throw new Error("repository_not_found");
+  }
 
-  return repository;
+  return {
+    ...repository,
+    githubRepositoryId: repository.githubRepositoryId,
+    installation: repository.installation,
+  };
 }
 
 async function verifyProviderSecrets(input: {
@@ -2075,6 +2156,50 @@ function githubApiStatus(error: unknown): number | null {
   return null;
 }
 
+type GitHubBranchRequester = {
+  request: (
+    route: string,
+    parameters?: Record<string, unknown>,
+  ) => Promise<{ readonly data: unknown }>;
+};
+
+async function resolveDashboardSetupBaseBranch(input: {
+  readonly octokit: GitHubBranchRequester;
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
+}): Promise<string> {
+  for (const branch of preferredSetupBaseBranches(input.defaultBranch)) {
+    if (await dashboardBranchExists(input, branch)) {
+      return branch;
+    }
+  }
+  return input.defaultBranch;
+}
+
+async function dashboardBranchExists(
+  input: {
+    readonly octokit: GitHubBranchRequester;
+    readonly owner: string;
+    readonly name: string;
+  },
+  branch: string,
+): Promise<boolean> {
+  try {
+    await input.octokit.request("GET /repos/{owner}/{repo}/git/ref/{ref}", {
+      owner: input.owner,
+      repo: input.name,
+      ref: `heads/${branch}`,
+    });
+    return true;
+  } catch (error) {
+    if (githubApiStatus(error) === 404) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function readGitHubOrganizationPlanName(value: unknown): string | null {
   if (
     typeof value === "object" &&
@@ -2323,7 +2448,10 @@ async function markRepositoryWorkflowSetupNeedsAttention(input: {
   readonly repositoryId: string;
   readonly setupBranch: string | null;
   readonly pullRequestNumber: number | null;
-  readonly reason: "setup_pr_closed" | "setup_pr_branch_deleted";
+  readonly reason:
+    | "setup_pr_closed"
+    | "setup_pr_branch_deleted"
+    | "setup_pr_wrong_base_branch";
 }): Promise<void> {
   const provisioningWhere =
     input.setupBranch || input.pullRequestNumber

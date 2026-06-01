@@ -154,6 +154,11 @@ export interface ProviderSessionDriver {
   classifySessionFailure(error: unknown): ProviderFailure;
 }
 
+export interface NoSessionDriver {
+  readonly providerId: string;
+  readonly sessionRequirement: { readonly kind: "none" };
+}
+
 export interface AgentDriver {
   readonly agentId: string;
   readonly providerId: string;
@@ -165,6 +170,11 @@ export interface AgentDriver {
 
 export type SubscriptionProviderDriver = ProviderSessionDriver & AgentDriver;
 ```
+
+`SubscriptionProviderDriver` is a convenience export, not the main internal
+contract. Core should compose `ProviderSessionDriver | NoSessionDriver` and
+`AgentDriver` separately, so non-rotating Claude tokens, API keys, and no-session
+local agents do not inherit Codex refresh/writeback assumptions.
 
 Why this matters:
 
@@ -217,6 +227,154 @@ Initial extraction map:
 | workflow provisioning Codex YAML                             | ReviewRouter adapter                                 | Host app owns workflow shape                                       |
 | setup manifest/seed script                                   | setup adapter + ReviewRouter web                     | Setup is separate from runtime                                     |
 | dashboard provider setup copy                                | ReviewRouter web                                     | Never move UI copy into core                                       |
+
+### Existing Refresh Logic Is The Baseline, Not Throwaway Code
+
+The current Codex refresh/writeback logic is not wasted. It is the working
+baseline that the extraction must preserve.
+
+Current production code already uses the subscription-runtime shape:
+
+- `packages/subscription-runtime/core/src/application/runtime.ts`
+  - reads session envelope
+  - acquires lease
+  - validates session
+  - calls provider `refreshSession`
+  - compares generation hash
+  - writes back refreshed artifact with idempotency
+  - runs task with the refreshed artifact
+- `packages/subscription-runtime/provider-codex/src/codex-cli-session-driver.ts`
+  - materializes `auth.json` into isolated `CODEX_HOME`
+  - runs Codex bootstrap
+  - reads refreshed `auth.json`
+  - classifies reconnect/quota/permission states
+  - cleans temp auth directories
+- `packages/features/codex-oauth-rotating/src/action/github-action.ts`
+  - wires the runtime into the GitHub Action
+  - confirms writeback before using the refreshed session for review
+  - keeps ReviewRouter no-custody secret writeback through the backend/GitHub App
+
+For Codex OAuth on GitHub-hosted Actions, the refresh/writeback layer is not
+optional. The job receives the current GitHub Secret value at job start. If Codex
+refreshes `auth.json`, the updated artifact must be written back durably for
+future runs; otherwise the next run can start from stale credentials and fail or
+silently skip useful work.
+
+The plan is therefore:
+
+```text
+Do:
+  preserve current refresh/writeback semantics
+  extract stable ports around them
+  add provider-neutral capability planning
+  keep current Codex E2E as regression baseline
+
+Do not:
+  delete the existing refresh path
+  replace it with a speculative generic OAuth helper
+  make Codex run without durable writeback
+  force Claude/API-key/no-session providers through Codex refresh behavior
+```
+
+Decision options:
+
+| Option                                                                                    | Score                             | Approx changes                         | Decision   |
+| ----------------------------------------------------------------------------------------- | --------------------------------- | -------------------------------------- | ---------- |
+| **Keep existing refresh/writeback as baseline and wrap it behind provider-neutral ports** | 🎯 9.5 / 10, 🛡️ 9 / 10, 🧠 6 / 10 | 500-1500 LOC over current package work | **choose** |
+| **Rewrite refresh/writeback from scratch in a new generic runtime**                       | 🎯 4 / 10, 🛡️ 4 / 10, 🧠 8 / 10   | 2000-5000 LOC plus new E2E risk        | reject     |
+| **Make Codex refresh optional and rely on old secret until it fails**                     | 🎯 2 / 10, 🛡️ 2 / 10, 🧠 3 / 10   | 100-400 LOC                            | reject     |
+
+Future optimization is allowed, but only after parity:
+
+- `always-refresh-before-run` remains the safest Codex production default.
+- Later backend-custody workers may use `lazy-refresh` with freshness window plus
+  guarded refresh on 401.
+- Lazy refresh still needs writeback when the provider returns a new artifact.
+- Claude/API-key providers can skip writeback only when their adapter declares
+  `sessionRotationMode: "never-rotates"` and contract tests prove it.
+
+### Current Extracted Package Baseline And Migration Path
+
+The repository already contains the first extraction of the runtime package
+family. Treat this code as the baseline implementation, not as a prototype to
+throw away.
+
+Current package ownership:
+
+| Package / area                                              | Keep or change                                                     | Why                                                                                                                                                                                                         |
+| ----------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/subscription-runtime/core`                        | **Keep and harden**                                                | This is already the right home for leases, session envelopes, generation hashes, writeback coordination, redaction, and provider-neutral orchestration.                                                     |
+| `packages/subscription-runtime/provider-codex`              | **Keep current refresh path, add new execution engines beside it** | `CodexCliSessionDriver.refreshSession` is the production refresh/writeback baseline. Future SDK/JSON/app-server task engines must reuse this session path unless they prove an equivalent refresh contract. |
+| `packages/subscription-runtime/runner-github-action`        | **Keep as GitHub Actions process boundary**                        | This isolates child process execution and env policy for GitHub-hosted jobs. Add stricter environment policy here or in provider adapters; do not spread `spawn` calls back into feature code.              |
+| `packages/subscription-runtime/store-github-actions-secret` | **Keep as no-custody store adapter**                               | This remains the ReviewRouter SaaS-safe writeback path. It may prepare encrypted payloads and metadata, but must never send plaintext credentials to the backend.                                           |
+| `packages/subscription-runtime/store-local-file`            | **Keep for local/dev/backend-custody adapters**                    | Useful for local certification and future backend worker deployments. It is not the default for ReviewRouter SaaS no-custody CI.                                                                            |
+| `packages/features/codex-oauth-rotating` action code        | **Keep as host-app compatibility wrapper**                         | ReviewRouter still owns OIDC checks, workflow inputs, PR review formatting, inline comments, fail gates, and SaaS control-plane calls. Do not move these product concerns into the generic package.         |
+
+Concrete migration sequence from the current code:
+
+1. Freeze current behavior with golden tests before moving more logic.
+   The baseline is the live production Codex rotating path, including inline
+   review comments, summary format, stale generation handling, duplicate final
+   error behavior, and no-plaintext backend boundary.
+2. Add provider capability planning inside `core` without changing the Codex
+   production path. The plan compiler chooses `no-session`, `static-session`, or
+   `rotating-session` before any session bytes are read.
+3. Move remaining Codex-specific env pruning behind a provider-owned
+   `ProviderEnvironmentPolicy`. The current Codex denylist stays as the initial
+   policy because it prevents API-key env vars from overriding subscription
+   credentials.
+4. Add fake provider contract tests for:
+   - no-session local agent
+   - static non-rotating provider
+   - rotating provider with writeback
+   - refresh failure followed by reconnect-required
+   - writeback stale generation
+5. Add the fast worker execution path as a new adapter, not a replacement for
+   refresh:
+   - `CodexCliSessionDriver` keeps refreshing `auth.json`
+   - `CodexJsonAgentDriver` or SDK/JSON worker engines consume the refreshed
+     session
+   - task execution optimization is allowed only after refresh/writeback parity
+     is locked
+6. Keep the current ReviewRouter action wrapper as the integration point. It can
+   switch task engines through a flag, but it must keep the same workflow YAML,
+   secret names, comments, inline findings, and fail-gate semantics.
+7. Only after live parity should APIs be renamed or cleaned up. For example,
+   `CodexCli*` can become `CodexRefresh*` plus `CodexJsonTask*` only when all
+   adapters and feature imports have compatibility exports.
+
+Do not delete these yet:
+
+- `CodexCliSessionDriver.refreshSession`
+- lease and writeback stores used by the current action
+- `refreshThenRunTask` / `refreshSession` orchestration in `core`
+- `packages/features/codex-oauth-rotating` compatibility wrapper
+- current local and live E2E fixtures
+- redaction canaries around auth JSON, access tokens, refresh tokens, and ID
+  tokens
+
+Deletion is allowed only when all of this is true:
+
+- AgentTeams production canary passes with inline comments in the old format.
+- Disposable public and private GitHub-hosted E2E pass on the new package path.
+- stale generation, concurrent run, reconnect-required, quota, backend outage,
+  and writeback idempotency tests pass.
+- no-plaintext backend canary proves `refresh_token`, `access_token`, and
+  `id_token` do not appear in API requests, logs, thrown errors, or comments.
+- rollback flag has been tested in a real workflow run.
+- at least two production review runs succeed after rollout.
+
+Decision options for existing package code:
+
+| Option                                                                               | Score                           | Approx changes | Decision                                                                               |
+| ------------------------------------------------------------------------------------ | ------------------------------- | -------------- | -------------------------------------------------------------------------------------- |
+| **Strangler migration around the current package code**                              | 🎯 9 / 10, 🛡️ 9 / 10, 🧠 6 / 10 | 800-2200 LOC   | **choose**                                                                             |
+| **Big-bang rewrite of the package into a cleaner generic runtime**                   | 🎯 4 / 10, 🛡️ 4 / 10, 🧠 9 / 10 | 3000-7000 LOC  | reject until current path has parity gaps that cannot be patched                       |
+| **Freeze current package as Codex-only and build a second provider-neutral package** | 🎯 6 / 10, 🛡️ 6 / 10, 🧠 7 / 10 | 1800-4500 LOC  | keep as fallback only if provider-neutral changes start destabilizing production Codex |
+
+The chosen path is the strangler migration: the current runtime stays in
+production, new abstractions grow around it, and risky execution optimizations
+are added behind explicit adapters and flags.
 
 ## Decision Options
 
@@ -442,10 +600,10 @@ compiles policy, and passes a fully wired runtime into the use case.
 ```ts
 export type SubscriptionRuntimeDeps = {
   readonly policy: RuntimePolicy;
-  readonly sessionDriver: ProviderSessionDriver;
+  readonly sessionDriver?: ProviderSessionDriver;
   readonly agentDriver: AgentDriver;
-  readonly sessionStore: SessionStorePort;
-  readonly leaseStore: LeaseStorePort;
+  readonly sessionStore?: SessionStorePort;
+  readonly leaseStore?: LeaseStorePort;
   readonly runner: RunnerPort;
   readonly workspace: WorkspacePort;
   readonly redactor: RedactorPort;
@@ -694,10 +852,37 @@ export function createAdapterRegistry(
 Capability negotiation should produce one explicit result.
 
 ```ts
+export type RuntimeExecutionPlan =
+  | {
+      readonly kind: "no-session";
+      readonly readSession: false;
+      readonly acquireLease: false;
+      readonly refresh: "never";
+      readonly writeback: "never";
+      readonly sessionForAgent: "absent";
+    }
+  | {
+      readonly kind: "static-session";
+      readonly readSession: true;
+      readonly acquireLease: boolean;
+      readonly refresh: "never" | "validate-only";
+      readonly writeback: "never";
+      readonly sessionForAgent: "stored";
+    }
+  | {
+      readonly kind: "rotating-session";
+      readonly readSession: true;
+      readonly acquireLease: true;
+      readonly refresh: "before-run" | "lazy";
+      readonly writeback: "before-task" | "after-successful-refresh";
+      readonly sessionForAgent: "refreshed";
+    };
+
 export type CapabilityDecision =
   | {
       readonly status: "accepted";
       readonly compiledPolicy: CompiledRuntimePolicy;
+      readonly executionPlan: RuntimeExecutionPlan;
       readonly warnings: readonly RuntimeWarning[];
     }
   | {
@@ -707,6 +892,9 @@ export type CapabilityDecision =
         | "runner_provider_incompatible"
         | "custody_mode_forbidden"
         | "interactive_runtime_forbidden"
+        | "task_mode_unsupported"
+        | "history_mode_unsupported"
+        | "session_store_required"
         | "missing_required_capability";
       readonly safeMessage: string;
       readonly details: Record<string, string>;
@@ -714,11 +902,58 @@ export type CapabilityDecision =
 
 export function negotiateCapabilities(input: {
   readonly requested: RuntimePolicy;
-  readonly provider: ProviderCapabilities;
-  readonly agent: AgentCapabilities;
-  readonly store: SessionStoreCapabilities;
+  readonly provider: ProviderCapabilityProfile;
+  readonly agent: AgentCapabilityProfile;
+  readonly store?: SessionStoreCapabilities;
   readonly runner: RunnerCapabilities;
 }): CapabilityDecision {
+  if (!input.agent.taskModes.includes(input.requested.taskMode)) {
+    return {
+      status: "rejected",
+      code: "task_mode_unsupported",
+      safeMessage: "Selected agent does not support the requested task mode.",
+      details: { agentId: input.agent.agentId },
+    };
+  }
+
+  if (
+    input.requested.requestedHistoryMode !== "unsupported" &&
+    input.agent.historyMode !== input.requested.requestedHistoryMode
+  ) {
+    return {
+      status: "rejected",
+      code: "history_mode_unsupported",
+      safeMessage:
+        "Selected agent does not support the requested history mode.",
+      details: { agentId: input.agent.agentId },
+    };
+  }
+
+  if (input.provider.sessionRequirement.kind === "none") {
+    return {
+      status: "accepted",
+      compiledPolicy: compileRuntimePolicy(input),
+      executionPlan: {
+        kind: "no-session",
+        readSession: false,
+        acquireLease: false,
+        refresh: "never",
+        writeback: "never",
+        sessionForAgent: "absent",
+      },
+      warnings: [],
+    };
+  }
+
+  if (!input.store) {
+    return {
+      status: "rejected",
+      code: "session_store_required",
+      safeMessage: "Selected provider requires a session store.",
+      details: { providerId: input.provider.providerId },
+    };
+  }
+
   if (input.requested.custodyMode === "no-plaintext-backend") {
     if (input.store.custody !== "no-plaintext-backend") {
       return {
@@ -731,7 +966,7 @@ export function negotiateCapabilities(input: {
   }
 
   if (
-    input.provider.refreshMayRotateSession &&
+    input.provider.sessionRotationMode !== "never-rotates" &&
     !input.store.supportsWriteback
   ) {
     return {
@@ -755,13 +990,44 @@ export function negotiateCapabilities(input: {
     };
   }
 
+  const executionPlan =
+    input.provider.sessionRotationMode === "never-rotates"
+      ? ({
+          kind: "static-session",
+          readSession: true,
+          acquireLease: input.requested.forceExclusiveProviderLease,
+          refresh:
+            input.provider.refreshMode === "validate-only"
+              ? "validate-only"
+              : "never",
+          writeback: "never",
+          sessionForAgent: "stored",
+        } satisfies RuntimeExecutionPlan)
+      : ({
+          kind: "rotating-session",
+          readSession: true,
+          acquireLease: true,
+          refresh:
+            input.provider.refreshMode === "lazy-refresh"
+              ? "lazy"
+              : "before-run",
+          writeback: "before-task",
+          sessionForAgent: "refreshed",
+        } satisfies RuntimeExecutionPlan);
+
   return {
     status: "accepted",
     compiledPolicy: compileRuntimePolicy(input),
+    executionPlan,
     warnings: [],
   };
 }
 ```
+
+Runtime orchestration must execute this compiled `RuntimeExecutionPlan`; it
+should not re-derive behavior from `providerId` or old boolean flags later in the
+call stack. This is the practical guard that keeps Codex writeback from leaking
+into Claude/API-key/local-agent paths.
 
 Registry rules:
 
@@ -926,7 +1192,24 @@ export type SessionArtifact = {
   readonly createdAt?: Date;
   readonly updatedAt?: Date;
 };
+
+export type SessionRequirement =
+  | {
+      readonly kind: "required";
+      readonly artifactKinds: readonly SessionArtifactKind[];
+    }
+  | {
+      readonly kind: "optional";
+      readonly artifactKinds: readonly SessionArtifactKind[];
+    }
+  | {
+      readonly kind: "none";
+    };
 ```
+
+Use `SessionRequirement` for no-session agents instead of inventing fake empty
+secrets. A local model or internal deterministic agent should not need a
+`SessionStorePort` just to satisfy a Codex-shaped API.
 
 Codex v1 maps to:
 
@@ -1132,11 +1415,16 @@ Every provider driver must expose capabilities before the host app chooses it.
 This is the key to supporting Codex, Claude, Gemini, and other agents without
 hardcoding provider checks in core.
 
+The shape below is the minimal v1 sketch. The later "Provider Capability
+Dimensions" section tightens it into explicit refresh/history modes. Use those
+explicit modes for policy decisions and keep booleans only as display/readability
+helpers.
+
 ```ts
 export type ProviderCapabilities = {
   readonly providerId: string;
   readonly displayName: string;
-  readonly sessionArtifactKinds: readonly SessionArtifactKind[];
+  readonly sessionRequirement: SessionRequirement;
   readonly supportsRefresh: boolean;
   readonly refreshMayRotateSession: boolean;
   readonly supportsNonInteractiveRuntime: boolean;
@@ -1175,7 +1463,10 @@ Examples:
 export const codexCapabilities: ProviderCapabilities = {
   providerId: "codex",
   displayName: "Codex",
-  sessionArtifactKinds: ["json-file"],
+  sessionRequirement: {
+    kind: "required",
+    artifactKinds: ["json-file"],
+  },
   supportsRefresh: true,
   refreshMayRotateSession: true,
   supportsNonInteractiveRuntime: true,
@@ -1190,7 +1481,10 @@ export const codexCapabilities: ProviderCapabilities = {
 export const claudeCodeCapabilities: ProviderCapabilities = {
   providerId: "claude-code",
   displayName: "Claude Code",
-  sessionArtifactKinds: ["env-token", "json-file"],
+  sessionRequirement: {
+    kind: "required",
+    artifactKinds: ["env-token", "json-file"],
+  },
   supportsRefresh: false,
   refreshMayRotateSession: false,
   supportsNonInteractiveRuntime: true,
@@ -1205,6 +1499,370 @@ export const claudeCodeCapabilities: ProviderCapabilities = {
 
 Important: these are illustrative. Re-check provider docs and actual CLI
 behavior before shipping each adapter.
+
+### Multi-Provider Design Options
+
+The library must support Codex first, but it must not become a Codex library with
+a generic name. There are three realistic designs:
+
+| Option                                                       | Score                             | Approx changes                                                 | Decision                                                  |
+| ------------------------------------------------------------ | --------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------- |
+| **Provider-owned session + agent drivers behind core ports** | 🎯 9 / 10, 🛡️ 9 / 10, 🧠 7 / 10   | 800-1600 LOC in core/contracts, then 800-2500 LOC per provider | **choose**                                                |
+| **One generic OAuth driver configured per provider**         | 🎯 5.5 / 10, 🛡️ 5 / 10, 🧠 5 / 10 | 500-1200 LOC initially, more incident cost later               | reject for subscription agents                            |
+| **Separate runtime per provider**                            | 🎯 6 / 10, 🛡️ 7 / 10, 🧠 8 / 10   | 1500-4000 LOC per provider                                     | reject unless a provider has incompatible isolation needs |
+
+Why choose provider-owned drivers:
+
+- Codex, Claude, Gemini, API-key providers, and local agents do not share one
+  reliable refresh model.
+- Core can still be reusable if it owns orchestration, leases, stores, redaction,
+  policy checks, workspace handling, and result envelopes.
+- Each provider can evolve auth/session behavior independently.
+- A provider can expose multiple agents over one session, for example a future
+  Claude `one-shot` agent and a Claude `threaded` agent.
+
+Do **not** make "OAuth" the central abstraction. OAuth is one possible setup and
+refresh mechanism. The central abstraction is a **session artifact** that can be
+validated, optionally refreshed, stored, leased, materialized, and used by an
+agent.
+
+### Non-Negotiable Multi-Provider Guardrails
+
+These rules are what keep the package from becoming Codex-only after the first
+adapter ships:
+
+1. Core must not import `provider-codex`, `provider-claude`, GitHub App code,
+   Prisma models, Next.js routes, or host-app config.
+2. Core must not branch on `providerId === "codex"` or
+   `providerId === "claude"`. Provider-specific branching belongs in adapter
+   factories, adapter manifests, or host-app policy.
+3. Writeback is required only when the provider capability profile says the
+   session can rotate. Non-rotating Claude/API-key providers must not pay the
+   Codex writeback tax.
+4. Leases are required only when a store/writeback/rate-limit policy needs
+   coordination. No-session and simple API-key providers can skip provider
+   refresh leases.
+5. Runtime never performs interactive auth. Device auth, browser login, local
+   session import, and account consent are setup-driver responsibilities.
+6. Task mode and history mode must be validated before session bytes are read.
+   A `threaded` task cannot silently run through an `ephemeral` one-shot agent.
+7. Redaction profile is provider-owned and mandatory before any provider process
+   runs. Unknown token field names are treated as a certification blocker.
+8. At least one fake non-Codex provider must run in core tests. This test exists
+   to catch accidental Codex assumptions before a real Claude/Gemini adapter is
+   implemented.
+9. Provider runners must use an explicit environment allowlist/denylist. A
+   host-level API key must not silently override a subscription/session artifact.
+10. Provider cost/credit semantics are adapter metadata, not core logic. Core can
+    report safe usage categories, but product/billing policy belongs to the host
+    app.
+
+Concrete anti-pattern to reject in review:
+
+```ts
+// Bad: core behavior hardcoded around Codex.
+if (providerId === "codex") {
+  await writeBackRefreshedAuthJson(...);
+}
+
+// Good: core follows provider capability profile.
+if (provider.sessionRotationMode !== "never-rotates") {
+  await sessionStore.writeBackWithGenerationCheck(...);
+}
+
+// Bad: provider process inherits host env and may pick the wrong credential.
+spawn(providerBinary, args, { env: process.env });
+
+// Good: provider adapter builds a deliberate credential environment.
+spawn(providerBinary, args, {
+  env: buildProviderEnv({ baseEnv: process.env, policy, injected }),
+});
+```
+
+Implementation score after adding these guardrails:
+
+```text
+🎯 9 / 10   🛡️ 9 / 10   🧠 7.5 / 10
+Approx extra tests/guards: 300-700 LOC
+```
+
+### Cross-Perspective Risk Review
+
+Use this as the review lens before starting implementation and before adding a
+second provider.
+
+| Perspective          | Main risk                                                                                        | Required plan response                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| Security/custody     | Plaintext session leaks into SaaS, logs, job payloads, crash dumps, or debug artifacts           | custody mode is explicit; redaction canary; no-custody store rejects plaintext; temp dirs are cleaned   |
+| Provider semantics   | Codex refresh rules get treated as universal OAuth rules                                         | provider-owned session drivers; `RuntimeExecutionPlan`; fake Claude-like provider tests                 |
+| Credential selection | Host env silently changes provider auth source                                                   | provider-owned env policy; denied env stripped before spawn; selected source recorded as safe metadata  |
+| Runtime/process      | Provider child process hangs, leaks env, leaves orphan children, or outputs malformed JSON       | runner process group cleanup; bounded stdout/stderr; malformed output classification                    |
+| Product/UX           | User sees generic reconnect/error copy and cannot understand what action is needed               | failure taxonomy maps to host-owned actionable copy; setup/runtime states are separate                  |
+| Operations/release   | Core, adapter, action SHA, and SaaS env drift during rollout                                     | release gates include version matrix, action artifact check, rollback flag, and production canary       |
+| Performance/cost     | Worker concurrency worsens account limits or uses a provider-specific credit bucket unexpectedly | provider-account limiter; cost/usage category metadata; provider docs certification                     |
+| Developer API        | Host apps have to adopt our queue, storage, or ReviewRouter concepts                             | queue/store/runner are ports; host app chooses adapters; examples include no-session and static-session |
+| Legal/terms          | Subscription automation may be allowed for one provider path but not another                     | adapter certification includes terms/compatibility check before shipping                                |
+| Support/debugging    | Incidents require reading provider-specific code or secrets                                      | safe diagnostic envelope, provider version, credential source category, runtime plan kind, failure code |
+
+Acceptance gate: every row above must have at least one unit, contract, E2E, or
+release checklist item before the package is treated as public-library quality.
+
+### Provider Capability Dimensions
+
+Provider capabilities need to describe behavior, not just features. Otherwise a
+future Claude adapter can pass type checks while violating runtime assumptions.
+
+```ts
+export type RefreshMode =
+  | "none"
+  | "validate-only"
+  | "lazy-refresh"
+  | "always-refresh-before-run"
+  | "provider-managed";
+
+export type SessionRotationMode =
+  | "never-rotates"
+  | "may-rotate"
+  | "always-rotates"
+  | "unknown";
+
+export type TaskMode =
+  | "one-shot"
+  | "threaded"
+  | "streaming"
+  | "tool-using"
+  | "review";
+
+export type HistoryMode =
+  | "ephemeral"
+  | "provider-thread"
+  | "host-managed-thread"
+  | "unsupported";
+
+export type RedactionProfileId = string;
+
+export type CredentialSourceKind =
+  | "session-artifact"
+  | "env-token"
+  | "api-key"
+  | "helper"
+  | "os-keychain"
+  | "cloud-provider"
+  | "none";
+
+export type ProviderEnvironmentPolicy = {
+  readonly allowedEnvNames: readonly string[];
+  readonly deniedEnvNames: readonly string[];
+  readonly requiredAbsentEnvNames: readonly string[];
+  readonly credentialSourceOrder: readonly CredentialSourceKind[];
+};
+
+export type ProviderCapabilityProfile = {
+  readonly providerId: string;
+  readonly displayName: string;
+  readonly sessionRequirement: SessionRequirement;
+  readonly refreshMode: RefreshMode;
+  readonly sessionRotationMode: SessionRotationMode;
+  readonly supportsNonInteractiveRuntime: boolean;
+  readonly requiresNetwork: boolean;
+  readonly requiresWorkspace: boolean;
+  readonly setupModes: readonly ProviderSetupMode[];
+  readonly redactionProfiles: readonly RedactionProfileId[];
+  readonly environmentPolicy: ProviderEnvironmentPolicy;
+};
+
+export type AgentCapabilityProfile = {
+  readonly agentId: string;
+  readonly providerId: string;
+  readonly taskModes: readonly TaskMode[];
+  readonly historyMode: HistoryMode;
+  readonly supportsStructuredOutput: boolean;
+  readonly supportsNativeJsonEvents: boolean;
+  readonly supportsToolCalling: boolean;
+  readonly supportsRepositoryContext: boolean;
+  readonly supportsInlineFindings: boolean;
+  readonly requiresWritableWorkspace: boolean;
+  readonly maxPromptBytes?: number;
+  readonly maxRuntimeMs: number;
+};
+```
+
+When implementing, evolve the earlier minimal `ProviderCapabilities` /
+`AgentCapabilities` sketch toward this profile. Vague booleans like
+`supportsRefresh` are acceptable as display helpers, but policy checks should be
+based on explicit modes.
+
+Provider examples:
+
+| Provider shape           | Session artifact                | Refresh mode                                        | Rotation mode                               | Agent modes                  | Main guard                                      |
+| ------------------------ | ------------------------------- | --------------------------------------------------- | ------------------------------------------- | ---------------------------- | ----------------------------------------------- |
+| Codex OAuth subscription | `auth.json`                     | `always-refresh-before-run` or later `lazy-refresh` | `may-rotate`                                | `one-shot`, `review`         | store must support writeback and generation CAS |
+| Claude durable token     | token/env/json                  | `validate-only` or `none`                           | `never-rotates` unless docs prove otherwise | `one-shot`, maybe `threaded` | do not require writeback capability             |
+| Browser-backed provider  | encrypted cookie/session bundle | `provider-managed`                                  | `unknown`                                   | `threaded` or `tool-using`   | must use isolated runner and strict redaction   |
+| API-key provider         | API key                         | `none`                                              | `never-rotates`                             | provider API task modes      | no refresh lease required                       |
+| Local model              | none/local config               | `none`                                              | `never-rotates`                             | local task modes             | no session store required                       |
+
+Capability-to-runtime mapping:
+
+| Capability profile                         | Compiled runtime plan | Reads session? | Acquires provider lease? | Writes back?                             | Agent receives              |
+| ------------------------------------------ | --------------------- | -------------- | ------------------------ | ---------------------------------------- | --------------------------- |
+| `sessionRequirement: none`                 | `no-session`          | No             | No                       | No                                       | `session: undefined`        |
+| `never-rotates` + `refreshMode: none`      | `static-session`      | Yes            | Only if policy forces it | No                                       | stored session              |
+| `never-rotates` + `validate-only`          | `static-session`      | Yes            | Only if policy forces it | No                                       | validated stored session    |
+| `may-rotate` + `lazy-refresh`              | `rotating-session`    | Yes            | Yes                      | Only after refresh produces new artifact | stored or refreshed session |
+| `may-rotate` + `always-refresh-before-run` | `rotating-session`    | Yes            | Yes                      | Before task starts                       | refreshed session           |
+| `unknown` rotation                         | `rotating-session`    | Yes            | Yes                      | Before task starts                       | refreshed session           |
+
+Treat this table as a contract test matrix. Adding Claude should add rows to the
+matrix, not new provider-id branches in core.
+
+### Credential Precedence And Environment Isolation
+
+Provider CLIs often choose credentials from several sources, and this can defeat
+the session model if the runtime passes through the host environment unchanged.
+Provider adapters must declare an environment policy and the runner must enforce
+it before spawning the provider.
+
+As of 2026-05-30, official Claude Code docs say Claude Code supports several
+auth sources and chooses them in a defined precedence order. Relevant examples:
+cloud-provider env flags, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+`apiKeyHelper`, `CLAUDE_CODE_OAUTH_TOKEN`, then subscription OAuth credentials.
+The same docs say `claude setup-token` can generate a one-year OAuth token for
+CI/scripts, and note that starting June 15, 2026, Agent SDK and `claude -p`
+usage on subscription plans draw from a separate Agent SDK credit. Source:
+https://code.claude.com/docs/en/authentication
+
+Implications for this runtime:
+
+- Core must not blindly inherit `process.env` into provider runners.
+- Provider adapters own `allowedEnvNames`, `deniedEnvNames`, and
+  `requiredAbsentEnvNames`.
+- A Claude subscription adapter must explicitly decide whether it uses
+  `CLAUDE_CODE_OAUTH_TOKEN`, stored CLI credentials, `apiKeyHelper`, or API keys.
+- A Codex subscription adapter should similarly deny API-key variables that would
+  silently switch the provider away from subscription auth.
+- Credential source selected by the provider should be observed as safe metadata
+  when the CLI exposes it, for example `credentialSource: "oauth-token"`, not
+  raw credential values.
+
+Illustrative runner guard:
+
+```ts
+export function buildProviderEnv(input: {
+  readonly baseEnv: NodeJS.ProcessEnv;
+  readonly policy: ProviderEnvironmentPolicy;
+  readonly injected: Readonly<Record<string, string>>;
+}): Readonly<Record<string, string>> {
+  const env: Record<string, string> = {};
+
+  for (const name of input.policy.allowedEnvNames) {
+    const value = input.baseEnv[name];
+    if (value !== undefined) env[name] = value;
+  }
+
+  for (const name of input.policy.requiredAbsentEnvNames) {
+    if (
+      input.baseEnv[name] !== undefined ||
+      input.injected[name] !== undefined
+    ) {
+      throw new RuntimePolicyError("provider_credential_env_conflict");
+    }
+  }
+
+  for (const name of input.policy.deniedEnvNames) {
+    delete env[name];
+  }
+
+  return { ...env, ...input.injected };
+}
+```
+
+Required tests:
+
+- `credential-env:anthropic-api-key-does-not-override-claude-subscription`
+- `credential-env:codex-api-key-does-not-override-codex-oauth`
+- `credential-env:denied-env-is-not-passed-to-provider-process`
+- `credential-env:provider-selected-credential-source-is-safe-metadata`
+
+Required policy checks:
+
+```ts
+export function assertProviderPolicy(input: {
+  readonly provider: ProviderCapabilityProfile;
+  readonly agent: AgentCapabilityProfile;
+  readonly store?: SessionStoreCapabilities;
+  readonly policy: RuntimePolicy;
+}): void {
+  if (input.agent.providerId !== input.provider.providerId) {
+    throw new RuntimePolicyError("agent_provider_mismatch");
+  }
+
+  if (input.policy.requireNonInteractiveRuntime) {
+    if (!input.provider.supportsNonInteractiveRuntime) {
+      throw new RuntimePolicyError("provider_requires_interactive_runtime");
+    }
+  }
+
+  if (input.provider.sessionRequirement.kind === "none") {
+    if (
+      input.provider.sessionRotationMode !== "never-rotates" ||
+      input.provider.refreshMode !== "none"
+    ) {
+      throw new RuntimePolicyError("no_session_provider_cannot_refresh");
+    }
+    return;
+  }
+
+  if (!input.store) {
+    throw new RuntimePolicyError("session_provider_requires_session_store");
+  }
+
+  if (input.provider.sessionRotationMode !== "never-rotates") {
+    if (!input.store.supportsWriteback || !input.store.supportsCompareAndSwap) {
+      throw new RuntimePolicyError("rotating_session_requires_cas_writeback");
+    }
+  }
+
+  if (input.policy.requireNoBackendPlaintext) {
+    if (input.store?.plaintextAvailableToBackend) {
+      throw new RuntimePolicyError(
+        "store_violates_no_backend_plaintext_policy",
+      );
+    }
+  }
+}
+```
+
+Edge-case rules:
+
+- `sessionRotationMode: "unknown"` must be treated like `may-rotate` until the
+  provider adapter has certification evidence. This is less convenient, but it
+  prevents losing refreshed credentials or falsely marking a session healthy.
+- `sessionRequirement.kind === "none"` must bypass session store and lease
+  requirements. Do not create fake empty secrets for no-session agents.
+- `historyMode: "provider-thread"` requires a host-visible thread identity and
+  explicit cleanup policy. Do not hide provider thread ids inside `auth.json` or
+  adapter-private cache state.
+- `historyMode: "host-managed-thread"` means the host app owns conversation
+  routing and persistence. The adapter may execute a turn, but it must not become
+  the source of truth for business history.
+
+### Setup Versus Runtime Matrix
+
+Provider setup and runtime have different reliability and security rules. Keep
+them separate even when the same CLI can do both.
+
+| Flow                              | May be interactive?     | May read plaintext session?   | May write durable session?              | Owner                     |
+| --------------------------------- | ----------------------- | ----------------------------- | --------------------------------------- | ------------------------- |
+| Setup command on user machine     | Yes                     | Yes, local user context       | Yes, through chosen store/setup adapter | setup adapter + host app  |
+| GitHub Actions no-custody runtime | No                      | Yes, runner secret env only   | Yes, encrypted writeback only           | runtime + store adapter   |
+| Backend-custody worker            | No                      | Yes, explicit custody consent | Yes, KMS/Postgres/local store           | host app + store adapter  |
+| Local daemon                      | Maybe during setup only | Yes, local machine            | Yes, local encrypted file               | local setup/store adapter |
+| No-session agent                  | No                      | No session exists             | No                                      | agent adapter             |
+
+Runtime rule: if a provider needs user interaction to become healthy again, the
+runtime returns `needs_reconnect` with safe metadata. It does not start device
+auth, open a browser, wait for stdin, or mutate setup state.
 
 ### Storage Capability Model
 
@@ -1229,13 +1887,29 @@ export type SessionStoreCapabilities = {
 
 Runtime must reject combinations that cannot meet the requested policy:
 
+For providers with `sessionRequirement.kind === "none"`, the runtime should skip
+session store checks entirely. Do not require local models or internal agents to
+create placeholder secrets.
+
 ```ts
 export function assertRuntimeCapabilities(input: {
   readonly provider: ProviderCapabilities;
   readonly agent: AgentCapabilities;
-  readonly store: SessionStoreCapabilities;
+  readonly store?: SessionStoreCapabilities;
   readonly policy: RuntimePolicy;
 }): void {
+  if (input.agent.providerId !== input.provider.providerId) {
+    throw new Error("agent_provider_mismatch");
+  }
+
+  if (input.provider.sessionRequirement.kind === "none") {
+    return;
+  }
+
+  if (!input.store) {
+    throw new Error("session_provider_requires_session_store");
+  }
+
   if (input.policy.requireNoBackendPlaintext) {
     if (input.store.plaintextAvailableToBackend) {
       throw new Error("store_violates_no_backend_plaintext_policy");
@@ -1249,10 +1923,6 @@ export function assertRuntimeCapabilities(input: {
     if (!input.store.supportsIdempotency) {
       throw new Error("store_missing_required_idempotency");
     }
-  }
-
-  if (input.agent.providerId !== input.provider.providerId) {
-    throw new Error("agent_provider_mismatch");
   }
 }
 ```
@@ -1315,7 +1985,7 @@ providers like Codex where one CLI owns both session refresh and task execution.
 ```ts
 export interface ProviderSessionDriver {
   readonly providerId: string;
-  readonly supportedArtifactKinds: readonly SessionArtifactKind[];
+  readonly sessionRequirement: SessionRequirement;
   readonly capabilities: ProviderCapabilities;
 
   validateSession(input: {
@@ -1334,13 +2004,18 @@ export interface ProviderSessionDriver {
   classifySessionFailure(error: unknown): ProviderFailure;
 }
 
+export interface NoSessionDriver {
+  readonly providerId: string;
+  readonly sessionRequirement: { readonly kind: "none" };
+}
+
 export interface AgentDriver {
   readonly agentId: string;
   readonly providerId: string;
   readonly capabilities: AgentCapabilities;
 
   runTask(input: {
-    readonly session: SessionArtifact;
+    readonly session?: SessionArtifact;
     readonly task: ProviderTask;
     readonly workspace: WorkspaceHandle;
     readonly runner: RunnerPort;
@@ -1354,25 +2029,38 @@ export interface AgentDriver {
 export type SubscriptionProviderDriver = ProviderSessionDriver & AgentDriver;
 ```
 
+Use optional `session` only at the `AgentDriver` boundary. Core must validate the
+provider's `SessionRequirement` before calling the agent:
+
+- `required` means session must exist and match an allowed artifact kind.
+- `optional` means session can be absent, but if present it must validate.
+- `none` means session must be absent and no store/lease should be required.
+
 This split lets a future package publish:
 
 - `@subscription-runtime/provider-claude-session`
 - `@subscription-runtime/agent-claude-code`
-- `@subscription-runtime/agent-codex-cli`
+- `@subscription-runtime/agent-codex-json`
 - `@subscription-runtime/provider-openai-codex-session`
 
-The first implementation can still export `CodexCliProviderDriver implements
-SubscriptionProviderDriver` to keep ReviewRouter integration simple.
+The first implementation can still export `CodexProviderDriver implements
+SubscriptionProviderDriver` as a convenience composition around
+`CodexSessionDriver` and `CodexJsonAgentDriver` to keep ReviewRouter integration
+simple.
 
 ### Provider Driver Port
 
 This is the v1 convenience port for combined provider+agent adapters. It should
 be implemented as a composition of the smaller ports above.
 
+Do not make new core use cases depend on this interface directly. It is useful
+for Codex v1 ergonomics, but it is the easiest way to accidentally force every
+future provider to implement refresh, storage, and task execution as one object.
+
 ```ts
 export interface SubscriptionProviderDriver {
   readonly providerId: string;
-  readonly supportedArtifactKinds: readonly SessionArtifactKind[];
+  readonly sessionRequirement: SessionRequirement;
   readonly capabilities: ProviderCapabilities;
   readonly agentCapabilities: AgentCapabilities;
 
@@ -1390,7 +2078,7 @@ export interface SubscriptionProviderDriver {
   }): Promise<RefreshedSession>;
 
   runTask(input: {
-    readonly session: SessionArtifact;
+    readonly session?: SessionArtifact;
     readonly task: ProviderTask;
     readonly workspace: WorkspaceHandle;
     readonly runner: RunnerPort;
@@ -1581,6 +2269,35 @@ Rules:
 Application use cases should be written against the smaller session/agent
 ports. The combined `SubscriptionProviderDriver` is an adapter convenience, not
 the only internal shape.
+
+Every high-level use case should start by negotiating capabilities and compiling
+a `RuntimeExecutionPlan`. The rest of the use case follows that plan:
+
+```ts
+const decision = negotiateCapabilities({
+  requested: input.policy,
+  provider: input.provider.capabilities,
+  agent: input.agent.capabilities,
+  store: input.sessionStore?.capabilities,
+  runner: input.runner.capabilities,
+});
+
+if (decision.status === "rejected") {
+  return failedTask(decision.code);
+}
+
+switch (decision.executionPlan.kind) {
+  case "no-session":
+    return input.agent.runTask({ ...taskInput, session: undefined });
+  case "static-session":
+    return runStaticSessionTask(input, decision.executionPlan);
+  case "rotating-session":
+    return refreshThenRunRotatingSessionTask(input, decision.executionPlan);
+}
+```
+
+The examples below show the rotating-session path because Codex is v1, but the
+generic runtime must keep all three branches tested.
 
 ### Refresh Session
 
@@ -1843,7 +2560,7 @@ Codex v1 responsibilities:
 
 - validate `auth.json`
 - write `auth.json` and `config.toml` into temp `CODEX_HOME`
-- run `codex exec` bootstrap in isolated env
+- run refresh/bootstrap in an isolated Codex home
 - read refreshed `auth.json`
 - compact/validate refreshed `auth.json`
 - classify failures:
@@ -1853,63 +2570,701 @@ Codex v1 responsibilities:
   - `unknown_auth_state`
 - support review task execution through existing full ReviewRouter runtime
 
-Illustrative sketch:
+### Codex Execution Engine Decision - Single Production Engine
+
+As of the latest local re-check on 2026-05-30, `@openai/codex-sdk` and
+`@openai/codex` latest npm versions are `0.135.0`. The TypeScript SDK README
+states that the SDK wraps the `codex` CLI, spawns it, and exchanges JSONL over
+stdin/stdout. That means the SDK is not faster because it avoids process spawn;
+it is faster and cleaner because it uses the packaged Codex binary, machine
+JSON protocol, stdin, structured output, and a Node-native event API.
+
+The production architecture should take the fast pieces from the SDK path
+without making the SDK API the main production dependency. Use **one**
+production Codex task engine:
+
+```text
+Packaged Codex JSON Engine
+  pinned @openai/codex package binary
+  codex exec --json or --experimental-json
+  prompt through stdin
+  structured output schema
+  controlled CODEX_HOME
+  bounded stdout/stderr parsing
+```
+
+This is the best fit when top priorities are **speed** and **flexibility**.
+It is not a raw "shell out to whatever codex is on PATH" approach. It is a
+small, owned process engine around the pinned `@openai/codex` package binary and
+Codex's machine-readable JSON protocol.
+
+The architecture should use this shape:
+
+```text
+provider-codex
+  CodexSessionDriver
+    validate auth.json
+    refresh/auth bootstrap
+    read refreshed auth.json
+
+  CodexJsonAgentDriver
+    owns task execution through one production engine
+
+  production engine
+    PackagedCodexJsonExecutionEngine
+
+  non-production probes
+    CodexSdkProbeEngine            benchmark/reference only
+    CodexAppServerProbeEngine      experimental benchmark only
+```
+
+Do **not** add SDK-specific or CLI-specific branches to core. Core should keep
+depending only on `AgentDriver`. The Codex package owns the choice of execution
+engine. Also do **not** support multiple Codex production engines at the same
+time unless a real production incident proves it is necessary; that adds
+support, testing, and rollout complexity without improving the primary latency
+path.
+
+Recommended default:
+
+```text
+🎯 9 / 10   🛡️ 8 / 10   🧠 6.5 / 10
+Approx changes: 1500-3000 LOC including tests
+```
+
+Use `CodexJsonAgentDriver` as the default production task driver for Codex
+backend/batch execution. Keep `codex exec --json` as the stable fallback engine.
+For backend workloads that can keep local custody, `codex app-server` may be
+enabled behind the same `CodexExecutionEngine` port as a bounded slot pool.
+SDK stays a benchmark/reference path until it proves a better production
+contract.
+
+Why this beats SDK-first for our priorities:
+
+- it already resolves the packaged `@openai/codex` binary instead of a stale
+  global `codex`
+- it uses the same fast machine path as the SDK: JSON protocol, stdin, and
+  structured output
+- it gives direct access to new CLI flags without waiting for SDK wrappers
+- it lets us pin, verify, and report the exact Codex binary version
+- it keeps process lifecycle, timeout, orphan cleanup, and redaction under our
+  control
+- it avoids supporting two production task engines that behave almost the same
+  internally
+- it keeps the public runtime API provider-agnostic while keeping Codex-specific
+  complexity in `provider-codex`
+
+What we give up by not using SDK as the production engine:
+
+- less out-of-the-box convenience for images, `Thread`, `resumeThread`, and
+  `runStreamed`
+- we must own robust JSONL parsing and schema-file lifecycle
+- we must track CLI protocol changes directly
+- we need stronger adapter certification around process errors, timeouts, and
+  output parsing
+
+Those tradeoffs are acceptable because our immediate backend use case is
+one-shot structured batch computation, not an interactive Codex app. If future
+features require rich thread APIs, add a separate SDK-based agent driver then,
+behind the same `AgentDriver` interface.
+
+### Provider-Agnostic Boundary For Claude And Future Agents
+
+This plan must not bake Codex into the runtime core. Codex is the first
+production adapter because it has the hardest session-refresh problem today, but
+the same package family should later support Claude subscription sessions,
+Gemini-style user sessions, local agents, or hosted browser agents.
+
+The stable split is:
+
+```text
+subscription-runtime-core
+  SessionArtifact
+  SessionStorePort
+  LeaseStorePort
+  ProviderSessionDriver
+  AgentDriver
+  RunnerPort
+  RedactorPort
+  ObservabilityPort
+
+provider-codex
+  CodexSessionDriver
+  CodexJsonAgentDriver
+  Codex-specific auth.json validation and refresh
+
+provider-claude
+  ClaudeSessionDriver
+  ClaudeAgentDriver
+  Claude-specific session validation and refresh
+```
+
+Core must never know whether a provider stores `auth.json`, an OAuth token,
+`CLAUDE_CODE_OAUTH_TOKEN`, browser cookies, or a local encrypted file. It only
+knows that the provider can validate a `SessionArtifact`, optionally refresh it,
+and run a task through an `AgentDriver`.
+
+Adapter manifest example:
 
 ```ts
-export class CodexCliProviderDriver implements SubscriptionProviderDriver {
+export type ProviderAdapterManifest = {
+  readonly providerId: "codex" | "claude" | string;
+  readonly sessionRequirement: SessionRequirement;
+  readonly refreshMode: RefreshMode;
+  readonly sessionRotationMode: SessionRotationMode;
+  readonly taskModes: readonly ("one-shot" | "threaded" | "streaming")[];
+  readonly custodyModes: readonly CustodyMode[];
+  readonly supportsStructuredOutput: boolean;
+  readonly requiresExclusiveAccountLease: boolean;
+  readonly minimumRuntimeVersion: string;
+};
+```
+
+Codex v1 should publish:
+
+```ts
+export const codexAdapterManifest = {
+  providerId: "codex",
+  sessionRequirement: {
+    kind: "required",
+    artifactKinds: ["json-file"],
+  },
+  refreshMode: "always-refresh-before-run",
+  sessionRotationMode: "may-rotate",
+  taskModes: ["one-shot"],
+  custodyModes: ["no-plaintext-backend", "backend-custody", "local-only"],
+  supportsStructuredOutput: true,
+  requiresExclusiveAccountLease: true,
+  minimumRuntimeVersion: "1.0.0",
+} satisfies ProviderAdapterManifest;
+```
+
+Claude can then be added without changing core:
+
+```ts
+export const claudeAdapterManifest = {
+  providerId: "claude",
+  sessionRequirement: {
+    kind: "required",
+    artifactKinds: ["env-token", "json-file"],
+  },
+  refreshMode: "validate-only",
+  sessionRotationMode: "never-rotates",
+  taskModes: ["one-shot", "threaded"],
+  custodyModes: ["backend-custody", "local-only"],
+  supportsStructuredOutput: true,
+  requiresExclusiveAccountLease: false,
+  minimumRuntimeVersion: "1.0.0",
+} satisfies ProviderAdapterManifest;
+```
+
+The important rule: provider adapters may share utility packages, but they must
+not share hidden assumptions. Codex refresh, Claude refresh, and future provider
+refresh belong behind provider-owned ports and contract tests, not behind one
+"universal OAuth refresh" implementation that guesses provider behavior.
+
+Observed spike results on a local MacBook with small prompts, `gpt-5.5`, low
+reasoning, and two worker slots:
+
+| Engine                  | Main path                                 | Result                     | Decision                                               |
+| ----------------------- | ----------------------------------------- | -------------------------- | ------------------------------------------------------ |
+| stale global CLI        | `/usr/local/bin/codex@0.125.0` human mode | slow/noisy                 | reject; invalid baseline                               |
+| packaged CLI human mode | `@openai/codex@0.134.0`, `-o` output file | ~8-9s single               | reject; human renderer adds overhead                   |
+| packaged CLI JSON mode  | `@openai/codex@0.134.0 --json --schema -` | ~6s single                 | stable fallback engine shape                           |
+| TypeScript SDK          | SDK spawning packaged Codex JSON protocol | similar path               | keep as benchmark/reference, not production dependency |
+| app-server daemon       | `codex app-server --listen stdio://`      | faster short jobs in spike | optional backend fast path behind fallback             |
+
+The exact numbers are workload and account-limit dependent. Treat the table as
+directional and keep a benchmark gate in CI for adapter changes.
+
+### Codex Agent Driver Shape
+
+Keep the public `AgentDriver` stable and hide execution-engine details behind a
+small internal port:
+
+```ts
+export type CodexExecutionEngineKind = "packaged-json" | "app-server-pool";
+
+export interface CodexExecutionEngine {
+  readonly kind: CodexExecutionEngineKind;
+  readonly capabilities: {
+    readonly supportsStructuredOutput: boolean;
+    readonly supportsJsonEvents: boolean;
+    readonly supportsThreadResume: boolean;
+    readonly requiresSchemaFile: boolean;
+  };
+
+  run(input: {
+    readonly prompt: string;
+    readonly session: CodexMaterializedSession;
+    readonly workspacePath: string;
+    readonly model: string;
+    readonly reasoningEffort: "minimal" | "low" | "medium" | "high" | "xhigh";
+    readonly outputSchema?: unknown;
+    readonly abortSignal: AbortSignal;
+  }): Promise<CodexExecutionResult>;
+}
+```
+
+Then the driver stays simple:
+
+```ts
+export class CodexJsonAgentDriver implements AgentDriver {
+  readonly agentId = "codex-json";
   readonly providerId = "codex";
-  readonly supportedArtifactKinds = ["json-file"] as const;
-  readonly capabilities = codexCapabilities;
-  readonly agentCapabilities = codexAgentCapabilities;
+  readonly capabilities = codexJsonAgentCapabilities;
 
-  async validateSession(input: {
-    readonly session: SessionArtifact;
-  }): Promise<SessionValidationResult> {
-    return validateCodexAuthJsonBytes({
-      authJsonBytes: new TextDecoder().decode(input.session.bytes),
-    });
-  }
+  constructor(
+    private readonly deps: {
+      readonly engine: CodexExecutionEngine;
+      readonly sessionMaterializer: CodexSessionMaterializer;
+      readonly model: string;
+      readonly reasoningEffort: CodexReasoningEffort;
+    },
+  ) {}
 
-  async refreshSession(input: RefreshSessionInput): Promise<RefreshedSession> {
-    const codexHome = await input.workspace.makePrivateDir("codex-home");
-    await writeCodexAuthSnapshot(codexHome.path, input.session);
-
-    await input.runner.run({
-      command: "codex",
-      args: ["exec", "--model", "gpt-5.5", "--sandbox", "read-only"],
-      cwd: input.workspace.path,
-      env: buildCodexRefreshEnv(codexHome.path),
-      stdin: new TextEncoder().encode("Reply OK after auth check."),
-      timeoutMs: 120_000,
+  async runTask(input: AgentRunInput): Promise<ProviderTaskResult> {
+    const session = await this.deps.sessionMaterializer.materialize({
+      artifact: input.session,
+      redactor: input.redactor,
       abortSignal: input.abortSignal,
     });
 
-    const refreshed = await codexHome.readFile("auth.json");
-    return {
-      artifact: {
-        kind: "json-file",
-        providerId: "codex",
-        formatVersion: "codex-auth-json-v1",
-        contentType: "application/json",
-        bytes: refreshed,
-      },
-      providerState: "refreshed",
-      warnings: [],
-    };
-  }
+    try {
+      const result = await this.deps.engine.run({
+        prompt: input.task.prompt,
+        outputSchema: resolveTaskOutputSchema(input.task.outputSchemaName),
+        session,
+        workspacePath: input.workspace.path,
+        model: this.deps.model,
+        reasoningEffort: this.deps.reasoningEffort,
+        abortSignal: input.abortSignal,
+      });
 
-  classifyFailure(error: unknown): ProviderFailure {
-    return classifyCodexRuntimeFailure(error);
+      return {
+        status: "completed",
+        outputText: result.outputText,
+        structuredOutput: result.structuredOutput,
+        warnings: result.warnings,
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        failure: classifyCodexRuntimeFailure(error),
+        warnings: [],
+      };
+    } finally {
+      await session.release();
+    }
   }
 }
 ```
+
+Important: `CodexSessionMaterializer` is provider-internal. Core stores
+`SessionArtifact`; provider-codex decides whether to materialize it into a
+temporary `CODEX_HOME`, a reusable per-worker `CODEX_HOME`, or a container
+mount.
+
+```ts
+export interface CodexSessionMaterializer {
+  materialize(input: {
+    readonly artifact: SessionArtifact;
+    readonly redactor: RedactorPort;
+    readonly abortSignal: AbortSignal;
+  }): Promise<CodexMaterializedSession>;
+}
+
+export type CodexMaterializedSession = {
+  readonly codexHome: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly generationHash: string;
+  release(): Promise<void>;
+};
+```
+
+Materializer modes:
+
+| Mode                | Use case                                  | Behavior                                                |
+| ------------------- | ----------------------------------------- | ------------------------------------------------------- |
+| `ephemeral`         | GitHub Actions no-custody runtime         | temp `CODEX_HOME` per run; delete after task            |
+| `worker-cache`      | Node/Nest backend worker with custody     | per worker/account/generation `CODEX_HOME`; reuse cache |
+| `container-mounted` | isolated backend/container worker         | materialize into mounted secret volume                  |
+| `local-dev`         | developer tools with local encrypted file | stable local path with file lock                        |
+
+This is the main flexibility point. It lets ReviewRouter keep no-custody
+GitHub behavior while a future backend app can use warm workers and persistent
+sessions for speed.
+
+Current implementation note: `provider-codex` ships
+`CodexEphemeralSessionMaterializer` as the default and
+`CodexWorkerCacheSessionMaterializer` for backend worker processes. A
+`CodexJsonAgentDriver` can be prewarmed with `prewarmSession()` and cleaned up
+with `dispose()`. The worker-cache materializer serializes one warmed slot, so
+host apps should create one driver/materializer per account/slot and scale by
+adding slots instead of running concurrent jobs through the same `CODEX_HOME`.
+
+Update after app-server spike: `provider-codex` also ships
+`CodexWorkerCacheSessionPoolMaterializer` and
+`CodexAppServerExecutionEngine`. The pool materializer exposes multiple reusable
+`CODEX_HOME` slots for one provider account, and the app-server engine keeps one
+daemon per materialized slot. The recommended backend shape is one active turn
+per slot, with `PackagedCodexJsonExecutionEngine` configured as fallback.
+
+### Worker Pool Boundary
+
+The library core should not depend on Bull, BullMQ, pg-boss, Nest, or any queue.
+Queues are host-app infrastructure. The runtime package can provide optional
+helpers later, but v1 should expose queue-agnostic primitives:
+
+```ts
+export type SubscriptionJobHandler = {
+  run(input: {
+    readonly providerInstanceId: string;
+    readonly task: ProviderTask;
+    readonly runContext: RunContext;
+  }): Promise<RefreshThenRunResult>;
+};
+
+export function createSubscriptionJobHandler(
+  runtime: SubscriptionRuntime,
+): SubscriptionJobHandler {
+  return {
+    run: (input) => runtime.refreshThenRunTask(input),
+  };
+}
+```
+
+Nest/Bull integration should live in the host app or a separate optional package:
+
+```ts
+@Processor("subscription-runtime")
+export class SubscriptionRuntimeProcessor {
+  constructor(private readonly handler: SubscriptionJobHandler) {}
+
+  @Process({ name: "run-provider-task", concurrency: 2 })
+  async process(job: Job<SubscriptionRuntimeJob>) {
+    return this.handler.run({
+      providerInstanceId: job.data.providerInstanceId,
+      task: job.data.task,
+      runContext: {
+        runId: job.id.toString(),
+        attempt: job.attemptsMade + 1,
+        abortSignal: AbortSignal.timeout(job.data.timeoutMs),
+      },
+    });
+  }
+}
+```
+
+This avoids forcing every consumer to use our queue stack. A Padel/Nest app can
+bind the same runtime into its existing Bull setup, while ReviewRouter keeps
+GitHub Actions as the runner.
+
+### Speed Architecture
+
+For backend workers, fastest safe mode is:
+
+```text
+Bull/Nest worker process
+  -> one CodexJsonAgentDriver per provider account or worker slot
+  -> prewarmSession() before accepting jobs
+  -> worker-cache materializer
+  -> PackagedCodexJsonExecutionEngine
+  -> provider concurrency limiter
+```
+
+Runtime settings:
+
+- pin `@openai/codex` exact version
+- never call global `codex` by default
+- fail startup if resolved Codex version differs from certified version unless
+  canary mode is enabled
+- use `outputSchema` for structured jobs
+- parse JSON events for progress/observability
+- use `AbortSignal` for per-job timeout
+- keep provider concurrency lower than worker count
+- recycle a worker after N jobs, after memory threshold, or after CLI
+  protocol errors
+
+Example composition:
+
+```ts
+const codexProvider = combineSessionAndAgent({
+  sessionDriver: new CodexSessionDriver({
+    refreshEngine: new CodexJsonCliRefreshEngine({
+      codexPackageBinary: resolvePackagedCodexBinary(),
+    }),
+  }),
+  agentDriver: new CodexJsonAgentDriver({
+    engine: new PackagedCodexJsonExecutionEngine({
+      codexPackageBinary: resolvePackagedCodexBinary(),
+    }),
+    sessionMaterializer: new WorkerCacheCodexSessionMaterializer({
+      rootDir: "/var/lib/subscription-runtime/codex",
+      maxGenerationsPerAccount: 2,
+    }),
+    model: "gpt-5.5",
+    reasoningEffort: "low",
+  }),
+});
+```
+
+The refresh path can continue using CLI bootstrap even when task execution uses
+the same packaged Codex binary. Refresh and task execution are separate reasons
+to change.
+
+### Hybrid Shape Without Multiple Production Engines
+
+The recommended design is still a hybrid, but only at the right boundary:
+
+```text
+Hybrid we want:
+  SDK learnings + packaged Codex binary + JSON protocol + our process control
+
+Hybrid we do not want:
+  SDK production path + JSON CLI production path + app-server production path
+```
+
+This distinction matters. A good hybrid shares **mechanics** while keeping one
+production behavior. A bad hybrid ships several behaviors and asks support,
+tests, rollout, observability, and customers to understand which one ran.
+
+The chosen hybrid:
+
+- uses the SDK's proven fast lane concept: packaged Codex binary, JSON events,
+  stdin, and structured output
+- avoids the SDK's moving Node API as the production contract
+- avoids the old CLI human renderer
+- avoids global binary drift
+- keeps a single process supervisor and a single failure taxonomy
+- keeps SDK/app-server as benchmark probes, so we can still learn from them
+  without making them production dependencies
+
+Why this is faster-friendly:
+
+- `codex exec --json` can emit the final agent message without human rendering
+- stdin avoids argv quoting/length overhead and prompt leakage
+- structured schema narrows output and reduces post-processing
+- worker-cache materialization avoids rebuilding `CODEX_HOME` for every job in
+  backend-custody worker deployments
+- a single engine makes p95 regression analysis much clearer
+
+Why this is flexibility-friendly:
+
+- any new CLI flag can be added immediately to the command builder
+- provider-specific behavior stays inside `provider-codex`
+- queue choice stays in the host app
+- storage choice stays behind `SessionStorePort`
+- future Claude/Gemini adapters add new `AgentDriver`s without changing core
+- if SDK becomes clearly better later, it can be introduced as a new
+  `AgentDriver` behind a feature flag after certification, not as hidden
+  fallback magic
+
+### Option Tradeoff Matrix
+
+| Option                         | Score                                              | Pros                                                                                                                                                  | Cons                                                                                                                | Decision                 |
+| ------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| **Packaged Codex JSON Engine** | 🎯 9 / 10, 🛡️ 8 / 10, 🧠 6.5 / 10, 1500-3000 LOC   | fastest controllable path; direct CLI flags; pinned binary; one production implementation; no SDK API dependency; strong process supervision possible | we own JSONL parsing, schema temp files, process lifecycle, and compatibility tests                                 | **choose**               |
+| **SDK-first**                  | 🎯 8.5 / 10, 🛡️ 8 / 10, 🧠 6 / 10, 1500-3000 LOC   | convenient Node API; structured output object; image/thread helpers; less custom parsing                                                              | still spawns CLI; SDK can hide flags; SDK API is another moving surface; harder to guarantee exact process behavior | benchmark/reference only |
+| **SDK + JSON fallback**        | 🎯 8 / 10, 🛡️ 8 / 10, 🧠 7.5 / 10, 2500-4500 LOC   | maximum escape hatch; easy rollback between wrappers                                                                                                  | two production paths, duplicated tests, confusing incidents, harder rollout/support                                 | reject for now           |
+| **App-server daemon**          | 🎯 6.5 / 10, 🛡️ 5.5 / 10, 🧠 8 / 10, 3000-6000 LOC | theoretically persistent daemon; richer bidirectional protocol                                                                                        | experimental; spike did not prove faster p95; startup/tail reliability risk                                         | experimental only        |
+
+The deciding point is operational: SDK-first and packaged JSON use the same
+underlying Codex binary and JSON machine path, but packaged JSON gives us fewer
+abstraction surprises and one production surface to certify. SDK convenience is
+valuable, but not valuable enough to justify making it the primary production
+dependency for batch workers.
+
+### Packaged JSON Engine Edge Cases
+
+`PackagedCodexJsonExecutionEngine` must be production-grade, not a quick
+`spawn` wrapper:
+
+- resolve the packaged `@openai/codex` binary from the package, never from
+  `PATH`, unless explicitly configured
+- require `--json`; reject human-output mode in production
+- pass prompt through stdin, not argv, to avoid command-line leakage and shell
+  length limits
+- pass schema through a temp file with `0600` permissions and delete it
+- parse JSONL with a line buffer that handles chunk splits
+- bound stdout/stderr memory and preserve only redacted tails
+- kill process group on timeout to avoid orphan child processes
+- classify non-zero exit with redacted stdout/stderr
+- treat exit zero without final agent message as `provider_output_invalid`
+- use a controlled `CODEX_HOME` with generated `config.toml`; never trust a
+  user config in backend workers
+- cache key must include provider instance id and generation hash
+- invalidate worker cache on stale generation, reconnect, permission failure,
+  or explicit session delete
+- use account-level provider concurrency limits, not only process-level limits
+- treat valid text but invalid schema as `provider_output_invalid`
+- ensure tokens never reach logs, job payloads, progress events, or retry
+  metadata
+- keep SDK and app-server probes outside production dependency graph unless
+  explicitly running benchmarks
+
+### Weak Spots And Required Mitigations
+
+These are the places where the design is still risky if implemented casually.
+They should be called out in code review and certification.
+
+| Weak spot                                          | Why it matters                                                                               | Required mitigation                                                                                                                  |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Codex JSON event schema drift                      | CLI output can change while exit code stays zero                                             | Keep real JSONL fixtures per certified Codex version; accept extra fields; fail closed when required final output fields are missing |
+| `--json` vs `--experimental-json` ambiguity        | A flag rename can silently break execution                                                   | Capability-probe the pinned binary during certification; production command builder uses only the certified flag set                 |
+| Global binary drift                                | Local or container `codex` can be older than the package                                     | Resolve from exact `@openai/codex` package path; log only version metadata; fail startup on mismatch                                 |
+| Worker cache leaks state                           | A one-shot task can accidentally inherit history or stale auth                               | Cache only `CODEX_HOME` auth/config; never reuse thread ids for one-shot jobs; key by provider instance id plus generation hash      |
+| No-custody vs backend-custody confusion            | ReviewRouter must not read plaintext provider secrets on SaaS                                | Materializer mode is selected by runtime policy; `worker-cache` is rejected when `requireNoBackendPlaintext` is true                 |
+| Concurrent refresh races                           | Two workers can refresh the same account and overwrite newer secret material                 | Use account lease plus generation precondition; writeback is idempotent; stale generation invalidates local cache                    |
+| Refresh during active task                         | A task can run with an artifact that was superseded mid-run                                  | Task uses the artifact returned by its own refresh step; later writeback generation does not mutate the running process              |
+| Account rate limits                                | More workers can make latency worse or trigger provider lockouts                             | Add provider-account concurrency limiter, 429/quota classifier, retry budget, and p95/429 metrics                                    |
+| Process orphans                                    | Timeouts can leave Codex children running                                                    | Spawn process group where supported; SIGTERM then SIGKILL; test child cleanup                                                        |
+| Split stdout chunks                                | JSONL can be split across stream chunks                                                      | Use line-buffer parser with fuzz tests for every byte boundary                                                                       |
+| Secret leakage                                     | Auth JSON, tokens, or prompt inputs can hit logs                                             | Redaction canary for stdout, stderr, errors, progress events, job payloads, and retry metadata                                       |
+| Structured output mismatch                         | Provider can answer text that does not match schema                                          | Treat as `provider_output_invalid`; do not coerce silently in production                                                             |
+| Provider-specific auth differences                 | Claude, Codex, and future agents refresh differently                                         | Keep refresh behind provider-specific `ProviderSessionDriver`; core only orchestrates leases, storage, redaction, and task execution |
+| Non-rotating providers forced through Codex flow   | Claude/API-key providers can be made slower and more fragile by unnecessary leases/writeback | Runtime policy branches on `refreshMode` and `sessionRotationMode`, not provider id                                                  |
+| No-session providers forced to create fake secrets | Local models or internal agents may not need any durable session                             | Support `sessionRequirement.kind === "none"` or an explicit `NoSessionDriver`                                                        |
+| Threaded providers hidden behind one-shot API      | Future conversation/history use cases can leak state or lose context                         | Model `historyMode` and `taskModes`; reject unsupported task/history combinations before session read                                |
+
+Confidence after these mitigations:
+
+```text
+🎯 9 / 10   🛡️ 8.5 / 10   🧠 7 / 10
+Approx additional hardening: 600-1200 LOC
+```
+
+### Engine Selection Policy
+
+Use explicit policy. Production should not silently change engines based on
+availability.
+
+```ts
+export type CodexEnginePolicy = {
+  readonly engine: "packaged-json";
+  readonly certifiedCodexVersion: string;
+  readonly allowNewerPatchVersion: boolean;
+  readonly failOnUncertifiedVersion: boolean;
+  readonly allowBenchmarkProbeEngines: boolean;
+};
+```
+
+Default production policy:
+
+```ts
+export const productionCodexEnginePolicy = {
+  engine: "packaged-json",
+  certifiedCodexVersion: "0.135.0",
+  allowNewerPatchVersion: false,
+  failOnUncertifiedVersion: true,
+  allowBenchmarkProbeEngines: false,
+} satisfies CodexEnginePolicy;
+```
+
+If the packaged JSON engine cannot start because the pinned binary is missing or
+uncertified, fail fast with an operator error. Do not automatically switch to
+global `codex`, SDK, or app-server in production; that would make incidents
+harder to diagnose and could change security boundaries.
+
+### Benchmark And Certification Gate
+
+Every Codex engine release should run:
+
+```text
+capability probe for pinned binary
+codex exec --help fixture
+json event fixture for certified version
+1 job / 1 slot warmup
+8 jobs / 2 slots
+24 jobs / 4 slots
+long output bounded-memory fixture
+stale auth
+quota/rate-limit classifier fixture
+invalid JSON output fixture
+zero exit with missing final output fixture
+non-zero exit with reconnect classifier fixture
+timeout/orphan cleanup fixture
+redaction canary for stdout/stderr/errors/progress
+worker-cache stale generation invalidation
+no-custody policy rejects worker-cache materializer
+```
+
+Promote an engine only when:
+
+- success rate is 100% in local deterministic tests
+- no secret reaches logs or errors
+- p95 latency is not worse than current production baseline by more than 20%
+- memory per active worker stays under the configured host limit
+- stale generation and reconnect paths fail closed with actionable messages
+- production fallback to SDK, app-server, or global `codex` is disabled
+- adapter manifest compatibility is verified before session bytes are read
+
+### Revised Implementation Phases
+
+The implementation should be phased so we do not replace working ReviewRouter
+runtime behavior in one risky jump.
+
+1. **Certification harness first** - add fixtures, version probing, JSONL parser
+   tests, redaction canaries, and process cleanup tests before switching any
+   production path.
+2. **Packaged engine behind internal port** - implement
+   `PackagedCodexJsonExecutionEngine`, `CodexCommandBuilder`, temp schema files,
+   stdout/stderr bounds, and failure classification.
+3. **Session materializers** - implement `ephemeral` first for GitHub Actions,
+   then `worker-cache` for backend-custody workers. Enforce custody policy at
+   construction time.
+4. **Agent driver integration** - add `CodexJsonAgentDriver` behind the existing
+   `AgentDriver` port while keeping current ReviewRouter review formatting and
+   inline-comment runtime untouched.
+5. **Backend worker prototype** - bind the same runtime into a host queue
+   adapter, for example Nest/Bull in `openai-service`, without adding Bull as a
+   core dependency.
+6. **Canary and promotion** - run benchmark matrix, compare p50/p95, memory, and
+   quota behavior, then switch the composition root to the new engine.
+7. **Legacy cleanup** - after one release window, remove the old human-output
+   Codex task path or keep it as a documented emergency operator-only path, not
+   an automatic fallback.
+
+Phase scores:
+
+| Phase                  | Score                               | Approx changes           |
+| ---------------------- | ----------------------------------- | ------------------------ |
+| Certification harness  | 🎯 9 / 10, 🛡️ 9 / 10, 🧠 5 / 10     | 400-900 LOC              |
+| Packaged engine        | 🎯 9 / 10, 🛡️ 8 / 10, 🧠 7 / 10     | 700-1400 LOC             |
+| Session materializers  | 🎯 8.5 / 10, 🛡️ 8.5 / 10, 🧠 7 / 10 | 500-1000 LOC             |
+| Agent integration      | 🎯 8.5 / 10, 🛡️ 8 / 10, 🧠 6 / 10   | 300-700 LOC              |
+| Queue host integration | 🎯 8 / 10, 🛡️ 8 / 10, 🧠 6 / 10     | 250-700 LOC per host app |
+
+### Acceptance Criteria For This Engine
+
+The packaged JSON engine is production-ready only when all of these are true:
+
+- no production path resolves `codex` from `PATH`
+- exact `@openai/codex` package version is pinned, certified, and exposed as
+  non-secret diagnostics
+- `codex exec --json` smoke returns a valid final assistant output for the
+  certified version
+- malformed JSONL, missing final output, timeout, non-zero exit, quota, and
+  reconnect failures map to stable `ProviderFailure` codes
+- task output schema is enforced by the adapter, not by downstream business code
+- `ephemeral` mode passes ReviewRouter no-custody E2E
+- `worker-cache` mode passes backend-custody load tests and stale-generation
+  invalidation tests
+- `ProviderAdapterManifest` lets Claude or another provider register without
+  changing runtime core
+- runtime can run two provider adapters in the same process without shared
+  mutable provider state
+- docs clearly say SDK/app-server are benchmark probes, not production fallback
 
 Preferred extracted shape:
 
 ```ts
 export class CodexSessionDriver implements ProviderSessionDriver {
   readonly providerId = "codex";
-  readonly supportedArtifactKinds = ["json-file"] as const;
+  readonly sessionRequirement = {
+    kind: "required",
+    artifactKinds: ["json-file"],
+  } as const;
   readonly capabilities = codexCapabilities;
 
   async validateSession(input: ValidateSessionInput) {
@@ -1930,14 +3285,24 @@ export class CodexSessionDriver implements ProviderSessionDriver {
   }
 }
 
-export class CodexCliAgentDriver implements AgentDriver {
-  readonly agentId = "codex-cli";
+export class CodexJsonAgentDriver implements AgentDriver {
+  readonly agentId = "codex-json";
   readonly providerId = "codex";
   readonly capabilities = codexAgentCapabilities;
 
+  constructor(private readonly engine: PackagedCodexJsonExecutionEngine) {}
+
   async runTask(input: AgentRunInput): Promise<ProviderTaskResult> {
-    const codexHome = await prepareCodexHome(input);
-    return runCodexTaskAndParseOutput(input.runner, codexHome, input);
+    const session = await prepareCodexMaterializedSession(input);
+    return this.engine.run({
+      prompt: input.task.prompt,
+      outputSchema: input.task.outputSchema,
+      session,
+      workspacePath: input.workspace.path,
+      model: input.task.model,
+      reasoningEffort: input.task.reasoningEffort,
+      abortSignal: input.abortSignal,
+    });
   }
 
   classifyRunFailure(error: unknown) {
@@ -1945,9 +3310,14 @@ export class CodexCliAgentDriver implements AgentDriver {
   }
 }
 
-export const codexCliProvider = combineSessionAndAgent({
-  sessionDriver: new CodexSessionDriver(),
-  agentDriver: new CodexCliAgentDriver(),
+export const codexProvider = combineSessionAndAgent({
+  sessionDriver: new CodexSessionDriver({ refreshEngine }),
+  agentDriver: new CodexJsonAgentDriver(
+    new PackagedCodexJsonExecutionEngine({
+      codexPackageBinary: resolvePackagedCodexBinary(),
+      policy: productionCodexEnginePolicy,
+    }),
+  ),
 });
 ```
 
@@ -1962,7 +3332,10 @@ use a token-like session artifact:
 ```ts
 export class ClaudeCodeSessionDriver implements ProviderSessionDriver {
   readonly providerId = "claude-code";
-  readonly supportedArtifactKinds = ["env-token"] as const;
+  readonly sessionRequirement = {
+    kind: "required",
+    artifactKinds: ["env-token"],
+  } as const;
   readonly capabilities = claudeCodeSessionCapabilities;
 
   async refreshSession(input: RefreshSessionInput): Promise<RefreshedSession> {
@@ -2021,6 +3394,9 @@ export type RuntimePolicy = {
   readonly requireWritebackBeforeTask: boolean;
   readonly requireCompareAndSwap: boolean;
   readonly allowInteractiveSetupInRuntime: false;
+  readonly taskMode: TaskMode;
+  readonly requestedHistoryMode: HistoryMode;
+  readonly forceExclusiveProviderLease: boolean;
   readonly allowedProviderIds: readonly string[];
   readonly allowedStoreIds: readonly string[];
   readonly allowedRunnerIds: readonly string[];
@@ -2202,13 +3578,13 @@ policy, capability negotiation, and lease acquisition have all accepted.
 This matrix should be maintained as adapters are added. Values are examples and
 must be verified per provider before release.
 
-| Provider    | Session artifact          | Refresh likely? | Runtime path   | Main risk                | v1 stance              |
-| ----------- | ------------------------- | --------------: | -------------- | ------------------------ | ---------------------- |
-| Codex       | `auth.json` JSON file     |             Yes | CLI            | token rotation/writeback | Ship first             |
-| Claude Code | token or CLI auth state   |        Maybe/no | CLI            | exact session semantics  | Design for later       |
-| Gemini CLI  | CLI auth state or API key |         Unknown | CLI/API        | auth format stability    | Later spike            |
-| OpenRouter  | API key                   |              No | API            | billing/user key custody | Existing separate path |
-| Local model | none or local config      |              No | process/server | sandbox/resource use     | Later                  |
+| Provider    | Session artifact          | Refresh likely? | Runtime path      | Main risk                | v1 stance              |
+| ----------- | ------------------------- | --------------: | ----------------- | ------------------------ | ---------------------- |
+| Codex       | `auth.json` JSON file     |             Yes | packaged JSON CLI | token rotation/writeback | Ship first             |
+| Claude Code | token or CLI auth state   |        Maybe/no | CLI               | exact session semantics  | Design for later       |
+| Gemini CLI  | CLI auth state or API key |         Unknown | CLI/API           | auth format stability    | Later spike            |
+| OpenRouter  | API key                   |              No | API               | billing/user key custody | Existing separate path |
+| Local model | none or local config      |              No | process/server    | sandbox/resource use     | Later                  |
 
 Do not add provider-specific branches to core. Add a provider driver, capability
 metadata, setup driver if needed, and adapter tests.
@@ -2221,9 +3597,9 @@ architecture.
 
 | Scenario                             | Session driver                                      | Agent driver            | Store                       | Runner             | Setup mode                  | Notes                                   |
 | ------------------------------------ | --------------------------------------------------- | ----------------------- | --------------------------- | ------------------ | --------------------------- | --------------------------------------- |
-| ReviewRouter Codex in GitHub Actions | `CodexSessionDriver`                                | `CodexCliAgentDriver`   | GitHub Secret no-custody    | GitHub Action      | local command/device/import | first production path                   |
+| ReviewRouter Codex in GitHub Actions | `CodexSessionDriver`                                | `CodexJsonAgentDriver`  | GitHub Secret no-custody    | GitHub Action      | local command/device/import | first production path                   |
 | Claude Code with durable token       | `StaticTokenSessionDriver` or `ClaudeSessionDriver` | `ClaudeCodeAgentDriver` | GitHub Secret or local file | GitHub Action/node | manual secret/import        | may not need refresh                    |
-| Local developer daemon               | `CodexSessionDriver`                                | `CodexCliAgentDriver`   | local encrypted file        | node process       | device/import               | no GitHub dependency                    |
+| Local developer daemon               | `CodexSessionDriver`                                | `CodexJsonAgentDriver`  | local encrypted file        | node process       | device/import               | no GitHub dependency                    |
 | Backend batch worker with custody    | provider-specific session                           | provider-specific agent | Postgres/KMS                | container          | account consent/import      | opt-in only                             |
 | API-key provider                     | `ApiKeySessionDriver`                               | provider API agent      | GitHub Secret/KMS           | node/container     | manual secret               | no refresh, simpler lease               |
 | Local model                          | `NoSessionDriver`                                   | `LocalModelAgentDriver` | none/local config           | process/container  | none                        | runtime still useful for task isolation |
@@ -2231,6 +3607,16 @@ architecture.
 Recommended adapter composition APIs:
 
 ```ts
+export type SessionDriverBinding =
+  | {
+      readonly kind: "session";
+      readonly sessionDriver: ProviderSessionDriver;
+    }
+  | {
+      readonly kind: "none";
+      readonly sessionDriver: NoSessionDriver;
+    };
+
 export function combineSessionAndAgent(input: {
   readonly sessionDriver: ProviderSessionDriver;
   readonly agentDriver: AgentDriver;
@@ -2242,6 +3628,24 @@ export function combineSessionAndAgent(input: {
   }
 
   return new CombinedSubscriptionProviderDriver(input);
+}
+
+export function bindNoSessionAgent(input: {
+  readonly agentDriver: AgentDriver;
+}): SessionDriverBinding {
+  if (input.agentDriver.capabilities.historyMode === "provider-thread") {
+    throw new RuntimeConfigurationError(
+      "No-session agent cannot rely on provider-owned thread state.",
+    );
+  }
+
+  return {
+    kind: "none",
+    sessionDriver: {
+      providerId: input.agentDriver.providerId,
+      sessionRequirement: { kind: "none" },
+    },
+  };
 }
 ```
 
@@ -2862,7 +4266,10 @@ Create a compatibility wrapper so current action behavior remains unchanged.
 
 ```ts
 const runtime = createSubscriptionRuntime({
-  provider: new CodexCliProviderDriver(),
+  provider: createCodexProviderDriver({
+    engine: "packaged-json",
+    codexPackageBinary: resolvePackagedCodexBinary(),
+  }),
   sessionStore: new ReviewRouterGitHubActionSecretStore({
     apiUrl,
     providerInstanceId,
@@ -3024,7 +4431,7 @@ const refreshed = await provider.refreshSession(...);
 await sessionStore.write({ nextArtifact: refreshed.artifact, ... });
 
 // Good: adapter-specific behavior stays in adapter.
-new CodexCliProviderDriver().refreshSession(...);
+createCodexProviderDriver({ engine: "packaged-json" }).refreshSession(...);
 
 // Good: custody is explicit.
 createSubscriptionRuntime({
@@ -3147,6 +4554,10 @@ Required controls:
 - provider changes session file format
 - provider CLI exits non-zero but produced valid task output
 - provider CLI exits zero but output is invalid
+- provider CLI selects a different credential source because env variables leaked
+- provider subscription token expires on a calendar date instead of refresh flow
+- provider introduces separate usage credits or billing buckets for automation
+- provider stores credentials in OS keychain and cannot export them safely to CI
 
 Required controls:
 
@@ -3155,6 +4566,9 @@ Required controls:
 - validation before and after refresh
 - reconnect state surfaced to host app
 - provider adapter contract tests
+- provider-owned environment allowlist/denylist
+- credential-source diagnostics as safe metadata only
+- setup docs distinguish subscription token, API key, cloud auth, and local login
 
 ### Storage
 
@@ -3245,39 +4659,55 @@ Required controls:
 - provider forbids CI automation
 - provider has long-lived token and no refresh
 - provider supports API key only
+- provider has several task engines over one session
+- provider supports persistent threads that must be routed by conversation id
+- provider returns structured output only through prompt discipline, not native
+  schema support
 
 Required controls:
 
 - setup driver separated from runtime driver
-- artifact kind supports directory/opaque bytes
-- provider capability flags
+- artifact kind supports file, directory, token, opaque bytes, and no-session
+  providers
+- provider capability profiles with refresh mode, rotation mode, task modes, and
+  history mode
 - terms/compatibility docs per adapter
 - adapter can return `unchanged` refresh state
+- host app chooses queue/concurrency policy per provider account, not globally
+- generic runtime contract test runs with a fake non-Codex provider
 
 ### Edge Case Resolution Matrix
 
 Each critical edge case should have an owner and a test. If ownership is unclear,
 the case will regress when adapters are extracted.
 
-| Edge case                            | Detect at                         | Owner                       | Runtime action                         | Required test                 |
-| ------------------------------------ | --------------------------------- | --------------------------- | -------------------------------------- | ----------------------------- |
-| Fork PR attempts secret-bearing run  | identity gate before prelease     | host app                    | fail closed before session read        | action test with fork payload |
-| Bot actor triggers review            | host policy gate                  | host app                    | skip with safe message                 | policy unit test              |
-| Draft PR triggers run                | host policy gate                  | host app                    | skip before session read               | policy unit test              |
-| Wrong workflow SHA/action ref        | identity gate                     | host + lease store          | fail closed                            | OIDC claim fixture test       |
-| GitHub App lacks `Secrets: write`    | setup/writeback                   | store adapter + host app    | return `permission_required`           | GitHub API fake test          |
-| Two runs refresh same generation     | lease/writeback                   | lease store + session store | first wins, stale skips                | concurrency contract test     |
-| Writeback succeeds but response lost | writeback                         | store adapter               | idempotent replay returns success      | idempotency contract test     |
-| Provider refresh token revoked       | provider refresh                  | provider session driver     | return `needs_reconnect`               | provider fixture test         |
-| Provider CLI leaks token to stderr   | runner output                     | runner + redactor           | redact and fail canary if leak remains | redaction canary              |
-| Provider writes auth into workspace  | workspace scan or adapter cleanup | provider adapter            | fail or cleanup before artifact upload | temp workspace test           |
-| Store CAS unsupported                | capability negotiation            | core                        | reject policy requiring CAS            | policy compile test           |
-| Local file lock orphaned             | lease/read/write                  | local store adapter         | stale lock recovery with owner/ttl     | local store test              |
-| KMS key rotated                      | store read/write                  | KMS store adapter           | decrypt old, write new key version     | KMS adapter test              |
-| Backend down before prelease         | identity/lease gate               | host adapter                | fail closed before session read        | API outage test               |
-| Backend down after refresh           | writeback                         | host/store adapter          | do not publish session, rerun safe     | outage-after-refresh test     |
-| Provider output malformed            | agent parse                       | agent driver                | return structured failure              | malformed output fixture      |
-| Provider terms disallow automation   | adapter certification             | host/product owner          | do not ship adapter                    | release checklist             |
+| Edge case                                        | Detect at                         | Owner                       | Runtime action                         | Required test                  |
+| ------------------------------------------------ | --------------------------------- | --------------------------- | -------------------------------------- | ------------------------------ |
+| Fork PR attempts secret-bearing run              | identity gate before prelease     | host app                    | fail closed before session read        | action test with fork payload  |
+| Bot actor triggers review                        | host policy gate                  | host app                    | skip with safe message                 | policy unit test               |
+| Draft PR triggers run                            | host policy gate                  | host app                    | skip before session read               | policy unit test               |
+| Wrong workflow SHA/action ref                    | identity gate                     | host + lease store          | fail closed                            | OIDC claim fixture test        |
+| GitHub App lacks `Secrets: write`                | setup/writeback                   | store adapter + host app    | return `permission_required`           | GitHub API fake test           |
+| Two runs refresh same generation                 | lease/writeback                   | lease store + session store | first wins, stale skips                | concurrency contract test      |
+| Writeback succeeds but response lost             | writeback                         | store adapter               | idempotent replay returns success      | idempotency contract test      |
+| Provider refresh token revoked                   | provider refresh                  | provider session driver     | return `needs_reconnect`               | provider fixture test          |
+| Provider CLI leaks token to stderr               | runner output                     | runner + redactor           | redact and fail canary if leak remains | redaction canary               |
+| Provider writes auth into workspace              | workspace scan or adapter cleanup | provider adapter            | fail or cleanup before artifact upload | temp workspace test            |
+| Store CAS unsupported                            | capability negotiation            | core                        | reject policy requiring CAS            | policy compile test            |
+| Local file lock orphaned                         | lease/read/write                  | local store adapter         | stale lock recovery with owner/ttl     | local store test               |
+| KMS key rotated                                  | store read/write                  | KMS store adapter           | decrypt old, write new key version     | KMS adapter test               |
+| Backend down before prelease                     | identity/lease gate               | host adapter                | fail closed before session read        | API outage test                |
+| Backend down after refresh                       | writeback                         | host/store adapter          | do not publish session, rerun safe     | outage-after-refresh test      |
+| Provider output malformed                        | agent parse                       | agent driver                | return structured failure              | malformed output fixture       |
+| Provider terms disallow automation               | adapter certification             | host/product owner          | do not ship adapter                    | release checklist              |
+| Non-rotating provider requires writeback         | capability negotiation            | core                        | do not require writeback               | Claude-like fake provider test |
+| Threaded provider receives one-shot task         | agent capability check            | core + agent driver         | reject before session read             | task-mode mismatch test        |
+| Provider has no session                          | capability negotiation            | core                        | skip session store and lease           | local-model fake provider test |
+| Two agents share one provider session            | adapter registry                  | core                        | allow only if provider ids match       | multi-agent same-session test  |
+| Runtime plan differs from capability matrix      | capability negotiation            | core                        | reject release                         | runtime-plan matrix test       |
+| Core branches on concrete provider id            | dependency/static scan            | core                        | reject release                         | provider-id branch scan        |
+| Provider env chooses wrong credential            | runner env build                  | provider adapter + runner   | reject or strip env before spawn       | credential precedence test     |
+| Provider automation uses different credit bucket | adapter certification             | host/product owner          | surface safe usage category            | provider docs certification    |
 
 Default edge-case policy:
 
@@ -3301,6 +4731,12 @@ describe("subscription runtime edge matrix", () => {
   it("edge:writeback-response-loss-is-idempotent", async () => {});
   it("edge:provider-reconnect-does-not-delete-old-secret", async () => {});
   it("edge:backend-outage-after-refresh-does-not-log-session", async () => {});
+  it("edge:non-rotating-provider-does-not-require-writeback", async () => {});
+  it("edge:task-mode-mismatch-fails-before-session-read", async () => {});
+  it("edge:no-session-provider-skips-session-store", async () => {});
+  it("edge:capability-matrix-compiles-provider-neutral-runtime-plans", async () => {});
+  it("edge:core-runtime-has-no-provider-id-branches", async () => {});
+  it("edge:provider-env-cannot-override-selected-credential-source", async () => {});
 });
 ```
 
@@ -3319,6 +4755,14 @@ same matrix becomes the checklist for whether it is production-safe.
 - idempotent writeback replay
 - provider driver fake contract
 - session store fake contract
+- capability profiles reject invalid combinations
+- capability profiles compile into the expected `RuntimeExecutionPlan`
+- fake Claude-like non-rotating provider can run without writeback
+- fake local/no-session provider can run without session store
+- multi-agent same-provider registration does not require core changes
+- core source scan rejects provider-id-specific branches in runtime orchestration
+- provider env policy strips denied credential variables before process spawn
+- provider selected credential source is recorded only as safe metadata
 
 ### Adapter Contract Tests
 
@@ -3331,6 +4775,11 @@ For every provider adapter:
 - reconnect failure
 - quota/permission failure
 - redacts provider-specific token patterns
+- declares refresh mode and session rotation mode
+- rejects unsupported task/history mode before running provider process
+- never requires interactive setup during runtime
+- declares environment policy and credential source order
+- rejects credential environment conflicts before spawning provider process
 
 For every store adapter:
 
@@ -3374,7 +4823,7 @@ export function providerDriverContract(
     it("declares capabilities before runtime starts", () => {
       const fixture = factory();
       expect(fixture.driver.capabilities.providerId).toBeTruthy();
-      expect(fixture.driver.capabilities.sessionArtifactKinds.length).toBe(1);
+      expect(fixture.driver.capabilities.sessionRequirement.kind).toBeDefined();
     });
   });
 }
@@ -3786,7 +5235,7 @@ import {
   type RunnerPort,
 } from "@subscription-runtime/core";
 
-import { CodexCliProviderDriver } from "@subscription-runtime/provider-codex";
+import { createCodexProviderDriver } from "@subscription-runtime/provider-codex";
 import { GitHubActionsSecretStore } from "@subscription-runtime/store-github-actions-secret";
 import { GitHubActionRunner } from "@subscription-runtime/runner-github-action";
 ```
@@ -3795,9 +5244,10 @@ Usage:
 
 ```ts
 const runtime = createSubscriptionRuntime({
-  provider: new CodexCliProviderDriver({
+  provider: createCodexProviderDriver({
     model: "gpt-5.5",
-    codexBinary: "codex",
+    engine: "packaged-json",
+    codexPackageBinary: resolvePackagedCodexBinary(),
   }),
   sessionStore: new GitHubActionsSecretStore({
     secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
@@ -3824,14 +5274,18 @@ await runtime.refreshThenRunTask({
 
 ```ts
 import { createSubscriptionRuntime } from "@subscription-runtime/core";
-import { CodexCliProviderDriver } from "@subscription-runtime/provider-codex";
+import { createCodexProviderDriver } from "@subscription-runtime/provider-codex";
 import { GitHubActionsSecretStore } from "@subscription-runtime/store-github-actions-secret";
 import { GitHubActionRunner } from "@subscription-runtime/runner-github-action";
 
 export async function runReview(): Promise<void> {
   const runtime = createSubscriptionRuntime({
     policy: reviewRouterCodexPolicy,
-    provider: new CodexCliProviderDriver({ model: "gpt-5.5" }),
+    provider: createCodexProviderDriver({
+      model: "gpt-5.5",
+      engine: "packaged-json",
+      codexPackageBinary: resolvePackagedCodexBinary(),
+    }),
     sessionStore: new GitHubActionsSecretStore({
       secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
     }),
@@ -3857,7 +5311,11 @@ const runtime = createSubscriptionRuntime({
     ...defaultLocalPolicy,
     requireNoBackendPlaintext: true,
   },
-  provider: new CodexCliProviderDriver({ model: "gpt-5.5" }),
+  provider: createCodexProviderDriver({
+    model: "gpt-5.5",
+    engine: "packaged-json",
+    codexPackageBinary: resolvePackagedCodexBinary(),
+  }),
   sessionStore: new LocalEncryptedFileSessionStore({
     rootDir: "~/.my-daemon/provider-sessions",
   }),
@@ -3879,7 +5337,11 @@ const runtime = createSubscriptionRuntime({
     ...defaultBackendCustodyPolicy,
     requireNoBackendPlaintext: false,
   },
-  provider: new CodexCliProviderDriver({ model: "gpt-5.5" }),
+  provider: createCodexProviderDriver({
+    model: "gpt-5.5",
+    engine: "packaged-json",
+    codexPackageBinary: resolvePackagedCodexBinary(),
+  }),
   sessionStore: new KmsPostgresSessionStore({
     prisma,
     kms,
@@ -4108,6 +5570,8 @@ A release that changes core or provider-codex must pass:
 
 - unit tests
 - adapter contract tests
+- fake non-Codex provider contract tests
+- fake no-session provider contract tests
 - action artifact check
 - local no-custody E2E
 - live GitHub-hosted E2E on disposable repo
@@ -4146,6 +5610,8 @@ Scope:
 - add `@reviewrouter/subscription-runtime-core`
 - add domain types, failure taxonomy, transition validators
 - add fake provider/store/runner
+- add fake Claude-like non-rotating provider
+- add fake no-session local-agent provider
 - add contract test harness
 - enforce dependency boundary test
 
@@ -4160,8 +5626,9 @@ Scope:
 
 - extract Codex auth JSON codec
 - implement `CodexSessionDriver`
-- implement `CodexCliAgentDriver`
-- expose combined `CodexCliProviderDriver`
+- implement `CodexJsonAgentDriver`
+- implement `PackagedCodexJsonExecutionEngine`
+- expose combined `CodexProviderDriver` with explicit packaged-engine policy
 - prove existing ReviewRouter prompt/output behavior stays outside adapter
 
 ### PR 4 - GitHub Actions Secret Store
@@ -4288,6 +5755,9 @@ V1 extraction is complete when:
 - tests prove stale generation and idempotent replay handling
 - docs explain custody modes clearly
 - future provider can be added by implementing session/agent drivers and tests
+- fake Claude-like provider passes contract tests without Codex code paths
+- fake no-session provider proves core does not require auth/writeback
+- unsupported task/history mode fails before session bytes are read
 
 ## Open Questions
 
@@ -4319,6 +5789,22 @@ Recommended answers for v1:
 - add only Codex provider in v1
 - design provider interfaces for Claude, but do not implement Claude until Codex
   extraction is stable
+
+Provider-specific assumptions to validate before implementing non-Codex adapters:
+
+| Assumption                                                                               | Current confidence | Validation required before code                                                                       |
+| ---------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------- |
+| Claude can be represented as a non-rotating or validate-only session                     | 🎯 6 / 10          | Check current Claude Code auth/session docs and run a disposable adapter spike                        |
+| Claude threaded mode can share the same `AgentDriver` contract                           | 🎯 6.5 / 10        | Spike one-shot and threaded tasks separately; decide `provider-thread` vs `host-managed-thread`       |
+| Claude subscription CI should use `CLAUDE_CODE_OAUTH_TOKEN` instead of local login files | 🎯 8 / 10          | Re-check Claude Code docs, test `claude setup-token`, and verify non-interactive `claude -p` behavior |
+| Claude env precedence can accidentally switch subscription jobs to API-key mode          | 🎯 9 / 10          | Add env-conflict tests for `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN` |
+| Claude subscription automation has separate credit/billing semantics after June 15, 2026 | 🎯 8 / 10          | Re-check official docs before enabling Claude adapter and surface usage category in host UI/docs      |
+| Gemini/local agents can use the same runner/materializer contracts                       | 🎯 6 / 10          | Validate session artifact shape and non-interactive runtime support                                   |
+| API-key providers need no refresh/writeback lease                                        | 🎯 9 / 10          | Confirm store-only secret read path and redaction profile                                             |
+| No-session local model can skip `SessionStorePort` completely                            | 🎯 8.5 / 10        | Contract test with fake no-session agent before real local adapter                                    |
+
+Do not turn these assumptions into production code until they have a provider
+fixture, a redaction profile, and a contract test.
 
 ## Final Recommendation
 

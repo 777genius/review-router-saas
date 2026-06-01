@@ -156,7 +156,7 @@ export function describeRepositorySetup(
     return {
       label: "Setup PR needed",
       tone: "warning",
-      hint: "Workflow is not on the default branch yet.",
+      hint: "Workflow is not on the setup PR target branch yet.",
     };
   }
 

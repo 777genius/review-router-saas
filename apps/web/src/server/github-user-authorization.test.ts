@@ -28,7 +28,10 @@ describe("GitHub user authorization", () => {
         now,
         env,
         principal: {
+          provider: "github",
           userId: "user_1",
+          externalUserId: "123",
+          login: "maintainer",
           githubUserId: "123",
           githubLogin: "maintainer",
           primaryEmail: null,

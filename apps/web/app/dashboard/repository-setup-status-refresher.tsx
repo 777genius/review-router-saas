@@ -97,5 +97,9 @@ export function RepositorySetupStatusRefresher({
 function isRecoverableSetupPullRequestError(
   value: string | undefined,
 ): boolean {
-  return value === "setup_pr_closed" || value === "setup_pr_branch_deleted";
+  return (
+    value === "setup_pr_closed" ||
+    value === "setup_pr_branch_deleted" ||
+    value === "setup_pr_wrong_base_branch"
+  );
 }

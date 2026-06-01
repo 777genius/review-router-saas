@@ -132,7 +132,8 @@ The Action `Release` workflow validates:
 - the requested version is `vN.N.N`
 - it is running on `main`
 - local `HEAD` matches `origin/main`
-- the exact tag does not already exist locally or remotely
+- the exact tag is absent, or already points to the same SaaS `HEAD` for a safe
+  rerun
 - the version is newer than the latest existing `v1.*.*` tag
 - package metadata and installer fallback match the requested version
 - dependencies install cleanly
@@ -175,9 +176,28 @@ The SaaS `Release` workflow validates:
 - the version is newer than the latest existing `v1.*.*` tag
 - the matching Action tag exists
 - a successful `CI` run exists for the exact SaaS `HEAD`
+- production Render credentials can read the current trusted Action ref plan
 
-Only after those gates pass, it creates `v1.0.x`, force-moves `v1`, and creates
-the GitHub Release.
+Only after those gates pass, it creates `v1.0.x` and force-moves `v1`. By
+default it then resolves the matching `777genius/review-router` Action tag to a
+full commit SHA, updates production `REVIEW_ROUTER_ACTION_REF` /
+`REVIEW_ROUTER_ALLOWED_ACTION_REFS`, triggers Render deploys, waits for them to
+become live, and then creates the GitHub Release. Disable this only for a
+deliberate non-production release:
+
+```bash
+gh workflow run release.yml \
+  -R 777genius/review-router-saas \
+  --ref main \
+  -f version=v1.0.40 \
+  -f create_github_release=true \
+  -f sync_production_action_ref=false
+```
+
+If the workflow fails after publishing the exact tag, rerun with the same
+version only when that exact tag already points to the same SaaS `GITHUB_SHA`.
+The workflow allows that recovery path and still fails closed if the tag points
+anywhere else.
 
 ## Post-Release Verification
 
@@ -208,7 +228,10 @@ SaaS control plane validates that exact ref during GitHub OIDC prelease. This is
 intentional: a workflow that silently switches to an untrusted Action commit
 must fail closed instead of receiving checkout/comment/writeback tokens.
 
-Use the sync command after pushing a new `777genius/review-router` Action commit:
+The SaaS release workflow runs this sync automatically by default after a
+successful release, using the commit SHA behind the matching Action tag. Use the
+manual sync command only for dogfood Action commits, emergency correction, or
+rollout-window maintenance:
 
 ```bash
 pnpm ops:sync-action-ref
@@ -223,12 +246,18 @@ By default, the command:
   includes the new SHA and the previous SHA
 - triggers Render deploys for the three services
 
+When `--action-ref 777genius/review-router@v1` or an exact tag such as
+`@v1.0.40` is provided, the command resolves that hosted tag to a full commit
+SHA before writing Render env vars. Production env must not be left on a moving
+tag.
+
 Useful variants:
 
 ```bash
 pnpm ops:sync-action-ref --dry-run
 pnpm ops:sync-action-ref --action-ref 777genius/review-router@<40-char-sha>
 pnpm ops:sync-action-ref --no-deploy
+pnpm ops:sync-action-ref --wait
 pnpm ops:sync-action-ref --allowlist-window 3
 ```
 
