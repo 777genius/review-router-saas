@@ -8,10 +8,9 @@ ReviewRouter generates workflows that run in customer repositories. Dependencies
 
 For public production SaaS-generated workflows:
 
-- ReviewRouter Action defaults to the moving `v1` stable major channel
+- ReviewRouter Action defaults to `777genius/review-router@main` during hosted beta
 - third-party actions should use stable version tags initially for usability
 - offer a stricter pin-to-SHA mode later for enterprise/security-focused users
-- never default production customer workflows to ReviewRouter `main`
 - offer explicit `v1.0.x` pinning for customers who do not want automatic
   compatible updates
 
@@ -33,10 +32,10 @@ actions/create-github-app-token
 ReviewRouter Action
 ```
 
-Production policy:
+Production hosted beta policy:
 
-- ReviewRouter Action: moving `v1` stable major channel by default, updated only
-  after a vetted `v1.0.x` smoke
+- ReviewRouter Action: `777genius/review-router@main` by default so fixes reach
+  generated workflows without setup PR churn
 - GitHub-owned actions: major version tags acceptable for beta, document tradeoff
 - third-party non-GitHub actions: avoid unless necessary; prefer first-party or inline code
 - Conservative customer option: explicit `v1.0.x` release tag
@@ -68,10 +67,10 @@ This should resolve action versions to full commit SHA and show update PRs when 
 
 ## Tests
 
-- production generated workflow uses the ReviewRouter `v1` stable major channel
+- production generated workflow uses `777genius/review-router@main`
   by default
 - local beta generated workflow uses `777genius/review-router@main` by default
-- `main` requires explicit opt-in after production launch
+- full-SHA or `v1.0.x` pinning requires explicit opt-in during hosted beta
 - dependency update changes workflow snapshot intentionally
 
 ## Stable Major Channel
