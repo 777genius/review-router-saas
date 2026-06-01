@@ -1,5 +1,8 @@
 import type { AuditLogRepositoryPort } from "@reviewrouter/features-audit-log";
-import type { ReviewRouterWorkflowStyle } from "../../domain/workflow-template";
+import type {
+  ReviewRouterDiscussionMode,
+  ReviewRouterWorkflowStyle,
+} from "../../domain/workflow-template";
 import { provisionReviewRouterWorkflow } from "./provision-reviewrouter-workflow";
 import type { WorkflowProvisioningRepositoryPort } from "../ports/workflow-provisioning-repository-port";
 import type { WorkflowSetupGatewayPort } from "../ports/workflow-setup-gateway-port";
@@ -12,6 +15,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly runtimeConfigMode: "oidc" | "static";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
+  readonly discussionMode?: ReviewRouterDiscussionMode;
   readonly conflictReviewFallbackEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly actor?: string;
@@ -56,6 +60,7 @@ export async function provisionRepositoryReviewRouterWorkflow(
       apiUrl: input.apiUrl,
       runtimeConfigMode: input.runtimeConfigMode,
       ...(input.workflowStyle ? { workflowStyle: input.workflowStyle } : {}),
+      ...(input.discussionMode ? { discussionMode: input.discussionMode } : {}),
       ...(input.conflictReviewFallbackEnabled === undefined
         ? {}
         : {

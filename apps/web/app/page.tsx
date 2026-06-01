@@ -16,6 +16,7 @@ import {
   defaultSeoTitle,
   siteName,
 } from "./seo";
+import { SourceProviderLabel } from "./source-provider-logo";
 
 export const metadata: Metadata = createPublicPageMetadata({
   title: "Free privacy-first AI code review in CI",
@@ -120,12 +121,10 @@ export default async function HomePage(): Promise<React.ReactElement> {
     ? await countConnectedGitHubInstallations(workspaceScope)
     : 0;
   const hasConnectedApp = connectedInstallations > 0;
-  const primaryHref = hasConnectedApp
+  const githubHref = hasConnectedApp
     ? "/dashboard"
     : (appInstallUrl ?? "/setup");
-  const primaryLabel = hasConnectedApp
-    ? "Open dashboard"
-    : "Install GitHub App";
+  const githubLabel = hasConnectedApp ? "Open dashboard" : "Install GitHub App";
 
   return (
     <main className="home-shell flex min-h-screen w-full flex-col gap-8 overflow-hidden pb-8 md:pb-10">
@@ -220,22 +219,42 @@ export default async function HomePage(): Promise<React.ReactElement> {
             <GitHubAppInstallPermissionDialog
               href={appInstallUrl}
               size="lg"
-              className="home-install-cta setup-blueprint__install-cta"
+              className="home-install-cta setup-blueprint__source-cta"
             >
-              {primaryLabel}
+              <SourceProviderLabel
+                provider="github"
+                label={githubLabel}
+                className="setup-blueprint__source-cta-label"
+              />
             </GitHubAppInstallPermissionDialog>
           ) : (
             <LoadingLinkButton
-              href={primaryHref}
+              href={githubHref}
               size="lg"
-              className="home-install-cta setup-blueprint__install-cta"
+              className="home-install-cta setup-blueprint__source-cta"
               pendingLabel={
                 hasConnectedApp ? "Opening dashboard..." : "Opening setup..."
               }
             >
-              {primaryLabel}
+              <SourceProviderLabel
+                provider="github"
+                label={githubLabel}
+                className="setup-blueprint__source-cta-label"
+              />
             </LoadingLinkButton>
           )}
+          <LoadingLinkButton
+            href="/setup/gitlab"
+            size="lg"
+            className="home-install-cta home-install-cta--gitlab setup-blueprint__source-cta"
+            pendingLabel="Opening GitLab setup..."
+          >
+            <SourceProviderLabel
+              provider="gitlab"
+              label="Connect GitLab"
+              className="setup-blueprint__source-cta-label"
+            />
+          </LoadingLinkButton>
         </div>
 
         <span aria-hidden="true" className="setup-blueprint__version">

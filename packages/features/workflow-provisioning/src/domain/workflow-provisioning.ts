@@ -2,6 +2,7 @@ import {
   defaultCodexRotatingWorkflowPath,
   defaultSetupBranch,
   defaultWorkflowPath,
+  type ReviewRouterDiscussionMode,
   type ReviewRouterWorkflowStyle,
 } from "./workflow-template";
 
@@ -22,6 +23,7 @@ export type ProvisionWorkflowInput = {
   readonly runtimeConfigMode: "oidc" | "static";
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
+  readonly discussionMode?: ReviewRouterDiscussionMode;
   readonly conflictReviewFallbackEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly setupBranch?: string;

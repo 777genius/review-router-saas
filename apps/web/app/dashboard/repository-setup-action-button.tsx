@@ -96,6 +96,24 @@ export function RepositorySetupActionButton({
       <input type="hidden" name="workspaceId" value={workspaceId} />
       <input type="hidden" name="repositoryId" value={repositoryId} />
       <input type="hidden" name="workflowStyle" value="reusable" />
+      <label className="mb-3 flex max-w-xl items-start gap-3 rounded-lg border border-cyan-200/15 bg-slate-950/40 px-3 py-3 text-left text-sm text-slate-200">
+        <input
+          type="checkbox"
+          name="reviewDiscussionMode"
+          value="suggest"
+          disabled={disabled}
+          className="mt-1 h-4 w-4 rounded border-cyan-200/30 bg-slate-950 text-cyan-300"
+        />
+        <span className="grid gap-1">
+          <span className="font-semibold text-cyan-50">
+            AI replies to review discussions
+          </span>
+          <span className="text-xs leading-5 text-slate-400">
+            Suggest-only replies on ReviewRouter finding threads. Default stays
+            off unless this setup PR is merged.
+          </span>
+        </span>
+      </label>
       <Button
         type="submit"
         variant={variant}

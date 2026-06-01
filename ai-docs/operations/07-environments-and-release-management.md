@@ -25,14 +25,14 @@ repos on matching exact tags, for example `v1.0.39` in both repositories.
 ## Channels
 
 ```text
-v1       - stable moving major channel, default for production setup PRs
+main     - live Action channel, default for hosted beta setup PRs
+v1       - stable moving major channel, conservative customer option
 v1.0.x   - immutable exact release tag, conservative pinned customer option
-main     - live development channel, opt-in only for dogfood or emergency testing
 ```
 
 Rules:
 
-- Never default production customer workflows to `main`.
+- Hosted beta customer workflows default to `main` so Action fixes ship without regenerating customer setup PRs.
 - Never force-move immutable exact tags such as `v1.0.39`.
 - Move `v1` only through the release workflows, except for a documented emergency rollback.
 - Do not move `v1` for breaking workflow inputs, protocol breaks, or untested runtime changes.
@@ -176,14 +176,12 @@ The SaaS `Release` workflow validates:
 - the version is newer than the latest existing `v1.*.*` tag
 - the matching Action tag exists
 - a successful `CI` run exists for the exact SaaS `HEAD`
-- production Render credentials can read the current trusted Action ref plan
+- when `sync_production_action_ref=true`, production Render credentials can
+  dry-run the requested Action ref override
 
-Only after those gates pass, it creates `v1.0.x` and force-moves `v1`. By
-default it then resolves the matching `777genius/review-router` Action tag to a
-full commit SHA, updates production `REVIEW_ROUTER_ACTION_REF` /
-`REVIEW_ROUTER_ALLOWED_ACTION_REFS`, triggers Render deploys, waits for them to
-become live, and then creates the GitHub Release. Disable this only for a
-deliberate non-production release:
+Only after those gates pass, it creates `v1.0.x`, force-moves `v1`, and creates
+the GitHub Release. Hosted beta production keeps `REVIEW_ROUTER_ACTION_REF` on
+`777genius/review-router@main` by default. Normal release invocation:
 
 ```bash
 gh workflow run release.yml \
@@ -198,6 +196,9 @@ If the workflow fails after publishing the exact tag, rerun with the same
 version only when that exact tag already points to the same SaaS `GITHUB_SHA`.
 The workflow allows that recovery path and still fails closed if the tag points
 anywhere else.
+
+Set `sync_production_action_ref=true` only for a deliberate rollback or smoke
+override.
 
 ## Post-Release Verification
 
@@ -223,15 +224,16 @@ errors.
 
 ## Production Action Ref Sync
 
-Codex OAuth rotating workflows are pinned to a full Action commit SHA, and the
-SaaS control plane validates that exact ref during GitHub OIDC prelease. This is
-intentional: a workflow that silently switches to an untrusted Action commit
-must fail closed instead of receiving checkout/comment/writeback tokens.
+Codex OAuth rotating workflows must match the configured ReviewRouter Action
+ref, normally `777genius/review-router@main`. The SaaS control plane validates
+that ref during GitHub OIDC preflight. This is intentional: a workflow that
+silently switches to an untrusted Action ref must fail closed instead of
+receiving checkout/comment/writeback tokens.
 
-The SaaS release workflow runs this sync automatically by default after a
-successful release, using the commit SHA behind the matching Action tag. Use the
-manual sync command only for dogfood Action commits, emergency correction, or
-rollout-window maintenance:
+Normal hosted beta production should keep `REVIEW_ROUTER_ACTION_REF` on
+`777genius/review-router@main`. Use the sync command only to restore that value
+or for a deliberate full-SHA rollback, dogfood Action commit, emergency
+correction, or rollout-window maintenance:
 
 ```bash
 pnpm ops:sync-action-ref
@@ -239,22 +241,22 @@ pnpm ops:sync-action-ref
 
 By default, the command:
 
-- resolves `777genius/review-router@refs/heads/main` to a 40-character SHA
+- writes `777genius/review-router@main`
 - updates `REVIEW_ROUTER_ACTION_REF` on `reviewrouter-web`,
   `reviewrouter-api`, and `reviewrouter-worker`
-- writes `REVIEW_ROUTER_ALLOWED_ACTION_REFS` as a short rolling window that
-  includes the new SHA and the previous SHA
+- keeps `REVIEW_ROUTER_ALLOWED_ACTION_REFS` as a short full-SHA transition
+  window when explicit rollback refs are present
 - triggers Render deploys for the three services
 
 When `--action-ref 777genius/review-router@v1` or an exact tag such as
-`@v1.0.40` is provided, the command resolves that hosted tag to a full commit
-SHA before writing Render env vars. Production env must not be left on a moving
-tag.
+`@v1.0.40` is provided, the command writes that hosted ref directly. Use a full
+SHA for rollback refs that must also stay in `REVIEW_ROUTER_ALLOWED_ACTION_REFS`.
 
 Useful variants:
 
 ```bash
 pnpm ops:sync-action-ref --dry-run
+pnpm ops:sync-action-ref --action-ref 777genius/review-router@main
 pnpm ops:sync-action-ref --action-ref 777genius/review-router@<40-char-sha>
 pnpm ops:sync-action-ref --no-deploy
 pnpm ops:sync-action-ref --wait
@@ -276,8 +278,8 @@ again with `--allowlist-window 1` after customer workflows have converged.
 
 If a PR run fails with `action_repository_mismatch` immediately after an Action
 runtime bump, run the sync command before rerunning the PR. The failure means the
-OIDC guard worked: the workflow SHA and the trusted production action refs were
-temporarily out of sync.
+OIDC guard worked: the workflow source and configured production action refs
+were temporarily out of sync.
 
 ## Rollback
 

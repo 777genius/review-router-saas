@@ -53,6 +53,7 @@ export default async function SetupPage({
   searchParams,
 }: SetupPageProps): Promise<React.ReactElement> {
   const params = searchParams ? await searchParams : {};
+
   const installationId = readParam(params.installation_id);
   const setupAction = readParam(params.setup_action);
   const [mutationStatus, workspaceScope] = await Promise.all([

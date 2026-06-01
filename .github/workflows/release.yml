@@ -156,7 +156,7 @@ jobs:
 
           echo "Using CI gate: $CI_URL"
 
-      - name: Preflight production Action ref sync
+      - name: Preflight production Action ref override sync
         if: ${{ inputs.sync_production_action_ref }}
         shell: bash
         env:
@@ -195,7 +195,7 @@ jobs:
           git tag -f "$MAJOR_TAG" "$GITHUB_SHA"
           git push --force origin "refs/tags/$MAJOR_TAG"
 
-      - name: Sync production Action ref
+      - name: Sync production Action ref override
         if: ${{ inputs.sync_production_action_ref }}
         shell: bash
         env:
@@ -241,6 +241,8 @@ jobs:
             echo "- Stable tag: $MAJOR_TAG"
             echo "- Target SHA: $GITHUB_SHA"
             echo "- Exact tag pre-existed on target SHA: $VERSION_TAG_EXISTS"
-            echo "- Production Action ref sync: $SYNC_PRODUCTION_ACTION_REF"
-            echo "- Trusted Action ref: $ACTION_REF"
+            echo "- Production Action ref override sync: $SYNC_PRODUCTION_ACTION_REF"
+            if [[ "$SYNC_PRODUCTION_ACTION_REF" == "true" ]]; then
+              echo "- Override Action ref: $ACTION_REF"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

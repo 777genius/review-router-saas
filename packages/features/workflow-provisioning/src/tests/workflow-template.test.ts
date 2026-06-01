@@ -408,6 +408,20 @@ describe("renderReviewRouterWorkflow", () => {
     );
   });
 
+  it("can opt setup PR interaction workflows into suggest-only discussion replies", () => {
+    const files = renderReviewRouterWorkflowFiles({
+      ...workflowOptions,
+      discussionMode: "suggest",
+    });
+    const interactionWorkflowContent = workflowFileContent(
+      files.find((file) => file.path === defaultInteractionWorkflowPath),
+    );
+
+    expect(interactionWorkflowContent).toContain(
+      "discussion_mode: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'suggest' }}",
+    );
+  });
+
   it("does not render conflict fallback trigger or inputs unless enabled", () => {
     const workflow = renderReviewRouterReusableWorkflow({
       ...workflowOptions,

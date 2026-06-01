@@ -101,6 +101,7 @@ import {
   readProviderSetupConfirmationMode,
   readProviderSetupSelection,
   readReviewConfigurationForm,
+  readReviewDiscussionMode,
   readWorkflowStyle,
 } from "./dashboard-action-form-readers";
 import { safeDashboardErrorCode } from "./dashboard-error-codes";
@@ -462,6 +463,7 @@ async function createSetupPullRequestMutation(
   const repositoryId = readFormString(formData, "repositoryId");
   const workspaceId = readFormString(formData, "workspaceId");
   const workflowStyle = readWorkflowStyle(formData);
+  const discussionMode = readReviewDiscussionMode(formData);
   let params: Record<string, string>;
 
   try {
@@ -555,6 +557,7 @@ async function createSetupPullRequestMutation(
         name: repository.name,
         defaultBranch: setupBaseBranch,
         actionRef,
+        discussionMode,
         conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
         ...(codexRotatingProviderInstanceId
           ? {
@@ -637,6 +640,7 @@ async function createSetupPullRequestMutation(
               runtimeConfigMode: "oidc",
               staticRuntimeEnv: resolvedRuntime.runtimeEnv,
               workflowStyle,
+              discussionMode,
               conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
               ...(codexRotatingProviderInstanceId
                 ? { codexRotatingProviderInstanceId }
