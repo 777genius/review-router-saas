@@ -12,6 +12,11 @@ on:
         required: true
         default: true
         type: boolean
+      sync_production_action_ref:
+        description: Sync production Action ref override after release
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -79,14 +84,33 @@ jobs:
             fi
           fi
 
-          if ! git ls-remote --exit-code --tags "https://github.com/$ACTION_REPOSITORY.git" "refs/tags/$VERSION" >/dev/null 2>&1; then
+          ACTION_TAG_REF="$(
+            git ls-remote --tags "https://github.com/$ACTION_REPOSITORY.git" "refs/tags/$VERSION" \
+              | awk 'NR == 1 { print $1 }'
+          )"
+          if [[ -z "$ACTION_TAG_REF" ]]; then
             echo "::error::$ACTION_REPOSITORY tag $VERSION must exist before releasing the SaaS runtime"
             exit 1
           fi
 
+          ACTION_SHA="$(
+            git ls-remote --tags "https://github.com/$ACTION_REPOSITORY.git" "refs/tags/$VERSION^{}" \
+              | awk 'NR == 1 { print $1 }'
+          )"
+          if [[ -z "$ACTION_SHA" ]]; then
+            ACTION_SHA="$ACTION_TAG_REF"
+          fi
+          if [[ ! "$ACTION_SHA" =~ ^[a-fA-F0-9]{40}$ ]]; then
+            echo "::error::could not resolve $ACTION_REPOSITORY $VERSION to a commit SHA"
+            exit 1
+          fi
+          ACTION_SHA="$(printf '%s' "$ACTION_SHA" | tr '[:upper:]' '[:lower:]')"
+
           {
             echo "version=$VERSION"
             echo "major_tag=$MAJOR_TAG"
+            echo "action_sha=$ACTION_SHA"
+            echo "action_ref=$ACTION_REPOSITORY@$ACTION_SHA"
           } >> "$GITHUB_OUTPUT"
 
       - name: Require successful CI on this commit
@@ -114,6 +138,25 @@ jobs:
 
           echo "Using CI gate: $CI_URL"
 
+      - name: Preflight production Action ref override sync
+        if: ${{ inputs.sync_production_action_ref }}
+        shell: bash
+        env:
+          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RENDER_API_KEY:-}" ]]; then
+            echo "::error::RENDER_API_KEY secret is required when sync_production_action_ref override is enabled"
+            exit 1
+          fi
+
+          node scripts/sync-render-action-ref.mjs \
+            --action-ref "$ACTION_REF" \
+            --dry-run \
+            --no-deploy
+
       - name: Publish exact and stable tags
         shell: bash
         env:
@@ -128,6 +171,19 @@ jobs:
           git tag -f "$MAJOR_TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$VERSION"
           git push --force origin "refs/tags/$MAJOR_TAG"
+
+      - name: Sync production Action ref override
+        if: ${{ inputs.sync_production_action_ref }}
+        shell: bash
+        env:
+          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          node scripts/sync-render-action-ref.mjs \
+            --action-ref "$ACTION_REF" \
+            --wait
 
       - name: Create GitHub Release
         if: ${{ inputs.create_github_release }}
@@ -147,6 +203,8 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.version }}
           MAJOR_TAG: ${{ steps.release.outputs.major_tag }}
+          ACTION_REF: ${{ steps.release.outputs.action_ref }}
+          SYNC_PRODUCTION_ACTION_REF: ${{ inputs.sync_production_action_ref }}
         run: |
           {
             echo "Released $VERSION"
@@ -154,4 +212,8 @@ jobs:
             echo "- Exact tag: $VERSION"
             echo "- Stable tag: $MAJOR_TAG"
             echo "- Target SHA: $GITHUB_SHA"
+            echo "- Production Action ref override sync: $SYNC_PRODUCTION_ACTION_REF"
+            if [[ "$SYNC_PRODUCTION_ACTION_REF" == "true" ]]; then
+              echo "- Override Action ref: $ACTION_REF"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

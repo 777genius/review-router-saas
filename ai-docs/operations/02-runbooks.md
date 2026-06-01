@@ -167,7 +167,7 @@ Production Codex must always use the rotating workflow:
 1. `.github/workflows/reviewrouter-codex.yml`
 2. `mode: codex-oauth-rotating`
 3. `auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}`
-4. full-SHA action ref: `777genius/review-router@<40-char-sha>`
+4. action ref: `777genius/review-router@main` unless an explicit rollback ref is configured
 
 Do not merge a Codex setup PR that uses `REVIEW_AUTH_MODE=codex-oauth`,
 `CODEX_AUTH_JSON`, `OPENAI_API_KEY`, `reviewrouter-reusable.yml`, or
@@ -190,29 +190,30 @@ workflow/action repository does not match the selected repository.
 
 Why it happens:
 
-1. Codex OAuth rotating workflows are pinned to a full
-   `777genius/review-router@40-char-sha`.
+1. Codex OAuth rotating workflows must match the configured ReviewRouter Action
+   ref, normally `777genius/review-router@main`.
 2. The SaaS API validates the workflow source at GitHub's `workflow_sha` before
    issuing checkout, comment, or secret writeback tokens.
-3. During a release, customer workflows can move to a new Action SHA before all
-   Render services have the same trusted SHA in env.
-4. The correct behavior is fail closed. Do not bypass this check with `@main` or
-   `@v1`.
+3. The workflow file and Render config can diverge if a rollback or smoke ref is
+   applied only on one side.
+4. The correct behavior is fail closed. Fix the configured action ref instead
+   of bypassing owner, provider, or schema checks.
 
 Normal recovery:
 
 ```bash
 pnpm ops:sync-action-ref --dry-run --no-deploy
-pnpm ops:sync-action-ref
+pnpm ops:sync-action-ref --wait
 ```
 
 Expected sync output:
 
-1. `actionRef` is a full `777genius/review-router@40-char-sha`
+1. `actionRef` is `777genius/review-router@main` unless an explicit rollback ref was passed
 2. `allowedActionRefs` contains only full SHA refs
 3. services are exactly `reviewrouter-web`, `reviewrouter-api`, and
    `reviewrouter-worker`
 4. deploy ids are printed for all three services
+5. with `--wait`, each requested deploy reaches `live`
 
 Post-sync verification:
 
@@ -223,8 +224,8 @@ pnpm ops:sync-action-ref --dry-run --no-deploy
 ```
 
 The final dry-run should show the same `actionRef` and
-`allowedActionRefs` that are already live. If the failing PR used a newer SHA
-than the dry-run output, rerun the sync with an explicit ref:
+`allowedActionRefs` that are already live. If the failing PR intentionally used
+a rollback SHA, rerun the sync with that explicit ref:
 
 ```bash
 pnpm ops:sync-action-ref \
@@ -233,10 +234,10 @@ pnpm ops:sync-action-ref \
 
 Rollback:
 
-1. If the new Action commit is bad, roll back generated/customer workflows to
-   the previous full SHA or publish a fixed Action commit.
-2. Keep both current and previous SHAs in `REVIEW_ROUTER_ALLOWED_ACTION_REFS`
-   during the transition.
+1. If the new Action commit is bad, publish a fixed Action commit on `main` or
+   temporarily sync a known-good full SHA.
+2. Keep temporary rollback SHAs in `REVIEW_ROUTER_ALLOWED_ACTION_REFS` during
+   the transition.
 3. After workflows converge, shrink the window:
 
 ```bash

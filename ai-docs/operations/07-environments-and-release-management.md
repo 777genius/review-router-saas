@@ -25,14 +25,14 @@ repos on matching exact tags, for example `v1.0.39` in both repositories.
 ## Channels
 
 ```text
-v1       - stable moving major channel, default for production setup PRs
+main     - live Action channel, default for hosted beta setup PRs
+v1       - stable moving major channel, conservative customer option
 v1.0.x   - immutable exact release tag, conservative pinned customer option
-main     - live development channel, opt-in only for dogfood or emergency testing
 ```
 
 Rules:
 
-- Never default production customer workflows to `main`.
+- Hosted beta customer workflows default to `main` so Action fixes ship without regenerating customer setup PRs.
 - Never force-move immutable exact tags such as `v1.0.39`.
 - Move `v1` only through the release workflows, except for a documented emergency rollback.
 - Do not move `v1` for breaking workflow inputs, protocol breaks, or untested runtime changes.
@@ -177,7 +177,20 @@ The SaaS `Release` workflow validates:
 - a successful `CI` run exists for the exact SaaS `HEAD`
 
 Only after those gates pass, it creates `v1.0.x`, force-moves `v1`, and creates
-the GitHub Release.
+the GitHub Release. Hosted beta production keeps `REVIEW_ROUTER_ACTION_REF` on
+`777genius/review-router@main` by default. Normal release invocation:
+
+```bash
+gh workflow run release.yml \
+  -R 777genius/review-router-saas \
+  --ref main \
+  -f version=v1.0.40 \
+  -f create_github_release=true \
+  -f sync_production_action_ref=false
+```
+
+Set `sync_production_action_ref=true` only for a deliberate rollback or smoke
+override.
 
 ## Post-Release Verification
 
@@ -203,12 +216,16 @@ errors.
 
 ## Production Action Ref Sync
 
-Codex OAuth rotating workflows are pinned to a full Action commit SHA, and the
-SaaS control plane validates that exact ref during GitHub OIDC prelease. This is
-intentional: a workflow that silently switches to an untrusted Action commit
-must fail closed instead of receiving checkout/comment/writeback tokens.
+Codex OAuth rotating workflows must match the configured ReviewRouter Action
+ref, normally `777genius/review-router@main`. The SaaS control plane validates
+that ref during GitHub OIDC prelease. This is intentional: a workflow that
+silently switches to an untrusted Action ref must fail closed instead of
+receiving checkout/comment/writeback tokens.
 
-Use the sync command after pushing a new `777genius/review-router` Action commit:
+Normal hosted beta production should keep `REVIEW_ROUTER_ACTION_REF` on
+`777genius/review-router@main`. Use the sync command only to restore that value
+or for a deliberate full-SHA rollback, dogfood Action commit, emergency
+correction, or rollout-window maintenance:
 
 ```bash
 pnpm ops:sync-action-ref
@@ -216,19 +233,21 @@ pnpm ops:sync-action-ref
 
 By default, the command:
 
-- resolves `777genius/review-router@refs/heads/main` to a 40-character SHA
+- writes `777genius/review-router@main`
 - updates `REVIEW_ROUTER_ACTION_REF` on `reviewrouter-web`,
   `reviewrouter-api`, and `reviewrouter-worker`
-- writes `REVIEW_ROUTER_ALLOWED_ACTION_REFS` as a short rolling window that
-  includes the new SHA and the previous SHA
+- keeps `REVIEW_ROUTER_ALLOWED_ACTION_REFS` as a short full-SHA transition
+  window when explicit rollback refs are present
 - triggers Render deploys for the three services
 
 Useful variants:
 
 ```bash
 pnpm ops:sync-action-ref --dry-run
+pnpm ops:sync-action-ref --action-ref 777genius/review-router@main
 pnpm ops:sync-action-ref --action-ref 777genius/review-router@<40-char-sha>
 pnpm ops:sync-action-ref --no-deploy
+pnpm ops:sync-action-ref --wait
 pnpm ops:sync-action-ref --allowlist-window 3
 ```
 
@@ -247,8 +266,8 @@ again with `--allowlist-window 1` after customer workflows have converged.
 
 If a PR run fails with `action_repository_mismatch` immediately after an Action
 runtime bump, run the sync command before rerunning the PR. The failure means the
-OIDC guard worked: the workflow SHA and the trusted production action refs were
-temporarily out of sync.
+OIDC guard worked: the workflow source and configured production action refs
+were temporarily out of sync.
 
 ## Rollback
 
