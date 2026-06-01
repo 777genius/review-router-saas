@@ -68,6 +68,22 @@ describe("workflow setup readiness", () => {
     ).resolves.toBe(false);
   });
 
+  it("does not skip setup when discussion replies are being enabled", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        { ...readinessInput, discussionMode: "suggest" },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(false);
+
+    expect(probe.input).toBeNull();
+  });
+
   it("requires Claude workflow capability markers when checking Claude readiness", async () => {
     const probe = new CapturingWorkflowProbe({
       status: "present",

@@ -18,9 +18,11 @@ export type ReviewRouterWorkflowOptions = {
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly conflictReviewFallbackEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
+  readonly discussionMode?: ReviewRouterDiscussionMode;
 };
 
 export type ReviewRouterWorkflowStyle = "reusable" | "explicit";
+export type ReviewRouterDiscussionMode = "off" | "suggest";
 
 export type ReviewRouterWorkflowFile =
   | {
@@ -79,6 +81,12 @@ const interactionMemoryRuntimeEnvBlock = `${reviewMemoryRuntimeEnvBlock}
       REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"`;
 const interactionJobGuardExpression =
   "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')";
+
+function discussionModeExpression(
+  options: Pick<ReviewRouterWorkflowOptions, "discussionMode">,
+): string {
+  return `\${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || '${options.discussionMode ?? "off"}' }}`;
+}
 
 export function renderReviewRouterWorkflow(
   options: ReviewRouterWorkflowOptions,
@@ -261,7 +269,7 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"
-          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+          REVIEW_ROUTER_DISCUSSION_MODE: ${discussionModeExpression(options)}
 
       - name: Setup Node.js for Codex discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
@@ -323,7 +331,7 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
-          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+          REVIEW_ROUTER_DISCUSSION_MODE: ${discussionModeExpression(options)}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_PR: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
           REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
@@ -377,7 +385,7 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"
-          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+          REVIEW_ROUTER_DISCUSSION_MODE: ${discussionModeExpression(options)}
 
       - name: Setup Node.js for Codex discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -415,7 +423,7 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
-          REVIEW_ROUTER_DISCUSSION_MODE: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+          REVIEW_ROUTER_DISCUSSION_MODE: ${discussionModeExpression(options)}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_PR: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
           REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
@@ -547,7 +555,7 @@ jobs:
       api_url: ${JSON.stringify(options.apiUrl)}
       runtime_config_mode: ${options.runtimeConfigMode}
       review_workflow_file: reviewrouter.yml
-      discussion_mode: \${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}
+      discussion_mode: ${discussionModeExpression(options)}
       discussion_model: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
       discussion_reasoning_effort: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
       discussion_max_per_pr: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}

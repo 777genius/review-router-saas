@@ -1,4 +1,5 @@
 import type { ProviderSecretScope } from "@reviewrouter/features-provider-setup";
+import type { ReviewRouterDiscussionMode } from "@reviewrouter/features-workflow-provisioning";
 import {
   parseReviewConfigurationStrict,
   type ReviewConfiguration,
@@ -130,6 +131,13 @@ export function readOptionalEditedMemory(formData: FormData): {
 export function readWorkflowStyle(formData: FormData): "reusable" | "explicit" {
   const value = formData.get("workflowStyle");
   return value === "explicit" ? "explicit" : "reusable";
+}
+
+export function readReviewDiscussionMode(
+  formData: FormData,
+): ReviewRouterDiscussionMode {
+  const value = formData.get("reviewDiscussionMode");
+  return value === "suggest" ? "suggest" : "off";
 }
 
 export function readProviderSetupSelection(formData: FormData): {

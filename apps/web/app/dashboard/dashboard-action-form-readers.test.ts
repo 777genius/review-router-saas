@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   readProviderSetupSelection,
   readReviewConfigurationForm,
+  readReviewDiscussionMode,
 } from "./dashboard-action-form-readers";
 
 describe("dashboard action form readers", () => {
@@ -73,6 +74,16 @@ describe("dashboard action form readers", () => {
     expect(() => readReviewConfigurationForm(formData)).toThrow(
       "duplicate_review_provider",
     );
+  });
+
+  it("defaults review discussion replies off unless setup explicitly opts in", () => {
+    const formData = new FormData();
+
+    expect(readReviewDiscussionMode(formData)).toBe("off");
+
+    formData.set("reviewDiscussionMode", "suggest");
+
+    expect(readReviewDiscussionMode(formData)).toBe("suggest");
   });
 });
 
