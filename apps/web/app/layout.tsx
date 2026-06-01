@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import type { ComponentProps } from "react";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { unstable_rethrow } from "next/navigation";
 import { getServerSession } from "next-auth";
@@ -126,6 +127,11 @@ export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>): Promise<React.ReactElement> {
   const profile = await loadHeaderProfile();
+  const headerProfileMenuProps = {
+    login: profile.login,
+    avatarUrl: profile.avatarUrl,
+    provider: profile.provider,
+  } satisfies ComponentProps<typeof HeaderProfileMenu>;
 
   return (
     <html
@@ -193,15 +199,11 @@ export default async function RootLayout({
                 </span>
               </div>
               <div className="hidden lg:block">
-                <HeaderProfileMenu
-                  githubLogin={profile.githubLogin}
-                  githubAvatarUrl={profile.githubAvatarUrl}
-                />
+                <HeaderProfileMenu {...headerProfileMenuProps} />
               </div>
               <MobilePrimaryNav
                 signedIn={profile.signedIn}
-                githubLogin={profile.githubLogin}
-                githubAvatarUrl={profile.githubAvatarUrl}
+                {...headerProfileMenuProps}
               />
             </div>
           </div>
@@ -329,18 +331,28 @@ export default async function RootLayout({
 
 async function loadHeaderProfile(): Promise<{
   readonly signedIn: boolean;
-  readonly githubLogin: string | null;
-  readonly githubAvatarUrl: string | null;
+  readonly login: string | null;
+  readonly avatarUrl: string | null;
+  readonly provider: "github" | "gitlab" | null;
 }> {
   try {
     const session = await getServerSession(authOptions);
     return {
       signedIn: Boolean(session?.user),
-      githubLogin: session?.user?.githubLogin ?? null,
-      githubAvatarUrl: session?.user?.githubAvatarUrl ?? null,
+      login: session?.user?.sourceLogin ?? session?.user?.githubLogin ?? null,
+      avatarUrl:
+        session?.user?.sourceAvatarUrl ??
+        session?.user?.githubAvatarUrl ??
+        null,
+      provider: session?.user?.sourceProvider ?? null,
     };
   } catch (error) {
     unstable_rethrow(error);
-    return { signedIn: false, githubLogin: null, githubAvatarUrl: null };
+    return {
+      signedIn: false,
+      login: null,
+      avatarUrl: null,
+      provider: null,
+    };
   }
 }

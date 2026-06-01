@@ -65,6 +65,8 @@ export function readReviewConfigurationForm(
       inlineMaxComments: readFormNumber(formData, "inlineMaxComments"),
       targetTokensPerBatch: readFormNumber(formData, "targetTokensPerBatch"),
     },
+    reviewLanguage:
+      readOptionalFormString(formData, "reviewLanguage") ?? undefined,
   });
 }
 

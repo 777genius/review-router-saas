@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "paths": {
+      "@reviewrouter/subscription-runtime-core": ["../core/dist/index.d.ts"]
+    }
+  },
+  "exclude": ["src/**/*.test.ts", "src/tests/**", "src/testing/**"]
+}

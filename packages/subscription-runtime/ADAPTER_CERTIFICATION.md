@@ -79,7 +79,9 @@ pnpm exec vitest run packages/features/codex-oauth-rotating/src/tests/codex-oaut
 - Default production custody mode: `no-plaintext-backend`.
 - Production store: `store.github-actions-secret`.
 - Development store: `store.local-encrypted-file`.
-- Provider and agent: `provider.codex-cli`.
+- Provider adapter: `provider.codex-cli`.
+- Production Codex task agent: `codex-json`, backed by the packaged Codex JSON
+  execution engine.
 - Runner: `runner.github-action`.
 - Rollback switch: set `REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX=0` or omit
   it to use the legacy refresh path for the compatibility release.

@@ -6,10 +6,19 @@ export type WorkspaceAccessGrant = {
 };
 
 export interface WorkspaceAccessRepositoryPort {
+  findWorkspaceRoleByUserId(input: {
+    readonly workspaceId: string;
+    readonly userId: string;
+  }): Promise<WorkspaceAccessRole | null>;
+
   findWorkspaceRoleByGitHubUserId(input: {
     readonly workspaceId: string;
     readonly githubUserId: string;
   }): Promise<WorkspaceAccessRole | null>;
+
+  listWorkspaceRolesByUserId(input: {
+    readonly userId: string;
+  }): Promise<readonly WorkspaceAccessGrant[]>;
 
   listWorkspaceRolesByGitHubUserId(input: {
     readonly githubUserId: string;

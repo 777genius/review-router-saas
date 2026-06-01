@@ -163,6 +163,8 @@ describe("Codex rotating auth domain", () => {
     expect(workflow).not.toContain("merge_group:");
     expect(workflow).not.toContain("actions/checkout");
     expect(workflow).not.toContain("run:");
+    expect(workflow).toContain("permissions: {}\n\njobs:");
+    expect(workflow).toContain("    permissions:\n      id-token: write");
     expect(workflow).toContain(
       `auth-json: \${{ secrets.${codexRotatingSecretName} }}`,
     );
@@ -194,6 +196,38 @@ describe("Codex rotating auth domain", () => {
     expect(scanCodexRotatingAdvisoryWorkflow(inlineStrategy).errors).toContain(
       "matrix_strategy_not_allowed",
     );
+  });
+
+  it("accepts job-scoped and legacy top-level id-token workflow permissions", () => {
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+    });
+
+    expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const legacyTopLevelPermissions = workflow.replace(
+      "permissions: {}\n\njobs:",
+      "permissions:\n  id-token: write\n\njobs:",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(legacyTopLevelPermissions),
+    ).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const broadReviewJobPermissions = workflow.replace(
+      "    permissions:\n      id-token: write",
+      "    permissions:\n      id-token: write\n      contents: read",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(broadReviewJobPermissions).errors,
+    ).toContain("review_job_requires_id_token_write");
   });
 
   it("allows only explicit hybrid provider secret inputs in rotating workflow", () => {

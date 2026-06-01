@@ -53,6 +53,9 @@ if (!actionSessionSecret) {
 const prisma = createPrismaClient();
 try {
   const repository = await ensureRepositoryFixture();
+  if (!repository.githubRepositoryId) {
+    throw new Error("fixture repository is missing GitHub id");
+  }
   const e2eProvider = {
     ...safeDefaultReviewConfiguration.provider,
     kind: "openrouter" as const,
@@ -299,6 +302,8 @@ async function ensureRepositoryFixture() {
     where: { githubRepositoryId: 9_999_002n },
     update: {
       workspaceId: workspace.id,
+      provider: "github",
+      externalRepositoryId: "9999002",
       installationId: installation.id,
       owner,
       name,
@@ -309,6 +314,8 @@ async function ensureRepositoryFixture() {
     },
     create: {
       workspaceId: workspace.id,
+      provider: "github",
+      externalRepositoryId: "9999002",
       installationId: installation.id,
       githubRepositoryId: 9_999_002n,
       owner,

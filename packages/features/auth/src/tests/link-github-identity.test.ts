@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AuthenticatedPrincipal } from "../domain/authenticated-principal";
+import type { ExternalIdentity } from "../domain/external-identity";
 import type { GitHubExternalIdentity } from "../domain/github-external-identity";
 import type { UserRepositoryPort } from "../application/ports/user-repository-port";
 import type {
@@ -7,6 +8,7 @@ import type {
   WorkspaceMembershipRepositoryPort,
 } from "../application/ports/workspace-membership-repository-port";
 import { linkGitHubIdentity } from "../application/use-cases/link-github-identity";
+import { linkExternalIdentity } from "../application/use-cases/link-external-identity";
 
 class InMemoryUserRepository implements UserRepositoryPort {
   private readonly users = new Map<string, AuthenticatedPrincipal>();
@@ -14,15 +16,34 @@ class InMemoryUserRepository implements UserRepositoryPort {
   async upsertGitHubUser(
     identity: GitHubExternalIdentity,
   ): Promise<AuthenticatedPrincipal> {
-    const existing = this.users.get(identity.githubUserId);
+    return this.upsertExternalIdentity({
+      provider: "github",
+      externalUserId: identity.githubUserId,
+      login: identity.githubLogin,
+      primaryEmail: identity.primaryEmail ?? null,
+      avatarUrl: identity.avatarUrl ?? null,
+    });
+  }
+
+  async upsertExternalIdentity(
+    identity: ExternalIdentity,
+  ): Promise<AuthenticatedPrincipal> {
+    const identityKey = `${identity.provider}:${identity.externalUserId}`;
+    const existing = this.users.get(identityKey);
     const principal = {
-      userId: existing?.userId ?? `user-${identity.githubUserId}`,
-      githubUserId: identity.githubUserId,
-      githubLogin: identity.githubLogin,
+      provider: identity.provider,
+      userId:
+        existing?.userId ??
+        `user-${identity.provider}-${identity.externalUserId}`,
+      externalUserId: identity.externalUserId,
+      login: identity.login,
+      githubUserId:
+        identity.provider === "github" ? identity.externalUserId : null,
+      githubLogin: identity.provider === "github" ? identity.login : null,
       primaryEmail: identity.primaryEmail ?? null,
       avatarUrl: identity.avatarUrl ?? null,
     } satisfies AuthenticatedPrincipal;
-    this.users.set(identity.githubUserId, principal);
+    this.users.set(identityKey, principal);
     return principal;
   }
 }
@@ -36,7 +57,7 @@ class InMemoryMembershipRepository implements WorkspaceMembershipRepositoryPort 
   ): Promise<WorkspaceMembership> {
     this.personalWorkspaceOwnerCalls += 1;
     return {
-      workspaceId: `workspace-${principal.githubUserId}`,
+      workspaceId: `workspace-${principal.userId}`,
       role: "owner",
       source: "personal",
     };
@@ -74,5 +95,31 @@ describe("linkGitHubIdentity", () => {
     expect(renamed.githubLogin).toBe("new-login");
     expect(memberships.personalWorkspaceOwnerCalls).toBe(2);
     expect(memberships.installationWorkspaceOwnerCalls).toBe(2);
+  });
+
+  it("links GitLab identity without requiring GitHub fields or installation owners", async () => {
+    const users = new InMemoryUserRepository();
+    const memberships = new InMemoryMembershipRepository();
+
+    const principal = await linkExternalIdentity(
+      {
+        provider: "gitlab",
+        externalUserId: "123",
+        login: "gitlab-user",
+        primaryEmail: null,
+        avatarUrl: null,
+      },
+      { users, memberships },
+    );
+
+    expect(principal).toMatchObject({
+      provider: "gitlab",
+      externalUserId: "123",
+      login: "gitlab-user",
+      githubUserId: null,
+      githubLogin: null,
+    });
+    expect(memberships.personalWorkspaceOwnerCalls).toBe(1);
+    expect(memberships.installationWorkspaceOwnerCalls).toBe(0);
   });
 });

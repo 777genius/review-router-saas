@@ -59,8 +59,8 @@ describe("renderReviewRouterWorkflow", () => {
 
     expect(workflow).toContain("name: ReviewRouter Codex OAuth");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
-    expect(workflow).toContain("permissions:\n  id-token: write\n\njobs:");
-    expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain("permissions: {}\n\njobs:");
+    expect(workflow).toContain("    permissions:\n      id-token: write");
     expect(workflow).toContain("mode: codex-oauth-rotating");
     expect(workflow).toContain(
       "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
@@ -140,6 +140,10 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflowContent).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
     );
+    expect(interactionWorkflowContent).toContain("mode: interaction-preflight");
+    expect(interactionWorkflowContent).toContain("mode: interaction");
+    expect(interactionWorkflowContent).not.toContain("provider-instance-id:");
+    expect(interactionWorkflowContent).not.toContain("auth-json:");
     expect(interactionWorkflowContent).not.toContain("secrets.CODEX_AUTH_JSON");
     expect(interactionWorkflowContent).not.toContain("OPENAI_API_KEY");
   });
@@ -200,8 +204,12 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
     );
+    expect(workflow).toContain("mode: interaction-preflight");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
+    expect(workflow).toContain("mode: interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).not.toContain("provider-instance-id:");
+    expect(workflow).not.toContain("auth-json:");
     expect(workflow).not.toContain("secrets.CODEX_AUTH_JSON");
     expect(workflow).not.toContain("OPENAI_API_KEY");
   });
@@ -216,8 +224,8 @@ describe("renderReviewRouterWorkflow", () => {
     ).toEqual([
       [
         "name: ReviewRouter Codex OAuth",
-        "permissions:\n  id-token: write\n\njobs:",
-        "id-token: write",
+        "permissions: {}\n\njobs:",
+        "    permissions:\n      id-token: write",
         "mode: codex-oauth-rotating",
         'provider-instance-id: "codex-rotating:123456"',
         "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
@@ -254,7 +262,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain("uses: actions/setup-node@v6");
     expect(workflow).toContain('node-version: "24"');
-    expect(workflow).toContain("npm install -g @openai/codex@0.125.0");
+    expect(workflow).toContain("npm install -g @openai/codex@0.135.0");
     expect(workflow).toContain("env.OPENROUTER_API_KEY_PRESENT == '1'");
     expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
     expect(workflow).toContain(
@@ -317,6 +325,7 @@ describe("renderReviewRouterWorkflow", () => {
       "startsWith(github.event.comment.body, '/rr ')",
     );
     expect(workflow).toContain("Preflight ReviewRouter interaction");
+    expect(workflow).toContain("mode: interaction-preflight");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
     expect(workflow).toContain(
       "REVIEW_ROUTER_DISCUSSION_MODE: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
@@ -331,6 +340,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("CODEX_AUTH_JSON_PRESENT");
     expect(workflow).toContain("OPENAI_API_KEY_PRESENT");
     expect(workflow).toContain("steps.preflight.outputs.should_run == 'true'");
+    expect(workflow).toContain("mode: interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
     expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
     expect(workflow).toContain(

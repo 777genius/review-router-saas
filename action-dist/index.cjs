@@ -50,7 +50,7 @@ __export(github_action_exports, {
 });
 module.exports = __toCommonJS(github_action_exports);
 var import_node_child_process2 = require("node:child_process");
-var import_node_crypto4 = require("node:crypto");
+var import_node_crypto5 = require("node:crypto");
 var import_node_fs = require("node:fs");
 var import_node_http = __toESM(require("node:http"), 1);
 
@@ -90,15 +90,32 @@ function negotiateCapabilities(input) {
       agentId: input.agent.agentId
     });
   }
-  if (!policy.allowedStoreIds.includes(input.store.storeId)) {
-    return rejected("missing_required_capability", "Store is not allowed.", {
-      storeId: input.store.storeId
-    });
-  }
   if (!policy.allowedRunnerIds.includes(input.runner.runnerId)) {
     return rejected("missing_required_capability", "Runner is not allowed.", {
       runnerId: input.runner.runnerId
     });
+  }
+  const requestedTaskMode = policy.requestedTaskMode ?? "review";
+  if (!input.agent.taskModes.includes(requestedTaskMode)) {
+    return rejected(
+      "task_mode_unsupported",
+      "Selected agent does not support the requested task mode.",
+      {
+        agentId: input.agent.agentId,
+        taskMode: requestedTaskMode
+      }
+    );
+  }
+  const requestedHistoryMode = policy.requestedHistoryMode ?? "unsupported";
+  if (requestedHistoryMode !== "unsupported" && input.agent.historyMode !== requestedHistoryMode) {
+    return rejected(
+      "history_mode_unsupported",
+      "Selected agent does not support the requested history mode.",
+      {
+        agentId: input.agent.agentId,
+        historyMode: requestedHistoryMode
+      }
+    );
   }
   if (policy.allowInteractiveSetupInRuntime !== false) {
     return rejected(
@@ -106,6 +123,58 @@ function negotiateCapabilities(input) {
       "Interactive setup is forbidden in runtime jobs.",
       {}
     );
+  }
+  if (!input.runner.supportsEnvAllowlist) {
+    return rejected(
+      "missing_required_capability",
+      "Runner must support environment allowlisting.",
+      { runnerId: input.runner.runnerId }
+    );
+  }
+  if ((input.provider.requiresWorkspace || input.agent.supportsRepositoryContext) && !input.runner.supportsWorkingDirectory) {
+    return rejected(
+      "runner_provider_incompatible",
+      "Provider or agent requires workspace support.",
+      { runnerId: input.runner.runnerId }
+    );
+  }
+  if (input.agent.requiresWritableWorkspace && input.runner.readOnlyFilesystem) {
+    return rejected(
+      "runner_provider_incompatible",
+      "Agent requires writable workspace, but runner is read-only.",
+      { agentId: input.agent.agentId }
+    );
+  }
+  const executionPlan = compileRuntimeExecutionPlan({
+    policy,
+    provider: input.provider
+  });
+  if (executionPlan.kind === "no-session") {
+    return {
+      status: "accepted",
+      compiledPolicy: compileRuntimePolicy({
+        requested: policy,
+        provider: input.provider,
+        agent: input.agent,
+        runner: input.runner
+      }),
+      executionPlan,
+      warnings: []
+    };
+  }
+  if (!input.store) {
+    return rejected(
+      "session_store_required",
+      "Selected provider requires a session store.",
+      {
+        providerId: input.provider.providerId
+      }
+    );
+  }
+  if (!policy.allowedStoreIds.includes(input.store.storeId)) {
+    return rejected("missing_required_capability", "Store is not allowed.", {
+      storeId: input.store.storeId
+    });
   }
   if (policy.custodyMode === "no-plaintext-backend") {
     if (input.store.custody !== "no-plaintext-backend") {
@@ -137,7 +206,7 @@ function negotiateCapabilities(input) {
       { storeId: input.store.storeId }
     );
   }
-  if (input.provider.refreshMayRotateSession) {
+  if (providerMayRotateSession(input.provider)) {
     if (!input.store.supportsWriteback) {
       return rejected(
         "provider_store_incompatible",
@@ -153,27 +222,6 @@ function negotiateCapabilities(input) {
       );
     }
   }
-  if (!input.runner.supportsEnvAllowlist) {
-    return rejected(
-      "missing_required_capability",
-      "Runner must support environment allowlisting.",
-      { runnerId: input.runner.runnerId }
-    );
-  }
-  if ((input.provider.requiresWorkspace || input.agent.supportsRepositoryContext) && !input.runner.supportsWorkingDirectory) {
-    return rejected(
-      "runner_provider_incompatible",
-      "Provider or agent requires workspace support.",
-      { runnerId: input.runner.runnerId }
-    );
-  }
-  if (input.agent.requiresWritableWorkspace && input.runner.readOnlyFilesystem) {
-    return rejected(
-      "runner_provider_incompatible",
-      "Agent requires writable workspace, but runner is read-only.",
-      { agentId: input.agent.agentId }
-    );
-  }
   return {
     status: "accepted",
     compiledPolicy: compileRuntimePolicy({
@@ -183,27 +231,67 @@ function negotiateCapabilities(input) {
       store: input.store,
       runner: input.runner
     }),
+    executionPlan,
     warnings: []
   };
 }
 function compileRuntimePolicy(input) {
+  const mayRotate = providerMayRotateSession(input.provider);
   return {
-    trustMode: input.store.custody,
+    trustMode: input.store?.custody ?? input.requested.custodyMode,
     providerId: input.provider.providerId,
     agentId: input.agent.agentId,
-    storeId: input.store.storeId,
+    storeId: input.store?.storeId ?? null,
     runnerId: input.runner.runnerId,
-    requiresDurableWriteback: input.provider.refreshMayRotateSession,
-    requiresLease: input.provider.refreshMayRotateSession,
-    requiresCas: input.store.supportsCompareAndSwap,
+    requiresDurableWriteback: mayRotate,
+    requiresLease: mayRotate,
+    requiresCas: input.store?.supportsCompareAndSwap ?? false,
     allowsInteractiveRuntime: false,
-    maxSessionBytes: input.store.maxArtifactBytes,
+    maxSessionBytes: input.store?.maxArtifactBytes ?? 0,
     maxTaskOutputBytes: input.requested.maxTaskOutputBytes ?? 1024 * 1024,
     timeoutMs: Math.min(
       input.provider.defaultTimeoutMs,
       input.agent.maxRuntimeMs
-    )
+    ),
+    refreshPolicy: {
+      minFreshMs: input.requested.refreshPolicy?.minFreshMs ?? 15 * 60 * 1e3,
+      refreshBeforeExpiryMs: input.requested.refreshPolicy?.refreshBeforeExpiryMs ?? 5 * 60 * 1e3,
+      maxSessionAgeMs: input.requested.refreshPolicy?.maxSessionAgeMs ?? 24 * 60 * 60 * 1e3
+    }
   };
+}
+function compileRuntimeExecutionPlan(input) {
+  if (input.provider.sessionRequirement.kind === "none") {
+    return {
+      kind: "no-session",
+      readSession: false,
+      acquireLease: false,
+      refresh: "never",
+      writeback: "never",
+      sessionForAgent: "absent"
+    };
+  }
+  if (!providerMayRotateSession(input.provider)) {
+    return {
+      kind: "static-session",
+      readSession: true,
+      acquireLease: false,
+      refresh: input.provider.refreshMode === "validate-only" ? "validate-only" : "never",
+      writeback: "never",
+      sessionForAgent: "stored"
+    };
+  }
+  return {
+    kind: "rotating-session",
+    readSession: true,
+    acquireLease: true,
+    refresh: input.provider.refreshMode === "lazy-refresh" ? "lazy" : "before-run",
+    writeback: input.policy.requireWritebackBeforeTask ? "before-task" : "after-successful-refresh",
+    sessionForAgent: "refreshed"
+  };
+}
+function providerMayRotateSession(provider) {
+  return provider.sessionRotationMode === "may-rotate" || provider.refreshMayRotateSession;
 }
 function rejected(code, safeMessage, details) {
   return {
@@ -313,15 +401,20 @@ function createSubscriptionRuntime(deps) {
     requested: deps.policy,
     provider: deps.sessionDriver.capabilities,
     agent: deps.agentDriver.capabilities,
-    store: deps.sessionStore.capabilities,
-    runner: deps.runner.capabilities
+    runner: deps.runner.capabilities,
+    ...deps.sessionStore ? { store: deps.sessionStore.capabilities } : {}
   });
   if (decision.status === "rejected") {
     throw new Error(decision.code);
   }
-  const kernel = new RuntimeKernel(deps, decision.compiledPolicy);
+  const kernel = new RuntimeKernel(
+    deps,
+    decision.compiledPolicy,
+    decision.executionPlan
+  );
   return {
     capabilities: decision.compiledPolicy,
+    executionPlan: decision.executionPlan,
     refreshSession: (input) => kernel.refreshSession(input),
     runTask: (input) => kernel.runTask(input),
     refreshThenRunTask: (input) => kernel.refreshThenRunTask(input),
@@ -329,20 +422,38 @@ function createSubscriptionRuntime(deps) {
   };
 }
 var RuntimeKernel = class {
-  constructor(deps, policy) {
+  constructor(deps, policy, executionPlan) {
     this.deps = deps;
     this.policy = policy;
+    this.executionPlan = executionPlan;
   }
   deps;
   policy;
+  executionPlan;
   async refreshSession(input) {
+    if (this.executionPlan.kind === "no-session") {
+      this.emit("provider.refresh.skipped", input.runContext.runId, {
+        reason: "no_session"
+      });
+      return {
+        status: "skipped",
+        reason: "refresh_not_required",
+        warnings: []
+      };
+    }
+    if (this.executionPlan.kind === "static-session") {
+      return this.validateStaticSession(input);
+    }
+    const sessionStore = this.requireSessionStore();
+    const leaseStore = this.requireLeaseStore();
+    const sessionDriver = this.requireRefreshableSessionDriver();
     const readStartedAt = this.deps.clock.monotonicMs();
     this.emit("session.read.started", input.runContext.runId, {
       purpose: "refresh"
     });
-    const session = await this.deps.sessionStore.read({
+    const session = await sessionStore.read({
       providerInstanceId: input.providerInstanceId,
-      expectedProviderId: this.deps.sessionDriver.providerId,
+      expectedProviderId: sessionDriver.providerId,
       purpose: "refresh"
     });
     this.emit(
@@ -363,11 +474,33 @@ var RuntimeKernel = class {
       );
     }
     this.deps.redactor.registerSecret(session.artifact.bytes, "session");
+    if (this.executionPlan.kind === "rotating-session" && this.executionPlan.refresh === "lazy" && !input.forceRefresh) {
+      const freshness = await this.inspectFreshness({
+        session: session.artifact,
+        runId: input.runContext.runId
+      });
+      if (freshness.status === "fresh") {
+        this.emit("provider.refresh.skipped", input.runContext.runId, {
+          reason: freshness.reason,
+          generation: String(session.generation)
+        });
+        return {
+          status: "skipped",
+          reason: "refresh_not_required",
+          session,
+          warnings: freshness.warnings
+        };
+      }
+      this.emit("provider.refresh.recommended", input.runContext.runId, {
+        reason: freshness.reason,
+        generation: String(session.generation)
+      });
+    }
     const leaseStartedAt = this.deps.clock.monotonicMs();
     this.emit("lease.acquire.started", input.runContext.runId, {
       generation: String(session.generation)
     });
-    const lease = await this.deps.leaseStore.acquire({
+    const lease = await leaseStore.acquire({
       providerInstanceId: input.providerInstanceId,
       runId: input.runContext.runId,
       attempt: input.runContext.attempt,
@@ -395,154 +528,190 @@ var RuntimeKernel = class {
       this.emitFailure("permission_required", input.runContext.runId);
       return blocked("permission_required", lease.safeMessage);
     }
-    const validation = await this.deps.sessionDriver.validateSession({
-      session: session.artifact,
-      redactor: this.deps.redactor
-    });
-    if (validation.status === "invalid") {
-      this.emitFailure(validation.failure.code, input.runContext.runId);
-      return blocked(
-        validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required",
-        validation.failure.safeMessage
-      );
-    }
-    const workspace = await this.deps.workspace.create({
-      purpose: "refresh",
-      isolation: "temp-dir"
-    });
+    let leaseClosed = false;
     try {
-      const refreshStartedAt = this.deps.clock.monotonicMs();
-      this.emit("provider.refresh.started", input.runContext.runId, {
-        generation: String(session.generation)
-      });
-      const refreshed = await this.deps.sessionDriver.refreshSession({
+      const validation = await sessionDriver.validateSession({
         session: session.artifact,
-        workspace,
-        runner: this.deps.runner,
-        redactor: this.deps.redactor,
-        abortSignal: input.runContext.abortSignal
+        redactor: this.deps.redactor
       });
-      this.emit(
-        "provider.refresh.completed",
-        input.runContext.runId,
-        {
-          providerState: refreshed.providerState
-        },
-        this.deps.clock.monotonicMs() - refreshStartedAt
-      );
-      this.deps.observability.timing(
-        "subscription_runtime.provider_refresh_ms",
-        this.deps.clock.monotonicMs() - refreshStartedAt
-      );
-      if (refreshed.providerState === "needs-reconnect") {
-        this.deps.observability.count(
-          "subscription_runtime.reconnect_required"
-        );
-        this.emitFailure("needs_reconnect", input.runContext.runId);
+      if (validation.status === "invalid") {
+        this.emitFailure(validation.failure.code, input.runContext.runId);
         return blocked(
-          "provider_reconnect_required",
-          "Provider session needs reconnect.",
-          refreshed.warnings
+          validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required",
+          validation.failure.safeMessage
         );
       }
-      if (refreshed.providerState === "permission-required") {
-        this.emitFailure("permission_required", input.runContext.runId);
-        return blocked(
-          "permission_required",
-          "Provider permission is required.",
-          refreshed.warnings
-        );
-      }
-      if (refreshed.providerState === "quota-limited") {
-        this.deps.observability.count("subscription_runtime.quota_limited");
-        this.emitFailure("quota_limited", input.runContext.runId);
-        return blocked(
-          "quota_limited",
-          "Provider quota is limited.",
-          refreshed.warnings
-        );
-      }
-      const nextHash = computeSessionGenerationHash({
-        artifact: refreshed.artifact
+      const workspace = await this.deps.workspace.create({
+        purpose: "refresh",
+        isolation: "temp-dir"
       });
-      if (nextHash === session.generationHash) {
-        this.emit("session.writeback.completed", input.runContext.runId, {
-          status: "skipped_unchanged",
+      try {
+        const refreshStartedAt = this.deps.clock.monotonicMs();
+        this.emit("provider.refresh.started", input.runContext.runId, {
           generation: String(session.generation)
         });
-        return {
-          status: "skipped",
-          reason: "session_unchanged",
-          session,
-          warnings: refreshed.warnings
-        };
-      }
-      await this.deps.leaseStore.finalize({
-        leaseId: lease.leaseId,
-        restoredGenerationHash: session.generationHash
-      });
-      this.emit("session.writeback.started", input.runContext.runId, {
-        leaseId: lease.leaseId,
-        expectedGeneration: String(session.generation)
-      });
-      await this.deps.leaseStore.markWritebackStarted({
-        leaseId: lease.leaseId
-      });
-      const idempotencyKey = this.deps.idGenerator.idempotencyKey({
-        providerInstanceId: input.providerInstanceId,
-        runId: input.runContext.runId,
-        attempt: input.runContext.attempt,
-        purpose: "writeback"
-      });
-      const writeback = await this.deps.sessionStore.write({
-        providerInstanceId: input.providerInstanceId,
-        expectedGeneration: session.generation,
-        nextArtifact: refreshed.artifact,
-        idempotencyKey,
-        leaseId: lease.leaseId
-      });
-      if (writeback.status === "stale_generation") {
-        this.deps.observability.count(
-          "subscription_runtime.writeback_conflict"
-        );
-        this.emit("session.writeback.completed", input.runContext.runId, {
-          status: writeback.status
+        const refreshed = await sessionDriver.refreshSession({
+          session: session.artifact,
+          workspace,
+          runner: this.deps.runner,
+          redactor: this.deps.redactor,
+          abortSignal: input.runContext.abortSignal
         });
-        this.emitFailure("stale_generation", input.runContext.runId);
+        this.emit(
+          "provider.refresh.completed",
+          input.runContext.runId,
+          {
+            providerState: refreshed.providerState
+          },
+          this.deps.clock.monotonicMs() - refreshStartedAt
+        );
+        this.deps.observability.timing(
+          "subscription_runtime.provider_refresh_ms",
+          this.deps.clock.monotonicMs() - refreshStartedAt
+        );
+        if (refreshed.providerState === "needs-reconnect") {
+          this.deps.observability.count(
+            "subscription_runtime.reconnect_required"
+          );
+          this.emitFailure("needs_reconnect", input.runContext.runId);
+          return blocked(
+            "provider_reconnect_required",
+            "Provider session needs reconnect.",
+            refreshed.warnings
+          );
+        }
+        if (refreshed.providerState === "permission-required") {
+          this.emitFailure("permission_required", input.runContext.runId);
+          return blocked(
+            "permission_required",
+            "Provider permission is required.",
+            refreshed.warnings
+          );
+        }
+        if (refreshed.providerState === "quota-limited") {
+          this.deps.observability.count("subscription_runtime.quota_limited");
+          this.emitFailure("quota_limited", input.runContext.runId);
+          return blocked(
+            "quota_limited",
+            "Provider quota is limited.",
+            refreshed.warnings
+          );
+        }
+        const nextHash = computeSessionGenerationHash({
+          artifact: refreshed.artifact
+        });
+        const idempotencyKey = this.deps.idGenerator.idempotencyKey({
+          providerInstanceId: input.providerInstanceId,
+          runId: input.runContext.runId,
+          attempt: input.runContext.attempt,
+          purpose: "writeback"
+        });
+        if (nextHash === session.generationHash) {
+          await leaseStore.finalize({
+            leaseId: lease.leaseId,
+            restoredGenerationHash: session.generationHash
+          });
+          await leaseStore.markWritebackCommitted({
+            leaseId: lease.leaseId,
+            nextGenerationHash: session.generationHash,
+            idempotencyKey
+          });
+          leaseClosed = true;
+          this.emit("session.writeback.completed", input.runContext.runId, {
+            status: "skipped_unchanged",
+            generation: String(session.generation)
+          });
+          return {
+            status: "skipped",
+            reason: "session_unchanged",
+            session,
+            warnings: refreshed.warnings
+          };
+        }
+        await leaseStore.finalize({
+          leaseId: lease.leaseId,
+          restoredGenerationHash: session.generationHash
+        });
+        this.emit("session.writeback.started", input.runContext.runId, {
+          leaseId: lease.leaseId,
+          expectedGeneration: String(session.generation)
+        });
+        await leaseStore.markWritebackStarted({
+          leaseId: lease.leaseId
+        });
+        const writeback = await sessionStore.write({
+          providerInstanceId: input.providerInstanceId,
+          expectedGeneration: session.generation,
+          nextArtifact: refreshed.artifact,
+          idempotencyKey,
+          leaseId: lease.leaseId
+        });
+        if (writeback.status === "stale_generation") {
+          this.deps.observability.count(
+            "subscription_runtime.writeback_conflict"
+          );
+          this.emit("session.writeback.completed", input.runContext.runId, {
+            status: writeback.status
+          });
+          this.emitFailure("stale_generation", input.runContext.runId);
+          return {
+            status: "skipped",
+            reason: "stale_generation",
+            warnings: refreshed.warnings
+          };
+        }
+        await leaseStore.markWritebackCommitted({
+          leaseId: lease.leaseId,
+          nextGenerationHash: writeback.generationHash,
+          idempotencyKey
+        });
+        leaseClosed = true;
+        this.emit("session.writeback.completed", input.runContext.runId, {
+          status: writeback.status,
+          generation: String(writeback.generation)
+        });
+        this.deps.observability.count("subscription_runtime.refresh_success");
         return {
-          status: "skipped",
-          reason: "stale_generation",
+          status: "ready",
+          session: nextEnvelope(session, refreshed.artifact, writeback),
+          writeback,
           warnings: refreshed.warnings
         };
+      } finally {
+        await workspace.dispose?.();
       }
-      await this.deps.leaseStore.markWritebackCommitted({
-        leaseId: lease.leaseId,
-        nextGenerationHash: writeback.generationHash,
-        idempotencyKey
-      });
-      this.emit("session.writeback.completed", input.runContext.runId, {
-        status: writeback.status,
-        generation: String(writeback.generation)
-      });
-      this.deps.observability.count("subscription_runtime.refresh_success");
-      return {
-        status: "ready",
-        session: nextEnvelope(session, refreshed.artifact, writeback),
-        writeback,
-        warnings: refreshed.warnings
-      };
     } finally {
-      await workspace.dispose?.();
+      if (!leaseClosed) {
+        await this.releaseLeaseQuietly({
+          leaseId: lease.leaseId,
+          runId: input.runContext.runId,
+          reason: "refresh_completed_without_committed_writeback"
+        });
+      }
     }
   }
   async runTask(input) {
+    const unsupported = this.unsupportedTaskFailure(input.task);
+    if (unsupported) {
+      this.emitFailure("task_mode_unsupported", input.runContext.runId);
+      return unsupported;
+    }
+    if (this.executionPlan.kind === "no-session") {
+      return this.runTaskWithSession({
+        session: null,
+        task: input.task,
+        runContext: input.runContext
+      });
+    }
+    const sessionStore = this.requireSessionStore();
+    const sessionDriver = this.requireSessionDriver();
     const readStartedAt = this.deps.clock.monotonicMs();
     this.emit("session.read.started", input.runContext.runId, {
       purpose: "run"
     });
-    const session = await this.deps.sessionStore.read({
+    const session = await sessionStore.read({
       providerInstanceId: input.providerInstanceId,
-      expectedProviderId: this.deps.sessionDriver.providerId,
+      expectedProviderId: sessionDriver.providerId,
       purpose: "run"
     });
     this.emit(
@@ -559,6 +728,20 @@ var RuntimeKernel = class {
       this.emitFailure("needs_reconnect", input.runContext.runId);
       return failedTask("needs_reconnect", "Provider session is missing.");
     }
+    if (this.executionPlan.kind === "static-session") {
+      const validation = await sessionDriver.validateSession({
+        session: session.artifact,
+        redactor: this.deps.redactor
+      });
+      if (validation.status === "invalid") {
+        this.emitFailure(validation.failure.code, input.runContext.runId);
+        return {
+          status: "failed",
+          failure: validation.failure,
+          warnings: []
+        };
+      }
+    }
     return this.runTaskWithSession({
       session: session.artifact,
       task: input.task,
@@ -566,7 +749,41 @@ var RuntimeKernel = class {
     });
   }
   async refreshThenRunTask(input) {
+    const unsupported = this.unsupportedTaskFailure(input.task);
+    if (unsupported) {
+      this.emitFailure("task_mode_unsupported", input.runContext.runId);
+      return {
+        status: "blocked",
+        reason: "task_mode_unsupported",
+        safeMessage: unsupported.failure.safeMessage,
+        warnings: []
+      };
+    }
     const refresh = await this.refreshSession(input);
+    if (this.executionPlan.kind === "no-session" && refresh.status === "skipped" && refresh.reason === "refresh_not_required") {
+      const task2 = await this.runTaskWithSession({
+        session: null,
+        task: input.task,
+        runContext: input.runContext
+      });
+      return {
+        status: "completed",
+        refresh,
+        task: task2
+      };
+    }
+    if (this.executionPlan.kind === "static-session" && refresh.status === "skipped" && refresh.reason === "refresh_not_required" && refresh.session) {
+      const task2 = await this.runTaskWithSession({
+        session: refresh.session.artifact,
+        task: input.task,
+        runContext: input.runContext
+      });
+      return {
+        status: "completed",
+        refresh,
+        task: task2
+      };
+    }
     if (refresh.status === "blocked") {
       return {
         status: "blocked",
@@ -581,6 +798,63 @@ var RuntimeKernel = class {
         reason: "stale_generation",
         safeMessage: "A newer provider session generation already exists.",
         warnings: refresh.warnings
+      };
+    }
+    if (this.executionPlan.kind === "rotating-session" && refresh.status === "skipped" && refresh.reason === "refresh_not_required" && refresh.session) {
+      const task2 = await this.runTaskWithSession({
+        session: refresh.session.artifact,
+        task: input.task,
+        runContext: input.runContext
+      });
+      if (task2.status === "failed" && shouldGuardedRefresh(task2.failure)) {
+        this.emit("provider.refresh.guard.started", input.runContext.runId, {
+          reason: task2.failure.code
+        });
+        const guardedRefresh = await this.refreshSession({
+          providerInstanceId: input.providerInstanceId,
+          runContext: input.runContext,
+          forceRefresh: true
+        });
+        if (guardedRefresh.status === "blocked") {
+          return {
+            status: "blocked",
+            reason: guardedRefresh.reason,
+            safeMessage: guardedRefresh.safeMessage,
+            warnings: guardedRefresh.warnings
+          };
+        }
+        if (guardedRefresh.status === "skipped" && guardedRefresh.reason === "stale_generation") {
+          return {
+            status: "blocked",
+            reason: "stale_generation",
+            safeMessage: "A newer provider session generation already exists.",
+            warnings: guardedRefresh.warnings
+          };
+        }
+        const guardedSession = sessionForPostRefreshTask(guardedRefresh);
+        if (!guardedSession) {
+          return {
+            status: "blocked",
+            reason: "provider_reconnect_required",
+            safeMessage: "Provider session is missing after guarded refresh.",
+            warnings: guardedRefresh.warnings
+          };
+        }
+        const retriedTask = await this.runTaskWithSession({
+          session: guardedSession.artifact,
+          task: input.task,
+          runContext: input.runContext
+        });
+        return {
+          status: "completed",
+          refresh: guardedRefresh,
+          task: retriedTask
+        };
+      }
+      return {
+        status: "completed",
+        refresh,
+        task: task2
       };
     }
     const session = sessionForPostRefreshTask(refresh);
@@ -604,9 +878,18 @@ var RuntimeKernel = class {
     };
   }
   async healthCheck(input) {
-    const session = await this.deps.sessionStore.read({
+    if (this.executionPlan.kind === "no-session") {
+      return {
+        status: "healthy",
+        failures: [],
+        warnings: []
+      };
+    }
+    const sessionStore = this.requireSessionStore();
+    const sessionDriver = this.requireSessionDriver();
+    const session = await sessionStore.read({
       providerInstanceId: input.providerInstanceId,
-      expectedProviderId: this.deps.sessionDriver.providerId,
+      expectedProviderId: sessionDriver.providerId,
       purpose: "health-check"
     });
     if (!session) {
@@ -616,7 +899,7 @@ var RuntimeKernel = class {
         warnings: []
       };
     }
-    const validation = await this.deps.sessionDriver.validateSession({
+    const validation = await sessionDriver.validateSession({
       session: session.artifact,
       redactor: this.deps.redactor
     });
@@ -634,7 +917,9 @@ var RuntimeKernel = class {
     };
   }
   async runTaskWithSession(input) {
-    this.deps.redactor.registerSecret(input.session.bytes, "session");
+    if (input.session) {
+      this.deps.redactor.registerSecret(input.session.bytes, "session");
+    }
     const workspace = await this.deps.workspace.create({
       purpose: "run-task",
       isolation: "temp-dir"
@@ -670,12 +955,44 @@ var RuntimeKernel = class {
       await workspace.dispose?.();
     }
   }
+  async inspectFreshness(input) {
+    const sessionDriver = this.requireSessionDriver();
+    if (!sessionDriver.inspectSessionFreshness) {
+      return {
+        status: "refresh_recommended",
+        reason: "freshness_unknown",
+        warnings: []
+      };
+    }
+    try {
+      return await sessionDriver.inspectSessionFreshness({
+        session: input.session,
+        policy: this.policy.refreshPolicy,
+        now: this.deps.clock.now(),
+        redactor: this.deps.redactor
+      });
+    } catch (error51) {
+      this.emit("provider.refresh.freshness_failed", input.runId, {
+        reason: error51 instanceof Error ? error51.message.slice(0, 120) : "unknown"
+      });
+      return {
+        status: "refresh_recommended",
+        reason: "freshness_unknown",
+        warnings: [
+          {
+            code: "session_freshness_unknown",
+            safeMessage: "Session freshness could not be determined."
+          }
+        ]
+      };
+    }
+  }
   emit(name, runId, metadata = {}, durationMs) {
     const event = {
       name,
       providerId: this.deps.sessionDriver.providerId,
       agentId: this.deps.agentDriver.agentId,
-      storeId: this.deps.sessionStore.storeId,
+      storeId: this.deps.sessionStore?.storeId ?? "none",
       metadata,
       ...runId === void 0 ? {} : { runId },
       ...durationMs === void 0 ? {} : { durationMs }
@@ -684,6 +1001,96 @@ var RuntimeKernel = class {
   }
   emitFailure(code, runId) {
     this.emit("runtime.failure.classified", runId, { code });
+  }
+  async releaseLeaseQuietly(input) {
+    if (!this.deps.leaseStore?.release) return;
+    try {
+      await this.deps.leaseStore.release({
+        leaseId: input.leaseId,
+        reason: input.reason
+      });
+    } catch (error51) {
+      this.emit("lease.release.failed", input.runId, {
+        leaseId: input.leaseId,
+        reason: input.reason,
+        error: error51 instanceof Error ? error51.message : "unknown"
+      });
+    }
+  }
+  unsupportedTaskFailure(task) {
+    if (this.deps.agentDriver.capabilities.taskModes.includes(task.kind)) {
+      return null;
+    }
+    return failedTask(
+      "task_mode_unsupported",
+      "Selected agent does not support the requested task mode."
+    );
+  }
+  async validateStaticSession(input) {
+    const sessionStore = this.requireSessionStore();
+    const sessionDriver = this.requireSessionDriver();
+    const session = await sessionStore.read({
+      providerInstanceId: input.providerInstanceId,
+      expectedProviderId: sessionDriver.providerId,
+      purpose: "refresh"
+    });
+    if (!session) {
+      this.emitFailure("provider_reconnect_required", input.runContext.runId);
+      return blocked(
+        "provider_reconnect_required",
+        "Provider session is missing."
+      );
+    }
+    if (this.executionPlan.refresh === "validate-only") {
+      const validation = await sessionDriver.validateSession({
+        session: session.artifact,
+        redactor: this.deps.redactor
+      });
+      if (validation.status === "invalid") {
+        this.emitFailure(validation.failure.code, input.runContext.runId);
+        return blocked(
+          validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required",
+          validation.failure.safeMessage
+        );
+      }
+      return {
+        status: "skipped",
+        reason: "refresh_not_required",
+        session,
+        warnings: validation.warnings
+      };
+    }
+    return {
+      status: "skipped",
+      reason: "refresh_not_required",
+      session,
+      warnings: []
+    };
+  }
+  requireSessionStore() {
+    if (!this.deps.sessionStore) {
+      throw new Error("session_store_required");
+    }
+    return this.deps.sessionStore;
+  }
+  requireLeaseStore() {
+    if (!this.deps.leaseStore) {
+      throw new Error("lease_store_required");
+    }
+    return this.deps.leaseStore;
+  }
+  requireSessionDriver() {
+    if (!("validateSession" in this.deps.sessionDriver)) {
+      throw new Error("session_driver_required");
+    }
+    return this.deps.sessionDriver;
+  }
+  requireRefreshableSessionDriver() {
+    const sessionDriver = this.requireSessionDriver();
+    if (!("refreshSession" in sessionDriver)) {
+      throw new Error("refreshable_session_driver_required");
+    }
+    return sessionDriver;
   }
 };
 function nextEnvelope(previous, artifact, writeback) {
@@ -698,10 +1105,13 @@ function sessionForPostRefreshTask(refresh) {
   if (refresh.status === "ready") {
     return refresh.session;
   }
-  if (refresh.status === "skipped" && refresh.reason === "session_unchanged") {
+  if (refresh.status === "skipped" && (refresh.reason === "session_unchanged" || refresh.reason === "refresh_not_required")) {
     return refresh.session ?? null;
   }
   return null;
+}
+function shouldGuardedRefresh(failure) {
+  return failure.code === "needs_reconnect" || failure.code === "provider_session_invalid" || failure.causeCategory === "needs_reconnect";
 }
 function blocked(reason, safeMessage, warnings = []) {
   return {
@@ -735,11 +1145,46 @@ function missingSessionFailure() {
 // packages/subscription-runtime/provider-codex/src/capabilities.ts
 var codexProviderId = "codex";
 var codexAgentId = "codex-cli";
+var codexJsonAgentId = "codex-json";
 var codexAuthJsonFormatVersion = "codex-auth-json-v1";
+var codexEnvironmentPolicy = {
+  inheritHostEnvironment: false,
+  allowlist: ["PATH", "HOME", "CI", "CODEX_HOME"],
+  denylist: [
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "GITHUB_ENV",
+    "GITHUB_OUTPUT",
+    "GITHUB_PATH",
+    "GITHUB_STEP_SUMMARY",
+    "GITHUB_STATE",
+    "NODE_OPTIONS",
+    "BASH_ENV",
+    "ENV",
+    "GIT_*",
+    "INPUT_AUTH*",
+    "*CODEX_AUTH_JSON*",
+    "*OPENAI_API_KEY*",
+    "*CLAUDE_CODE_OAUTH_TOKEN*",
+    "*OPENROUTER_API_KEY*",
+    "*REVIEW_ROUTER_COMMENT_TOKEN*",
+    "*REVIEWROUTER_PROXY_NONCE*"
+  ],
+  credentialSourceOrder: ["codex-auth-json-file"]
+};
 var codexSessionCapabilities = {
   providerId: codexProviderId,
   displayName: "Codex",
+  sessionRequirement: {
+    kind: "required",
+    artifactKinds: ["json-file"]
+  },
   sessionArtifactKinds: ["json-file"],
+  refreshMode: "always-before-run",
+  sessionRotationMode: "may-rotate",
+  environmentPolicy: codexEnvironmentPolicy,
   supportsRefresh: true,
   refreshMayRotateSession: true,
   supportsNonInteractiveRuntime: true,
@@ -753,6 +1198,8 @@ var codexSessionCapabilities = {
 var codexAgentCapabilities = {
   agentId: codexAgentId,
   providerId: codexProviderId,
+  taskModes: ["review", "structured-prompt", "health-check"],
+  historyMode: "none",
   supportsReviewTasks: true,
   supportsStructuredOutput: true,
   supportsToolCalling: false,
@@ -760,6 +1207,10 @@ var codexAgentCapabilities = {
   supportsInlineFindings: true,
   requiresWritableWorkspace: false,
   maxRuntimeMs: 6e5
+};
+var codexJsonAgentCapabilities = {
+  ...codexAgentCapabilities,
+  agentId: codexJsonAgentId
 };
 
 // packages/subscription-runtime/provider-codex/src/codex-cli-domain.ts
@@ -801,6 +1252,27 @@ function compactCodexAuthJson(input) {
   }
   return { compactAuthJsonBytes, byteLength };
 }
+function readCodexAuthJsonFreshness(input) {
+  const validation = validateCodexAuthJsonBytes({
+    authJsonBytes: input.authJsonBytes,
+    ...input.now ? { now: input.now } : {}
+  });
+  const warnings = [...validation.warnings];
+  const lastRefreshAt = parseOptionalDate(
+    validation.parsed.last_refresh,
+    "last_refresh_unparseable",
+    warnings
+  );
+  const expiresAt = parseOptionalExpiry(
+    validation.parsed.tokens.expiry,
+    warnings
+  );
+  return {
+    lastRefreshAt,
+    expiresAt,
+    warnings
+  };
+}
 function classifyCodexRuntimeFailure(message) {
   const normalized = message.toLowerCase();
   if (isCodexQuotaOrRateLimitFailure(normalized)) {
@@ -829,7 +1301,7 @@ function pruneCodexChildEnv(env) {
   const allowed = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === void 0) continue;
-    if (shouldDropChildEnvKey(key)) continue;
+    if (!shouldAllowChildEnvKey(key)) continue;
     allowed[key] = value;
   }
   return allowed;
@@ -878,6 +1350,9 @@ function parseCodexAuthJson(value) {
   if (value.last_refresh !== void 0 && typeof value.last_refresh !== "string") {
     throw new Error("codex_auth_json_invalid_last_refresh");
   }
+  if (value.tokens.expiry !== void 0 && typeof value.tokens.expiry !== "string" && typeof value.tokens.expiry !== "number") {
+    throw new Error("codex_auth_json_invalid_expiry");
+  }
   return value;
 }
 function collectCodexAuthJsonWarnings(input) {
@@ -897,8 +1372,54 @@ function collectCodexAuthJsonWarnings(input) {
   }
   return warnings;
 }
+function parseOptionalDate(value, warning, warnings) {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    if (!warnings.includes(warning)) warnings.push(warning);
+    return null;
+  }
+  return new Date(parsed);
+}
+function parseOptionalExpiry(value, warnings) {
+  if (value === void 0) return null;
+  const ms = typeof value === "number" ? normalizeEpochToMs(value) : Number.isFinite(Number(value)) ? normalizeEpochToMs(Number(value)) : Date.parse(value);
+  if (!Number.isFinite(ms)) {
+    warnings.push("expiry_unparseable");
+    return null;
+  }
+  return new Date(ms);
+}
+function normalizeEpochToMs(value) {
+  return value < 1e10 ? value * 1e3 : value;
+}
 function shouldDropChildEnvKey(key) {
-  return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("GIT_") || key.startsWith("INPUT_AUTH") || key.includes("CODEX_AUTH_JSON") || key.includes("REVIEWROUTER_CODEX_AUTH_JSON") || key.includes("OPENAI_API_KEY") || key.includes("CLAUDE_CODE_OAUTH_TOKEN") || key.includes("OPENROUTER_API_KEY") || key.includes("REVIEW_ROUTER_COMMENT_TOKEN") || key.includes("REVIEWROUTER_PROXY_NONCE");
+  return codexEnvironmentPolicy.denylist.some(
+    (pattern) => matchesEnvPattern(key, pattern)
+  );
+}
+function shouldAllowChildEnvKey(key) {
+  if (shouldDropChildEnvKey(key)) {
+    return false;
+  }
+  if (codexEnvironmentPolicy.inheritHostEnvironment) {
+    return true;
+  }
+  return codexEnvironmentPolicy.allowlist.some(
+    (pattern) => matchesEnvPattern(key, pattern)
+  );
+}
+function matchesEnvPattern(key, pattern) {
+  if (pattern.endsWith("*") && pattern.startsWith("*")) {
+    return key.includes(pattern.slice(1, -1));
+  }
+  if (pattern.endsWith("*")) {
+    return key.startsWith(pattern.slice(0, -1));
+  }
+  if (pattern.startsWith("*")) {
+    return key.endsWith(pattern.slice(1));
+  }
+  return key === pattern;
 }
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -963,11 +1484,6 @@ function codexValidationFailure(error51) {
 function safeCauseCategory(message) {
   return /^[a-z0-9_:-]{1,80}$/i.test(message) ? message : "codex_validation";
 }
-
-// packages/subscription-runtime/provider-codex/src/codex-cli-agent-driver.ts
-var import_promises2 = require("node:fs/promises");
-var import_node_os = require("node:os");
-var import_node_path2 = require("node:path");
 
 // packages/subscription-runtime/provider-codex/src/codex-cli-temp-cleanup.ts
 var import_promises = require("node:fs/promises");
@@ -1055,76 +1571,283 @@ function classifyCodexFailure(error51) {
   }
 }
 
-// packages/subscription-runtime/provider-codex/src/codex-cli-agent-driver.ts
-var CodexCliAgentDriver = class {
-  constructor(options = {}) {
+// packages/subscription-runtime/provider-codex/src/codex-execution-profile.ts
+var statelessCompletionBaseInstructions = [
+  "You are a fast backend inference worker.",
+  "Return only the requested final answer.",
+  "Do not inspect files.",
+  "Do not use tools unless explicitly allowed.",
+  "If JSON is requested, return valid JSON only."
+].join(" ");
+
+// packages/subscription-runtime/provider-codex/src/codex-json-execution-engine.ts
+var defaultTimeoutMs = 10 * 60 * 1e3;
+var defaultMaxOutputBytes = 512 * 1024;
+var PackagedCodexJsonExecutionEngine = class {
+  constructor(options) {
     this.options = options;
+    if (!options.codexBinaryPath.trim()) {
+      throw new Error("codex_packaged_binary_required");
+    }
   }
   options;
-  agentId = codexAgentId;
-  providerId = codexProviderId;
-  capabilities = codexAgentCapabilities;
-  async runTask(input) {
+  kind = "packaged-json";
+  capabilities = {
+    supportsStructuredOutput: true,
+    supportsJsonEvents: true,
+    supportsThreadResume: false,
+    requiresSchemaFile: false
+  };
+  async run(input) {
+    const args = buildCodexJsonExecArgs({
+      jsonFlag: this.options.jsonFlag ?? "--json",
+      model: input.model,
+      reasoningEffort: input.reasoningEffort
+    });
+    const result = await input.runner.run({
+      command: this.options.codexBinaryPath,
+      args,
+      cwd: input.workspacePath,
+      env: {
+        ...pruneCodexChildEnv(this.options.sourceEnv ?? {}),
+        ...input.session.env,
+        CI: "true"
+      },
+      stdin: new TextEncoder().encode(input.prompt),
+      timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
+      abortSignal: input.abortSignal
+    });
+    const stdout = input.redactor.redact(result.stdout);
+    const stderr = input.redactor.redact(result.stderr);
+    input.redactor.assertNoKnownSecret(stdout, "codex-json-stdout");
+    input.redactor.assertNoKnownSecret(stderr, "codex-json-stderr");
+    assertOutputWithinBounds(stdout, this.options.maxOutputBytes);
+    assertOutputWithinBounds(stderr, this.options.maxOutputBytes);
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `codex_json_exec_failed:${result.exitCode}:${safeTail(`${stdout}
+${stderr}`)}`
+      );
+    }
+    const outputText = extractFinalAssistantText(stdout);
+    if (input.outputSchema) {
+      return {
+        outputText,
+        structuredOutput: parseStructuredOutput(outputText),
+        warnings: []
+      };
+    }
+    return {
+      outputText,
+      warnings: []
+    };
+  }
+  async prewarm() {
+    return {
+      kind: this.kind,
+      reusable: false,
+      warmedAt: /* @__PURE__ */ new Date(),
+      warnings: [
+        {
+          code: "codex_packaged_exec_prewarm_skipped",
+          safeMessage: "Packaged Codex exec starts a fresh process for every task."
+        }
+      ]
+    };
+  }
+};
+function buildCodexJsonExecArgs(input) {
+  return [
+    "exec",
+    input.jsonFlag,
+    "--model",
+    input.model,
+    "--sandbox",
+    "read-only",
+    "--config",
+    'approval_policy="never"',
+    "--config",
+    `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`,
+    "--config",
+    'model_verbosity="low"',
+    "--config",
+    'web_search="disabled"',
+    "--config",
+    "features.apps=false",
+    "--config",
+    "features.hooks=false",
+    "--config",
+    "features.memories=false",
+    "--config",
+    "features.multi_agent=false",
+    "--config",
+    "features.shell_snapshot=false",
+    "--config",
+    "features.skill_mcp_dependency_install=false",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--color",
+    "never",
+    "--skip-git-repo-check",
+    "-"
+  ];
+}
+function codexExecutionFailure(error51) {
+  return {
+    status: "failed",
+    failure: classifyCodexFailure(error51),
+    warnings: []
+  };
+}
+function extractFinalAssistantText(stdout) {
+  let finalText = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch (error51) {
+      if (looksLikeJsonLine(trimmed)) {
+        throw new Error("codex_json_event_invalid", { cause: error51 });
+      }
+      continue;
+    }
+    const text = extractTextFromEvent(event);
+    if (text) {
+      finalText = text;
+    }
+  }
+  if (!finalText) {
+    throw new Error("codex_json_final_message_missing");
+  }
+  return finalText;
+}
+function looksLikeJsonLine(value) {
+  return value.startsWith("{") || value.startsWith("[");
+}
+function extractTextFromEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  const record2 = event;
+  for (const key of [
+    "message",
+    "text",
+    "output_text",
+    "last_message",
+    "content"
+  ]) {
+    const value = record2[key];
+    const text = stringifyContent(value);
+    if (text) return text;
+  }
+  for (const key of ["data", "item", "delta", "response"]) {
+    const nested = extractTextFromEvent(record2[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+function stringifyContent(value) {
+  if (typeof value === "string" && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const parts = value.map((entry) => {
+      if (typeof entry === "string") return entry;
+      if (entry && typeof entry === "object") {
+        const record2 = entry;
+        return stringifyContent(record2.text ?? record2.content);
+      }
+      return null;
+    }).filter((entry) => typeof entry === "string");
+    return parts.length > 0 ? parts.join("") : null;
+  }
+  return null;
+}
+function parseStructuredOutput(outputText) {
+  try {
+    return JSON.parse(outputText);
+  } catch (error51) {
+    throw new Error("codex_structured_output_invalid", { cause: error51 });
+  }
+}
+function assertOutputWithinBounds(output, maxOutputBytes = defaultMaxOutputBytes) {
+  if (Buffer.byteLength(output, "utf8") > maxOutputBytes) {
+    throw new Error("codex_json_output_too_large");
+  }
+}
+function safeTail(value) {
+  return value.slice(-4096);
+}
+
+// packages/subscription-runtime/provider-codex/src/codex-session-materializer.ts
+var import_node_crypto3 = require("node:crypto");
+var import_promises2 = require("node:fs/promises");
+var import_node_os = require("node:os");
+var import_node_path2 = require("node:path");
+var CodexEphemeralSessionMaterializer = class {
+  mode = "ephemeral";
+  async materialize(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
     const tempRoot = await (0, import_promises2.mkdtemp)(
       (0, import_node_path2.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-")
     );
-    const tempHome = (0, import_node_path2.join)(tempRoot, "home");
-    const tempCodexHome = (0, import_node_path2.join)(tempRoot, "codex-home");
-    await (0, import_promises2.mkdir)(tempHome, { recursive: true, mode: 448 });
-    await (0, import_promises2.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
+    const home = (0, import_node_path2.join)(tempRoot, "home");
+    const codexHome = (0, import_node_path2.join)(tempRoot, "codex-home");
+    await (0, import_promises2.mkdir)(home, { recursive: true, mode: 448 });
+    await (0, import_promises2.mkdir)(codexHome, { recursive: true, mode: 448 });
+    await writeCodexJsonHomeSnapshot({ codexHome, authJson });
+    return {
+      home,
+      codexHome,
+      sessionHash: sessionArtifactHash(input.session),
+      env: {
+        HOME: home,
+        CODEX_HOME: codexHome
+      },
+      release: once(async () => {
+        try {
+          await cleanupCodexRuntimeTempRoot({
+            tempRoot,
+            tempCodexHome: codexHome
+          });
+        } catch {
+          await (0, import_promises2.rm)(tempRoot, { recursive: true, force: true });
+        }
+      })
+    };
+  }
+  async prewarm(input) {
+    const materialized = await this.materialize(input);
     try {
-      await writeCodexHomeSnapshot({ codexHome: tempCodexHome, authJson });
-      const result = await input.runner.run({
-        command: this.options.codexBinaryPath ?? "codex",
-        args: [
-          "exec",
-          "--skip-git-repo-check",
-          "--model",
-          this.options.model ?? "gpt-5.5",
-          "--",
-          input.task.prompt
-        ],
-        cwd: input.workspace.path,
-        env: {
-          ...pruneCodexChildEnv(this.options.sourceEnv ?? {}),
-          HOME: tempHome,
-          CODEX_HOME: tempCodexHome,
-          CI: "true"
-        },
-        timeoutMs: this.options.timeoutMs ?? this.capabilities.maxRuntimeMs,
-        abortSignal: input.abortSignal
-      });
-      const stdout = input.redactor.redact(result.stdout);
-      const stderr = input.redactor.redact(result.stderr);
-      input.redactor.assertNoKnownSecret(stdout, "codex-agent-stdout");
-      input.redactor.assertNoKnownSecret(stderr, "codex-agent-stderr");
-      if (result.exitCode !== 0) {
-        return {
-          status: "failed",
-          failure: this.classifyRunFailure(`${stdout}
-${stderr}`),
-          warnings: []
-        };
-      }
       return {
-        status: "completed",
-        outputText: stdout,
-        warnings: []
+        mode: this.mode,
+        home: materialized.home,
+        codexHome: materialized.codexHome,
+        sessionHash: sessionArtifactHash(input.session),
+        reusable: false,
+        warmedAt: /* @__PURE__ */ new Date()
       };
     } finally {
-      await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
+      await materialized.release();
     }
   }
-  classifyRunFailure(error51) {
-    return classifyCodexFailure(error51);
-  }
 };
-async function writeCodexHomeSnapshot(input) {
+async function writeCodexJsonHomeSnapshot(input) {
   const config2 = [
+    'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
     'sandbox_mode = "read-only"',
+    'web_search = "disabled"',
+    "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
     "",
     "[history]",
     'persistence = "none"',
@@ -1140,13 +1863,165 @@ async function writeCodexHomeSnapshot(input) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "config.toml"), config2, {
-    mode: 384
-  });
-  await (0, import_promises2.writeFile)((0, import_node_path2.join)(input.codexHome, "auth.json"), input.authJson, {
-    mode: 384
-  });
+  await writeFileAtomic((0, import_node_path2.join)(input.codexHome, "config.toml"), config2);
+  await writeCodexAuthJson(input);
 }
+async function writeCodexAuthJson(input) {
+  await writeFileAtomic((0, import_node_path2.join)(input.codexHome, "auth.json"), input.authJson);
+}
+function sessionArtifactHash(session) {
+  return stableHash(new TextDecoder().decode(session.bytes));
+}
+function stableHash(value) {
+  return (0, import_node_crypto3.createHash)("sha256").update(value).digest("hex");
+}
+async function writeFileAtomic(path, value) {
+  const tempPath = `${path}.${process.pid}.${(0, import_node_crypto3.randomUUID)()}.tmp`;
+  await (0, import_promises2.writeFile)(tempPath, value, { mode: 384 });
+  await (0, import_promises2.rename)(tempPath, path);
+}
+function once(fn) {
+  let called = false;
+  return async () => {
+    if (called) return void 0;
+    called = true;
+    return fn();
+  };
+}
+
+// packages/subscription-runtime/provider-codex/src/codex-json-agent-driver.ts
+var CodexJsonAgentDriver = class {
+  constructor(options) {
+    this.options = options;
+    this.engine = "engine" in options ? options.engine : new PackagedCodexJsonExecutionEngine({
+      codexBinaryPath: options.codexBinaryPath,
+      ...options.sourceEnv ? { sourceEnv: options.sourceEnv } : {},
+      ...options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}
+    });
+    this.model = options.model ?? "gpt-5.5";
+    this.reasoningEffort = options.reasoningEffort ?? "low";
+    this.sessionMaterializer = options.sessionMaterializer ?? new CodexEphemeralSessionMaterializer();
+  }
+  options;
+  agentId = codexJsonAgentId;
+  providerId = codexProviderId;
+  capabilities = codexJsonAgentCapabilities;
+  engine;
+  model;
+  reasoningEffort;
+  sessionMaterializer;
+  async runTask(input) {
+    if (!input.session) {
+      return {
+        status: "failed",
+        failure: {
+          code: "provider_session_invalid",
+          retryable: false,
+          reconnectRequired: true,
+          safeMessage: "Codex requires a session artifact."
+        },
+        warnings: []
+      };
+    }
+    let materialized = null;
+    try {
+      materialized = await this.sessionMaterializer.materialize({
+        session: input.session,
+        redactor: input.redactor
+      });
+      const result = await this.engine.run({
+        prompt: input.task.prompt,
+        outputSchema: input.task.outputSchemaName ? { name: input.task.outputSchemaName } : void 0,
+        session: materialized,
+        workspacePath: input.workspace.path,
+        runner: input.runner,
+        redactor: input.redactor,
+        model: this.model,
+        reasoningEffort: this.reasoningEffort,
+        abortSignal: input.abortSignal
+      });
+      return {
+        status: "completed",
+        outputText: result.outputText,
+        structuredOutput: result.structuredOutput,
+        warnings: result.warnings
+      };
+    } catch (error51) {
+      return codexExecutionFailure(error51);
+    } finally {
+      await materialized?.release();
+    }
+  }
+  classifyRunFailure(error51) {
+    return classifyCodexFailure(error51);
+  }
+  async prewarmSession(input) {
+    const sessionPrewarm = this.sessionMaterializer.prewarm ? await this.sessionMaterializer.prewarm(input) : await this.prewarmMaterializerFallback(input);
+    if (!sessionPrewarm.reusable || !this.engine.prewarm || !input.workspacePath || !input.runner) {
+      return sessionPrewarm;
+    }
+    const materialized = await this.sessionMaterializer.materialize(input);
+    try {
+      const enginePrewarm = await this.engine.prewarm({
+        session: materialized,
+        workspacePath: input.workspacePath,
+        runner: input.runner,
+        redactor: input.redactor,
+        model: this.model,
+        reasoningEffort: this.reasoningEffort,
+        ...this.options.warmupPrompt ? { warmupPrompt: this.options.warmupPrompt } : {},
+        abortSignal: input.abortSignal ?? new AbortController().signal
+      });
+      return {
+        ...sessionPrewarm,
+        engine: {
+          kind: enginePrewarm.kind,
+          reusable: enginePrewarm.reusable
+        },
+        warmedAt: enginePrewarm.warmedAt,
+        warnings: enginePrewarm.warnings
+      };
+    } finally {
+      await materialized.release();
+    }
+  }
+  async prewarmMaterializerFallback(input) {
+    const materialized = await this.sessionMaterializer.materialize(input);
+    try {
+      return {
+        mode: this.sessionMaterializer.mode,
+        home: materialized.home,
+        codexHome: materialized.codexHome,
+        sessionHash: sessionArtifactHash(input.session),
+        reusable: false,
+        warmedAt: /* @__PURE__ */ new Date()
+      };
+    } finally {
+      await materialized.release();
+    }
+  }
+  async dispose() {
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => this.engine.dispose?.()),
+      Promise.resolve().then(() => this.sessionMaterializer.dispose?.())
+    ]);
+    const errors = results.filter(
+      (result) => result.status === "rejected"
+    ).map((result) => result.reason);
+    if (errors.length > 0) {
+      const error51 = new AggregateError(
+        errors,
+        "codex_json_agent_dispose_failed"
+      );
+      error51.code = "codex_json_agent_dispose_failed";
+      throw error51;
+    }
+  }
+};
+
+// packages/subscription-runtime/provider-codex/src/codex-app-server-execution-engine.ts
+var defaultTimeoutMs2 = 10 * 60 * 1e3;
+var defaultMaxOutputBytes2 = 512 * 1024;
 
 // packages/subscription-runtime/provider-codex/src/codex-cli-session-driver.ts
 var import_promises3 = require("node:fs/promises");
@@ -1155,11 +2030,15 @@ var import_node_path3 = require("node:path");
 var CodexCliSessionDriver = class {
   constructor(options = {}) {
     this.options = options;
+    this.capabilities = options.refreshMode ? {
+      ...codexSessionCapabilities,
+      refreshMode: options.refreshMode
+    } : codexSessionCapabilities;
   }
   options;
   providerId = codexProviderId;
   supportedArtifactKinds = ["json-file"];
-  capabilities = codexSessionCapabilities;
+  capabilities;
   async validateSession(input) {
     return validateCodexSessionArtifact(input.session);
   }
@@ -1177,7 +2056,7 @@ var CodexCliSessionDriver = class {
     await (0, import_promises3.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
     await (0, import_promises3.mkdir)(emptyWorkingDirectory, { recursive: true, mode: 448 });
     try {
-      await writeCodexHomeSnapshot2({ codexHome: tempCodexHome, authJson });
+      await writeCodexHomeSnapshot({ codexHome: tempCodexHome, authJson });
       const plan = buildCodexRefreshBootstrapPlan({
         codexBinaryPath: this.options.codexBinaryPath ?? "codex",
         tempHome,
@@ -1236,11 +2115,79 @@ var CodexCliSessionDriver = class {
       await cleanupCodexRuntimeTempRoot({ tempRoot, tempCodexHome });
     }
   }
+  async inspectSessionFreshness(input) {
+    const authJson = codexAuthJsonFromArtifact(input.session);
+    const freshness = readCodexAuthJsonFreshness({
+      authJsonBytes: authJson,
+      now: input.now
+    });
+    const warnings = freshness.warnings.map((warning) => ({
+      code: warning,
+      safeMessage: `Codex auth freshness warning: ${warning}`
+    }));
+    if (freshness.lastRefreshAt) {
+      const ageMs = input.now.getTime() - freshness.lastRefreshAt.getTime();
+      if (ageMs >= input.policy.maxSessionAgeMs) {
+        return {
+          status: "refresh_recommended",
+          reason: "max_age_exceeded",
+          refreshedAt: freshness.lastRefreshAt,
+          ...freshness.expiresAt ? { expiresAt: freshness.expiresAt } : {},
+          warnings
+        };
+      }
+    }
+    if (freshness.expiresAt) {
+      const refreshAt = freshness.expiresAt.getTime() - input.policy.refreshBeforeExpiryMs;
+      if (freshness.expiresAt.getTime() <= input.now.getTime()) {
+        return {
+          status: "refresh_recommended",
+          reason: "expired",
+          expiresAt: freshness.expiresAt,
+          ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+          warnings
+        };
+      }
+      if (refreshAt <= input.now.getTime()) {
+        return {
+          status: "refresh_recommended",
+          reason: "expires_soon",
+          expiresAt: freshness.expiresAt,
+          ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+          warnings
+        };
+      }
+      return {
+        status: "fresh",
+        reason: "expires_later",
+        expiresAt: freshness.expiresAt,
+        ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+        warnings
+      };
+    }
+    if (freshness.lastRefreshAt) {
+      const ageMs = input.now.getTime() - freshness.lastRefreshAt.getTime();
+      if (ageMs <= input.policy.minFreshMs) {
+        return {
+          status: "fresh",
+          reason: "recent_refresh",
+          refreshedAt: freshness.lastRefreshAt,
+          warnings
+        };
+      }
+    }
+    return {
+      status: "refresh_recommended",
+      reason: "freshness_unknown",
+      ...freshness.lastRefreshAt ? { refreshedAt: freshness.lastRefreshAt } : {},
+      warnings
+    };
+  }
   classifySessionFailure(error51) {
     return classifyCodexFailure(error51);
   }
 };
-async function writeCodexHomeSnapshot2(input) {
+async function writeCodexHomeSnapshot(input) {
   const config2 = [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -1436,7 +2383,7 @@ var import_node_os3 = require("node:os");
 var import_node_path4 = require("node:path");
 
 // packages/features/codex-oauth-rotating/src/domain/codex-oauth-rotating.ts
-var import_node_crypto3 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 
 // node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -19421,7 +20368,7 @@ function validateCodexAuthJsonBytes2(input) {
   return {
     parsed,
     byteLength,
-    exactBytesSha256: (0, import_node_crypto3.createHash)("sha256").update(input.authJsonBytes, "utf8").digest("hex"),
+    exactBytesSha256: (0, import_node_crypto4.createHash)("sha256").update(input.authJsonBytes, "utf8").digest("hex"),
     warnings
   };
 }
@@ -19439,7 +20386,7 @@ function computeCodexAuthGenerationHash(input) {
   if (salt.length < 16) {
     throw new Error("generation_hash_salt_too_short");
   }
-  return (0, import_node_crypto3.createHmac)("sha256", salt).update(input.authJsonBytes, "utf8").digest("base64url");
+  return (0, import_node_crypto4.createHmac)("sha256", salt).update(input.authJsonBytes, "utf8").digest("base64url");
 }
 var codexRotatingSetupManifestSchema = external_exports.object({
   protocolVersion: external_exports.literal(1),
@@ -19583,10 +20530,10 @@ function decodeBase64OrBase64Url(value) {
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var defaultOidcAudience = "reviewrouter";
 var bundledCodexPlatform = "linux-x64";
-var bundledCodexVersion = "0.125.0";
+var bundledCodexVersion = "0.135.0";
 var bundledCodexPackageName = ["@openai", "codex"].join("/");
 var bundledCodexArchiveName = "codex-linux-x64.tgz";
-var bundledCodexBinaryPathInArchive = "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+var bundledCodexBinaryPathInArchive = "package/vendor/x86_64-unknown-linux-musl/bin/codex";
 var maxCommentBytes = 6e4;
 var maxCapturedProcessOutputBytes = 256e3;
 var maxProxyRequestBodyBytes = 2e6;
@@ -19602,6 +20549,7 @@ var githubRequestTimeoutMs = 3e4;
 var networkRetryMaxAttempts = 3;
 var networkRetryBaseDelayMs = 750;
 var fullRuntimeProgressCommentMarker = "<!-- review-router-progress-tracker -->";
+var providerNeutralReviewFindingsArtifactFileName = "reviewrouter-findings.json";
 async function runCodexRotatingGitHubAction(runtime = {}) {
   const env = runtime.env ?? process.env;
   const io = runtime.io ?? { stdout: process.stdout, stderr: process.stderr };
@@ -19742,6 +20690,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
         try {
           await fullReviewRuntimeRunner({
             inputs,
+            leaseId: prelease.leaseId,
             codexBinaryPath,
             env,
             io,
@@ -19922,6 +20871,7 @@ async function readPullRequestEvent(env) {
   }
   return {
     number: requireNumber(event.number, "pr_number"),
+    ...isSafeGitHubNumericId(event.repository?.id) ? { repositoryId: String(event.repository.id) } : {},
     repository,
     owner,
     repo,
@@ -20069,7 +21019,7 @@ function routeCodexLocalProviderRequest(input) {
   return "responses";
 }
 async function startCodexLocalProviderProxy(input) {
-  const nonce = (0, import_node_crypto4.randomBytes)(24).toString("base64url");
+  const nonce = (0, import_node_crypto5.randomBytes)(24).toString("base64url");
   let requestCount = 0;
   const server = import_node_http.default.createServer((req, res) => {
     void (async () => {
@@ -20286,7 +21236,7 @@ function validateCodexBinaryManifest(manifest, archiveSize) {
 }
 function sha256File(path) {
   return new Promise((resolve, reject) => {
-    const hash2 = (0, import_node_crypto4.createHash)("sha256");
+    const hash2 = (0, import_node_crypto5.createHash)("sha256");
     const stream = (0, import_node_fs.createReadStream)(path);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
@@ -20309,6 +21259,15 @@ async function writeCodexAuthSnapshot(codexHome, authJson) {
     'sandbox_mode = "read-only"',
     'web_search = "disabled"',
     "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
     "",
     "[history]",
     'persistence = "none"',
@@ -20364,7 +21323,7 @@ async function refreshCodexAuthJson(input) {
     codexBinaryPath: input.codexBinaryPath,
     sourceEnv: input.env
   });
-  const agentDriver = new CodexCliAgentDriver({
+  const agentDriver = new CodexJsonAgentDriver({
     codexBinaryPath: input.codexBinaryPath,
     sourceEnv: input.env
   });
@@ -20739,6 +21698,7 @@ async function runFullReviewRouterRuntime(input) {
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
       inputs: input.inputs,
+      leaseId: input.leaseId,
       event: input.event,
       tempHome: input.tempHome,
       tempCodexHome: input.tempCodexHome,
@@ -20792,6 +21752,17 @@ function buildFullReviewRuntimeEnv(input) {
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
     REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
+    REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: input.leaseId,
+    REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID: input.inputs.providerInstanceId,
+    REVIEWROUTER_SCM_PROVIDER: "github",
+    REVIEWROUTER_FINDINGS_ARTIFACT_PATH: providerNeutralReviewFindingsArtifactFileName,
+    REVIEWROUTER_REPOSITORY_EXTERNAL_ID: input.event.repositoryId ?? input.event.repository,
+    REVIEWROUTER_REPOSITORY_FULL_NAME: input.event.repository,
+    REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID: String(input.event.number),
+    REVIEWROUTER_HEAD_SHA: input.event.headSha,
+    REVIEWROUTER_BASE_SHA: input.event.baseSha,
+    REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion)
   };
@@ -21201,7 +22172,7 @@ async function makeTempDirectory(prefix) {
 function buildWritebackIdempotencyKey(env, leaseId) {
   const runId = env.GITHUB_RUN_ID || "local";
   const runAttempt = env.GITHUB_RUN_ATTEMPT || "1";
-  const digest = (0, import_node_crypto4.createHash)("sha256").update(`${leaseId}:${runId}:${runAttempt}`).digest("hex").slice(0, 24);
+  const digest = (0, import_node_crypto5.createHash)("sha256").update(`${leaseId}:${runId}:${runAttempt}`).digest("hex").slice(0, 24);
   return `idem:${runId}:${runAttempt}:${digest}`;
 }
 function clearActionAuthEnv(env) {
@@ -21276,6 +22247,12 @@ function requireNumber(value, field) {
     throw new Error(`invalid_event_field:${field}`);
   }
   return value;
+}
+function isSafeGitHubNumericId(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0;
+  }
+  return typeof value === "string" && /^[0-9]+$/.test(value);
 }
 function requireSha(value, field) {
   const sha = requireString(value, field);

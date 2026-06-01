@@ -82,6 +82,8 @@ try {
   const repository = await prisma.repositoryConnection.create({
     data: {
       workspaceId: workspace.id,
+      provider: "github",
+      externalRepositoryId: repositoryGithubId.toString(),
       installationId: installation.id,
       githubRepositoryId: repositoryGithubId,
       owner: "review-router-e2e",
@@ -163,7 +165,7 @@ try {
     aud: defaultActionOidcAudience,
     sub: `repo:${repository.fullName}:pull_request`,
     repository: repository.fullName,
-    repository_id: repository.githubRepositoryId.toString(),
+    repository_id: repositoryGithubId.toString(),
     repository_owner: repository.owner,
     event_name: "pull_request",
     run_id: `local-config-e2e-${marker}-${runSuffix}`,

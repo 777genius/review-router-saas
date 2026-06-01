@@ -3,11 +3,9 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowUpRight, LogIn, Menu } from "lucide-react";
 import { usePathname } from "next/navigation";
+import { LinkButton } from "@reviewrouter/ui";
 import { GitHubAccountAvatar } from "./github-account-avatar";
-import {
-  GitHubSignInButton,
-  GitHubSignOutButton,
-} from "./github-sign-in-button";
+import { GitHubSignOutButton } from "./github-sign-in-button";
 import { LogoMark } from "./logo-mark";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -60,12 +58,14 @@ export function PrimaryNav({
 
 export function MobilePrimaryNav({
   signedIn,
-  githubLogin,
-  githubAvatarUrl,
+  login,
+  avatarUrl,
+  provider,
 }: {
   readonly signedIn: boolean;
-  readonly githubLogin: string | null;
-  readonly githubAvatarUrl: string | null;
+  readonly login: string | null;
+  readonly avatarUrl: string | null;
+  readonly provider: "github" | "gitlab" | null;
 }): React.ReactElement {
   const pathname = usePathname();
   const items = signedIn ? signedInPrimaryNav : signedOutPrimaryNav;
@@ -114,8 +114,9 @@ export function MobilePrimaryNav({
 
           <div className="grid gap-3 p-3">
             <MobileProfileBlock
-              githubLogin={githubLogin}
-              githubAvatarUrl={githubAvatarUrl}
+              login={login}
+              avatarUrl={avatarUrl}
+              provider={provider}
             />
             <div className="flex items-center justify-between gap-3 rounded-xl border border-cyan-200/10 px-3 py-2.5">
               <span className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
@@ -154,7 +155,7 @@ export function MobilePrimaryNav({
                 );
               })}
             </nav>
-            {githubLogin ? (
+            {login ? (
               <DropdownMenu.Item asChild>
                 <GitHubSignOutButton
                   variant="ghost"
@@ -201,28 +202,30 @@ function commandNavLinkClass(active: boolean): string {
 }
 
 function MobileProfileBlock({
-  githubLogin,
-  githubAvatarUrl,
+  login,
+  avatarUrl,
+  provider,
 }: {
-  readonly githubLogin: string | null;
-  readonly githubAvatarUrl: string | null;
+  readonly login: string | null;
+  readonly avatarUrl: string | null;
+  readonly provider: "github" | "gitlab" | null;
 }): React.ReactElement {
-  if (!githubLogin) {
+  if (!login) {
     return (
       <div className="rounded-xl border border-cyan-200/10 px-3 py-2.5">
         <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-slate-500">
           Account
         </p>
         <DropdownMenu.Item asChild>
-          <GitHubSignInButton
-            callbackUrl="/dashboard"
+          <LinkButton
+            href="/auth/signin?callbackUrl=%2Fdashboard"
             variant="ghost"
             size="sm"
             className="mt-2 w-full justify-center rounded-xl border border-cyan-200/20 bg-white/[0.035] font-mono text-[0.68rem] uppercase tracking-[0.14em] text-cyan-100"
           >
             <LogIn aria-hidden="true" className="size-4" />
             Sign in
-          </GitHubSignInButton>
+          </LinkButton>
         </DropdownMenu.Item>
       </div>
     );
@@ -230,25 +233,30 @@ function MobileProfileBlock({
 
   return (
     <div className="flex items-center gap-3 rounded-xl border border-cyan-200/10 px-3 py-2.5">
-      {githubAvatarUrl ? (
+      {avatarUrl ? (
         <GitHubAccountAvatar
-          avatarUrl={githubAvatarUrl}
-          login={githubLogin}
+          avatarUrl={avatarUrl}
+          login={login}
           size="profile"
+          altText={`${login} ${provider ? providerLabel(provider) : "source"} avatar`}
         />
       ) : (
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-2xl border border-cyan-200/15 bg-cyan-300/[0.08] font-mono text-xs font-bold uppercase text-cyan-100 shadow-[0_0_24px_rgba(0,240,255,0.12)]">
-          {githubLogin.slice(0, 1)}
+          {login.slice(0, 1)}
         </span>
       )}
       <div className="min-w-0">
         <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
-          Signed in as
+          Signed in{provider ? ` with ${providerLabel(provider)}` : ""}
         </p>
         <p className="truncate text-sm font-semibold text-cyan-50">
-          {githubLogin}
+          {login}
         </p>
       </div>
     </div>
   );
+}
+
+function providerLabel(provider: "github" | "gitlab"): string {
+  return provider === "github" ? "GitHub" : "GitLab";
 }
