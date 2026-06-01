@@ -56,7 +56,7 @@ var import_node_crypto5 = require("node:crypto");
 var import_node_fs = require("node:fs");
 var import_node_http = __toESM(require("node:http"), 1);
 
-// packages/subscription-runtime/core/src/domain/errors.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/core/domain/errors.js
 var RuntimeConfigurationError = class extends Error {
   constructor(message) {
     super(message);
@@ -70,7 +70,7 @@ var BoundaryViolationError = class extends Error {
   }
 };
 
-// packages/subscription-runtime/core/src/application/policy.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/core/application/policy.js
 function negotiateCapabilities(input) {
   const policy = input.requested ?? input.policy;
   if (!policy) {
@@ -99,53 +99,29 @@ function negotiateCapabilities(input) {
   }
   const requestedTaskMode = policy.requestedTaskMode ?? "review";
   if (!input.agent.taskModes.includes(requestedTaskMode)) {
-    return rejected(
-      "task_mode_unsupported",
-      "Selected agent does not support the requested task mode.",
-      {
-        agentId: input.agent.agentId,
-        taskMode: requestedTaskMode
-      }
-    );
+    return rejected("task_mode_unsupported", "Selected agent does not support the requested task mode.", {
+      agentId: input.agent.agentId,
+      taskMode: requestedTaskMode
+    });
   }
   const requestedHistoryMode = policy.requestedHistoryMode ?? "unsupported";
   if (requestedHistoryMode !== "unsupported" && input.agent.historyMode !== requestedHistoryMode) {
-    return rejected(
-      "history_mode_unsupported",
-      "Selected agent does not support the requested history mode.",
-      {
-        agentId: input.agent.agentId,
-        historyMode: requestedHistoryMode
-      }
-    );
+    return rejected("history_mode_unsupported", "Selected agent does not support the requested history mode.", {
+      agentId: input.agent.agentId,
+      historyMode: requestedHistoryMode
+    });
   }
   if (policy.allowInteractiveSetupInRuntime !== false) {
-    return rejected(
-      "interactive_runtime_forbidden",
-      "Interactive setup is forbidden in runtime jobs.",
-      {}
-    );
+    return rejected("interactive_runtime_forbidden", "Interactive setup is forbidden in runtime jobs.", {});
   }
   if (!input.runner.supportsEnvAllowlist) {
-    return rejected(
-      "missing_required_capability",
-      "Runner must support environment allowlisting.",
-      { runnerId: input.runner.runnerId }
-    );
+    return rejected("missing_required_capability", "Runner must support environment allowlisting.", { runnerId: input.runner.runnerId });
   }
   if ((input.provider.requiresWorkspace || input.agent.supportsRepositoryContext) && !input.runner.supportsWorkingDirectory) {
-    return rejected(
-      "runner_provider_incompatible",
-      "Provider or agent requires workspace support.",
-      { runnerId: input.runner.runnerId }
-    );
+    return rejected("runner_provider_incompatible", "Provider or agent requires workspace support.", { runnerId: input.runner.runnerId });
   }
   if (input.agent.requiresWritableWorkspace && input.runner.readOnlyFilesystem) {
-    return rejected(
-      "runner_provider_incompatible",
-      "Agent requires writable workspace, but runner is read-only.",
-      { agentId: input.agent.agentId }
-    );
+    return rejected("runner_provider_incompatible", "Agent requires writable workspace, but runner is read-only.", { agentId: input.agent.agentId });
   }
   const executionPlan = compileRuntimeExecutionPlan({
     policy,
@@ -165,13 +141,9 @@ function negotiateCapabilities(input) {
     };
   }
   if (!input.store) {
-    return rejected(
-      "session_store_required",
-      "Selected provider requires a session store.",
-      {
-        providerId: input.provider.providerId
-      }
-    );
+    return rejected("session_store_required", "Selected provider requires a session store.", {
+      providerId: input.provider.providerId
+    });
   }
   if (!policy.allowedStoreIds.includes(input.store.storeId)) {
     return rejected("missing_required_capability", "Store is not allowed.", {
@@ -180,48 +152,24 @@ function negotiateCapabilities(input) {
   }
   if (policy.custodyMode === "no-plaintext-backend") {
     if (input.store.custody !== "no-plaintext-backend") {
-      return rejected(
-        "custody_mode_forbidden",
-        "Selected store is not compatible with no-custody mode.",
-        { storeId: input.store.storeId }
-      );
+      return rejected("custody_mode_forbidden", "Selected store is not compatible with no-custody mode.", { storeId: input.store.storeId });
     }
     if (input.store.plaintextAvailableToBackend) {
-      return rejected(
-        "custody_mode_forbidden",
-        "Selected store exposes plaintext to backend.",
-        { storeId: input.store.storeId }
-      );
+      return rejected("custody_mode_forbidden", "Selected store exposes plaintext to backend.", { storeId: input.store.storeId });
     }
   }
   if (policy.requireNoBackendPlaintext && input.store.plaintextAvailableToBackend) {
-    return rejected(
-      "custody_mode_forbidden",
-      "Runtime policy forbids backend plaintext.",
-      { storeId: input.store.storeId }
-    );
+    return rejected("custody_mode_forbidden", "Runtime policy forbids backend plaintext.", { storeId: input.store.storeId });
   }
   if (policy.requireCompareAndSwap && !input.store.supportsCompareAndSwap) {
-    return rejected(
-      "missing_required_capability",
-      "Runtime policy requires compare-and-swap writes.",
-      { storeId: input.store.storeId }
-    );
+    return rejected("missing_required_capability", "Runtime policy requires compare-and-swap writes.", { storeId: input.store.storeId });
   }
   if (providerMayRotateSession(input.provider)) {
     if (!input.store.supportsWriteback) {
-      return rejected(
-        "provider_store_incompatible",
-        "Provider can rotate sessions, but store cannot write back.",
-        { providerId: input.provider.providerId }
-      );
+      return rejected("provider_store_incompatible", "Provider can rotate sessions, but store cannot write back.", { providerId: input.provider.providerId });
     }
     if (!input.store.supportsIdempotency) {
-      return rejected(
-        "provider_store_incompatible",
-        "Provider can rotate sessions, but store cannot deduplicate writes.",
-        { storeId: input.store.storeId }
-      );
+      return rejected("provider_store_incompatible", "Provider can rotate sessions, but store cannot deduplicate writes.", { storeId: input.store.storeId });
     }
   }
   return {
@@ -251,10 +199,7 @@ function compileRuntimePolicy(input) {
     allowsInteractiveRuntime: false,
     maxSessionBytes: input.store?.maxArtifactBytes ?? 0,
     maxTaskOutputBytes: input.requested.maxTaskOutputBytes ?? 1024 * 1024,
-    timeoutMs: Math.min(
-      input.provider.defaultTimeoutMs,
-      input.agent.maxRuntimeMs
-    ),
+    timeoutMs: Math.min(input.provider.defaultTimeoutMs, input.agent.maxRuntimeMs),
     refreshPolicy: {
       minFreshMs: input.requested.refreshPolicy?.minFreshMs ?? 15 * 60 * 1e3,
       refreshBeforeExpiryMs: input.requested.refreshPolicy?.refreshBeforeExpiryMs ?? 5 * 60 * 1e3,
@@ -304,7 +249,7 @@ function rejected(code, safeMessage, details) {
   };
 }
 
-// packages/subscription-runtime/core/src/application/redactor.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/core/application/redactor.js
 var textDecoder = new TextDecoder();
 var DefaultRedactor = class {
   secrets = /* @__PURE__ */ new Map();
@@ -320,25 +265,17 @@ var DefaultRedactor = class {
     for (const [secret, label] of this.secrets.entries()) {
       output = output.split(secret).join(`[redacted:${label}]`);
     }
-    output = output.replace(
-      /["']?\b(?:access_token|refresh_token|id_token|api_key|token)\b["']?\s*[:=]\s*["']?[^"',}\s]+["']?/gi,
-      (match) => {
-        const key = match.match(/["']?([A-Za-z_]+)["']?\s*[:=]/)?.[1];
-        return `${key ?? "token"}=[redacted:token-field]`;
-      }
-    );
-    output = output.replace(
-      /\bBearer\s+[A-Za-z0-9._~+/=-]+/g,
-      "Bearer [redacted]"
-    );
+    output = output.replace(/["']?\b(?:access_token|refresh_token|id_token|api_key|token)\b["']?\s*[:=]\s*["']?[^"',}\s]+["']?/gi, (match) => {
+      const key = match.match(/["']?([A-Za-z_]+)["']?\s*[:=]/)?.[1];
+      return `${key ?? "token"}=[redacted:token-field]`;
+    });
+    output = output.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]");
     return output;
   }
   assertNoKnownSecret(input, context) {
     for (const secret of this.secrets.keys()) {
       if (input.includes(secret)) {
-        throw new BoundaryViolationError(
-          `Known secret leaked through ${context}`
-        );
+        throw new BoundaryViolationError(`Known secret leaked through ${context}`);
       }
     }
   }
@@ -377,7 +314,7 @@ var DeterministicIdGenerator = class {
   }
 };
 
-// packages/subscription-runtime/core/src/domain/generation-hash.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/core/domain/generation-hash.js
 var import_node_crypto = require("node:crypto");
 function computeSessionGenerationHash(input) {
   const hash2 = (0, import_node_crypto.createHash)("sha256");
@@ -397,7 +334,7 @@ function computeSessionGenerationHash(input) {
   return hash2.digest("base64url");
 }
 
-// packages/subscription-runtime/core/src/application/runtime.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/core/application/runtime.js
 function createSubscriptionRuntime(deps) {
   const decision = negotiateCapabilities({
     requested: deps.policy,
@@ -409,11 +346,7 @@ function createSubscriptionRuntime(deps) {
   if (decision.status === "rejected") {
     throw new Error(decision.code);
   }
-  const kernel = new RuntimeKernel(
-    deps,
-    decision.compiledPolicy,
-    decision.executionPlan
-  );
+  const kernel = new RuntimeKernel(deps, decision.compiledPolicy, decision.executionPlan);
   return {
     capabilities: decision.compiledPolicy,
     executionPlan: decision.executionPlan,
@@ -424,14 +357,14 @@ function createSubscriptionRuntime(deps) {
   };
 }
 var RuntimeKernel = class {
+  deps;
+  policy;
+  executionPlan;
   constructor(deps, policy, executionPlan) {
     this.deps = deps;
     this.policy = policy;
     this.executionPlan = executionPlan;
   }
-  deps;
-  policy;
-  executionPlan;
   async refreshSession(input) {
     if (this.executionPlan.kind === "no-session") {
       this.emit("provider.refresh.skipped", input.runContext.runId, {
@@ -458,22 +391,14 @@ var RuntimeKernel = class {
       expectedProviderId: sessionDriver.providerId,
       purpose: "refresh"
     });
-    this.emit(
-      "session.read.completed",
-      input.runContext.runId,
-      {
-        purpose: "refresh",
-        found: session ? "true" : "false",
-        generation: session ? String(session.generation) : "none"
-      },
-      this.deps.clock.monotonicMs() - readStartedAt
-    );
+    this.emit("session.read.completed", input.runContext.runId, {
+      purpose: "refresh",
+      found: session ? "true" : "false",
+      generation: session ? String(session.generation) : "none"
+    }, this.deps.clock.monotonicMs() - readStartedAt);
     if (!session) {
       this.emitFailure("provider_reconnect_required", input.runContext.runId);
-      return blocked(
-        "provider_reconnect_required",
-        "Provider session is missing."
-      );
+      return blocked("provider_reconnect_required", "Provider session is missing.");
     }
     this.deps.redactor.registerSecret(session.artifact.bytes, "session");
     if (this.executionPlan.kind === "rotating-session" && this.executionPlan.refresh === "lazy" && !input.forceRefresh) {
@@ -509,14 +434,9 @@ var RuntimeKernel = class {
       ttlMs: this.policy.timeoutMs,
       restoredGenerationHash: session.generationHash
     });
-    this.emit(
-      "lease.acquire.completed",
-      input.runContext.runId,
-      {
-        status: lease.status
-      },
-      this.deps.clock.monotonicMs() - leaseStartedAt
-    );
+    this.emit("lease.acquire.completed", input.runContext.runId, {
+      status: lease.status
+    }, this.deps.clock.monotonicMs() - leaseStartedAt);
     if (lease.status === "stale") {
       this.deps.observability.count("subscription_runtime.stale_generation");
       this.emitFailure("stale_generation", input.runContext.runId);
@@ -538,10 +458,7 @@ var RuntimeKernel = class {
       });
       if (validation.status === "invalid") {
         this.emitFailure(validation.failure.code, input.runContext.runId);
-        return blocked(
-          validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required",
-          validation.failure.safeMessage
-        );
+        return blocked(validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required", validation.failure.safeMessage);
       }
       const workspace = await this.deps.workspace.create({
         purpose: "refresh",
@@ -559,45 +476,23 @@ var RuntimeKernel = class {
           redactor: this.deps.redactor,
           abortSignal: input.runContext.abortSignal
         });
-        this.emit(
-          "provider.refresh.completed",
-          input.runContext.runId,
-          {
-            providerState: refreshed.providerState
-          },
-          this.deps.clock.monotonicMs() - refreshStartedAt
-        );
-        this.deps.observability.timing(
-          "subscription_runtime.provider_refresh_ms",
-          this.deps.clock.monotonicMs() - refreshStartedAt
-        );
+        this.emit("provider.refresh.completed", input.runContext.runId, {
+          providerState: refreshed.providerState
+        }, this.deps.clock.monotonicMs() - refreshStartedAt);
+        this.deps.observability.timing("subscription_runtime.provider_refresh_ms", this.deps.clock.monotonicMs() - refreshStartedAt);
         if (refreshed.providerState === "needs-reconnect") {
-          this.deps.observability.count(
-            "subscription_runtime.reconnect_required"
-          );
+          this.deps.observability.count("subscription_runtime.reconnect_required");
           this.emitFailure("needs_reconnect", input.runContext.runId);
-          return blocked(
-            "provider_reconnect_required",
-            "Provider session needs reconnect.",
-            refreshed.warnings
-          );
+          return blocked("provider_reconnect_required", "Provider session needs reconnect.", refreshed.warnings);
         }
         if (refreshed.providerState === "permission-required") {
           this.emitFailure("permission_required", input.runContext.runId);
-          return blocked(
-            "permission_required",
-            "Provider permission is required.",
-            refreshed.warnings
-          );
+          return blocked("permission_required", "Provider permission is required.", refreshed.warnings);
         }
         if (refreshed.providerState === "quota-limited") {
           this.deps.observability.count("subscription_runtime.quota_limited");
           this.emitFailure("quota_limited", input.runContext.runId);
-          return blocked(
-            "quota_limited",
-            "Provider quota is limited.",
-            refreshed.warnings
-          );
+          return blocked("quota_limited", "Provider quota is limited.", refreshed.warnings);
         }
         const nextHash = computeSessionGenerationHash({
           artifact: refreshed.artifact
@@ -649,9 +544,7 @@ var RuntimeKernel = class {
           leaseId: lease.leaseId
         });
         if (writeback.status === "stale_generation") {
-          this.deps.observability.count(
-            "subscription_runtime.writeback_conflict"
-          );
+          this.deps.observability.count("subscription_runtime.writeback_conflict");
           this.emit("session.writeback.completed", input.runContext.runId, {
             status: writeback.status
           });
@@ -716,16 +609,11 @@ var RuntimeKernel = class {
       expectedProviderId: sessionDriver.providerId,
       purpose: "run"
     });
-    this.emit(
-      "session.read.completed",
-      input.runContext.runId,
-      {
-        purpose: "run",
-        found: session ? "true" : "false",
-        generation: session ? String(session.generation) : "none"
-      },
-      this.deps.clock.monotonicMs() - readStartedAt
-    );
+    this.emit("session.read.completed", input.runContext.runId, {
+      purpose: "run",
+      found: session ? "true" : "false",
+      generation: session ? String(session.generation) : "none"
+    }, this.deps.clock.monotonicMs() - readStartedAt);
     if (!session) {
       this.emitFailure("needs_reconnect", input.runContext.runId);
       return failedTask("needs_reconnect", "Provider session is missing.");
@@ -939,19 +827,11 @@ var RuntimeKernel = class {
         redactor: this.deps.redactor,
         abortSignal: input.runContext.abortSignal
       });
-      this.emit(
-        "provider.task.completed",
-        input.runContext.runId,
-        {
-          taskKind: input.task.kind,
-          status: result.status
-        },
-        this.deps.clock.monotonicMs() - taskStartedAt
-      );
-      this.deps.observability.timing(
-        "subscription_runtime.provider_task_ms",
-        this.deps.clock.monotonicMs() - taskStartedAt
-      );
+      this.emit("provider.task.completed", input.runContext.runId, {
+        taskKind: input.task.kind,
+        status: result.status
+      }, this.deps.clock.monotonicMs() - taskStartedAt);
+      this.deps.observability.timing("subscription_runtime.provider_task_ms", this.deps.clock.monotonicMs() - taskStartedAt);
       return result;
     } finally {
       await workspace.dispose?.();
@@ -1005,7 +885,8 @@ var RuntimeKernel = class {
     this.emit("runtime.failure.classified", runId, { code });
   }
   async releaseLeaseQuietly(input) {
-    if (!this.deps.leaseStore?.release) return;
+    if (!this.deps.leaseStore?.release)
+      return;
     try {
       await this.deps.leaseStore.release({
         leaseId: input.leaseId,
@@ -1023,10 +904,7 @@ var RuntimeKernel = class {
     if (this.deps.agentDriver.capabilities.taskModes.includes(task.kind)) {
       return null;
     }
-    return failedTask(
-      "task_mode_unsupported",
-      "Selected agent does not support the requested task mode."
-    );
+    return failedTask("task_mode_unsupported", "Selected agent does not support the requested task mode.");
   }
   async validateStaticSession(input) {
     const sessionStore = this.requireSessionStore();
@@ -1038,10 +916,7 @@ var RuntimeKernel = class {
     });
     if (!session) {
       this.emitFailure("provider_reconnect_required", input.runContext.runId);
-      return blocked(
-        "provider_reconnect_required",
-        "Provider session is missing."
-      );
+      return blocked("provider_reconnect_required", "Provider session is missing.");
     }
     if (this.executionPlan.refresh === "validate-only") {
       const validation = await sessionDriver.validateSession({
@@ -1050,10 +925,7 @@ var RuntimeKernel = class {
       });
       if (validation.status === "invalid") {
         this.emitFailure(validation.failure.code, input.runContext.runId);
-        return blocked(
-          validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required",
-          validation.failure.safeMessage
-        );
+        return blocked(validation.failure.reconnectRequired ? "provider_reconnect_required" : "permission_required", validation.failure.safeMessage);
       }
       return {
         status: "skipped",
@@ -1144,7 +1016,7 @@ function missingSessionFailure() {
   };
 }
 
-// packages/subscription-runtime/provider-codex/src/capabilities.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/capabilities.js
 var codexProviderId = "codex";
 var codexAgentId = "codex-cli";
 var codexJsonAgentId = "codex-json";
@@ -1215,7 +1087,7 @@ var codexJsonAgentCapabilities = {
   agentId: codexJsonAgentId
 };
 
-// packages/subscription-runtime/provider-codex/src/codex-cli-domain.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-cli-domain.js
 var import_node_crypto2 = require("node:crypto");
 var codexAuthJsonMaxBytes = 32 * 1024;
 function validateCodexAuthJsonBytes(input) {
@@ -1260,15 +1132,8 @@ function readCodexAuthJsonFreshness(input) {
     ...input.now ? { now: input.now } : {}
   });
   const warnings = [...validation.warnings];
-  const lastRefreshAt = parseOptionalDate(
-    validation.parsed.last_refresh,
-    "last_refresh_unparseable",
-    warnings
-  );
-  const expiresAt = parseOptionalExpiry(
-    validation.parsed.tokens.expiry,
-    warnings
-  );
+  const lastRefreshAt = parseOptionalDate(validation.parsed.last_refresh, "last_refresh_unparseable", warnings);
+  const expiresAt = parseOptionalExpiry(validation.parsed.tokens.expiry, warnings);
   return {
     lastRefreshAt,
     expiresAt,
@@ -1289,21 +1154,15 @@ function classifyCodexRuntimeFailure(message) {
   return "unknown_auth_state";
 }
 function isCodexQuotaOrRateLimitFailure(normalizedMessage) {
-  return /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(
-    normalizedMessage
-  ) || /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?: reached| exceeded)?|limit reached)\b/.test(
-    normalizedMessage
-  ) || /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(
-    normalizedMessage
-  ) || /\byou(?:'|’)ve hit your usage limit\b/.test(normalizedMessage) || /\b(?:purchase|buy|add|get) more credits\b/.test(normalizedMessage) || /\bout of credits\b/.test(normalizedMessage) || /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(
-    normalizedMessage
-  );
+  return /\b(?:429|too many requests|rate[_ -]?limit(?:ed| exceeded)?|rate_limit_exceeded)\b/.test(normalizedMessage) || /\b(?:rate[_ -]?limits?|not enough retry quota|usage[_ -]?limit(?: reached| exceeded)?|limit reached)\b/.test(normalizedMessage) || /\b(?:insufficient_quota|quota_exceeded|exceeded (?:your )?(?:current )?quota|quota (?:limit|exceeded))\b/.test(normalizedMessage) || /\byou(?:'|’)ve hit your usage limit\b/.test(normalizedMessage) || /\b(?:purchase|buy|add|get) more credits\b/.test(normalizedMessage) || /\bout of credits\b/.test(normalizedMessage) || /\b(?:billing_hard_limit|payment required|billing (?:limit|quota|hard limit|not active|required))\b/.test(normalizedMessage);
 }
 function pruneCodexChildEnv(env) {
   const allowed = {};
   for (const [key, value] of Object.entries(env)) {
-    if (value === void 0) continue;
-    if (!shouldAllowChildEnvKey(key)) continue;
+    if (value === void 0)
+      continue;
+    if (!shouldAllowChildEnvKey(key))
+      continue;
     allowed[key] = value;
   }
   return allowed;
@@ -1375,16 +1234,19 @@ function collectCodexAuthJsonWarnings(input) {
   return warnings;
 }
 function parseOptionalDate(value, warning, warnings) {
-  if (!value) return null;
+  if (!value)
+    return null;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) {
-    if (!warnings.includes(warning)) warnings.push(warning);
+    if (!warnings.includes(warning))
+      warnings.push(warning);
     return null;
   }
   return new Date(parsed);
 }
 function parseOptionalExpiry(value, warnings) {
-  if (value === void 0) return null;
+  if (value === void 0)
+    return null;
   const ms = typeof value === "number" ? normalizeEpochToMs(value) : Number.isFinite(Number(value)) ? normalizeEpochToMs(Number(value)) : Date.parse(value);
   if (!Number.isFinite(ms)) {
     warnings.push("expiry_unparseable");
@@ -1396,9 +1258,7 @@ function normalizeEpochToMs(value) {
   return value < 1e10 ? value * 1e3 : value;
 }
 function shouldDropChildEnvKey(key) {
-  return codexEnvironmentPolicy.denylist.some(
-    (pattern) => matchesEnvPattern(key, pattern)
-  );
+  return codexEnvironmentPolicy.denylist.some((pattern) => matchesEnvPattern(key, pattern));
 }
 function shouldAllowChildEnvKey(key) {
   if (shouldDropChildEnvKey(key)) {
@@ -1407,9 +1267,7 @@ function shouldAllowChildEnvKey(key) {
   if (codexEnvironmentPolicy.inheritHostEnvironment) {
     return true;
   }
-  return codexEnvironmentPolicy.allowlist.some(
-    (pattern) => matchesEnvPattern(key, pattern)
-  );
+  return codexEnvironmentPolicy.allowlist.some((pattern) => matchesEnvPattern(key, pattern));
 }
 function matchesEnvPattern(key, pattern) {
   if (pattern.endsWith("*") && pattern.startsWith("*")) {
@@ -1427,7 +1285,7 @@ function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// packages/subscription-runtime/provider-codex/src/codex-auth-json-codec.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
 var textDecoder2 = new TextDecoder();
 var textEncoder = new TextEncoder();
 function sessionArtifactFromCodexAuthJson(authJsonBytes) {
@@ -1487,7 +1345,7 @@ function safeCauseCategory(message) {
   return /^[a-z0-9_:-]{1,80}$/i.test(message) ? message : "codex_validation";
 }
 
-// packages/subscription-runtime/provider-codex/src/codex-cli-temp-cleanup.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
 var import_promises = require("node:fs/promises");
 var import_node_path = require("node:path");
 var transientCleanupErrorCodes = /* @__PURE__ */ new Set([
@@ -1497,9 +1355,7 @@ var transientCleanupErrorCodes = /* @__PURE__ */ new Set([
   "EPERM"
 ]);
 async function cleanupCodexRuntimeTempRoot(input) {
-  const secretsScrubbed = await scrubSensitiveCodexHomePaths(
-    input.tempCodexHome
-  );
+  const secretsScrubbed = await scrubSensitiveCodexHomePaths(input.tempCodexHome);
   try {
     await (0, import_promises.rm)(input.tempRoot, {
       recursive: true,
@@ -1533,7 +1389,7 @@ async function scrubSensitiveCodexHomePaths(codexHome) {
   return results.every((result) => result.status === "fulfilled");
 }
 
-// packages/subscription-runtime/provider-codex/src/failure-classifier.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/failure-classifier.js
 function classifyCodexFailure(error51) {
   const message = error51 instanceof Error ? error51.message : String(error51);
   const state = classifyCodexRuntimeFailure(message);
@@ -1573,7 +1429,7 @@ function classifyCodexFailure(error51) {
   }
 }
 
-// packages/subscription-runtime/provider-codex/src/codex-execution-profile.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-execution-profile.js
 var statelessCompletionBaseInstructions = [
   "You are a fast backend inference worker.",
   "Return only the requested final answer.",
@@ -1582,16 +1438,10 @@ var statelessCompletionBaseInstructions = [
   "If JSON is requested, return valid JSON only."
 ].join(" ");
 
-// packages/subscription-runtime/provider-codex/src/codex-json-execution-engine.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
 var defaultTimeoutMs = 10 * 60 * 1e3;
 var defaultMaxOutputBytes = 512 * 1024;
 var PackagedCodexJsonExecutionEngine = class {
-  constructor(options) {
-    this.options = options;
-    if (!options.codexBinaryPath.trim()) {
-      throw new Error("codex_packaged_binary_required");
-    }
-  }
   options;
   kind = "packaged-json";
   capabilities = {
@@ -1600,6 +1450,12 @@ var PackagedCodexJsonExecutionEngine = class {
     supportsThreadResume: false,
     requiresSchemaFile: false
   };
+  constructor(options) {
+    this.options = options;
+    if (!options.codexBinaryPath.trim()) {
+      throw new Error("codex_packaged_binary_required");
+    }
+  }
   async run(input) {
     const args = buildCodexJsonExecArgs({
       jsonFlag: this.options.jsonFlag ?? "--json",
@@ -1626,10 +1482,8 @@ var PackagedCodexJsonExecutionEngine = class {
     assertOutputWithinBounds(stdout, this.options.maxOutputBytes);
     assertOutputWithinBounds(stderr, this.options.maxOutputBytes);
     if (result.exitCode !== 0) {
-      throw new Error(
-        `codex_json_exec_failed:${result.exitCode}:${safeTail(`${stdout}
-${stderr}`)}`
-      );
+      throw new Error(`codex_json_exec_failed:${result.exitCode}:${safeTail(`${stdout}
+${stderr}`)}`);
     }
     const outputText = extractFinalAssistantText(stdout);
     if (input.outputSchema) {
@@ -1706,7 +1560,8 @@ function extractFinalAssistantText(stdout) {
   let finalText = null;
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed)
+      continue;
     let event;
     try {
       event = JSON.parse(trimmed);
@@ -1730,7 +1585,8 @@ function looksLikeJsonLine(value) {
   return value.startsWith("{") || value.startsWith("[");
 }
 function extractTextFromEvent(event) {
-  if (!event || typeof event !== "object") return null;
+  if (!event || typeof event !== "object")
+    return null;
   const record2 = event;
   for (const key of [
     "message",
@@ -1741,19 +1597,23 @@ function extractTextFromEvent(event) {
   ]) {
     const value = record2[key];
     const text = stringifyContent(value);
-    if (text) return text;
+    if (text)
+      return text;
   }
   for (const key of ["data", "item", "delta", "response"]) {
     const nested = extractTextFromEvent(record2[key]);
-    if (nested) return nested;
+    if (nested)
+      return nested;
   }
   return null;
 }
 function stringifyContent(value) {
-  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "string" && value.trim())
+    return value;
   if (Array.isArray(value)) {
     const parts = value.map((entry) => {
-      if (typeof entry === "string") return entry;
+      if (typeof entry === "string")
+        return entry;
       if (entry && typeof entry === "object") {
         const record2 = entry;
         return stringifyContent(record2.text ?? record2.content);
@@ -1780,7 +1640,7 @@ function safeTail(value) {
   return value.slice(-4096);
 }
 
-// packages/subscription-runtime/provider-codex/src/codex-session-materializer.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-session-materializer.js
 var import_node_crypto3 = require("node:crypto");
 var import_promises2 = require("node:fs/promises");
 var import_node_os = require("node:os");
@@ -1790,9 +1650,7 @@ var CodexEphemeralSessionMaterializer = class {
   async materialize(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await (0, import_promises2.mkdtemp)(
-      (0, import_node_path2.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-")
-    );
+    const tempRoot = await (0, import_promises2.mkdtemp)((0, import_node_path2.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-"));
     const home = (0, import_node_path2.join)(tempRoot, "home");
     const codexHome = (0, import_node_path2.join)(tempRoot, "codex-home");
     await (0, import_promises2.mkdir)(home, { recursive: true, mode: 448 });
@@ -1885,14 +1743,23 @@ async function writeFileAtomic(path, value) {
 function once(fn) {
   let called = false;
   return async () => {
-    if (called) return void 0;
+    if (called)
+      return void 0;
     called = true;
     return fn();
   };
 }
 
-// packages/subscription-runtime/provider-codex/src/codex-json-agent-driver.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
 var CodexJsonAgentDriver = class {
+  options;
+  agentId = codexJsonAgentId;
+  providerId = codexProviderId;
+  capabilities = codexJsonAgentCapabilities;
+  engine;
+  model;
+  reasoningEffort;
+  sessionMaterializer;
   constructor(options) {
     this.options = options;
     this.engine = "engine" in options ? options.engine : new PackagedCodexJsonExecutionEngine({
@@ -1904,14 +1771,6 @@ var CodexJsonAgentDriver = class {
     this.reasoningEffort = options.reasoningEffort ?? "low";
     this.sessionMaterializer = options.sessionMaterializer ?? new CodexEphemeralSessionMaterializer();
   }
-  options;
-  agentId = codexJsonAgentId;
-  providerId = codexProviderId;
-  capabilities = codexJsonAgentCapabilities;
-  engine;
-  model;
-  reasoningEffort;
-  sessionMaterializer;
   async runTask(input) {
     if (!input.session) {
       return {
@@ -2007,29 +1866,28 @@ var CodexJsonAgentDriver = class {
       Promise.resolve().then(() => this.engine.dispose?.()),
       Promise.resolve().then(() => this.sessionMaterializer.dispose?.())
     ]);
-    const errors = results.filter(
-      (result) => result.status === "rejected"
-    ).map((result) => result.reason);
+    const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason);
     if (errors.length > 0) {
-      const error51 = new AggregateError(
-        errors,
-        "codex_json_agent_dispose_failed"
-      );
+      const error51 = new AggregateError(errors, "codex_json_agent_dispose_failed");
       error51.code = "codex_json_agent_dispose_failed";
       throw error51;
     }
   }
 };
 
-// packages/subscription-runtime/provider-codex/src/codex-app-server-execution-engine.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-app-server-execution-engine.js
 var defaultTimeoutMs2 = 10 * 60 * 1e3;
 var defaultMaxOutputBytes2 = 512 * 1024;
 
-// packages/subscription-runtime/provider-codex/src/codex-cli-session-driver.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
 var import_promises3 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var import_node_path3 = require("node:path");
 var CodexCliSessionDriver = class {
+  options;
+  providerId = codexProviderId;
+  supportedArtifactKinds = ["json-file"];
+  capabilities;
   constructor(options = {}) {
     this.options = options;
     this.capabilities = options.refreshMode ? {
@@ -2037,19 +1895,13 @@ var CodexCliSessionDriver = class {
       refreshMode: options.refreshMode
     } : codexSessionCapabilities;
   }
-  options;
-  providerId = codexProviderId;
-  supportedArtifactKinds = ["json-file"];
-  capabilities;
   async validateSession(input) {
     return validateCodexSessionArtifact(input.session);
   }
   async refreshSession(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await (0, import_promises3.mkdtemp)(
-      (0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "subscription-runtime-codex-")
-    );
+    const tempRoot = await (0, import_promises3.mkdtemp)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "subscription-runtime-codex-"));
     const tempHome = (0, import_node_path3.join)(tempRoot, "home");
     const tempCodexHome = (0, import_node_path3.join)(tempRoot, "codex-home");
     const emptyWorkingDirectory = (0, import_node_path3.join)(tempRoot, "empty-workdir");
@@ -2219,7 +2071,7 @@ async function writeCodexHomeSnapshot(input) {
   });
 }
 
-// packages/subscription-runtime/runner-github-action/src/capabilities.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/runner-github-action/capabilities.js
 var githubActionRunnerCapabilities = {
   runnerId: "github-action",
   supportsEnvAllowlist: true,
@@ -2232,7 +2084,7 @@ var githubActionRunnerCapabilities = {
   platform: "github-actions"
 };
 
-// packages/subscription-runtime/runner-github-action/src/github-action-runner.ts
+// node_modules/.pnpm/@777genius+subscription-runtime@https+++github.com+777genius+subscription-runtime+archive+refs+heads+main.tar.gz/node_modules/@777genius/subscription-runtime/dist/runner-github-action/github-action-runner.js
 var import_node_child_process = require("node:child_process");
 var defaultMaxCapturedOutputBytes = 256e3;
 var GitHubActionRunner = class {
@@ -2269,7 +2121,8 @@ var GitHubActionRunner = class {
         input.abortSignal.removeEventListener("abort", abort);
       };
       const settleReject = (error51) => {
-        if (settled) return;
+        if (settled)
+          return;
         settled = true;
         cleanup();
         reject(error51);
@@ -2286,36 +2139,23 @@ var GitHubActionRunner = class {
       child.stdout.on("data", (chunk) => {
         const buffer = Buffer.from(chunk);
         writeRedacted(input.stdout, this.redactor, buffer);
-        capturedBytes = appendCapturedChunk(
-          stdoutChunks,
-          capturedBytes,
-          buffer,
-          this.maxCapturedOutputBytes
-        );
+        capturedBytes = appendCapturedChunk(stdoutChunks, capturedBytes, buffer, this.maxCapturedOutputBytes);
       });
       child.stderr.on("data", (chunk) => {
         const buffer = Buffer.from(chunk);
         writeRedacted(input.stderr, this.redactor, buffer);
-        capturedBytes = appendCapturedChunk(
-          stderrChunks,
-          capturedBytes,
-          buffer,
-          this.maxCapturedOutputBytes
-        );
+        capturedBytes = appendCapturedChunk(stderrChunks, capturedBytes, buffer, this.maxCapturedOutputBytes);
       });
       child.on("error", (error51) => {
         settleReject(error51 instanceof Error ? error51 : new Error(String(error51)));
       });
       child.on("close", (code) => {
-        if (settled) return;
+        if (settled)
+          return;
         settled = true;
         cleanup();
-        const stdout = this.redactor.redact(
-          Buffer.concat(stdoutChunks).toString("utf8")
-        );
-        const stderr = this.redactor.redact(
-          Buffer.concat(stderrChunks).toString("utf8")
-        );
+        const stdout = this.redactor.redact(Buffer.concat(stdoutChunks).toString("utf8"));
+        const stderr = this.redactor.redact(Buffer.concat(stderrChunks).toString("utf8"));
         const durationMs = Date.now() - startedAt;
         if (code === 0) {
           resolve({
@@ -2326,14 +2166,8 @@ var GitHubActionRunner = class {
           });
           return;
         }
-        reject(
-          new Error(
-            `process_failed:${input.command}:${code ?? "signal"}:${safeFailureOutput(
-              `${stdout}
-${stderr}`
-            )}`
-          )
-        );
+        reject(new Error(`process_failed:${input.command}:${code ?? "signal"}:${safeFailureOutput(`${stdout}
+${stderr}`)}`));
       });
       child.stdin.end(input.stdin ? Buffer.from(input.stdin) : void 0);
     });
@@ -2364,12 +2198,14 @@ function isForbiddenRunnerEnvKey(key) {
   return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("INPUT_AUTH") || key.includes("AUTH_JSON") || key.includes("OPENAI_API_KEY") || key.includes("CLAUDE_CODE_OAUTH_TOKEN") || key.includes("OPENROUTER_API_KEY");
 }
 function writeRedacted(sink, redactor, chunk) {
-  if (!sink) return;
+  if (!sink)
+    return;
   sink.write(redactor.redact(chunk.toString("utf8")));
 }
 function appendCapturedChunk(chunks, currentBytes, chunk, maxBytes) {
   const remaining = maxBytes - currentBytes;
-  if (remaining <= 0) return currentBytes;
+  if (remaining <= 0)
+    return currentBytes;
   const nextChunk = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
   chunks.push(nextChunk);
   return currentBytes + nextChunk.byteLength;

@@ -20,13 +20,13 @@ import {
   type SessionWriteResult,
   type WorkspaceHandle,
   type WorkspacePort,
-} from "@reviewrouter/subscription-runtime-core";
+} from "@777genius/subscription-runtime/core";
 import {
   CodexJsonAgentDriver,
   CodexCliSessionDriver,
   sessionArtifactFromCodexAuthJson,
-} from "@reviewrouter/subscription-runtime-provider-codex";
-import { GitHubActionRunner } from "@reviewrouter/subscription-runtime-runner-github-action";
+} from "@777genius/subscription-runtime/provider-codex";
+import { GitHubActionRunner } from "@777genius/subscription-runtime/runner-github-action";
 import {
   mkdtemp,
   readFile,

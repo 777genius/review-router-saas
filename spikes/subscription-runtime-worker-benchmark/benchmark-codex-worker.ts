@@ -2,9 +2,9 @@ import { readFile, rm } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BoundedSubscriptionWorkerPool } from "@reviewrouter/subscription-runtime-worker-core";
-import { FileBackendCodexWorker } from "@reviewrouter/subscription-runtime-worker-codex";
-import type { CodexAppServerProcessFactory } from "@reviewrouter/subscription-runtime-provider-codex";
+import { BoundedSubscriptionWorkerPool } from "@777genius/subscription-runtime/worker-core";
+import { FileBackendCodexWorker } from "@777genius/subscription-runtime/worker-codex";
+import type { CodexAppServerProcessFactory } from "@777genius/subscription-runtime/provider-codex";
 
 type BenchmarkSample = {
   readonly slots: number;

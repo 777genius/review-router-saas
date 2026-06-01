@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
@@ -7,7 +7,7 @@ const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const boundaryRoots = [
   join(root, "packages", "features"),
   join(root, "packages", "subscription-runtime"),
-];
+].filter((directory) => existsSync(directory));
 
 const forbiddenImports = [
   {

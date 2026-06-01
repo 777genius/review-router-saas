@@ -14,6 +14,9 @@ importers:
 
   .:
     dependencies:
+      '@777genius/subscription-runtime':
+        specifier: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
+        version: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
       '@base-ui/react':
         specifier: ^1.4.1
         version: 1.4.1(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -423,18 +426,12 @@ importers:
 
   packages/features/codex-oauth-rotating:
     dependencies:
+      '@777genius/subscription-runtime':
+        specifier: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
+        version: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../../subscription-runtime/core
-      '@reviewrouter/subscription-runtime-provider-codex':
-        specifier: workspace:*
-        version: link:../../subscription-runtime/provider-codex
-      '@reviewrouter/subscription-runtime-runner-github-action':
-        specifier: workspace:*
-        version: link:../../subscription-runtime/runner-github-action
       libsodium-wrappers:
         specifier: ^0.8.4
         version: 0.8.4
@@ -708,71 +705,6 @@ importers:
 
   packages/shared: {}
 
-  packages/subscription-runtime/core: {}
-
-  packages/subscription-runtime/provider-codex:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-
-  packages/subscription-runtime/queue-bull:
-    dependencies:
-      '@reviewrouter/subscription-runtime-queue-core':
-        specifier: workspace:*
-        version: link:../queue-core
-      '@reviewrouter/subscription-runtime-worker-core':
-        specifier: workspace:*
-        version: link:../worker-core
-
-  packages/subscription-runtime/queue-core:
-    dependencies:
-      '@reviewrouter/subscription-runtime-worker-core':
-        specifier: workspace:*
-        version: link:../worker-core
-
-  packages/subscription-runtime/runner-github-action:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-
-  packages/subscription-runtime/store-github-actions-secret:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-      libsodium-wrappers:
-        specifier: ^0.8.4
-        version: 0.8.4
-
-  packages/subscription-runtime/store-local-file:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-
-  packages/subscription-runtime/worker-codex:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-      '@reviewrouter/subscription-runtime-provider-codex':
-        specifier: workspace:*
-        version: link:../provider-codex
-      '@reviewrouter/subscription-runtime-store-local-file':
-        specifier: workspace:*
-        version: link:../store-local-file
-      '@reviewrouter/subscription-runtime-worker-core':
-        specifier: workspace:*
-        version: link:../worker-core
-
-  packages/subscription-runtime/worker-core:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-
   packages/ui:
     dependencies:
       '@base-ui/react':
@@ -795,6 +727,11 @@ importers:
         version: 3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.2.4)
 
 packages:
+
+  '@777genius/subscription-runtime@https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz':
+    resolution: {integrity: sha512-gL5OORnUMOmATRYCOjuVZCTte/F/JYcMfxKsYkQP135EH1Z7YDuOPH17zYdqDHz9owfFdCGFjvrQnwAbFqo1dQ==, tarball: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz}
+    version: 0.1.0-main.0
+    engines: {node: '>=20'}
 
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
@@ -3902,6 +3839,10 @@ packages:
         optional: true
 
 snapshots:
+
+  '@777genius/subscription-runtime@https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz':
+    dependencies:
+      libsodium-wrappers: 0.8.4
 
   '@alloc/quick-lru@5.2.0': {}
 
