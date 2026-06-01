@@ -71,6 +71,7 @@ for (const forbidden of [
   "pre-if:",
   "post:",
   "post-if:",
+  "default: codex-oauth-rotating",
   "codex-package-version",
   "codex-binary",
 ]) {
