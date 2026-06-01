@@ -15,6 +15,7 @@ export class PrismaWorkflowProvisioningTarget implements WorkflowProvisioningTar
       select: {
         id: true,
         workspaceId: true,
+        provider: true,
         owner: true,
         name: true,
         fullName: true,
@@ -25,7 +26,11 @@ export class PrismaWorkflowProvisioningTarget implements WorkflowProvisioningTar
       },
     });
 
-    if (!repository) {
+    if (
+      !repository ||
+      repository.provider !== "github" ||
+      !repository.installation
+    ) {
       return null;
     }
 

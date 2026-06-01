@@ -27,6 +27,10 @@ export class PrismaOrgRulesetProvisioningRepository implements OrgRulesetProvisi
         repositorySelection: true,
         status: true,
         repositories: {
+          where: {
+            provider: "github",
+            githubRepositoryId: { not: null },
+          },
           orderBy: { fullName: "asc" },
           select: {
             id: true,
@@ -55,10 +59,16 @@ export class PrismaOrgRulesetProvisioningRepository implements OrgRulesetProvisi
       accountType: installation.accountType,
       installationStatus: installation.status,
       repositorySelection: installation.repositorySelection,
-      repositories: installation.repositories.map((repository) => ({
-        ...repository,
-        githubRepositoryId: repository.githubRepositoryId.toString(),
-      })),
+      repositories: installation.repositories.flatMap((repository) =>
+        repository.githubRepositoryId
+          ? [
+              {
+                ...repository,
+                githubRepositoryId: repository.githubRepositoryId.toString(),
+              },
+            ]
+          : [],
+      ),
     };
   }
 

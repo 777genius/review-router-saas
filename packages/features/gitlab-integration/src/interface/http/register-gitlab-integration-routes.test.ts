@@ -157,12 +157,21 @@ class StaticInstallation implements GitLabInstallationPort {
   async getProjectSettings(input: {
     readonly projectId: string;
   }): Promise<GitLabProjectInstallationSettings> {
-    if (this.failingProjectIds.has(input.projectId)) {
+    return this.getProjectSettingsByPathOrId({
+      projectPathOrId: input.projectId,
+    });
+  }
+
+  async getProjectSettingsByPathOrId(input: {
+    readonly projectPathOrId: string;
+  }): Promise<GitLabProjectInstallationSettings> {
+    const projectId = input.projectPathOrId;
+    if (this.failingProjectIds.has(projectId)) {
       throw new Error("gitlab_api_error_503");
     }
     return {
-      projectId: input.projectId,
-      fullName: `group/project-${input.projectId}`,
+      projectId,
+      fullName: `group/project-${projectId}`,
       defaultBranch: "main",
       ciConfigPath: null,
       canEditProjectSettings: true,

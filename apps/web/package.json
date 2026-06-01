@@ -11,6 +11,7 @@
     "@reviewrouter/features-audit-log": "workspace:*",
     "@reviewrouter/features-auth": "workspace:*",
     "@reviewrouter/features-entitlements": "workspace:*",
+    "@reviewrouter/features-gitlab-integration": "workspace:*",
     "@reviewrouter/features-github-installations": "workspace:*",
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",

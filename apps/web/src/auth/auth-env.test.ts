@@ -1,25 +1,41 @@
-import { describe, expect, it, vi } from "vitest";
-import { authOptions } from "./auth-options";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAuthEnvironmentStatus, readOptionalAuthEnv } from "./auth-env";
 
 describe("auth env", () => {
-  it("reports missing required GitHub OAuth env without throwing during build", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("requires Auth secret and at least one source OAuth provider", () => {
     expect(getAuthEnvironmentStatus({})).toEqual({
       configured: false,
       missing: [
         "AUTH_SECRET",
         "GITHUB_APP_CLIENT_ID",
         "GITHUB_APP_CLIENT_SECRET",
+        "GITLAB_OAUTH_CLIENT_ID",
+        "GITLAB_OAUTH_CLIENT_SECRET",
       ],
     });
   });
 
-  it("reports configured auth env when all required values are present", () => {
+  it("reports configured auth env with GitHub OAuth", () => {
     expect(
       getAuthEnvironmentStatus({
         AUTH_SECRET: "secret",
         GITHUB_APP_CLIENT_ID: "client",
         GITHUB_APP_CLIENT_SECRET: "client-secret",
+      }),
+    ).toEqual({ configured: true, missing: [] });
+  });
+
+  it("reports configured auth env with GitLab OAuth only", () => {
+    expect(
+      getAuthEnvironmentStatus({
+        AUTH_SECRET: "secret",
+        GITLAB_OAUTH_CLIENT_ID: "client",
+        GITLAB_OAUTH_CLIENT_SECRET: "client-secret",
       }),
     ).toEqual({ configured: true, missing: [] });
   });
@@ -30,28 +46,41 @@ describe("auth env", () => {
     );
   });
 
-  it("uses a branded sign-in page instead of the default Auth.js screen", () => {
+  it("uses a branded sign-in page instead of the default Auth.js screen", async () => {
+    const { authOptions } = await import("./auth-options");
+
     expect(authOptions.pages).toMatchObject({
       signIn: "/auth/signin",
       error: "/auth/signin",
     });
   });
 
-  it("requests repository OAuth scope for review thread resolution", () => {
-    const provider = authOptions.providers[0] as {
-      readonly options?: {
-        readonly authorization?: {
-          readonly params?: { readonly scope?: string };
-        };
-      };
-    };
+  it("requests repository OAuth scope for review thread resolution", async () => {
+    vi.stubEnv("GITHUB_APP_CLIENT_ID", "client");
+    vi.stubEnv("GITHUB_APP_CLIENT_SECRET", "client-secret");
+    vi.resetModules();
 
-    expect(provider.options?.authorization?.params?.scope?.split(" ")).toEqual(
+    const { authOptions } = await import("./auth-options");
+    const provider = authOptions.providers.find(
+      (candidate) => (candidate as { readonly id?: string }).id === "github",
+    ) as
+      | {
+          readonly options?: {
+            readonly authorization?: {
+              readonly params?: { readonly scope?: string };
+            };
+          };
+        }
+      | undefined;
+
+    expect(provider).toBeDefined();
+    expect(provider?.options?.authorization?.params?.scope?.split(" ")).toEqual(
       expect.arrayContaining(["read:user", "user:email", "repo"]),
     );
   });
 
-  it("downgrades stale JWT session cookie noise to a warning", () => {
+  it("downgrades stale JWT session cookie noise to a warning", async () => {
+    const { authOptions } = await import("./auth-options");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 

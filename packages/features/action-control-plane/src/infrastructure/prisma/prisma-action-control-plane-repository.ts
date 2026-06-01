@@ -27,8 +27,11 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
   async findSelectedRepositoryByGithubId(
     githubRepositoryId: string,
   ): Promise<ActionRepositoryContext | null> {
-    const repository = await this.prisma.repositoryConnection.findUnique({
-      where: { githubRepositoryId: BigInt(githubRepositoryId) },
+    const repository = await this.prisma.repositoryConnection.findFirst({
+      where: {
+        provider: "github",
+        githubRepositoryId: BigInt(githubRepositoryId),
+      },
       select: {
         id: true,
         workspaceId: true,
@@ -66,14 +69,19 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
       },
     });
 
-    if (!repository) {
+    if (
+      !repository ||
+      !repository.githubRepositoryId ||
+      !repository.installation
+    ) {
       return null;
     }
+    const repositoryGithubId = repository.githubRepositoryId.toString();
 
     return {
       workspaceId: repository.workspaceId,
       repositoryId: repository.id,
-      githubRepositoryId: repository.githubRepositoryId.toString(),
+      githubRepositoryId: repositoryGithubId,
       githubInstallationId:
         repository.installation.githubInstallationId.toString(),
       fullName: repository.fullName,
@@ -87,7 +95,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
               sourceGithubRepositoryId:
                 ruleset.sourceGithubRepositoryId?.toString() ?? null,
               targetRepositoryIds: ruleset.targetRepositoryIds,
-              githubRepositoryId: repository.githubRepositoryId.toString(),
+              githubRepositoryId: repositoryGithubId,
             });
           })
           .flatMap((ruleset) => {

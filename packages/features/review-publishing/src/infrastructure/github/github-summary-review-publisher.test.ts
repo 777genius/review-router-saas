@@ -102,11 +102,79 @@ describe("GitHubSummaryReviewPublisher", () => {
       ),
     ).toBe(false);
   });
+
+  it("refreshes the GitHub token once after an auth failure and retries the request", async () => {
+    const authorizations: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      authorizations.push(readAuthorization(init));
+      if (href.endsWith("/repos/owner/repo/issues/7/comments?per_page=100")) {
+        return authorizations.length === 1
+          ? jsonResponse({ message: "Bad credentials" }, 401)
+          : jsonResponse([]);
+      }
+      if (href.endsWith("/repos/owner/repo/issues/7/comments")) {
+        return jsonResponse({ id: 1001 });
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+    const refreshToken = vi.fn(async () => "ghs-refreshed-token");
+
+    const publisher = new GitHubSummaryReviewPublisher({
+      token: "ghs-expired-token",
+      tokenRefresh: { refreshToken },
+      apiBaseUrl: "https://github.test",
+      fetchImpl,
+    });
+
+    await publisher.publishReview(createPlan());
+
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(authorizations).toEqual([
+      "Bearer ghs-expired-token",
+      "Bearer ghs-refreshed-token",
+      "Bearer ghs-refreshed-token",
+    ]);
+  });
+
+  it("does not refresh the GitHub token for permission errors", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ message: "Resource not accessible by integration" }, 403),
+    ) as unknown as typeof fetch;
+    const refreshToken = vi.fn(async () => "ghs-refreshed-token");
+
+    const publisher = new GitHubSummaryReviewPublisher({
+      token: "ghs-token",
+      tokenRefresh: { refreshToken },
+      apiBaseUrl: "https://github.test",
+      fetchImpl,
+    });
+
+    await expect(publisher.publishReview(createPlan())).rejects.toThrow(
+      "github_review_comment_lookup_failed:403",
+    );
+    expect(refreshToken).not.toHaveBeenCalled();
+  });
 });
 
-function jsonResponse(value: unknown): Response {
+function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function readAuthorization(init: RequestInit | undefined): string {
+  const headers = init?.headers;
+  if (!headers) return "";
+  if (headers instanceof Headers) {
+    return headers.get("authorization") ?? "";
+  }
+  if (Array.isArray(headers)) {
+    return (
+      headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] ?? ""
+    );
+  }
+  const record = headers as Record<string, string | undefined>;
+  return String(record.authorization ?? record.Authorization ?? "");
 }

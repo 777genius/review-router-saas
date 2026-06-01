@@ -9,6 +9,7 @@ export type GitLabProjectInstallationSettings = {
   readonly projectId: string;
   readonly fullName: string;
   readonly defaultBranch: string;
+  readonly visibility?: "public" | "internal" | "private" | undefined;
   readonly ciConfigPath: string | null;
   readonly canEditProjectSettings: boolean;
   readonly canCreateMergeRequest: boolean;
@@ -20,6 +21,7 @@ export type GitLabGroupProject = {
   readonly name: string;
   readonly defaultBranch: string | null;
   readonly webUrl: string | null;
+  readonly visibility?: "public" | "internal" | "private" | undefined;
   readonly archived: boolean;
 };
 

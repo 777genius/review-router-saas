@@ -1,7 +1,11 @@
-import type { GitHubExternalIdentity } from "../../domain/github-external-identity";
+import {
+  gitHubIdentityToExternalIdentity,
+  type GitHubExternalIdentity,
+} from "../../domain/github-external-identity";
 import type { AuthenticatedPrincipal } from "../../domain/authenticated-principal";
 import type { UserRepositoryPort } from "../ports/user-repository-port";
 import type { WorkspaceMembershipRepositoryPort } from "../ports/workspace-membership-repository-port";
+import { linkExternalIdentity } from "./link-external-identity";
 
 export type LinkGitHubIdentityDependencies = {
   readonly users: UserRepositoryPort;
@@ -12,10 +16,10 @@ export async function linkGitHubIdentity(
   identity: GitHubExternalIdentity,
   dependencies: LinkGitHubIdentityDependencies,
 ): Promise<AuthenticatedPrincipal> {
-  const principal = await dependencies.users.upsertGitHubUser(identity);
-  await dependencies.memberships?.ensurePersonalWorkspaceOwner(principal);
-  await dependencies.memberships?.ensureGitHubUserInstallationWorkspaceOwners(
-    principal,
-  );
-  return principal;
+  return linkExternalIdentity(gitHubIdentityToExternalIdentity(identity), {
+    users: dependencies.users,
+    ...(dependencies.memberships
+      ? { memberships: dependencies.memberships }
+      : {}),
+  });
 }

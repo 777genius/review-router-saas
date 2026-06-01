@@ -26,6 +26,10 @@ export interface GitLabInstallationPort {
     readonly projectId: string;
   }): Promise<GitLabProjectInstallationSettings>;
 
+  getProjectSettingsByPathOrId(input: {
+    readonly projectPathOrId: string;
+  }): Promise<GitLabProjectInstallationSettings>;
+
   lintCiConfig(input: {
     readonly projectId: string;
     readonly content: string;

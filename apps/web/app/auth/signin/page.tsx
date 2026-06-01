@@ -1,15 +1,22 @@
 import type { Metadata } from "next";
 import { Badge, Card, LinkButton } from "@reviewrouter/ui";
-import { GitHubSignInButton } from "../../github-sign-in-button";
+import {
+  GitHubSignInButton,
+  GitLabSignInButton,
+} from "../../github-sign-in-button";
 import { LogoMark } from "../../logo-mark";
 import { createNoIndexPageMetadata } from "../../seo";
+import {
+  isGitHubAuthConfigured,
+  isGitLabAuthConfigured,
+} from "../../../src/auth/auth-env";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = createNoIndexPageMetadata({
   title: "Sign in",
   description:
-    "Sign in to connect GitHub installation metadata to the ReviewRouter dashboard.",
+    "Sign in to connect source repository metadata to the ReviewRouter dashboard.",
 });
 
 type SignInPageProps = {
@@ -28,23 +35,23 @@ type SignInIssue = {
 
 const signInIssues: Record<string, SignInIssue> = {
   OAuthCallback: {
-    badge: "GitHub App installed",
+    badge: "Source connected",
     title: "Finish dashboard sign-in",
-    body: "GitHub returned from the App installation before dashboard sign-in was started. Continue with GitHub below to connect the installed App to your dashboard.",
+    body: "GitHub returned from the App installation before dashboard sign-in was started. Continue below with GitHub or GitLab to connect source metadata to your dashboard.",
     nextStep:
       "If this repeats, disable “Request user authorization (OAuth) during installation” in the GitHub App settings and keep the setup URL pointed at /setup.",
     tone: "success",
   },
   OAuthSignin: {
     badge: "Sign-in issue",
-    title: "GitHub sign-in could not start.",
-    body: "Check the GitHub App client settings, then try again.",
+    title: "Sign-in could not start.",
+    body: "Check the source OAuth client settings, then try again.",
     tone: "warning",
   },
   AccessDenied: {
     badge: "Access denied",
-    title: "GitHub denied access.",
-    body: "Use an account that can access the selected installation or repository.",
+    title: "The source provider denied access.",
+    body: "Use an account that can access the selected workspace or repository.",
     tone: "warning",
   },
   Configuration: {
@@ -64,13 +71,15 @@ export default async function SignInPage({
   const issue = error
     ? (signInIssues[error] ?? signInIssues.Configuration)
     : null;
+  const githubConfigured = isGitHubAuthConfigured();
+  const gitlabConfigured = isGitLabAuthConfigured();
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 md:py-12">
       <section className="min-w-0 rounded-[2rem] border border-cyan-300/[0.12] bg-[var(--rr-surface-card-strong)] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.42),0_0_90px_-54px_rgba(0,240,255,0.9)] backdrop-blur-2xl sm:p-8">
         <div className="flex flex-wrap items-center gap-3">
           <LogoMark size="sm" />
-          <Badge tone={issue ? issue.tone : "accent"}>GitHub sign-in</Badge>
+          <Badge tone={issue ? issue.tone : "accent"}>Source sign-in</Badge>
         </div>
 
         <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
@@ -79,9 +88,9 @@ export default async function SignInPage({
               Sign in to ReviewRouter
             </h1>
             <p className="max-w-full text-base leading-7 text-[var(--rr-color-text-muted)] [overflow-wrap:anywhere] sm:max-w-2xl">
-              Continue with GitHub to map installed repositories to your
-              dashboard. Provider credentials and PR diffs stay in GitHub
-              Actions.
+              Continue with GitHub or GitLab to map repository metadata to your
+              dashboard. Provider credentials and PR diffs stay in your CI
+              boundary.
             </p>
           </div>
           <div className="grid w-full gap-3 sm:flex sm:w-auto sm:flex-wrap lg:justify-end">
@@ -89,9 +98,23 @@ export default async function SignInPage({
               callbackUrl={callbackUrl}
               size="lg"
               className="w-full rounded-2xl sm:min-w-56 sm:w-auto"
+              disabled={!githubConfigured}
             >
-              Continue with GitHub
+              {githubConfigured
+                ? "Continue with GitHub"
+                : "GitHub sign-in unavailable"}
             </GitHubSignInButton>
+            <GitLabSignInButton
+              callbackUrl={callbackUrl}
+              size="lg"
+              variant="outline"
+              className="w-full rounded-2xl sm:min-w-56 sm:w-auto"
+              disabled={!gitlabConfigured}
+            >
+              {gitlabConfigured
+                ? "Continue with GitLab"
+                : "GitLab sign-in unavailable"}
+            </GitLabSignInButton>
             <LinkButton
               href="/"
               variant="outline"
@@ -126,9 +149,9 @@ export default async function SignInPage({
             Sign-in only connects metadata.
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-            ReviewRouter uses GitHub identity to show installations,
-            repositories, setup PR status, and health. It does not ask for Codex
-            OAuth files or provider API keys here.
+            ReviewRouter uses source identity to show repositories, setup
+            status, and health. It does not ask for Codex OAuth files or
+            provider API keys here.
           </p>
         </Card>
       )}

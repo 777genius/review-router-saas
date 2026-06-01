@@ -3,6 +3,130 @@ import { stringifyReviewFindingsArtifact } from "../../domain/review-findings-ar
 import { runReviewPublisherCli } from "./reviewrouter-publish-review";
 
 describe("reviewrouter-publish-review CLI", () => {
+  it("refreshes the GitHub comment token once when publishing gets a 401", async () => {
+    const authorizations: string[] = [];
+    const refreshBodies: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href === "https://api.reviewrouter.test/comment-token") {
+        if (init?.body) refreshBodies.push(String(init.body));
+        return jsonResponse({ token: "ghs-refreshed-token" });
+      }
+      authorizations.push(readAuthorization(init));
+      if (href.endsWith("/repos/owner/repo/issues/7/comments?per_page=100")) {
+        return authorizations.length === 1
+          ? jsonResponse({ message: "Bad credentials" }, 401)
+          : jsonResponse([]);
+      }
+      if (href.endsWith("/repos/owner/repo/issues/7/comments")) {
+        return jsonResponse({ id: 1001 });
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+    let output = "";
+
+    await runReviewPublisherCli({
+      argv: ["--provider", "github"],
+      env: {
+        GITHUB_TOKEN: "ghs-expired-token",
+        REVIEWROUTER_GITHUB_API_BASE_URL: "https://github.test",
+        REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL:
+          "https://api.reviewrouter.test/comment-token",
+        REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: "lease_1",
+        REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID:
+          "codex-rotating:123456",
+        REVIEWROUTER_REPOSITORY_EXTERNAL_ID: "123",
+        REVIEWROUTER_REPOSITORY_FULL_NAME: "owner/repo",
+        REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID: "7",
+        REVIEWROUTER_HEAD_SHA: "a".repeat(40),
+      },
+      fetchImpl,
+      readFileImpl: async () =>
+        stringifyReviewFindingsArtifact({
+          protocolVersion: 1,
+          generatedAt: "2026-05-30T12:00:00.000Z",
+          findings: [],
+        }),
+      stdout: { write: (chunk) => (output += chunk) },
+    });
+
+    const result = JSON.parse(output) as {
+      readonly summaryCommentCount: number;
+      readonly externalIds: readonly string[];
+    };
+    expect(result.summaryCommentCount).toBe(1);
+    expect(result.externalIds).toEqual(["github:summary:1001"]);
+    expect(authorizations).toEqual([
+      "Bearer ghs-expired-token",
+      "Bearer ghs-refreshed-token",
+      "Bearer ghs-refreshed-token",
+    ]);
+    expect(refreshBodies.map((body) => JSON.parse(body))).toEqual([
+      {
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        authCleared: true,
+      },
+    ]);
+  });
+
+  it("bounds GitHub comment token refresh latency", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn((url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href === "https://api.reviewrouter.test/comment-token") {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
+        });
+      }
+      if (href.endsWith("/repos/owner/repo/issues/7/comments?per_page=100")) {
+        return Promise.resolve(
+          jsonResponse({ message: "Bad credentials" }, 401),
+        );
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+    let output = "";
+
+    try {
+      const publish = runReviewPublisherCli({
+        argv: ["--provider", "github"],
+        env: {
+          GITHUB_TOKEN: "ghs-expired-token",
+          REVIEWROUTER_GITHUB_API_BASE_URL: "https://github.test",
+          REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL:
+            "https://api.reviewrouter.test/comment-token",
+          REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: "lease_1",
+          REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID:
+            "codex-rotating:123456",
+          REVIEWROUTER_REPOSITORY_EXTERNAL_ID: "123",
+          REVIEWROUTER_REPOSITORY_FULL_NAME: "owner/repo",
+          REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID: "7",
+          REVIEWROUTER_HEAD_SHA: "a".repeat(40),
+        },
+        fetchImpl,
+        readFileImpl: async () =>
+          stringifyReviewFindingsArtifact({
+            protocolVersion: 1,
+            generatedAt: "2026-05-30T12:00:00.000Z",
+            findings: [],
+          }),
+        stdout: { write: (chunk) => (output += chunk) },
+      });
+
+      const rejection = expect(publish).rejects.toThrow(
+        "github_comment_token_refresh_timeout",
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(output).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("publishes a GitLab findings artifact and emits safe metadata only", async () => {
     const calls: { readonly method: string; readonly url: string }[] = [];
     const bodies: string[] = [];
@@ -102,9 +226,24 @@ describe("reviewrouter-publish-review CLI", () => {
   });
 });
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function readAuthorization(init: RequestInit | undefined): string {
+  const headers = init?.headers;
+  if (!headers) return "";
+  if (headers instanceof Headers) {
+    return headers.get("authorization") ?? "";
+  }
+  if (Array.isArray(headers)) {
+    return (
+      headers.find(([key]) => key.toLowerCase() === "authorization")?.[1] ?? ""
+    );
+  }
+  const record = headers as Record<string, string | undefined>;
+  return String(record.authorization ?? record.Authorization ?? "");
 }
