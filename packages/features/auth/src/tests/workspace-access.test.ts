@@ -19,11 +19,19 @@ class StaticWorkspaceAccess implements WorkspaceAccessRepositoryPort {
     return this.role;
   }
 
+  async findWorkspaceRoleByUserId(): Promise<WorkspaceAccessRole | null> {
+    return this.role;
+  }
+
   async listWorkspaceRolesByGitHubUserId() {
     return this.workspaceIds.map((workspaceId) => ({
       workspaceId,
       role: "member" as const,
     }));
+  }
+
+  async listWorkspaceRolesByUserId() {
+    return this.listWorkspaceRolesByGitHubUserId();
   }
 }
 

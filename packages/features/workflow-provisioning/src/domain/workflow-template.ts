@@ -138,7 +138,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
@@ -256,6 +256,8 @@ jobs:
     steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
         id: preflight
         uses: ${options.actionRef}
+        with:
+          mode: interaction-preflight
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"
@@ -270,7 +272,7 @@ jobs:
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -316,6 +318,8 @@ jobs:
       - name: Run ReviewRouter interaction
         if: \${{ steps.preflight.outputs.should_run == 'true' }}
         uses: ${options.actionRef}
+        with:
+          mode: interaction
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
@@ -368,6 +372,8 @@ jobs:
     steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
         id: preflight
         uses: ${options.actionRef}
+        with:
+          mode: interaction-preflight
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"
@@ -382,7 +388,7 @@ jobs:
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -404,6 +410,8 @@ jobs:
       - name: Run ReviewRouter interaction
         if: \${{ steps.preflight.outputs.should_run == 'true' }}
         uses: ${options.actionRef}
+        with:
+          mode: interaction
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
@@ -615,7 +623,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.135.0
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
@@ -809,8 +817,8 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
 }): readonly (readonly string[])[] {
   const markers = [
     "name: ReviewRouter Codex OAuth",
-    "permissions:\n  id-token: write\n\njobs:",
-    "id-token: write",
+    "permissions: {}\n\njobs:",
+    "    permissions:\n      id-token: write",
     "mode: codex-oauth-rotating",
     `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
     "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",

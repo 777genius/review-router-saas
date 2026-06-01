@@ -38,10 +38,10 @@ const codexManifestPath = join(
   "manifest.json",
 );
 const codexPackageName = "@openai/codex";
-const codexVersion = "0.125.0";
+const codexVersion = "0.135.0";
 const codexPlatform = "linux-x64";
 const codexBinaryPathInArchive =
-  "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+  "package/vendor/x86_64-unknown-linux-musl/bin/codex";
 const maxGitHubFileBytes = 100 * 1024 * 1024;
 const requireBinary =
   process.env.REVIEWROUTER_CODEX_ROTATING_ACTION_REQUIRE_BINARY !== "0";
@@ -79,6 +79,10 @@ for (const forbidden of [
     forbidden,
     `action.yml must not contain ${forbidden}`,
   );
+}
+
+if (/\bdefault:\s*["']?codex-oauth-rotating["']?\b/.test(actionYml)) {
+  fail("action.yml must not default mode to codex-oauth-rotating");
 }
 
 for (const forbidden of [
@@ -129,7 +133,7 @@ if (requireBinary) {
   }
   if (!existsSync(codexArchivePath)) {
     fail(
-      `Bundled Codex linux-x64 archive is missing at ${codexArchivePath}. Build with REVIEWROUTER_CODEX_LINUX_X64_PACKAGE_TARBALL=/path/to/openai-codex-0.125.0-linux-x64.tgz pnpm action:build.`,
+      `Bundled Codex linux-x64 archive is missing at ${codexArchivePath}. Build with REVIEWROUTER_CODEX_LINUX_X64_PACKAGE_TARBALL=/path/to/openai-codex-0.135.0-linux-x64.tgz pnpm action:build.`,
     );
   }
   if (!existsSync(codexManifestPath)) {

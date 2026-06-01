@@ -64,6 +64,10 @@ export async function saveGitHubUserAuthorizationFromAccount(input: {
   const now = input.now ?? new Date();
   const refreshToken = readString(input.account.refresh_token);
   const appSlug = resolveGitHubUserAuthorizationAppSlug(env);
+  const githubUserId = input.principal.githubUserId;
+  if (!githubUserId) {
+    throw new Error("github_user_id_required");
+  }
 
   await input.prisma.gitHubUserAuthorization.upsert({
     where: {
@@ -73,7 +77,7 @@ export async function saveGitHubUserAuthorizationFromAccount(input: {
       },
     },
     update: {
-      githubUserId: BigInt(input.principal.githubUserId),
+      githubUserId: BigInt(githubUserId),
       encryptedAccessToken: encryptServerToken(accessToken, env),
       encryptedRefreshToken: refreshToken
         ? encryptServerToken(refreshToken, env)
@@ -91,7 +95,7 @@ export async function saveGitHubUserAuthorizationFromAccount(input: {
     },
     create: {
       userId: input.principal.userId,
-      githubUserId: BigInt(input.principal.githubUserId),
+      githubUserId: BigInt(githubUserId),
       appSlug,
       encryptedAccessToken: encryptServerToken(accessToken, env),
       encryptedRefreshToken: refreshToken

@@ -9,7 +9,7 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
     workspaceId: string,
   ): Promise<readonly RepositoryHealthInput[]> {
     const repositories = await this.prisma.repositoryConnection.findMany({
-      where: { workspaceId },
+      where: { workspaceId, provider: "github" },
       orderBy: { fullName: "asc" },
       select: {
         id: true,
@@ -41,38 +41,41 @@ export class PrismaRepositoryHealthRepository implements RepositoryHealthReposit
       },
     });
 
-    return repositories.map((repository) => {
+    return repositories.flatMap((repository) => {
+      if (!repository.installation) return [];
       const latestHealth = repository.actionHealth[0];
-      return {
-        repositoryId: repository.id,
-        fullName: repository.fullName,
-        owner: repository.owner,
-        name: repository.name,
-        defaultBranch: repository.defaultBranch,
-        githubInstallationId:
-          repository.installation.githubInstallationId.toString(),
-        setupStatus: repository.setupStatus,
-        expectedActionRef: "",
-        latestProviderHealth: latestHealth?.providerHealth ?? null,
-        latestProviderSetupState: latestHealth?.providerSetupState ?? null,
-        latestActionHealthReceivedAt: latestHealth?.receivedAt ?? null,
-        latestActionHealthTelemetry: latestHealth
-          ? {
-              configSource: latestHealth.configSource,
-              findingCounts: {
-                critical: latestHealth.findingCriticalCount,
-                major: latestHealth.findingMajorCount,
-                minor: latestHealth.findingMinorCount,
-                info: latestHealth.findingInfoCount,
-              },
-              commentCounts: {
-                inline: latestHealth.inlineCommentCount,
-                summary: latestHealth.summaryCommentCount,
-              },
-              skippedReasonCategory: latestHealth.skippedReasonCategory,
-            }
-          : null,
-      };
+      return [
+        {
+          repositoryId: repository.id,
+          fullName: repository.fullName,
+          owner: repository.owner,
+          name: repository.name,
+          defaultBranch: repository.defaultBranch,
+          githubInstallationId:
+            repository.installation.githubInstallationId.toString(),
+          setupStatus: repository.setupStatus,
+          expectedActionRef: "",
+          latestProviderHealth: latestHealth?.providerHealth ?? null,
+          latestProviderSetupState: latestHealth?.providerSetupState ?? null,
+          latestActionHealthReceivedAt: latestHealth?.receivedAt ?? null,
+          latestActionHealthTelemetry: latestHealth
+            ? {
+                configSource: latestHealth.configSource,
+                findingCounts: {
+                  critical: latestHealth.findingCriticalCount,
+                  major: latestHealth.findingMajorCount,
+                  minor: latestHealth.findingMinorCount,
+                  info: latestHealth.findingInfoCount,
+                },
+                commentCounts: {
+                  inline: latestHealth.inlineCommentCount,
+                  summary: latestHealth.summaryCommentCount,
+                },
+                skippedReasonCategory: latestHealth.skippedReasonCategory,
+              }
+            : null,
+        },
+      ];
     });
   }
 }

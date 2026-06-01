@@ -13,6 +13,7 @@ describe("inspectSetupPullRequestStatus", () => {
             merged: true,
             state: "closed",
             head: { ref: "reviewrouter/setup" },
+            base: { ref: "main" },
           },
         };
       }),
@@ -61,6 +62,38 @@ describe("inspectSetupPullRequestStatus", () => {
 
     expect(status).toBe("branch_deleted");
   });
+
+  it("accepts a setup pull request merged into a preferred setup branch", async () => {
+    const status = await inspectSetupPullRequestStatus(
+      setupInput(),
+      requester(async () => ({
+        data: {
+          merged: true,
+          state: "closed",
+          head: { ref: "reviewrouter/setup" },
+          base: { ref: "dev" },
+        },
+      })),
+    );
+
+    expect(status).toBe("merged");
+  });
+
+  it("reports a setup pull request merged outside allowed setup branches", async () => {
+    const status = await inspectSetupPullRequestStatus(
+      setupInput(),
+      requester(async () => ({
+        data: {
+          merged: true,
+          state: "closed",
+          head: { ref: "reviewrouter/setup" },
+          base: { ref: "feature/setup" },
+        },
+      })),
+    );
+
+    expect(status).toBe("wrong_base_branch");
+  });
 });
 
 function setupInput(): {
@@ -68,12 +101,14 @@ function setupInput(): {
   readonly name: string;
   readonly pullRequestNumber: number;
   readonly setupBranch: string;
+  readonly allowedBaseBranches: readonly string[];
 } {
   return {
     owner: "777genius",
     name: "example",
     pullRequestNumber: 1,
     setupBranch: "reviewrouter/setup",
+    allowedBaseBranches: ["dev", "develop", "main"],
   };
 }
 

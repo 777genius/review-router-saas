@@ -38,7 +38,7 @@ forbidSet("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH_BETA");
 forbidSet("REVIEW_ROUTER_CODEX_ROTATING_OAUTH_BETA_REPOSITORIES");
 requireGitHubAppPrivateKey();
 forbidProviderSecretsInSaaS();
-requireFullShaActionRef();
+requireHostedActionRef();
 
 if (errors.length > 0) {
   console.error("ReviewRouter hosted readiness failed:");
@@ -199,7 +199,7 @@ function forbidProviderSecretsInSaaS() {
   }
 }
 
-function requireFullShaActionRef() {
+function requireHostedActionRef() {
   const explicitRef = resolveHostedActionRef();
   if (!explicitRef) {
     errors.push(
@@ -209,7 +209,7 @@ function requireFullShaActionRef() {
   }
   if (!isHostedActionRef(explicitRef)) {
     errors.push(
-      "REVIEW_ROUTER_ACTION_REF must be 777genius/review-router@v1, a v1.x.y release tag, or a full 40-character commit SHA in hosted production.",
+      "REVIEW_ROUTER_ACTION_REF must be 777genius/review-router@main, 777genius/review-router@v1, a v1.x.y release tag, or a full 40-character commit SHA in hosted production.",
     );
   }
   const expectedOwnerRepo = explicitRef.split("@", 1)[0]?.toLowerCase();
@@ -242,7 +242,7 @@ function resolveHostedActionRef() {
 }
 
 function isHostedActionRef(actionRef) {
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@(v1|v1\.[0-9]+\.[0-9]+|[a-f0-9]{40})$/i.test(
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@(main|v1|v1\.[0-9]+\.[0-9]+|[a-f0-9]{40})$/i.test(
     actionRef,
   );
 }

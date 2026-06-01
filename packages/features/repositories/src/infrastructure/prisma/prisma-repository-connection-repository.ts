@@ -34,6 +34,9 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
         where: { githubRepositoryId: BigInt(repository.githubRepositoryId) },
         update: {
           workspaceId: installation.workspaceId,
+          provider: "github",
+          sourceBaseUrl: "https://github.com",
+          externalRepositoryId: repository.githubRepositoryId,
           installationId: installation.id,
           owner: repository.owner,
           name: repository.name,
@@ -47,6 +50,9 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
         },
         create: {
           workspaceId: installation.workspaceId,
+          provider: "github",
+          sourceBaseUrl: "https://github.com",
+          externalRepositoryId: repository.githubRepositoryId,
           installationId: installation.id,
           githubRepositoryId: BigInt(repository.githubRepositoryId),
           owner: repository.owner,
@@ -95,7 +101,12 @@ export class PrismaRepositoryConnectionRepository implements RepositoryConnectio
     return repositories.map((repository) => ({
       id: repository.id,
       workspaceId: repository.workspaceId,
-      githubRepositoryId: repository.githubRepositoryId.toString(),
+      provider: repository.provider,
+      externalRepositoryId: repository.externalRepositoryId,
+      sourceBaseUrl: repository.sourceBaseUrl,
+      githubRepositoryId:
+        repository.githubRepositoryId?.toString() ??
+        repository.externalRepositoryId,
       owner: repository.owner,
       name: repository.name,
       fullName: repository.fullName,

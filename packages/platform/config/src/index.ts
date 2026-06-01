@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 export const REVIEW_ROUTER_ACTION_REPOSITORY = "777genius/review-router";
-export const DEFAULT_REVIEW_ROUTER_ACTION_VERSION = "v1";
+export const DEFAULT_REVIEW_ROUTER_ACTION_VERSION = "main";
 
 export const runtimeEnvSchema = z.object({
   NODE_ENV: z

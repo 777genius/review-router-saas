@@ -14,6 +14,9 @@ export type GitHubRepositorySnapshot = {
 export type RepositoryConnectionSummary = GitHubRepositorySnapshot & {
   readonly id: string;
   readonly workspaceId: string;
+  readonly provider: "github" | "gitlab";
+  readonly externalRepositoryId: string;
+  readonly sourceBaseUrl: string;
   readonly selected: boolean;
   readonly setupStatus:
     | "not_configured"

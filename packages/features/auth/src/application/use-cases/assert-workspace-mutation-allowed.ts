@@ -3,6 +3,7 @@ import type { WorkspaceAccessRepositoryPort } from "../ports/workspace-access-re
 
 export type AssertWorkspaceMutationAllowedInput = {
   readonly workspaceId: string;
+  readonly userId?: string | undefined;
   readonly githubUserId: string;
   readonly githubLogin: string;
   readonly localAdminGithubLogins?: readonly string[];
@@ -14,11 +15,15 @@ export async function assertWorkspaceMutationAllowed(
     readonly workspaceAccess: WorkspaceAccessRepositoryPort;
   },
 ): Promise<{ readonly allowed: true; readonly reason: string }> {
-  const role =
-    await dependencies.workspaceAccess.findWorkspaceRoleByGitHubUserId({
-      workspaceId: input.workspaceId,
-      githubUserId: input.githubUserId,
-    });
+  const role = input.userId
+    ? await dependencies.workspaceAccess.findWorkspaceRoleByUserId({
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+      })
+    : await dependencies.workspaceAccess.findWorkspaceRoleByGitHubUserId({
+        workspaceId: input.workspaceId,
+        githubUserId: input.githubUserId,
+      });
   const decision = canMutateWorkspace({ ...input, role });
 
   if (!decision.allowed) {

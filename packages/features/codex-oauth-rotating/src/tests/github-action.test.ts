@@ -58,6 +58,9 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     expect(actionYml).toContain("using: node24");
     expect(actionYml).toContain("main: action-dist/index.cjs");
+    expect(actionYml).not.toMatch(
+      /\bdefault:\s*["']?codex-oauth-rotating["']?\b/,
+    );
     expect(actionSource).toContain("action-dist[\\\\/]index\\.cjs");
     expect(actionSource).not.toContain("process.env.GITHUB_ACTION_PATH");
     expect(actionYml).toContain("provider-instance-id:\n    description:");
@@ -827,6 +830,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         "      configIncludesProxy: config.includes('model_provider = \"reviewrouter_proxy\"'),",
         "      configIncludesApprovalNever: config.includes('approval_policy = \"never\"'),",
         "      configIncludesReadOnly: config.includes('sandbox_mode = \"read-only\"'),",
+        "      configIncludesShellSnapshotDisabled: config.includes('shell_snapshot = false'),",
         "      configIncludesToken: config.includes('refreshed-access-token'),",
         "      inheritedOpenAi: process.env.OPENAI_API_KEY,",
         "    }));",
@@ -913,6 +917,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  configIncludesProxy: config.includes('model_provider = \"reviewrouter_proxy\"'),",
         "  configIncludesApprovalNever: config.includes('approval_policy = \"never\"'),",
         "  configIncludesReadOnly: config.includes('sandbox_mode = \"read-only\"'),",
+        "  configIncludesShellSnapshotDisabled: config.includes('shell_snapshot = false'),",
         "  configIncludesToken: config.includes('refreshed-access-token'),",
         "  inheritedOpenAi: process.env.OPENAI_API_KEY,",
         "  claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,",
@@ -930,6 +935,16 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  providers: process.env.REVIEW_PROVIDERS,",
         "  runtimeMode: process.env.REVIEWROUTER_RUNTIME_CONFIG_MODE,",
         "  commentTokenMode: process.env.REVIEWROUTER_COMMENT_TOKEN_MODE,",
+        "  commentTokenRefreshUrl: process.env.REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL,",
+        "  commentTokenLeaseId: process.env.REVIEWROUTER_COMMENT_TOKEN_LEASE_ID,",
+        "  commentTokenProviderInstanceId: process.env.REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID,",
+        "  scmProvider: process.env.REVIEWROUTER_SCM_PROVIDER,",
+        "  findingsArtifactPath: process.env.REVIEWROUTER_FINDINGS_ARTIFACT_PATH,",
+        "  repositoryFullName: process.env.REVIEWROUTER_REPOSITORY_FULL_NAME,",
+        "  changeRequestExternalId: process.env.REVIEWROUTER_CHANGE_REQUEST_EXTERNAL_ID,",
+        "  reviewHeadSha: process.env.REVIEWROUTER_HEAD_SHA,",
+        "  reviewBaseSha: process.env.REVIEWROUTER_BASE_SHA,",
+        "  reviewMarker: process.env.REVIEWROUTER_REVIEW_MARKER,",
         "  runtimeConfigVersion: process.env.REVIEWROUTER_CONFIG_VERSION,",
         "}));",
         "process.stdout.write('runtime marker visible\\n');",
@@ -1110,6 +1125,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         configIncludesProxy: false,
         configIncludesApprovalNever: true,
         configIncludesReadOnly: true,
+        configIncludesShellSnapshotDisabled: true,
         configIncludesToken: false,
         githubToken: "ghs_comment_token",
         githubOutputInsideHome: true,
@@ -1121,6 +1137,18 @@ describe("Codex rotating GitHub Action runtime", () => {
           "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
         runtimeMode: "static",
         commentTokenMode: "github-token",
+        commentTokenRefreshUrl:
+          "https://api.reviewrouter.site/api/action/v1/codex-oauth/comment-token",
+        commentTokenLeaseId: "lease_1",
+        commentTokenProviderInstanceId: "codex-rotating:123456",
+        scmProvider: "github",
+        findingsArtifactPath: "reviewrouter-findings.json",
+        repositoryFullName: "777genius/agent-teams-ai",
+        changeRequestExternalId: "118",
+        reviewHeadSha: "0123456789abcdef0123456789abcdef01234567",
+        reviewBaseSha: "abcdef0123456789abcdef0123456789abcdef01",
+        reviewMarker:
+          "reviewrouter:codex-oauth-rotating head=0123456789abcdef0123456789abcdef01234567",
         runtimeConfigVersion: "7",
       });
       expect(reviewEnv.inheritedOpenAi).toBeUndefined();
@@ -1622,7 +1650,7 @@ async function writeCodexManifest(binaryPath: string): Promise<void> {
   const archivePath = join(bundleDir, "codex-linux-x64.tgz");
   const stagingDir = await mkdtemp(join(tmpdir(), "reviewrouter-codex-tar-"));
   const binaryPathInArchive =
-    "package/vendor/x86_64-unknown-linux-musl/codex/codex";
+    "package/vendor/x86_64-unknown-linux-musl/bin/codex";
   const stagedBinary = join(stagingDir, binaryPathInArchive);
   await mkdir(join(stagedBinary, ".."), { recursive: true });
   await writeFile(stagedBinary, bytes, { mode: 0o700 });
@@ -1635,7 +1663,7 @@ async function writeCodexManifest(binaryPath: string): Promise<void> {
       {
         protocolVersion: 1,
         packageName: "@openai/codex",
-        version: "0.125.0",
+        version: "0.135.0",
         platform: "linux-x64",
         archive: "codex-linux-x64.tgz",
         archiveSize: archiveBytes.byteLength,

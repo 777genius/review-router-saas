@@ -1,6 +1,6 @@
 import type { RuntimeAdapterManifest } from "@reviewrouter/subscription-runtime-core";
 import {
-  codexAgentCapabilities,
+  codexJsonAgentCapabilities,
   codexSessionCapabilities,
 } from "./capabilities";
 
@@ -12,11 +12,11 @@ export const codexProviderManifest = {
   protocolVersion: 1,
   capabilities: {
     session: codexSessionCapabilities,
-    agent: codexAgentCapabilities,
+    agent: codexJsonAgentCapabilities,
   },
   experimental: false,
   minimumCoreVersion: "0.0.0",
 } satisfies RuntimeAdapterManifest<{
   readonly session: typeof codexSessionCapabilities;
-  readonly agent: typeof codexAgentCapabilities;
+  readonly agent: typeof codexJsonAgentCapabilities;
 }>;

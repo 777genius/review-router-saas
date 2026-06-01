@@ -58,6 +58,7 @@ export class PrismaMemoryPermission implements MemoryPermissionPort {
   }
 
   private isLocalAdmin(actor: MemoryActor): boolean {
+    if (actor.kind !== "github_user") return false;
     if (!actor.login) return false;
     return (
       this.options.localAdminGithubLogins?.some(
@@ -106,6 +107,9 @@ export class PrismaMemoryPermission implements MemoryPermissionPort {
 function workspaceMemberActorFilter(
   actor: MemoryActor,
 ): Prisma.WorkspaceMemberWhereInput[] | null {
+  if (actor.kind === "workspace_user") {
+    return [{ userId: actor.id }];
+  }
   const filters: Prisma.WorkspaceMemberWhereInput[] = [];
   if (actor.githubUserId && /^\d+$/.test(actor.githubUserId)) {
     filters.push({ user: { githubUserId: BigInt(actor.githubUserId) } });

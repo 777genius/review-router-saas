@@ -45,7 +45,14 @@ export function providerSessionDriverContract(
     it("declares capabilities before runtime starts", () => {
       const fixture = factory();
       expect(fixture.driver.capabilities.providerId).toBeTruthy();
-      expect(fixture.driver.capabilities.sessionArtifactKinds.length).toBe(1);
+      expect(fixture.driver.capabilities.sessionRequirement.kind).toBe(
+        "required",
+      );
+      if (fixture.driver.capabilities.sessionRequirement.kind === "required") {
+        expect(
+          fixture.driver.capabilities.sessionRequirement.artifactKinds.length,
+        ).toBeGreaterThan(0);
+      }
     });
   });
 }

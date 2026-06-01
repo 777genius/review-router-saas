@@ -9,7 +9,67 @@ export type SetupPullRequestStatus =
   | "merged"
   | "open"
   | "closed"
-  | "branch_deleted";
+  | "branch_deleted"
+  | "wrong_base_branch";
+
+export type SetupPullRequestInspection = {
+  readonly status: SetupPullRequestStatus;
+  readonly baseBranch: string | null;
+};
+
+export async function inspectSetupPullRequest(
+  input: {
+    readonly owner: string;
+    readonly name: string;
+    readonly pullRequestNumber: number;
+    readonly setupBranch: string | null;
+    readonly allowedBaseBranches?: readonly string[];
+  },
+  octokit: GitHubRequester,
+): Promise<SetupPullRequestInspection> {
+  const setupBranch = input.setupBranch;
+  const pullRequest = await readPullRequest(input, octokit);
+  if (!pullRequest) {
+    if (setupBranch) {
+      return {
+        status: (await setupBranchExists({ ...input, setupBranch }, octokit))
+          ? "closed"
+          : "branch_deleted",
+        baseBranch: null,
+      };
+    }
+    return { status: "closed", baseBranch: null };
+  }
+
+  const setupBranchMatches =
+    !setupBranch || pullRequest.headRef === setupBranch;
+  if (
+    setupBranchMatches &&
+    input.allowedBaseBranches &&
+    input.allowedBaseBranches.length > 0 &&
+    pullRequest.baseRef &&
+    !input.allowedBaseBranches.includes(pullRequest.baseRef)
+  ) {
+    return { status: "wrong_base_branch", baseBranch: pullRequest.baseRef };
+  }
+
+  if (pullRequest.merged && setupBranchMatches) {
+    return { status: "merged", baseBranch: pullRequest.baseRef };
+  }
+
+  if (
+    setupBranch &&
+    !(await setupBranchExists({ ...input, setupBranch }, octokit))
+  ) {
+    return { status: "branch_deleted", baseBranch: pullRequest.baseRef };
+  }
+
+  if (pullRequest.state === "closed") {
+    return { status: "closed", baseBranch: pullRequest.baseRef };
+  }
+
+  return { status: "open", baseBranch: pullRequest.baseRef };
+}
 
 export async function inspectSetupPullRequestStatus(
   input: {
@@ -17,38 +77,11 @@ export async function inspectSetupPullRequestStatus(
     readonly name: string;
     readonly pullRequestNumber: number;
     readonly setupBranch: string | null;
+    readonly allowedBaseBranches?: readonly string[];
   },
   octokit: GitHubRequester,
 ): Promise<SetupPullRequestStatus> {
-  const setupBranch = input.setupBranch;
-  const pullRequest = await readPullRequest(input, octokit);
-  if (!pullRequest) {
-    if (setupBranch) {
-      return (await setupBranchExists({ ...input, setupBranch }, octokit))
-        ? "closed"
-        : "branch_deleted";
-    }
-    return "closed";
-  }
-
-  const setupBranchMatches =
-    !setupBranch || pullRequest.headRef === setupBranch;
-  if (pullRequest.merged && setupBranchMatches) {
-    return "merged";
-  }
-
-  if (
-    setupBranch &&
-    !(await setupBranchExists({ ...input, setupBranch }, octokit))
-  ) {
-    return "branch_deleted";
-  }
-
-  if (pullRequest.state === "closed") {
-    return "closed";
-  }
-
-  return "open";
+  return (await inspectSetupPullRequest(input, octokit)).status;
 }
 
 async function readPullRequest(
@@ -62,6 +95,7 @@ async function readPullRequest(
   readonly merged: boolean;
   readonly state: string | null;
   readonly headRef: string | null;
+  readonly baseRef: string | null;
 } | null> {
   try {
     const response = await octokit.request(
@@ -108,21 +142,25 @@ function parsePullRequest(data: unknown): {
   readonly merged: boolean;
   readonly state: string | null;
   readonly headRef: string | null;
+  readonly baseRef: string | null;
 } {
   if (typeof data !== "object" || data === null) {
-    return { merged: false, state: null, headRef: null };
+    return { merged: false, state: null, headRef: null, baseRef: null };
   }
 
   const pullRequest = data as {
     readonly merged?: unknown;
     readonly state?: unknown;
     readonly head?: { readonly ref?: unknown };
+    readonly base?: { readonly ref?: unknown };
   };
   return {
     merged: pullRequest.merged === true,
     state: typeof pullRequest.state === "string" ? pullRequest.state : null,
     headRef:
       typeof pullRequest.head?.ref === "string" ? pullRequest.head.ref : null,
+    baseRef:
+      typeof pullRequest.base?.ref === "string" ? pullRequest.base.ref : null,
   };
 }
 
