@@ -27,47 +27,31 @@ describe("sync-render-action-ref", () => {
     ).resolves.toBe(`777genius/review-router@${shaA}`);
   });
 
-  it("resolves explicit stable tags to full SHAs", async () => {
-    const calls: string[] = [];
-    const result = await resolveActionRef(
-      {
+  it("keeps explicit hosted channel refs as channels", async () => {
+    await expect(
+      resolveActionRef({
+        actionRef: "777genius/review-router@main",
+        actionRepo: "777genius/review-router",
+        branch: "main",
+      }),
+    ).resolves.toBe("777genius/review-router@main");
+    await expect(
+      resolveActionRef({
         actionRef: "777genius/review-router@v1",
         actionRepo: "777genius/review-router",
         branch: "main",
-      },
-      {
-        execFile: async (_command, args) => {
-          calls.push(args[2] ?? "");
-          return { stdout: `${shaB}\trefs/tags/v1^{}\n`, stderr: "" };
-        },
-      },
-    );
-
-    expect(result).toBe(`777genius/review-router@${shaB}`);
-    expect(calls).toEqual(["refs/tags/v1^{}"]);
+      }),
+    ).resolves.toBe("777genius/review-router@v1");
   });
 
-  it("falls back to lightweight tag refs when dereference is absent", async () => {
-    const calls: string[] = [];
-    const result = await resolveActionRef(
-      {
-        actionRef: "777genius/review-router@v1.0.40",
+  it("uses the hosted main branch ref by default", async () => {
+    await expect(
+      resolveActionRef({
+        actionRef: "",
         actionRepo: "777genius/review-router",
         branch: "main",
-      },
-      {
-        execFile: async (_command, args) => {
-          calls.push(args[2] ?? "");
-          return {
-            stdout: args[2] === "refs/tags/v1.0.40" ? `${shaC}\tref\n` : "",
-            stderr: "",
-          };
-        },
-      },
-    );
-
-    expect(result).toBe(`777genius/review-router@${shaC}`);
-    expect(calls).toEqual(["refs/tags/v1.0.40^{}", "refs/tags/v1.0.40"]);
+      }),
+    ).resolves.toBe("777genius/review-router@main");
   });
 
   it("builds a bounded trusted ref window from current production refs", () => {
