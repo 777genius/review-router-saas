@@ -13,9 +13,9 @@ on:
         default: true
         type: boolean
       sync_production_action_ref:
-        description: Sync production trusted Action SHA after release
+        description: Sync production Action ref override after release
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -166,7 +166,7 @@ jobs:
           set -euo pipefail
 
           if [[ -z "${RENDER_API_KEY:-}" ]]; then
-            echo "::error::RENDER_API_KEY secret is required when sync_production_action_ref is enabled"
+            echo "::error::RENDER_API_KEY secret is required when sync_production_action_ref override is enabled"
             exit 1
           fi
 

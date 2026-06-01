@@ -114,9 +114,9 @@ describe("resolveGitLabCodexSeedScriptUrl", () => {
     );
   });
 
-  it("defaults the GitLab seed script redirect to the stable action version", () => {
+  it("defaults the GitLab seed script redirect to the live action branch", () => {
     expect(resolveGitLabCodexInstallRedirect({} as NodeJS.ProcessEnv)).toBe(
-      "https://raw.githubusercontent.com/777genius/review-router/v1/scripts/seed-codex-gitlab-auth.sh",
+      "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-gitlab-auth.sh",
     );
   });
 

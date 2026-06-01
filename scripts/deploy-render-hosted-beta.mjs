@@ -45,7 +45,7 @@ function resolveHostedActionRef(source) {
   const version =
     source.REVIEW_ROUTER_ACTION_VERSION ??
     process.env.REVIEW_ROUTER_ACTION_VERSION ??
-    "v1";
+    "main";
   return `777genius/review-router@${version}`;
 }
 

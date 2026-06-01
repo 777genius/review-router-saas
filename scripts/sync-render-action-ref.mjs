@@ -1,12 +1,9 @@
 /* global fetch */
 
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
 const renderApi = "https://api.render.com/v1";
 const defaultActionRepository = "777genius/review-router";
 const defaultBranch = "main";
@@ -21,9 +18,9 @@ function usage() {
   pnpm ops:sync-action-ref [options]
 
 Options:
-  --action-ref owner/repo@ref          Use an explicit action ref. Hosted refs support v1, v1.x.y, or a full SHA.
-  --action-repo owner/repo             Resolve refs/heads/main from this action repo. Default: ${defaultActionRepository}
-  --branch name                        Branch to resolve when --action-ref is omitted. Default: ${defaultBranch}
+  --action-ref owner/repo@ref          Use an explicit action ref. Hosted refs support main, v1, v1.x.y, or a full SHA.
+  --action-repo owner/repo             Build the default branch action ref from this repo. Default: ${defaultActionRepository}
+  --branch name                        Branch ref to use when --action-ref is omitted. Default: ${defaultBranch}
   --services a,b,c                     Render service names. Default: ${defaultServiceNames.join(",")}
   --allowlist-window n                 Keep n trusted refs including the new ref. Default: 2
   --no-deploy                          Update env vars without triggering Render deploys.
@@ -226,45 +223,28 @@ function envVarValue(data) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-async function resolveActionRef(input, deps = { execFile: execFileAsync }) {
+async function resolveActionRef(input) {
   if (input.actionRef) {
-    const normalized = normalizeHostedActionRef(
-      input.actionRef,
-      "--action-ref",
-    );
-    if (isFullShaActionRef(normalized)) {
-      return normalizeFullShaActionRef(normalized, "--action-ref");
-    }
-    const { ownerRepo, ref } = parseHostedActionRef(normalized);
-    const sha = await resolveGitRefSha(ownerRepo, `refs/tags/${ref}^{}`, deps);
-    const fallbackSha =
-      sha || (await resolveGitRefSha(ownerRepo, `refs/tags/${ref}`, deps));
-    if (!fallbackSha) {
-      throw new Error(`Could not resolve ${ownerRepo}@${ref} to a commit SHA`);
-    }
-    return normalizeFullShaActionRef(`${ownerRepo}@${fallbackSha}`, "git");
+    return normalizeHostedActionRef(input.actionRef, "--action-ref");
   }
-  const sha = await resolveGitRefSha(
-    input.actionRepo,
-    `refs/heads/${input.branch}`,
-    deps,
-  );
-  if (!sha) {
-    throw new Error(
-      `Could not resolve ${input.actionRepo} refs/heads/${input.branch}`,
-    );
-  }
-  return normalizeFullShaActionRef(`${input.actionRepo}@${sha}`, "git");
+  return normalizeHostedActionRef(`${input.actionRepo}@${input.branch}`, "git");
 }
 
-async function resolveGitRefSha(ownerRepo, gitRef, deps) {
-  const { stdout } = await deps.execFile("git", [
-    "ls-remote",
-    `https://github.com/${ownerRepo}.git`,
-    gitRef,
-  ]);
-  const sha = stdout.trim().split(/\s+/)[0];
-  return /^[a-f0-9]{40}$/i.test(sha) ? sha.toLowerCase() : "";
+function normalizeActionOwnerRepo(actionRef) {
+  const ownerRepo = actionRef.split("@", 1)[0];
+  if (!ownerRepo) {
+    throw new Error("action ref must be owner/repo@ref");
+  }
+  return ownerRepo;
+}
+
+function assertSameActionRepository(actionRef, expectedOwnerRepo) {
+  const ownerRepo = normalizeActionOwnerRepo(actionRef);
+  if (ownerRepo !== expectedOwnerRepo) {
+    throw new Error(
+      `Ref ${actionRef} does not use the same action repository as ${expectedOwnerRepo}`,
+    );
+  }
 }
 
 function buildTrustedRefs(input) {
@@ -279,14 +259,10 @@ function buildTrustedRefs(input) {
     .map((actionRef) =>
       normalizeFullShaActionRef(actionRef, "REVIEW_ROUTER_ALLOWED_ACTION_REFS"),
     );
-  const ownerRepo = input.nextActionRef.split("@", 1)[0];
+  const ownerRepo = normalizeActionOwnerRepo(input.nextActionRef);
   const unique = [];
   for (const actionRef of candidates) {
-    if (actionRef.split("@", 1)[0] !== ownerRepo) {
-      throw new Error(
-        `Ref ${actionRef} does not use the same action repository as ${input.nextActionRef}`,
-      );
-    }
+    assertSameActionRepository(actionRef, ownerRepo);
     if (!unique.includes(actionRef)) {
       unique.push(actionRef);
     }
@@ -310,22 +286,14 @@ function normalizeHostedActionRef(actionRef, source) {
     .toLowerCase();
   if (!isHostedActionRef(normalized)) {
     throw new Error(
-      `${source} must be owner/repo@v1, owner/repo@v1.x.y, or owner/repo@40-character-sha`,
+      `${source} must be owner/repo@main, owner/repo@v1, owner/repo@v1.x.y, or owner/repo@40-character-sha`,
     );
   }
   return normalized;
 }
 
-function parseHostedActionRef(actionRef) {
-  const [ownerRepo, ref] = actionRef.split("@");
-  if (!ownerRepo || !ref) {
-    throw new Error("action ref must be owner/repo@ref");
-  }
-  return { ownerRepo, ref };
-}
-
 function isHostedActionRef(actionRef) {
-  return /^[a-z0-9_.-]+\/[a-z0-9_.-]+@(v1|v1\.[0-9]+\.[0-9]+|[a-f0-9]{40})$/.test(
+  return /^[a-z0-9_.-]+\/[a-z0-9_.-]+@(main|v1|v1\.[0-9]+\.[0-9]+|[a-f0-9]{40})$/.test(
     String(actionRef ?? "")
       .trim()
       .toLowerCase(),
