@@ -244,7 +244,7 @@ export default async function HomePage(): Promise<React.ReactElement> {
             </LoadingLinkButton>
           )}
           <LoadingLinkButton
-            href="/setup?source=gitlab"
+            href="/setup/gitlab"
             size="lg"
             className="home-install-cta home-install-cta--gitlab setup-blueprint__source-cta"
             pendingLabel="Opening GitLab setup..."

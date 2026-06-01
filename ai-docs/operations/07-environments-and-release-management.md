@@ -226,7 +226,7 @@ errors.
 
 Codex OAuth rotating workflows must match the configured ReviewRouter Action
 ref, normally `777genius/review-router@main`. The SaaS control plane validates
-that ref during GitHub OIDC prelease. This is intentional: a workflow that
+that ref during GitHub OIDC preflight. This is intentional: a workflow that
 silently switches to an untrusted Action ref must fail closed instead of
 receiving checkout/comment/writeback tokens.
 

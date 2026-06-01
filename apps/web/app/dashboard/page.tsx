@@ -1854,7 +1854,7 @@ function WorkspaceCard({
                     dashboard.
                   </p>
                   <LinkButton
-                    href="/setup?source=gitlab"
+                    href={`/setup/gitlab?workspaceId=${encodeURIComponent(workspace.id)}`}
                     variant="outline"
                     size="sm"
                     className="mt-3 border-orange-300/35"
@@ -2959,11 +2959,15 @@ function RepositoryTable({
                 <div className="repository-setup-row-header grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <span
-                      title="GitHub repository"
+                      title={`${
+                        repository.provider === "gitlab" ? "GitLab" : "GitHub"
+                      } repository`}
                       className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-200/15 bg-cyan-300/[0.07]"
                     >
                       <SourceProviderLogo
-                        provider="github"
+                        provider={
+                          repository.provider === "gitlab" ? "gitlab" : "github"
+                        }
                         className="h-[1.125rem] w-[1.125rem]"
                       />
                     </span>
