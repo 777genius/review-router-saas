@@ -254,6 +254,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             providerMaxParallel: true,
             inlineMinAgreement: true,
             targetTokensPerBatch: true,
+            reviewLanguage: true,
             providers: {
               orderBy: { order: "asc" },
               select: {
@@ -300,6 +301,7 @@ export class PrismaActionControlPlaneRepository implements ActionControlPlaneRep
             version.targetTokensPerBatch ??
             safeDefaultReviewConfiguration.limits.targetTokensPerBatch,
         },
+        reviewLanguage: version.reviewLanguage ?? undefined,
       }),
     };
   }

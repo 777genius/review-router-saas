@@ -56,6 +56,7 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
               providerMaxParallel: 1,
               inlineMinAgreement: 1,
               targetTokensPerBatch: 50000,
+              reviewLanguage: "Russian",
               providers: [
                 {
                   providerKind: "claude",
@@ -84,6 +85,7 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
       authMode: "claude_code_oauth",
       model: "sonnet",
     });
+    expect(record?.config.reviewLanguage).toBe("Russian");
     expect(record?.config.providers).toHaveLength(1);
     expect(record?.config.providers[0]?.requiredHealthy).toBe(true);
   });

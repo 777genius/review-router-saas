@@ -1868,6 +1868,7 @@ describe("action control plane", () => {
           fastMode: false,
         },
       ],
+      reviewLanguage: "Russian",
     });
 
     const config = await getActionRuntimeConfig(
@@ -1890,6 +1891,7 @@ describe("action control plane", () => {
       },
       runtimeEnv: {
         REVIEW_AUTH_MODE: "codex-oauth-rotating",
+        REVIEW_OUTPUT_LANGUAGE: "Russian",
       },
     });
   });
