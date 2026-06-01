@@ -140,6 +140,10 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflowContent).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
     );
+    expect(interactionWorkflowContent).toContain("mode: interaction-preflight");
+    expect(interactionWorkflowContent).toContain("mode: interaction");
+    expect(interactionWorkflowContent).not.toContain("provider-instance-id:");
+    expect(interactionWorkflowContent).not.toContain("auth-json:");
     expect(interactionWorkflowContent).not.toContain("secrets.CODEX_AUTH_JSON");
     expect(interactionWorkflowContent).not.toContain("OPENAI_API_KEY");
   });
@@ -200,8 +204,12 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
     );
+    expect(workflow).toContain("mode: interaction-preflight");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
+    expect(workflow).toContain("mode: interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).not.toContain("provider-instance-id:");
+    expect(workflow).not.toContain("auth-json:");
     expect(workflow).not.toContain("secrets.CODEX_AUTH_JSON");
     expect(workflow).not.toContain("OPENAI_API_KEY");
   });
@@ -317,6 +325,7 @@ describe("renderReviewRouterWorkflow", () => {
       "startsWith(github.event.comment.body, '/rr ')",
     );
     expect(workflow).toContain("Preflight ReviewRouter interaction");
+    expect(workflow).toContain("mode: interaction-preflight");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
     expect(workflow).toContain(
       "REVIEW_ROUTER_DISCUSSION_MODE: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",
@@ -331,6 +340,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("CODEX_AUTH_JSON_PRESENT");
     expect(workflow).toContain("OPENAI_API_KEY_PRESENT");
     expect(workflow).toContain("steps.preflight.outputs.should_run == 'true'");
+    expect(workflow).toContain("mode: interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
     expect(workflow).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
     expect(workflow).toContain(

@@ -256,6 +256,8 @@ jobs:
     steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
         id: preflight
         uses: ${options.actionRef}
+        with:
+          mode: interaction-preflight
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"
@@ -316,6 +318,8 @@ jobs:
       - name: Run ReviewRouter interaction
         if: \${{ steps.preflight.outputs.should_run == 'true' }}
         uses: ${options.actionRef}
+        with:
+          mode: interaction
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
@@ -368,6 +372,8 @@ jobs:
     steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
         id: preflight
         uses: ${options.actionRef}
+        with:
+          mode: interaction-preflight
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"
@@ -404,6 +410,8 @@ jobs:
       - name: Run ReviewRouter interaction
         if: \${{ steps.preflight.outputs.should_run == 'true' }}
         uses: ${options.actionRef}
+        with:
+          mode: interaction
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"

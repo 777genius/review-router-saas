@@ -81,6 +81,10 @@ for (const forbidden of [
   );
 }
 
+if (/\bdefault:\s*["']?codex-oauth-rotating["']?\b/.test(actionYml)) {
+  fail("action.yml must not default mode to codex-oauth-rotating");
+}
+
 for (const forbidden of [
   "npx",
   "@openai/codex",

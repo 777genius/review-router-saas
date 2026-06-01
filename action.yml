@@ -4,20 +4,19 @@ inputs:
   mode:
     description: Runtime mode.
     required: false
-    default: codex-oauth-rotating
   api-url:
     description: ReviewRouter API URL.
-    required: true
+    required: false
   provider-instance-id:
     description: ReviewRouter provider instance id.
-    required: true
+    required: false
   workflow-schema-version:
     description: ReviewRouter workflow schema version.
     required: false
     default: "1"
   auth-json:
     description: Codex OAuth auth JSON.
-    required: true
+    required: false
   claude-code-oauth-token:
     description: Claude Code OAuth token for hybrid reviews.
     required: false

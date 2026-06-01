@@ -58,6 +58,9 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     expect(actionYml).toContain("using: node24");
     expect(actionYml).toContain("main: action-dist/index.cjs");
+    expect(actionYml).not.toMatch(
+      /\bdefault:\s*["']?codex-oauth-rotating["']?\b/,
+    );
     expect(actionSource).toContain("action-dist[\\\\/]index\\.cjs");
     expect(actionSource).not.toContain("process.env.GITHUB_ACTION_PATH");
     expect(actionYml).toContain("provider-instance-id:\n    description:");
