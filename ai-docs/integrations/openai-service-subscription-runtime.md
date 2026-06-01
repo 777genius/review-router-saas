@@ -20,15 +20,15 @@ Verified dependency install:
 ```bash
 npm install --save \
   @openai/codex@0.135.0 \
-  git+https://github.com/777genius/subscription-runtime-worker-codex.git#main \
-  git+https://github.com/777genius/subscription-runtime-queue-bull.git#main
+  https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
 ```
 
 Verified checks:
 
 - `npm run build` passes.
-- ESM import of `@reviewrouter/subscription-runtime-worker-codex` passes.
-- ESM import of `@reviewrouter/subscription-runtime-queue-bull` passes.
+- ESM import of `@777genius/subscription-runtime/worker-codex` passes.
+- ESM import of `@777genius/subscription-runtime/worker-core` passes.
+- ESM import of `@777genius/subscription-runtime/queue-bullmq` passes.
 - packaged Codex binary is available as `/app/node_modules/.bin/codex`.
 - Docker image builds on the service's existing `node:20.18.0-alpine` base.
 - Docker runtime can start a file-backed Codex worker as non-root user.
@@ -188,8 +188,8 @@ leases, worker slots, and execution.
 
 ```ts
 import { Inject, Module, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { BoundedSubscriptionWorkerPool } from "@reviewrouter/subscription-runtime-worker-core";
-import { FileBackendCodexWorker } from "@reviewrouter/subscription-runtime-worker-codex";
+import { BoundedSubscriptionWorkerPool } from "@777genius/subscription-runtime/worker-core";
+import { FileBackendCodexWorker } from "@777genius/subscription-runtime/worker-codex";
 
 @Module({
   providers: [
@@ -252,7 +252,7 @@ Bull processor sketch:
 import { Process, Processor } from "@nestjs/bull";
 import { Inject } from "@nestjs/common";
 import { Job } from "bull";
-import { BoundedSubscriptionWorkerPool } from "@reviewrouter/subscription-runtime-worker-core";
+import { BoundedSubscriptionWorkerPool } from "@777genius/subscription-runtime/worker-core";
 
 @Processor("codex-subscription")
 export class CodexJobProcessor {
