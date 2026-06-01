@@ -23,6 +23,7 @@ Options:
   --branch name                        Branch ref to use when --action-ref is omitted. Default: ${defaultBranch}
   --services a,b,c                     Render service names. Default: ${defaultServiceNames.join(",")}
   --allowlist-window n                 Keep n trusted refs including the new ref. Default: 2
+  --extra-allowed-action-ref ref        Keep an additional full-SHA action ref in the allowlist. Can be repeated or comma-separated.
   --no-deploy                          Update env vars without triggering Render deploys.
   --wait                               Wait for requested Render deploys to become live.
   --wait-timeout-ms n                  Maximum time to wait for deploys. Default: 900000
@@ -40,6 +41,7 @@ function parseArgs(argv) {
     branch: defaultBranch,
     serviceNames: defaultServiceNames,
     allowlistWindow: 2,
+    extraAllowedActionRefs: [],
     deploy: true,
     wait: false,
     waitTimeoutMs: 900_000,
@@ -72,6 +74,16 @@ function parseArgs(argv) {
         .filter(Boolean);
     } else if (arg === "--allowlist-window") {
       args.allowlistWindow = Number.parseInt(next(), 10);
+    } else if (arg === "--extra-allowed-action-ref") {
+      args.extraAllowedActionRefs.push(
+        ...next()
+          .split(",")
+          .map((actionRef) => actionRef.trim())
+          .filter(Boolean)
+          .map((actionRef) =>
+            normalizeFullShaActionRef(actionRef, "--extra-allowed-action-ref"),
+          ),
+      );
     } else if (arg === "--no-deploy") {
       args.deploy = false;
     } else if (arg === "--wait") {
@@ -250,6 +262,7 @@ function assertSameActionRepository(actionRef, expectedOwnerRepo) {
 function buildTrustedRefs(input) {
   const candidates = [
     input.nextActionRef,
+    ...(input.extraAllowedActionRefs ?? []),
     ...input.currentActionRefs,
     ...input.currentAllowedActionRefs.flatMap((value) =>
       value.split(/[\s,]+/).filter(Boolean),
@@ -395,6 +408,7 @@ async function main() {
     nextActionRef,
     currentActionRefs: currentActionRefs.filter(Boolean),
     currentAllowedActionRefs: currentAllowedActionRefs.filter(Boolean),
+    extraAllowedActionRefs: args.extraAllowedActionRefs,
     allowlistWindow: args.allowlistWindow,
   });
   const plan = {

@@ -9,12 +9,34 @@ import {
 const shaA = "a".repeat(40);
 const shaB = "b".repeat(40);
 const shaC = "c".repeat(40);
+const shaD = "d".repeat(40);
 
 describe("sync-render-action-ref", () => {
   it("rejects waiting when deploys are disabled", () => {
     expect(() => parseArgs(["--wait", "--no-deploy"])).toThrow(
       "--wait requires deploys",
     );
+  });
+
+  it("accepts additional full SHA refs for active pinned workflows", () => {
+    expect(
+      parseArgs([
+        "--extra-allowed-action-ref",
+        `777genius/review-router@${shaA},777genius/review-router@${shaB}`,
+        "--extra-allowed-action-ref",
+        `777genius/review-router@${shaC}`,
+      ]).extraAllowedActionRefs,
+    ).toEqual([
+      `777genius/review-router@${shaA}`,
+      `777genius/review-router@${shaB}`,
+      `777genius/review-router@${shaC}`,
+    ]);
+  });
+
+  it("rejects mutable extra allowed action refs", () => {
+    expect(() =>
+      parseArgs(["--extra-allowed-action-ref", "777genius/review-router@main"]),
+    ).toThrow("--extra-allowed-action-ref must be owner/repo@40-character-sha");
   });
 
   it("keeps explicit full SHA action refs pinned", async () => {
@@ -70,10 +92,33 @@ describe("sync-render-action-ref", () => {
     ]);
   });
 
+  it("keeps explicit active workflow refs before older rollback refs", () => {
+    expect(
+      buildTrustedRefs({
+        nextActionRef: `777genius/review-router@${shaA}`,
+        extraAllowedActionRefs: [
+          `777genius/review-router@${shaC}`,
+          `777genius/review-router@${shaD}`,
+        ],
+        currentActionRefs: [`777genius/review-router@${shaB}`],
+        currentAllowedActionRefs: [
+          `777genius/review-router@${shaD},777genius/review-router@${shaB}`,
+        ],
+        allowlistWindow: 4,
+      }),
+    ).toEqual([
+      `777genius/review-router@${shaA}`,
+      `777genius/review-router@${shaC}`,
+      `777genius/review-router@${shaD}`,
+      `777genius/review-router@${shaB}`,
+    ]);
+  });
+
   it("fails when a trusted ref belongs to another action repository", () => {
     expect(() =>
       buildTrustedRefs({
         nextActionRef: `777genius/review-router@${shaA}`,
+        extraAllowedActionRefs: [],
         currentActionRefs: [`other/review-router@${shaB}`],
         currentAllowedActionRefs: [],
         allowlistWindow: 2,
