@@ -143,8 +143,6 @@ describe("Codex rotating OAuth action control plane", () => {
     ).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedActionOwnerRepo: "777genius/review-router",
-        expectedActionRef: `777genius/review-router@${workflowSha}`,
-        expectedActionRefs: [`777genius/review-router@${workflowSha}`],
         expectedProviderInstanceId: "codex-rotating:123456",
         expectedWorkflowSchemaVersion: 1,
       }),
@@ -249,9 +247,8 @@ describe("Codex rotating OAuth action control plane", () => {
     ).rejects.toThrow();
   });
 
-  it("accepts a trusted rollout action SHA while keeping the primary workflow pin strict", async () => {
-    const previousActionRef =
-      "777genius/review-router@1111111111111111111111111111111111111111";
+  it("accepts any workflow action ref from the expected action repository", async () => {
+    const workflowActionRef = "777genius/review-router@main";
     const currentActionRef = `777genius/review-router@${workflowSha}`;
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       {
@@ -259,7 +256,6 @@ describe("Codex rotating OAuth action control plane", () => {
         repositoryFullName: "777genius/agent-teams-ai",
         githubRepositoryId: "123456",
         actionRef: currentActionRef,
-        allowedActionRefs: [currentActionRef, previousActionRef],
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
         workflowSchemaVersion: 1,
       },
@@ -280,7 +276,7 @@ describe("Codex rotating OAuth action control plane", () => {
             providerInstanceId: "codex-rotating:123456",
             repositoryFullName: "777genius/agent-teams-ai",
             githubRepositoryId: "123456",
-            actionRef: previousActionRef,
+            actionRef: workflowActionRef,
             workflowPath: ".github/workflows/reviewrouter-codex.yml",
             workflowSchemaVersion: 1,
           },
@@ -312,10 +308,40 @@ describe("Codex rotating OAuth action control plane", () => {
       dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource,
     ).toHaveBeenCalledWith(
       expect.objectContaining({
-        expectedActionRef: currentActionRef,
-        expectedActionRefs: [currentActionRef, previousActionRef],
+        expectedActionOwnerRepo: "777genius/review-router",
       }),
     );
+  });
+
+  it("rejects verifier bindings from an unexpected action repository", async () => {
+    const dependencies = buildRotatingDependencies({
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn().mockResolvedValue({
+          binding: {
+            providerInstanceId: "codex-rotating:123456",
+            repositoryFullName: "777genius/agent-teams-ai",
+            githubRepositoryId: "123456",
+            actionRef: "evil/review-router@main",
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            workflowSchemaVersion: 1,
+          },
+          workflowSourceSha256:
+            "workflow-source-sha256-012345678901234567890123456789",
+        }),
+      },
+    });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_workflow_action_ref_not_allowed");
   });
 
   it("blocks rotating prelease when the production gate denies the repository", async () => {

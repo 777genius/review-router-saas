@@ -158,8 +158,6 @@ export interface CodexRotatingWorkflowSourceVerifierPort {
     readonly workflowSha: string;
     readonly workflowPath: string;
     readonly expectedActionOwnerRepo: string;
-    readonly expectedActionRef: string;
-    readonly expectedActionRefs?: readonly string[] | undefined;
     readonly expectedProviderInstanceId: string;
     readonly expectedWorkflowSchemaVersion: number;
   }): Promise<{

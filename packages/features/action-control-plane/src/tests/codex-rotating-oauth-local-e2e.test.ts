@@ -106,7 +106,7 @@ describe("Codex rotating OAuth local E2E", () => {
       codexRotatingOAuth,
       codexRotatingWorkflowSourceVerifier: {
         verifyWorkflowSource: vi.fn(async (input) => {
-          expect(input.expectedActionRef).toBe(actionRef);
+          expect(input.expectedActionOwnerRepo).toBe("777genius/review-router");
           expect(input.expectedProviderInstanceId).toBe(providerInstanceId);
           expect(workflowMetadata.actionRef).toBe(actionRef);
           return {

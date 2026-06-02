@@ -71,21 +71,23 @@ export async function preleaseCodexRotatingOAuth(
   if (!binding) {
     throw new Error("codex_rotating_provider_binding_not_found");
   }
+  const expectedActionOwnerRepo = binding.actionRef.split("@")[0]!;
   const verifiedWorkflow =
     await dependencies.codexRotatingWorkflowSourceVerifier.verifyWorkflowSource(
       {
         repository,
         workflowSha: claims.workflow_sha,
         workflowPath: binding.workflowPath,
-        expectedActionOwnerRepo: binding.actionRef.split("@")[0]!,
-        expectedActionRef: binding.actionRef,
-        expectedActionRefs: trustedActionRefsForBinding(binding),
+        expectedActionOwnerRepo,
         expectedProviderInstanceId: input.providerInstanceId,
         expectedWorkflowSchemaVersion: input.workflowSchemaVersion,
       },
     );
-  if (!isTrustedActionRef(verifiedWorkflow.binding.actionRef, binding)) {
-    throw new Error("codex_rotating_workflow_action_ref_mismatch");
+  if (
+    verifiedWorkflow.binding.actionRef.split("@")[0]!.toLowerCase() !==
+    expectedActionOwnerRepo.toLowerCase()
+  ) {
+    throw new Error("codex_rotating_workflow_action_ref_not_allowed");
   }
   validateCodexRotatingPrelease({
     claims,
@@ -121,34 +123,6 @@ export async function preleaseCodexRotatingOAuth(
       : {}),
     expiresAt: lease.expiresAt.toISOString(),
   };
-}
-
-function normalizeActionRef(actionRef: string): string {
-  return actionRef.trim().toLowerCase();
-}
-
-function trustedActionRefsForBinding(input: {
-  readonly actionRef: string;
-  readonly allowedActionRefs?: readonly string[] | undefined;
-}): readonly string[] {
-  return [
-    ...new Set(
-      [input.actionRef, ...(input.allowedActionRefs ?? [])].map((actionRef) =>
-        normalizeActionRef(actionRef),
-      ),
-    ),
-  ];
-}
-
-function isTrustedActionRef(
-  actionRef: string,
-  binding: {
-    readonly actionRef: string;
-    readonly allowedActionRefs?: readonly string[] | undefined;
-  },
-): boolean {
-  const trusted = new Set(trustedActionRefsForBinding(binding));
-  return trusted.has(normalizeActionRef(actionRef));
 }
 
 async function consumeCodexRotatingOidcReplayNonce(input: {

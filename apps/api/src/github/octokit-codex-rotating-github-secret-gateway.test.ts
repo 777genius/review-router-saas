@@ -190,8 +190,6 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         workflowSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
         expectedActionOwnerRepo: "777genius/review-router",
-        expectedActionRef:
-          "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
         expectedProviderInstanceId: "codex-rotating:123456",
         expectedWorkflowSchemaVersion: 1,
       }),
@@ -217,10 +215,10 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     );
   });
 
-  it("rejects rotating workflow source that pins an unexpected action SHA", async () => {
+  it("rejects rotating workflow source from an unexpected action repository", async () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef:
-        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+        "evil/review-router@0123456789abcdef0123456789abcdef01234567",
       apiUrl: "https://reviewrouter.site",
       providerInstanceId: "codex-rotating:123456",
     });
@@ -253,15 +251,13 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         workflowSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
         expectedActionOwnerRepo: "777genius/review-router",
-        expectedActionRef:
-          "777genius/review-router@9999999999999999999999999999999999999999",
         expectedProviderInstanceId: "codex-rotating:123456",
         expectedWorkflowSchemaVersion: 1,
       }),
-    ).rejects.toThrow("codex_rotating_workflow_action_ref_mismatch");
+    ).rejects.toThrow("codex_rotating_workflow_action_ref_not_allowed");
   });
 
-  it("accepts rotating workflow source pinned to a trusted rollout action SHA", async () => {
+  it("accepts rotating workflow source with any ref from the expected action repository", async () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef:
         "777genius/review-router@2222222222222222222222222222222222222222",
@@ -297,12 +293,6 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         workflowSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
         workflowPath: ".github/workflows/reviewrouter-codex.yml",
         expectedActionOwnerRepo: "777genius/review-router",
-        expectedActionRef:
-          "777genius/review-router@1111111111111111111111111111111111111111",
-        expectedActionRefs: [
-          "777genius/review-router@1111111111111111111111111111111111111111",
-          "777genius/review-router@2222222222222222222222222222222222222222",
-        ],
         expectedProviderInstanceId: "codex-rotating:123456",
         expectedWorkflowSchemaVersion: 1,
       }),
