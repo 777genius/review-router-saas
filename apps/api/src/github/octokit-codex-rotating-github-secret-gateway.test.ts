@@ -217,8 +217,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
 
   it("rejects rotating workflow source from an unexpected action repository", async () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
-      actionRef:
-        "evil/review-router@0123456789abcdef0123456789abcdef01234567",
+      actionRef: "evil/review-router@0123456789abcdef0123456789abcdef01234567",
       apiUrl: "https://reviewrouter.site",
       providerInstanceId: "codex-rotating:123456",
     });
