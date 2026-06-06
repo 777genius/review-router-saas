@@ -7,6 +7,7 @@ import {
   writebackCodexRotatingOAuth,
   issueCodexRotatingOAuthCheckoutToken,
   issueCodexRotatingOAuthCommentToken,
+  codexRotatingCommentTokenRefreshTtlMs,
 } from "../index";
 import { parseReviewConfiguration } from "@reviewrouter/features-review-config";
 
@@ -463,6 +464,83 @@ describe("Codex rotating OAuth action control plane", () => {
     expect(finalized.runtimeEnv).not.toHaveProperty("OPENROUTER_API_KEY");
   });
 
+  it("issues rotating comment tokens after auth lease expiry when posting window is fresh", async () => {
+    let currentNow = now;
+    const dependencies = buildRotatingDependencies({
+      clock: { now: () => currentNow },
+    });
+    const { prelease } = await completeRotatingWriteback(dependencies);
+
+    currentNow = new Date(now.getTime() + 20 * 60 * 1000);
+
+    await expect(
+      issueCodexRotatingOAuthCommentToken(
+        {
+          leaseId: prelease.leaseId,
+          providerInstanceId: "codex-rotating:123456",
+          authCleared: true,
+        },
+        dependencies,
+      ),
+    ).resolves.toMatchObject({
+      protocolVersion: 1,
+      token: "ghs_comment_token",
+      repository: "777genius/agent-teams-ai",
+    });
+  });
+
+  it("expires rotating comment token refresh after the completed posting window", async () => {
+    let currentNow = now;
+    const dependencies = buildRotatingDependencies({
+      clock: { now: () => currentNow },
+    });
+    const { prelease } = await completeRotatingWriteback(dependencies);
+
+    currentNow = new Date(
+      now.getTime() + codexRotatingCommentTokenRefreshTtlMs + 1,
+    );
+
+    await expect(
+      issueCodexRotatingOAuthCommentToken(
+        {
+          leaseId: prelease.leaseId,
+          providerInstanceId: "codex-rotating:123456",
+          authCleared: true,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_lease_not_active");
+  });
+
+  it("keeps expired unfinished rotating leases closed for comment tokens", async () => {
+    let currentNow = now;
+    const dependencies = buildRotatingDependencies({
+      clock: { now: () => currentNow },
+    });
+    const prelease = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "jwt",
+        audience: "reviewrouter",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+
+    currentNow = new Date(now.getTime() + 20 * 60 * 1000);
+
+    await expect(
+      issueCodexRotatingOAuthCommentToken(
+        {
+          leaseId: prelease.leaseId,
+          providerInstanceId: "codex-rotating:123456",
+          authCleared: true,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_lease_not_active");
+  });
+
   it("moves failed encrypted writeback into unknown auth state before another refresh can start", async () => {
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       {
@@ -654,4 +732,51 @@ function buildRotatingDependencies(
     ...overrides,
     codexRotatingOAuth,
   };
+}
+
+async function completeRotatingWriteback(dependencies: RotatingDependencies) {
+  const prelease = await preleaseCodexRotatingOAuth(
+    {
+      oidcToken: "jwt",
+      audience: "reviewrouter",
+      providerInstanceId: "codex-rotating:123456",
+      workflowSchemaVersion: 1,
+    },
+    dependencies,
+  );
+  const finalized = await finalizeCodexRotatingOAuthLease(
+    {
+      leaseId: prelease.leaseId,
+      providerInstanceId: "codex-rotating:123456",
+      restoredGenerationHash: "restored-generation-hash-value",
+    },
+    dependencies,
+  );
+  if (finalized.status !== "finalized") {
+    throw new Error("expected_finalized");
+  }
+  await preflightCodexRotatingOAuthWriteback(
+    {
+      leaseId: prelease.leaseId,
+      providerInstanceId: "codex-rotating:123456",
+      githubKeyId: "github-key",
+    },
+    dependencies,
+  );
+  await writebackCodexRotatingOAuth(
+    {
+      body: {
+        protocolVersion: 1,
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        generation: finalized.nextGeneration,
+        latestGenerationHash: "latest-generation-hash-value-0123456789",
+        encryptedValue: Buffer.from("ciphertext").toString("base64"),
+        keyId: "github-key",
+        idempotencyKey: "idem:9001:1",
+      },
+    },
+    dependencies,
+  );
+  return { prelease, finalized };
 }

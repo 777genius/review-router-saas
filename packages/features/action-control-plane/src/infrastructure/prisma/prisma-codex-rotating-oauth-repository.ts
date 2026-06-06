@@ -8,6 +8,7 @@ import {
   type CodexRotatingProviderBinding,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
+import { isCodexRotatingCompletedLeasePostingWindowActive } from "../../domain/codex-rotating-oauth-posting-window.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
@@ -530,11 +531,22 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
       },
     });
     const lease = provider?.leases[0];
-    if (!provider || !lease || lease.expiresAt <= input.now) {
+    if (!provider || !lease) {
       return { status: "lease_not_active" as const };
     }
     if (lease.status !== "completed" || !lease.completedAt) {
+      if (lease.expiresAt <= input.now) {
+        return { status: "lease_not_active" as const };
+      }
       return { status: "lease_not_completed" as const };
+    }
+    if (
+      !isCodexRotatingCompletedLeasePostingWindowActive({
+        completedAt: lease.completedAt,
+        now: input.now,
+      })
+    ) {
+      return { status: "lease_not_active" as const };
     }
     return {
       status: "ready" as const,
