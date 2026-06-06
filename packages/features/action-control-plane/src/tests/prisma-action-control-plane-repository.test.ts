@@ -1,9 +1,11 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { codexRotatingCommentTokenRefreshTtlMs } from "../domain/codex-rotating-oauth-posting-window.js";
 import {
   orgRulesetTargetsRepository,
   PrismaActionControlPlaneRepository,
 } from "../infrastructure/prisma/prisma-action-control-plane-repository.js";
+import { PrismaCodexRotatingOAuthRepository } from "../infrastructure/prisma/prisma-codex-rotating-oauth-repository.js";
 
 describe("PrismaActionControlPlaneRepository helpers", () => {
   it("does not trust org ruleset workflows for the source repository itself", () => {
@@ -90,3 +92,99 @@ describe("PrismaActionControlPlaneRepository helpers", () => {
     expect(record?.config.providers[0]?.requiredHealthy).toBe(true);
   });
 });
+
+describe("PrismaCodexRotatingOAuthRepository", () => {
+  const now = new Date("2026-05-25T12:00:00.000Z");
+
+  it("allows completed leases to refresh comment tokens after auth lease expiry inside the posting window", async () => {
+    const { repository } = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(now.getTime() - 20 * 60 * 1000),
+    });
+
+    await expect(
+      repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      writeTarget: {
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+        repo: "example",
+      },
+    });
+  });
+
+  it("closes completed leases after the posting window expires", async () => {
+    const { repository } = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(
+        now.getTime() - codexRotatingCommentTokenRefreshTtlMs - 1,
+      ),
+    });
+
+    await expect(
+      repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+  });
+
+  it("keeps expired unfinished leases closed for comment token refresh", async () => {
+    const { repository } = buildCodexRotatingRepository({
+      status: "finalized",
+      expiresAt: new Date(now.getTime() - 1),
+      completedAt: null,
+    });
+
+    await expect(
+      repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+  });
+});
+
+function buildCodexRotatingRepository(lease: {
+  readonly status: string;
+  readonly expiresAt: Date;
+  readonly completedAt: Date | null;
+}) {
+  const prisma = {
+    codexOAuthProviderInstance: {
+      findUnique: vi.fn().mockResolvedValue({
+        repository: {
+          id: "repo_1",
+          workspaceId: "workspace_1",
+          provider: "github",
+          githubRepositoryId: 123456n,
+          fullName: "777genius/example",
+          owner: "777genius",
+          name: "example",
+          selected: true,
+          installation: {
+            githubInstallationId: 789n,
+            status: "active",
+          },
+        },
+        leases: [lease],
+      }),
+    },
+  } as unknown as PrismaClient;
+
+  return {
+    prisma,
+    repository: new PrismaCodexRotatingOAuthRepository(prisma, {
+      actionOwnerRepo: "777genius/review-router",
+    }),
+  };
+}

@@ -6,6 +6,7 @@ import {
   type CodexRotatingProviderBinding,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
+import { isCodexRotatingCompletedLeasePostingWindowActive } from "../../domain/codex-rotating-oauth-posting-window.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
@@ -27,12 +28,14 @@ type WritebackRecord = {
   readonly request: CodexRotatingEncryptedWritebackRequest;
   readonly encryptedPayloadDigest: string;
   readonly status: "pending" | "completed" | "failed";
+  readonly completedAt?: Date;
 };
 
 export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthRepositoryPort {
   private readonly leases = new InMemoryCodexRotatingLeaseStore();
   private readonly providers = new Map<string, ProviderRecord>();
   private readonly writebacks = new Map<string, WritebackRecord>();
+  private readonly leaseExpiresAtById = new Map<string, Date>();
 
   constructor(bindings: readonly CodexRotatingProviderBinding[] = []) {
     for (const binding of bindings) {
@@ -101,6 +104,7 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
       now: input.now,
       ttlSeconds: 15 * 60,
     });
+    this.leaseExpiresAtById.set(lease.leaseId, lease.expiresAt);
     if (provider && lease.status !== "conflict") {
       this.providers.set(input.providerInstanceId, {
         ...provider,
@@ -290,14 +294,29 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
     if (!provider?.repository) {
       return { status: "lease_not_active" };
     }
-    const completed = [...this.writebacks.values()].some(
+    const writeback = [...this.writebacks.values()].find(
       (record) =>
         record.request.leaseId === input.leaseId &&
-        record.request.providerInstanceId === input.providerInstanceId &&
-        record.status === "completed",
+        record.request.providerInstanceId === input.providerInstanceId,
     );
-    if (!completed) {
+    if (
+      !writeback ||
+      writeback.status !== "completed" ||
+      !writeback.completedAt
+    ) {
+      const expiresAt = this.leaseExpiresAtById.get(input.leaseId);
+      if (expiresAt && expiresAt <= input.now) {
+        return { status: "lease_not_active" };
+      }
       return { status: "lease_not_completed" };
+    }
+    if (
+      !isCodexRotatingCompletedLeasePostingWindowActive({
+        completedAt: writeback.completedAt,
+        now: input.now,
+      })
+    ) {
+      return { status: "lease_not_active" };
     }
     return {
       status: "ready",
@@ -316,7 +335,11 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
       throw new Error("codex_rotating_writeback_intent_not_found");
     }
     const [key, record] = recordEntry;
-    this.writebacks.set(key, { ...record, status: "completed" });
+    this.writebacks.set(key, {
+      ...record,
+      status: "completed",
+      completedAt: input.now,
+    });
     const provider = this.providers.get(record.request.providerInstanceId);
     if (provider) {
       this.providers.set(record.request.providerInstanceId, {
