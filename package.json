@@ -19,6 +19,7 @@
     "hosted:check": "node scripts/check-hosted-readiness.mjs",
     "hosted:check:smoke": "node scripts/check-hosted-readiness-smoke.mjs",
     "hosted:web:check": "node scripts/check-hosted-web.mjs",
+    "self-hosted:check": "node scripts/check-self-hosted-readiness.mjs",
     "public-beta:check:smoke": "node scripts/check-public-beta-readiness-smoke.mjs",
     "beta:check": "bash scripts/check-beta-readiness.sh",
     "web:smoke": "node scripts/run-with-env.mjs node scripts/check-web-pages.mjs",
