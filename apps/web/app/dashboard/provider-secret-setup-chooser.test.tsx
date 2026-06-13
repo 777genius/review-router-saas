@@ -115,6 +115,7 @@ describe("ProviderSecretSetupChooser", () => {
         /was not found in 777genius\/plugin-kit-ai-starter-claude-python repository Actions secrets/i,
       ),
     ).toBeTruthy();
+    expect(screen.getByText(/copy a fresh command/i)).toBeTruthy();
     expect(
       screen.queryByRole("button", { name: "Confirm manually" }),
     ).toBeNull();
