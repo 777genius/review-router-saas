@@ -1,3 +1,15 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import sodium from "libsodium-wrappers";
 import {
@@ -31,6 +43,112 @@ const validAuthJson = JSON.stringify({
   },
   last_refresh: "2026-05-24T12:00:00.000Z",
 });
+
+function withRenderedInstallerCommandFixture(input: {
+  readonly installerBody: string;
+  readonly run: (fixture: {
+    readonly command: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly markerPath: string;
+    readonly manifest: ReturnType<typeof buildCodexRotatingSetupManifest>;
+  }) => void;
+}): void {
+  const root = mkdtempSync(join(tmpdir(), "rr-codex-command-e2e-"));
+  try {
+    const binDir = join(root, "bin");
+    const installerPath = join(root, "fixture-installer.sh");
+    const markerPath = join(root, "install-marker.txt");
+    const installerUrl = "https://reviewrouter.site/install/codex-rotating";
+    mkdirSync(binDir, { recursive: true });
+    writeExecutable(installerPath, input.installerBody);
+    writeExecutable(
+      join(binDir, "curl"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+out=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      shift
+      out="\${1:-}"
+      ;;
+    -*)
+      ;;
+    *)
+      url="$1"
+      ;;
+  esac
+  shift
+done
+if [ "$url" != "$RR_EXPECTED_URL" ]; then
+  echo "unexpected curl URL: $url" >&2
+  exit 21
+fi
+if [ -z "$out" ]; then
+  echo "missing curl output path" >&2
+  exit 22
+fi
+cp "$RR_FIXTURE_INSTALLER" "$out"
+`,
+    );
+    writeExecutable(
+      join(binDir, "shasum"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+file="\${@: -1}"
+hash="$(node - "$file" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+console.log(crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex"));
+NODE
+)"
+printf '%s  %s\\n' "$hash" "$file"
+`,
+    );
+
+    const installerSha256 = createHash("sha256")
+      .update(readFileSync(installerPath))
+      .digest("hex");
+    const manifest = buildCodexRotatingSetupManifest({
+      repositoryFullName: "777genius/agent-teams-ai",
+      repositoryId: "123456",
+      providerInstanceId: "codex-rotating:123456",
+      setupNonce: "stp:sandbox-command",
+      installerUrl,
+      installerVersion: "v1.2.3",
+      installerSha256,
+      now: new Date("2026-05-25T12:00:00.000Z"),
+    });
+    const command = renderCodexRotatingInstallerCommand({
+      manifest,
+      setupManifestUrl:
+        "https://reviewrouter.site/api/codex-rotating/setup-manifest",
+      setupConfirmUrl:
+        "https://reviewrouter.site/api/codex-rotating/setup-confirm",
+    });
+
+    input.run({
+      command,
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        RR_EXPECTED_URL: installerUrl,
+        RR_FIXTURE_INSTALLER: installerPath,
+        RR_INSTALL_MARKER: markerPath,
+      },
+      markerPath,
+      manifest,
+    });
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+}
+
+function writeExecutable(path: string, content: string): void {
+  writeFileSync(path, content);
+  chmodSync(path, 0o700);
+}
 
 describe("Codex rotating auth domain", () => {
   it("validates ChatGPT Codex auth and hashes exact bytes", () => {
@@ -108,6 +226,7 @@ describe("Codex rotating auth domain", () => {
     });
     const command = renderCodexRotatingInstallerCommand({ manifest });
 
+    expect(command).toMatch(/^bash <<'REVIEW_ROUTER_INSTALL'\n/);
     expect(command).toContain("curl -fsSL");
     expect(command).toContain("shasum -a 256");
     expect(command).toContain("sha256sum");
@@ -118,6 +237,77 @@ describe("Codex rotating auth domain", () => {
     expect(command).toContain(
       "REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64",
     );
+    expect(command).toMatch(/\nREVIEW_ROUTER_INSTALL$/);
+  });
+
+  it("executes the rendered installer command end-to-end in a sandbox", () => {
+    withRenderedInstallerCommandFixture({
+      installerBody: `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -ne 1 ] || [ "$1" != "--confirm-write" ]; then
+  echo "unexpected installer args: $*" >&2
+  exit 10
+fi
+{
+  printf 'url=%s\\n' "$REVIEW_ROUTER_INSTALLER_URL"
+  printf 'version=%s\\n' "$REVIEW_ROUTER_INSTALLER_VERSION"
+  printf 'sha=%s\\n' "$REVIEW_ROUTER_INSTALLER_SHA256"
+  printf 'provider=%s\\n' "$REVIEW_ROUTER_CODEX_ROTATING_PROVIDER_INSTANCE_ID"
+  printf 'setup_url=%s\\n' "$REVIEW_ROUTER_CODEX_ROTATING_SETUP_URL"
+  printf 'confirm_url=%s\\n' "$REVIEW_ROUTER_CODEX_ROTATING_SETUP_CONFIRM_URL"
+  printf 'nonce=%s\\n' "$REVIEW_ROUTER_CODEX_ROTATING_SETUP_NONCE"
+} > "$RR_INSTALL_MARKER"
+`,
+      run: ({ command, env, markerPath, manifest }) => {
+        const result = spawnSync("bash", ["-c", command], {
+          encoding: "utf8",
+          env,
+        });
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(readFileSync(markerPath, "utf8")).toContain(
+          `url=${manifest.installer.url}`,
+        );
+        expect(readFileSync(markerPath, "utf8")).toContain(
+          `version=${manifest.installer.version}`,
+        );
+        expect(readFileSync(markerPath, "utf8")).toContain(
+          `sha=${manifest.installer.sha256}`,
+        );
+        expect(readFileSync(markerPath, "utf8")).toContain(
+          `provider=${manifest.providerInstanceId}`,
+        );
+        expect(readFileSync(markerPath, "utf8")).toContain(
+          `nonce=${manifest.setupNonce}`,
+        );
+      },
+    });
+  });
+
+  it("keeps the caller shell alive when the child installer fails", () => {
+    withRenderedInstallerCommandFixture({
+      installerBody: `#!/usr/bin/env bash
+set -euo pipefail
+printf 'installer-started\\n' > "$RR_INSTALL_MARKER"
+echo "installer failed intentionally" >&2
+exit 17
+`,
+      run: ({ command, env, markerPath }) => {
+        const result = spawnSync(
+          "bash",
+          ["-c", `${command}\nprintf 'parent-shell-survived\\n'`],
+          {
+            encoding: "utf8",
+            env,
+          },
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain("parent-shell-survived");
+        expect(result.stderr).toContain("installer failed intentionally");
+        expect(readFileSync(markerPath, "utf8")).toBe("installer-started\n");
+      },
+    });
   });
 
   it("renders server-backed setup nonce commands without embedding the manifest", () => {
