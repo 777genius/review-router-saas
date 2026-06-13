@@ -856,6 +856,10 @@ function verificationErrorText(input: {
       return `${input.secretNames} was not found as an organization Actions secret in ${input.organizationLogin ?? "this organization"}. Ask an organization owner to create it, or switch to a repository secret and run the repository command.`;
     }
 
+    if (input.secretNames === "REVIEWROUTER_CODEX_AUTH_JSON") {
+      return `${input.secretNames} was not found in ${input.repositoryFullName} repository Actions secrets. If the terminal closed or the command was interrupted, reopen this dialog and copy a fresh command because rotating Codex setup links are one-time.`;
+    }
+
     return `${input.secretNames} was not found in ${input.repositoryFullName} repository Actions secrets. Run the command below, then check again.`;
   }
 

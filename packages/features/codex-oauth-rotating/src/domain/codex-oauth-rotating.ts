@@ -328,6 +328,7 @@ export function renderCodexRotatingInstallerCommand(input: {
   ];
 
   return [
+    "bash <<'REVIEW_ROUTER_INSTALL'",
     "set -euo pipefail",
     'tmp="$(mktemp)"',
     "trap 'rm -f \"$tmp\"' EXIT",
@@ -347,6 +348,7 @@ export function renderCodexRotatingInstallerCommand(input: {
     "fi",
     ...envLines,
     'bash "$tmp" --confirm-write',
+    "REVIEW_ROUTER_INSTALL",
   ].join("\n");
 }
 
