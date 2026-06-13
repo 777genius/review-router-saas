@@ -35,7 +35,7 @@ export function HeaderProfileMenu({
         <button
           type="button"
           aria-label={`Open profile menu for ${login}`}
-          className="group inline-flex min-h-11 shrink-0 items-center gap-2 rounded-2xl border border-cyan-200/15 bg-white/[0.035] px-2.5 py-2 text-left transition hover:border-cyan-200/40 hover:bg-cyan-300/[0.08] hover:shadow-[0_0_28px_-18px_rgba(0,240,255,0.95)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 data-[state=open]:border-cyan-200/40 data-[state=open]:bg-cyan-300/[0.08]"
+          className="group inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl border border-cyan-200/15 bg-white/[0.035] px-2 py-1.5 text-left transition hover:border-cyan-200/40 hover:bg-cyan-300/[0.08] hover:shadow-[0_0_28px_-18px_rgba(0,240,255,0.95)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 data-[state=open]:border-cyan-200/40 data-[state=open]:bg-cyan-300/[0.08] lg:min-h-9"
         >
           <span className="hidden max-w-32 truncate font-mono text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-cyan-100 sm:inline">
             {login}

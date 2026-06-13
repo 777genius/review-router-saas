@@ -155,20 +155,20 @@ export default async function RootLayout({
             aria-hidden="true"
             className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-cyan-200/55 to-transparent"
           />
-          <div className="mx-auto grid min-h-16 w-full min-w-0 max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 sm:px-6 lg:min-h-20 lg:grid-cols-[minmax(240px,auto)_minmax(0,1fr)_auto] lg:py-0">
+          <div className="mx-auto grid min-h-16 w-full min-w-0 max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 sm:px-6 lg:min-h-14 lg:grid-cols-[minmax(220px,auto)_minmax(0,1fr)_auto] lg:py-1">
             <a
               href="/"
-              className="group flex min-w-0 items-center gap-3 rounded-2xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+              className="group flex min-w-0 items-center gap-2.5 rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
             >
               <LogoMark
-                size="sm"
-                className="shadow-[0_0_34px_-10px_rgba(0,240,255,0.9)]"
+                size="xs"
+                className="shadow-[0_0_26px_-10px_rgba(0,240,255,0.85)]"
               />
               <span className="min-w-0">
-                <span className="block truncate font-mono text-sm font-semibold tracking-[0.14em] text-cyan-50 sm:text-base sm:tracking-[0.16em]">
+                <span className="block truncate font-mono text-sm font-semibold tracking-[0.12em] text-cyan-50 sm:text-[0.95rem] sm:tracking-[0.14em]">
                   ReviewRouter
                 </span>
-                <span className="hidden text-xs text-slate-500 sm:block">
+                <span className="hidden text-[0.68rem] leading-4 text-slate-500 sm:block">
                   Private AI review control plane
                 </span>
               </span>
@@ -180,18 +180,18 @@ export default async function RootLayout({
               />
               <PrimaryNav signedIn={profile.signedIn} />
             </div>
-            <div className="flex min-w-0 items-center justify-end gap-2 sm:gap-3 lg:justify-end">
+            <div className="flex min-w-0 items-center justify-end gap-2 lg:justify-end">
               <ThemeToggle />
-              <div className="hidden items-center gap-3 border-r border-cyan-200/10 pr-3 xl:flex">
-                <span className="relative grid h-9 w-9 place-items-center rounded-xl border border-lime-300/20 bg-lime-300/[0.07] text-lime-300">
-                  <ShieldCheck aria-hidden="true" className="size-4" />
-                  <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-lime-300 shadow-[0_0_12px_rgba(190,242,100,0.8)]" />
+              <div className="hidden items-center gap-2.5 border-r border-cyan-200/10 pr-2.5 xl:flex">
+                <span className="relative grid h-8 w-8 place-items-center rounded-lg border border-lime-300/20 bg-lime-300/[0.07] text-lime-300">
+                  <ShieldCheck aria-hidden="true" className="size-3.5" />
+                  <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-lime-300 shadow-[0_0_10px_rgba(190,242,100,0.8)]" />
                 </span>
                 <span className="min-w-0">
                   <span className="block font-mono text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-lime-200">
                     Secure
                   </span>
-                  <span className="block text-xs text-slate-500">
+                  <span className="block text-[0.68rem] leading-4 text-slate-500">
                     Systems operational
                   </span>
                 </span>

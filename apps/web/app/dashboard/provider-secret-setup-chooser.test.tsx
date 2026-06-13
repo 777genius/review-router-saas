@@ -41,6 +41,80 @@ function pageText(): string {
 }
 
 describe("ProviderSecretSetupChooser", () => {
+  it("shows a loading state while provider setup verification is pending", async () => {
+    const pendingResponse = deferredProviderSetupResponse();
+    mockProviderSetupFetch().mockReturnValueOnce(pendingResponse.promise);
+
+    renderProviderSecretSetupChooser();
+
+    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+
+    const loadingButton = await screen.findByRole("button", {
+      name: "Checking secrets...",
+    });
+    expect((loadingButton as HTMLButtonElement).disabled).toBe(true);
+    expect(loadingButton.getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByRole("button", { name: "Confirmed" })).toBeNull();
+
+    pendingResponse.resolve(
+      providerSetupResponse({
+        params: {
+          notice: "provider_setup_confirmed",
+          workspace: "workspace_1",
+          section: "repositories",
+          repository: "777genius/plugin-kit-ai-starter-claude-python",
+        },
+      }),
+    );
+
+    expect(
+      await screen.findByText(/Provider secret metadata was verified/i),
+    ).toBeTruthy();
+  });
+
+  it("shows a saving state while manual provider setup confirmation is pending", async () => {
+    const pendingResponse = deferredProviderSetupResponse();
+    mockProviderSetupFetch()
+      .mockResolvedValueOnce(
+        providerSetupResponse({
+          params: {
+            error: "provider_secret_check_permission_required",
+            workspace: "workspace_1",
+            section: "repositories",
+          },
+        }),
+      )
+      .mockReturnValueOnce(pendingResponse.promise);
+
+    renderProviderSecretSetupChooser();
+
+    fireEvent.click(screen.getByRole("button", { name: "I ran this script" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm manually" }),
+    );
+
+    const savingButton = await screen.findByRole("button", {
+      name: "Saving...",
+    });
+    expect((savingButton as HTMLButtonElement).disabled).toBe(true);
+    expect(savingButton.getAttribute("aria-busy")).toBe("true");
+
+    pendingResponse.resolve(
+      providerSetupResponse({
+        params: {
+          notice: "provider_setup_confirmed",
+          workspace: "workspace_1",
+          section: "repositories",
+          repository: "777genius/plugin-kit-ai-starter-claude-python",
+        },
+      }),
+    );
+
+    expect(
+      await screen.findByText(/Provider setup was manually marked complete/i),
+    ).toBeTruthy();
+  });
+
   it("keeps provider setup errors inside the dialog when the action rejects", async () => {
     mockProviderSetupFetch().mockRejectedValueOnce(
       new Error("provider setup failed"),
@@ -586,6 +660,21 @@ function mockProviderSetupFetch(): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function deferredProviderSetupResponse(): {
+  readonly promise: Promise<Response>;
+  readonly resolve: (value: Response) => void;
+} {
+  let resolveResponse: (value: Response) => void = () => {};
+  const promise = new Promise<Response>((resolve) => {
+    resolveResponse = resolve;
+  });
+
+  return {
+    promise,
+    resolve: resolveResponse,
+  };
 }
 
 function providerSetupResponse(body: {

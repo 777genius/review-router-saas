@@ -96,7 +96,10 @@ export function MobilePrimaryNav({
             className="mt-3 grid gap-1 border-t border-cyan-200/10 pt-3"
           >
             {items.map((item) => {
-              const active = isActivePath(pathname, item.activePath ?? item.href);
+              const active = isActivePath(
+                pathname,
+                item.activePath ?? item.href,
+              );
 
               return (
                 <DropdownMenu.Item asChild key={item.href}>
@@ -144,7 +147,7 @@ function isActivePath(pathname: string | null, href: string): boolean {
 
 function navLinkClass(active: boolean): string {
   const base =
-    "relative inline-flex min-h-11 shrink-0 items-center justify-center whitespace-nowrap rounded-xl border px-3.5 py-2 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300";
+    "relative inline-flex min-h-9 shrink-0 items-center justify-center whitespace-nowrap rounded-lg border px-3 py-1.5 transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300";
 
   if (active) {
     return `${base} border-cyan-300/45 bg-cyan-300/[0.11] text-cyan-50 shadow-[inset_0_-1px_0_rgba(103,232,249,0.4),0_0_30px_-16px_rgba(0,240,255,0.95)] after:absolute after:inset-x-3 after:-bottom-px after:h-px after:bg-cyan-200`;
@@ -212,9 +215,7 @@ function MobileProfileBlock({
         <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
           Signed in{provider ? ` with ${providerLabel(provider)}` : ""}
         </p>
-        <p className="truncate text-sm font-semibold text-cyan-50">
-          {login}
-        </p>
+        <p className="truncate text-sm font-semibold text-cyan-50">{login}</p>
       </div>
     </div>
   );
