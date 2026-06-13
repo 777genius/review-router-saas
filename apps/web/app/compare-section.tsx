@@ -423,81 +423,81 @@ function CompetitorTable(): React.ReactElement {
         })}
       </div>
       <div className="hidden overflow-x-auto rounded-2xl border border-cyan-200/12 bg-[var(--rr-surface-panel)] shadow-[inset_0_1px_0_rgba(103,232,249,0.09)] md:block">
-      <table className="w-full min-w-[1040px] border-collapse text-left">
-        <thead>
-          <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">
-            <th className="px-5 py-4 font-semibold">Product</th>
-            <th className="px-5 py-4 font-semibold">Execution</th>
-            <th className="px-5 py-4 font-semibold">Code path</th>
-            <th className="px-5 py-4 font-semibold">Best fit</th>
-            <th className="px-5 py-4 font-semibold">Control</th>
-          </tr>
-        </thead>
-        <tbody className="text-sm text-slate-300">
-          {competitorRows.map((row) => {
-            const isAccent = row.product === "ReviewRouter";
+        <table className="w-full min-w-[1040px] border-collapse text-left">
+          <thead>
+            <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-slate-400">
+              <th className="px-5 py-4 font-semibold">Product</th>
+              <th className="px-5 py-4 font-semibold">Execution</th>
+              <th className="px-5 py-4 font-semibold">Code path</th>
+              <th className="px-5 py-4 font-semibold">Best fit</th>
+              <th className="px-5 py-4 font-semibold">Control</th>
+            </tr>
+          </thead>
+          <tbody className="text-sm text-slate-300">
+            {competitorRows.map((row) => {
+              const isAccent = row.product === "ReviewRouter";
 
-            return (
-              <tr
-                key={row.product}
-                className={cx(
-                  "border-b border-cyan-200/10 last:border-b-0",
-                  isAccent &&
-                    "bg-cyan-300/[0.055] text-cyan-50 shadow-[inset_0_0_0_1px_rgba(0,240,255,0.55)]",
-                )}
-              >
-                <td className="px-5 py-4">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <ServiceIcon
-                      accent={isAccent}
-                      iconSrc={row.iconSrc}
-                      mark={row.mark}
-                      product={row.product}
-                    />
-                    <span className="font-semibold text-cyan-50">
-                      {row.product}
-                    </span>
-                  </div>
-                </td>
-                <td className="px-5 py-4">
-                  <TablePill accent={isAccent}>{row.execution}</TablePill>
-                  <p className="mt-2 leading-5 text-slate-400">
-                    {row.executionDetail}
-                  </p>
-                </td>
-                <td className="px-5 py-4">
-                  <p
-                    className={cx(
-                      "max-w-[15rem] leading-6",
-                      isAccent
-                        ? "font-semibold text-lime-300"
-                        : "text-slate-300",
-                    )}
-                  >
-                    {row.codePath}
-                  </p>
-                </td>
-                <td className="px-5 py-4">
-                  <p className="max-w-[14rem] leading-6">{row.bestFit}</p>
-                </td>
-                <td className="px-5 py-4">
-                  <p
-                    className={cx(
-                      "font-semibold",
-                      isAccent ? "text-lime-300" : "text-fuchsia-300",
-                    )}
-                  >
-                    {row.control}
-                  </p>
-                  <p className="mt-1 max-w-[13rem] leading-5 text-slate-400">
-                    {row.controlDetail}
-                  </p>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+              return (
+                <tr
+                  key={row.product}
+                  className={cx(
+                    "border-b border-cyan-200/10 last:border-b-0",
+                    isAccent &&
+                      "bg-cyan-300/[0.055] text-cyan-50 shadow-[inset_0_0_0_1px_rgba(0,240,255,0.55)]",
+                  )}
+                >
+                  <td className="px-5 py-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <ServiceIcon
+                        accent={isAccent}
+                        iconSrc={row.iconSrc}
+                        mark={row.mark}
+                        product={row.product}
+                      />
+                      <span className="font-semibold text-cyan-50">
+                        {row.product}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-5 py-4">
+                    <TablePill accent={isAccent}>{row.execution}</TablePill>
+                    <p className="mt-2 leading-5 text-slate-400">
+                      {row.executionDetail}
+                    </p>
+                  </td>
+                  <td className="px-5 py-4">
+                    <p
+                      className={cx(
+                        "max-w-[15rem] leading-6",
+                        isAccent
+                          ? "font-semibold text-lime-300"
+                          : "text-slate-300",
+                      )}
+                    >
+                      {row.codePath}
+                    </p>
+                  </td>
+                  <td className="px-5 py-4">
+                    <p className="max-w-[14rem] leading-6">{row.bestFit}</p>
+                  </td>
+                  <td className="px-5 py-4">
+                    <p
+                      className={cx(
+                        "font-semibold",
+                        isAccent ? "text-lime-300" : "text-fuchsia-300",
+                      )}
+                    >
+                      {row.control}
+                    </p>
+                    <p className="mt-1 max-w-[13rem] leading-5 text-slate-400">
+                      {row.controlDetail}
+                    </p>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </>
   );
@@ -612,64 +612,64 @@ function BoundaryTable(): React.ReactElement {
         })}
       </div>
       <div className="hidden overflow-x-auto rounded-2xl border border-cyan-200/10 bg-[var(--rr-surface-panel)] md:block">
-      <table className="w-full min-w-[940px] border-collapse text-left text-sm">
-        <thead>
-          <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.16em] text-slate-400">
-            <th className="px-5 py-4 font-semibold">Dimension</th>
-            {boundaryColumns.map((column) => (
-              <th
-                key={column}
-                className={cx(
-                  "px-5 py-4 font-semibold",
-                  column === "ReviewRouter" && "text-cyan-100",
-                )}
-              >
-                {column}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {boundaryRows.map((row) => {
-            const Icon = row.icon;
-
-            return (
-              <tr
-                key={row.label}
-                className="border-b border-cyan-200/10 last:border-b-0"
-              >
-                <th className="px-5 py-4 text-left font-normal">
-                  <div className="flex items-start gap-3">
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-cyan-300/25 bg-cyan-300/[0.08] text-cyan-200">
-                      <Icon aria-hidden="true" className="size-4" />
-                    </span>
-                    <span>
-                      <span className="block font-semibold text-cyan-50">
-                        {row.label}
-                      </span>
-                      <span className="mt-1 block text-xs text-slate-500">
-                        {row.hint}
-                      </span>
-                    </span>
-                  </div>
+        <table className="w-full min-w-[940px] border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b border-cyan-200/10 font-mono text-[0.68rem] uppercase tracking-[0.16em] text-slate-400">
+              <th className="px-5 py-4 font-semibold">Dimension</th>
+              {boundaryColumns.map((column) => (
+                <th
+                  key={column}
+                  className={cx(
+                    "px-5 py-4 font-semibold",
+                    column === "ReviewRouter" && "text-cyan-100",
+                  )}
+                >
+                  {column}
                 </th>
-                {row.values.map((value, index) => (
-                  <td
-                    key={`${row.label}-${boundaryColumns[index]}`}
-                    className={cx(
-                      "px-5 py-4 text-slate-300",
-                      boundaryColumns[index] === "ReviewRouter" &&
-                        "bg-lime-300/[0.045] font-semibold text-lime-300",
-                    )}
-                  >
-                    {value}
-                  </td>
-                ))}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {boundaryRows.map((row) => {
+              const Icon = row.icon;
+
+              return (
+                <tr
+                  key={row.label}
+                  className="border-b border-cyan-200/10 last:border-b-0"
+                >
+                  <th className="px-5 py-4 text-left font-normal">
+                    <div className="flex items-start gap-3">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-cyan-300/25 bg-cyan-300/[0.08] text-cyan-200">
+                        <Icon aria-hidden="true" className="size-4" />
+                      </span>
+                      <span>
+                        <span className="block font-semibold text-cyan-50">
+                          {row.label}
+                        </span>
+                        <span className="mt-1 block text-xs text-slate-500">
+                          {row.hint}
+                        </span>
+                      </span>
+                    </div>
+                  </th>
+                  {row.values.map((value, index) => (
+                    <td
+                      key={`${row.label}-${boundaryColumns[index]}`}
+                      className={cx(
+                        "px-5 py-4 text-slate-300",
+                        boundaryColumns[index] === "ReviewRouter" &&
+                          "bg-lime-300/[0.045] font-semibold text-lime-300",
+                      )}
+                    >
+                      {value}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </>
   );

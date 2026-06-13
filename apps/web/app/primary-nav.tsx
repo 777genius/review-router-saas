@@ -96,7 +96,10 @@ export function MobilePrimaryNav({
             className="mt-3 grid gap-1 border-t border-cyan-200/10 pt-3"
           >
             {items.map((item) => {
-              const active = isActivePath(pathname, item.activePath ?? item.href);
+              const active = isActivePath(
+                pathname,
+                item.activePath ?? item.href,
+              );
 
               return (
                 <DropdownMenu.Item asChild key={item.href}>
@@ -212,9 +215,7 @@ function MobileProfileBlock({
         <p className="font-mono text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-slate-500">
           Signed in{provider ? ` with ${providerLabel(provider)}` : ""}
         </p>
-        <p className="truncate text-sm font-semibold text-cyan-50">
-          {login}
-        </p>
+        <p className="truncate text-sm font-semibold text-cyan-50">{login}</p>
       </div>
     </div>
   );

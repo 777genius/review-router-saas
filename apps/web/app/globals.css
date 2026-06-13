@@ -1128,9 +1128,24 @@ canvas {
     pointer-events: none;
     content: "";
     background:
-      linear-gradient(105deg, transparent 0 18%, rgba(52, 211, 153, 0.1) 26%, transparent 42%),
-      linear-gradient(245deg, transparent 0 28%, rgba(34, 211, 238, 0.08) 36%, transparent 52%),
-      linear-gradient(20deg, transparent 0 54%, rgba(245, 158, 11, 0.07) 66%, transparent 82%);
+      linear-gradient(
+        105deg,
+        transparent 0 18%,
+        rgba(52, 211, 153, 0.1) 26%,
+        transparent 42%
+      ),
+      linear-gradient(
+        245deg,
+        transparent 0 28%,
+        rgba(34, 211, 238, 0.08) 36%,
+        transparent 52%
+      ),
+      linear-gradient(
+        20deg,
+        transparent 0 54%,
+        rgba(245, 158, 11, 0.07) 66%,
+        transparent 82%
+      );
     background-size: 160% 160%;
     mix-blend-mode: screen;
     opacity: 0.9;
@@ -1189,7 +1204,13 @@ canvas {
 
   @supports ((-webkit-background-clip: text) or (background-clip: text)) {
     .setup-blueprint__intro h1 {
-      background: linear-gradient(112deg, #ffffff 0%, #bfffea 38%, #7dd3fc 66%, #fcd34d 100%);
+      background: linear-gradient(
+        112deg,
+        #ffffff 0%,
+        #bfffea 38%,
+        #7dd3fc 66%,
+        #fcd34d 100%
+      );
       background-clip: text;
       background-size: 180% auto;
       color: transparent;
@@ -1234,7 +1255,12 @@ canvas {
     border: 1px solid rgba(45, 212, 191, 0.14);
     border-radius: 1.25rem;
     background:
-      linear-gradient(135deg, rgba(52, 211, 153, 0.12), transparent 46%, rgba(34, 211, 238, 0.08)),
+      linear-gradient(
+        135deg,
+        rgba(52, 211, 153, 0.12),
+        transparent 46%,
+        rgba(34, 211, 238, 0.08)
+      ),
       linear-gradient(180deg, rgba(18, 27, 28, 0.94), rgba(10, 15, 17, 0.94)),
       rgba(8, 13, 15, 0.96);
     background-size:
@@ -1249,7 +1275,12 @@ canvas {
     gap: 0.9rem;
     min-height: 8.5rem;
     border-bottom: 1px solid rgba(45, 212, 191, 0.1);
-    background: linear-gradient(110deg, rgba(45, 212, 191, 0.085), transparent 46%, rgba(245, 158, 11, 0.045));
+    background: linear-gradient(
+      110deg,
+      rgba(45, 212, 191, 0.085),
+      transparent 46%,
+      rgba(245, 158, 11, 0.045)
+    );
     padding: 1rem;
   }
 
@@ -1322,8 +1353,12 @@ canvas {
     min-height: 3.4rem;
     border-color: rgba(190, 242, 100, 0.36) !important;
     border-radius: 0.9rem;
-    background:
-      linear-gradient(135deg, #34d399 0%, #22d3ee 46%, #f59e0b 100%) !important;
+    background: linear-gradient(
+      135deg,
+      #34d399 0%,
+      #22d3ee 46%,
+      #f59e0b 100%
+    ) !important;
     color: #03110f !important;
     padding-inline: 1rem;
     font-size: 0.95rem;
@@ -1383,8 +1418,7 @@ canvas {
   .site-footer {
     background:
       linear-gradient(120deg, rgba(45, 212, 191, 0.08), transparent 42%),
-      linear-gradient(180deg, rgba(8, 13, 15, 0.92), #05080a),
-      #05080a;
+      linear-gradient(180deg, rgba(8, 13, 15, 0.92), #05080a), #05080a;
   }
 
   .site-footer__main {
@@ -1468,6 +1502,9 @@ canvas {
 
   #compare article,
   #compare [class*="bg-[var(--rr-surface-panel)]"] {
-    background-size: 180% 180%, auto, auto;
+    background-size:
+      180% 180%,
+      auto,
+      auto;
   }
 }
