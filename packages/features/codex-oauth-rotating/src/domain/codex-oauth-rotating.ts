@@ -5,8 +5,12 @@ import sodium from "libsodium-wrappers";
 export const codexRotatingAuthMode = "codex_subscription_oauth_rotating";
 export const codexRotatingSetupKind = "codex_oauth_rotating";
 export const codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
+export const codexForkAgenticSandboxRuntimeMode = "fork-agentic-sandbox";
 export const codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
 export const codexRotatingWorkflowSchemaVersion = 1;
+export const codexForkAgenticSandboxCertificationVariable =
+  "REVIEW_ROUTER_FORK_AGENTIC_SANDBOX";
+export const codexForkAgenticSandboxCertificationValue = "certified";
 export const codexRotatingAuthJsonMaxBytes = 32 * 1024;
 export const codexRotatingDefaultRunner = "ubuntu-24.04";
 export const codexRotatingDefaultTimeoutMinutes = 30;
@@ -358,6 +362,7 @@ export type CodexRotatingWorkflowOptions = {
   readonly providerInstanceId: string;
   readonly claudeCodeOAuthTokenSecret?: boolean;
   readonly openRouterApiKeySecret?: boolean;
+  readonly forkAgenticSandboxEnabled?: boolean;
   readonly runnerLabel?: string;
   readonly timeoutMinutes?: number;
   readonly workflowSchemaVersion?: number;
@@ -377,7 +382,13 @@ export function renderCodexRotatingAdvisoryWorkflow(
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]${
+      options.forkAgenticSandboxEnabled === true
+        ? `
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]`
+        : ""
+    }
 
 permissions: {}
 
@@ -399,7 +410,72 @@ jobs:
           provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
           workflow-schema-version: "${schemaVersion}"
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
-${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}`;
+${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
+    options.forkAgenticSandboxEnabled === true
+      ? `
+
+  fork-sandbox-review:
+    name: fork-sandbox-review
+    runs-on: ${runnerLabel}
+    timeout-minutes: ${timeoutMinutes}
+    if: \${{ github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name != github.repository && vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}' }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout fork pull request head
+        uses: actions/checkout@v6
+        with:
+          repository: \${{ github.event.pull_request.head.repo.full_name }}
+          ref: \${{ github.event.pull_request.head.sha }}
+          path: safe-workspace
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify fork sandbox checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "\${{ github.event.pull_request.head.repo.full_name }}" = "\${{ github.repository }}" ]; then
+            echo "::error::ReviewRouter fork sandbox is only for fork pull requests."
+            exit 1
+          fi
+          if [ "\${{ vars.${codexForkAgenticSandboxCertificationVariable} }}" != "${codexForkAgenticSandboxCertificationValue}" ]; then
+            echo "::error::ReviewRouter fork sandbox requires ${codexForkAgenticSandboxCertificationVariable}=${codexForkAgenticSandboxCertificationValue}."
+            exit 1
+          fi
+          case "\${{ github.event.pull_request.head.sha }}" in
+            ""|*[!0-9a-fA-F]*)
+              echo "::error::ReviewRouter fork sandbox requires an exact pull request head SHA."
+              exit 1
+              ;;
+          esac
+          if git -C safe-workspace config --local --get-regexp 'http\\..*\\.extraheader|credential\\.helper|url\\..*\\.insteadOf' >/tmp/reviewrouter-unsafe-git-config 2>/dev/null; then
+            cat /tmp/reviewrouter-unsafe-git-config
+            echo "::error::ReviewRouter fork sandbox checkout persisted credentials."
+            exit 1
+          fi
+          if find safe-workspace -type l -print -quit | grep -q .; then
+            echo "::error::ReviewRouter fork sandbox does not support symlinks yet."
+            exit 1
+          fi
+
+      - name: ReviewRouter fork sandbox review
+        id: run_fork_sandbox
+        uses: ${options.actionRef}
+        with:
+          mode: ${codexForkAgenticSandboxRuntimeMode}
+          api-url: ${JSON.stringify(options.apiUrl)}
+          provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
+          workflow-schema-version: "${schemaVersion}"
+          auth-json: \${{ secrets.${codexRotatingSecretName} }}
+${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}        env:
+          REVIEW_ROUTER_PR_WORKSPACE: \${{ github.workspace }}/safe-workspace
+`
+      : ""
+  }`;
 }
 
 export type CodexRotatingWorkflowScanResult = {
@@ -412,6 +488,34 @@ export type CodexRotatingWorkflowSourceMetadata = {
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
 };
+
+function scanCodexForkAgenticSandboxMarkers(
+  workflow: string,
+): readonly string[] {
+  const errors: string[] = [];
+  const requiredMarkers = [
+    "pull_request_target:",
+    "fork-sandbox-review:",
+    `vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}'`,
+    "github.event.pull_request.head.repo.full_name != github.repository",
+    "repository: ${{ github.event.pull_request.head.repo.full_name }}",
+    "ref: ${{ github.event.pull_request.head.sha }}",
+    "path: safe-workspace",
+    "persist-credentials: false",
+    "fetch-depth: 0",
+    "Verify fork sandbox checkout",
+    "git -C safe-workspace config --local --get-regexp",
+    "find safe-workspace -type l -print -quit",
+    `mode: ${codexForkAgenticSandboxRuntimeMode}`,
+    "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
+  ];
+  for (const marker of requiredMarkers) {
+    if (!workflow.includes(marker)) {
+      errors.push(`fork_marker_missing:${marker}`);
+    }
+  }
+  return errors;
+}
 
 type WorkflowPermissionEntry = {
   readonly name: string;
@@ -430,10 +534,13 @@ export function scanCodexRotatingAdvisoryWorkflow(
   workflow: string,
 ): CodexRotatingWorkflowScanResult {
   const errors: string[] = [];
+  const forkSandboxEnabled = workflow.includes(
+    `mode: ${codexForkAgenticSandboxRuntimeMode}`,
+  );
   const secretMatches = workflow.match(
     new RegExp(codexRotatingSecretName, "g"),
   );
-  if ((secretMatches?.length ?? 0) !== 1) {
+  if ((secretMatches?.length ?? 0) !== (forkSandboxEnabled ? 2 : 1)) {
     errors.push("rotating_secret_must_appear_exactly_once");
   }
   if (
@@ -474,10 +581,6 @@ export function scanCodexRotatingAdvisoryWorkflow(
   for (const [pattern, code] of [
     [/\bworkflow_dispatch\s*:/, "workflow_dispatch_not_allowed"],
     [/\bmerge_group\s*:/, "merge_group_not_allowed"],
-    [/\bpull_request_target\s*:/, "pull_request_target_not_allowed"],
-    [/\buses:\s*actions\/checkout@/i, "actions_checkout_not_allowed"],
-    [/\brun:\s*[|>]?/i, "raw_run_step_not_allowed"],
-    [/^\s*env\s*:/m, "workflow_env_not_allowed"],
     [/^\s*strategy\s*:/m, "matrix_strategy_not_allowed"],
     [/^\s*container\s*:/m, "job_container_not_allowed"],
     [/^\s*services\s*:/m, "job_services_not_allowed"],
@@ -494,15 +597,54 @@ export function scanCodexRotatingAdvisoryWorkflow(
       errors.push(code);
     }
   }
+  if (!forkSandboxEnabled) {
+    for (const [pattern, code] of [
+      [/\bpull_request_target\s*:/, "pull_request_target_not_allowed"],
+      [/\buses:\s*actions\/checkout@/i, "actions_checkout_not_allowed"],
+      [/\brun:\s*[|>]?/i, "raw_run_step_not_allowed"],
+    ] as const) {
+      if (pattern.test(workflow)) {
+        errors.push(code);
+      }
+    }
+    if (/^\s*env\s*:/m.test(workflow)) {
+      errors.push("workflow_env_not_allowed");
+    }
+  } else {
+    errors.push(...scanCodexForkAgenticSandboxMarkers(workflow));
+  }
   const actionRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)$/gm)].map(
     (match) => match[1]!,
   );
   const actionRef = actionRefs[0];
-  if (actionRefs.length !== 1) {
+  if (actionRefs.length !== (forkSandboxEnabled ? 3 : 1)) {
     errors.push("exactly_one_action_step_required");
   }
-  if (!actionRef || !isSafeActionRef(actionRef)) {
+  if (!actionRef || !actionRefs.every(isSafeActionRef)) {
     errors.push("action_ref_invalid");
+  }
+  if (forkSandboxEnabled) {
+    const checkoutRefs = actionRefs.filter(
+      (ref) => ref.toLowerCase() === "actions/checkout@v6",
+    );
+    const reviewActionRefs = actionRefs.filter(
+      (ref) => ref.toLowerCase() !== "actions/checkout@v6",
+    );
+    if (checkoutRefs.length !== 1) {
+      errors.push("fork_checkout_action_ref_invalid");
+    }
+    if (
+      reviewActionRefs.length !== 2 ||
+      reviewActionRefs[0] !== reviewActionRefs[1]
+    ) {
+      errors.push("fork_review_action_refs_invalid");
+    }
+    if ((workflow.match(/^\s*run:\s*[|>]?/gm)?.length ?? 0) !== 1) {
+      errors.push("fork_raw_run_step_count_invalid");
+    }
+    if ((workflow.match(/^\s*env\s*:/gm)?.length ?? 0) !== 1) {
+      errors.push("fork_env_block_count_invalid");
+    }
   }
   const source = extractCodexRotatingWorkflowSourceMetadata(workflow);
   if (!source.providerInstanceId) {
@@ -535,6 +677,22 @@ export function scanCodexRotatingAdvisoryWorkflow(
     ])
   ) {
     errors.push("review_job_requires_id_token_write");
+  }
+  if (forkSandboxEnabled) {
+    const forkJobPermissions = parseWorkflowPermissions(
+      extractWorkflowJobSection(workflow, "fork-sandbox-review") ?? "",
+      4,
+    );
+    if (
+      !permissionsExactly(forkJobPermissions, [
+        { name: "contents", value: "read" },
+        { name: "pull-requests", value: "write" },
+        { name: "issues", value: "write" },
+        { name: "id-token", value: "write" },
+      ])
+    ) {
+      errors.push("fork_job_permissions_invalid");
+    }
   }
   return { valid: errors.length === 0, errors };
 }
@@ -571,7 +729,7 @@ export const codexRotatingOidcClaimsSchema = z
     repository_owner: z.string().min(1).optional(),
     repository_owner_id: z.string().min(1).optional(),
     repository_visibility: z.enum(["public", "private", "internal"]),
-    event_name: z.literal("pull_request"),
+    event_name: z.enum(["pull_request", "pull_request_target"]),
     run_id: z.string().min(1),
     run_attempt: z.string().min(1),
     workflow_ref: z.string().min(1),

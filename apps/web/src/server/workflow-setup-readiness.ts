@@ -17,6 +17,7 @@ export type WorkflowSetupReadinessInput = {
   readonly providerKind?: ProviderKind;
   readonly discussionMode?: ReviewRouterDiscussionMode;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingClaudeCodeOAuthTokenSecret?: boolean;
   readonly codexRotatingOpenRouterApiKeySecret?: boolean;
@@ -50,6 +51,8 @@ export async function isWorkflowSetupAlreadyCurrent(
                 input.codexRotatingClaudeCodeOAuthTokenSecret === true,
               openRouterApiKeySecret:
                 input.codexRotatingOpenRouterApiKeySecret === true,
+              forkAgenticSandboxEnabled:
+                input.forkAgenticSandboxEnabled === true,
             }),
         }
       : input.providerKind || input.conflictReviewFallbackEnabled === true

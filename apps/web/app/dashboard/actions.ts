@@ -546,6 +546,8 @@ async function createSetupPullRequestMutation(
     const codexRotatingSecretInputs = codexRotatingProviderInstanceId
       ? codexRotatingWorkflowSecretInputs(resolvedRuntime.config)
       : null;
+    const forkAgenticSandboxEnabled =
+      codexRotatingProviderInstanceId !== undefined;
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -562,6 +564,7 @@ async function createSetupPullRequestMutation(
         ...(codexRotatingProviderInstanceId
           ? {
               codexRotatingProviderInstanceId,
+              forkAgenticSandboxEnabled,
               ...(codexRotatingSecretInputs ?? {}),
             }
           : {}),
@@ -643,7 +646,10 @@ async function createSetupPullRequestMutation(
               discussionMode,
               conflictReviewFallbackEnabled: conflictReviewFallbackAllowed,
               ...(codexRotatingProviderInstanceId
-                ? { codexRotatingProviderInstanceId }
+                ? {
+                    codexRotatingProviderInstanceId,
+                    forkAgenticSandboxEnabled,
+                  }
                 : {}),
               actor: actor.actor,
             },
@@ -815,6 +821,8 @@ async function confirmSetupPullRequestMergedMutation(
       resolvedRuntime !== null && codexRotatingProviderInstanceId
         ? codexRotatingWorkflowSecretInputs(resolvedRuntime.config)
         : null;
+    const forkAgenticSandboxEnabled =
+      codexRotatingProviderInstanceId !== undefined;
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -832,6 +840,7 @@ async function confirmSetupPullRequestMergedMutation(
             ...(codexRotatingProviderInstanceId
               ? {
                   codexRotatingProviderInstanceId,
+                  forkAgenticSandboxEnabled,
                   ...(codexRotatingSecretInputs ?? {}),
                 }
               : {}),

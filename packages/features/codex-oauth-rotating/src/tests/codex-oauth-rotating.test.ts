@@ -449,6 +449,44 @@ exit 17
     );
   });
 
+  it("rejects extra executable surfaces in fork sandbox workflow", () => {
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      forkAgenticSandboxEnabled: true,
+    });
+
+    expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const extraRun = workflow.replace(
+      "      - name: ReviewRouter fork sandbox review",
+      "      - name: Unexpected fork command\n        run: echo unsafe\n\n      - name: ReviewRouter fork sandbox review",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(extraRun).errors).toContain(
+      "fork_raw_run_step_count_invalid",
+    );
+
+    const extraEnv = workflow.replace(
+      "    timeout-minutes:",
+      "    env: { NODE_OPTIONS: --require ./hook.js }\n    timeout-minutes:",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(extraEnv).errors).toContain(
+      "fork_env_block_count_invalid",
+    );
+
+    const downgradedCheckout = workflow.replace(
+      "uses: actions/checkout@v6",
+      "uses: actions/checkout@v5",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(downgradedCheckout).errors,
+    ).toContain("fork_checkout_action_ref_invalid");
+  });
+
   it("validates OIDC prelease binding before auth input can be read", () => {
     const now = new Date("2026-05-25T12:00:00.000Z");
     const claims = {

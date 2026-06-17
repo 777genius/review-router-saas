@@ -56,6 +56,8 @@ import {
 declare const __dirname: string | undefined;
 
 const defaultOidcAudience = "reviewrouter";
+const forkAgenticSandboxActionMode = "fork-agentic-sandbox";
+const defaultOpenAiResponsesUrl = "https://api.openai.com/v1/responses";
 const bundledCodexPlatform = "linux-x64";
 const bundledCodexVersion = "0.135.0";
 const bundledCodexPackageName = ["@openai", "codex"].join("/");
@@ -225,6 +227,17 @@ export async function runCodexRotatingGitHubAction(
   const inputs = readActionInputs(env);
   maskProviderSecretInputs(io, inputs.providerSecrets);
   clearActionProviderSecretEnv(env);
+
+  if (inputs.mode === forkAgenticSandboxActionMode) {
+    await runForkAgenticSandboxGitHubAction({
+      inputs,
+      env,
+      io,
+      fetchImpl,
+      fullReviewRuntimeRunner,
+    });
+    return;
+  }
 
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
@@ -412,9 +425,195 @@ export async function runCodexRotatingGitHubAction(
   }
 }
 
+async function runForkAgenticSandboxGitHubAction(input: {
+  readonly inputs: ActionInputs;
+  readonly env: NodeJS.ProcessEnv;
+  readonly io: ActionIO;
+  readonly fetchImpl: FetchLike;
+  readonly fullReviewRuntimeRunner: FullReviewRuntimeRunner;
+}): Promise<void> {
+  const event = await readForkPullRequestTargetEvent(input.env);
+  assertSameRepositoryPullRequest(event, input.env);
+  const workspace = await resolveForkSandboxWorkspace(input.env);
+  await assertForkSandboxWorkspace(workspace);
+
+  const oidcToken = await requestGitHubActionsOidcToken({
+    env: input.env,
+    fetchImpl: input.fetchImpl,
+    audience: defaultOidcAudience,
+  });
+  mask(input.io, oidcToken);
+  clearOidcRequestEnv(input.env);
+
+  const prelease = await postJson<PreleaseResponse>({
+    fetchImpl: input.fetchImpl,
+    label: "api_prelease",
+    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
+    body: {
+      oidcToken,
+      audience: defaultOidcAudience,
+      providerInstanceId: input.inputs.providerInstanceId,
+      workflowSchemaVersion: input.inputs.workflowSchemaVersion,
+    },
+  });
+
+  await assertSupportedRunnerEnvironment(input.env);
+  const codexBinaryPath = await resolveCodexBinary(input.env);
+  const authJson = readActionAuthJson(input.env);
+  mask(input.io, authJson);
+  clearActionAuthEnv(input.env);
+  validateCodexAuthJsonBytes({ authJsonBytes: authJson });
+  const restoredGenerationHash = computeCodexAuthGenerationHash({
+    authJsonBytes: authJson,
+    generationHashSalt: prelease.generationHashSalt,
+  });
+
+  const finalize = await postJson<FinalizeResponse>({
+    fetchImpl: input.fetchImpl,
+    label: "api_finalize",
+    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/finalize`,
+    body: {
+      leaseId: prelease.leaseId,
+      providerInstanceId: input.inputs.providerInstanceId,
+      restoredGenerationHash,
+    },
+  });
+
+  if (finalize.status === "stale_queued_secret") {
+    clearActionAuthEnv(input.env);
+    notice(input.io, "ReviewRouter skipped a stale queued Codex OAuth secret.");
+    return;
+  }
+
+  const runtimeEnv = codexOnlyForkRuntimeEnv(finalize.runtimeEnv);
+  mask(input.io, finalize.publicKeyReadToken);
+  const publicKey = await fetchGitHubRepositoryPublicKey({
+    fetchImpl: input.fetchImpl,
+    owner: finalize.repositoryOwner,
+    repo: finalize.repositoryName,
+    token: finalize.publicKeyReadToken,
+  });
+
+  await postJson({
+    fetchImpl: input.fetchImpl,
+    label: "api_writeback_preflight",
+    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/writeback-preflight`,
+    body: {
+      leaseId: prelease.leaseId,
+      providerInstanceId: input.inputs.providerInstanceId,
+      githubKeyId: publicKey.key_id,
+    },
+  });
+
+  const tempHome = await makeTempDirectory("reviewrouter-home-");
+  const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
+  try {
+    const refreshed = await refreshCodexAuthJson({
+      authJson,
+      inputs: input.inputs,
+      fetchImpl: input.fetchImpl,
+      prelease,
+      finalize,
+      publicKey,
+      codexBinaryPath,
+      env: input.env,
+      tempHome,
+      tempCodexHome,
+    });
+
+    if (!refreshed.writebackCommittedByRuntime) {
+      await writeRefreshedCodexAuthJson({
+        authJson: refreshed.authJson,
+        inputs: input.inputs,
+        fetchImpl: input.fetchImpl,
+        prelease,
+        finalize,
+        publicKey,
+        env: input.env,
+      });
+    }
+
+    const commentToken = await postJson<CommentTokenResponse>({
+      fetchImpl: input.fetchImpl,
+      label: "api_comment_token",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+      body: {
+        leaseId: prelease.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        authCleared: true,
+      },
+    });
+    mask(input.io, commentToken.token);
+    await deleteStaleCodexRotatingSummaryComments({
+      fetchImpl: input.fetchImpl,
+      token: commentToken.token,
+      owner: event.owner,
+      repo: event.repo,
+      issueNumber: event.number,
+    });
+
+    const accessToken = extractCodexAccessToken(refreshed.authJson);
+    const proxy = await startCodexLocalProviderProxy({
+      fetchImpl: input.fetchImpl,
+      accessToken,
+      upstreamResponsesUrl:
+        input.env.REVIEWROUTER_OPENAI_RESPONSES_URL ??
+        defaultOpenAiResponsesUrl,
+    });
+    try {
+      await writeCodexProxySnapshot({
+        codexHome: tempCodexHome,
+        baseUrl: proxy.baseUrl,
+        model: codexModelForForkRuntime(runtimeEnv),
+      });
+
+      const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
+      try {
+        await input.fullReviewRuntimeRunner({
+          inputs: input.inputs,
+          leaseId: prelease.leaseId,
+          codexBinaryPath,
+          env: input.env,
+          io: input.io,
+          workspace,
+          tempHome: reviewHome,
+          tempCodexHome,
+          event,
+          commentToken: commentToken.token,
+          runtimeConfigVersion: finalize.runtimeConfigVersion,
+          runtimeEnv,
+        });
+        try {
+          await deleteFullRuntimeProgressComments({
+            fetchImpl: input.fetchImpl,
+            token: commentToken.token,
+            owner: event.owner,
+            repo: event.repo,
+            issueNumber: event.number,
+          });
+        } catch {
+          notice(
+            input.io,
+            "ReviewRouter could not clean up progress comments.",
+          );
+        }
+      } finally {
+        await removeTree(reviewHome);
+      }
+    } finally {
+      await proxy.close();
+    }
+  } finally {
+    clearActionAuthEnv(input.env);
+    clearOidcRequestEnv(input.env);
+    await removeTree(tempCodexHome);
+    await removeTree(tempHome);
+  }
+  notice(input.io, "ReviewRouter fork sandbox review completed.");
+}
+
 export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
   const mode = readInput(env, "mode") || codexRotatingRuntimeAuthMode;
-  const apiUrl = requireInput(env, "api-url").replace(/\/+$/, "");
   const claudeCodeOAuthToken = optionalSecretInput(
     env,
     "claude-code-oauth-token",
@@ -429,7 +628,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
 
   return {
     mode,
-    apiUrl,
+    apiUrl: requireInput(env, "api-url").replace(/\/+$/, ""),
     providerInstanceId: requireInput(env, "provider-instance-id"),
     workflowSchemaVersion,
     providerSecrets: {
@@ -598,6 +797,59 @@ async function readPullRequestEvent(
   }
   if (repository !== headRepo) {
     throw new Error("fork_pull_request_unsupported");
+  }
+  const [owner, repo] = repository.split("/");
+  if (!owner || !repo) {
+    throw new Error("invalid_github_repository");
+  }
+  return {
+    number: requireNumber(event.number, "pr_number"),
+    ...(isSafeGitHubNumericId(event.repository?.id)
+      ? { repositoryId: String(event.repository.id) }
+      : {}),
+    repository,
+    owner,
+    repo,
+    headSha: requireSha(event.pull_request?.head?.sha, "head_sha"),
+    baseSha: requireSha(event.pull_request?.base?.sha, "base_sha"),
+  };
+}
+
+async function readForkPullRequestTargetEvent(
+  env: NodeJS.ProcessEnv,
+): Promise<PullRequestEvent> {
+  if (env.GITHUB_EVENT_NAME !== "pull_request_target") {
+    throw new Error("unsupported_event");
+  }
+  const eventPath = env.GITHUB_EVENT_PATH;
+  if (!eventPath) {
+    throw new Error("missing_github_event_path");
+  }
+  const event = JSON.parse(await readFile(eventPath, "utf8")) as {
+    readonly number?: unknown;
+    readonly repository?: {
+      readonly id?: unknown;
+      readonly full_name?: unknown;
+    };
+    readonly pull_request?: {
+      readonly draft?: unknown;
+      readonly head?: {
+        readonly sha?: unknown;
+        readonly repo?: { readonly full_name?: unknown };
+      };
+      readonly base?: { readonly sha?: unknown };
+    };
+  };
+  const repository = requireString(event.repository?.full_name, "event_repo");
+  const headRepo = requireString(
+    event.pull_request?.head?.repo?.full_name,
+    "head_repo",
+  );
+  if (event.pull_request?.draft === true) {
+    throw new Error("draft_pull_request_unsupported");
+  }
+  if (repository === headRepo) {
+    throw new Error("fork_pull_request_required");
   }
   const [owner, repo] = repository.split("/");
   if (!owner || !repo) {
@@ -1149,6 +1401,54 @@ async function writeCodexAuthSnapshot(
   await writeFile(join(codexHome, "auth.json"), authJson, { mode: 0o600 });
 }
 
+async function writeCodexProxySnapshot(input: {
+  readonly codexHome: string;
+  readonly baseUrl: string;
+  readonly model: string;
+}): Promise<void> {
+  await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
+  await rm(join(input.codexHome, "auth.json"), { force: true });
+  const config = [
+    `model = ${JSON.stringify(input.model)}`,
+    'model_provider = "reviewrouter_proxy"',
+    'approval_policy = "never"',
+    'sandbox_mode = "read-only"',
+    'web_search = "disabled"',
+    "disable_response_storage = true",
+    'model_verbosity = "low"',
+    "",
+    "[model_providers.reviewrouter_proxy]",
+    'name = "ReviewRouter local Responses proxy"',
+    `base_url = ${JSON.stringify(input.baseUrl)}`,
+    'wire_api = "responses"',
+    "",
+    "[features]",
+    "apps = false",
+    "hooks = false",
+    "memories = false",
+    "multi_agent = false",
+    "shell_snapshot = false",
+    "skill_mcp_dependency_install = false",
+    "",
+    "[history]",
+    'persistence = "none"',
+    "",
+    "[otel]",
+    'exporter = "none"',
+    'metrics_exporter = "none"',
+    'trace_exporter = "none"',
+    "log_user_prompt = false",
+    "",
+    "[shell_environment_policy]",
+    'inherit = "none"',
+    'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
+    "",
+  ].join("\n");
+  await writeFile(join(input.codexHome, "config.toml"), config, {
+    mode: 0o600,
+  });
+}
+
 async function runCodexBootstrap(input: {
   readonly inputs: ActionInputs;
   readonly codexBinaryPath: string;
@@ -1665,6 +1965,13 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input: {
   readonly workspace: string;
   readonly checkoutToken: string;
 }): Promise<void> {
+  await assertGitConfigDoesNotPersistCredentials(input);
+}
+
+async function assertGitConfigDoesNotPersistCredentials(input: {
+  readonly workspace: string;
+  readonly checkoutToken?: string;
+}): Promise<void> {
   let gitConfig: string;
   try {
     gitConfig = await readFile(join(input.workspace, ".git", "config"), "utf8");
@@ -1673,7 +1980,7 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input: {
   }
   const normalized = gitConfig.toLowerCase();
   if (
-    gitConfig.includes(input.checkoutToken) ||
+    (input.checkoutToken ? gitConfig.includes(input.checkoutToken) : false) ||
     normalized.includes("extraheader") ||
     normalized.includes("credential.helper") ||
     normalized.includes("insteadof") ||
@@ -1682,6 +1989,39 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input: {
   ) {
     throw new Error("checkout_persisted_credentials_detected");
   }
+}
+
+async function resolveForkSandboxWorkspace(
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const workspace = env.REVIEW_ROUTER_PR_WORKSPACE;
+  if (!workspace) {
+    throw new Error("missing_fork_sandbox_workspace");
+  }
+  const githubWorkspace = env.GITHUB_WORKSPACE;
+  if (!githubWorkspace) {
+    throw new Error("missing_github_workspace");
+  }
+  const resolvedWorkspace = await realpath(workspace);
+  const resolvedRoot = await realpath(githubWorkspace);
+  if (
+    resolvedWorkspace !== resolvedRoot &&
+    !resolvedWorkspace.startsWith(`${resolvedRoot}/`)
+  ) {
+    throw new Error("fork_sandbox_workspace_outside_github_workspace");
+  }
+  if (resolvedWorkspace === "/" || resolvedWorkspace === resolvedRoot) {
+    throw new Error("fork_sandbox_workspace_invalid");
+  }
+  return resolvedWorkspace;
+}
+
+async function assertForkSandboxWorkspace(workspace: string): Promise<void> {
+  const stats = await lstat(workspace);
+  if (!stats.isDirectory()) {
+    throw new Error("fork_sandbox_workspace_not_directory");
+  }
+  await assertGitConfigDoesNotPersistCredentials({ workspace });
 }
 
 async function runFullReviewRouterRuntime(input: {
@@ -1865,6 +2205,86 @@ function runtimeProvidersInclude(
   return (runtimeEnv.REVIEW_PROVIDERS ?? "")
     .split(",")
     .some((provider) => provider.trim().startsWith(providerPrefix));
+}
+
+const forkRuntimeEnvAllowedKeys = new Set([
+  "REVIEWROUTER_CONFIG_SCHEMA_VERSION",
+  "REVIEW_AUTH_MODE",
+  "INLINE_MAX_COMMENTS",
+  "TARGET_TOKENS_PER_BATCH",
+  "FAIL_ON_SEVERITY",
+  "REVIEW_OUTPUT_LANGUAGE",
+  "CODEX_MODEL",
+  "CODEX_REASONING_EFFORT",
+  "CODEX_AGENTIC_CONTEXT",
+  "CODEX_FAST_MODE",
+  "CODEX_AGENTIC_AUDIT",
+  "FAIL_ON_NO_HEALTHY_PROVIDERS",
+]);
+
+function codexOnlyForkRuntimeEnv(
+  runtimeEnv: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const normalized = normalizeFullReviewRuntimeEnv(runtimeEnv);
+  const codexProviders = (normalized.REVIEW_PROVIDERS ?? "")
+    .split(",")
+    .map((provider) => provider.trim())
+    .filter((provider) => provider.startsWith("codex/"));
+  if (codexProviders.length === 0) {
+    throw new Error("fork_agentic_sandbox_requires_codex_provider");
+  }
+  const primaryProvider = codexProviders[0]!;
+  const allowedRuntimeEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(normalized)) {
+    if (forkRuntimeEnvAllowedKeys.has(key)) {
+      allowedRuntimeEnv[key] = value;
+    }
+  }
+  const forkEnv: Record<string, string> = {
+    ...allowedRuntimeEnv,
+    REVIEW_PROVIDERS: codexProviders.join(","),
+    REQUIRED_HEALTHY_PROVIDERS: primaryProvider,
+    SYNTHESIS_MODEL: primaryProvider,
+    PROVIDER_LIMIT: "1",
+    PROVIDER_MAX_PARALLEL: "1",
+    INLINE_MIN_AGREEMENT: "1",
+    REVIEWROUTER_FORK_AGENTIC_SANDBOX: "true",
+  };
+  return forkEnv;
+}
+
+function codexModelForForkRuntime(
+  runtimeEnv: Readonly<Record<string, string>>,
+): string {
+  const provider = (runtimeEnv.REVIEW_PROVIDERS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .find((value) => value.startsWith("codex/"));
+  const modelFromProvider = provider?.slice("codex/".length);
+  return modelFromProvider || runtimeEnv.CODEX_MODEL || "gpt-5.5";
+}
+
+function extractCodexAccessToken(authJson: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(authJson);
+  } catch {
+    throw new Error("codex_auth_json_invalid_json");
+  }
+  const accessToken =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "tokens" in parsed &&
+    typeof parsed.tokens === "object" &&
+    parsed.tokens !== null &&
+    "access_token" in parsed.tokens &&
+    typeof parsed.tokens.access_token === "string"
+      ? parsed.tokens.access_token
+      : "";
+  if (!accessToken) {
+    throw new Error("codex_access_token_missing");
+  }
+  return accessToken;
 }
 
 function normalizeFullReviewRuntimeEnv(
@@ -2353,6 +2773,7 @@ function buildWritebackIdempotencyKey(
 function clearActionAuthEnv(env: NodeJS.ProcessEnv): void {
   delete env["INPUT_AUTH-JSON"];
   delete env.INPUT_AUTH_JSON;
+  delete env.CODEX_AUTH_JSON;
   delete env.REVIEWROUTER_CODEX_AUTH_JSON;
   clearActionProviderSecretEnv(env);
 }

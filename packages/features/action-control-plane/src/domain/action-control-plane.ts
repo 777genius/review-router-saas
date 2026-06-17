@@ -33,6 +33,7 @@ export const trustedReviewRouterReusableWorkflowRefPattern =
 
 export const allowedActionEvents = [
   "pull_request",
+  "pull_request_target",
   "pull_request_review_comment",
   "issue_comment",
   "workflow_dispatch",
