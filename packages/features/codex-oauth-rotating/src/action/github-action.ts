@@ -2150,6 +2150,7 @@ async function runFullReviewRouterRuntime(input: {
       inputs: input.inputs,
       leaseId: input.leaseId,
       event: input.event,
+      workspace: input.workspace,
       tempHome: input.tempHome,
       tempCodexHome: input.tempCodexHome,
       codexBinDir,
@@ -2183,6 +2184,7 @@ function buildFullReviewRuntimeEnv(input: {
   readonly inputs: ActionInputs;
   readonly leaseId: string;
   readonly event: PullRequestEvent;
+  readonly workspace: string;
   readonly tempHome: string;
   readonly tempCodexHome: string;
   readonly codexBinDir: string;
@@ -2206,6 +2208,7 @@ function buildFullReviewRuntimeEnv(input: {
     ...providerSecretEnv,
     HOME: input.tempHome,
     CODEX_HOME: input.tempCodexHome,
+    GITHUB_WORKSPACE: input.workspace,
     CI: "true",
     PATH: `${input.codexBinDir}:${join(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
     GITHUB_OUTPUT: join(input.tempHome, "github-output"),
