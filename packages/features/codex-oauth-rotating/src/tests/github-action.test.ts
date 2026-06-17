@@ -288,15 +288,17 @@ describe("Codex rotating GitHub Action runtime", () => {
       );
       expect(input.tempCodexHome.startsWith(`${safeWorkspace}/`)).toBe(false);
       expect(input.runtimeEnv).toMatchObject({
-        REVIEW_PROVIDERS: "codex/gpt-5.5",
+        REVIEW_PROVIDERS:
+          "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
         REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
         SYNTHESIS_MODEL: "codex/gpt-5.5",
-        PROVIDER_LIMIT: "1",
-        PROVIDER_MAX_PARALLEL: "1",
-        INLINE_MIN_AGREEMENT: "1",
+        PROVIDER_LIMIT: "3",
+        PROVIDER_MAX_PARALLEL: "3",
+        INLINE_MIN_AGREEMENT: "2",
+        CLAUDE_MODEL: "sonnet",
+        CLAUDE_AGENTIC_CONTEXT: "true",
         REVIEWROUTER_FORK_AGENTIC_SANDBOX: "true",
       });
-      expect(input.runtimeEnv.CLAUDE_MODEL).toBeUndefined();
       expect(input.runtimeEnv.OPENROUTER_MODEL).toBeUndefined();
       expect(input.runtimeEnv.EXTRA_RUNTIME_FLAG).toBeUndefined();
       const config = readFileSync(
