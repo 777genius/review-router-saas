@@ -57,7 +57,8 @@ declare const __dirname: string | undefined;
 
 const defaultOidcAudience = "reviewrouter";
 const forkAgenticSandboxActionMode = "fork-agentic-sandbox";
-const defaultOpenAiResponsesUrl = "https://api.openai.com/v1/responses";
+const defaultChatGptCodexResponsesUrl =
+  "https://chatgpt.com/backend-api/codex/responses";
 const bundledCodexPlatform = "linux-x64";
 const bundledCodexVersion = "0.135.0";
 const bundledCodexPackageName = ["@openai", "codex"].join("/");
@@ -78,9 +79,9 @@ const codexProxyForwardHeaderNames = new Set([
   "thread-id",
   "user-agent",
   "x-client-request-id",
-  "x-codex-beta-features",
-  "x-codex-turn-metadata",
-  "x-codex-window-id",
+  "x-oai-attestation",
+  "x-openai-internal-codex-responses-lite",
+  "x-responsesapi-include-timing-metrics",
 ]);
 const minimumRunnerFreeDiskBytes = 4 * 1024 * 1024 * 1024;
 const supportedRunnerOs = "Linux";
@@ -570,9 +571,7 @@ async function runForkAgenticSandboxGitHubAction(input: {
     const proxy = await startCodexLocalProviderProxy({
       fetchImpl: input.fetchImpl,
       accessToken,
-      upstreamResponsesUrl:
-        input.env.REVIEWROUTER_OPENAI_RESPONSES_URL ??
-        defaultOpenAiResponsesUrl,
+      upstreamResponsesUrl: resolveCodexProxyUpstreamResponsesUrl(input.env),
     });
     try {
       await writeCodexProxySnapshot({
@@ -1139,6 +1138,16 @@ export async function startCodexLocalProviderProxy(input: {
   };
 }
 
+export function resolveCodexProxyUpstreamResponsesUrl(
+  env: NodeJS.ProcessEnv,
+): string {
+  return (
+    env.REVIEWROUTER_CODEX_RESPONSES_URL ??
+    env.REVIEWROUTER_OPENAI_RESPONSES_URL ??
+    defaultChatGptCodexResponsesUrl
+  );
+}
+
 function buildCodexProxyUpstreamHeaders(input: {
   readonly requestHeaders: http.IncomingHttpHeaders;
   readonly fallbackAccessToken: string;
@@ -1160,13 +1169,22 @@ function buildCodexProxyUpstreamHeaders(input: {
       ? authorization
       : `Bearer ${input.fallbackAccessToken}`;
 
-  for (const name of codexProxyForwardHeaderNames) {
+  for (const name of Object.keys(input.requestHeaders)) {
+    if (!shouldForwardCodexProxyHeader(name)) continue;
     const value = getJoinedRequestHeader(input.requestHeaders, name);
     if (value) {
       headers[name] = value;
     }
   }
   return headers;
+}
+
+function shouldForwardCodexProxyHeader(name: string): boolean {
+  const lowerName = name.toLowerCase();
+  return (
+    codexProxyForwardHeaderNames.has(lowerName) ||
+    lowerName.startsWith("x-codex-")
+  );
 }
 
 function getJoinedRequestHeader(

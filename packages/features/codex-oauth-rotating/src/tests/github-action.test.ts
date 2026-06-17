@@ -23,6 +23,7 @@ import {
   readActionAuthJson,
   readActionInputs,
   resolveCodexBinary,
+  resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
@@ -788,6 +789,25 @@ describe("Codex rotating GitHub Action runtime", () => {
         bodyBytes: 100,
       }),
     ).toBe("deny");
+  });
+
+  it("defaults the fork proxy upstream to the ChatGPT Codex backend", () => {
+    expect(resolveCodexProxyUpstreamResponsesUrl({})).toBe(
+      "https://chatgpt.com/backend-api/codex/responses",
+    );
+    expect(
+      resolveCodexProxyUpstreamResponsesUrl({
+        REVIEWROUTER_CODEX_RESPONSES_URL: "https://codex-proxy.test/responses",
+        REVIEWROUTER_OPENAI_RESPONSES_URL:
+          "https://api.openai.test/v1/responses",
+      }),
+    ).toBe("https://codex-proxy.test/responses");
+    expect(
+      resolveCodexProxyUpstreamResponsesUrl({
+        REVIEWROUTER_OPENAI_RESPONSES_URL:
+          "https://api.openai.test/v1/responses",
+      }),
+    ).toBe("https://api.openai.test/v1/responses");
   });
 
   it("forwards live local provider proxy responses through nonce-bound loopback only", async () => {

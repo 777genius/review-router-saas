@@ -40,6 +40,7 @@ __export(github_action_exports, {
   readActionAuthJson: () => readActionAuthJson,
   readActionInputs: () => readActionInputs,
   resolveCodexBinary: () => resolveCodexBinary,
+  resolveCodexProxyUpstreamResponsesUrl: () => resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest: () => routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction: () => runCodexRotatingGitHubAction,
   sanitizeReviewComment: () => sanitizeReviewComment,
@@ -20530,7 +20531,7 @@ function decodeBase64OrBase64Url(value) {
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var defaultOidcAudience = "reviewrouter";
 var forkAgenticSandboxActionMode = "fork-agentic-sandbox";
-var defaultOpenAiResponsesUrl = "https://api.openai.com/v1/responses";
+var defaultChatGptCodexResponsesUrl = "https://chatgpt.com/backend-api/codex/responses";
 var bundledCodexPlatform = "linux-x64";
 var bundledCodexVersion = "0.135.0";
 var bundledCodexPackageName = ["@openai", "codex"].join("/");
@@ -20550,9 +20551,9 @@ var codexProxyForwardHeaderNames = /* @__PURE__ */ new Set([
   "thread-id",
   "user-agent",
   "x-client-request-id",
-  "x-codex-beta-features",
-  "x-codex-turn-metadata",
-  "x-codex-window-id"
+  "x-oai-attestation",
+  "x-openai-internal-codex-responses-lite",
+  "x-responsesapi-include-timing-metrics"
 ]);
 var minimumRunnerFreeDiskBytes = 4 * 1024 * 1024 * 1024;
 var supportedRunnerOs = "Linux";
@@ -20870,7 +20871,7 @@ async function runForkAgenticSandboxGitHubAction(input) {
     const proxy = await startCodexLocalProviderProxy({
       fetchImpl: input.fetchImpl,
       accessToken,
-      upstreamResponsesUrl: input.env.REVIEWROUTER_OPENAI_RESPONSES_URL ?? defaultOpenAiResponsesUrl
+      upstreamResponsesUrl: resolveCodexProxyUpstreamResponsesUrl(input.env)
     });
     try {
       await writeCodexProxySnapshot({
@@ -21297,6 +21298,9 @@ async function startCodexLocalProviderProxy(input) {
     close: () => closeHttpServer(server)
   };
 }
+function resolveCodexProxyUpstreamResponsesUrl(env) {
+  return env.REVIEWROUTER_CODEX_RESPONSES_URL ?? env.REVIEWROUTER_OPENAI_RESPONSES_URL ?? defaultChatGptCodexResponsesUrl;
+}
 function buildCodexProxyUpstreamHeaders(input) {
   const headers = {
     accept: getJoinedRequestHeader(input.requestHeaders, "accept") ?? "text/event-stream",
@@ -21307,13 +21311,18 @@ function buildCodexProxyUpstreamHeaders(input) {
     "authorization"
   );
   headers.authorization = authorization && /^Bearer\s+\S+/i.test(authorization) ? authorization : `Bearer ${input.fallbackAccessToken}`;
-  for (const name of codexProxyForwardHeaderNames) {
+  for (const name of Object.keys(input.requestHeaders)) {
+    if (!shouldForwardCodexProxyHeader(name)) continue;
     const value = getJoinedRequestHeader(input.requestHeaders, name);
     if (value) {
       headers[name] = value;
     }
   }
   return headers;
+}
+function shouldForwardCodexProxyHeader(name) {
+  const lowerName = name.toLowerCase();
+  return codexProxyForwardHeaderNames.has(lowerName) || lowerName.startsWith("x-codex-");
 }
 function getJoinedRequestHeader(headers, name) {
   const value = headers[name.toLowerCase()];
@@ -22693,6 +22702,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   readActionAuthJson,
   readActionInputs,
   resolveCodexBinary,
+  resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
