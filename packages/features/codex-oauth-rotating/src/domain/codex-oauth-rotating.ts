@@ -473,6 +473,7 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
 ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}        env:
           REVIEW_ROUTER_PR_WORKSPACE: \${{ github.workspace }}/safe-workspace
+          REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN: \${{ secrets.REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN }}
 `
       : ""
   }`;
@@ -555,6 +556,7 @@ export function scanCodexRotatingAdvisoryWorkflow(
     codexRotatingSecretName,
     "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENROUTER_API_KEY",
+    "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN",
   ]);
   for (const secretName of secretReferences) {
     if (!allowedSecretReferences.has(secretName)) {

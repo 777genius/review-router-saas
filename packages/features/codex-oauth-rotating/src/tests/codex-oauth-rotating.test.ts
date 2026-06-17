@@ -461,6 +461,9 @@ exit 17
       valid: true,
       errors: [],
     });
+    expect(workflow).toContain(
+      "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN: ${{ secrets.REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN }}",
+    );
 
     const extraRun = workflow.replace(
       "      - name: ReviewRouter fork sandbox review",
@@ -485,6 +488,14 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(downgradedCheckout).errors,
     ).toContain("fork_checkout_action_ref_invalid");
+
+    const unknownLifecycleSecret = workflow.replace(
+      "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN: ${{ secrets.REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN }}",
+      "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN: ${{ secrets.SOME_OTHER_SECRET }}",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(unknownLifecycleSecret).errors,
+    ).toContain("unknown_secret_reference:SOME_OTHER_SECRET");
   });
 
   it("validates OIDC prelease binding before auth input can be read", () => {
