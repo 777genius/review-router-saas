@@ -36,6 +36,7 @@ run("pnpm", [
   "--legal-comments=none",
   `--outfile=${outfile}`,
 ]);
+await stripTrailingWhitespace(outfile);
 
 rmSync(bundledCodexOutfile, { force: true });
 
@@ -130,4 +131,12 @@ async function sha256File(path) {
   return createHash("sha256")
     .update(await readFile(path))
     .digest("hex");
+}
+
+async function stripTrailingWhitespace(path) {
+  const source = await readFile(path, "utf8");
+  const clean = source.replace(/[ \t]+$/gm, "");
+  if (clean !== source) {
+    await writeFile(path, clean);
+  }
 }
