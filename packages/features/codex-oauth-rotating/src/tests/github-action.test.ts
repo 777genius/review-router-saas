@@ -1180,6 +1180,13 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,",
         "  openrouterKey: process.env.OPENROUTER_API_KEY,",
         "  inheritedOpenAi: process.env.OPENAI_API_KEY,",
+        "  inheritedGemini: process.env.GEMINI_API_KEY,",
+        "  inheritedOpenCode: process.env.OPENCODE_API_KEY,",
+        "  inheritedNpmToken: process.env.NPM_TOKEN,",
+        "  inheritedCustomSecret: process.env.CUSTOM_SECRET,",
+        "  inheritedPrivateKey: process.env.PRIVATE_KEY,",
+        "  inheritedPassword: process.env.DB_PASSWORD,",
+        "  inheritedInputMode: process.env.INPUT_MODE,",
         "  inheritedInputClaude: process.env['INPUT_CLAUDE-CODE-OAUTH-TOKEN'] || process.env.INPUT_CLAUDE_CODE_OAUTH_TOKEN,",
         "  inheritedInputOpenRouter: process.env['INPUT_OPENROUTER-API-KEY'] || process.env.INPUT_OPENROUTER_API_KEY,",
         "  inheritedOidc: process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,",
@@ -1294,6 +1301,12 @@ describe("Codex rotating GitHub Action runtime", () => {
           GITHUB_RUN_ID: "9001",
           GITHUB_RUN_ATTEMPT: "1",
           OPENAI_API_KEY: "sk-runner-openai-key",
+          GEMINI_API_KEY: "sk-gemini-inherited",
+          OPENCODE_API_KEY: "sk-opencode-inherited",
+          NPM_TOKEN: "npm-token-inherited",
+          CUSTOM_SECRET: "custom-secret-inherited",
+          PRIVATE_KEY: "private-key-inherited",
+          DB_PASSWORD: "db-password-inherited",
           CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-inherited",
           OPENROUTER_API_KEY: "sk-or-inherited",
           PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -1354,6 +1367,13 @@ describe("Codex rotating GitHub Action runtime", () => {
         runtimeConfigVersion: "7",
       });
       expect(reviewEnv.inheritedOpenAi).toBeUndefined();
+      expect(reviewEnv.inheritedGemini).toBeUndefined();
+      expect(reviewEnv.inheritedOpenCode).toBeUndefined();
+      expect(reviewEnv.inheritedNpmToken).toBeUndefined();
+      expect(reviewEnv.inheritedCustomSecret).toBeUndefined();
+      expect(reviewEnv.inheritedPrivateKey).toBeUndefined();
+      expect(reviewEnv.inheritedPassword).toBeUndefined();
+      expect(reviewEnv.inheritedInputMode).toBeUndefined();
       expect(reviewEnv.inheritedInputClaude).toBeUndefined();
       expect(reviewEnv.inheritedInputOpenRouter).toBeUndefined();
       expect(reviewEnv.inheritedOidc).toBeUndefined();

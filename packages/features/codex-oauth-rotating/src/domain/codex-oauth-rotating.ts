@@ -1291,6 +1291,7 @@ function unquoteWorkflowScalar(value: string | undefined): string | undefined {
 }
 
 function shouldDropChildEnvKey(key: string): boolean {
+  const normalizedKey = key.toUpperCase();
   return (
     key === "GITHUB_TOKEN" ||
     key === "GH_TOKEN" ||
@@ -1305,14 +1306,12 @@ function shouldDropChildEnvKey(key: string): boolean {
     key === "BASH_ENV" ||
     key === "ENV" ||
     key.startsWith("GIT_") ||
-    key.startsWith("INPUT_AUTH") ||
-    key.includes("CODEX_AUTH_JSON") ||
-    key.includes("REVIEWROUTER_CODEX_AUTH_JSON") ||
-    key.includes("OPENAI_API_KEY") ||
-    key.includes("CLAUDE_CODE_OAUTH_TOKEN") ||
-    key.includes("OPENROUTER_API_KEY") ||
-    key.includes("REVIEW_ROUTER_COMMENT_TOKEN") ||
-    key.includes("REVIEWROUTER_PROXY_NONCE")
+    key.startsWith("INPUT_") ||
+    normalizedKey.includes("CODEX_AUTH_JSON") ||
+    normalizedKey.includes("REVIEWROUTER_CODEX_AUTH_JSON") ||
+    normalizedKey.includes("REVIEW_ROUTER_COMMENT_TOKEN") ||
+    normalizedKey.includes("REVIEWROUTER_PROXY_NONCE") ||
+    /(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)/.test(normalizedKey)
   );
 }
 
