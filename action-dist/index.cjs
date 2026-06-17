@@ -5494,7 +5494,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
             })));
           }
         }
-        
+
         if (${id}.value === undefined) {
           if (${k2} in input) {
             newResult[${k2}] = undefined;
@@ -5502,7 +5502,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         } else {
           newResult[${k2}] = ${id}.value;
         }
-        
+
       `);
       } else if (!isOptionalIn) {
         doc.write(`
@@ -5539,7 +5539,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
             path: iss.path ? [${k2}, ...iss.path] : [${k2}]
           })));
         }
-        
+
         if (${id}.value === undefined) {
           if (${k2} in input) {
             newResult[${k2}] = undefined;
@@ -5547,7 +5547,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         } else {
           newResult[${k2}] = ${id}.value;
         }
-        
+
       `);
       }
     }
@@ -20805,7 +20805,7 @@ async function runForkAgenticSandboxGitHubAction(input) {
     notice(input.io, "ReviewRouter skipped a stale queued Codex OAuth secret.");
     return;
   }
-  const runtimeEnv = codexOnlyForkRuntimeEnv(finalize2.runtimeEnv);
+  const runtimeEnv = forkAgenticSandboxRuntimeEnv(finalize2.runtimeEnv);
   mask(input.io, finalize2.publicKeyReadToken);
   const publicKey = await fetchGitHubRepositoryPublicKey({
     fetchImpl: input.fetchImpl,
@@ -22050,6 +22050,7 @@ async function runFullReviewRouterRuntime(input) {
       inputs: input.inputs,
       leaseId: input.leaseId,
       event: input.event,
+      workspace: input.workspace,
       tempHome: input.tempHome,
       tempCodexHome: input.tempCodexHome,
       codexBinDir,
@@ -22091,6 +22092,7 @@ function buildFullReviewRuntimeEnv(input) {
     ...providerSecretEnv,
     HOME: input.tempHome,
     CODEX_HOME: input.tempCodexHome,
+    GITHUB_WORKSPACE: input.workspace,
     CI: "true",
     PATH: `${input.codexBinDir}:${(0, import_node_path4.join)(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
     GITHUB_OUTPUT: (0, import_node_path4.join)(input.tempHome, "github-output"),
@@ -22173,32 +22175,79 @@ var forkRuntimeEnvAllowedKeys = /* @__PURE__ */ new Set([
   "CODEX_AGENTIC_CONTEXT",
   "CODEX_FAST_MODE",
   "CODEX_AGENTIC_AUDIT",
+  "CODEX_EVENT_AUDIT",
+  "CLAUDE_MODEL",
+  "CLAUDE_AGENTIC_CONTEXT",
   "FAIL_ON_NO_HEALTHY_PROVIDERS"
 ]);
-function codexOnlyForkRuntimeEnv(runtimeEnv) {
+var certifiedForkAgenticProviderPrefixes = [
+  "codex/",
+  "claude/",
+  "openrouter/",
+  "codex-openrouter/"
+];
+function forkAgenticSandboxRuntimeEnv(runtimeEnv) {
   const normalized = normalizeFullReviewRuntimeEnv(runtimeEnv);
-  const codexProviders = (normalized.REVIEW_PROVIDERS ?? "").split(",").map((provider) => provider.trim()).filter((provider) => provider.startsWith("codex/"));
-  if (codexProviders.length === 0) {
-    throw new Error("fork_agentic_sandbox_requires_codex_provider");
+  const forkProviders = parseRuntimeProviders(
+    normalized.REVIEW_PROVIDERS
+  ).filter(isCertifiedForkAgenticProvider);
+  if (forkProviders.length === 0) {
+    throw new Error("fork_agentic_sandbox_requires_certified_provider");
   }
-  const primaryProvider = codexProviders[0];
+  const primaryProvider = forkProviders[0];
   const allowedRuntimeEnv = {};
   for (const [key, value] of Object.entries(normalized)) {
     if (forkRuntimeEnvAllowedKeys.has(key)) {
       allowedRuntimeEnv[key] = value;
     }
   }
+  const providerLimit = Math.min(
+    forkRuntimePositiveInteger(normalized.PROVIDER_LIMIT, forkProviders.length),
+    forkProviders.length
+  );
+  const providerMaxParallel = Math.min(
+    forkRuntimePositiveInteger(normalized.PROVIDER_MAX_PARALLEL, providerLimit),
+    providerLimit
+  );
+  const requiredHealthyProviders = parseRuntimeProviders(
+    normalized.REQUIRED_HEALTHY_PROVIDERS
+  ).filter((provider) => forkProviders.includes(provider));
+  const synthesisModel = forkProviders.includes(
+    normalized.SYNTHESIS_MODEL ?? ""
+  ) ? normalized.SYNTHESIS_MODEL : primaryProvider;
+  const inlineMinAgreement = Math.min(
+    forkRuntimePositiveInteger(normalized.INLINE_MIN_AGREEMENT, 1),
+    providerLimit
+  );
   const forkEnv = {
     ...allowedRuntimeEnv,
-    REVIEW_PROVIDERS: codexProviders.join(","),
-    REQUIRED_HEALTHY_PROVIDERS: primaryProvider,
-    SYNTHESIS_MODEL: primaryProvider,
-    PROVIDER_LIMIT: "1",
-    PROVIDER_MAX_PARALLEL: "1",
-    INLINE_MIN_AGREEMENT: "1",
+    REVIEW_PROVIDERS: forkProviders.join(","),
+    REQUIRED_HEALTHY_PROVIDERS: requiredHealthyProviders.length > 0 ? requiredHealthyProviders.join(",") : primaryProvider,
+    SYNTHESIS_MODEL: synthesisModel,
+    PROVIDER_LIMIT: String(providerLimit),
+    PROVIDER_MAX_PARALLEL: String(providerMaxParallel),
+    INLINE_MIN_AGREEMENT: String(inlineMinAgreement),
     REVIEWROUTER_FORK_AGENTIC_SANDBOX: "true"
   };
+  if (forkProviders.some((provider) => provider.startsWith("claude/"))) {
+    forkEnv.CLAUDE_AGENTIC_CONTEXT = "true";
+  }
   return forkEnv;
+}
+function parseRuntimeProviders(value) {
+  return (value ?? "").split(",").map((provider) => provider.trim()).filter(Boolean);
+}
+function isCertifiedForkAgenticProvider(provider) {
+  return certifiedForkAgenticProviderPrefixes.some(
+    (prefix) => provider.startsWith(prefix)
+  );
+}
+function forkRuntimePositiveInteger(value, defaultValue) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return defaultValue;
+  }
+  return parsed;
 }
 function codexModelForForkRuntime(runtimeEnv) {
   const provider = (runtimeEnv.REVIEW_PROVIDERS ?? "").split(",").map((value) => value.trim()).find((value) => value.startsWith("codex/"));

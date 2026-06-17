@@ -288,15 +288,17 @@ describe("Codex rotating GitHub Action runtime", () => {
       );
       expect(input.tempCodexHome.startsWith(`${safeWorkspace}/`)).toBe(false);
       expect(input.runtimeEnv).toMatchObject({
-        REVIEW_PROVIDERS: "codex/gpt-5.5",
+        REVIEW_PROVIDERS:
+          "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
         REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
         SYNTHESIS_MODEL: "codex/gpt-5.5",
-        PROVIDER_LIMIT: "1",
-        PROVIDER_MAX_PARALLEL: "1",
-        INLINE_MIN_AGREEMENT: "1",
+        PROVIDER_LIMIT: "3",
+        PROVIDER_MAX_PARALLEL: "3",
+        INLINE_MIN_AGREEMENT: "2",
+        CLAUDE_MODEL: "sonnet",
+        CLAUDE_AGENTIC_CONTEXT: "true",
         REVIEWROUTER_FORK_AGENTIC_SANDBOX: "true",
       });
-      expect(input.runtimeEnv.CLAUDE_MODEL).toBeUndefined();
       expect(input.runtimeEnv.OPENROUTER_MODEL).toBeUndefined();
       expect(input.runtimeEnv.EXTRA_RUNTIME_FLAG).toBeUndefined();
       const config = readFileSync(
@@ -1053,6 +1055,326 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(methods).not.toContain(
       "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/456",
     );
+  });
+
+  it("runs fork sandbox E2E with certified provider context in the child runtime", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-fork-e2e-"));
+    const binDir = join(tempDir, "bin");
+    const eventPath = join(tempDir, "event.json");
+    const githubWorkspace = join(tempDir, "github-workspace");
+    const safeWorkspace = join(githubWorkspace, "safe-workspace");
+    const fakeCodex = join(
+      tempDir,
+      "action-dist",
+      "codex",
+      "linux-x64",
+      "codex",
+    );
+    const fakeClaude = join(binDir, "claude");
+    const fakeFullRuntime = join(tempDir, "dist", "index.js");
+    const runtimeEnvLog = join(tempDir, "fork-runtime-env.json");
+    const claudeInstallEnvLog = join(tempDir, "claude-install-env.json");
+    const invokedUrls: string[] = [];
+    const requestBodies: string[] = [];
+    const refreshedAuthJson = JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        refresh_token: "refreshed-refresh-token",
+        access_token: "refreshed-access-token",
+      },
+    });
+
+    await mkdir(binDir, { recursive: true });
+    await mkdir(join(tempDir, "action-dist", "codex", "linux-x64"), {
+      recursive: true,
+    });
+    await mkdir(join(tempDir, "dist"), { recursive: true });
+    await mkdir(join(safeWorkspace, ".git"), { recursive: true });
+    await writeFile(
+      join(safeWorkspace, ".git", "config"),
+      "[core]\n\trepositoryformatversion = 0\n",
+    );
+    await writeFile(
+      join(safeWorkspace, "file.ts"),
+      "import { related } from './related';\nexport const value = related;\n",
+    );
+    await writeFile(
+      join(safeWorkspace, "related.ts"),
+      "export const related = 1;\n",
+    );
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        number: 118,
+        repository: { id: 777, full_name: "777genius/agent-teams-ai" },
+        pull_request: {
+          draft: false,
+          head: {
+            sha: "0123456789abcdef0123456789abcdef01234567",
+            repo: { full_name: "external-contributor/agent-teams-ai" },
+          },
+          base: { sha: "abcdef0123456789abcdef0123456789abcdef01" },
+        },
+      }),
+    );
+    await writeFile(
+      fakeCodex,
+      [
+        "#!/usr/bin/env node",
+        "const { readFileSync, writeFileSync } = require('node:fs');",
+        "const { join } = require('node:path');",
+        "const authPath = join(process.env.CODEX_HOME, 'auth.json');",
+        "readFileSync(authPath, 'utf8');",
+        `writeFileSync(authPath, ${JSON.stringify(refreshedAuthJson)});`,
+        "process.stdout.write('OK\\n');",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await writeCodexManifest(fakeCodex);
+    await writeFile(
+      fakeClaude,
+      [
+        "#!/usr/bin/env node",
+        "const { writeFileSync } = require('node:fs');",
+        `writeFileSync(${JSON.stringify(claudeInstallEnvLog)}, JSON.stringify({`,
+        "  cwd: process.cwd(),",
+        "  githubToken: process.env.GITHUB_TOKEN,",
+        "  claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,",
+        "  openrouterKey: process.env.OPENROUTER_API_KEY,",
+        "  path: process.env.PATH,",
+        "}));",
+        "process.stdout.write('claude 1.0.0\\n');",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await writeFile(
+      fakeFullRuntime,
+      [
+        "#!/usr/bin/env node",
+        "const { existsSync, readFileSync, writeFileSync } = require('node:fs');",
+        "const { join } = require('node:path');",
+        "const configPath = join(process.env.CODEX_HOME, 'config.toml');",
+        "const config = readFileSync(configPath, 'utf8');",
+        `writeFileSync(${JSON.stringify(runtimeEnvLog)}, JSON.stringify({`,
+        "  cwd: process.cwd(),",
+        "  githubWorkspace: process.env.GITHUB_WORKSPACE,",
+        "  safeFileExists: existsSync(join(process.cwd(), 'file.ts')),",
+        "  relatedFileExists: existsSync(join(process.cwd(), 'related.ts')),",
+        "  authExists: existsSync(join(process.env.CODEX_HOME, 'auth.json')),",
+        "  configIncludesProxy: config.includes('model_provider = \"reviewrouter_proxy\"'),",
+        "  configIncludesApprovalNever: config.includes('approval_policy = \"never\"'),",
+        "  configIncludesReadOnly: config.includes('sandbox_mode = \"read-only\"'),",
+        "  configIncludesToken: config.includes('refreshed-access-token'),",
+        "  providers: process.env.REVIEW_PROVIDERS,",
+        "  requiredHealthyProviders: process.env.REQUIRED_HEALTHY_PROVIDERS,",
+        "  synthesisModel: process.env.SYNTHESIS_MODEL,",
+        "  providerLimit: process.env.PROVIDER_LIMIT,",
+        "  providerMaxParallel: process.env.PROVIDER_MAX_PARALLEL,",
+        "  inlineMinAgreement: process.env.INLINE_MIN_AGREEMENT,",
+        "  claudeAgenticContext: process.env.CLAUDE_AGENTIC_CONTEXT,",
+        "  forkFlag: process.env.REVIEWROUTER_FORK_AGENTIC_SANDBOX,",
+        "  reviewAuthMode: process.env.REVIEW_AUTH_MODE,",
+        "  githubToken: process.env.GITHUB_TOKEN,",
+        "  claudeToken: process.env.CLAUDE_CODE_OAUTH_TOKEN,",
+        "  openrouterKey: process.env.OPENROUTER_API_KEY,",
+        "  inheritedOpenAi: process.env.OPENAI_API_KEY,",
+        "  inheritedInputClaude: process.env['INPUT_CLAUDE-CODE-OAUTH-TOKEN'] || process.env.INPUT_CLAUDE_CODE_OAUTH_TOKEN,",
+        "  inheritedInputOpenRouter: process.env['INPUT_OPENROUTER-API-KEY'] || process.env.INPUT_OPENROUTER_API_KEY,",
+        "  inheritedOidc: process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,",
+        "  openrouterModel: process.env.OPENROUTER_MODEL,",
+        "  extraRuntimeFlag: process.env.EXTRA_RUNTIME_FLAG,",
+        "  runtimeConfigVersion: process.env.REVIEWROUTER_CONFIG_VERSION,",
+        "}));",
+        "process.stdout.write('fork runtime marker\\n');",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await chmod(fakeCodex, 0o700);
+    await chmod(fakeClaude, 0o700);
+    await chmod(fakeFullRuntime, 0o700);
+
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      invokedUrls.push(href);
+      if (typeof init?.body === "string") {
+        requestBodies.push(init.body);
+      }
+      if (href.startsWith("https://oidc.actions.test/token")) {
+        return jsonResponse({ value: "oidc.jwt.value" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
+        return jsonResponse({
+          leaseId: "lease_1",
+          generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
+        return jsonResponse({
+          status: "finalized",
+          nextGeneration: 2,
+          repositoryOwner: "777genius",
+          repositoryName: "agent-teams-ai",
+          publicKeyReadToken: "ghs_public_key_read_token",
+          runtimeConfigVersion: 7,
+          runtimeEnv: {
+            REVIEW_AUTH_MODE: "codex-oauth-rotating",
+            REVIEW_PROVIDERS:
+              "gemini/gemini-2.0, codex/gpt-5.5, claude/sonnet, openrouter/openai/gpt-5.3-codex, opencode/qwen",
+            REQUIRED_HEALTHY_PROVIDERS:
+              "gemini/gemini-2.0,claude/sonnet,openrouter/openai/gpt-5.3-codex",
+            SYNTHESIS_MODEL: "openrouter/openai/gpt-5.3-codex",
+            PROVIDER_LIMIT: "9",
+            PROVIDER_MAX_PARALLEL: "8",
+            INLINE_MIN_AGREEMENT: "7",
+            CODEX_MODEL: "gpt-5.5",
+            CLAUDE_MODEL: "sonnet",
+            OPENROUTER_MODEL: "openai/gpt-5.3-codex",
+            EXTRA_RUNTIME_FLAG: "must-not-pass",
+          },
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/actions/secrets/public-key"
+      ) {
+        return jsonResponse({
+          key: Buffer.alloc(32, 1).toString("base64"),
+          key_id: "github-key-id",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback-preflight")) {
+        return jsonResponse({ protocolVersion: 1, status: "ready" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback")) {
+        return jsonResponse({ protocolVersion: 1, status: "accepted" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/comment-token")) {
+        return jsonResponse({
+          token: "ghs_comment_token",
+          repository: "777genius/agent-teams-ai",
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100"
+      ) {
+        return jsonResponse([]);
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+    const stdoutWrite = vi.fn();
+    const stderrWrite = vi.fn();
+
+    try {
+      await runCodexRotatingGitHubAction({
+        env: {
+          INPUT_MODE: "fork-agentic-sandbox",
+          "INPUT_API-URL": "https://api.reviewrouter.site/",
+          "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+          "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+          "INPUT_CLAUDE-CODE-OAUTH-TOKEN": "sk-ant-oat01-claude-input",
+          "INPUT_OPENROUTER-API-KEY": "sk-or-input",
+          "INPUT_AUTH-JSON": JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+              refresh_token: "initial-refresh-token",
+              access_token: "initial-access-token",
+            },
+          }),
+          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+          GITHUB_EVENT_NAME: "pull_request_target",
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_REPOSITORY: "777genius/agent-teams-ai",
+          GITHUB_WORKSPACE: githubWorkspace,
+          REVIEW_ROUTER_PR_WORKSPACE: safeWorkspace,
+          GITHUB_RUN_ID: "9001",
+          GITHUB_RUN_ATTEMPT: "1",
+          OPENAI_API_KEY: "sk-runner-openai-key",
+          CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-inherited",
+          OPENROUTER_API_KEY: "sk-or-inherited",
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          ...supportedRunnerEnv(tempDir),
+        },
+        fetchImpl,
+        io: {
+          stdout: { write: stdoutWrite },
+          stderr: { write: stderrWrite },
+        },
+      });
+
+      const serializedRequests = requestBodies.join("\n");
+      expect(serializedRequests).not.toContain("initial-refresh-token");
+      expect(serializedRequests).not.toContain("refreshed-refresh-token");
+      expect(serializedRequests).not.toContain("sk-ant-oat01-claude-input");
+      expect(serializedRequests).not.toContain("sk-or-input");
+      expect(invokedUrls.some((url) => url.endsWith("/checkout-token"))).toBe(
+        false,
+      );
+      expect(invokedUrls.some((url) => url.endsWith("/comment-token"))).toBe(
+        true,
+      );
+      expect(
+        invokedUrls.filter((url) =>
+          url.endsWith("/api/action/v1/codex-oauth/writeback"),
+        ),
+      ).toHaveLength(1);
+
+      const resolvedSafeWorkspace = await realpath(safeWorkspace);
+      const reviewEnv = JSON.parse(
+        readFileSync(runtimeEnvLog, "utf8"),
+      ) as Record<string, unknown>;
+      expect(reviewEnv).toMatchObject({
+        cwd: resolvedSafeWorkspace,
+        githubWorkspace: resolvedSafeWorkspace,
+        safeFileExists: true,
+        relatedFileExists: true,
+        authExists: false,
+        configIncludesProxy: true,
+        configIncludesApprovalNever: true,
+        configIncludesReadOnly: true,
+        configIncludesToken: false,
+        providers:
+          "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
+        requiredHealthyProviders:
+          "claude/sonnet,openrouter/openai/gpt-5.3-codex",
+        synthesisModel: "openrouter/openai/gpt-5.3-codex",
+        providerLimit: "3",
+        providerMaxParallel: "3",
+        inlineMinAgreement: "3",
+        claudeAgenticContext: "true",
+        forkFlag: "true",
+        reviewAuthMode: "codex-oauth",
+        githubToken: "ghs_comment_token",
+        claudeToken: "sk-ant-oat01-claude-input",
+        openrouterKey: "sk-or-input",
+        runtimeConfigVersion: "7",
+      });
+      expect(reviewEnv.inheritedOpenAi).toBeUndefined();
+      expect(reviewEnv.inheritedInputClaude).toBeUndefined();
+      expect(reviewEnv.inheritedInputOpenRouter).toBeUndefined();
+      expect(reviewEnv.inheritedOidc).toBeUndefined();
+      expect(reviewEnv.openrouterModel).toBeUndefined();
+      expect(reviewEnv.extraRuntimeFlag).toBeUndefined();
+
+      const claudeInstallEnv = JSON.parse(
+        readFileSync(claudeInstallEnvLog, "utf8"),
+      ) as Record<string, unknown>;
+      expect(claudeInstallEnv.githubToken).toBeUndefined();
+      expect(claudeInstallEnv.claudeToken).toBeUndefined();
+      expect(claudeInstallEnv.openrouterKey).toBeUndefined();
+      expect(
+        stdoutWrite.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain("fork runtime marker");
+      expect(stderrWrite).not.toHaveBeenCalledWith(
+        expect.stringContaining("refreshed-access-token"),
+      );
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("runs the local action E2E with only explicit hybrid provider secrets in child runtime env", async () => {
