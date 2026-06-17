@@ -20540,6 +20540,20 @@ var maxCommentBytes = 6e4;
 var maxCapturedProcessOutputBytes = 256e3;
 var maxProxyRequestBodyBytes = 2e6;
 var maxProxyRequestsPerReview = 16;
+var codexProxyForwardHeaderNames = /* @__PURE__ */ new Set([
+  "chatgpt-account-id",
+  "openai-beta",
+  "openai-organization",
+  "openai-project",
+  "originator",
+  "session-id",
+  "thread-id",
+  "user-agent",
+  "x-client-request-id",
+  "x-codex-beta-features",
+  "x-codex-turn-metadata",
+  "x-codex-window-id"
+]);
 var minimumRunnerFreeDiskBytes = 4 * 1024 * 1024 * 1024;
 var supportedRunnerOs = "Linux";
 var supportedRunnerArch = "X64";
@@ -21252,15 +21266,12 @@ async function startCodexLocalProviderProxy(input) {
           writeProxyError(res, 429, "proxy_request_budget_exceeded");
           return;
         }
-        const acceptHeader = Array.isArray(req.headers.accept) ? req.headers.accept.join(", ") : req.headers.accept ?? "text/event-stream";
-        const contentTypeHeader = Array.isArray(req.headers["content-type"]) ? req.headers["content-type"].join(", ") : req.headers["content-type"] ?? "application/json";
         const upstream = await input.fetchImpl(input.upstreamResponsesUrl, {
           method: "POST",
-          headers: {
-            accept: acceptHeader,
-            authorization: `Bearer ${input.accessToken}`,
-            "content-type": contentTypeHeader
-          },
+          headers: buildCodexProxyUpstreamHeaders({
+            requestHeaders: req.headers,
+            fallbackAccessToken: input.accessToken
+          }),
           body: new Uint8Array(body)
         });
         await writeProxyUpstreamResponse(res, upstream);
@@ -21285,6 +21296,29 @@ async function startCodexLocalProviderProxy(input) {
     baseUrl: `http://127.0.0.1:${address.port}/${nonce}/v1`,
     close: () => closeHttpServer(server)
   };
+}
+function buildCodexProxyUpstreamHeaders(input) {
+  const headers = {
+    accept: getJoinedRequestHeader(input.requestHeaders, "accept") ?? "text/event-stream",
+    "content-type": getJoinedRequestHeader(input.requestHeaders, "content-type") ?? "application/json"
+  };
+  const authorization = getJoinedRequestHeader(
+    input.requestHeaders,
+    "authorization"
+  );
+  headers.authorization = authorization && /^Bearer\s+\S+/i.test(authorization) ? authorization : `Bearer ${input.fallbackAccessToken}`;
+  for (const name of codexProxyForwardHeaderNames) {
+    const value = getJoinedRequestHeader(input.requestHeaders, name);
+    if (value) {
+      headers[name] = value;
+    }
+  }
+  return headers;
+}
+function getJoinedRequestHeader(headers, name) {
+  const value = headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value.join(", ");
+  return value;
 }
 function readProxyRequestBody(req) {
   return new Promise((resolve, reject) => {

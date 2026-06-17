@@ -794,6 +794,9 @@ describe("Codex rotating GitHub Action runtime", () => {
     const upstreamCalls: {
       readonly url: string;
       readonly authorization: string | undefined;
+      readonly chatgptAccountId: string | undefined;
+      readonly codexBetaFeatures: string | undefined;
+      readonly unexpectedHeader: string | undefined;
       readonly body: string;
     }[] = [];
     const proxy = await startCodexLocalProviderProxy({
@@ -804,6 +807,13 @@ describe("Codex rotating GitHub Action runtime", () => {
           url: String(url),
           authorization:
             new Headers(init?.headers).get("authorization") ?? undefined,
+          chatgptAccountId:
+            new Headers(init?.headers).get("chatgpt-account-id") ?? undefined,
+          codexBetaFeatures:
+            new Headers(init?.headers).get("x-codex-beta-features") ??
+            undefined,
+          unexpectedHeader:
+            new Headers(init?.headers).get("x-not-forwarded") ?? undefined,
           body:
             init?.body instanceof Uint8Array
               ? Buffer.from(init.body).toString("utf8")
@@ -821,7 +831,13 @@ describe("Codex rotating GitHub Action runtime", () => {
     try {
       const response = await fetch(`${proxy.baseUrl}/responses`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          authorization: "Bearer codex-refreshed-token",
+          "chatgpt-account-id": "account-123",
+          "content-type": "application/json",
+          "x-codex-beta-features": "responses-v1",
+          "x-not-forwarded": "blocked",
+        },
         body: JSON.stringify({ input: "review" }),
       });
       expect(response.status).toBe(200);
@@ -831,10 +847,24 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(upstreamCalls).toEqual([
         {
           url: "https://api.openai.test/v1/responses",
-          authorization: "Bearer proxy-access-token",
+          authorization: "Bearer codex-refreshed-token",
+          chatgptAccountId: "account-123",
+          codexBetaFeatures: "responses-v1",
+          unexpectedHeader: undefined,
           body: JSON.stringify({ input: "review" }),
         },
       ]);
+
+      const fallbackResponse = await fetch(`${proxy.baseUrl}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: "fallback" }),
+      });
+      expect(fallbackResponse.status).toBe(200);
+      expect(upstreamCalls.at(-1)).toMatchObject({
+        authorization: "Bearer proxy-access-token",
+        body: JSON.stringify({ input: "fallback" }),
+      });
 
       const denied = await fetch(`${proxy.baseUrl}/models`, {
         method: "POST",
@@ -844,7 +874,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       await expect(denied.json()).resolves.toEqual({
         error: "proxy_route_denied",
       });
-      expect(upstreamCalls).toHaveLength(1);
+      expect(upstreamCalls).toHaveLength(2);
     } finally {
       await proxy.close();
     }
