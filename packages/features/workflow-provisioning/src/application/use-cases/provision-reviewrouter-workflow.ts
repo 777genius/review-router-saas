@@ -75,6 +75,7 @@ export async function provisionReviewRouterWorkflow(
       workflowStyle: plan.workflowStyle,
       conflictReviewFallbackEnabled:
         plan.conflictReviewFallbackEnabled === true,
+      forkAgenticSandboxEnabled: plan.forkAgenticSandboxEnabled === true,
       ...(plan.codexRotatingProviderInstanceId
         ? {
             codexRotatingProviderInstanceId:

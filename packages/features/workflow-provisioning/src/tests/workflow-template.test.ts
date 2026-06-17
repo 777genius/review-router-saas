@@ -182,6 +182,62 @@ describe("renderReviewRouterWorkflow", () => {
     });
   });
 
+  it("adds fork agentic sandbox as an opt-in job inside the rotating Codex workflow", () => {
+    const files = renderReviewRouterWorkflowFiles({
+      actionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      apiUrl: "https://reviewrouter.site",
+      runtimeConfigMode: "oidc",
+      staticRuntimeEnv: {
+        REVIEW_AUTH_MODE: "codex-oauth-rotating",
+        REVIEW_PROVIDERS:
+          "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
+      },
+      codexRotatingProviderInstanceId: "codex-rotating:123456",
+      forkAgenticSandboxEnabled: true,
+    });
+
+    expect(files.map((file) => file.path)).toEqual([
+      defaultCodexRotatingWorkflowPath,
+      defaultWorkflowPath,
+      defaultInteractionWorkflowPath,
+      defaultInteractionWorkflowPath,
+    ]);
+    const codexWorkflow = workflowFileContent(files[0]);
+    expect(codexWorkflow).toContain("pull_request_target:");
+    expect(codexWorkflow).toContain("fork-sandbox-review:");
+    expect(codexWorkflow).toContain(
+      "vars.REVIEW_ROUTER_FORK_AGENTIC_SANDBOX == 'certified'",
+    );
+    expect(codexWorkflow).toContain(
+      "repository: ${{ github.event.pull_request.head.repo.full_name }}",
+    );
+    expect(codexWorkflow).toContain("path: safe-workspace");
+    expect(codexWorkflow).toContain("persist-credentials: false");
+    expect(codexWorkflow).toContain("fetch-depth: 0");
+    expect(codexWorkflow).toContain(
+      "git -C safe-workspace config --local --get-regexp",
+    );
+    expect(codexWorkflow).toContain("find safe-workspace -type l -print -quit");
+    expect(codexWorkflow).toContain("mode: fork-agentic-sandbox");
+    expect(codexWorkflow).toContain(
+      "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
+    );
+    expect(codexWorkflow).toContain(
+      "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    );
+    expect(codexWorkflow).toContain(
+      "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+    );
+    expect(codexWorkflow).toContain(
+      "openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(codexWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+  });
+
   it("renders the dedicated rotating Codex interaction workflow", () => {
     const workflow = renderCodexRotatingInteractionWorkflow({
       actionRef:
@@ -301,6 +357,15 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).not.toContain("REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT");
     expect(workflow).toContain('REVIEW_AUTH_MODE: "codex-oauth"');
     expect(workflow).toContain('CODEX_MODEL: "gpt-5.5"');
+  });
+
+  it("requires rotating Codex setup before fork agentic sandbox can be provisioned", () => {
+    expect(() =>
+      renderReviewRouterWorkflowFiles({
+        ...workflowOptions,
+        forkAgenticSandboxEnabled: true,
+      }),
+    ).toThrow("fork_agentic_sandbox_requires_codex_rotating");
   });
 
   it("renders a separate interaction workflow for /rr commands", () => {

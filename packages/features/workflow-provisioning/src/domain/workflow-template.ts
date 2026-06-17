@@ -17,6 +17,7 @@ export type ReviewRouterWorkflowOptions = {
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly discussionMode?: ReviewRouterDiscussionMode;
 };
@@ -822,6 +823,7 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   readonly providerInstanceId: string;
   readonly claudeCodeOAuthTokenSecret?: boolean | undefined;
   readonly openRouterApiKeySecret?: boolean | undefined;
+  readonly forkAgenticSandboxEnabled?: boolean | undefined;
 }): readonly (readonly string[])[] {
   const markers = [
     "name: ReviewRouter Codex OAuth",
@@ -839,6 +841,15 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   }
   if (input.openRouterApiKeySecret === true) {
     markers.push("openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}");
+  }
+  if (input.forkAgenticSandboxEnabled === true) {
+    markers.push(
+      "pull_request_target:",
+      "fork-sandbox-review:",
+      "vars.REVIEW_ROUTER_FORK_AGENTIC_SANDBOX == 'certified'",
+      "mode: fork-agentic-sandbox",
+      "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
+    );
   }
 
   return [markers];
@@ -1137,6 +1148,7 @@ export function renderReviewRouterWorkflowFiles(
           ...codexRotatingProviderSecretInputsForRuntimeEnv(
             options.staticRuntimeEnv,
           ),
+          forkAgenticSandboxEnabled: options.forkAgenticSandboxEnabled === true,
         }),
       },
       {
@@ -1159,6 +1171,10 @@ export function renderReviewRouterWorkflowFiles(
         }),
       },
     ];
+  }
+
+  if (options.forkAgenticSandboxEnabled === true) {
+    throw new Error("fork_agentic_sandbox_requires_codex_rotating");
   }
 
   if (
