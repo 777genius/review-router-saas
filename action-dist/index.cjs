@@ -20809,7 +20809,7 @@ async function runForkAgenticSandboxGitHubAction(input) {
     }
   });
   const tempHome = await makeTempDirectory("reviewrouter-home-");
-  const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
+  const tempCodexHome = await makeForkSandboxCodexHomeDirectory(input.env);
   try {
     const refreshed = await refreshCodexAuthJson({
       authJson,
@@ -21970,6 +21970,30 @@ async function assertForkSandboxWorkspace(workspace) {
     throw new Error("fork_sandbox_workspace_not_directory");
   }
   await assertGitConfigDoesNotPersistCredentials({ workspace });
+}
+async function makeForkSandboxCodexHomeDirectory(env) {
+  const githubWorkspace = env.GITHUB_WORKSPACE;
+  if (!githubWorkspace) {
+    throw new Error("missing_github_workspace");
+  }
+  const resolvedWorkspaceRoot = await (0, import_promises4.realpath)(githubWorkspace);
+  const codexHomeRoot = (0, import_node_path4.join)(resolvedWorkspaceRoot, ".reviewrouter-codex-home");
+  await (0, import_promises4.mkdir)(codexHomeRoot, { recursive: true, mode: 448 });
+  const codexHomeRootStats = await (0, import_promises4.lstat)(codexHomeRoot);
+  if (!codexHomeRootStats.isDirectory() || codexHomeRootStats.isSymbolicLink()) {
+    throw new Error("fork_sandbox_codex_home_root_invalid");
+  }
+  const resolvedCodexHomeRoot = await (0, import_promises4.realpath)(codexHomeRoot);
+  if (resolvedCodexHomeRoot !== codexHomeRoot && !resolvedCodexHomeRoot.startsWith(`${resolvedWorkspaceRoot}/`)) {
+    throw new Error("fork_sandbox_codex_home_root_escape");
+  }
+  const codexHome = await (0, import_promises4.mkdtemp)((0, import_node_path4.join)(resolvedCodexHomeRoot, "run-"));
+  await (0, import_promises4.chmod)(codexHome, 448);
+  const resolvedCodexHome = await (0, import_promises4.realpath)(codexHome);
+  if (!resolvedCodexHome.startsWith(`${resolvedCodexHomeRoot}/`)) {
+    throw new Error("fork_sandbox_codex_home_escape");
+  }
+  return resolvedCodexHome;
 }
 async function runFullReviewRouterRuntime(input) {
   const actionPath = resolveGitHubActionPath(input.env);

@@ -281,6 +281,11 @@ describe("Codex rotating GitHub Action runtime", () => {
     }) as unknown as typeof fetch;
     const fullReviewRuntimeRunner = vi.fn(async (input) => {
       expect(input.workspace).toBe(await realpath(safeWorkspace));
+      const resolvedGithubWorkspace = await realpath(githubWorkspace);
+      expect(input.tempCodexHome).toContain(
+        join(resolvedGithubWorkspace, ".reviewrouter-codex-home", "run-"),
+      );
+      expect(input.tempCodexHome.startsWith(`${safeWorkspace}/`)).toBe(false);
       expect(input.runtimeEnv).toMatchObject({
         REVIEW_PROVIDERS: "codex/gpt-5.5",
         REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
