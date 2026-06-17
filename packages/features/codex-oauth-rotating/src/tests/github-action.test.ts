@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
+  buildFullReviewRuntimeEnv,
   deleteFullRuntimeProgressComments,
   deleteStaleCodexRotatingSummaryComments,
   extractReviewRouterRuntimeFailure,
@@ -81,6 +82,50 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(actionYml).not.toMatch(/\bpre-if:/);
     expect(actionYml).not.toMatch(/\bpost:/);
     expect(actionYml).not.toMatch(/\bpost-if:/);
+  });
+
+  it("passes the optional lifecycle resolve token only to the full runtime child", () => {
+    const childEnv = buildFullReviewRuntimeEnv({
+      sourceEnv: {
+        PATH: "/usr/bin",
+        GITHUB_TOKEN: "source-github-token",
+        OPENAI_API_KEY: "source-openai-key",
+        REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN: "source-lifecycle-token",
+      },
+      inputs: {
+        mode: "fork-agentic-sandbox",
+        apiUrl: "https://api.reviewrouter.site",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 1,
+        providerSecrets: {},
+      },
+      leaseId: "lease-123",
+      event: {
+        number: 118,
+        repository: "777genius/agent-teams-ai",
+        owner: "777genius",
+        repo: "agent-teams-ai",
+        headSha: "head-sha",
+        baseSha: "base-sha",
+      },
+      workspace: "/tmp/workspace",
+      tempHome: "/tmp/home",
+      tempCodexHome: "/tmp/codex-home",
+      codexBinDir: "/tmp/codex-bin",
+      commentToken: "comment-token",
+      runtimeConfigVersion: 7,
+      runtimeEnv: {
+        REVIEW_PROVIDERS: "codex/gpt-5.5",
+      },
+      reviewThreadLifecycleResolveToken: "repo-scoped-lifecycle-token",
+    });
+
+    expect(childEnv.PATH).toContain("/tmp/codex-bin");
+    expect(childEnv.GITHUB_TOKEN).toBe("comment-token");
+    expect(childEnv.OPENAI_API_KEY).toBeUndefined();
+    expect(childEnv.REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN).toBe(
+      "repo-scoped-lifecycle-token",
+    );
   });
 
   it("does not auto-run when imported by CI tooling under GitHub Actions", () => {

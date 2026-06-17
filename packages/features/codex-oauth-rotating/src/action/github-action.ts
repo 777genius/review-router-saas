@@ -97,6 +97,8 @@ const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
 const providerNeutralReviewFindingsArtifactFileName =
   "reviewrouter-findings.json";
+const reviewThreadLifecycleResolveTokenEnvKey =
+  "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN";
 
 type FetchLike = typeof fetch;
 
@@ -2141,6 +2143,11 @@ async function runFullReviewRouterRuntime(input: {
   const actionPath = resolveGitHubActionPath(input.env);
   const runtimePath = join(actionPath, "dist", "index.js");
   await access(runtimePath, fsConstants.R_OK);
+  const reviewThreadLifecycleResolveToken =
+    input.env[reviewThreadLifecycleResolveTokenEnvKey]?.trim() || undefined;
+  if (reviewThreadLifecycleResolveToken) {
+    mask(input.io, reviewThreadLifecycleResolveToken);
+  }
 
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
@@ -2157,6 +2164,7 @@ async function runFullReviewRouterRuntime(input: {
       commentToken: input.commentToken,
       runtimeConfigVersion: input.runtimeConfigVersion,
       runtimeEnv: input.runtimeEnv,
+      reviewThreadLifecycleResolveToken,
     });
     await ensureFullReviewRuntimeTools({
       env: childEnv,
@@ -2179,7 +2187,7 @@ async function runFullReviewRouterRuntime(input: {
   }
 }
 
-function buildFullReviewRuntimeEnv(input: {
+export function buildFullReviewRuntimeEnv(input: {
   readonly sourceEnv: NodeJS.ProcessEnv;
   readonly inputs: ActionInputs;
   readonly leaseId: string;
@@ -2191,6 +2199,7 @@ function buildFullReviewRuntimeEnv(input: {
   readonly commentToken: string;
   readonly runtimeConfigVersion: number;
   readonly runtimeEnv: Record<string, string>;
+  readonly reviewThreadLifecycleResolveToken?: string | undefined;
 }): Record<string, string> {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
   const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
@@ -2202,10 +2211,17 @@ function buildFullReviewRuntimeEnv(input: {
     runtimeEnv,
     providerSecrets: input.inputs.providerSecrets,
   });
+  const reviewThreadLifecycleResolveEnv = input.reviewThreadLifecycleResolveToken
+    ? {
+        [reviewThreadLifecycleResolveTokenEnvKey]:
+          input.reviewThreadLifecycleResolveToken,
+      }
+    : {};
   return {
     ...inherited,
     ...runtimeEnv,
     ...providerSecretEnv,
+    ...reviewThreadLifecycleResolveEnv,
     HOME: input.tempHome,
     CODEX_HOME: input.tempCodexHome,
     GITHUB_WORKSPACE: input.workspace,
