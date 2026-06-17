@@ -2211,12 +2211,13 @@ export function buildFullReviewRuntimeEnv(input: {
     runtimeEnv,
     providerSecrets: input.inputs.providerSecrets,
   });
-  const reviewThreadLifecycleResolveEnv = input.reviewThreadLifecycleResolveToken
-    ? {
-        [reviewThreadLifecycleResolveTokenEnvKey]:
-          input.reviewThreadLifecycleResolveToken,
-      }
-    : {};
+  const reviewThreadLifecycleResolveEnv =
+    input.reviewThreadLifecycleResolveToken
+      ? {
+          [reviewThreadLifecycleResolveTokenEnvKey]:
+            input.reviewThreadLifecycleResolveToken,
+        }
+      : {};
   return {
     ...inherited,
     ...runtimeEnv,
