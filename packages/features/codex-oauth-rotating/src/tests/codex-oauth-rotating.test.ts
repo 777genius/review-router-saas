@@ -784,13 +784,24 @@ exit 17
         INPUT_AUTH_JSON: validAuthJson,
         REVIEWROUTER_CODEX_AUTH_JSON: validAuthJson,
         OPENAI_API_KEY: "sk-test",
+        GEMINI_API_KEY: "gemini-test",
+        OPENCODE_API_KEY: "opencode-test",
+        NPM_TOKEN: "npm-token",
+        CUSTOM_SECRET: "secret",
+        PRIVATE_KEY: "private-key",
+        DB_PASSWORD: "password",
+        INPUT_MODE: "fork-agentic-sandbox",
         NODE_OPTIONS: "--require ./repo-hook.js",
         BASH_ENV: "/tmp/repo-env",
         ENV: "/tmp/repo-env",
         GIT_CONFIG_COUNT: "1",
         GIT_TRACE: "1",
+        REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "0",
       }),
-    ).toEqual({ PATH: "/usr/bin" });
+    ).toEqual({
+      PATH: "/usr/bin",
+      REVIEW_ROUTER_USE_SUBSCRIPTION_RUNTIME_CODEX: "0",
+    });
   });
 
   it("builds refresh bootstrap and safe checkout plans without package installs", () => {

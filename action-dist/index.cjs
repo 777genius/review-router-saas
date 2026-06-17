@@ -20516,7 +20516,10 @@ function collectCodexAuthJsonWarnings2(input) {
   return warnings;
 }
 function shouldDropChildEnvKey2(key) {
-  return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("GIT_") || key.startsWith("INPUT_AUTH") || key.includes("CODEX_AUTH_JSON") || key.includes("REVIEWROUTER_CODEX_AUTH_JSON") || key.includes("OPENAI_API_KEY") || key.includes("CLAUDE_CODE_OAUTH_TOKEN") || key.includes("OPENROUTER_API_KEY") || key.includes("REVIEW_ROUTER_COMMENT_TOKEN") || key.includes("REVIEWROUTER_PROXY_NONCE");
+  const normalizedKey = key.toUpperCase();
+  return key === "GITHUB_TOKEN" || key === "GH_TOKEN" || key === "ACTIONS_ID_TOKEN_REQUEST_URL" || key === "ACTIONS_ID_TOKEN_REQUEST_TOKEN" || key === "GITHUB_ENV" || key === "GITHUB_OUTPUT" || key === "GITHUB_PATH" || key === "GITHUB_STEP_SUMMARY" || key === "GITHUB_STATE" || key === "NODE_OPTIONS" || key === "BASH_ENV" || key === "ENV" || key.startsWith("GIT_") || key.startsWith("INPUT_") || normalizedKey.includes("CODEX_AUTH_JSON") || normalizedKey.includes("REVIEWROUTER_CODEX_AUTH_JSON") || normalizedKey.includes("REVIEW_ROUTER_COMMENT_TOKEN") || normalizedKey.includes("REVIEWROUTER_PROXY_NONCE") || /(TOKEN|SECRET|PASSWORD|PRIVATE_KEY|API_KEY|AUTH_JSON)/.test(
+    normalizedKey
+  );
 }
 function decodeBase64OrBase64Url(value) {
   if (base64UrlPattern.test(value)) {
