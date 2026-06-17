@@ -506,7 +506,7 @@ async function runForkAgenticSandboxGitHubAction(input: {
   });
 
   const tempHome = await makeTempDirectory("reviewrouter-home-");
-  const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
+  const tempCodexHome = await makeForkSandboxCodexHomeDirectory(input.env);
   try {
     const refreshed = await refreshCodexAuthJson({
       authJson,
@@ -2022,6 +2022,42 @@ async function assertForkSandboxWorkspace(workspace: string): Promise<void> {
     throw new Error("fork_sandbox_workspace_not_directory");
   }
   await assertGitConfigDoesNotPersistCredentials({ workspace });
+}
+
+async function makeForkSandboxCodexHomeDirectory(
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const githubWorkspace = env.GITHUB_WORKSPACE;
+  if (!githubWorkspace) {
+    throw new Error("missing_github_workspace");
+  }
+
+  const resolvedWorkspaceRoot = await realpath(githubWorkspace);
+  const codexHomeRoot = join(resolvedWorkspaceRoot, ".reviewrouter-codex-home");
+  await mkdir(codexHomeRoot, { recursive: true, mode: 0o700 });
+  const codexHomeRootStats = await lstat(codexHomeRoot);
+  if (
+    !codexHomeRootStats.isDirectory() ||
+    codexHomeRootStats.isSymbolicLink()
+  ) {
+    throw new Error("fork_sandbox_codex_home_root_invalid");
+  }
+
+  const resolvedCodexHomeRoot = await realpath(codexHomeRoot);
+  if (
+    resolvedCodexHomeRoot !== codexHomeRoot &&
+    !resolvedCodexHomeRoot.startsWith(`${resolvedWorkspaceRoot}/`)
+  ) {
+    throw new Error("fork_sandbox_codex_home_root_escape");
+  }
+
+  const codexHome = await mkdtemp(join(resolvedCodexHomeRoot, "run-"));
+  await chmod(codexHome, 0o700);
+  const resolvedCodexHome = await realpath(codexHome);
+  if (!resolvedCodexHome.startsWith(`${resolvedCodexHomeRoot}/`)) {
+    throw new Error("fork_sandbox_codex_home_escape");
+  }
+  return resolvedCodexHome;
 }
 
 async function runFullReviewRouterRuntime(input: {
