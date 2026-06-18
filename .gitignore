@@ -10,5 +10,6 @@ build/
 coverage/
 tmp/
 .local-secrets/
+deploy/self-hosted/secrets/
 *.pem
 *.private-key.pem

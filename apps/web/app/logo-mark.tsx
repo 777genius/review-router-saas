@@ -1,9 +1,10 @@
 type LogoMarkProps = {
-  readonly size?: "sm" | "md" | "lg";
+  readonly size?: "xs" | "sm" | "md" | "lg";
   readonly className?: string;
 };
 
 const sizeClasses = {
+  xs: "h-9 w-9 rounded-lg",
   sm: "h-11 w-11 rounded-xl",
   md: "h-16 w-16 rounded-2xl",
   lg: "h-20 w-20 rounded-[1.35rem]",

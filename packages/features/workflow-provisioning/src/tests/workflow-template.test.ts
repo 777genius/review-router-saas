@@ -135,13 +135,26 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflowContent).toContain("issue_comment:");
     expect(interactionWorkflowContent).toContain("runs-on: ubuntu-24.04");
     expect(interactionWorkflowContent).toContain(
+      "repository: 777genius/review-router",
+    );
+    expect(interactionWorkflowContent).toContain(
+      "run: node .reviewrouter-runtime/dist/index.js",
+    );
+    expect(interactionWorkflowContent).toContain(
       "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
     );
     expect(interactionWorkflowContent).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
     );
-    expect(interactionWorkflowContent).toContain("mode: interaction-preflight");
-    expect(interactionWorkflowContent).toContain("mode: interaction");
+    expect(interactionWorkflowContent).toContain(
+      'REVIEW_ROUTER_MODE: "interaction-preflight"',
+    );
+    expect(interactionWorkflowContent).toContain(
+      'REVIEW_ROUTER_MODE: "interaction"',
+    );
+    expect(interactionWorkflowContent).not.toContain(
+      "uses: 777genius/review-router@",
+    );
     expect(interactionWorkflowContent).not.toContain("provider-instance-id:");
     expect(interactionWorkflowContent).not.toContain("auth-json:");
     expect(interactionWorkflowContent).not.toContain("secrets.CODEX_AUTH_JSON");
@@ -251,6 +264,10 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("issue_comment:");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
+    expect(workflow).toContain("repository: 777genius/review-router");
+    expect(workflow).toContain(
+      "run: node .reviewrouter-runtime/dist/index.js",
+    );
     expect(workflow).toContain(
       "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
     );
@@ -260,10 +277,9 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain(
       'REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"',
     );
-    expect(workflow).toContain("mode: interaction-preflight");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
-    expect(workflow).toContain("mode: interaction");
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction"');
+    expect(workflow).not.toContain("uses: 777genius/review-router@");
     expect(workflow).not.toContain("provider-instance-id:");
     expect(workflow).not.toContain("auth-json:");
     expect(workflow).not.toContain("secrets.CODEX_AUTH_JSON");
@@ -318,7 +334,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("uses: 777genius/review-router@v1");
     expect(workflow).toContain("uses: actions/setup-node@v6");
     expect(workflow).toContain('node-version: "24"');
-    expect(workflow).toContain("npm install -g @openai/codex@0.135.0");
+    expect(workflow).toContain("npm install -g @openai/codex@0.141.0");
     expect(workflow).toContain("env.OPENROUTER_API_KEY_PRESENT == '1'");
     expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
     expect(workflow).toContain(

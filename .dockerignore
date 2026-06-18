@@ -3,6 +3,15 @@
 .env
 .env.*
 !.env.example
+*.pem
+**/*.pem
+*.private-key
+**/*.private-key
+*.private-key.pem
+**/*.private-key.pem
+.local-secrets
+**/.local-secrets
+deploy/self-hosted/secrets
 
 node_modules
 **/node_modules

@@ -52,9 +52,9 @@ export function ThemeToggle(): React.ReactElement {
       aria-label={preferenceLabels[preference]}
       title={preferenceLabels[preference]}
       onClick={cyclePreference}
-      className="inline-grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cyan-200/15 bg-white/[0.035] text-cyan-100 transition hover:border-cyan-200/40 hover:bg-cyan-300/[0.08] hover:text-cyan-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300"
+      className="inline-grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cyan-200/15 bg-white/[0.035] text-cyan-100 transition hover:border-cyan-200/40 hover:bg-cyan-300/[0.08] hover:text-cyan-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 lg:h-9 lg:w-9 lg:rounded-lg"
     >
-      <Icon aria-hidden="true" className="size-4" />
+      <Icon aria-hidden="true" className="size-4 lg:size-3.5" />
     </button>
   );
 }

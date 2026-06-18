@@ -1,0 +1,101 @@
+name: reviewrouter-self-hosted
+
+x-reviewrouter-service: &reviewrouter-service
+  image: reviewrouter-self-hosted:${REVIEW_ROUTER_IMAGE_TAG:-local}
+  build:
+    context: ../..
+    dockerfile: deploy/self-hosted/Dockerfile
+  env_file:
+    - ${REVIEW_ROUTER_SELF_HOSTED_ENV_FILE:-./.env}
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-review_router}
+      POSTGRES_USER: ${POSTGRES_USER:-reviewrouter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "${REVIEW_ROUTER_POSTGRES_BIND:-127.0.0.1:5432}:5432"
+    volumes:
+      - reviewrouter-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  migrate:
+    <<: *reviewrouter-service
+    restart: "no"
+    command: ["pnpm", "db:migrate:deploy"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    <<: *reviewrouter-service
+    command:
+      [
+        "pnpm",
+        "--filter",
+        "@reviewrouter/web",
+        "exec",
+        "next",
+        "start",
+        "--hostname",
+        "0.0.0.0",
+      ]
+    environment:
+      PORT: "3000"
+    ports:
+      - "${REVIEW_ROUTER_WEB_BIND:-127.0.0.1:3000}:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:3000/status'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  api:
+    <<: *reviewrouter-service
+    command: ["pnpm", "api:start"]
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "4000"
+    ports:
+      - "${REVIEW_ROUTER_API_BIND:-127.0.0.1:4000}:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:4000/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *reviewrouter-service
+    command: ["pnpm", "worker:start"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  reviewrouter-postgres-data:

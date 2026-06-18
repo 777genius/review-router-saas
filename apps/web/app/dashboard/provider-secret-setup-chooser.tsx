@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useEffect,
-  useMemo,
-  useState,
-  useTransition,
-  type FormEvent,
-} from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Tabs } from "@base-ui/react/tabs";
 import { CheckCircle2 } from "lucide-react";
 import type {
@@ -41,6 +35,7 @@ type RotatingSetupCommandState =
       readonly providerInstanceId: string;
     }
   | { readonly status: "error"; readonly error: string };
+type SubmitStatus = "idle" | "submitting";
 
 const providerChoices: readonly {
   readonly value: ProviderChoice;
@@ -122,10 +117,11 @@ export function ProviderSecretSetupChooser({
   const [rotatingSetupCommand, setRotatingSetupCommand] =
     useState<RotatingSetupCommandState>({ status: "idle" });
   const [setupCommandRefreshKey, setSetupCommandRefreshKey] = useState(0);
+  const [submitStatus, setSubmitStatus] = useState<SubmitStatus>("idle");
   const [confirmedProviderModes, setConfirmedProviderModes] = useState<
     Partial<Record<ProviderChoice, "verified" | "manual">>
   >({});
-  const [isPending, startTransition] = useTransition();
+  const isSubmitting = submitStatus === "submitting";
   const confirmedMode = confirmedProviderModes[providerChoice] ?? "verified";
   const confirmed = confirmedProviderModes[providerChoice] !== undefined;
   const rotatingCodexSelected = providerChoice === "codex_oauth_rotating";
@@ -526,46 +522,47 @@ export function ProviderSecretSetupChooser({
             setConfirmedProviderModes((choices) =>
               removeConfirmedProviderChoice(choices, submittedProviderChoice),
             );
-            startTransition(() => {
-              void confirmProviderSecretSetup(formData)
-                .then(({ params }) => {
-                  if (
-                    submittedConfirmationMode === "verified" &&
-                    isVerificationFallbackError(params.error)
-                  ) {
-                    setVerificationError(params.error);
-                    setSubmitError(null);
-                    return;
-                  }
-                  if (params.error) {
-                    setSubmitError(params.error);
-                    return;
-                  }
-                  setVerificationError(null);
+            setSubmitStatus("submitting");
+            void confirmProviderSecretSetup(formData)
+              .then(({ params }) => {
+                if (
+                  submittedConfirmationMode === "verified" &&
+                  isVerificationFallbackError(params.error)
+                ) {
+                  setVerificationError(params.error);
                   setSubmitError(null);
-                  setConfirmedProviderModes((choices) => ({
-                    ...choices,
-                    [submittedProviderChoice]: submittedConfirmationMode,
-                  }));
-                  clearProviderSecretStatusCache({
-                    workspaceId,
-                    repositoryId,
-                    authMode: submittedProviderSetupSelection.authMode,
-                  });
-                  window.dispatchEvent(
-                    providerSetupConfirmedEvent({
-                      repositoryId,
-                      repositoryFullName,
-                      providerKind:
-                        submittedProviderSetupSelection.providerKind,
-                      authMode: submittedProviderSetupSelection.authMode,
-                    }),
-                  );
-                })
-                .catch(() => {
-                  setSubmitError("dashboard_action_stale");
+                  return;
+                }
+                if (params.error) {
+                  setSubmitError(params.error);
+                  return;
+                }
+                setVerificationError(null);
+                setSubmitError(null);
+                setConfirmedProviderModes((choices) => ({
+                  ...choices,
+                  [submittedProviderChoice]: submittedConfirmationMode,
+                }));
+                clearProviderSecretStatusCache({
+                  workspaceId,
+                  repositoryId,
+                  authMode: submittedProviderSetupSelection.authMode,
                 });
-            });
+                window.dispatchEvent(
+                  providerSetupConfirmedEvent({
+                    repositoryId,
+                    repositoryFullName,
+                    providerKind: submittedProviderSetupSelection.providerKind,
+                    authMode: submittedProviderSetupSelection.authMode,
+                  }),
+                );
+              })
+              .catch(() => {
+                setSubmitError("dashboard_action_stale");
+              })
+              .finally(() => {
+                setSubmitStatus("idle");
+              });
           }}
           className="mt-4"
         >
@@ -598,10 +595,10 @@ export function ProviderSecretSetupChooser({
               variant="solid"
               size="sm"
               className="min-h-11 rounded-xl px-5"
-              disabled={isPending || confirmed || !activeCommand}
-              aria-busy={isPending}
+              disabled={isSubmitting || confirmed || !activeCommand}
+              aria-busy={isSubmitting}
             >
-              {isPending ? (
+              {isSubmitting ? (
                 <span className="inline-flex items-center gap-2">
                   <span
                     aria-hidden="true"

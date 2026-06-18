@@ -135,7 +135,7 @@ jobs:
       - name: Install Codex CLI
         if: ${{ env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' }}
         shell: bash
-        run: npm install -g @openai/codex@0.125.0
+        run: npm install -g @openai/codex@0.141.0
 
       - name: Run conflict review runtime
         shell: bash

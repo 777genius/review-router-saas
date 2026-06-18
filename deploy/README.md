@@ -25,6 +25,13 @@ defines web/API/worker/Postgres plus a shared env group. See
 [`deploy/render.md`](./render.md) for the exact Blueprint flow and post-sync
 GitHub App settings.
 
+## Self-Hosted Control Plane
+
+For operators who want to run the control plane themselves for github.com
+repositories, use [`deploy/self-hosted/README.md`](./self-hosted/README.md).
+That stack provides Docker Compose for web/API/worker/Postgres plus a one-shot
+migration service and a self-hosted readiness checker.
+
 ## Build
 
 ```bash
