@@ -17,6 +17,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly discussionMode?: ReviewRouterDiscussionMode;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly actor?: string;
 };
@@ -65,6 +66,11 @@ export async function provisionRepositoryReviewRouterWorkflow(
         ? {}
         : {
             conflictReviewFallbackEnabled: input.conflictReviewFallbackEnabled,
+          }),
+      ...(input.forkAgenticSandboxEnabled === undefined
+        ? {}
+        : {
+            forkAgenticSandboxEnabled: input.forkAgenticSandboxEnabled,
           }),
       ...(input.codexRotatingProviderInstanceId
         ? {

@@ -106,11 +106,11 @@ export function RepositorySetupActionButton({
         />
         <span className="grid gap-1">
           <span className="font-semibold text-cyan-50">
-            AI replies to review discussions
+            Enable AI suggested replies
           </span>
           <span className="text-xs leading-5 text-slate-400">
-            Suggest-only replies on ReviewRouter finding threads. Default stays
-            off unless this setup PR is merged.
+            Adds suggest-only AI replies to ReviewRouter finding discussions
+            after this setup PR is merged.
           </span>
         </span>
       </label>

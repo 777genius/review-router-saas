@@ -233,4 +233,34 @@ describe("workflow setup readiness", () => {
       ],
     });
   });
+
+  it("requires fork sandbox markers when rotating Codex fork mode is enabled", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        {
+          ...readinessInput,
+          codexRotatingProviderInstanceId: "codex-rotating:123456",
+          forkAgenticSandboxEnabled: true,
+        },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
+
+    expect(probe.input).not.toBeNull();
+    expect(probe.input!.expectedContentMarkerGroups?.[0]).toEqual(
+      expect.arrayContaining([
+        "pull_request_target:",
+        "fork-sandbox-review:",
+        "vars.REVIEW_ROUTER_FORK_AGENTIC_SANDBOX == 'certified'",
+        "mode: fork-agentic-sandbox",
+        "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
+      ]),
+    );
+  });
 });

@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -117,6 +124,235 @@ describe("Codex rotating GitHub Action runtime", () => {
         openRouterApiKey: "sk-or-provider-secret",
       },
     });
+  });
+
+  it("reads fork agentic sandbox action inputs through the rotating contract", () => {
+    const inputs = readActionInputs({
+      INPUT_MODE: "fork-agentic-sandbox",
+      "INPUT_API-URL": "https://api.reviewrouter.site/",
+      "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+      "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+      "INPUT_CLAUDE-CODE-OAUTH-TOKEN": " sk-ant-oat01-provider-secret\n",
+    });
+
+    expect(inputs).toMatchObject({
+      mode: "fork-agentic-sandbox",
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      workflowSchemaVersion: 1,
+      providerSecrets: {
+        claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
+      },
+    });
+  });
+
+  it("runs fork agentic sandbox review from a sanitized workspace without checkout token", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-fork-test-"));
+    const eventPath = join(tempDir, "event.json");
+    const githubWorkspace = join(tempDir, "github-workspace");
+    const safeWorkspace = join(githubWorkspace, "safe-workspace");
+    const fakeCodex = join(
+      tempDir,
+      "action-dist",
+      "codex",
+      "linux-x64",
+      "codex",
+    );
+    const refreshedAuthJson = JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        refresh_token: "refreshed-refresh-token",
+        access_token: "refreshed-access-token",
+      },
+    });
+    const invokedUrls: string[] = [];
+    const requestBodies: string[] = [];
+
+    await mkdir(join(tempDir, "action-dist", "codex", "linux-x64"), {
+      recursive: true,
+    });
+    await mkdir(join(safeWorkspace, ".git"), { recursive: true });
+    await writeFile(
+      join(safeWorkspace, ".git", "config"),
+      "[core]\n\trepositoryformatversion = 0\n",
+    );
+    await writeFile(
+      join(safeWorkspace, "file.ts"),
+      "export const value = 1;\n",
+    );
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        number: 118,
+        repository: { id: 777, full_name: "777genius/agent-teams-ai" },
+        pull_request: {
+          draft: false,
+          head: {
+            sha: "0123456789abcdef0123456789abcdef01234567",
+            repo: { full_name: "agent-teams-ai/review-router-fork" },
+          },
+          base: { sha: "abcdef0123456789abcdef0123456789abcdef01" },
+        },
+      }),
+    );
+    await writeFile(
+      fakeCodex,
+      [
+        "#!/usr/bin/env node",
+        "const { readFileSync, writeFileSync } = require('node:fs');",
+        "const { join } = require('node:path');",
+        "const authPath = join(process.env.CODEX_HOME, 'auth.json');",
+        "readFileSync(authPath, 'utf8');",
+        `writeFileSync(authPath, ${JSON.stringify(refreshedAuthJson)});`,
+        "process.stdout.write('OK\\n');",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await writeCodexManifest(fakeCodex);
+
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      invokedUrls.push(href);
+      if (typeof init?.body === "string") {
+        requestBodies.push(init.body);
+      }
+      if (href.startsWith("https://oidc.actions.test/token")) {
+        return jsonResponse({ value: "oidc.jwt.value" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
+        return jsonResponse({
+          leaseId: "lease_1",
+          generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
+        return jsonResponse({
+          status: "finalized",
+          nextGeneration: 2,
+          repositoryOwner: "777genius",
+          repositoryName: "agent-teams-ai",
+          publicKeyReadToken: "ghs_public_key_read_token",
+          runtimeConfigVersion: 7,
+          runtimeEnv: {
+            REVIEW_AUTH_MODE: "codex-oauth-rotating",
+            REVIEW_PROVIDERS:
+              "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
+            REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
+            SYNTHESIS_MODEL: "codex/gpt-5.5",
+            PROVIDER_LIMIT: "3",
+            PROVIDER_MAX_PARALLEL: "3",
+            INLINE_MIN_AGREEMENT: "2",
+            CODEX_MODEL: "gpt-5.5",
+            CLAUDE_MODEL: "sonnet",
+            OPENROUTER_MODEL: "openai/gpt-5.3-codex",
+            EXTRA_RUNTIME_FLAG: "must-not-pass",
+          },
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/actions/secrets/public-key"
+      ) {
+        return jsonResponse({
+          key: Buffer.alloc(32, 1).toString("base64"),
+          key_id: "github-key-id",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback-preflight")) {
+        return jsonResponse({ protocolVersion: 1, status: "ready" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback")) {
+        return jsonResponse({ protocolVersion: 1, status: "accepted" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/comment-token")) {
+        return jsonResponse({
+          token: "ghs_comment_token",
+          repository: "777genius/agent-teams-ai",
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100"
+      ) {
+        return jsonResponse([]);
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+    const fullReviewRuntimeRunner = vi.fn(async (input) => {
+      expect(input.workspace).toBe(await realpath(safeWorkspace));
+      expect(input.runtimeEnv).toMatchObject({
+        REVIEW_PROVIDERS: "codex/gpt-5.5",
+        REQUIRED_HEALTHY_PROVIDERS: "codex/gpt-5.5",
+        SYNTHESIS_MODEL: "codex/gpt-5.5",
+        PROVIDER_LIMIT: "1",
+        PROVIDER_MAX_PARALLEL: "1",
+        INLINE_MIN_AGREEMENT: "1",
+        REVIEWROUTER_FORK_AGENTIC_SANDBOX: "true",
+      });
+      expect(input.runtimeEnv.CLAUDE_MODEL).toBeUndefined();
+      expect(input.runtimeEnv.OPENROUTER_MODEL).toBeUndefined();
+      expect(input.runtimeEnv.EXTRA_RUNTIME_FLAG).toBeUndefined();
+      const config = readFileSync(
+        join(input.tempCodexHome, "config.toml"),
+        "utf8",
+      );
+      expect(config).toContain('model_provider = "reviewrouter_proxy"');
+      expect(config).toContain('wire_api = "responses"');
+      expect(config).toContain('sandbox_mode = "read-only"');
+      expect(config).not.toContain("refreshed-access-token");
+      expect(() =>
+        readFileSync(join(input.tempCodexHome, "auth.json"), "utf8"),
+      ).toThrow();
+    });
+
+    try {
+      await runCodexRotatingGitHubAction({
+        env: {
+          INPUT_MODE: "fork-agentic-sandbox",
+          "INPUT_API-URL": "https://api.reviewrouter.site/",
+          "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+          "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+          "INPUT_AUTH-JSON": JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+              refresh_token: "initial-refresh-token",
+              access_token: "initial-access-token",
+            },
+          }),
+          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+          GITHUB_EVENT_NAME: "pull_request_target",
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_REPOSITORY: "777genius/agent-teams-ai",
+          GITHUB_ACTION_PATH: tempDir,
+          GITHUB_WORKSPACE: githubWorkspace,
+          REVIEW_ROUTER_PR_WORKSPACE: safeWorkspace,
+          GITHUB_RUN_ID: "9001",
+          GITHUB_RUN_ATTEMPT: "1",
+          RUNNER_OS: "Linux",
+          RUNNER_ARCH: "X64",
+          ImageOS: "ubuntu24",
+          ImageVersion: "20260518.1.0",
+          PATH: process.env.PATH ?? "",
+        },
+        fetchImpl,
+        fullReviewRuntimeRunner,
+        io: {
+          stdout: { write: vi.fn() },
+          stderr: { write: vi.fn() },
+        },
+      });
+
+      expect(fullReviewRuntimeRunner).toHaveBeenCalledTimes(1);
+      expect(invokedUrls.some((url) => url.endsWith("/checkout-token"))).toBe(
+        false,
+      );
+      expect(requestBodies.join("\n")).not.toContain("initial-refresh-token");
+      expect(requestBodies.join("\n")).not.toContain("refreshed-refresh-token");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("reads auth-json as exact bytes and clears auth input env", () => {

@@ -25,6 +25,7 @@ export type ProvisionWorkflowInput = {
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly discussionMode?: ReviewRouterDiscussionMode;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly setupBranch?: string;
   readonly workflowPath?: string;

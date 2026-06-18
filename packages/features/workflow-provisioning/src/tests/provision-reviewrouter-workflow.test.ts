@@ -410,7 +410,22 @@ describe("provisionReviewRouterWorkflow", () => {
     );
     expect(interactionWorkflowContent).toContain("issue_comment:");
     expect(interactionWorkflowContent).toContain("runs-on: ubuntu-24.04");
-    expect(interactionWorkflowContent).toContain(`uses: ${actionRef}`);
+    expect(interactionWorkflowContent).toContain(
+      "repository: 777genius/review-router",
+    );
+    expect(interactionWorkflowContent).toContain(
+      'RR_RUNTIME_REF: "0123456789abcdef0123456789abcdef01234567"',
+    );
+    expect(interactionWorkflowContent).toContain(
+      'REVIEW_ROUTER_MODE: "interaction-preflight"',
+    );
+    expect(interactionWorkflowContent).toContain(
+      'REVIEW_ROUTER_MODE: "interaction"',
+    );
+    expect(interactionWorkflowContent).toContain(
+      "run: node .reviewrouter-runtime/dist/index.js",
+    );
+    expect(interactionWorkflowContent).not.toContain(`uses: ${actionRef}`);
     expect(interactionWorkflowContent).toContain(
       "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
     );

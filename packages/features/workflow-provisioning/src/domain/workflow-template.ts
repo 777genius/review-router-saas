@@ -17,6 +17,7 @@ export type ReviewRouterWorkflowOptions = {
   readonly staticRuntimeEnv?: Readonly<Record<string, string>>;
   readonly workflowStyle?: ReviewRouterWorkflowStyle;
   readonly conflictReviewFallbackEnabled?: boolean;
+  readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly discussionMode?: ReviewRouterDiscussionMode;
 };
@@ -146,7 +147,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.135.0
+        run: npm install -g @openai/codex@0.141.0
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
@@ -280,7 +281,7 @@ jobs:
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.135.0
+        run: npm install -g @openai/codex@0.141.0
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -344,8 +345,7 @@ jobs:
 export function renderCodexRotatingInteractionWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
-  assertSafeActionRef(options.actionRef);
-  const template = prepareWorkflowTemplate(options);
+  const runtimeRef = extractReusableRuntimeRef(options.actionRef);
 
   return `name: ReviewRouter Interaction
 
@@ -369,34 +369,46 @@ jobs:
     runs-on: ubuntu-24.04
     if: \${{ ${interactionJobGuardExpression} }}
     env:
+      RR_RUNTIME_REF: ${JSON.stringify(runtimeRef)}
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
-      REVIEWROUTER_ACTION_VERSION: ${JSON.stringify(template.actionVersion)}
       REVIEWROUTER_OIDC_AUDIENCE: "reviewrouter"
       REVIEWROUTER_RUNTIME_CONFIG_MODE: ${JSON.stringify(options.runtimeConfigMode)}
       REVIEWROUTER_STATIC_CONFIG_FALLBACK: "true"
-      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(template.commentTokenMode)}
+      REVIEWROUTER_COMMENT_TOKEN_MODE: ${JSON.stringify(options.runtimeConfigMode === "oidc" ? "app-oidc" : "github-token")}
       CODEX_AUTH_JSON_PRESENT: \${{ secrets.${codexRotatingSecretName} != '' && '1' || '0' }}
       REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"
-    steps:${template.oidcStep}      - name: Preflight ReviewRouter interaction
-        id: preflight
-        uses: ${options.actionRef}
+      REVIEW_ROUTER_MEMORY_ENABLED: "true"
+      REVIEW_ROUTER_MEMORY_PROTOCOL_VERSION: "1"
+      REVIEW_ROUTER_MEMORY_BUNDLE_ENDPOINT: "/api/action/v1/memory"
+      REVIEW_ROUTER_MEMORY_CANDIDATE_ENDPOINT: "/api/action/v1/memory-candidates"
+      REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"
+    steps:
+      - name: Checkout ReviewRouter interaction runtime
+        uses: actions/checkout@v6
         with:
-          mode: interaction-preflight
-        env:
-          GITHUB_TOKEN: \${{ github.token }}
-          REVIEW_ROUTER_MODE: "interaction-preflight"
-          REVIEW_ROUTER_DISCUSSION_MODE: ${discussionModeExpression(options)}
+          repository: ${reusableWorkflowRuntimeRepository}
+          ref: \${{ env.RR_RUNTIME_REF }}
+          path: .reviewrouter-runtime
+          persist-credentials: false
 
-      - name: Setup Node.js for Codex discussion replies
-        if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
+      - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: "24"
 
+      - name: Preflight ReviewRouter interaction
+        id: preflight
+        shell: bash
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          REVIEW_ROUTER_MODE: "interaction-preflight"
+          REVIEW_ROUTER_DISCUSSION_MODE: ${discussionModeExpression(options)}
+        run: node .reviewrouter-runtime/dist/index.js
+
       - name: Install Codex CLI for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
         shell: bash
-        run: npm install -g @openai/codex@0.135.0
+        run: npm install -g @openai/codex@0.141.0
 
       - name: Restore Codex subscription auth for discussion replies
         if: \${{ steps.preflight.outputs.needs_discussion == 'true' && env.CODEX_AUTH_JSON_PRESENT == '1' }}
@@ -417,18 +429,18 @@ jobs:
 
       - name: Run ReviewRouter interaction
         if: \${{ steps.preflight.outputs.should_run == 'true' }}
-        uses: ${options.actionRef}
-        with:
-          mode: interaction
+        shell: bash
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction"
+          REVIEW_ROUTER_LEDGER_KEY: \${{ secrets.REVIEW_ROUTER_LEDGER_KEY }}
           REVIEW_ROUTER_DISCUSSION_MODE: ${discussionModeExpression(options)}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_PR: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
           REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
           REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
           CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
           CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
+        run: node .reviewrouter-runtime/dist/index.js
 `;
 }
 
@@ -631,7 +643,7 @@ jobs:
       - name: Install Codex CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && (env.CODEX_AUTH_JSON_PRESENT == '1' || env.OPENAI_API_KEY_PRESENT == '1' || env.OPENROUTER_API_KEY_PRESENT == '1') }}
         shell: bash
-        run: npm install -g @openai/codex@0.135.0
+        run: npm install -g @openai/codex@0.141.0
 
       - name: Install Claude Code CLI
         if: \${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot')) && github.event_name != 'merge_group' && env.CLAUDE_CODE_OAUTH_TOKEN_PRESENT == '1' }}
@@ -822,6 +834,7 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   readonly providerInstanceId: string;
   readonly claudeCodeOAuthTokenSecret?: boolean | undefined;
   readonly openRouterApiKeySecret?: boolean | undefined;
+  readonly forkAgenticSandboxEnabled?: boolean | undefined;
 }): readonly (readonly string[])[] {
   const markers = [
     "name: ReviewRouter Codex OAuth",
@@ -839,6 +852,15 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   }
   if (input.openRouterApiKeySecret === true) {
     markers.push("openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}");
+  }
+  if (input.forkAgenticSandboxEnabled === true) {
+    markers.push(
+      "pull_request_target:",
+      "fork-sandbox-review:",
+      "vars.REVIEW_ROUTER_FORK_AGENTIC_SANDBOX == 'certified'",
+      "mode: fork-agentic-sandbox",
+      "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
+    );
   }
 
   return [markers];
@@ -1137,6 +1159,7 @@ export function renderReviewRouterWorkflowFiles(
           ...codexRotatingProviderSecretInputsForRuntimeEnv(
             options.staticRuntimeEnv,
           ),
+          forkAgenticSandboxEnabled: options.forkAgenticSandboxEnabled === true,
         }),
       },
       {
@@ -1159,6 +1182,10 @@ export function renderReviewRouterWorkflowFiles(
         }),
       },
     ];
+  }
+
+  if (options.forkAgenticSandboxEnabled === true) {
+    throw new Error("fork_agentic_sandbox_requires_codex_rotating");
   }
 
   if (
