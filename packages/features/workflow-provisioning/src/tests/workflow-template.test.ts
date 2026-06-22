@@ -67,6 +67,9 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("codex-refresh:");
     expect(workflow).toContain("mode: codex-oauth-refresh");
     expect(workflow).toContain(
+      "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-777genius-agent-teams-ai",
+    );
+    expect(workflow).toContain(
       "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
     );
     expect(workflow).not.toContain("merge_group:");

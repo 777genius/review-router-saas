@@ -385,6 +385,9 @@ export function renderCodexRotatingAdvisoryWorkflow(
       ? null
       : (options.refreshScheduleCron ??
         codexRotatingDefaultRefreshScheduleCron);
+  const concurrencyGroup = renderCodexRotatingConcurrencyGroup(
+    options.providerInstanceId,
+  );
 
   return `name: ReviewRouter Codex OAuth
 
@@ -412,6 +415,9 @@ jobs:
     name: codex-review
     runs-on: ${runnerLabel}
     timeout-minutes: ${timeoutMinutes}
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
     if: \${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
     permissions:
       id-token: write
@@ -433,6 +439,9 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
     name: fork-sandbox-review
     runs-on: ${runnerLabel}
     timeout-minutes: ${timeoutMinutes}
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
     if: \${{ github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name != github.repository && vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}' }}
     permissions:
       contents: read
@@ -498,6 +507,9 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
     name: codex-refresh
     runs-on: ${runnerLabel}
     timeout-minutes: ${timeoutMinutes}
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
     if: \${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     permissions:
       id-token: write
@@ -514,6 +526,16 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
 `
       : ""
   }`;
+}
+
+function renderCodexRotatingConcurrencyGroup(providerInstanceId: string): string {
+  const providerSegment =
+    providerInstanceId
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 96) || "provider";
+  return `reviewrouter-codex-oauth-\${{ github.repository_id }}-${providerSegment}`;
 }
 
 export type CodexRotatingWorkflowScanResult = {
@@ -627,7 +649,7 @@ export function scanCodexRotatingAdvisoryWorkflow(
     [/^\s*strategy\s*:/m, "matrix_strategy_not_allowed"],
     [/^\s*container\s*:/m, "job_container_not_allowed"],
     [/^\s*services\s*:/m, "job_services_not_allowed"],
-    [/^\s*concurrency\s*:/m, "workflow_concurrency_not_allowed"],
+    [/^concurrency\s*:/m, "workflow_concurrency_not_allowed"],
     [/^ {4}uses:\s*/m, "reusable_job_not_allowed"],
     [/ubuntu-latest/i, "mutable_runner_label_not_allowed"],
     [/toJSON\s*\(\s*secrets\s*\)/, "tojson_secrets_not_allowed"],
