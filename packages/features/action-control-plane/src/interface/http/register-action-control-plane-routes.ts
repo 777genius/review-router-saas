@@ -24,6 +24,10 @@ import {
   type FinalizeCodexRotatingOAuthLeaseDependencies,
 } from "../../application/use-cases/finalize-codex-rotating-oauth-lease.js";
 import {
+  abandonCodexRotatingOAuthLease,
+  type AbandonCodexRotatingOAuthLeaseDependencies,
+} from "../../application/use-cases/abandon-codex-rotating-oauth-lease.js";
+import {
   preflightCodexRotatingOAuthWriteback,
   type PreflightCodexRotatingOAuthWritebackDependencies,
 } from "../../application/use-cases/preflight-codex-rotating-oauth-writeback.js";
@@ -74,6 +78,7 @@ export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
     Partial<PreleaseCodexRotatingOAuthDependencies> &
     Partial<FinalizeCodexRotatingOAuthLeaseDependencies> &
+    Partial<AbandonCodexRotatingOAuthLeaseDependencies> &
     Partial<PreflightCodexRotatingOAuthWritebackDependencies> &
     Partial<WritebackCodexRotatingOAuthDependencies> &
     Partial<IssueCodexRotatingOAuthCheckoutTokenDependencies> &
@@ -111,6 +116,14 @@ const codexRotatingFinalizeBodySchema = z
     leaseId: z.string().min(8).max(160),
     providerInstanceId: z.string().min(8).max(160),
     restoredGenerationHash: z.string().min(32).max(128),
+  })
+  .strict();
+
+const codexRotatingAbandonBodySchema = z
+  .object({
+    leaseId: z.string().min(8).max(160),
+    providerInstanceId: z.string().min(8).max(160),
+    reason: z.enum(["needs_reconnect", "unknown_auth_state"]),
   })
   .strict();
 
@@ -281,6 +294,41 @@ export async function registerActionControlPlaneRoutes(
             restoredGenerationHash: body.restoredGenerationHash,
           },
           dependencies as FinalizeCodexRotatingOAuthLeaseDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingAbandonHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (!dependencies.codexRotatingOAuth) {
+        return sendActionErrorCode(
+          reply,
+          "codex_rotating_oauth_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingAbandonBodySchema.parse(request.body);
+        const result = await abandonCodexRotatingOAuthLease(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+            reason: body.reason,
+          },
+          dependencies as AbandonCodexRotatingOAuthLeaseDependencies,
         );
         return reply.send(result);
       } catch (error) {
@@ -639,6 +687,11 @@ export async function registerActionControlPlaneRoutes(
     "/api/action/v1/codex-oauth/finalize",
     { bodyLimit: 4_096 },
     createCodexRotatingFinalizeHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/abandon",
+    { bodyLimit: 4_096 },
+    createCodexRotatingAbandonHandler("v1"),
   );
   app.post(
     "/api/action/v1/codex-oauth/writeback-preflight",

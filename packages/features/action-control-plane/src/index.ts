@@ -20,6 +20,7 @@ export * from "./application/ports/codex-rotating-oauth-repository-port.js";
 export * from "./application/use-cases/exchange-github-oidc-token.js";
 export * from "./application/use-cases/prelease-codex-rotating-oauth.js";
 export * from "./application/use-cases/finalize-codex-rotating-oauth-lease.js";
+export * from "./application/use-cases/abandon-codex-rotating-oauth-lease.js";
 export * from "./application/use-cases/preflight-codex-rotating-oauth-writeback.js";
 export * from "./application/use-cases/writeback-codex-rotating-oauth.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-checkout-token.js";

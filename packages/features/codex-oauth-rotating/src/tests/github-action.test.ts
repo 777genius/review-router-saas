@@ -2396,6 +2396,9 @@ describe("Codex rotating GitHub Action runtime", () => {
       if (href.endsWith("/api/action/v1/codex-oauth/writeback-preflight")) {
         return jsonResponse({ protocolVersion: 1, status: "ready" });
       }
+      if (href.endsWith("/api/action/v1/codex-oauth/abandon")) {
+        return jsonResponse({ protocolVersion: 1, status: "abandoned" });
+      }
       throw new Error(`unexpected_fetch:${href}`);
     }) as unknown as typeof fetch;
 
@@ -2435,6 +2438,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(stdoutText).not.toContain("invalid_grant");
       expect(stdoutText).not.toContain("leak");
       expect(stderrWrite).not.toHaveBeenCalled();
+      expect(invokedUrls.some((url) => url.endsWith("/abandon"))).toBe(true);
       expect(invokedUrls.some((url) => url.endsWith("/writeback"))).toBe(false);
     } finally {
       await rm(tempDir, { recursive: true, force: true });

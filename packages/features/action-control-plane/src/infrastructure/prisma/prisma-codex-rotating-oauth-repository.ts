@@ -314,6 +314,64 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
     });
   }
 
+  async abandonLease(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly reason: "needs_reconnect" | "unknown_auth_state";
+    readonly now: Date;
+  }): Promise<{
+    readonly status: "abandoned" | "lease_not_active";
+  }> {
+    return this.prisma.$transaction(async (tx) => {
+      const provider = await tx.codexOAuthProviderInstance.findUnique({
+        where: { providerInstanceId: input.providerInstanceId },
+        select: {
+          id: true,
+          activeLeaseId: true,
+          activeLeaseExpiresAt: true,
+          leases: {
+            where: { id: input.leaseId },
+            take: 1,
+            select: {
+              id: true,
+              status: true,
+              expiresAt: true,
+            },
+          },
+        },
+      });
+      const lease = provider?.leases[0];
+      if (
+        !provider ||
+        !lease ||
+        provider.activeLeaseId !== input.leaseId ||
+        !provider.activeLeaseExpiresAt ||
+        provider.activeLeaseExpiresAt <= input.now ||
+        lease.expiresAt <= input.now ||
+        lease.status === "completed"
+      ) {
+        return { status: "lease_not_active" as const };
+      }
+
+      await tx.codexOAuthLease.update({
+        where: { id: input.leaseId },
+        data: {
+          status: input.reason,
+          expiresAt: input.now,
+        },
+      });
+      await tx.codexOAuthProviderInstance.update({
+        where: { id: provider.id },
+        data: {
+          state: input.reason,
+          activeLeaseId: null,
+          activeLeaseExpiresAt: null,
+        },
+      });
+      return { status: "abandoned" as const };
+    });
+  }
+
   async preflightWriteback(input: {
     readonly leaseId: string;
     readonly providerInstanceId: string;

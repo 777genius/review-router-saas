@@ -46,6 +46,15 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly nextGeneration: number;
     readonly repository?: ActionRepositoryContext;
     readonly status: "finalized" | "stale_queued_secret";
+      }>;
+
+  abandonLease(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly reason: "needs_reconnect" | "unknown_auth_state";
+    readonly now: Date;
+  }): Promise<{
+    readonly status: "abandoned" | "lease_not_active";
   }>;
 
   preflightWriteback(input: {

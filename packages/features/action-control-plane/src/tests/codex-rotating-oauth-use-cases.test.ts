@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryCodexRotatingOAuthRepository,
   preleaseCodexRotatingOAuth,
+  abandonCodexRotatingOAuthLease,
   finalizeCodexRotatingOAuthLease,
   preflightCodexRotatingOAuthWriteback,
   writebackCodexRotatingOAuth,
@@ -312,6 +313,88 @@ describe("Codex rotating OAuth action control plane", () => {
         expectedActionOwnerRepo: "777genius/review-router",
       }),
     );
+  });
+
+  it("abandons reconnect failures without leaving an active lease conflict", async () => {
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId: "codex-rotating:123456",
+        repositoryFullName: "777genius/agent-teams-ai",
+        githubRepositoryId: "123456",
+        actionRef: `777genius/review-router@${workflowSha}`,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const dependencies = {
+      oidcVerifier: {
+        verify: vi
+          .fn()
+          .mockResolvedValueOnce(claims)
+          .mockResolvedValueOnce({
+            ...claims,
+            run_id: "9002",
+            jti: "jti-9002",
+          }),
+      },
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn(),
+        recordHealthReport: vi.fn(),
+      },
+      codexRotatingOAuth,
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn().mockResolvedValue({
+          binding: {
+            providerInstanceId: "codex-rotating:123456",
+            repositoryFullName: "777genius/agent-teams-ai",
+            githubRepositoryId: "123456",
+            actionRef: `777genius/review-router@${workflowSha}`,
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            workflowSchemaVersion: 1,
+          },
+          workflowSourceSha256:
+            "workflow-source-sha256-012345678901234567890123456789",
+        }),
+      },
+      replayNonces: {
+        tryConsumeNonce: vi.fn().mockResolvedValue(true),
+      },
+      clock: { now: () => now },
+    };
+
+    const prelease = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "jwt",
+        audience: "reviewrouter",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+
+    await expect(
+      abandonCodexRotatingOAuthLease(
+        {
+          leaseId: prelease.leaseId,
+          providerInstanceId: "codex-rotating:123456",
+          reason: "needs_reconnect",
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({ protocolVersion: 1, status: "abandoned" });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt-2",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_provider_needs_reconnect");
   });
 
   it("rejects verifier bindings from an unexpected action repository", async () => {

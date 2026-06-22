@@ -165,6 +165,34 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
       : response;
   }
 
+  async abandonLease(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly reason: "needs_reconnect" | "unknown_auth_state";
+    readonly now: Date;
+  }): Promise<{
+    readonly status: "abandoned" | "lease_not_active";
+  }> {
+    const provider = this.providers.get(input.providerInstanceId);
+    if (!provider || provider.activeLeaseId !== input.leaseId) {
+      return { status: "lease_not_active" };
+    }
+    const expiresAt = this.leaseExpiresAtById.get(input.leaseId);
+    if (expiresAt && expiresAt <= input.now) {
+      return { status: "lease_not_active" };
+    }
+    this.providers.set(input.providerInstanceId, {
+      binding: provider.binding,
+      generationHashSalt: provider.generationHashSalt,
+      latestGeneration: provider.latestGeneration,
+      latestGenerationHash: provider.latestGenerationHash,
+      state: input.reason,
+      ...(provider.repository ? { repository: provider.repository } : {}),
+    });
+    this.leaseExpiresAtById.set(input.leaseId, input.now);
+    return { status: "abandoned" };
+  }
+
   async preflightWriteback(input: {
     readonly leaseId: string;
     readonly providerInstanceId: string;

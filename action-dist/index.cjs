@@ -20674,7 +20674,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
       const tempHome = await makeTempDirectory("reviewrouter-home-");
       const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
       try {
-        const refreshed = await refreshCodexAuthJson({
+        await refreshAndWritebackCodexAuthJson({
           authJson,
           inputs,
           fetchImpl,
@@ -20686,17 +20686,6 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           tempHome,
           tempCodexHome
         });
-        if (!refreshed.writebackCommittedByRuntime) {
-          await writeRefreshedCodexAuthJson({
-            authJson: refreshed.authJson,
-            inputs,
-            fetchImpl,
-            prelease,
-            finalize: finalize2,
-            publicKey,
-            env
-          });
-        }
         const checkout = await postJson({
           fetchImpl,
           label: "api_checkout_token",
@@ -20844,7 +20833,7 @@ async function runCodexRefreshOnlyGitHubAction(input) {
       "reviewrouter-refresh-codex-"
     );
     try {
-      const refreshed = await refreshCodexAuthJson({
+      await refreshAndWritebackCodexAuthJson({
         authJson,
         inputs: input.inputs,
         fetchImpl: input.fetchImpl,
@@ -20856,17 +20845,6 @@ async function runCodexRefreshOnlyGitHubAction(input) {
         tempHome,
         tempCodexHome
       });
-      if (!refreshed.writebackCommittedByRuntime) {
-        await writeRefreshedCodexAuthJson({
-          authJson: refreshed.authJson,
-          inputs: input.inputs,
-          fetchImpl: input.fetchImpl,
-          prelease,
-          finalize: finalize2,
-          publicKey,
-          env: input.env
-        });
-      }
     } finally {
       await removeTree(tempCodexHome);
       await removeTree(tempHome);
@@ -20946,7 +20924,7 @@ async function runForkAgenticSandboxGitHubAction(input) {
   const tempHome = await makeTempDirectory("reviewrouter-home-");
   const tempCodexHome = await makeForkSandboxCodexHomeDirectory(input.env);
   try {
-    const refreshed = await refreshCodexAuthJson({
+    const refreshed = await refreshAndWritebackCodexAuthJson({
       authJson,
       inputs: input.inputs,
       fetchImpl: input.fetchImpl,
@@ -20958,17 +20936,6 @@ async function runForkAgenticSandboxGitHubAction(input) {
       tempHome,
       tempCodexHome
     });
-    if (!refreshed.writebackCommittedByRuntime) {
-      await writeRefreshedCodexAuthJson({
-        authJson: refreshed.authJson,
-        inputs: input.inputs,
-        fetchImpl: input.fetchImpl,
-        prelease,
-        finalize: finalize2,
-        publicKey,
-        env: input.env
-      });
-    }
     const commentToken = await postJson({
       fetchImpl: input.fetchImpl,
       label: "api_comment_token",
@@ -21798,6 +21765,54 @@ async function refreshCodexAuthJson(input) {
     authJson: refreshedAuthJson,
     writebackCommittedByRuntime: refresh.status === "ready"
   };
+}
+async function refreshAndWritebackCodexAuthJson(input) {
+  try {
+    const refreshed = await refreshCodexAuthJson(input);
+    if (!refreshed.writebackCommittedByRuntime) {
+      await writeRefreshedCodexAuthJson({
+        authJson: refreshed.authJson,
+        inputs: input.inputs,
+        fetchImpl: input.fetchImpl,
+        prelease: input.prelease,
+        finalize: input.finalize,
+        publicKey: input.publicKey,
+        env: input.env
+      });
+    }
+    return refreshed;
+  } catch (error51) {
+    await abandonCodexRotatingLeaseOnReconnect({
+      error: error51,
+      inputs: input.inputs,
+      fetchImpl: input.fetchImpl,
+      prelease: input.prelease
+    });
+    throw error51;
+  }
+}
+async function abandonCodexRotatingLeaseOnReconnect(input) {
+  if (!isNeedsReconnectError(input.error)) {
+    return;
+  }
+  try {
+    await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_abandon",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/abandon`,
+      body: {
+        leaseId: input.prelease.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        reason: "needs_reconnect"
+      }
+    });
+  } catch {
+  }
+}
+function isNeedsReconnectError(error51) {
+  return String(error51 instanceof Error ? error51.message : error51).includes(
+    "needs_reconnect"
+  );
 }
 async function writeRefreshedCodexAuthJson(input) {
   const compact = compactCodexAuthJson2({
