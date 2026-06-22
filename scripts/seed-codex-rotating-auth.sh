@@ -18,6 +18,7 @@ SCRIPT_SELF_PATH="${BASH_SOURCE[0]:-$0}"
 TARGET_REPO="${REVIEW_ROUTER_REPO:-}"
 AUTH_FILE="${REVIEW_ROUTER_CODEX_AUTH_FILE:-}"
 CODEX_HOME_OVERRIDE="${REVIEW_ROUTER_CODEX_HOME:-}"
+ALLOW_EXTERNAL_AUTH_FILE="${REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE:-0}"
 DRY_RUN="${REVIEW_ROUTER_DRY_RUN:-0}"
 CONFIRM_WRITE="${REVIEW_ROUTER_CONFIRM_WRITE:-${REVIEW_ROUTER_YES:-0}}"
 SKIP_LOGIN="${REVIEW_ROUTER_SKIP_CODEX_LOGIN:-0}"
@@ -55,7 +56,7 @@ Options:
   --setup-confirm-url val  HTTPS URL used to confirm a successful setup.
   --setup-nonce value      Short-lived ReviewRouter setup nonce.
   --repo owner/repo        Expected repository. Must match the setup manifest.
-  --auth-file path         Import an explicit Codex auth JSON file.
+  --auth-file path         Choose an explicit auth JSON file inside the dedicated CODEX_HOME.
   --codex-home path        Dedicated ReviewRouter Codex home. Defaults to ~/.reviewrouter/codex/<owner-repo>.
   --skip-login             Do not run codex login --device-auth when auth is missing.
   --dry-run                Validate and print the gh command without writing.
@@ -65,6 +66,10 @@ Options:
 The installer is repo-scoped only and writes REVIEWROUTER_CODEX_AUTH_JSON
 directly to GitHub Actions secrets through gh. ReviewRouter SaaS does not
 receive plaintext auth.json.
+
+External --auth-file paths are blocked by default because rotating refresh
+tokens must not be copied across repositories. For one-off recovery only, set
+REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE=1.
 EOF
 }
 
@@ -363,6 +368,53 @@ EOF
   elif ! grep -Eq '^[[:space:]]*cli_auth_credentials_store[[:space:]]*=[[:space:]]*"file"' "$config_path"; then
     fatal "Dedicated CODEX_HOME already has config.toml without cli_auth_credentials_store = \"file\": $config_path"
   fi
+}
+
+assert_auth_file_is_repo_scoped() {
+  if [ -z "$AUTH_FILE" ]; then
+    return
+  fi
+  [ -f "$AUTH_FILE" ] || fatal "Codex auth file not found: $AUTH_FILE"
+
+  if is_true "$ALLOW_EXTERNAL_AUTH_FILE"; then
+    warn "Using external Codex auth file because REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE=1. Do not reuse one rotating auth.json across repositories."
+    return
+  fi
+
+  node - "$AUTH_FILE" "$CODEX_HOME_DIR" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const authPath = process.argv[2];
+const codexHome = process.argv[3];
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+let authRealPath;
+let codexHomeRealPath;
+try {
+  authRealPath = fs.realpathSync(authPath);
+} catch {
+  fail(`Codex auth file not found: ${authPath}`);
+}
+try {
+  codexHomeRealPath = fs.realpathSync(codexHome);
+} catch {
+  fail(`Dedicated CODEX_HOME not found: ${codexHome}`);
+}
+const relative = path.relative(codexHomeRealPath, authRealPath);
+if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+  process.exit(0);
+}
+fail(
+  [
+    `Refusing --auth-file outside dedicated CODEX_HOME: ${authPath}.`,
+    `Run codex login with CODEX_HOME=${codexHome}, choose a file under that directory,`,
+    "or set REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE=1 for a one-off recovery.",
+    "Do not reuse one rotating auth.json across repositories.",
+  ].join(" "),
+);
+NODE
 }
 
 run_codex_login_if_needed() {
@@ -691,6 +743,7 @@ main() {
 
   resolve_codex_home
   write_dedicated_codex_config
+  assert_auth_file_is_repo_scoped
   assert_manifest_not_reused
   run_codex_login_if_needed
   resolved_auth_file="$(resolve_auth_file)" || fatal "Could not find a Codex auth file in $CODEX_HOME_DIR. Run codex login with the dedicated CODEX_HOME and retry."

@@ -224,6 +224,83 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     expect(result.stderr).toContain("--auth-file <path>");
   });
 
+  it("installer refuses an explicit auth file outside the dedicated CODEX_HOME", () => {
+    const fixture = createRotatingInstallerFixture();
+    const sharedAuthPath = join(fixture.home, "shared-auth.json");
+    writeFileSync(
+      sharedAuthPath,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "shared-refresh-token" },
+      }),
+    );
+
+    const result = spawnSync(
+      "bash",
+      [fixture.scriptPath, "--dry-run", "--confirm-write"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: fixture.path,
+          HOME: fixture.home,
+          REVIEW_ROUTER_CODEX_AUTH_FILE: sharedAuthPath,
+          REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+          REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+          REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+          REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
+            fixture.manifestBase64,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("outside dedicated CODEX_HOME");
+    expect(result.stderr).toContain(
+      "Do not reuse one rotating auth.json across repositories",
+    );
+  });
+
+  it("installer allows an external auth file only with the recovery override", () => {
+    const fixture = createRotatingInstallerFixture();
+    const sharedAuthPath = join(fixture.home, "shared-auth.json");
+    writeFileSync(
+      sharedAuthPath,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "shared-refresh-token" },
+      }),
+    );
+
+    const result = spawnSync(
+      "bash",
+      [fixture.scriptPath, "--dry-run", "--confirm-write"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: fixture.path,
+          HOME: fixture.home,
+          REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE: "1",
+          REVIEW_ROUTER_CODEX_AUTH_FILE: sharedAuthPath,
+          REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+          REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+          REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+          REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
+            fixture.manifestBase64,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("[dry-run] gh secret set");
+    expect(result.stdout).toContain("Using external Codex auth file");
+  });
+
   it("installer fetches setup manifest by nonce and confirms safe metadata after write", () => {
     const fixture = createRotatingInstallerFixture();
     const confirmCapturePath = join(fixture.home, "confirm.json");
