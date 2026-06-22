@@ -417,6 +417,7 @@ jobs:
     timeout-minutes: ${timeoutMinutes}
     concurrency:
       group: ${concurrencyGroup}
+      queue: max
       cancel-in-progress: false
     if: \${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
     permissions:
@@ -441,6 +442,7 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
     timeout-minutes: ${timeoutMinutes}
     concurrency:
       group: ${concurrencyGroup}
+      queue: max
       cancel-in-progress: false
     if: \${{ github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name != github.repository && vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}' }}
     permissions:
@@ -509,6 +511,7 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
     timeout-minutes: ${timeoutMinutes}
     concurrency:
       group: ${concurrencyGroup}
+      queue: max
       cancel-in-progress: false
     if: \${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     permissions:

@@ -69,6 +69,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain(
       "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-777genius-agent-teams-ai",
     );
+    expect(workflow).toContain("      queue: max");
     expect(workflow).toContain(
       "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
     );

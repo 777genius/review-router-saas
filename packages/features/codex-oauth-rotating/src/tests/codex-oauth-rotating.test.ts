@@ -357,6 +357,7 @@ exit 17
     expect(workflow).not.toContain("actions/checkout");
     expect(workflow).not.toContain("run:");
     expect(workflow.match(/^\s+concurrency:$/gm)).toHaveLength(2);
+    expect(workflow.match(/^\s+queue: max$/gm)).toHaveLength(2);
     expect(workflow.match(/^\s+cancel-in-progress: false$/gm)).toHaveLength(2);
     expect(workflow).toContain(
       "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-777genius-agent-teams-ai",
