@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allowedActionRefsEnvValue,
   buildTrustedRefs,
   parseArgs,
   resolveActionRef,
@@ -90,6 +91,18 @@ describe("sync-render-action-ref", () => {
       `777genius/review-router@${shaA}`,
       `777genius/review-router@${shaB}`,
     ]);
+  });
+
+  it("does not render an empty allowed refs env value", () => {
+    expect(allowedActionRefsEnvValue([])).toBeNull();
+    expect(
+      allowedActionRefsEnvValue([
+        `777genius/review-router@${shaA}`,
+        `777genius/review-router@${shaB}`,
+      ]),
+    ).toBe(
+      `777genius/review-router@${shaA},777genius/review-router@${shaB}`,
+    );
   });
 
   it("keeps explicit active workflow refs before older rollback refs", () => {

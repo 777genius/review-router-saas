@@ -338,6 +338,11 @@ function describePlan(plan) {
   };
 }
 
+function allowedActionRefsEnvValue(allowedActionRefs) {
+  const value = allowedActionRefs.join(",");
+  return value ? value : null;
+}
+
 function deployId(data) {
   const id = data?.id ?? data?.deploy?.id;
   return typeof id === "string" && id ? id : "";
@@ -426,16 +431,23 @@ async function main() {
   const deploys = [];
   for (const service of services) {
     console.log(`updating ${service.name}`);
+    const allowedActionRefsValue = allowedActionRefsEnvValue(allowedActionRefs);
     await client.setEnvVar(
       service.id,
       "REVIEW_ROUTER_ACTION_REF",
       nextActionRef,
     );
-    await client.setEnvVar(
-      service.id,
-      "REVIEW_ROUTER_ALLOWED_ACTION_REFS",
-      allowedActionRefs.join(","),
-    );
+    if (allowedActionRefsValue) {
+      await client.setEnvVar(
+        service.id,
+        "REVIEW_ROUTER_ALLOWED_ACTION_REFS",
+        allowedActionRefsValue,
+      );
+    } else {
+      console.log(
+        `skipping REVIEW_ROUTER_ALLOWED_ACTION_REFS for ${service.name}: no full-SHA refs to allowlist`,
+      );
+    }
     if (args.deploy) {
       const deploy = await client.triggerDeploy(service.id);
       const id = deployId(deploy);
@@ -462,6 +474,7 @@ if (invokedPath && fileURLToPath(import.meta.url) === invokedPath) {
 }
 
 export {
+  allowedActionRefsEnvValue,
   buildTrustedRefs,
   describePlan,
   isFullShaActionRef,
