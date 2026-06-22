@@ -442,6 +442,138 @@ describe("Codex rotating GitHub Action runtime", () => {
     ).toBe(true);
   });
 
+  it("runs scheduled refresh without pull request checkout or comments", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-refresh-test-"));
+    const fakeCodex = join(
+      tempDir,
+      "action-dist",
+      "codex",
+      "linux-x64",
+      "codex",
+    );
+    const invokedUrls: string[] = [];
+    const requestBodies: string[] = [];
+    const fullReviewRuntimeRunner = vi.fn();
+
+    await mkdir(join(tempDir, "action-dist", "codex", "linux-x64"), {
+      recursive: true,
+    });
+    await writeFile(
+      fakeCodex,
+      [
+        "#!/usr/bin/env node",
+        "const { readFileSync, writeFileSync } = require('node:fs');",
+        "const { join } = require('node:path');",
+        "const authPath = join(process.env.CODEX_HOME, 'auth.json');",
+        "readFileSync(authPath, 'utf8');",
+        "writeFileSync(authPath, JSON.stringify({",
+        "  auth_mode: 'chatgpt',",
+        "  tokens: {",
+        "    refresh_token: 'scheduled-refreshed-refresh-token',",
+        "    access_token: 'scheduled-refreshed-access-token'",
+        "  }",
+        "}));",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    await chmod(fakeCodex, 0o700);
+    await writeCodexManifest(fakeCodex);
+
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      invokedUrls.push(href);
+      if (init?.body) {
+        requestBodies.push(String(init.body));
+      }
+      if (href.startsWith("https://oidc.actions.test/token")) {
+        return jsonResponse({ value: "oidc.jwt.value" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
+        return jsonResponse({
+          leaseId: "lease_1",
+          generationHashSalt: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/finalize")) {
+        return jsonResponse({
+          status: "finalized",
+          nextGeneration: 2,
+          repositoryOwner: "777genius",
+          repositoryName: "agent-teams-ai",
+          publicKeyReadToken: "ghs_public_key_read_token",
+          runtimeConfigVersion: 7,
+          runtimeEnv: {},
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/actions/secrets/public-key"
+      ) {
+        return jsonResponse({
+          key: Buffer.alloc(32, 1).toString("base64"),
+          key_id: "github-key-id",
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback-preflight")) {
+        return jsonResponse({ protocolVersion: 1, status: "ready" });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/writeback")) {
+        return jsonResponse({ protocolVersion: 1, status: "accepted" });
+      }
+      throw new Error(`unexpected_fetch:${href}`);
+    }) as unknown as typeof fetch;
+
+    try {
+      await runCodexRotatingGitHubAction({
+        env: {
+          INPUT_MODE: "codex-oauth-refresh",
+          "INPUT_API-URL": "https://api.reviewrouter.site/",
+          "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+          "INPUT_WORKFLOW-SCHEMA-VERSION": "1",
+          "INPUT_AUTH-JSON": JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+              refresh_token: "scheduled-initial-refresh-token",
+              access_token: "scheduled-initial-access-token",
+            },
+          }),
+          ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+          GITHUB_EVENT_NAME: "schedule",
+          GITHUB_REPOSITORY: "777genius/agent-teams-ai",
+          GITHUB_RUN_ID: "9001",
+          GITHUB_RUN_ATTEMPT: "1",
+          PATH: process.env.PATH ?? "",
+          ...supportedRunnerEnv(tempDir),
+        },
+        fetchImpl,
+        fullReviewRuntimeRunner,
+        io: {
+          stdout: { write: vi.fn() },
+          stderr: { write: vi.fn() },
+        },
+      });
+
+      expect(fullReviewRuntimeRunner).not.toHaveBeenCalled();
+      expect(invokedUrls.some((url) => url.endsWith("/writeback"))).toBe(true);
+      expect(invokedUrls.some((url) => url.endsWith("/checkout-token"))).toBe(
+        false,
+      );
+      expect(invokedUrls.some((url) => url.endsWith("/comment-token"))).toBe(
+        false,
+      );
+      expect(requestBodies.join("\n")).not.toContain(
+        "scheduled-initial-refresh-token",
+      );
+      expect(requestBodies.join("\n")).not.toContain(
+        "scheduled-refreshed-refresh-token",
+      );
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("maps empty auth-json to reconnect before parsing", () => {
     expect(() => readActionAuthJson({ "INPUT_AUTH-JSON": "" })).toThrow(
       "needs_reconnect",

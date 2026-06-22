@@ -20325,6 +20325,7 @@ var libsodium_wrappers_default = t;
 // packages/features/codex-oauth-rotating/src/domain/codex-oauth-rotating.ts
 var codexRotatingAuthMode = "codex_subscription_oauth_rotating";
 var codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
+var codexRotatingRefreshRuntimeMode = "codex-oauth-refresh";
 var codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
 var codexRotatingAuthJsonMaxBytes = 32 * 1024;
 var codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
@@ -20417,7 +20418,12 @@ var codexRotatingOidcClaimsSchema = external_exports.object({
   repository_owner: external_exports.string().min(1).optional(),
   repository_owner_id: external_exports.string().min(1).optional(),
   repository_visibility: external_exports.enum(["public", "private", "internal"]),
-  event_name: external_exports.enum(["pull_request", "pull_request_target"]),
+  event_name: external_exports.enum([
+    "pull_request",
+    "pull_request_target",
+    "workflow_dispatch",
+    "schedule"
+  ]),
   run_id: external_exports.string().min(1),
   run_attempt: external_exports.string().min(1),
   workflow_ref: external_exports.string().min(1),
@@ -20585,6 +20591,15 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
       io,
       fetchImpl,
       fullReviewRuntimeRunner
+    });
+    return;
+  }
+  if (inputs.mode === codexRotatingRefreshRuntimeMode) {
+    await runCodexRefreshOnlyGitHubAction({
+      inputs,
+      env,
+      io,
+      fetchImpl
     });
     return;
   }
@@ -20758,6 +20773,108 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   } finally {
     clearActionAuthEnv(env);
     clearOidcRequestEnv(env);
+  }
+}
+async function runCodexRefreshOnlyGitHubAction(input) {
+  try {
+    const oidcToken = await requestGitHubActionsOidcToken({
+      env: input.env,
+      fetchImpl: input.fetchImpl,
+      audience: defaultOidcAudience
+    });
+    mask(input.io, oidcToken);
+    clearOidcRequestEnv(input.env);
+    const prelease = await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_prelease",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
+      body: {
+        oidcToken,
+        audience: defaultOidcAudience,
+        providerInstanceId: input.inputs.providerInstanceId,
+        workflowSchemaVersion: input.inputs.workflowSchemaVersion
+      }
+    });
+    await assertSupportedRunnerEnvironment(input.env);
+    const codexBinaryPath = await resolveCodexBinary(input.env);
+    const authJson = readActionAuthJson(input.env);
+    mask(input.io, authJson);
+    clearActionAuthEnv(input.env);
+    validateCodexAuthJsonBytes2({ authJsonBytes: authJson });
+    const restoredGenerationHash = computeCodexAuthGenerationHash({
+      authJsonBytes: authJson,
+      generationHashSalt: prelease.generationHashSalt
+    });
+    const finalize2 = await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_finalize",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/finalize`,
+      body: {
+        leaseId: prelease.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        restoredGenerationHash
+      }
+    });
+    if (finalize2.status === "stale_queued_secret") {
+      notice(
+        input.io,
+        "ReviewRouter skipped a stale queued Codex OAuth secret."
+      );
+      return;
+    }
+    mask(input.io, finalize2.publicKeyReadToken);
+    const publicKey = await fetchGitHubRepositoryPublicKey({
+      fetchImpl: input.fetchImpl,
+      owner: finalize2.repositoryOwner,
+      repo: finalize2.repositoryName,
+      token: finalize2.publicKeyReadToken
+    });
+    await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_writeback_preflight",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/writeback-preflight`,
+      body: {
+        leaseId: prelease.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        githubKeyId: publicKey.key_id
+      }
+    });
+    const tempHome = await makeTempDirectory("reviewrouter-refresh-home-");
+    const tempCodexHome = await makeTempDirectory(
+      "reviewrouter-refresh-codex-"
+    );
+    try {
+      const refreshed = await refreshCodexAuthJson({
+        authJson,
+        inputs: input.inputs,
+        fetchImpl: input.fetchImpl,
+        prelease,
+        finalize: finalize2,
+        publicKey,
+        codexBinaryPath,
+        env: input.env,
+        tempHome,
+        tempCodexHome
+      });
+      if (!refreshed.writebackCommittedByRuntime) {
+        await writeRefreshedCodexAuthJson({
+          authJson: refreshed.authJson,
+          inputs: input.inputs,
+          fetchImpl: input.fetchImpl,
+          prelease,
+          finalize: finalize2,
+          publicKey,
+          env: input.env
+        });
+      }
+    } finally {
+      await removeTree(tempCodexHome);
+      await removeTree(tempHome);
+    }
+    notice(input.io, "ReviewRouter Codex OAuth refresh completed.");
+  } finally {
+    clearActionAuthEnv(input.env);
+    clearOidcRequestEnv(input.env);
   }
 }
 async function runForkAgenticSandboxGitHubAction(input) {

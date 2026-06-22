@@ -341,7 +341,7 @@ exit 17
     expect(command).not.toContain("generationHashSalt");
   });
 
-  it("renders an advisory-only workflow and scanner rejects hardened-only surfaces", () => {
+  it("renders an advisory workflow with a scheduled refresh heartbeat", () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
       apiUrl: "https://reviewrouter.site",
@@ -349,7 +349,10 @@ exit 17
     });
 
     expect(workflow).toContain("pull_request:");
-    expect(workflow).not.toContain("workflow_dispatch:");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toContain("schedule:");
+    expect(workflow).toContain('cron: "17 */6 * * *"');
+    expect(workflow).toContain("codex-refresh:");
     expect(workflow).not.toContain("merge_group:");
     expect(workflow).not.toContain("actions/checkout");
     expect(workflow).not.toContain("run:");
@@ -361,14 +364,28 @@ exit 17
     expect(workflow.match(/^\s+mode:\s+codex-oauth-rotating$/gm)).toHaveLength(
       1,
     );
+    expect(workflow.match(/^\s+mode:\s+codex-oauth-refresh$/gm)).toHaveLength(
+      1,
+    );
     expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
       valid: true,
       errors: [],
     });
 
-    const unsafe = `${workflow}\n  workflow_dispatch: {}\n`;
+    const legacyWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      refreshScheduleCron: null,
+    });
+    expect(scanCodexRotatingAdvisoryWorkflow(legacyWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const unsafe = `${legacyWorkflow}\n  workflow_dispatch: {}\n`;
     expect(scanCodexRotatingAdvisoryWorkflow(unsafe).errors).toContain(
-      "workflow_dispatch_not_allowed",
+      "refresh_job_required_for_manual_or_schedule_trigger",
     );
 
     const inlineEnv = workflow.replace(
@@ -531,6 +548,13 @@ exit 17
         job_workflow_sha: "0123456789abcdef0123456789abcdef01234567",
       }).repository_visibility,
     ).toBe("private");
+    expect(
+      codexRotatingOidcClaimsSchema.parse({
+        ...claims,
+        event_name: "schedule",
+        sub: "repo:777genius/agent-teams-ai:schedule",
+      }).event_name,
+    ).toBe("schedule");
 
     expect(
       validateCodexRotatingPrelease({

@@ -44,6 +44,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  codexRotatingRefreshRuntimeMode,
   codexRotatingRuntimeAuthMode,
   compactCodexAuthJson,
   computeCodexAuthGenerationHash,
@@ -256,6 +257,16 @@ export async function runCodexRotatingGitHubAction(
     return;
   }
 
+  if (inputs.mode === codexRotatingRefreshRuntimeMode) {
+    await runCodexRefreshOnlyGitHubAction({
+      inputs,
+      env,
+      io,
+      fetchImpl,
+    });
+    return;
+  }
+
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
   }
@@ -439,6 +450,123 @@ export async function runCodexRotatingGitHubAction(
   } finally {
     clearActionAuthEnv(env);
     clearOidcRequestEnv(env);
+  }
+}
+
+async function runCodexRefreshOnlyGitHubAction(input: {
+  readonly inputs: ActionInputs;
+  readonly env: NodeJS.ProcessEnv;
+  readonly io: ActionIO;
+  readonly fetchImpl: FetchLike;
+}): Promise<void> {
+  try {
+    const oidcToken = await requestGitHubActionsOidcToken({
+      env: input.env,
+      fetchImpl: input.fetchImpl,
+      audience: defaultOidcAudience,
+    });
+    mask(input.io, oidcToken);
+    clearOidcRequestEnv(input.env);
+
+    const prelease = await postJson<PreleaseResponse>({
+      fetchImpl: input.fetchImpl,
+      label: "api_prelease",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
+      body: {
+        oidcToken,
+        audience: defaultOidcAudience,
+        providerInstanceId: input.inputs.providerInstanceId,
+        workflowSchemaVersion: input.inputs.workflowSchemaVersion,
+      },
+    });
+
+    await assertSupportedRunnerEnvironment(input.env);
+    const codexBinaryPath = await resolveCodexBinary(input.env);
+    const authJson = readActionAuthJson(input.env);
+    mask(input.io, authJson);
+    clearActionAuthEnv(input.env);
+    validateCodexAuthJsonBytes({ authJsonBytes: authJson });
+    const restoredGenerationHash = computeCodexAuthGenerationHash({
+      authJsonBytes: authJson,
+      generationHashSalt: prelease.generationHashSalt,
+    });
+
+    const finalize = await postJson<FinalizeResponse>({
+      fetchImpl: input.fetchImpl,
+      label: "api_finalize",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/finalize`,
+      body: {
+        leaseId: prelease.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        restoredGenerationHash,
+      },
+    });
+
+    if (finalize.status === "stale_queued_secret") {
+      notice(
+        input.io,
+        "ReviewRouter skipped a stale queued Codex OAuth secret.",
+      );
+      return;
+    }
+
+    mask(input.io, finalize.publicKeyReadToken);
+    const publicKey = await fetchGitHubRepositoryPublicKey({
+      fetchImpl: input.fetchImpl,
+      owner: finalize.repositoryOwner,
+      repo: finalize.repositoryName,
+      token: finalize.publicKeyReadToken,
+    });
+
+    await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_writeback_preflight",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/writeback-preflight`,
+      body: {
+        leaseId: prelease.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        githubKeyId: publicKey.key_id,
+      },
+    });
+
+    const tempHome = await makeTempDirectory("reviewrouter-refresh-home-");
+    const tempCodexHome = await makeTempDirectory(
+      "reviewrouter-refresh-codex-",
+    );
+    try {
+      const refreshed = await refreshCodexAuthJson({
+        authJson,
+        inputs: input.inputs,
+        fetchImpl: input.fetchImpl,
+        prelease,
+        finalize,
+        publicKey,
+        codexBinaryPath,
+        env: input.env,
+        tempHome,
+        tempCodexHome,
+      });
+
+      if (!refreshed.writebackCommittedByRuntime) {
+        await writeRefreshedCodexAuthJson({
+          authJson: refreshed.authJson,
+          inputs: input.inputs,
+          fetchImpl: input.fetchImpl,
+          prelease,
+          finalize,
+          publicKey,
+          env: input.env,
+        });
+      }
+    } finally {
+      await removeTree(tempCodexHome);
+      await removeTree(tempHome);
+    }
+
+    notice(input.io, "ReviewRouter Codex OAuth refresh completed.");
+  } finally {
+    clearActionAuthEnv(input.env);
+    clearOidcRequestEnv(input.env);
   }
 }
 

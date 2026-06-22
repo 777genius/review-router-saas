@@ -62,10 +62,13 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("permissions: {}\n\njobs:");
     expect(workflow).toContain("    permissions:\n      id-token: write");
     expect(workflow).toContain("mode: codex-oauth-rotating");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toContain("schedule:");
+    expect(workflow).toContain("codex-refresh:");
+    expect(workflow).toContain("mode: codex-oauth-refresh");
     expect(workflow).toContain(
       "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
     );
-    expect(workflow).not.toContain("workflow_dispatch:");
     expect(workflow).not.toContain("merge_group:");
     expect(workflow).not.toContain("actions/checkout");
     expect(scanExportedCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
@@ -121,7 +124,10 @@ describe("renderReviewRouterWorkflow", () => {
       'provider-instance-id: "codex-rotating:123456"',
     );
     expect(codexWorkflowContent).not.toContain("reviewrouter-interaction.yml");
-    expect(codexWorkflowContent).not.toContain("workflow_dispatch:");
+    expect(codexWorkflowContent).toContain("workflow_dispatch:");
+    expect(codexWorkflowContent).toContain("schedule:");
+    expect(codexWorkflowContent).toContain("codex-refresh:");
+    expect(codexWorkflowContent).toContain("mode: codex-oauth-refresh");
     expect(scanCodexRotatingAdvisoryWorkflow(codexWorkflowContent)).toEqual({
       valid: true,
       errors: [],
@@ -265,9 +271,7 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
     expect(workflow).toContain("repository: 777genius/review-router");
-    expect(workflow).toContain(
-      "run: node .reviewrouter-runtime/dist/index.js",
-    );
+    expect(workflow).toContain("run: node .reviewrouter-runtime/dist/index.js");
     expect(workflow).toContain(
       "CODEX_AUTH_JSON_PRESENT: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON != '' && '1' || '0' }}",
     );

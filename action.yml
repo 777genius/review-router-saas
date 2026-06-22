@@ -2,7 +2,7 @@ name: ReviewRouter
 description: ReviewRouter pull request review runtime.
 inputs:
   mode:
-    description: Runtime mode.
+    description: Runtime mode. Use codex-oauth-rotating for PR review or codex-oauth-refresh for scheduled refresh.
     required: false
   api-url:
     description: ReviewRouter API URL.

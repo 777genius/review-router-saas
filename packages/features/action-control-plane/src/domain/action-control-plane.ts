@@ -37,6 +37,7 @@ export const allowedActionEvents = [
   "pull_request_review_comment",
   "issue_comment",
   "workflow_dispatch",
+  "schedule",
   "merge_group",
   "repository_dispatch",
 ] as const;

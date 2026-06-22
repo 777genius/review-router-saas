@@ -5,6 +5,7 @@ import sodium from "libsodium-wrappers";
 export const codexRotatingAuthMode = "codex_subscription_oauth_rotating";
 export const codexRotatingSetupKind = "codex_oauth_rotating";
 export const codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
+export const codexRotatingRefreshRuntimeMode = "codex-oauth-refresh";
 export const codexForkAgenticSandboxRuntimeMode = "fork-agentic-sandbox";
 export const codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
 export const codexRotatingWorkflowSchemaVersion = 1;
@@ -14,6 +15,7 @@ export const codexForkAgenticSandboxCertificationValue = "certified";
 export const codexRotatingAuthJsonMaxBytes = 32 * 1024;
 export const codexRotatingDefaultRunner = "ubuntu-24.04";
 export const codexRotatingDefaultTimeoutMinutes = 30;
+export const codexRotatingDefaultRefreshScheduleCron = "17 */6 * * *";
 export const codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
 
 const repoFullNamePattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -366,6 +368,7 @@ export type CodexRotatingWorkflowOptions = {
   readonly runnerLabel?: string;
   readonly timeoutMinutes?: number;
   readonly workflowSchemaVersion?: number;
+  readonly refreshScheduleCron?: string | null;
 };
 
 export function renderCodexRotatingAdvisoryWorkflow(
@@ -377,6 +380,11 @@ export function renderCodexRotatingAdvisoryWorkflow(
     options.timeoutMinutes ?? codexRotatingDefaultTimeoutMinutes;
   const schemaVersion =
     options.workflowSchemaVersion ?? codexRotatingWorkflowSchemaVersion;
+  const refreshScheduleCron =
+    options.refreshScheduleCron === null
+      ? null
+      : (options.refreshScheduleCron ??
+        codexRotatingDefaultRefreshScheduleCron);
 
   return `name: ReviewRouter Codex OAuth
 
@@ -387,6 +395,13 @@ on:
         ? `
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]`
+        : ""
+    }${
+      refreshScheduleCron
+        ? `
+  workflow_dispatch:
+  schedule:
+    - cron: ${JSON.stringify(refreshScheduleCron)}`
         : ""
     }
 
@@ -476,6 +491,28 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
           REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN: \${{ secrets.REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN }}
 `
       : ""
+  }${
+    refreshScheduleCron
+      ? `
+  codex-refresh:
+    name: codex-refresh
+    runs-on: ${runnerLabel}
+    timeout-minutes: ${timeoutMinutes}
+    if: \${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      id-token: write
+    steps:
+      - name: ReviewRouter Codex OAuth refresh
+        id: refresh_codex
+        uses: ${options.actionRef}
+        with:
+          mode: ${codexRotatingRefreshRuntimeMode}
+          api-url: ${JSON.stringify(options.apiUrl)}
+          provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
+          workflow-schema-version: "${schemaVersion}"
+          auth-json: \${{ secrets.${codexRotatingSecretName} }}
+`
+      : ""
   }`;
 }
 
@@ -538,11 +575,16 @@ export function scanCodexRotatingAdvisoryWorkflow(
   const forkSandboxEnabled = workflow.includes(
     `mode: ${codexForkAgenticSandboxRuntimeMode}`,
   );
+  const refreshEnabled = workflow.includes(
+    `mode: ${codexRotatingRefreshRuntimeMode}`,
+  );
   const secretMatches = workflow.match(
     new RegExp(codexRotatingSecretName, "g"),
   );
-  if ((secretMatches?.length ?? 0) !== (forkSandboxEnabled ? 2 : 1)) {
-    errors.push("rotating_secret_must_appear_exactly_once");
+  const expectedRotatingSecretReferences =
+    1 + (forkSandboxEnabled ? 1 : 0) + (refreshEnabled ? 1 : 0);
+  if ((secretMatches?.length ?? 0) !== expectedRotatingSecretReferences) {
+    errors.push("rotating_secret_reference_count_invalid");
   }
   if (
     !workflow.includes(`auth-json: \${{ secrets.${codexRotatingSecretName} }}`)
@@ -581,7 +623,6 @@ export function scanCodexRotatingAdvisoryWorkflow(
     errors.push("openrouter_secret_must_be_literal_input");
   }
   for (const [pattern, code] of [
-    [/\bworkflow_dispatch\s*:/, "workflow_dispatch_not_allowed"],
     [/\bmerge_group\s*:/, "merge_group_not_allowed"],
     [/^\s*strategy\s*:/m, "matrix_strategy_not_allowed"],
     [/^\s*container\s*:/m, "job_container_not_allowed"],
@@ -597,6 +638,19 @@ export function scanCodexRotatingAdvisoryWorkflow(
   ] as const) {
     if (pattern.test(workflow)) {
       errors.push(code);
+    }
+  }
+  const hasRefreshTrigger =
+    /\bworkflow_dispatch\s*:/.test(workflow) || /\bschedule\s*:/.test(workflow);
+  if (hasRefreshTrigger && !refreshEnabled) {
+    errors.push("refresh_job_required_for_manual_or_schedule_trigger");
+  }
+  if (refreshEnabled) {
+    if (!/\bworkflow_dispatch\s*:/.test(workflow)) {
+      errors.push("refresh_workflow_dispatch_required");
+    }
+    if (!/\bschedule\s*:/.test(workflow)) {
+      errors.push("refresh_schedule_required");
     }
   }
   if (!forkSandboxEnabled) {
@@ -619,7 +673,9 @@ export function scanCodexRotatingAdvisoryWorkflow(
     (match) => match[1]!,
   );
   const actionRef = actionRefs[0];
-  if (actionRefs.length !== (forkSandboxEnabled ? 3 : 1)) {
+  const expectedActionStepCount =
+    1 + (forkSandboxEnabled ? 2 : 0) + (refreshEnabled ? 1 : 0);
+  if (actionRefs.length !== expectedActionStepCount) {
     errors.push("exactly_one_action_step_required");
   }
   if (!actionRef || !actionRefs.every(isSafeActionRef)) {
@@ -636,8 +692,8 @@ export function scanCodexRotatingAdvisoryWorkflow(
       errors.push("fork_checkout_action_ref_invalid");
     }
     if (
-      reviewActionRefs.length !== 2 ||
-      reviewActionRefs[0] !== reviewActionRefs[1]
+      reviewActionRefs.length !== (refreshEnabled ? 3 : 2) ||
+      !reviewActionRefs.every((ref) => ref === reviewActionRefs[0])
     ) {
       errors.push("fork_review_action_refs_invalid");
     }
@@ -696,6 +752,19 @@ export function scanCodexRotatingAdvisoryWorkflow(
       errors.push("fork_job_permissions_invalid");
     }
   }
+  if (refreshEnabled) {
+    const refreshJobPermissions = parseWorkflowPermissions(
+      extractWorkflowJobSection(workflow, "codex-refresh") ?? "",
+      4,
+    );
+    if (
+      !permissionsExactly(refreshJobPermissions, [
+        { name: "id-token", value: "write" },
+      ])
+    ) {
+      errors.push("refresh_job_requires_id_token_write");
+    }
+  }
   return { valid: errors.length === 0, errors };
 }
 
@@ -731,7 +800,12 @@ export const codexRotatingOidcClaimsSchema = z
     repository_owner: z.string().min(1).optional(),
     repository_owner_id: z.string().min(1).optional(),
     repository_visibility: z.enum(["public", "private", "internal"]),
-    event_name: z.enum(["pull_request", "pull_request_target"]),
+    event_name: z.enum([
+      "pull_request",
+      "pull_request_target",
+      "workflow_dispatch",
+      "schedule",
+    ]),
     run_id: z.string().min(1),
     run_attempt: z.string().min(1),
     workflow_ref: z.string().min(1),
