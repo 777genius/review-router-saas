@@ -214,7 +214,7 @@ export function codexRotatingProviderStateCopy(
     case "needs_reconnect":
       return {
         title: "Codex reconnect required",
-        body: "The refreshed Codex session is no longer valid. Rerun the rotating setup command from the dedicated ReviewRouter Codex session.",
+        body: "The refreshed Codex session is no longer valid. Rerun the rotating setup command with a fresh login. If the installer refuses old dedicated auth, rerun it with --force-reseed.",
         tone: "danger",
       };
     case "stale_queued_secret":

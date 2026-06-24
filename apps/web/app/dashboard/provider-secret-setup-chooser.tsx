@@ -169,7 +169,7 @@ export function ProviderSecretSetupChooser({
             selectedRepositories: [repositoryFullName],
             validatesBeforeWrite: true,
             failureRecovery:
-              "If CI reports needs_reconnect or unknown_auth_state, reopen this dialog and run a fresh setup command.",
+              "If CI reports needs_reconnect or unknown_auth_state, reopen this dialog and run a fresh setup command. If the installer refuses old dedicated auth, rerun it with --force-reseed.",
             sendsSecretToReviewRouter: false,
           },
         });

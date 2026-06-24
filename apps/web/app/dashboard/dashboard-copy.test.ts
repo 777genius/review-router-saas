@@ -15,6 +15,7 @@ describe("dashboard Codex rotating OAuth copy", () => {
     expect(dashboardErrorText("needs_reconnect")).toContain(
       "Rerun the rotating setup command",
     );
+    expect(dashboardErrorText("needs_reconnect")).toContain("--force-reseed");
     expect(dashboardErrorText("unknown_auth_state")).toContain(
       "GitHub secret writeback was confirmed",
     );

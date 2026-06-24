@@ -327,7 +327,7 @@ function buildCodexRotatingSecretSetupGuidance(input: {
         selectedRepositories: [input.repoFullName],
         validatesBeforeWrite: true,
         failureRecovery:
-          "If CI reports needs_reconnect or unknown_auth_state, rerun this repository command from the dedicated ReviewRouter Codex session.",
+          "If CI reports needs_reconnect or unknown_auth_state, reopen provider setup and run a fresh repository command. If the installer refuses old dedicated auth, rerun it with --force-reseed.",
         sendsSecretToReviewRouter: false,
       },
     ],

@@ -48,6 +48,7 @@ describe("provider secret setup guidance", () => {
     expect(guidance.commands[0]?.command).not.toContain("| bash");
     expect(guidance.warnings.join(" ")).toContain("repository-scoped");
     expect(guidance.warnings.join(" ")).toContain("fork, draft, and bot");
+    expect(guidance.commands[0]?.failureRecovery).toContain("--force-reseed");
   });
 
   it("builds a Codex OAuth org selected-repository command without sending secrets to SaaS", () => {

@@ -22,6 +22,10 @@ ALLOW_EXTERNAL_AUTH_FILE="${REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE:-0}"
 DRY_RUN="${REVIEW_ROUTER_DRY_RUN:-0}"
 CONFIRM_WRITE="${REVIEW_ROUTER_CONFIRM_WRITE:-${REVIEW_ROUTER_YES:-0}}"
 SKIP_LOGIN="${REVIEW_ROUTER_SKIP_CODEX_LOGIN:-0}"
+FORCE_RESEED="${REVIEW_ROUTER_FORCE_CODEX_RESEED:-0}"
+REUSE_EXISTING_AUTH="${REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT:-0}"
+CODEX_LOGIN_METHOD="${REVIEW_ROUTER_CODEX_LOGIN_METHOD:-auto}"
+LOGIN_CREATED_AUTH="0"
 
 if [ -t 1 ]; then
   GREEN='\033[0;32m'
@@ -58,7 +62,11 @@ Options:
   --repo owner/repo        Expected repository. Must match the setup manifest.
   --auth-file path         Choose an explicit auth JSON file inside the dedicated CODEX_HOME.
   --codex-home path        Dedicated ReviewRouter Codex home. Defaults to ~/.reviewrouter/codex/<owner-repo>.
-  --skip-login             Do not run codex login --device-auth when auth is missing.
+  --skip-login             Do not run codex login when auth is missing.
+  --force-reseed           Quarantine existing dedicated auth and perform a fresh Codex login.
+  --reuse-existing-auth-i-know-it-is-current
+                           Reuse an existing auth file. Unsafe unless it is known to be current.
+  --login-method value     auto, browser, or device. Defaults to auto.
   --dry-run                Validate and print the gh command without writing.
   --yes, --confirm-write   Allow non-interactive repository secret write.
   -h, --help               Show this help.
@@ -165,6 +173,17 @@ parse_args() {
       --skip-login)
         SKIP_LOGIN="1"
         ;;
+      --force-reseed)
+        FORCE_RESEED="1"
+        ;;
+      --reuse-existing-auth-i-know-it-is-current)
+        REUSE_EXISTING_AUTH="1"
+        ;;
+      --login-method)
+        shift
+        require_arg "--login-method" "${1:-}"
+        CODEX_LOGIN_METHOD="$1"
+        ;;
       --dry-run)
         DRY_RUN="1"
         ;;
@@ -185,6 +204,19 @@ parse_args() {
     esac
     shift
   done
+}
+
+validate_seed_options() {
+  case "$CODEX_LOGIN_METHOD" in
+    auto|browser|device) ;;
+    *) fatal "--login-method must be auto, browser, or device. Got: $CODEX_LOGIN_METHOD" ;;
+  esac
+  if is_true "$FORCE_RESEED" && [ -n "$AUTH_FILE" ]; then
+    fatal "--force-reseed cannot be combined with --auth-file. Remove --auth-file and let the installer create a fresh dedicated Codex login."
+  fi
+  if is_true "$FORCE_RESEED" && is_true "$SKIP_LOGIN"; then
+    fatal "--force-reseed cannot be combined with --skip-login."
+  fi
 }
 
 validate_repo_name() {
@@ -348,6 +380,46 @@ NODE
   fi
 }
 
+ci_owned_auth_state_path() {
+  printf '%s\n' "$CODEX_HOME_DIR/reviewrouter-codex-auth-state.json"
+}
+
+mark_ci_owned_auth_state() {
+  if is_true "$DRY_RUN"; then
+    return
+  fi
+  [ -n "${AUTH_GENERATION_HASH:-}" ] || fatal "Missing generation hash for local auth state marker."
+  [ -n "${AUTH_ACCOUNT_FINGERPRINT:-}" ] || fatal "Missing account fingerprint for local auth state marker."
+  state_path="$(ci_owned_auth_state_path)"
+  node - "$state_path" "$MANIFEST_JSON" "$SECRET_NAME" "$AUTH_GENERATION_HASH" "$AUTH_ACCOUNT_FINGERPRINT" "$LOGIN_CREATED_AUTH" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const [
+  statePath,
+  manifestJson,
+  secretName,
+  generationHash,
+  accountFingerprint,
+  loginCreatedAuth,
+] = process.argv.slice(2);
+const manifest = JSON.parse(manifestJson);
+fs.mkdirSync(path.dirname(statePath), { recursive: true, mode: 0o700 });
+const state = {
+  stateVersion: 1,
+  ciOwnsTokenChain: true,
+  repositoryFullName: manifest.repositoryFullName,
+  providerInstanceId: manifest.providerInstanceId,
+  secretName,
+  setupNonce: manifest.setupNonce,
+  generationHash,
+  accountFingerprint,
+  seededAt: new Date().toISOString(),
+  authSource: loginCreatedAuth === "1" ? "fresh-login" : "explicit-reuse",
+};
+fs.writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
+NODE
+}
+
 resolve_codex_home() {
   if [ -n "$CODEX_HOME_OVERRIDE" ]; then
     CODEX_HOME_DIR="$CODEX_HOME_OVERRIDE"
@@ -418,32 +490,121 @@ NODE
 }
 
 run_codex_login_if_needed() {
-  if [ -n "$AUTH_FILE" ] && [ -f "$AUTH_FILE" ]; then
+  if is_true "$FORCE_RESEED"; then
+    quarantine_existing_codex_auth
+    run_codex_login
     return
   fi
 
   set +e
-  find_auth_file >/dev/null 2>&1
+  existing_auth_file="$(find_auth_file 2>/dev/null)"
   find_status="$?"
   set -e
+
   if [ "$find_status" -eq 0 ] || [ "$find_status" -eq 2 ]; then
-    return
+    if is_true "$REUSE_EXISTING_AUTH"; then
+      warn "Reusing an existing Codex auth file only because --reuse-existing-auth-i-know-it-is-current was set."
+      return
+    fi
+    refuse_existing_auth_reuse "$find_status" "$existing_auth_file"
   fi
 
   if is_true "$SKIP_LOGIN"; then
     fatal "No Codex auth file found in $CODEX_HOME_DIR and --skip-login is set."
   fi
 
-  info "No dedicated ReviewRouter Codex auth found. Starting Codex device login."
-  info "Follow the URL/code shown by Codex. This uses $CODEX_HOME_DIR, not your normal ~/.codex session."
-  CODEX_HOME="$CODEX_HOME_DIR" HOME="$HOME" codex login --device-auth
+  run_codex_login
+}
+
+refuse_existing_auth_reuse() {
+  find_status="$1"
+  existing_auth_file="${2:-}"
+  if [ "$find_status" -eq 2 ]; then
+    existing_auth_file="multiple Codex account auth files"
+  fi
+  state_hint=""
+  if [ -f "$(ci_owned_auth_state_path)" ]; then
+    state_hint=" This CODEX_HOME is marked as CI-owned after a previous ReviewRouter setup."
+  fi
+  fatal "Refusing to reuse existing Codex auth from $CODEX_HOME_DIR by default.${state_hint} The GitHub Actions secret may have been refreshed after this local file was created, so reusing it can overwrite the active rotating token chain. Use --force-reseed for a fresh login, or --reuse-existing-auth-i-know-it-is-current only if you know ${existing_auth_file:-the auth file} is current."
+}
+
+quarantine_existing_codex_auth() {
+  node - "$CODEX_HOME_DIR" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const codexHome = process.argv[2];
+const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+const quarantineRoot = path.join(codexHome, "quarantined-auth", stamp);
+const candidates = [path.join(codexHome, "auth.json")];
+const accountsDir = path.join(codexHome, "accounts");
+if (fs.existsSync(accountsDir)) {
+  for (const entry of fs.readdirSync(accountsDir)) {
+    if (entry.endsWith(".auth.json") || entry === "registry.json") {
+      candidates.push(path.join(accountsDir, entry));
+    }
+  }
+}
+let moved = 0;
+for (const source of candidates) {
+  if (!fs.existsSync(source)) continue;
+  const relative = path.relative(codexHome, source);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
+  const target = path.join(quarantineRoot, relative);
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  fs.renameSync(source, target);
+  moved += 1;
+}
+if (moved > 0) {
+  fs.writeFileSync(
+    path.join(quarantineRoot, "README.txt"),
+    [
+      "ReviewRouter quarantined these Codex auth files before a forced reseed.",
+      "They are not used automatically because GitHub Actions may own a newer rotating token chain.",
+      "",
+    ].join("\n"),
+    { mode: 0o600 },
+  );
+}
+NODE
+  info "Quarantined existing dedicated Codex auth before fresh reseed."
+}
+
+run_codex_login() {
+  if is_true "$SKIP_LOGIN"; then
+    fatal "No Codex auth file found in $CODEX_HOME_DIR and --skip-login is set."
+  fi
+  info "No reusable ReviewRouter Codex auth found. Starting Codex login."
+  info "This uses $CODEX_HOME_DIR, not your normal ~/.codex session."
+  case "$CODEX_LOGIN_METHOD" in
+    browser)
+      CODEX_HOME="$CODEX_HOME_DIR" HOME="$HOME" codex login
+      ;;
+    device)
+      CODEX_HOME="$CODEX_HOME_DIR" HOME="$HOME" codex login --device-auth
+      ;;
+    auto)
+      if [ -t 0 ] && [ -t 1 ] && [ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
+        if CODEX_HOME="$CODEX_HOME_DIR" HOME="$HOME" codex login; then
+          LOGIN_CREATED_AUTH="1"
+          return
+        fi
+        warn "Codex browser login did not complete. Falling back to device login."
+      fi
+      CODEX_HOME="$CODEX_HOME_DIR" HOME="$HOME" codex login --device-auth
+      ;;
+    *)
+      fatal "--login-method must be auto, browser, or device. Got: $CODEX_LOGIN_METHOD"
+      ;;
+  esac
+  LOGIN_CREATED_AUTH="1"
 }
 
 find_auth_file() {
   if [ -n "$AUTH_FILE" ]; then
     [ -f "$AUTH_FILE" ] || return 1
     printf '%s\n' "$AUTH_FILE"
-    return 0
+    return
   fi
 
   if [ -f "$CODEX_HOME_DIR/auth.json" ]; then
@@ -728,6 +889,7 @@ cleanup() {
 main() {
   trap cleanup EXIT
   parse_args "$@"
+  validate_seed_options
   log "${PRODUCT_NAME} rotating Codex OAuth setup"
   require_cmd node
   require_cmd gh
@@ -750,6 +912,7 @@ main() {
   validate_and_compact_auth "$resolved_auth_file"
   confirm_secret_write
   write_github_secret
+  mark_ci_owned_auth_state
   confirm_setup_success
   mark_manifest_used
 

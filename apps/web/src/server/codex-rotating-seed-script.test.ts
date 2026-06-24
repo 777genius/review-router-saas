@@ -3,8 +3,10 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
@@ -169,6 +171,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
           REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
           REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
           REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
             fixture.manifestBase64,
         },
@@ -178,6 +181,168 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("[dry-run] gh secret set");
+  });
+
+  it("installer refuses preexisting dedicated auth by default before writing the GitHub secret", () => {
+    const fixture = createRotatingInstallerFixture({
+      ghSecretSetFailsIfCalled: true,
+    });
+    writeFileSync(
+      join(fixture.codexHome, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "stale-refresh-token" },
+      }),
+    );
+
+    const result = spawnSync("bash", [fixture.scriptPath, "--confirm-write"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: fixture.path,
+        HOME: fixture.home,
+        REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+        REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+        REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+        REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+        REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64: fixture.manifestBase64,
+      },
+      encoding: "utf8",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "Refusing to reuse existing Codex auth from",
+    );
+    expect(result.stderr).toContain("--force-reseed");
+    expect(result.stderr).toContain(
+      "--reuse-existing-auth-i-know-it-is-current",
+    );
+    expect(result.stderr).not.toContain("gh secret set should not be called");
+  });
+
+  it("installer allows existing auth only with the explicit unsafe reuse flag", () => {
+    const fixture = createRotatingInstallerFixture();
+    writeFileSync(
+      join(fixture.codexHome, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "known-current-refresh-token" },
+      }),
+    );
+
+    const result = spawnSync(
+      "bash",
+      [
+        fixture.scriptPath,
+        "--dry-run",
+        "--confirm-write",
+        "--reuse-existing-auth-i-know-it-is-current",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: fixture.path,
+          HOME: fixture.home,
+          REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+          REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+          REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+          REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
+            fixture.manifestBase64,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("[dry-run] gh secret set");
+    expect(result.stdout).toContain("Reusing an existing Codex auth file");
+  });
+
+  it("installer force reseed quarantines old dedicated auth and logs in freshly", () => {
+    const fixture = createRotatingInstallerFixture();
+    const codexArgsPath = join(fixture.home, "codex-args.txt");
+    writeFileSync(
+      join(fixture.codexHome, "auth.json"),
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { refresh_token: "old-refresh-token" },
+      }),
+    );
+
+    const result = spawnSync(
+      "bash",
+      [fixture.scriptPath, "--dry-run", "--confirm-write", "--force-reseed"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: fixture.path,
+          HOME: fixture.home,
+          REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE: codexArgsPath,
+          REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+          REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+          REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+          REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+          REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
+            fixture.manifestBase64,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(codexArgsPath, "utf8")).toContain(
+      "login --device-auth",
+    );
+    expect(
+      readFileSync(join(fixture.codexHome, "auth.json"), "utf8"),
+    ).toContain("fresh-refresh-token");
+    expect(
+      readFileSync(join(fixture.codexHome, "auth.json"), "utf8"),
+    ).not.toContain("old-refresh-token");
+    const quarantineDir = join(fixture.codexHome, "quarantined-auth");
+    expect(existsSync(quarantineDir)).toBe(true);
+    expect(readdirSync(quarantineDir).length).toBeGreaterThan(0);
+  });
+
+  it("installer can use browser login explicitly instead of device login", () => {
+    const fixture = createRotatingInstallerFixture();
+    const codexArgsPath = join(fixture.home, "codex-browser-args.txt");
+
+    const result = spawnSync(
+      "bash",
+      [
+        fixture.scriptPath,
+        "--dry-run",
+        "--confirm-write",
+        "--login-method",
+        "browser",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: fixture.path,
+          HOME: fixture.home,
+          REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE: codexArgsPath,
+          REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH: "1",
+          REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+          REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
+          REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
+          REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
+            fixture.manifestBase64,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(codexArgsPath, "utf8").trim()).toBe("login");
   });
 
   it("installer refuses ambiguous account import without an explicit auth file", () => {
@@ -212,6 +377,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
           REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
           REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
+          REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
           REVIEW_ROUTER_CODEX_ROTATING_SETUP_MANIFEST_B64:
             fixture.manifestBase64,
         },
@@ -284,6 +450,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           PATH: fixture.path,
           HOME: fixture.home,
           REVIEW_ROUTER_ALLOW_EXTERNAL_CODEX_AUTH_FILE: "1",
+          REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
           REVIEW_ROUTER_CODEX_AUTH_FILE: sharedAuthPath,
           REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
           REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
@@ -324,6 +491,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
         REVIEW_ROUTER_TEST_MANIFEST_B64: fixture.manifestBase64,
         REVIEW_ROUTER_TEST_CONFIRM_CAPTURE: confirmCapturePath,
         REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+        REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
         REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
         REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
         REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
@@ -353,6 +521,22 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     expect(JSON.stringify(confirmation)).not.toContain(
       "id-token-for-fingerprint",
     );
+    const state = JSON.parse(
+      readFileSync(
+        join(fixture.codexHome, "reviewrouter-codex-auth-state.json"),
+        "utf8",
+      ),
+    );
+    expect(state).toMatchObject({
+      stateVersion: 1,
+      ciOwnsTokenChain: true,
+      repositoryFullName: "777genius/agent-teams-ai",
+      providerInstanceId: "codex-rotating:777genius:agent-teams-ai",
+      secretName: "REVIEWROUTER_CODEX_AUTH_JSON",
+      authSource: "explicit-reuse",
+    });
+    expect(JSON.stringify(state)).not.toContain("refresh-token");
+    expect(JSON.stringify(state)).not.toContain("id-token-for-fingerprint");
   });
 
   it("installer checks gh auth before spending a server-backed setup nonce", () => {
@@ -404,6 +588,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
           PATH: fixture.path,
           HOME: fixture.home,
           REVIEW_ROUTER_CODEX_HOME: fixture.codexHome,
+          REVIEW_ROUTER_REUSE_EXISTING_CODEX_AUTH_I_KNOW_IT_IS_CURRENT: "1",
           REVIEW_ROUTER_INSTALLER_URL: fixture.installerUrl,
           REVIEW_ROUTER_INSTALLER_VERSION: fixture.installerVersion,
           REVIEW_ROUTER_INSTALLER_SHA256: fixture.installerSha256,
@@ -424,6 +609,7 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
 function createRotatingInstallerFixture(
   options: {
     readonly ghAuthenticated?: boolean;
+    readonly ghSecretSetFailsIfCalled?: boolean;
     readonly curlFailsIfCalled?: boolean;
     readonly shasumFails?: boolean;
   } = {},
@@ -454,13 +640,30 @@ function createRotatingInstallerFixture(
         : "  exit 0",
       "fi",
       'if [ "${1:-}" = "api" ] && [ "${2:-}" = "repos/777genius/agent-teams-ai" ]; then printf "123456\\n"; exit 0; fi',
+      'if [ "${1:-}" = "secret" ] && [ "${2:-}" = "set" ]; then',
+      options.ghSecretSetFailsIfCalled
+        ? '  echo "gh secret set should not be called" >&2; exit 43'
+        : "  cat >/dev/null; exit 0",
+      "fi",
       "exit 0",
       "",
     ].join("\n"),
   );
   writeExecutable(
     join(bin, "codex"),
-    ["#!/usr/bin/env bash", "exit 0", ""].join("\n"),
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'if [ -n "${REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE:-}" ]; then',
+      '  printf "%s\\n" "$*" >> "$REVIEW_ROUTER_TEST_CODEX_ARGS_CAPTURE"',
+      "fi",
+      'if [ "${1:-}" = "login" ] && [ "${REVIEW_ROUTER_TEST_CODEX_LOGIN_WRITES_AUTH:-}" = "1" ]; then',
+      '  mkdir -p "${CODEX_HOME:?}"',
+      '  printf \'{"auth_mode":"chatgpt","tokens":{"refresh_token":"fresh-refresh-token","access_token":"fresh-access-token"}}\' > "$CODEX_HOME/auth.json"',
+      "fi",
+      "exit 0",
+      "",
+    ].join("\n"),
   );
   if (options.shasumFails) {
     writeExecutable(
