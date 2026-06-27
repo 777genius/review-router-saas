@@ -20,7 +20,7 @@ Verified dependency install:
 ```bash
 npm install --save \
   @openai/codex@0.135.0 \
-  @777genius/subscription-runtime@git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0
+  @777genius/subscription-runtime@git+https://github.com/777genius/ar.git#semver:^0.1.0-main.1
 ```
 
 Verified checks:

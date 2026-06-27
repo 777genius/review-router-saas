@@ -15,8 +15,8 @@ importers:
   .:
     dependencies:
       '@777genius/subscription-runtime':
-        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0
-        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6'
+        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.1
+        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384'
       '@base-ui/react':
         specifier: ^1.4.1
         version: 1.4.1(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -427,8 +427,8 @@ importers:
   packages/features/codex-oauth-rotating:
     dependencies:
       '@777genius/subscription-runtime':
-        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0
-        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6'
+        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.1
+        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384'
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -2377,9 +2377,9 @@ packages:
     resolution: {integrity: sha512-LdDNl6C5iJExcM0Yh0PwAIBb9PrSiCsWamF/JyEZawm3kFDnRoaq3LGE4bpyRao/fWeGKKyw7icx0YxrLFC5Cg==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
 
-  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6':
-    resolution: {tarball: https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6}
-    version: 0.1.0-main.0
+  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384':
+    resolution: {tarball: https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384}
+    version: 0.1.0-main.1
     engines: {node: '>=20'}
     hasBin: true
     peerDependencies:
@@ -5245,7 +5245,7 @@ snapshots:
       '@typescript-eslint/types': 8.59.1
       eslint-visitor-keys: 5.0.1
 
-  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6':
+  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384':
     dependencies:
       libsodium-wrappers: 0.8.4
 

@@ -79,7 +79,7 @@
     "release:sync-major": "node scripts/sync-major-release-tag.mjs"
   },
   "dependencies": {
-    "@777genius/subscription-runtime": "git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0",
+    "@777genius/subscription-runtime": "git+https://github.com/777genius/ar.git#semver:^0.1.0-main.1",
     "@base-ui/react": "^1.4.1",
     "@octokit/app": "^16.1.2",
     "@octokit/rest": "^22.0.1",
