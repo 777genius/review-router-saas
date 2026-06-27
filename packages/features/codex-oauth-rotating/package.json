@@ -11,7 +11,7 @@
     }
   },
   "dependencies": {
-    "@777genius/subscription-runtime": "https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz",
+    "@777genius/subscription-runtime": "git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0",
     "@reviewrouter/shared": "workspace:*",
     "libsodium-wrappers": "^0.8.4",
     "zod": "^4.4.2"

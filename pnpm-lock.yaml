@@ -15,8 +15,8 @@ importers:
   .:
     dependencies:
       '@777genius/subscription-runtime':
-        specifier: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
-        version: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
+        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0
+        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6'
       '@base-ui/react':
         specifier: ^1.4.1
         version: 1.4.1(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -427,8 +427,8 @@ importers:
   packages/features/codex-oauth-rotating:
     dependencies:
       '@777genius/subscription-runtime':
-        specifier: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
-        version: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz
+        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0
+        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6'
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -727,11 +727,6 @@ importers:
         version: 3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.2.4)
 
 packages:
-
-  '@777genius/subscription-runtime@https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz':
-    resolution: {integrity: sha512-gL5OORnUMOmATRYCOjuVZCTte/F/JYcMfxKsYkQP135EH1Z7YDuOPH17zYdqDHz9owfFdCGFjvrQnwAbFqo1dQ==, tarball: https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz}
-    version: 0.1.0-main.0
-    engines: {node: '>=20'}
 
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
@@ -2382,6 +2377,17 @@ packages:
     resolution: {integrity: sha512-LdDNl6C5iJExcM0Yh0PwAIBb9PrSiCsWamF/JyEZawm3kFDnRoaq3LGE4bpyRao/fWeGKKyw7icx0YxrLFC5Cg==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
 
+  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6':
+    resolution: {tarball: https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6}
+    version: 0.1.0-main.0
+    engines: {node: '>=20'}
+    hasBin: true
+    peerDependencies:
+      claude-runtime: 0.0.0
+    peerDependenciesMeta:
+      claude-runtime:
+        optional: true
+
   '@vitest/expect@4.1.5':
     resolution: {integrity: sha512-PWBaRY5JoKuRnHlUHfpV/KohFylaDZTupcXN1H9vYryNLOnitSw60Mw9IAE2r67NbwwzBw/Cc/8q9BK3kIX8Kw==}
 
@@ -3840,10 +3846,6 @@ packages:
 
 snapshots:
 
-  '@777genius/subscription-runtime@https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz':
-    dependencies:
-      libsodium-wrappers: 0.8.4
-
   '@alloc/quick-lru@5.2.0': {}
 
   '@asamuzakjp/css-color@5.1.11':
@@ -5242,6 +5244,10 @@ snapshots:
     dependencies:
       '@typescript-eslint/types': 8.59.1
       eslint-visitor-keys: 5.0.1
+
+  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/415fc06f4f4e9846f4771b475172c2e08891b7a6':
+    dependencies:
+      libsodium-wrappers: 0.8.4
 
   '@vitest/expect@4.1.5':
     dependencies:

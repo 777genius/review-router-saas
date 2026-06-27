@@ -62,7 +62,7 @@
     "subscription-runtime:live-e2e:smoke": "node scripts/check-subscription-runtime-live-e2e-smoke.mjs",
     "subscription-runtime:live-e2e": "node scripts/run-subscription-runtime-live-e2e.mjs",
     "subscription-runtime:worker-benchmark": "tsx spikes/subscription-runtime-worker-benchmark/benchmark-codex-worker.ts",
-    "subscription-runtime:sync-public-mirrors": "node -e \"console.log('subscription-runtime mirrors are deprecated; use 777genius/subscription-runtime')\"",
+    "subscription-runtime:sync-public-mirrors": "node -e \"console.log('subscription-runtime mirrors are deprecated; use 777genius/ar')\"",
     "subscription-runtime:check": "node scripts/check-external-subscription-runtime.mjs && pnpm action:build && pnpm action:artifact:check:smoke && pnpm subscription-runtime:live-e2e:smoke",
     "subscription-runtime:release-gate": "pnpm subscription-runtime:check && pnpm action:artifact:check && pnpm exec vitest run packages/features/codex-oauth-rotating/src/tests/codex-oauth-rotating.test.ts packages/features/codex-oauth-rotating/src/tests/github-action.test.ts && pnpm architecture:check && pnpm typecheck && git diff --check",
     "architecture:check": "node scripts/check-architecture-boundaries.mjs",
@@ -79,7 +79,7 @@
     "release:sync-major": "node scripts/sync-major-release-tag.mjs"
   },
   "dependencies": {
-    "@777genius/subscription-runtime": "https://github.com/777genius/subscription-runtime/archive/refs/heads/main.tar.gz",
+    "@777genius/subscription-runtime": "git+https://github.com/777genius/ar.git#semver:^0.1.0-main.0",
     "@base-ui/react": "^1.4.1",
     "@octokit/app": "^16.1.2",
     "@octokit/rest": "^22.0.1",
