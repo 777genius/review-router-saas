@@ -531,7 +531,9 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
   }`;
 }
 
-function renderCodexRotatingConcurrencyGroup(providerInstanceId: string): string {
+function renderCodexRotatingConcurrencyGroup(
+  providerInstanceId: string,
+): string {
   const providerSegment =
     providerInstanceId
       .toLowerCase()

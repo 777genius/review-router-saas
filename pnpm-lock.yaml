@@ -14,6 +14,9 @@ importers:
 
   .:
     dependencies:
+      '@777genius/subscription-runtime':
+        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.1
+        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384'
       '@base-ui/react':
         specifier: ^1.4.1
         version: 1.4.1(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -423,18 +426,12 @@ importers:
 
   packages/features/codex-oauth-rotating:
     dependencies:
+      '@777genius/subscription-runtime':
+        specifier: git+https://github.com/777genius/ar.git#semver:^0.1.0-main.1
+        version: '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384'
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../../subscription-runtime/core
-      '@reviewrouter/subscription-runtime-provider-codex':
-        specifier: workspace:*
-        version: link:../../subscription-runtime/provider-codex
-      '@reviewrouter/subscription-runtime-runner-github-action':
-        specifier: workspace:*
-        version: link:../../subscription-runtime/runner-github-action
       libsodium-wrappers:
         specifier: ^0.8.4
         version: 0.8.4
@@ -707,71 +704,6 @@ importers:
   packages/platform/logger: {}
 
   packages/shared: {}
-
-  packages/subscription-runtime/core: {}
-
-  packages/subscription-runtime/provider-codex:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-
-  packages/subscription-runtime/queue-bull:
-    dependencies:
-      '@reviewrouter/subscription-runtime-queue-core':
-        specifier: workspace:*
-        version: link:../queue-core
-      '@reviewrouter/subscription-runtime-worker-core':
-        specifier: workspace:*
-        version: link:../worker-core
-
-  packages/subscription-runtime/queue-core:
-    dependencies:
-      '@reviewrouter/subscription-runtime-worker-core':
-        specifier: workspace:*
-        version: link:../worker-core
-
-  packages/subscription-runtime/runner-github-action:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-
-  packages/subscription-runtime/store-github-actions-secret:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-      libsodium-wrappers:
-        specifier: ^0.8.4
-        version: 0.8.4
-
-  packages/subscription-runtime/store-local-file:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-
-  packages/subscription-runtime/worker-codex:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
-      '@reviewrouter/subscription-runtime-provider-codex':
-        specifier: workspace:*
-        version: link:../provider-codex
-      '@reviewrouter/subscription-runtime-store-local-file':
-        specifier: workspace:*
-        version: link:../store-local-file
-      '@reviewrouter/subscription-runtime-worker-core':
-        specifier: workspace:*
-        version: link:../worker-core
-
-  packages/subscription-runtime/worker-core:
-    dependencies:
-      '@reviewrouter/subscription-runtime-core':
-        specifier: workspace:*
-        version: link:../core
 
   packages/ui:
     dependencies:
@@ -2444,6 +2376,17 @@ packages:
   '@typescript-eslint/visitor-keys@8.59.1':
     resolution: {integrity: sha512-LdDNl6C5iJExcM0Yh0PwAIBb9PrSiCsWamF/JyEZawm3kFDnRoaq3LGE4bpyRao/fWeGKKyw7icx0YxrLFC5Cg==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384':
+    resolution: {tarball: https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384}
+    version: 0.1.0-main.1
+    engines: {node: '>=20'}
+    hasBin: true
+    peerDependencies:
+      claude-runtime: 0.0.0
+    peerDependenciesMeta:
+      claude-runtime:
+        optional: true
 
   '@vitest/expect@4.1.5':
     resolution: {integrity: sha512-PWBaRY5JoKuRnHlUHfpV/KohFylaDZTupcXN1H9vYryNLOnitSw60Mw9IAE2r67NbwwzBw/Cc/8q9BK3kIX8Kw==}
@@ -5301,6 +5244,10 @@ snapshots:
     dependencies:
       '@typescript-eslint/types': 8.59.1
       eslint-visitor-keys: 5.0.1
+
+  '@vioxen/subscription-runtime@https://codeload.github.com/777genius/ar/tar.gz/bc0e9794bfcba8e4493c658e6f2660fcf0122384':
+    dependencies:
+      libsodium-wrappers: 0.8.4
 
   '@vitest/expect@4.1.5':
     dependencies:

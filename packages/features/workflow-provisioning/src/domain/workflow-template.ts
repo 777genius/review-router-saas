@@ -267,6 +267,7 @@ jobs:
         uses: ${options.actionRef}
         with:
           mode: interaction-preflight
+          api-url: ${JSON.stringify(options.apiUrl)}
         env:
           GITHUB_TOKEN: \${{ github.token }}
           REVIEW_ROUTER_MODE: "interaction-preflight"

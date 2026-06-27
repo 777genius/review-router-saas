@@ -401,7 +401,8 @@ describe("provisionReviewRouterWorkflow", () => {
       "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
     );
     expect(codexWorkflowContent).not.toContain("actions/checkout");
-    expect(codexWorkflowContent).not.toContain("workflow_dispatch:");
+    expect(codexWorkflowContent).toContain("workflow_dispatch:");
+    expect(codexWorkflowContent).toContain("codex-refresh:");
     expect(interactionWorkflowContent).toContain(
       "name: ReviewRouter Interaction",
     );

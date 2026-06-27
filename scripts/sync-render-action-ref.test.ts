@@ -100,9 +100,7 @@ describe("sync-render-action-ref", () => {
         `777genius/review-router@${shaA}`,
         `777genius/review-router@${shaB}`,
       ]),
-    ).toBe(
-      `777genius/review-router@${shaA},777genius/review-router@${shaB}`,
-    );
+    ).toBe(`777genius/review-router@${shaA},777genius/review-router@${shaB}`);
   });
 
   it("keeps explicit active workflow refs before older rollback refs", () => {

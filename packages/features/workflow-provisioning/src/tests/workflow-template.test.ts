@@ -415,6 +415,7 @@ describe("renderReviewRouterWorkflow", () => {
     );
     expect(workflow).toContain("Preflight ReviewRouter interaction");
     expect(workflow).toContain("mode: interaction-preflight");
+    expect(workflow).toContain('api-url: "https://app.reviewrouter.dev"');
     expect(workflow).toContain('REVIEW_ROUTER_MODE: "interaction-preflight"');
     expect(workflow).toContain(
       "REVIEW_ROUTER_DISCUSSION_MODE: ${{ vars.REVIEW_ROUTER_DISCUSSION_MODE || 'off' }}",

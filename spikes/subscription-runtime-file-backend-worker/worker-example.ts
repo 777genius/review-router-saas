@@ -19,7 +19,7 @@ import {
   type RuntimeMetric,
   type WorkspaceHandle,
   type WorkspacePort,
-} from "@reviewrouter/subscription-runtime-core";
+} from "@777genius/subscription-runtime/core";
 import {
   CodexAppServerExecutionEngine,
   CodexCliSessionDriver,
@@ -28,8 +28,8 @@ import {
   PackagedCodexJsonExecutionEngine,
   type CodexReasoningEffort,
   sessionArtifactFromCodexAuthJson,
-} from "@reviewrouter/subscription-runtime-provider-codex";
-import { createLocalFileBackendRuntimeAdapters } from "@reviewrouter/subscription-runtime-store-local-file";
+} from "@777genius/subscription-runtime/provider-codex";
+import { createLocalFileBackendRuntimeAdapters } from "@777genius/subscription-runtime/store-local-file";
 
 export type FileBackendCodexWorkerOptions = {
   readonly providerInstanceId: string;

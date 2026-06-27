@@ -46,7 +46,7 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly nextGeneration: number;
     readonly repository?: ActionRepositoryContext;
     readonly status: "finalized" | "stale_queued_secret";
-      }>;
+  }>;
 
   abandonLease(input: {
     readonly leaseId: string;
