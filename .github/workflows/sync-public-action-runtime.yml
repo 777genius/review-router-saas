@@ -1,0 +1,128 @@
+name: Sync Public Action Runtime
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-public-action-runtime-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24"
+  ACTION_REPOSITORY: 777genius/review-router
+  ACTION_BRANCH: main
+
+jobs:
+  sync:
+    name: Sync public action runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.conclusion == 'success'
+        )
+      }}
+
+    steps:
+      - name: Require cross-repository sync token
+        shell: bash
+        env:
+          ACTION_SYNC_TOKEN: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ACTION_SYNC_TOKEN:-}" ]]; then
+            echo "::error::REVIEW_ROUTER_ACTION_SYNC_TOKEN secret is required. Use a fine-grained PAT or GitHub App token with Contents: write for ${ACTION_REPOSITORY} and permission to push ${ACTION_BRANCH}."
+            exit 1
+          fi
+
+      - name: Checkout SaaS runtime
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          path: review-router-saas
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install SaaS dependencies
+        working-directory: review-router-saas
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and verify public action artifact
+        working-directory: review-router-saas
+        run: pnpm action:build && pnpm action:artifact:check
+
+      - name: Checkout public Action repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.ACTION_REPOSITORY }}
+          ref: ${{ env.ACTION_BRANCH }}
+          path: review-router-action
+          token: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_TOKEN }}
+
+      - name: Sync public action runtime files
+        working-directory: review-router-saas
+        run: pnpm action:sync-public-runtime -- --write --action-repo ../review-router-action
+
+      - name: Detect public action changes
+        id: changes
+        working-directory: review-router-action
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short -- action.yml action-dist
+          if git diff --quiet -- action.yml action-dist; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push public action runtime
+        if: ${{ steps.changes.outputs.changed == 'true' }}
+        working-directory: review-router-action
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add action.yml action-dist
+          git commit \
+            -m "fix: sync public action runtime" \
+            -m "Source: 777genius/review-router-saas@${SOURCE_SHA}"
+          git pull --rebase origin "${ACTION_BRANCH}"
+          git push origin "HEAD:${ACTION_BRANCH}"
+
+      - name: Summary
+        shell: bash
+        env:
+          CHANGED: ${{ steps.changes.outputs.changed }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          {
+            echo "Public action runtime sync"
+            echo ""
+            echo "- Source: \`777genius/review-router-saas@${SOURCE_SHA}\`"
+            echo "- Target: \`${ACTION_REPOSITORY}@${ACTION_BRANCH}\`"
+            echo "- Changes pushed: \`${CHANGED}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

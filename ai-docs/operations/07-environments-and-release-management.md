@@ -99,6 +99,13 @@ Then commit and push the resulting public Action repo changes to
 `777genius/review-router@main`. Customer workflows using
 `uses: 777genius/review-router@main` pick up that commit on their next run.
 
+The `Sync Public Action Runtime` GitHub workflow performs this automatically
+after a successful SaaS `CI` run on `main`. It requires the SaaS repository
+secret `REVIEW_ROUTER_ACTION_SYNC_TOKEN`, because the default `GITHUB_TOKEN` is
+scoped to `777genius/review-router-saas` and cannot push to
+`777genius/review-router`. Use a fine-grained PAT or GitHub App token with
+`Contents: write` on `777genius/review-router` and permission to push `main`.
+
 ## Release Order
 
 For a new public/stable runtime release:
