@@ -56,7 +56,7 @@ var import_node_crypto6 = require("node:crypto");
 var import_node_fs = require("node:fs");
 var import_node_http = __toESM(require("node:http"), 1);
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
 var RuntimeConfigurationError = class extends Error {
   constructor(message) {
     super(message);
@@ -70,7 +70,7 @@ var BoundaryViolationError = class extends Error {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
 function negotiateCapabilities(input) {
   const policy = input.requested ?? input.policy;
   if (!policy) {
@@ -249,7 +249,7 @@ function rejected(code, safeMessage, details) {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
 var textDecoder = new TextDecoder();
 var DefaultRedactor = class {
   secrets = /* @__PURE__ */ new Map();
@@ -314,7 +314,7 @@ var DeterministicIdGenerator = class {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
 var import_node_crypto = require("node:crypto");
 function computeSessionGenerationHash(input) {
   const hash2 = (0, import_node_crypto.createHash)("sha256");
@@ -334,7 +334,7 @@ function computeSessionGenerationHash(input) {
   return hash2.digest("base64url");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
 function createSubscriptionRuntime(deps) {
   const decision = negotiateCapabilities({
     requested: deps.policy,
@@ -1166,7 +1166,7 @@ function missingSessionFailure() {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
 var providerTaskSystemPromptMaxBytes = 256 * 1024;
 function providerTaskSystemPromptValidationError(value, path = "systemPrompt") {
   if (value === void 0)
@@ -1185,12 +1185,12 @@ function assertProviderTaskSystemPrompt(value, path = "systemPrompt") {
     throw new Error(error51);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
 var codexProviderId = "codex";
 var codexAgentId = "codex-cli";
 var codexJsonAgentId = "codex-json";
 var codexAuthJsonFormatVersion = "codex-auth-json-v1";
-var defaultCodexModel = "gpt-5-codex";
+var defaultCodexModel = "gpt-5.5";
 var codexEnvironmentPolicy = {
   inheritHostEnvironment: false,
   allowlist: ["PATH", "HOME", "CI", "CODEX_HOME"],
@@ -1265,7 +1265,7 @@ var codexJsonAgentCapabilities = {
   agentId: codexJsonAgentId
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
 var import_node_crypto2 = require("node:crypto");
 var codexAuthJsonMaxBytes = 32 * 1024;
 function validateCodexAuthJsonBytes(input) {
@@ -1489,7 +1489,7 @@ function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
 var textDecoder2 = new TextDecoder();
 var textEncoder = new TextEncoder();
 function sessionArtifactFromCodexAuthJson(authJsonBytes) {
@@ -1549,7 +1549,7 @@ function safeCauseCategory(message) {
   return /^[a-z0-9_:-]{1,80}$/i.test(message) ? message : "codex_validation";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
 var import_promises = require("node:fs/promises");
 var import_node_path = require("node:path");
 var transientCleanupErrorCodes = /* @__PURE__ */ new Set([
@@ -1593,7 +1593,7 @@ async function scrubSensitiveCodexHomePaths(codexHome) {
   return results.every((result) => result.status === "fulfilled");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
 var import_node_crypto3 = require("node:crypto");
 function composeCodexPrompt(input) {
   const systemPrompt = input.systemPrompt?.trim();
@@ -1613,7 +1613,7 @@ function composeCodexPrompt(input) {
   ].join("\n");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
 function classifyCodexFailure(error51) {
   const message = error51 instanceof Error ? error51.message : String(error51);
   const state = classifyCodexRuntimeFailure(message);
@@ -1685,7 +1685,7 @@ function classifyCodexFailure(error51) {
   }
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
 var defaultTimeoutMs = 10 * 60 * 1e3;
 var defaultMaxOutputBytes = 512 * 1024;
 var PackagedCodexJsonExecutionEngine = class {
@@ -1902,7 +1902,7 @@ function safeTail(value) {
   return value.slice(-4096);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
 var statelessCompletionBaseInstructions = [
   "You are a fast backend inference worker.",
   "Return only the requested final answer.",
@@ -1911,7 +1911,7 @@ var statelessCompletionBaseInstructions = [
   "If JSON is requested, return valid JSON only."
 ].join(" ");
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
 var import_node_crypto4 = require("node:crypto");
 var import_promises2 = require("node:fs/promises");
 var import_node_os = require("node:os");
@@ -2026,7 +2026,7 @@ function once(fn) {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
 var CodexJsonAgentDriver = class {
   options;
   agentId = codexJsonAgentId;
@@ -2222,12 +2222,12 @@ function finishReasonForFailure(code) {
   return "provider_error";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-app-server-execution-engine.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-app-server-execution-engine.js
 var defaultTimeoutMs2 = 10 * 60 * 1e3;
 var defaultControlRequestTimeoutMs = 30 * 1e3;
 var defaultMaxOutputBytes2 = 512 * 1024;
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
 var import_promises3 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var import_node_path3 = require("node:path");
@@ -2420,7 +2420,7 @@ async function writeCodexHomeSnapshot(input) {
   });
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/capabilities.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/capabilities.js
 var githubActionRunnerCapabilities = {
   runnerId: "github-action",
   supportsEnvAllowlist: true,
@@ -2433,7 +2433,7 @@ var githubActionRunnerCapabilities = {
   platform: "github-actions"
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+bc0e9794bfcba8e4493c658e6f2660fcf0122384/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
 var import_node_child_process = require("node:child_process");
 var defaultMaxCapturedOutputBytes = 256e3;
 var GitHubActionRunner = class {
