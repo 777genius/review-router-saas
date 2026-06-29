@@ -21,6 +21,8 @@ env:
   NODE_VERSION: "24"
   ACTION_REPOSITORY: 777genius/review-router
   ACTION_BRANCH: main
+  ACTION_SYNC_TOKEN_PRESENT: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_TOKEN != '' }}
+  ACTION_SYNC_SSH_KEY_PRESENT: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_SSH_KEY != '' }}
 
 jobs:
   sync:
@@ -38,14 +40,15 @@ jobs:
       }}
 
     steps:
-      - name: Require cross-repository sync token
+      - name: Require cross-repository sync credential
         shell: bash
         env:
           ACTION_SYNC_TOKEN: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_TOKEN }}
+          ACTION_SYNC_SSH_KEY: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_SSH_KEY }}
         run: |
           set -euo pipefail
-          if [[ -z "${ACTION_SYNC_TOKEN:-}" ]]; then
-            echo "::error::REVIEW_ROUTER_ACTION_SYNC_TOKEN secret is required. Use a fine-grained PAT or GitHub App token with Contents: write for ${ACTION_REPOSITORY} and permission to push ${ACTION_BRANCH}."
+          if [[ -z "${ACTION_SYNC_TOKEN:-}" && -z "${ACTION_SYNC_SSH_KEY:-}" ]]; then
+            echo "::error::REVIEW_ROUTER_ACTION_SYNC_SSH_KEY or REVIEW_ROUTER_ACTION_SYNC_TOKEN is required. Prefer a write deploy key scoped to ${ACTION_REPOSITORY}; alternatively use a fine-grained PAT or GitHub App token with Contents: write and permission to push ${ACTION_BRANCH}."
             exit 1
           fi
 
@@ -71,13 +74,27 @@ jobs:
         working-directory: review-router-saas
         run: pnpm action:build && pnpm action:artifact:check
 
-      - name: Checkout public Action repository
+      - name: Checkout public Action repository with token
+        if: ${{ env.ACTION_SYNC_TOKEN_PRESENT == 'true' }}
         uses: actions/checkout@v6
         with:
           repository: ${{ env.ACTION_REPOSITORY }}
           ref: ${{ env.ACTION_BRANCH }}
           path: review-router-action
           token: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_TOKEN }}
+
+      - name: Checkout public Action repository with deploy key
+        if: >-
+          ${{
+            env.ACTION_SYNC_TOKEN_PRESENT != 'true' &&
+            env.ACTION_SYNC_SSH_KEY_PRESENT == 'true'
+          }}
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.ACTION_REPOSITORY }}
+          ref: ${{ env.ACTION_BRANCH }}
+          path: review-router-action
+          ssh-key: ${{ secrets.REVIEW_ROUTER_ACTION_SYNC_SSH_KEY }}
 
       - name: Sync public action runtime files
         working-directory: review-router-saas
