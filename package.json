@@ -55,6 +55,7 @@
     "action:build": "node scripts/build-codex-rotating-action.mjs",
     "action:artifact:check": "node scripts/check-codex-rotating-action-artifact.mjs",
     "action:artifact:check:smoke": "REVIEWROUTER_CODEX_ROTATING_ACTION_REQUIRE_BINARY=0 node scripts/check-codex-rotating-action-artifact.mjs",
+    "action:sync-public-runtime": "node scripts/sync-public-action-runtime.mjs",
     "subscription-runtime:contract": "node scripts/check-external-subscription-runtime.mjs",
     "subscription-runtime:redaction-canary": "node scripts/check-external-subscription-runtime.mjs",
     "subscription-runtime:e2e:local": "node scripts/check-external-subscription-runtime.mjs",

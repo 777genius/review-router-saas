@@ -84,6 +84,21 @@ git diff --check
 The Action repo commits bundled `dist/` output. If a change affects runtime
 code, rebuild and commit the bundle.
 
+For hosted beta `@main` customers, SaaS action runtime changes must also be
+synced into the public Action repo before they can be picked up by customer
+workflows:
+
+```bash
+git -C ../review-router-action switch main
+git -C ../review-router-action pull --ff-only origin main
+pnpm action:artifact:check
+pnpm action:sync-public-runtime -- --write
+```
+
+Then commit and push the resulting public Action repo changes to
+`777genius/review-router@main`. Customer workflows using
+`uses: 777genius/review-router@main` pick up that commit on their next run.
+
 ## Release Order
 
 For a new public/stable runtime release:
