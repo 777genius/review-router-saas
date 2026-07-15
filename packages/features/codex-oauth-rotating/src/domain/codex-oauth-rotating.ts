@@ -19,17 +19,6 @@ export const codexRotatingDefaultRunner = "ubuntu-24.04";
 export const codexRotatingDefaultTimeoutMinutes = 30;
 export const codexRotatingDefaultRefreshScheduleCron = "17 */6 * * *";
 export const codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
-export const codexRotatingReviewRuntimeEnv = {
-  BATCH_MAX_FILES: "100",
-  CODEX_AGENTIC_CONTEXT: "false",
-  TARGET_TOKENS_PER_BATCH: "240000",
-} as const;
-
-const codexRotatingReviewRuntimeEnvBlock = `        env:
-          BATCH_MAX_FILES: "${codexRotatingReviewRuntimeEnv.BATCH_MAX_FILES}"
-          CODEX_AGENTIC_CONTEXT: "${codexRotatingReviewRuntimeEnv.CODEX_AGENTIC_CONTEXT}"
-          TARGET_TOKENS_PER_BATCH: "${codexRotatingReviewRuntimeEnv.TARGET_TOKENS_PER_BATCH}"
-`;
 
 const repoFullNamePattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const sha256HexPattern = /^[a-f0-9]{64}$/i;
@@ -442,7 +431,7 @@ jobs:
       - name: ReviewRouter Codex OAuth review
         id: run_codex
         uses: ${options.actionRef}
-${codexRotatingReviewRuntimeEnvBlock}        with:
+        with:
           mode: codex-oauth-rotating
           api-url: ${JSON.stringify(options.apiUrl)}
           provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
@@ -709,10 +698,6 @@ export function scanCodexRotatingAdvisoryWorkflow(
   ) {
     errors.push("review_job_draft_input_required");
   }
-  const workflowWithoutAllowedReviewEnv = workflow.replace(
-    codexRotatingReviewRuntimeEnvBlock,
-    "",
-  );
   if (!forkSandboxEnabled) {
     for (const [pattern, code] of [
       [/\buses:\s*actions\/checkout@/i, "actions_checkout_not_allowed"],
@@ -722,7 +707,7 @@ export function scanCodexRotatingAdvisoryWorkflow(
         errors.push(code);
       }
     }
-    if (/^\s*env\s*:/m.test(workflowWithoutAllowedReviewEnv)) {
+    if (/^\s*env\s*:/m.test(workflow)) {
       errors.push("workflow_env_not_allowed");
     }
   } else {
@@ -759,10 +744,7 @@ export function scanCodexRotatingAdvisoryWorkflow(
     if ((workflow.match(/^\s*run:\s*[|>]?/gm)?.length ?? 0) !== 1) {
       errors.push("fork_raw_run_step_count_invalid");
     }
-    if (
-      (workflowWithoutAllowedReviewEnv.match(/^\s*env\s*:/gm)?.length ?? 0) !==
-      1
-    ) {
+    if ((workflow.match(/^\s*env\s*:/gm)?.length ?? 0) !== 1) {
       errors.push("fork_env_block_count_invalid");
     }
   }

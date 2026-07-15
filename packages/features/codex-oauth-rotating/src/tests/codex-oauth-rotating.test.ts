@@ -382,9 +382,6 @@ exit 17
     expect(workflow).toContain(
       "review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}",
     );
-    expect(workflow).toContain('BATCH_MAX_FILES: "100"');
-    expect(workflow).toContain('CODEX_AGENTIC_CONTEXT: "false"');
-    expect(workflow).toContain('TARGET_TOKENS_PER_BATCH: "240000"');
     expect(workflow).toContain(
       "github.event.pull_request.head.repo.full_name == github.repository",
     );
@@ -457,14 +454,6 @@ exit 17
     expect(scanCodexRotatingAdvisoryWorkflow(inlineEnv).errors).toContain(
       "workflow_env_not_allowed",
     );
-
-    const tamperedReviewEnv = workflow.replace(
-      'TARGET_TOKENS_PER_BATCH: "240000"',
-      'TARGET_TOKENS_PER_BATCH: "999999"',
-    );
-    expect(
-      scanCodexRotatingAdvisoryWorkflow(tamperedReviewEnv).errors,
-    ).toContain("workflow_env_not_allowed");
 
     const inlineStrategy = workflow.replace(
       "    timeout-minutes:",

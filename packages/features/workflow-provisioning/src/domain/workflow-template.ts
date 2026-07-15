@@ -1,6 +1,5 @@
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
-  codexRotatingReviewRuntimeEnv,
   codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
   renderCodexRotatingAdvisoryWorkflow,
@@ -847,9 +846,6 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
     "mode: codex-oauth-rotating",
     `vars.${codexRotatingReviewDraftsVariableName} == 'true'`,
     `review-drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}`,
-    `BATCH_MAX_FILES: ${JSON.stringify(codexRotatingReviewRuntimeEnv.BATCH_MAX_FILES)}`,
-    `CODEX_AGENTIC_CONTEXT: ${JSON.stringify(codexRotatingReviewRuntimeEnv.CODEX_AGENTIC_CONTEXT)}`,
-    `TARGET_TOKENS_PER_BATCH: ${JSON.stringify(codexRotatingReviewRuntimeEnv.TARGET_TOKENS_PER_BATCH)}`,
     `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
     "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
   ];
