@@ -23,4 +23,6 @@ jobs:
           api-url: "https://api.reviewrouter.site"
           provider-instance-id: "codex-rotating:1228690265"
           workflow-schema-version: "1"
+          max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}
+          review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}
           auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}
