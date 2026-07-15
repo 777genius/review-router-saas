@@ -72,10 +72,8 @@ export function resolveCodexRotatingInstallRedirect(
 export function resolveCodexReseedInstallRedirect(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const actionRef = env.REVIEW_ROUTER_ACTION_REF?.trim();
-  const pinnedSha = actionRef?.match(/@([a-f0-9]{40})$/i)?.[1];
-  const ref = pinnedSha ?? "main";
-  return `https://raw.githubusercontent.com/777genius/review-router/${ref}/${RESEED_SCRIPT_PATH}`;
+  const ref = env.REVIEW_ROUTER_RESEED_BOOTSTRAP_REF?.trim() || "main";
+  return `https://raw.githubusercontent.com/777genius/review-router-saas/${ref}/${RESEED_SCRIPT_PATH}`;
 }
 
 function defaultWebUrlForEnvironment(env: NodeJS.ProcessEnv): string {

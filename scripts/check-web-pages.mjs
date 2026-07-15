@@ -68,7 +68,7 @@ const redirectChecks = [
   ],
   [
     "/install/codex-reseed",
-    "https://raw.githubusercontent.com/777genius/review-router/main/scripts/reseed-codex-rotating-auth.sh",
+    "https://raw.githubusercontent.com/777genius/review-router-saas/main/scripts/reseed-codex-rotating-auth.sh",
   ],
 ];
 

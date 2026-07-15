@@ -98,14 +98,24 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
     );
   });
 
-  it("pins the one-command reseed bootstrap to the configured action SHA", () => {
+  it("keeps the reseed bootstrap on its own repository ref", () => {
     expect(
       resolveCodexReseedInstallRedirect({
         REVIEW_ROUTER_ACTION_REF:
           "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
       } as unknown as NodeJS.ProcessEnv),
     ).toBe(
-      "https://raw.githubusercontent.com/777genius/review-router/0123456789abcdef0123456789abcdef01234567/scripts/reseed-codex-rotating-auth.sh",
+      "https://raw.githubusercontent.com/777genius/review-router-saas/main/scripts/reseed-codex-rotating-auth.sh",
+    );
+  });
+
+  it("supports pinning the reseed bootstrap independently", () => {
+    expect(
+      resolveCodexReseedInstallRedirect({
+        REVIEW_ROUTER_RESEED_BOOTSTRAP_REF: "v1.2.3",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(
+      "https://raw.githubusercontent.com/777genius/review-router-saas/v1.2.3/scripts/reseed-codex-rotating-auth.sh",
     );
   });
 
