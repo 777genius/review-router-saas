@@ -120,9 +120,17 @@ Only the exact value `true` enables draft review. Removing the variable, or
 setting any other value, keeps draft pull requests skipped. Fork and bot pull
 requests remain blocked in both modes.
 
-Reviews have a 60-minute job budget, with the review subprocess stopped after
-55 minutes so cleanup can finish. To skip oversized pull requests before any
-OAuth lease or Codex session is used, set a maximum for `additions + deletions`:
+Reviews have a 60-minute job budget by default, with the review subprocess
+stopped five minutes earlier so cleanup can finish. Override the full job
+budget per repository with an integer from 10 through 360 minutes:
+
+```bash
+gh variable set REVIEW_ROUTER_TIMEOUT_MINUTES --repo OWNER/REPOSITORY --body 180
+gh variable delete REVIEW_ROUTER_TIMEOUT_MINUTES --repo OWNER/REPOSITORY
+```
+
+To skip oversized pull requests before any OAuth lease or Codex session is
+used, set a maximum for `additions + deletions`:
 
 ```bash
 gh variable set REVIEW_ROUTER_MAX_CHANGED_LINES --repo OWNER/REPOSITORY --body 10000

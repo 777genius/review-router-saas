@@ -22,6 +22,10 @@ inputs:
     description: Skip review when additions plus deletions exceed this value. Zero disables the limit.
     required: false
     default: "0"
+  review-timeout-minutes:
+    description: Full review job timeout. The runtime reserves five minutes for cleanup.
+    required: false
+    default: "60"
   auth-json:
     description: Codex OAuth auth JSON.
     required: false

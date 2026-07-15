@@ -75,6 +75,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(actionYml).toContain("provider-instance-id:\n    description:");
     expect(actionYml).toContain("review-drafts:\n    description:");
     expect(actionYml).toContain("max-changed-lines:\n    description:");
+    expect(actionYml).toContain("review-timeout-minutes:\n    description:");
     expect(actionYml).toContain("auth-json:\n    description:");
     expect(actionYml).toContain("claude-code-oauth-token:\n    description:");
     expect(actionYml).toContain("openrouter-api-key:\n    description:");
@@ -101,6 +102,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         workflowSchemaVersion: 1,
         reviewDrafts: false,
         maxChangedLines: 0,
+        reviewTimeoutMinutes: 60,
         providerSecrets: {},
       },
       leaseId: "lease-123",
@@ -171,6 +173,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       workflowSchemaVersion: 1,
       reviewDrafts: false,
       maxChangedLines: 0,
+      reviewTimeoutMinutes: 60,
       providerSecrets: {
         claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
         openRouterApiKey: "sk-or-provider-secret",
@@ -212,6 +215,25 @@ describe("Codex rotating GitHub Action runtime", () => {
     ).toThrow("invalid_non_negative_integer_action_input:max-changed-lines");
   });
 
+  it("reads a bounded repository review timeout", () => {
+    expect(
+      readActionInputs({
+        "INPUT_API-URL": "https://api.reviewrouter.site/",
+        "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+        "INPUT_REVIEW-TIMEOUT-MINUTES": "180",
+      }).reviewTimeoutMinutes,
+    ).toBe(180);
+    for (const value of ["9", "361", "1.5"]) {
+      expect(() =>
+        readActionInputs({
+          "INPUT_API-URL": "https://api.reviewrouter.site/",
+          "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+          "INPUT_REVIEW-TIMEOUT-MINUTES": value,
+        }),
+      ).toThrow(/review-timeout-minutes/);
+    }
+  });
+
   it("reads fork agentic sandbox action inputs through the rotating contract", () => {
     const inputs = readActionInputs({
       INPUT_MODE: "fork-agentic-sandbox",
@@ -228,6 +250,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       workflowSchemaVersion: 1,
       reviewDrafts: false,
       maxChangedLines: 0,
+      reviewTimeoutMinutes: 60,
       providerSecrets: {
         claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
       },

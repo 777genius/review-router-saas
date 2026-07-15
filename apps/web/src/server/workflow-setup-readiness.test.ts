@@ -229,6 +229,8 @@ describe("workflow setup readiness", () => {
           "vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
           "review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}",
           "max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}",
+          "timeout-minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
+          "review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}",
           'provider-instance-id: "codex-rotating:123456"',
           "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
           "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",

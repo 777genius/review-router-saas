@@ -385,7 +385,12 @@ exit 17
     expect(workflow).toContain(
       "max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}",
     );
-    expect(workflow).toContain("timeout-minutes: 60");
+    expect(workflow).toContain(
+      "timeout-minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
+    );
+    expect(workflow).toContain(
+      "review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}",
+    );
     expect(workflow).toContain(
       "github.event.pull_request.head.repo.full_name == github.repository",
     );
@@ -442,6 +447,22 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(missingMaxChangedLinesInput).errors,
     ).toContain("review_job_max_changed_lines_input_required");
+
+    const missingTimeoutInput = workflow.replace(
+      "          review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}\n",
+      "",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(missingTimeoutInput).errors,
+    ).toContain("review_job_timeout_input_required");
+
+    const mismatchedTimeoutInput = workflow.replace(
+      "review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}",
+      "review-timeout-minutes: 60",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(mismatchedTimeoutInput).errors,
+    ).toContain("review_job_timeout_variable_mismatch");
 
     const legacyWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
@@ -506,6 +527,23 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(broadReviewJobPermissions).errors,
     ).toContain("review_job_requires_id_token_write");
+  });
+
+  it("renders an explicit fixed review timeout when provisioning overrides it", () => {
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      timeoutMinutes: 180,
+    });
+
+    expect(workflow).toContain("timeout-minutes: 180");
+    expect(workflow).toContain('review-timeout-minutes: "180"');
+    expect(workflow).not.toContain("vars.REVIEW_ROUTER_TIMEOUT_MINUTES");
+    expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
   });
 
   it("allows only explicit hybrid provider secret inputs in rotating workflow", () => {

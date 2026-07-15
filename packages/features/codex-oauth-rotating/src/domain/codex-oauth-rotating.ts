@@ -1,6 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import sodium from "libsodium-wrappers";
+import {
+  createReviewExecutionBudget,
+  defaultReviewJobTimeoutMinutes,
+} from "./review-execution-budget";
 
 export const codexRotatingAuthMode = "codex_subscription_oauth_rotating";
 export const codexRotatingSetupKind = "codex_oauth_rotating";
@@ -12,13 +16,16 @@ export const codexRotatingReviewDraftsVariableName =
   "REVIEW_ROUTER_REVIEW_DRAFTS";
 export const codexRotatingMaxChangedLinesVariableName =
   "REVIEW_ROUTER_MAX_CHANGED_LINES";
+export const codexRotatingTimeoutMinutesVariableName =
+  "REVIEW_ROUTER_TIMEOUT_MINUTES";
 export const codexRotatingWorkflowSchemaVersion = 1;
 export const codexForkAgenticSandboxCertificationVariable =
   "REVIEW_ROUTER_FORK_AGENTIC_SANDBOX";
 export const codexForkAgenticSandboxCertificationValue = "certified";
 export const codexRotatingAuthJsonMaxBytes = 32 * 1024;
 export const codexRotatingDefaultRunner = "ubuntu-24.04";
-export const codexRotatingDefaultTimeoutMinutes = 60;
+export const codexRotatingDefaultTimeoutMinutes =
+  defaultReviewJobTimeoutMinutes;
 export const codexRotatingDefaultRefreshScheduleCron = "17 */6 * * *";
 export const codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
 
@@ -387,8 +394,17 @@ export function renderCodexRotatingAdvisoryWorkflow(
 ): string {
   assertSafeActionRef(options.actionRef);
   const runnerLabel = options.runnerLabel ?? codexRotatingDefaultRunner;
-  const timeoutMinutes =
-    options.timeoutMinutes ?? codexRotatingDefaultTimeoutMinutes;
+  const timeoutMinutes = createReviewExecutionBudget(
+    options.timeoutMinutes ?? codexRotatingDefaultTimeoutMinutes,
+  ).jobTimeoutMinutes;
+  const reviewJobTimeout =
+    options.timeoutMinutes === undefined
+      ? `\${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${timeoutMinutes}') }}`
+      : String(timeoutMinutes);
+  const reviewActionTimeout =
+    options.timeoutMinutes === undefined
+      ? `\${{ vars.${codexRotatingTimeoutMinutesVariableName} || '${timeoutMinutes}' }}`
+      : JSON.stringify(String(timeoutMinutes));
   const schemaVersion =
     options.workflowSchemaVersion ?? codexRotatingWorkflowSchemaVersion;
   const refreshScheduleCron =
@@ -421,7 +437,7 @@ jobs:
   codex-review:
     name: codex-review
     runs-on: ${runnerLabel}
-    timeout-minutes: ${timeoutMinutes}
+    timeout-minutes: ${reviewJobTimeout}
     concurrency:
       group: ${concurrencyGroup}
       queue: max
@@ -440,6 +456,7 @@ jobs:
           workflow-schema-version: "${schemaVersion}"
           review-drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}
           max-changed-lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
+          review-timeout-minutes: ${reviewActionTimeout}
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
 ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
     options.forkAgenticSandboxEnabled === true
@@ -448,7 +465,7 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
   fork-sandbox-review:
     name: fork-sandbox-review
     runs-on: ${runnerLabel}
-    timeout-minutes: ${timeoutMinutes}
+    timeout-minutes: ${reviewJobTimeout}
     concurrency:
       group: ${concurrencyGroup}
       queue: max
@@ -505,6 +522,7 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
           api-url: ${JSON.stringify(options.apiUrl)}
           provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
           workflow-schema-version: "${schemaVersion}"
+          review-timeout-minutes: ${reviewActionTimeout}
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
 ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}        env:
           REVIEW_ROUTER_PR_WORKSPACE: \${{ github.workspace }}/safe-workspace
@@ -707,6 +725,17 @@ export function scanCodexRotatingAdvisoryWorkflow(
     )
   ) {
     errors.push("review_job_max_changed_lines_input_required");
+  }
+  if (!reviewJob.includes("review-timeout-minutes:")) {
+    errors.push("review_job_timeout_input_required");
+  }
+  if (
+    reviewJob.includes(`vars.${codexRotatingTimeoutMinutesVariableName}`) &&
+    !reviewJob.includes(
+      `review-timeout-minutes: \${{ vars.${codexRotatingTimeoutMinutesVariableName} || '${codexRotatingDefaultTimeoutMinutes}' }}`,
+    )
+  ) {
+    errors.push("review_job_timeout_variable_mismatch");
   }
   if (!forkSandboxEnabled) {
     for (const [pattern, code] of [

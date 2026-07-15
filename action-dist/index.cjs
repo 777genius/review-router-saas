@@ -20507,6 +20507,21 @@ B.prototype.to_Uint8Array = function() {
 }, t.add = o, t.base64_variants = m, t.compare = l, t.from_base64 = x, t.from_hex = b, t.from_string = v, t.increment = p, t.is_zero = h, t.memcmp = i, t.memzero = y, t.output_formats = T, t.pad = u, t.unpad = d, t.ready = s, t.symbols = c, t.to_base64 = E, t.to_hex = f, t.to_string = g;
 var libsodium_wrappers_default = t;
 
+// packages/features/codex-oauth-rotating/src/domain/review-execution-budget.ts
+var defaultReviewJobTimeoutMinutes = 60;
+var minimumReviewJobTimeoutMinutes = 10;
+var maximumReviewJobTimeoutMinutes = 360;
+var reviewCleanupReserveMinutes = 5;
+function createReviewExecutionBudget(jobTimeoutMinutes) {
+  if (!Number.isSafeInteger(jobTimeoutMinutes) || jobTimeoutMinutes < minimumReviewJobTimeoutMinutes || jobTimeoutMinutes > maximumReviewJobTimeoutMinutes) {
+    throw new Error("invalid_review_execution_budget:jobTimeoutMinutes");
+  }
+  return {
+    jobTimeoutMinutes,
+    runtimeTimeoutMinutes: jobTimeoutMinutes - reviewCleanupReserveMinutes
+  };
+}
+
 // packages/features/codex-oauth-rotating/src/domain/codex-oauth-rotating.ts
 var codexRotatingAuthMode = "codex_subscription_oauth_rotating";
 var codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
@@ -20788,7 +20803,6 @@ var oidcRequestTimeoutMs = 2e4;
 var githubRequestTimeoutMs = 3e4;
 var networkRetryMaxAttempts = 3;
 var networkRetryBaseDelayMs = 750;
-var fullReviewRuntimeTimeoutMs = 55 * 60 * 1e3;
 var fullRuntimeProgressCommentMarker = "<!-- review-router-progress-tracker -->";
 var providerNeutralReviewFindingsArtifactFileName = "reviewrouter-findings.json";
 var reviewThreadLifecycleResolveTokenEnvKey = "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN";
@@ -21256,6 +21270,7 @@ function readActionInputs(env) {
     workflowSchemaVersion,
     reviewDrafts: readBooleanInput(env, "review-drafts"),
     maxChangedLines: readNonNegativeIntegerInput(env, "max-changed-lines"),
+    reviewTimeoutMinutes: readReviewTimeoutMinutesInput(env),
     providerSecrets: {
       ...claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {},
       ...openRouterApiKey ? { openRouterApiKey } : {}
@@ -21361,6 +21376,22 @@ function readNonNegativeIntegerInput(env, name) {
     throw new Error(`invalid_non_negative_integer_action_input:${name}`);
   }
   return parsed;
+}
+function readReviewTimeoutMinutesInput(env) {
+  const value = readInput(env, "review-timeout-minutes") || String(defaultReviewJobTimeoutMinutes);
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(
+      "invalid_positive_integer_action_input:review-timeout-minutes"
+    );
+  }
+  const parsed = Number(value);
+  try {
+    return createReviewExecutionBudget(parsed).jobTimeoutMinutes;
+  } catch {
+    throw new Error(
+      "invalid_review_timeout_action_input:review-timeout-minutes"
+    );
+  }
 }
 function optionalSecretInput(env, name) {
   const value = readRawInput(env, name);
@@ -22488,7 +22519,7 @@ async function runFullReviewRouterRuntime(input) {
       cwd: input.workspace,
       env: childEnv,
       streamOutput: input.io,
-      timeoutMs: fullReviewRuntimeTimeoutMs
+      timeoutMs: createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3
     });
   } catch (error51) {
     throw classifyPostWritebackCodexFailure(error51);

@@ -54,6 +54,10 @@ import {
   validateCodexAuthJsonBytes,
 } from "../domain/codex-oauth-rotating";
 import { decidePullRequestReviewAdmission } from "../domain/pull-request-review-admission";
+import {
+  createReviewExecutionBudget,
+  defaultReviewJobTimeoutMinutes,
+} from "../domain/review-execution-budget";
 
 declare const __dirname: string | undefined;
 
@@ -95,7 +99,6 @@ const oidcRequestTimeoutMs = 20_000;
 const githubRequestTimeoutMs = 30_000;
 const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
-const fullReviewRuntimeTimeoutMs = 55 * 60 * 1000;
 const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
 const providerNeutralReviewFindingsArtifactFileName =
@@ -126,6 +129,7 @@ type ActionInputs = {
   readonly workflowSchemaVersion: number;
   readonly reviewDrafts: boolean;
   readonly maxChangedLines: number;
+  readonly reviewTimeoutMinutes: number;
   readonly providerSecrets: ProviderSecretInputs;
 };
 
@@ -755,6 +759,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
     workflowSchemaVersion,
     reviewDrafts: readBooleanInput(env, "review-drafts"),
     maxChangedLines: readNonNegativeIntegerInput(env, "max-changed-lines"),
+    reviewTimeoutMinutes: readReviewTimeoutMinutesInput(env),
     providerSecrets: {
       ...(claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {}),
       ...(openRouterApiKey ? { openRouterApiKey } : {}),
@@ -895,6 +900,25 @@ function readNonNegativeIntegerInput(
     throw new Error(`invalid_non_negative_integer_action_input:${name}`);
   }
   return parsed;
+}
+
+function readReviewTimeoutMinutesInput(env: NodeJS.ProcessEnv): number {
+  const value =
+    readInput(env, "review-timeout-minutes") ||
+    String(defaultReviewJobTimeoutMinutes);
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Error(
+      "invalid_positive_integer_action_input:review-timeout-minutes",
+    );
+  }
+  const parsed = Number(value);
+  try {
+    return createReviewExecutionBudget(parsed).jobTimeoutMinutes;
+  } catch {
+    throw new Error(
+      "invalid_review_timeout_action_input:review-timeout-minutes",
+    );
+  }
 }
 
 function optionalSecretInput(
@@ -2426,7 +2450,11 @@ async function runFullReviewRouterRuntime(input: {
       cwd: input.workspace,
       env: childEnv,
       streamOutput: input.io,
-      timeoutMs: fullReviewRuntimeTimeoutMs,
+      timeoutMs:
+        createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes)
+          .runtimeTimeoutMinutes *
+        60 *
+        1000,
     });
   } catch (error) {
     throw classifyPostWritebackCodexFailure(error);

@@ -75,6 +75,11 @@ assertIncludes(
   "max-changed-lines:\n    description:",
   "action.yml must expose max-changed-lines",
 );
+assertIncludes(
+  actionYml,
+  "review-timeout-minutes:\n    description:",
+  "action.yml must expose review-timeout-minutes",
+);
 
 for (const forbidden of [
   "runs.pre",
@@ -138,6 +143,11 @@ assertIncludes(
   bundle,
   "max_changed_lines_exceeded",
   "action bundle must enforce the changed-line admission limit",
+);
+assertIncludes(
+  bundle,
+  "invalid_review_execution_budget:jobTimeoutMinutes",
+  "action bundle must enforce the review execution budget",
 );
 
 if (requireBinary) {
