@@ -77,6 +77,7 @@ If touching GitHub/OIDC/workflow setup, also read:
 - [Generated Workflow Security](./architecture/15-generated-workflow-security.md)
 - [Action Control Plane Protocol](./architecture/10-control-plane-protocol.md)
 - [OIDC Validation and Action Session Security](./architecture/26-oidc-validation-and-action-session-security.md)
+- [Incremental Review Snapshots](./architecture/46-incremental-review-snapshots.md)
 - [GitHub/OIDC Reality Spike](./spikes/github-app-oidc-reality-spike.md)
 
 If touching provider/auth setup, also read:

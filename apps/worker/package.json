@@ -11,6 +11,7 @@
     "@reviewrouter/features-org-ruleset-provisioning": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
+    "@reviewrouter/features-review-snapshots": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",

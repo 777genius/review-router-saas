@@ -15,6 +15,7 @@
     "@reviewrouter/features-codex-oauth-rotating": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-review-providers": "workspace:*",
+    "@reviewrouter/features-review-snapshots": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "jose": "^6.2.3",
     "zod": "^4.4.2"

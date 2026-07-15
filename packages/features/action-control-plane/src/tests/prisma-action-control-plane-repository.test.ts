@@ -1,6 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { codexRotatingCommentTokenRefreshTtlMs } from "../domain/codex-rotating-oauth-posting-window.js";
+import {
+  codexRotatingCommentTokenRefreshTtlMs,
+  codexRotatingReviewSnapshotAccessTtlMs,
+} from "../domain/codex-rotating-oauth-posting-window.js";
 import {
   orgRulesetTargetsRepository,
   PrismaActionControlPlaneRepository,
@@ -117,6 +120,21 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
         repo: "example",
       },
     });
+    await expect(
+      repository.authorizeReviewSnapshotAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      scope: {
+        workspaceId: "workspace_1",
+        repositoryId: "repo_1",
+        sourceRunId: "9001",
+        sourceRunAttempt: "2",
+      },
+    });
   });
 
   it("closes completed leases after the posting window expires", async () => {
@@ -130,6 +148,46 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
 
     await expect(
       repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+  });
+
+  it("keeps snapshot access active for long reviews without extending writeback access", async () => {
+    const { repository } = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(
+        now.getTime() - codexRotatingCommentTokenRefreshTtlMs - 1,
+      ),
+    });
+
+    await expect(
+      repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+    await expect(
+      repository.authorizeReviewSnapshotAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+
+    const expired = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(
+        now.getTime() - codexRotatingReviewSnapshotAccessTtlMs - 1,
+      ),
+    });
+    await expect(
+      expired.repository.authorizeReviewSnapshotAccess({
         leaseId: "lease_1",
         providerInstanceId: "codex-rotating:123456",
         now,
@@ -176,7 +234,13 @@ function buildCodexRotatingRepository(lease: {
             status: "active",
           },
         },
-        leases: [lease],
+        leases: [
+          {
+            ...lease,
+            githubRunId: "9001",
+            githubRunAttempt: "2",
+          },
+        ],
       }),
     },
   } as unknown as PrismaClient;

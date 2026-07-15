@@ -67,6 +67,7 @@ import {
   resolveReviewRouterTrustedActionRefs,
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
+import { PrismaReviewSnapshotRepository } from "@reviewrouter/features-review-snapshots";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
@@ -205,6 +206,16 @@ export async function createApiApp(
                   privateKey: githubAppPrivateKey,
                 })
               : undefined;
+          const codexRotatingOAuth = new PrismaCodexRotatingOAuthRepository(
+            prisma,
+            {
+              actionRef: resolveReviewRouterActionRef(),
+              allowedActionRefs: resolveReviewRouterTrustedActionRefs(),
+              actionOwnerRepo: resolveActionOwnerRepo(
+                process.env.REVIEW_ROUTER_ACTION_REF,
+              ),
+            },
+          );
           const ledgerSecret =
             process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
             options.actionSessionSecret;
@@ -244,13 +255,9 @@ export async function createApiApp(
               clock,
             ),
             replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
-            codexRotatingOAuth: new PrismaCodexRotatingOAuthRepository(prisma, {
-              actionRef: resolveReviewRouterActionRef(),
-              allowedActionRefs: resolveReviewRouterTrustedActionRefs(),
-              actionOwnerRepo: resolveActionOwnerRepo(
-                process.env.REVIEW_ROUTER_ACTION_REF,
-              ),
-            }),
+            codexRotatingOAuth,
+            codexRotatingReviewSnapshotAccess: codexRotatingOAuth,
+            reviewSnapshots: new PrismaReviewSnapshotRepository(prisma),
             codexRotatingRuntimeGate: {
               assertCodexRotatingOAuthEnabled(input: {
                 readonly repositoryFullName: string;
