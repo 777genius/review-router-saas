@@ -7,4 +7,5 @@ export {
   createCodexRotatingSalt,
   encodeCodexRotatingSetupManifest,
   renderCodexRotatingInstallerCommand,
+  type CodexRotatingInstallerArgument,
 } from "@reviewrouter/features-codex-oauth-rotating";

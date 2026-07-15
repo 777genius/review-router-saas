@@ -8,6 +8,7 @@ import {
   createCodexRotatingSalt,
   encodeCodexRotatingSetupManifest,
   renderCodexRotatingInstallerCommand,
+  type CodexRotatingInstallerArgument,
 } from "@reviewrouter/features-provider-setup";
 import { isCodexRotatingOAuthAllowedForRepository } from "@reviewrouter/platform-config";
 import { z } from "zod";
@@ -50,6 +51,7 @@ export async function issueCodexRotatingSetupCommand(input: {
   readonly installer: CodexRotatingSeedScriptDescriptor;
   readonly setupManifestUrl: string;
   readonly setupConfirmUrl: string;
+  readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
   readonly now?: Date;
 }): Promise<{
   readonly command: string;
@@ -129,6 +131,9 @@ export async function issueCodexRotatingSetupCommand(input: {
       manifest,
       setupManifestUrl: input.setupManifestUrl,
       setupConfirmUrl: input.setupConfirmUrl,
+      ...(input.installerArguments
+        ? { installerArguments: input.installerArguments }
+        : {}),
     }),
     expiresAt: manifest.expiresAt,
     providerInstanceId,

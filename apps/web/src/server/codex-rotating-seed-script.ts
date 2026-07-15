@@ -5,6 +5,7 @@ import { join } from "node:path";
 const DEFAULT_HOSTED_WEB_URL = "https://reviewrouter.site";
 const DEFAULT_LOCAL_WEB_URL = "http://localhost:3000";
 const SCRIPT_PATH = "scripts/seed-codex-rotating-auth.sh";
+const RESEED_SCRIPT_PATH = "scripts/reseed-codex-rotating-auth.sh";
 
 export type CodexRotatingSeedScriptDescriptor = {
   readonly url: string;
@@ -66,6 +67,15 @@ export function resolveCodexRotatingInstallRedirect(
   const pinnedSha = actionRef?.match(/@([a-f0-9]{40})$/i)?.[1];
   const ref = pinnedSha ?? "main";
   return `https://raw.githubusercontent.com/777genius/review-router/${ref}/scripts/seed-codex-rotating-auth.sh`;
+}
+
+export function resolveCodexReseedInstallRedirect(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const actionRef = env.REVIEW_ROUTER_ACTION_REF?.trim();
+  const pinnedSha = actionRef?.match(/@([a-f0-9]{40})$/i)?.[1];
+  const ref = pinnedSha ?? "main";
+  return `https://raw.githubusercontent.com/777genius/review-router/${ref}/${RESEED_SCRIPT_PATH}`;
 }
 
 function defaultWebUrlForEnvironment(env: NodeJS.ProcessEnv): string {

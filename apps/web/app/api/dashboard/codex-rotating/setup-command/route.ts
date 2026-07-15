@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
-import { isCodexRotatingOAuthAllowedForRepository } from "@reviewrouter/platform-config";
 import { assertDashboardRepositoryMutationAllowed } from "../../../../../src/server/dashboard-mutations";
-import { createDashboardRateLimitPolicy } from "../../../../../src/server/dashboard-rate-limits";
 import { getPrisma } from "../../../../../src/server/prisma";
-import {
-  resolveCodexRotatingPublicWebUrl,
-  resolveCodexRotatingSeedScriptDescriptor,
-} from "../../../../../src/server/codex-rotating-seed-script";
-import { issueCodexRotatingSetupCommand } from "../../../../../src/server/codex-rotating-setup-manifest";
+import { issueCodexRotatingSetupForRepository } from "../../../../../src/server/codex-rotating-setup-command";
 import { codexRotatingSecretName } from "@reviewrouter/features-provider-setup";
 
 export async function POST(request: Request): Promise<
@@ -63,43 +57,13 @@ export async function POST(request: Request): Promise<
       githubRepositoryId: repository.githubRepositoryId,
       installation: repository.installation,
     };
-    if (!repository.selected) throw new Error("repository_not_selected");
-    if (repository.archived) throw new Error("repository_archived");
-    if (githubRepository.installation.status !== "active") {
-      throw new Error("installation_not_active");
-    }
-    if (!isCodexRotatingOAuthAllowedForRepository(repository.fullName)) {
-      throw new Error("codex_rotating_not_enabled");
-    }
-
     await assertDashboardRepositoryMutationAllowed(
       workspaceId,
       githubRepository,
     );
-    await createDashboardRateLimitPolicy(prisma).assertReviewConfigSaveAllowed({
-      workspaceId,
-      resourceId: `codex-rotating-setup:${repositoryId}`,
-    });
-
-    const baseUrl = resolveCodexRotatingPublicWebUrl();
-    const setupManifestUrl = new URL(
-      "/api/codex-rotating/setup-manifest",
-      baseUrl,
-    ).toString();
-    const setupConfirmUrl = new URL(
-      "/api/codex-rotating/setup-confirm",
-      baseUrl,
-    ).toString();
-    const installer = resolveCodexRotatingSeedScriptDescriptor();
-    const setup = await issueCodexRotatingSetupCommand({
+    const setup = await issueCodexRotatingSetupForRepository({
       prisma,
-      workspaceId,
-      repositoryId,
-      repositoryFullName: repository.fullName,
-      githubRepositoryId: githubRepository.githubRepositoryId.toString(),
-      installer,
-      setupManifestUrl,
-      setupConfirmUrl,
+      repository,
     });
 
     return NextResponse.json({

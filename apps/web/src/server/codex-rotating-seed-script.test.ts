@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  resolveCodexReseedInstallRedirect,
   resolveCodexRotatingInstallRedirect,
   resolveCodexRotatingPublicWebUrl,
   resolveCodexRotatingSeedScriptDescriptor,
@@ -94,6 +95,17 @@ describe("resolveCodexRotatingSeedScriptDescriptor", () => {
       } as unknown as NodeJS.ProcessEnv),
     ).toBe(
       "https://raw.githubusercontent.com/777genius/review-router/0123456789abcdef0123456789abcdef01234567/scripts/seed-codex-rotating-auth.sh",
+    );
+  });
+
+  it("pins the one-command reseed bootstrap to the configured action SHA", () => {
+    expect(
+      resolveCodexReseedInstallRedirect({
+        REVIEW_ROUTER_ACTION_REF:
+          "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      } as unknown as NodeJS.ProcessEnv),
+    ).toBe(
+      "https://raw.githubusercontent.com/777genius/review-router/0123456789abcdef0123456789abcdef01234567/scripts/reseed-codex-rotating-auth.sh",
     );
   });
 

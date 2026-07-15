@@ -1,0 +1,113 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  authorizeGitHubCliRepository: vi.fn(),
+  issueCodexRotatingSetupForRepository: vi.fn(),
+  findFirst: vi.fn(),
+}));
+
+vi.mock(
+  "../../../../../src/server/github-cli-repository-authorization",
+  () => ({
+    authorizeGitHubCliRepository: mocks.authorizeGitHubCliRepository,
+  }),
+);
+vi.mock("../../../../../src/server/codex-rotating-setup-command", () => ({
+  issueCodexRotatingSetupForRepository:
+    mocks.issueCodexRotatingSetupForRepository,
+}));
+vi.mock("../../../../../src/server/prisma", () => ({
+  getPrisma: () => ({ repositoryConnection: { findFirst: mocks.findFirst } }),
+}));
+
+import { POST } from "./route";
+
+describe("Codex rotating CLI setup command route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.authorizeGitHubCliRepository.mockResolvedValue({
+      githubRepositoryId: "1185393047",
+      fullName: "Padelapp-Club/monorepository",
+    });
+    mocks.findFirst.mockResolvedValue({
+      id: "repo_1",
+      workspaceId: "workspace_1",
+      provider: "github",
+      githubRepositoryId: 1185393047n,
+      fullName: "Padelapp-Club/monorepository",
+      selected: true,
+      archived: false,
+      installation: { status: "active" },
+    });
+    mocks.issueCodexRotatingSetupForRepository.mockResolvedValue({
+      command: "safe setup command",
+      expiresAt: "2026-07-15T17:00:00.000Z",
+      providerInstanceId: "codex-rotating:1185393047",
+    });
+  });
+
+  it("authorizes with the request token and returns a fresh-login command", async () => {
+    const response = await POST(request({ reuseCurrentAuth: false }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.authorizeGitHubCliRepository).toHaveBeenCalledWith({
+      accessToken: "github-token-value",
+      repositoryFullName: "Padelapp-Club/monorepository",
+    });
+    expect(mocks.issueCodexRotatingSetupForRepository).toHaveBeenCalledWith(
+      expect.objectContaining({ installerArguments: ["--force-reseed"] }),
+    );
+    expect(body.command).toBe("safe setup command");
+    expect(JSON.stringify(body)).not.toContain("github-token-value");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("requires an explicit flag before reusing dedicated local auth", async () => {
+    const response = await POST(request({ reuseCurrentAuth: true }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.issueCodexRotatingSetupForRepository).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installerArguments: ["--reuse-existing-auth-i-know-it-is-current"],
+      }),
+    );
+  });
+
+  it("rejects missing bearer auth before repository lookup", async () => {
+    const response = await POST(
+      new Request(
+        "https://reviewrouter.site/api/codex-rotating/cli/setup-command",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            repository: "Padelapp-Club/monorepository",
+          }),
+        },
+      ),
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: "github_cli_token_required",
+    });
+    expect(mocks.authorizeGitHubCliRepository).not.toHaveBeenCalled();
+  });
+});
+
+function request(options: { readonly reuseCurrentAuth: boolean }): Request {
+  return new Request(
+    "https://reviewrouter.site/api/codex-rotating/cli/setup-command",
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer github-token-value",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        repository: "Padelapp-Club/monorepository",
+        reuseCurrentAuth: options.reuseCurrentAuth,
+      }),
+    },
+  );
+}

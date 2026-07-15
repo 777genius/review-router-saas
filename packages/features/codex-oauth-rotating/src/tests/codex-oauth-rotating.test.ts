@@ -240,6 +240,32 @@ describe("Codex rotating auth domain", () => {
     expect(command).toMatch(/\nREVIEW_ROUTER_INSTALL$/);
   });
 
+  it("renders only whitelisted reseed arguments", () => {
+    const manifest = buildCodexRotatingSetupManifest({
+      repositoryFullName: "777genius/agent-teams-ai",
+      installerUrl: "https://reviewrouter.site/install/codex-rotating",
+      installerVersion: "v1.2.3",
+      installerSha256:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      now: new Date("2026-05-25T12:00:00.000Z"),
+    });
+
+    expect(
+      renderCodexRotatingInstallerCommand({
+        manifest,
+        installerArguments: ["--force-reseed"],
+      }),
+    ).toContain('bash "$tmp" --confirm-write --force-reseed');
+    expect(
+      renderCodexRotatingInstallerCommand({
+        manifest,
+        installerArguments: ["--reuse-existing-auth-i-know-it-is-current"],
+      }),
+    ).toContain(
+      'bash "$tmp" --confirm-write --reuse-existing-auth-i-know-it-is-current',
+    );
+  });
+
   it("executes the rendered installer command end-to-end in a sandbox", () => {
     withRenderedInstallerCommandFixture({
       installerBody: `#!/usr/bin/env bash

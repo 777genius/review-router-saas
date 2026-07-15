@@ -299,6 +299,7 @@ export function renderCodexRotatingInstallerCommand(input: {
   readonly manifestBase64?: string;
   readonly setupManifestUrl?: string;
   readonly setupConfirmUrl?: string;
+  readonly installerArguments?: readonly CodexRotatingInstallerArgument[];
 }): string {
   const manifestBase64 =
     input.manifestBase64 ?? encodeCodexRotatingSetupManifest(input.manifest);
@@ -353,10 +354,16 @@ export function renderCodexRotatingInstallerCommand(input: {
     "  exit 1",
     "fi",
     ...envLines,
-    'bash "$tmp" --confirm-write',
+    ['bash "$tmp" --confirm-write', ...(input.installerArguments ?? [])].join(
+      " ",
+    ),
     "REVIEW_ROUTER_INSTALL",
   ].join("\n");
 }
+
+export type CodexRotatingInstallerArgument =
+  | "--force-reseed"
+  | "--reuse-existing-auth-i-know-it-is-current";
 
 export type CodexRotatingWorkflowOptions = {
   readonly actionRef: string;

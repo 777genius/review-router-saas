@@ -88,6 +88,26 @@ Hosted API demo smoke:
 REVIEW_ROUTER_API_URL=https://api.reviewrouter.site pnpm hosted:api-demo:check
 ```
 
+## Codex OAuth Reseed
+
+Reconnect a repository-scoped rotating Codex session without signing in to the
+ReviewRouter dashboard:
+
+```bash
+curl -fsSL https://reviewrouter.site/install/codex-reseed | bash -s -- \
+  --repo OWNER/REPOSITORY
+```
+
+The bootstrap uses the current `gh auth` token only for a request-scoped GitHub
+repository permission check. It performs a fresh Codex login in the dedicated
+`~/.reviewrouter/codex/OWNER-REPOSITORY` home, writes `auth.json` directly to
+the repository GitHub Actions secret, and confirms the new rotating generation.
+The GitHub token and Codex OAuth file are not persisted by ReviewRouter.
+
+Use `--reuse-current-auth` only immediately after creating a known-current
+session in that dedicated home. The default fresh login avoids reseeding stale
+local OAuth state.
+
 Public demo endpoints:
 
 ```text

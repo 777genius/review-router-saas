@@ -66,6 +66,10 @@ const redirectChecks = [
     "/install/codex",
     "https://raw.githubusercontent.com/777genius/review-router/main/scripts/seed-codex-rotating-auth.sh",
   ],
+  [
+    "/install/codex-reseed",
+    "https://raw.githubusercontent.com/777genius/review-router/main/scripts/reseed-codex-rotating-auth.sh",
+  ],
 ];
 
 const port = Number(process.env.REVIEW_ROUTER_WEB_SMOKE_PORT ?? 3300);
