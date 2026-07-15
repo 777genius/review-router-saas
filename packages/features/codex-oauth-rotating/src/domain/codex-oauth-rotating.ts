@@ -8,6 +8,8 @@ export const codexRotatingRuntimeAuthMode = "codex-oauth-rotating";
 export const codexRotatingRefreshRuntimeMode = "codex-oauth-refresh";
 export const codexForkAgenticSandboxRuntimeMode = "fork-agentic-sandbox";
 export const codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
+export const codexRotatingReviewDraftsVariableName =
+  "REVIEW_ROUTER_REVIEW_DRAFTS";
 export const codexRotatingWorkflowSchemaVersion = 1;
 export const codexForkAgenticSandboxCertificationVariable =
   "REVIEW_ROUTER_FORK_AGENTIC_SANDBOX";
@@ -426,7 +428,7 @@ jobs:
       group: ${concurrencyGroup}
       queue: max
       cancel-in-progress: false
-    if: \${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
+    if: \${{ (github.event.pull_request.draft == false || vars.${codexRotatingReviewDraftsVariableName} == 'true') && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
     permissions:
       id-token: write
     steps:
@@ -686,6 +688,10 @@ export function scanCodexRotatingAdvisoryWorkflow(
     if (!/\bschedule\s*:/.test(workflow)) {
       errors.push("refresh_schedule_required");
     }
+  }
+  const reviewJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
+  if (!reviewJob.includes("github.event.pull_request.draft == false")) {
+    errors.push("review_job_draft_guard_required");
   }
   if (!forkSandboxEnabled) {
     for (const [pattern, code] of [

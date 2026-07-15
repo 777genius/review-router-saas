@@ -336,7 +336,7 @@ function buildCodexRotatingSecretSetupGuidance(input: {
       "The command downloads a versioned installer, verifies SHA256 locally, then writes REVIEWROUTER_CODEX_AUTH_JSON directly to GitHub Actions secrets through gh.",
       "The installer creates a dedicated ~/.reviewrouter/codex/<repo> CODEX_HOME and does not mutate the normal ~/.codex login cache.",
       "ReviewRouter SaaS never receives plaintext auth.json; CI sends only the encrypted GitHub-secret payload needed for writeback.",
-      "Generated production workflows run on GitHub-hosted same-repository PRs only; fork, draft, and bot-triggered PRs never receive secret-bearing Codex review.",
+      "Generated production workflows run on GitHub-hosted same-repository PRs only; fork and bot-triggered PRs never receive secret-bearing Codex review. Draft review is disabled by default and can be enabled with the REVIEW_ROUTER_REVIEW_DRAFTS repository variable.",
     ],
   };
 }

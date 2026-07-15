@@ -225,6 +225,7 @@ describe("workflow setup readiness", () => {
           "permissions: {}\n\njobs:",
           "    permissions:\n      id-token: write",
           "mode: codex-oauth-rotating",
+          "vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
           'provider-instance-id: "codex-rotating:123456"',
           "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
           "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",

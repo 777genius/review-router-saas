@@ -1,5 +1,6 @@
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
@@ -842,6 +843,7 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
     "permissions: {}\n\njobs:",
     "    permissions:\n      id-token: write",
     "mode: codex-oauth-rotating",
+    `vars.${codexRotatingReviewDraftsVariableName} == 'true'`,
     `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
     "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
   ];

@@ -375,6 +375,13 @@ exit 17
     });
 
     expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain(
+      "github.event.pull_request.draft == false || vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
+    );
+    expect(workflow).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("schedule:");
     expect(workflow).toContain('cron: "17 */6 * * *"');
@@ -403,6 +410,14 @@ exit 17
       valid: true,
       errors: [],
     });
+
+    const unguardedDraftWorkflow = workflow.replace(
+      "(github.event.pull_request.draft == false || vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true') && ",
+      "",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(unguardedDraftWorkflow).errors,
+    ).toContain("review_job_draft_guard_required");
 
     const legacyWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",

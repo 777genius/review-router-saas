@@ -108,6 +108,18 @@ Use `--reuse-current-auth` only immediately after creating a known-current
 session in that dedicated home. The default fresh login avoids reseeding stale
 local OAuth state.
 
+Draft pull request review is disabled by default. Enable or disable it per
+repository without reprovisioning the workflow:
+
+```bash
+gh variable set REVIEW_ROUTER_REVIEW_DRAFTS --repo OWNER/REPOSITORY --body true
+gh variable delete REVIEW_ROUTER_REVIEW_DRAFTS --repo OWNER/REPOSITORY
+```
+
+Only the exact value `true` enables draft review. Removing the variable, or
+setting any other value, keeps draft pull requests skipped. Fork and bot pull
+requests remain blocked in both modes.
+
 Public demo endpoints:
 
 ```text

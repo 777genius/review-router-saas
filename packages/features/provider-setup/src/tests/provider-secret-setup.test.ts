@@ -47,7 +47,12 @@ describe("provider secret setup guidance", () => {
     );
     expect(guidance.commands[0]?.command).not.toContain("| bash");
     expect(guidance.warnings.join(" ")).toContain("repository-scoped");
-    expect(guidance.warnings.join(" ")).toContain("fork, draft, and bot");
+    expect(guidance.warnings.join(" ")).toContain(
+      "Draft review is disabled by default",
+    );
+    expect(guidance.warnings.join(" ")).toContain(
+      "REVIEW_ROUTER_REVIEW_DRAFTS",
+    );
     expect(guidance.commands[0]?.failureRecovery).toContain("--force-reseed");
   });
 
