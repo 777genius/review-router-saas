@@ -122,6 +122,7 @@ type ActionInputs = {
   readonly apiUrl: string;
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
+  readonly reviewDrafts: boolean;
   readonly providerSecrets: ProviderSecretInputs;
 };
 
@@ -271,7 +272,7 @@ export async function runCodexRotatingGitHubAction(
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
   }
 
-  const event = await readPullRequestEvent(env);
+  const event = await readPullRequestEvent(env, inputs.reviewDrafts);
   assertSameRepositoryPullRequest(event, env);
   const oidcToken = await requestGitHubActionsOidcToken({
     env,
@@ -738,6 +739,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
     apiUrl: requireInput(env, "api-url").replace(/\/+$/, ""),
     providerInstanceId: requireInput(env, "provider-instance-id"),
     workflowSchemaVersion,
+    reviewDrafts: readBooleanInput(env, "review-drafts"),
     providerSecrets: {
       ...(claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {}),
       ...(openRouterApiKey ? { openRouterApiKey } : {}),
@@ -857,6 +859,13 @@ function requireInput(env: NodeJS.ProcessEnv, name: string): string {
   return value;
 }
 
+function readBooleanInput(env: NodeJS.ProcessEnv, name: string): boolean {
+  const value = readInput(env, name);
+  if (!value || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error(`invalid_boolean_action_input:${name}`);
+}
+
 function optionalSecretInput(
   env: NodeJS.ProcessEnv,
   name: string,
@@ -871,8 +880,10 @@ function optionalSecretInput(
 
 async function readPullRequestEvent(
   env: NodeJS.ProcessEnv,
+  reviewDrafts: boolean,
 ): Promise<PullRequestEvent> {
-  if (env.GITHUB_EVENT_NAME !== "pull_request") {
+  const eventName = env.GITHUB_EVENT_NAME;
+  if (eventName !== "pull_request" && eventName !== "pull_request_target") {
     throw new Error("unsupported_event");
   }
   const eventPath = env.GITHUB_EVENT_PATH;
@@ -899,8 +910,15 @@ async function readPullRequestEvent(
     event.pull_request?.head?.repo?.full_name,
     "head_repo",
   );
-  if (event.pull_request?.draft === true) {
+  const draft = event.pull_request?.draft === true;
+  if (draft && !reviewDrafts) {
     throw new Error("draft_pull_request_unsupported");
+  }
+  if (draft && eventName !== "pull_request_target") {
+    throw new Error("draft_pull_request_target_required");
+  }
+  if (!draft && eventName !== "pull_request") {
+    throw new Error("ready_pull_request_event_required");
   }
   if (repository !== headRepo) {
     throw new Error("fork_pull_request_unsupported");

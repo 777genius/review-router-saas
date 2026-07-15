@@ -402,13 +402,9 @@ export function renderCodexRotatingAdvisoryWorkflow(
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]${
-      options.forkAgenticSandboxEnabled === true
-        ? `
+    types: [opened, synchronize, reopened, ready_for_review]
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]`
-        : ""
-    }${
+    types: [opened, synchronize, reopened, ready_for_review]${
       refreshScheduleCron
         ? `
   workflow_dispatch:
@@ -428,7 +424,7 @@ jobs:
       group: ${concurrencyGroup}
       queue: max
       cancel-in-progress: false
-    if: \${{ (github.event.pull_request.draft == false || vars.${codexRotatingReviewDraftsVariableName} == 'true') && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
+    if: \${{ ((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.${codexRotatingReviewDraftsVariableName} == 'true')) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
     permissions:
       id-token: write
     steps:
@@ -440,6 +436,7 @@ jobs:
           api-url: ${JSON.stringify(options.apiUrl)}
           provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
           workflow-schema-version: "${schemaVersion}"
+          review-drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
 ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
     options.forkAgenticSandboxEnabled === true
@@ -693,9 +690,16 @@ export function scanCodexRotatingAdvisoryWorkflow(
   if (!reviewJob.includes("github.event.pull_request.draft == false")) {
     errors.push("review_job_draft_guard_required");
   }
+  if (
+    reviewJob.includes(`vars.${codexRotatingReviewDraftsVariableName}`) &&
+    !reviewJob.includes(
+      `review-drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}`,
+    )
+  ) {
+    errors.push("review_job_draft_input_required");
+  }
   if (!forkSandboxEnabled) {
     for (const [pattern, code] of [
-      [/\bpull_request_target\s*:/, "pull_request_target_not_allowed"],
       [/\buses:\s*actions\/checkout@/i, "actions_checkout_not_allowed"],
       [/\brun:\s*[|>]?/i, "raw_run_step_not_allowed"],
     ] as const) {

@@ -305,9 +305,11 @@ describe("renderReviewRouterWorkflow", () => {
       [
         "name: ReviewRouter Codex OAuth",
         "permissions: {}\n\njobs:",
+        "pull_request_target:",
         "    permissions:\n      id-token: write",
         "mode: codex-oauth-rotating",
         "vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
+        "review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}",
         'provider-instance-id: "codex-rotating:123456"',
         "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
         "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",

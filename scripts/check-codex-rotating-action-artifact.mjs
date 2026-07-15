@@ -65,6 +65,11 @@ assertIncludes(
   "auth-json:\n    description:",
   "action.yml must expose auth-json",
 );
+assertIncludes(
+  actionYml,
+  "review-drafts:\n    description:",
+  "action.yml must expose review-drafts",
+);
 
 for (const forbidden of [
   "runs.pre",

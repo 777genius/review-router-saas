@@ -20791,7 +20791,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
   }
-  const event = await readPullRequestEvent(env);
+  const event = await readPullRequestEvent(env, inputs.reviewDrafts);
   assertSameRepositoryPullRequest(event, env);
   const oidcToken = await requestGitHubActionsOidcToken({
     env,
@@ -21213,6 +21213,7 @@ function readActionInputs(env) {
     apiUrl: requireInput(env, "api-url").replace(/\/+$/, ""),
     providerInstanceId: requireInput(env, "provider-instance-id"),
     workflowSchemaVersion,
+    reviewDrafts: readBooleanInput(env, "review-drafts"),
     providerSecrets: {
       ...claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {},
       ...openRouterApiKey ? { openRouterApiKey } : {}
@@ -21301,6 +21302,12 @@ function requireInput(env, name) {
   }
   return value;
 }
+function readBooleanInput(env, name) {
+  const value = readInput(env, name);
+  if (!value || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error(`invalid_boolean_action_input:${name}`);
+}
 function optionalSecretInput(env, name) {
   const value = readRawInput(env, name);
   if (value === void 0) {
@@ -21309,8 +21316,9 @@ function optionalSecretInput(env, name) {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : void 0;
 }
-async function readPullRequestEvent(env) {
-  if (env.GITHUB_EVENT_NAME !== "pull_request") {
+async function readPullRequestEvent(env, reviewDrafts) {
+  const eventName = env.GITHUB_EVENT_NAME;
+  if (eventName !== "pull_request" && eventName !== "pull_request_target") {
     throw new Error("unsupported_event");
   }
   const eventPath = env.GITHUB_EVENT_PATH;
@@ -21323,8 +21331,15 @@ async function readPullRequestEvent(env) {
     event.pull_request?.head?.repo?.full_name,
     "head_repo"
   );
-  if (event.pull_request?.draft === true) {
+  const draft = event.pull_request?.draft === true;
+  if (draft && !reviewDrafts) {
     throw new Error("draft_pull_request_unsupported");
+  }
+  if (draft && eventName !== "pull_request_target") {
+    throw new Error("draft_pull_request_target_required");
+  }
+  if (!draft && eventName !== "pull_request") {
+    throw new Error("ready_pull_request_event_required");
   }
   if (repository !== headRepo) {
     throw new Error("fork_pull_request_unsupported");

@@ -14,6 +14,10 @@ inputs:
     description: ReviewRouter workflow schema version.
     required: false
     default: "1"
+  review-drafts:
+    description: Allow same-repository draft review from pull_request_target.
+    required: false
+    default: "false"
   auth-json:
     description: Codex OAuth auth JSON.
     required: false

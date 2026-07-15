@@ -73,6 +73,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(actionSource).toContain("action-dist[\\\\/]index\\.cjs");
     expect(actionSource).not.toContain("process.env.GITHUB_ACTION_PATH");
     expect(actionYml).toContain("provider-instance-id:\n    description:");
+    expect(actionYml).toContain("review-drafts:\n    description:");
     expect(actionYml).toContain("auth-json:\n    description:");
     expect(actionYml).toContain("claude-code-oauth-token:\n    description:");
     expect(actionYml).toContain("openrouter-api-key:\n    description:");
@@ -97,6 +98,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         apiUrl: "https://api.reviewrouter.site",
         providerInstanceId: "codex-rotating:123456",
         workflowSchemaVersion: 1,
+        reviewDrafts: false,
         providerSecrets: {},
       },
       leaseId: "lease-123",
@@ -165,11 +167,29 @@ describe("Codex rotating GitHub Action runtime", () => {
       apiUrl: "https://api.reviewrouter.site",
       providerInstanceId: "codex-rotating:123456",
       workflowSchemaVersion: 1,
+      reviewDrafts: false,
       providerSecrets: {
         claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
         openRouterApiKey: "sk-or-provider-secret",
       },
     });
+  });
+
+  it("reads an exact boolean draft review action input", () => {
+    expect(
+      readActionInputs({
+        "INPUT_API-URL": "https://api.reviewrouter.site/",
+        "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+        "INPUT_REVIEW-DRAFTS": "true",
+      }).reviewDrafts,
+    ).toBe(true);
+    expect(() =>
+      readActionInputs({
+        "INPUT_API-URL": "https://api.reviewrouter.site/",
+        "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+        "INPUT_REVIEW-DRAFTS": "yes",
+      }),
+    ).toThrow("invalid_boolean_action_input:review-drafts");
   });
 
   it("reads fork agentic sandbox action inputs through the rotating contract", () => {
@@ -186,6 +206,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       apiUrl: "https://api.reviewrouter.site",
       providerInstanceId: "codex-rotating:123456",
       workflowSchemaVersion: 1,
+      reviewDrafts: false,
       providerSecrets: {
         claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
       },
@@ -626,6 +647,73 @@ describe("Codex rotating GitHub Action runtime", () => {
           },
         }),
       ).rejects.toThrow("github_oidc_unavailable");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows only explicitly enabled same-repository drafts from pull_request_target", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-draft-test-"));
+    const eventPath = join(tempDir, "event.json");
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        number: 240,
+        repository: { full_name: "777genius/agent-teams-ai" },
+        pull_request: {
+          draft: true,
+          head: {
+            sha: "0123456789abcdef0123456789abcdef01234567",
+            repo: { full_name: "777genius/agent-teams-ai" },
+          },
+          base: { sha: "abcdef0123456789abcdef0123456789abcdef01" },
+        },
+      }),
+    );
+    const baseEnv = {
+      "INPUT_API-URL": "https://api.reviewrouter.site/",
+      "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+      GITHUB_EVENT_PATH: eventPath,
+      GITHUB_REPOSITORY: "777genius/agent-teams-ai",
+    };
+    const runtime = {
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      io: {
+        stdout: { write: vi.fn() },
+        stderr: { write: vi.fn() },
+      },
+    };
+
+    try {
+      await expect(
+        runCodexRotatingGitHubAction({
+          ...runtime,
+          env: {
+            ...baseEnv,
+            "INPUT_REVIEW-DRAFTS": "true",
+            GITHUB_EVENT_NAME: "pull_request_target",
+          },
+        }),
+      ).rejects.toThrow("github_oidc_unavailable");
+      await expect(
+        runCodexRotatingGitHubAction({
+          ...runtime,
+          env: {
+            ...baseEnv,
+            GITHUB_EVENT_NAME: "pull_request_target",
+          },
+        }),
+      ).rejects.toThrow("draft_pull_request_unsupported");
+      await expect(
+        runCodexRotatingGitHubAction({
+          ...runtime,
+          env: {
+            ...baseEnv,
+            "INPUT_REVIEW-DRAFTS": "true",
+            GITHUB_EVENT_NAME: "pull_request",
+          },
+        }),
+      ).rejects.toThrow("draft_pull_request_target_required");
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

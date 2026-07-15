@@ -841,9 +841,11 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   const markers = [
     "name: ReviewRouter Codex OAuth",
     "permissions: {}\n\njobs:",
+    "pull_request_target:",
     "    permissions:\n      id-token: write",
     "mode: codex-oauth-rotating",
     `vars.${codexRotatingReviewDraftsVariableName} == 'true'`,
+    `review-drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}`,
     `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
     "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
   ];

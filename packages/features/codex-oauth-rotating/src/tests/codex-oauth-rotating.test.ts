@@ -375,8 +375,12 @@ exit 17
     });
 
     expect(workflow).toContain("pull_request:");
+    expect(workflow).toContain("pull_request_target:");
     expect(workflow).toContain(
-      "github.event.pull_request.draft == false || vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
+      "github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
+    );
+    expect(workflow).toContain(
+      "review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}",
     );
     expect(workflow).toContain(
       "github.event.pull_request.head.repo.full_name == github.repository",
@@ -412,12 +416,20 @@ exit 17
     });
 
     const unguardedDraftWorkflow = workflow.replace(
-      "(github.event.pull_request.draft == false || vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true') && ",
-      "",
+      "((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'))",
+      "true",
     );
     expect(
       scanCodexRotatingAdvisoryWorkflow(unguardedDraftWorkflow).errors,
     ).toContain("review_job_draft_guard_required");
+
+    const missingDraftInputWorkflow = workflow.replace(
+      "          review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}\n",
+      "",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(missingDraftInputWorkflow).errors,
+    ).toContain("review_job_draft_input_required");
 
     const legacyWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",
