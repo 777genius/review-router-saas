@@ -1,5 +1,6 @@
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  codexRotatingMaxChangedLinesVariableName,
   codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
   renderCodexRotatingAdvisoryWorkflow,
@@ -846,6 +847,7 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
     "mode: codex-oauth-rotating",
     `vars.${codexRotatingReviewDraftsVariableName} == 'true'`,
     `review-drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}`,
+    `max-changed-lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
     `provider-instance-id: ${JSON.stringify(input.providerInstanceId)}`,
     "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
   ];

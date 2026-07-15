@@ -53,6 +53,7 @@ import {
   pruneCodexRotatingChildEnv,
   validateCodexAuthJsonBytes,
 } from "../domain/codex-oauth-rotating";
+import { decidePullRequestReviewAdmission } from "../domain/pull-request-review-admission";
 
 declare const __dirname: string | undefined;
 
@@ -94,6 +95,7 @@ const oidcRequestTimeoutMs = 20_000;
 const githubRequestTimeoutMs = 30_000;
 const networkRetryMaxAttempts = 3;
 const networkRetryBaseDelayMs = 750;
+const fullReviewRuntimeTimeoutMs = 55 * 60 * 1000;
 const fullRuntimeProgressCommentMarker =
   "<!-- review-router-progress-tracker -->";
 const providerNeutralReviewFindingsArtifactFileName =
@@ -123,6 +125,7 @@ type ActionInputs = {
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
   readonly reviewDrafts: boolean;
+  readonly maxChangedLines: number;
   readonly providerSecrets: ProviderSecretInputs;
 };
 
@@ -139,6 +142,7 @@ type PullRequestEvent = {
   readonly repo: string;
   readonly headSha: string;
   readonly baseSha: string;
+  readonly changedLines?: number | undefined;
 };
 
 type PreleaseResponse = {
@@ -274,6 +278,16 @@ export async function runCodexRotatingGitHubAction(
 
   const event = await readPullRequestEvent(env, inputs.reviewDrafts);
   assertSameRepositoryPullRequest(event, env);
+  const admission = decidePullRequestReviewAdmission({
+    changedLines: event.changedLines ?? null,
+    maxChangedLines: inputs.maxChangedLines,
+  });
+  if (admission.status === "skipped") {
+    clearActionAuthEnv(env);
+    clearOidcRequestEnv(env);
+    notice(io, formatReviewAdmissionSkipNotice(event.number, admission));
+    return;
+  }
   const oidcToken = await requestGitHubActionsOidcToken({
     env,
     fetchImpl,
@@ -740,6 +754,7 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
     providerInstanceId: requireInput(env, "provider-instance-id"),
     workflowSchemaVersion,
     reviewDrafts: readBooleanInput(env, "review-drafts"),
+    maxChangedLines: readNonNegativeIntegerInput(env, "max-changed-lines"),
     providerSecrets: {
       ...(claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {}),
       ...(openRouterApiKey ? { openRouterApiKey } : {}),
@@ -866,6 +881,22 @@ function readBooleanInput(env: NodeJS.ProcessEnv, name: string): boolean {
   throw new Error(`invalid_boolean_action_input:${name}`);
 }
 
+function readNonNegativeIntegerInput(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): number {
+  const value = readInput(env, name);
+  if (!value) return 0;
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`invalid_non_negative_integer_action_input:${name}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`invalid_non_negative_integer_action_input:${name}`);
+  }
+  return parsed;
+}
+
 function optionalSecretInput(
   env: NodeJS.ProcessEnv,
   name: string,
@@ -903,6 +934,8 @@ async function readPullRequestEvent(
         readonly repo?: { readonly full_name?: unknown };
       };
       readonly base?: { readonly sha?: unknown };
+      readonly additions?: unknown;
+      readonly deletions?: unknown;
     };
   };
   const repository = requireString(event.repository?.full_name, "event_repo");
@@ -927,6 +960,10 @@ async function readPullRequestEvent(
   if (!owner || !repo) {
     throw new Error("invalid_github_repository");
   }
+  const changedLines = readPullRequestChangedLines({
+    additions: event.pull_request?.additions,
+    deletions: event.pull_request?.deletions,
+  });
   return {
     number: requireNumber(event.number, "pr_number"),
     ...(isSafeGitHubNumericId(event.repository?.id)
@@ -937,7 +974,44 @@ async function readPullRequestEvent(
     repo,
     headSha: requireSha(event.pull_request?.head?.sha, "head_sha"),
     baseSha: requireSha(event.pull_request?.base?.sha, "base_sha"),
+    ...(changedLines === undefined ? {} : { changedLines }),
   };
+}
+
+function readPullRequestChangedLines(input: {
+  readonly additions: unknown;
+  readonly deletions: unknown;
+}): number | undefined {
+  if (input.additions === undefined && input.deletions === undefined) {
+    return undefined;
+  }
+  if (
+    !Number.isSafeInteger(input.additions) ||
+    (input.additions as number) < 0 ||
+    !Number.isSafeInteger(input.deletions) ||
+    (input.deletions as number) < 0
+  ) {
+    throw new Error("invalid_event_field:changed_lines");
+  }
+  const changedLines =
+    (input.additions as number) + (input.deletions as number);
+  if (!Number.isSafeInteger(changedLines)) {
+    throw new Error("invalid_event_field:changed_lines");
+  }
+  return changedLines;
+}
+
+function formatReviewAdmissionSkipNotice(
+  pullRequestNumber: number,
+  decision: Exclude<
+    ReturnType<typeof decidePullRequestReviewAdmission>,
+    { readonly status: "admitted" }
+  >,
+): string {
+  if (decision.reason === "max_changed_lines_exceeded") {
+    return `ReviewRouter skipped PR #${pullRequestNumber}: ${decision.changedLines} changed lines exceed the configured maximum of ${decision.maxChangedLines}.`;
+  }
+  return `ReviewRouter skipped PR #${pullRequestNumber}: GitHub did not provide a changed-line count while the configured maximum is ${decision.maxChangedLines}.`;
 }
 
 async function readForkPullRequestTargetEvent(
@@ -2352,7 +2426,7 @@ async function runFullReviewRouterRuntime(input: {
       cwd: input.workspace,
       env: childEnv,
       streamOutput: input.io,
-      timeoutMs: 30 * 60 * 1000,
+      timeoutMs: fullReviewRuntimeTimeoutMs,
     });
   } catch (error) {
     throw classifyPostWritebackCodexFailure(error);

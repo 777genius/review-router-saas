@@ -70,6 +70,11 @@ assertIncludes(
   "review-drafts:\n    description:",
   "action.yml must expose review-drafts",
 );
+assertIncludes(
+  actionYml,
+  "max-changed-lines:\n    description:",
+  "action.yml must expose max-changed-lines",
+);
 
 for (const forbidden of [
   "runs.pre",
@@ -128,6 +133,11 @@ assertIncludes(
   bundle,
   "runner_disk_budget_too_low",
   "action bundle must fail closed on low runner disk before auth",
+);
+assertIncludes(
+  bundle,
+  "max_changed_lines_exceeded",
+  "action bundle must enforce the changed-line admission limit",
 );
 
 if (requireBinary) {

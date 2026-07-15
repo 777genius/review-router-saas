@@ -383,6 +383,10 @@ exit 17
       "review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}",
     );
     expect(workflow).toContain(
+      "max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}",
+    );
+    expect(workflow).toContain("timeout-minutes: 60");
+    expect(workflow).toContain(
       "github.event.pull_request.head.repo.full_name == github.repository",
     );
     expect(workflow).toContain("github.event.pull_request.user.type != 'Bot'");
@@ -430,6 +434,14 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(missingDraftInputWorkflow).errors,
     ).toContain("review_job_draft_input_required");
+
+    const missingMaxChangedLinesInput = workflow.replace(
+      "          max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}\n",
+      "",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(missingMaxChangedLinesInput).errors,
+    ).toContain("review_job_max_changed_lines_input_required");
 
     const legacyWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",

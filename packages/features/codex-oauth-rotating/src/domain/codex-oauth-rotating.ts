@@ -10,13 +10,15 @@ export const codexForkAgenticSandboxRuntimeMode = "fork-agentic-sandbox";
 export const codexRotatingSecretName = "REVIEWROUTER_CODEX_AUTH_JSON";
 export const codexRotatingReviewDraftsVariableName =
   "REVIEW_ROUTER_REVIEW_DRAFTS";
+export const codexRotatingMaxChangedLinesVariableName =
+  "REVIEW_ROUTER_MAX_CHANGED_LINES";
 export const codexRotatingWorkflowSchemaVersion = 1;
 export const codexForkAgenticSandboxCertificationVariable =
   "REVIEW_ROUTER_FORK_AGENTIC_SANDBOX";
 export const codexForkAgenticSandboxCertificationValue = "certified";
 export const codexRotatingAuthJsonMaxBytes = 32 * 1024;
 export const codexRotatingDefaultRunner = "ubuntu-24.04";
-export const codexRotatingDefaultTimeoutMinutes = 30;
+export const codexRotatingDefaultTimeoutMinutes = 60;
 export const codexRotatingDefaultRefreshScheduleCron = "17 */6 * * *";
 export const codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
 
@@ -437,6 +439,7 @@ jobs:
           provider-instance-id: ${JSON.stringify(options.providerInstanceId)}
           workflow-schema-version: "${schemaVersion}"
           review-drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}
+          max-changed-lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
 ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
     options.forkAgenticSandboxEnabled === true
@@ -697,6 +700,13 @@ export function scanCodexRotatingAdvisoryWorkflow(
     )
   ) {
     errors.push("review_job_draft_input_required");
+  }
+  if (
+    !reviewJob.includes(
+      `max-changed-lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
+    )
+  ) {
+    errors.push("review_job_max_changed_lines_input_required");
   }
   if (!forkSandboxEnabled) {
     for (const [pattern, code] of [

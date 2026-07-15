@@ -20721,6 +20721,36 @@ function decodeBase64OrBase64Url(value) {
   throw new Error("invalid_base64_value");
 }
 
+// packages/features/codex-oauth-rotating/src/domain/pull-request-review-admission.ts
+function decidePullRequestReviewAdmission(input) {
+  assertNonNegativeSafeInteger(input.maxChangedLines, "maxChangedLines");
+  if (input.maxChangedLines === 0) {
+    return { status: "admitted" };
+  }
+  if (input.changedLines === null) {
+    return {
+      status: "skipped",
+      reason: "changed_line_count_unavailable",
+      maxChangedLines: input.maxChangedLines
+    };
+  }
+  assertNonNegativeSafeInteger(input.changedLines, "changedLines");
+  if (input.changedLines > input.maxChangedLines) {
+    return {
+      status: "skipped",
+      reason: "max_changed_lines_exceeded",
+      changedLines: input.changedLines,
+      maxChangedLines: input.maxChangedLines
+    };
+  }
+  return { status: "admitted" };
+}
+function assertNonNegativeSafeInteger(value, field) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`invalid_review_admission_policy:${field}`);
+  }
+}
+
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var defaultOidcAudience = "reviewrouter";
 var forkAgenticSandboxActionMode = "fork-agentic-sandbox";
@@ -20758,6 +20788,7 @@ var oidcRequestTimeoutMs = 2e4;
 var githubRequestTimeoutMs = 3e4;
 var networkRetryMaxAttempts = 3;
 var networkRetryBaseDelayMs = 750;
+var fullReviewRuntimeTimeoutMs = 55 * 60 * 1e3;
 var fullRuntimeProgressCommentMarker = "<!-- review-router-progress-tracker -->";
 var providerNeutralReviewFindingsArtifactFileName = "reviewrouter-findings.json";
 var reviewThreadLifecycleResolveTokenEnvKey = "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN";
@@ -20793,6 +20824,16 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   }
   const event = await readPullRequestEvent(env, inputs.reviewDrafts);
   assertSameRepositoryPullRequest(event, env);
+  const admission = decidePullRequestReviewAdmission({
+    changedLines: event.changedLines ?? null,
+    maxChangedLines: inputs.maxChangedLines
+  });
+  if (admission.status === "skipped") {
+    clearActionAuthEnv(env);
+    clearOidcRequestEnv(env);
+    notice(io, formatReviewAdmissionSkipNotice(event.number, admission));
+    return;
+  }
   const oidcToken = await requestGitHubActionsOidcToken({
     env,
     fetchImpl,
@@ -21214,6 +21255,7 @@ function readActionInputs(env) {
     providerInstanceId: requireInput(env, "provider-instance-id"),
     workflowSchemaVersion,
     reviewDrafts: readBooleanInput(env, "review-drafts"),
+    maxChangedLines: readNonNegativeIntegerInput(env, "max-changed-lines"),
     providerSecrets: {
       ...claudeCodeOAuthToken ? { claudeCodeOAuthToken } : {},
       ...openRouterApiKey ? { openRouterApiKey } : {}
@@ -21308,6 +21350,18 @@ function readBooleanInput(env, name) {
   if (value === "true") return true;
   throw new Error(`invalid_boolean_action_input:${name}`);
 }
+function readNonNegativeIntegerInput(env, name) {
+  const value = readInput(env, name);
+  if (!value) return 0;
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`invalid_non_negative_integer_action_input:${name}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`invalid_non_negative_integer_action_input:${name}`);
+  }
+  return parsed;
+}
 function optionalSecretInput(env, name) {
   const value = readRawInput(env, name);
   if (value === void 0) {
@@ -21348,6 +21402,10 @@ async function readPullRequestEvent(env, reviewDrafts) {
   if (!owner || !repo) {
     throw new Error("invalid_github_repository");
   }
+  const changedLines = readPullRequestChangedLines({
+    additions: event.pull_request?.additions,
+    deletions: event.pull_request?.deletions
+  });
   return {
     number: requireNumber(event.number, "pr_number"),
     ...isSafeGitHubNumericId(event.repository?.id) ? { repositoryId: String(event.repository.id) } : {},
@@ -21355,8 +21413,28 @@ async function readPullRequestEvent(env, reviewDrafts) {
     owner,
     repo,
     headSha: requireSha(event.pull_request?.head?.sha, "head_sha"),
-    baseSha: requireSha(event.pull_request?.base?.sha, "base_sha")
+    baseSha: requireSha(event.pull_request?.base?.sha, "base_sha"),
+    ...changedLines === void 0 ? {} : { changedLines }
   };
+}
+function readPullRequestChangedLines(input) {
+  if (input.additions === void 0 && input.deletions === void 0) {
+    return void 0;
+  }
+  if (!Number.isSafeInteger(input.additions) || input.additions < 0 || !Number.isSafeInteger(input.deletions) || input.deletions < 0) {
+    throw new Error("invalid_event_field:changed_lines");
+  }
+  const changedLines = input.additions + input.deletions;
+  if (!Number.isSafeInteger(changedLines)) {
+    throw new Error("invalid_event_field:changed_lines");
+  }
+  return changedLines;
+}
+function formatReviewAdmissionSkipNotice(pullRequestNumber, decision) {
+  if (decision.reason === "max_changed_lines_exceeded") {
+    return `ReviewRouter skipped PR #${pullRequestNumber}: ${decision.changedLines} changed lines exceed the configured maximum of ${decision.maxChangedLines}.`;
+  }
+  return `ReviewRouter skipped PR #${pullRequestNumber}: GitHub did not provide a changed-line count while the configured maximum is ${decision.maxChangedLines}.`;
 }
 async function readForkPullRequestTargetEvent(env) {
   if (env.GITHUB_EVENT_NAME !== "pull_request_target") {
@@ -22410,7 +22488,7 @@ async function runFullReviewRouterRuntime(input) {
       cwd: input.workspace,
       env: childEnv,
       streamOutput: input.io,
-      timeoutMs: 30 * 60 * 1e3
+      timeoutMs: fullReviewRuntimeTimeoutMs
     });
   } catch (error51) {
     throw classifyPostWritebackCodexFailure(error51);

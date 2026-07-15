@@ -120,6 +120,18 @@ Only the exact value `true` enables draft review. Removing the variable, or
 setting any other value, keeps draft pull requests skipped. Fork and bot pull
 requests remain blocked in both modes.
 
+Reviews have a 60-minute job budget, with the review subprocess stopped after
+55 minutes so cleanup can finish. To skip oversized pull requests before any
+OAuth lease or Codex session is used, set a maximum for `additions + deletions`:
+
+```bash
+gh variable set REVIEW_ROUTER_MAX_CHANGED_LINES --repo OWNER/REPOSITORY --body 10000
+gh variable delete REVIEW_ROUTER_MAX_CHANGED_LINES --repo OWNER/REPOSITORY
+```
+
+An unset, empty, or `0` value disables the size limit. A configured limit fails
+closed when GitHub does not provide the changed-line count.
+
 Public demo endpoints:
 
 ```text

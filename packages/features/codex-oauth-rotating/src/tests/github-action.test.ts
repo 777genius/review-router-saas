@@ -74,6 +74,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(actionSource).not.toContain("process.env.GITHUB_ACTION_PATH");
     expect(actionYml).toContain("provider-instance-id:\n    description:");
     expect(actionYml).toContain("review-drafts:\n    description:");
+    expect(actionYml).toContain("max-changed-lines:\n    description:");
     expect(actionYml).toContain("auth-json:\n    description:");
     expect(actionYml).toContain("claude-code-oauth-token:\n    description:");
     expect(actionYml).toContain("openrouter-api-key:\n    description:");
@@ -99,6 +100,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         providerInstanceId: "codex-rotating:123456",
         workflowSchemaVersion: 1,
         reviewDrafts: false,
+        maxChangedLines: 0,
         providerSecrets: {},
       },
       leaseId: "lease-123",
@@ -168,6 +170,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       providerInstanceId: "codex-rotating:123456",
       workflowSchemaVersion: 1,
       reviewDrafts: false,
+      maxChangedLines: 0,
       providerSecrets: {
         claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
         openRouterApiKey: "sk-or-provider-secret",
@@ -192,6 +195,23 @@ describe("Codex rotating GitHub Action runtime", () => {
     ).toThrow("invalid_boolean_action_input:review-drafts");
   });
 
+  it("reads a non-negative changed-line limit", () => {
+    expect(
+      readActionInputs({
+        "INPUT_API-URL": "https://api.reviewrouter.site/",
+        "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+        "INPUT_MAX-CHANGED-LINES": "10000",
+      }).maxChangedLines,
+    ).toBe(10_000);
+    expect(() =>
+      readActionInputs({
+        "INPUT_API-URL": "https://api.reviewrouter.site/",
+        "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+        "INPUT_MAX-CHANGED-LINES": "-1",
+      }),
+    ).toThrow("invalid_non_negative_integer_action_input:max-changed-lines");
+  });
+
   it("reads fork agentic sandbox action inputs through the rotating contract", () => {
     const inputs = readActionInputs({
       INPUT_MODE: "fork-agentic-sandbox",
@@ -207,6 +227,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       providerInstanceId: "codex-rotating:123456",
       workflowSchemaVersion: 1,
       reviewDrafts: false,
+      maxChangedLines: 0,
       providerSecrets: {
         claudeCodeOAuthToken: "sk-ant-oat01-provider-secret",
       },
@@ -714,6 +735,61 @@ describe("Codex rotating GitHub Action runtime", () => {
           },
         }),
       ).rejects.toThrow("draft_pull_request_target_required");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips oversized pull requests before OIDC, auth, or a lease is used", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-size-test-"));
+    const eventPath = join(tempDir, "event.json");
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        number: 240,
+        repository: { full_name: "777genius/agent-teams-ai" },
+        pull_request: {
+          draft: true,
+          additions: 149_137,
+          deletions: 31_405,
+          head: {
+            sha: "0123456789abcdef0123456789abcdef01234567",
+            repo: { full_name: "777genius/agent-teams-ai" },
+          },
+          base: { sha: "abcdef0123456789abcdef0123456789abcdef01" },
+        },
+      }),
+    );
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const stdout = { write: vi.fn() };
+    const env = {
+      "INPUT_API-URL": "https://api.reviewrouter.site/",
+      "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+      "INPUT_REVIEW-DRAFTS": "true",
+      "INPUT_MAX-CHANGED-LINES": "10000",
+      "INPUT_AUTH-JSON": "must-be-cleared-without-being-read",
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.actions.test/token",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+      GITHUB_EVENT_NAME: "pull_request_target",
+      GITHUB_EVENT_PATH: eventPath,
+      GITHUB_REPOSITORY: "777genius/agent-teams-ai",
+    };
+
+    try {
+      await runCodexRotatingGitHubAction({
+        env,
+        fetchImpl,
+        io: { stdout, stderr: { write: vi.fn() } },
+      });
+
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(env["INPUT_AUTH-JSON"]).toBeUndefined();
+      expect(env.ACTIONS_ID_TOKEN_REQUEST_URL).toBeUndefined();
+      expect(stdout.write).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "180542 changed lines exceed the configured maximum of 10000",
+        ),
+      );
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

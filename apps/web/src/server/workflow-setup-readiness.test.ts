@@ -228,6 +228,7 @@ describe("workflow setup readiness", () => {
           "mode: codex-oauth-rotating",
           "vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
           "review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}",
+          "max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}",
           'provider-instance-id: "codex-rotating:123456"',
           "auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
           "claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",

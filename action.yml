@@ -18,6 +18,10 @@ inputs:
     description: Allow same-repository draft review from pull_request_target.
     required: false
     default: "false"
+  max-changed-lines:
+    description: Skip review when additions plus deletions exceed this value. Zero disables the limit.
+    required: false
+    default: "0"
   auth-json:
     description: Codex OAuth auth JSON.
     required: false
