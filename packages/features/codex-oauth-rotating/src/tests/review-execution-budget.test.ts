@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  createReviewExecutionDeadlineEpochMs,
   createReviewExecutionBudget,
   defaultReviewJobTimeoutMinutes,
+  remainingReviewExecutionBudgetMs,
 } from "../domain/review-execution-budget";
 
 describe("review execution budget", () => {
@@ -19,6 +21,30 @@ describe("review execution budget", () => {
       jobTimeoutMinutes: 180,
       runtimeTimeoutMinutes: 175,
     });
+  });
+
+  it("measures the cleanup reserve from wrapper execution start", () => {
+    const executionStartedAtEpochMs = 1_750_000_000_000;
+    const executionDeadlineEpochMs = createReviewExecutionDeadlineEpochMs({
+      jobTimeoutMinutes: 60,
+      executionStartedAtEpochMs,
+    });
+
+    expect(executionDeadlineEpochMs).toBe(
+      executionStartedAtEpochMs + 55 * 60 * 1000,
+    );
+    expect(
+      remainingReviewExecutionBudgetMs({
+        executionDeadlineEpochMs,
+        nowEpochMs: executionStartedAtEpochMs + 7 * 60 * 1000,
+      }),
+    ).toBe(48 * 60 * 1000);
+    expect(
+      remainingReviewExecutionBudgetMs({
+        executionDeadlineEpochMs,
+        nowEpochMs: executionDeadlineEpochMs + 1,
+      }),
+    ).toBe(0);
   });
 
   it("rejects budgets outside GitHub's supported policy range", () => {
