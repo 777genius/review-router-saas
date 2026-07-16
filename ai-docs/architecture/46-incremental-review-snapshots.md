@@ -72,7 +72,7 @@ The hosted Action uses its existing lease ID and lease token with these endpoint
 - `POST /api/action/v1/codex-oauth/review-snapshot/head-token`
 - `POST /api/action/v1/codex-oauth/review-snapshot/commit`
 
-Both endpoints have strict schemas and request-size limits. The lease controls the
+All three endpoints have strict schemas and request-size limits. The lease controls the
 workspace and repository identity; request bodies contain only pull-request and
 snapshot data. Provider credentials and raw authorization payloads are never part
 of these contracts. Snapshot access has a dedicated six-hour completed-lease
@@ -125,6 +125,23 @@ flow, a blocking-review candidate, stale-head and CAS-conflict coverage, and two
 consecutive hosted runs in a disposable test repository. The second hosted run
 must restore version 1, review only the delta from its reviewed head, and commit
 version 2. Production repositories are not used as smoke-test targets.
+
+## Hosted verification evidence
+
+The production rollout was verified on 2026-07-16 in the disposable private
+repository `777genius/rr-codex-rotating-e2e`, pull request 42:
+
+- run `29486414325` completed a full review of head `a2287808`, then production
+  persistence reported snapshot version 1 with that reviewed head and run ID;
+- run `29486837234` restored the prior head, logged the exact incremental range
+  `a2287808..c323892d`, reviewed one changed file, and completed successfully;
+- production persistence then reported snapshot version 2, reviewed head
+  `c323892d`, and source run `29486837234` for the same repository and pull
+  request scope.
+
+The test used a dedicated repository-scoped OAuth login. No account identity,
+credential material, source payload, or snapshot prose is retained in this
+evidence.
 
 Batch-level resume is intentionally a separate future aggregate. Provider results
 and synthesis state have different retention, size, and compatibility requirements;
