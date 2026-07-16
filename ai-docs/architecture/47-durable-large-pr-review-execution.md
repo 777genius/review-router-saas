@@ -60,10 +60,10 @@ rejects a state-changing acknowledgement unless it returns
 non-regressing version. A batch is resumable only after the server acknowledges
 it. Repeating the same work key and payload hash is idempotent; a different payload
 for that key, stale version, changed head/plan, unplanned work, expiry, or finalized
-state is a conflict. Head, plan, version, state, accepted bytes, and expiry are
-repeated in the atomic persistence predicate, so a preflight read cannot authorize
-a stale write. Clients restore and reconcile instead of overwriting concurrent
-progress.
+state is a conflict. Head, plan, version, state, accepted bytes, accepted findings,
+and expiry are repeated in the atomic persistence predicate, so a preflight read
+cannot authorize a stale write. Clients restore and reconcile instead of
+overwriting concurrent progress.
 
 ## Execution invariants
 
@@ -96,13 +96,39 @@ progress.
    before CAS-clearing, or clears directly when snapshots are disabled or coverage
    is incomplete. A runtime or required snapshot failure retains the finalized
    checkpoint for a safe retry.
+7. A plan with zero or one batch does not create a durable batch checkpoint.
+   The parent still settles a validated completed snapshot after a successful
+   runtime. This avoids checkpoint traffic for work that cannot benefit from
+   cross-run batch resume.
+
+## OAuth queue and cancellation
+
+One provider instance has one non-cancelling GitHub job concurrency group. The
+group queues reviews and refresh jobs rather than running one OAuth identity in
+parallel. Workflow-level `cancel-in-progress` is forbidden: cancellation after
+Codex refresh but before encrypted writeback can strand the current refresh token
+and force a manual reseed.
+
+Queue pressure is bounded through review admission, a configurable hard job and
+runtime deadline, risk-first batches, and durable resume. A queued run validates
+the signed target revision and auth generation when it starts. A stale revision
+or secret generation exits before provider work; a completed snapshot for the
+exact current head exits before graph, memory, health-check, or LLM work. Job and
+runtime timeout values come from the same setting. Raising the timeout increases
+both giant-PR coverage and head-of-line blocking, so repositories should pair it
+with `REVIEW_ROUTER_MAX_CHANGED_LINES`.
 
 ## Incomplete GitHub input
 
 GitHub's pull-request files API exposes at most 3,000 files. The runtime compares
 the PR's reported changed-file count with the unique files actually loaded and
-also tracks pagination, diff, and content-load failures. A cap, count mismatch,
-failed page, or failed required load makes the inventory explicitly incomplete.
+also tracks pagination, diff, and content-load failures. When the exact base and
+head commits exist in the hosted checkout, a bounded local git adapter may
+recover name/status/line-count metadata for the complete range without another
+GitHub request. Recovery is accepted only when its count matches GitHub metadata.
+A cap without verified recovery, count mismatch, failed page, local command
+failure, safety-limit hit, or failed required load makes the inventory explicitly
+incomplete.
 
 Known loadable files may still be reviewed in risk order, but output must not
 claim complete coverage. Unknown or unloaded files are included in the coverage
@@ -117,6 +143,12 @@ Checkpoint TTL is seven days and is refreshed by accepted batch commits and
 finalization. The worker prunes expired roots and cascading batch rows in bounded
 batches (default 500 every five minutes, hard limit 10,000) with the expiry
 predicate repeated at deletion time.
+
+Accepted byte and finding counters live on the checkpoint root and advance in the
+same CAS update as each immutable batch insert. A normal batch commit reads only
+the root and the candidate work key, so persistence cost is constant rather than
+re-reading every previous payload. Restore and finalization still validate the
+complete aggregate at their explicit boundaries.
 
 Limits are enforced at HTTP, domain, and persistence boundaries: at most 200 work
 keys, 128 KiB per batch payload, 2 MiB accepted payload per aggregate, and 1,000
@@ -180,8 +212,9 @@ rerun that skips only acknowledged work, honest partial publication with no
 snapshot advancement, complete finalization followed by snapshot commit and clear,
 direct clear when snapshot advancement is not required, snapshot-commit failure
 retaining the finalized checkpoint, and deadline retry suppression. A disposable
-3,000-plus-file fixture verifies the GitHub ceiling and
-partial-coverage claim; deterministic adapter tests cover page/load failures.
+3,000-plus-file fixture verifies exact local recovery and partial-coverage fallback
+when the checkout is absent or mismatched. Deterministic adapter tests cover
+rename/binary parsing, page failures, and local command failures.
 
 Evidence records run IDs, head/base SHAs, safe plan/work hashes, checkpoint
 versions, coverage counts, and snapshot versions. It does not retain credentials,

@@ -92,6 +92,7 @@ try {
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ReviewSnapshot') AS review_snapshot_table,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ReviewExecutionCheckpoint') AS review_execution_checkpoint_table,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ReviewExecutionBatchResult') AS review_execution_batch_result_table,
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ReviewExecutionCheckpoint' AND column_name = 'acceptedFindings' AND is_nullable = 'NO') AS review_execution_checkpoint_findings_counter,
       (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'workspaceId' AND is_nullable = 'NO') AS lease_workspace_scope,
       (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'repositoryId' AND is_nullable = 'NO') AS lease_repository_scope,
       (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'pullRequestNumber') AS lease_pull_request_scope,
@@ -104,7 +105,7 @@ try {
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
-  if (output !== "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1") {
+  if (output !== "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1") {
     console.error(output);
     fail("Migrated schema invariants failed");
   }

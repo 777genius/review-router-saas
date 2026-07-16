@@ -4,3 +4,6 @@ packages:
   - packages/shared
   - packages/platform/*
   - packages/features/*
+
+onlyBuiltDependencies:
+  - "@vioxen/subscription-runtime"

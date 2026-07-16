@@ -415,14 +415,13 @@ export function renderCodexRotatingAdvisoryWorkflow(
   const concurrencyGroup = renderCodexRotatingConcurrencyGroup(
     options.providerInstanceId,
   );
-
   return `name: ReviewRouter Codex OAuth
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]${
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]${
       refreshScheduleCron
         ? `
   workflow_dispatch:
@@ -694,6 +693,9 @@ export function scanCodexRotatingAdvisoryWorkflow(
       errors.push(code);
     }
   }
+  if (!workflow.includes("converted_to_draft")) {
+    errors.push("converted_to_draft_trigger_required");
+  }
   const hasRefreshTrigger =
     /\bworkflow_dispatch\s*:/.test(workflow) || /\bschedule\s*:/.test(workflow);
   if (hasRefreshTrigger && !refreshEnabled) {
@@ -708,6 +710,12 @@ export function scanCodexRotatingAdvisoryWorkflow(
     }
   }
   const reviewJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
+  if (
+    !reviewJob.includes("queue: max") ||
+    !reviewJob.includes("cancel-in-progress: false")
+  ) {
+    errors.push("review_job_provider_concurrency_required");
+  }
   if (!reviewJob.includes("github.event.pull_request.draft == false")) {
     errors.push("review_job_draft_guard_required");
   }
@@ -733,6 +741,26 @@ export function scanCodexRotatingAdvisoryWorkflow(
     reviewJob.includes(`vars.${codexRotatingTimeoutMinutesVariableName}`) &&
     !reviewJob.includes(
       `review-timeout-minutes: \${{ vars.${codexRotatingTimeoutMinutesVariableName} || '${codexRotatingDefaultTimeoutMinutes}' }}`,
+    )
+  ) {
+    errors.push("review_job_timeout_variable_mismatch");
+  }
+  const fixedJobTimeout = reviewJob.match(
+    /^ {4}timeout-minutes:\s*["']?(\d+)["']?$/m,
+  )?.[1];
+  const fixedActionTimeout = reviewJob.match(
+    /^ {10}review-timeout-minutes:\s*["']?(\d+)["']?$/m,
+  )?.[1];
+  if (
+    (fixedJobTimeout || fixedActionTimeout) &&
+    fixedJobTimeout !== fixedActionTimeout
+  ) {
+    errors.push("review_job_timeout_value_mismatch");
+  }
+  if (
+    reviewJob.includes(`vars.${codexRotatingTimeoutMinutesVariableName}`) &&
+    !reviewJob.includes(
+      `timeout-minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '${codexRotatingDefaultTimeoutMinutes}') }}`,
     )
   ) {
     errors.push("review_job_timeout_variable_mismatch");

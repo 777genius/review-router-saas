@@ -20,6 +20,7 @@ import {
   deleteStaleCodexRotatingSummaryComments,
   didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure,
+  FinalizedReviewCheckpointMarkerReadStatus,
   formatTopLevelActionErrorMessage,
   postPullRequestComment,
   readActionAuthJson,
@@ -70,7 +71,10 @@ describe("Codex rotating GitHub Action runtime", () => {
     };
 
     await settleFinalizedReviewCheckpoint({
-      marker,
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Valid,
+        marker,
+      },
       runtimeCompleted: true,
       commitSnapshot,
       clearCheckpoint,
@@ -81,11 +85,63 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     clearCheckpoint.mockClear();
     await settleFinalizedReviewCheckpoint({
-      marker,
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Valid,
+        marker,
+      },
       runtimeCompleted: false,
       commitSnapshot,
       clearCheckpoint,
     });
+    expect(clearCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("commits a completed snapshot when a review needed no batch checkpoint", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+    const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
+
+    await settleFinalizedReviewCheckpoint({
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Missing,
+      },
+      runtimeCompleted: true,
+      commitSnapshot,
+      clearCheckpoint,
+    });
+
+    expect(commitSnapshot).toHaveBeenCalledTimes(1);
+    expect(clearCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("does not settle a markerless snapshot after an incomplete runtime", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+
+    await settleFinalizedReviewCheckpoint({
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Missing,
+      },
+      runtimeCompleted: false,
+      commitSnapshot,
+      clearCheckpoint: vi.fn(),
+    });
+
+    expect(commitSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("does not advance a snapshot after an invalid finalization marker", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+    const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
+
+    await settleFinalizedReviewCheckpoint({
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Invalid,
+      },
+      runtimeCompleted: true,
+      commitSnapshot,
+      clearCheckpoint,
+    });
+
+    expect(commitSnapshot).not.toHaveBeenCalled();
     expect(clearCheckpoint).not.toHaveBeenCalled();
   });
 
@@ -1818,7 +1874,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it("runs the local action E2E with only explicit hybrid provider secrets in child runtime env", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-e2e-"));

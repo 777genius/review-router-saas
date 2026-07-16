@@ -68,7 +68,9 @@ jobs:
 
       - name: Install SaaS dependencies
         working-directory: review-router-saas
-        run: pnpm install --frozen-lockfile
+        env:
+          SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
 
       - name: Build and verify public action artifact
         working-directory: review-router-saas

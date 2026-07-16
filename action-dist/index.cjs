@@ -30,6 +30,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var github_action_exports = {};
 __export(github_action_exports, {
+  FinalizedReviewCheckpointMarkerReadStatus: () => FinalizedReviewCheckpointMarkerReadStatus,
   assertSupportedRunnerEnvironment: () => assertSupportedRunnerEnvironment,
   buildCodexCommand: () => buildCodexCommand,
   buildFullReviewRuntimeEnv: () => buildFullReviewRuntimeEnv,
@@ -55,10 +56,10 @@ __export(github_action_exports, {
 module.exports = __toCommonJS(github_action_exports);
 var import_node_child_process2 = require("node:child_process");
 var import_node_crypto6 = require("node:crypto");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_node_http = __toESM(require("node:http"), 1);
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/core/domain/errors.js
 var RuntimeConfigurationError = class extends Error {
   constructor(message) {
     super(message);
@@ -72,7 +73,7 @@ var BoundaryViolationError = class extends Error {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/core/application/policy.js
 function negotiateCapabilities(input) {
   const policy = input.requested ?? input.policy;
   if (!policy) {
@@ -251,7 +252,7 @@ function rejected(code, safeMessage, details) {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/core/application/redactor.js
 var textDecoder = new TextDecoder();
 var DefaultRedactor = class {
   secrets = /* @__PURE__ */ new Map();
@@ -316,7 +317,7 @@ var DeterministicIdGenerator = class {
   }
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/core/domain/generation-hash.js
 var import_node_crypto = require("node:crypto");
 function computeSessionGenerationHash(input) {
   const hash2 = (0, import_node_crypto.createHash)("sha256");
@@ -336,7 +337,7 @@ function computeSessionGenerationHash(input) {
   return hash2.digest("base64url");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/core/application/runtime.js
 function createSubscriptionRuntime(deps) {
   const decision = negotiateCapabilities({
     requested: deps.policy,
@@ -1168,7 +1169,7 @@ function missingSessionFailure() {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/core/domain/task-validation.js
 var providerTaskSystemPromptMaxBytes = 256 * 1024;
 function providerTaskSystemPromptValidationError(value, path = "systemPrompt") {
   if (value === void 0)
@@ -1187,7 +1188,7 @@ function assertProviderTaskSystemPrompt(value, path = "systemPrompt") {
     throw new Error(error51);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/capabilities.js
 var codexProviderId = "codex";
 var codexAgentId = "codex-cli";
 var codexJsonAgentId = "codex-json";
@@ -1267,8 +1268,10 @@ var codexJsonAgentCapabilities = {
   agentId: codexJsonAgentId
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-domain.js
+var import_node_fs = require("node:fs");
 var import_node_crypto2 = require("node:crypto");
+var import_node_path = require("node:path");
 var codexAuthJsonMaxBytes = 32 * 1024;
 function validateCodexAuthJsonBytes(input) {
   const maxBytes = input.maxBytes ?? codexAuthJsonMaxBytes;
@@ -1334,16 +1337,28 @@ function classifyCodexRuntimeFailure(message) {
   if (isCodexQuotaOrRateLimitFailure(normalized)) {
     return "quota_limited";
   }
-  if (isCodexInvalidatedAuthFailure(normalized)) {
+  if (normalized.includes("codex_app_server_goal_blocked")) {
+    return "backend_unavailable";
+  }
+  if (normalized.includes("codex_app_server_goal_max_turns_exceeded")) {
+    return "goal_slice_exhausted";
+  }
+  if (isCodexInvalidatedAuthFailure(normalized) || isCodexInvalidAuthJsonFailure(normalized)) {
     return "provider_session_invalid";
   }
-  if (normalized.includes("unauthorized") || normalized.includes("invalid_grant") || normalized.includes("refresh token") || normalized.includes("login required")) {
+  if (normalized.includes("unauthorized") || normalized.includes("invalid_grant") || normalized.includes("refresh token") || normalized.includes("login required") || isCodexReconnectableAuthShapeFailure(normalized)) {
     return "needs_reconnect";
   }
   if (normalized.includes("permission") || normalized.includes("forbidden") || normalized.includes("resource not accessible")) {
     return "permission_required";
   }
   return "unknown_auth_state";
+}
+function isCodexReconnectableAuthShapeFailure(normalizedMessage) {
+  return normalizedMessage.includes("missing field") && (normalizedMessage.includes("id_token") || normalizedMessage.includes("access_token") || normalizedMessage.includes("refresh_token") || normalizedMessage.includes("auth.json"));
+}
+function isCodexInvalidAuthJsonFailure(normalizedMessage) {
+  return normalizedMessage.includes("codex_auth_json_invalid_") || normalizedMessage.includes("codex_auth_json_empty") || normalizedMessage.includes("codex_auth_json_too_large");
 }
 function isCodexCancelledFailure(normalizedMessage) {
   return normalizedMessage.includes("node_process_runner_aborted") || normalizedMessage.includes("subscription_worker_run_aborted") || normalizedMessage.includes("codex_app_server_aborted") || normalizedMessage.includes("codex_app_server_turn_aborted") && !normalizedMessage.includes("codex_app_server_turn_aborted:replaced") || normalizedMessage.includes("aborterror") || /\baborted\b/.test(normalizedMessage);
@@ -1369,7 +1384,15 @@ function pruneCodexChildEnv(env) {
       continue;
     allowed[key] = value;
   }
+  allowed.PATH = codexChildPath(env);
   return allowed;
+}
+function codexChildPath(env) {
+  return uniquePathEntries([
+    ...(env.PATH ?? "").split(import_node_path.delimiter),
+    ...standardHostPathEntries,
+    ...availableExecutableDirs(env)
+  ]).join(import_node_path.delimiter);
 }
 function buildCodexRefreshBootstrapPlan(input) {
   const model = input.model?.trim();
@@ -1487,11 +1510,55 @@ function matchesEnvPattern(key, pattern) {
   }
   return key === pattern;
 }
+var standardHostPathEntries = [
+  "/usr/local/sbin",
+  "/usr/local/bin",
+  "/usr/sbin",
+  "/usr/bin",
+  "/sbin",
+  "/bin"
+];
+var explicitGhPathEnvNames = [
+  "SUBSCRIPTION_RUNTIME_GH_PATH",
+  "GH_PATH"
+];
+var ghPathCandidates = [
+  "/usr/bin/gh",
+  "/usr/local/bin/gh",
+  "/opt/homebrew/bin/gh"
+];
+function availableExecutableDirs(env) {
+  const candidates = [
+    ...explicitGhPathEnvNames.map((name) => env[name]?.trim()).filter((path) => path !== void 0 && path.length > 0 && (0, import_node_path.isAbsolute)(path)),
+    ...ghPathCandidates
+  ];
+  return candidates.filter(isExecutable).map((path) => (0, import_node_path.dirname)(path));
+}
+function isExecutable(path) {
+  try {
+    (0, import_node_fs.accessSync)(path, import_node_fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function uniquePathEntries(entries) {
+  const seen = /* @__PURE__ */ new Set();
+  const unique = [];
+  for (const entry of entries) {
+    const normalized = entry.trim();
+    if (!normalized || seen.has(normalized))
+      continue;
+    seen.add(normalized);
+    unique.push(normalized);
+  }
+  return unique;
+}
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-auth-json-codec.js
 var textDecoder2 = new TextDecoder();
 var textEncoder = new TextEncoder();
 function sessionArtifactFromCodexAuthJson(authJsonBytes) {
@@ -1551,9 +1618,9 @@ function safeCauseCategory(message) {
   return /^[a-z0-9_:-]{1,80}$/i.test(message) ? message : "codex_validation";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-temp-cleanup.js
 var import_promises = require("node:fs/promises");
-var import_node_path = require("node:path");
+var import_node_path2 = require("node:path");
 var transientCleanupErrorCodes = /* @__PURE__ */ new Set([
   "EBUSY",
   "EACCES",
@@ -1589,13 +1656,52 @@ function isTransientCodexTempCleanupError(error51) {
 }
 async function scrubSensitiveCodexHomePaths(codexHome) {
   const results = await Promise.allSettled([
-    (0, import_promises.rm)((0, import_node_path.join)(codexHome, "auth.json"), { force: true }),
-    (0, import_promises.rm)((0, import_node_path.join)(codexHome, "accounts"), { recursive: true, force: true })
+    (0, import_promises.rm)((0, import_node_path2.join)(codexHome, "auth.json"), { force: true }),
+    (0, import_promises.rm)((0, import_node_path2.join)(codexHome, "accounts"), { recursive: true, force: true })
   ]);
   return results.every((result) => result.status === "fulfilled");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-runtime-temp.js
+var import_promises2 = require("node:fs/promises");
+var import_node_os = require("node:os");
+var import_node_path3 = require("node:path");
+async function createCodexRuntimeTempRoot(input) {
+  const env = input.sourceEnv ?? process.env;
+  const candidates = uniqueNonEmpty([
+    env.SUBSCRIPTION_RUNTIME_TMPDIR,
+    env.TMPDIR,
+    env.SUBSCRIPTION_RUNTIME_JOB_ROOT ? (0, import_node_path3.join)(env.SUBSCRIPTION_RUNTIME_JOB_ROOT, "tmp") : void 0,
+    process.env.SUBSCRIPTION_RUNTIME_TMPDIR,
+    process.env.TMPDIR,
+    process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT ? (0, import_node_path3.join)(process.env.SUBSCRIPTION_RUNTIME_JOB_ROOT, "tmp") : void 0,
+    (0, import_node_os.tmpdir)()
+  ]);
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      await (0, import_promises2.mkdir)(candidate, { recursive: true, mode: 448 });
+      return await (0, import_promises2.mkdtemp)((0, import_node_path3.join)(candidate, input.prefix));
+    } catch (error51) {
+      lastError = error51;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("codex_runtime_temp_root_unavailable");
+}
+function uniqueNonEmpty(values) {
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed || seen.has(trimmed))
+      continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-prompt-composer.js
 var import_node_crypto3 = require("node:crypto");
 function composeCodexPrompt(input) {
   const systemPrompt = input.systemPrompt?.trim();
@@ -1615,10 +1721,15 @@ function composeCodexPrompt(input) {
   ].join("\n");
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
+var import_promises3 = require("node:fs/promises");
+var import_node_path4 = require("node:path");
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/failure-classifier.js
 function classifyCodexFailure(error51) {
-  const message = error51 instanceof Error ? error51.message : String(error51);
+  const message = codexFailureMessage(error51);
   const state = classifyCodexRuntimeFailure(message);
+  const details = codexFailureDetails(error51, message);
   switch (state) {
     case "task_cancelled":
       return {
@@ -1668,6 +1779,24 @@ function classifyCodexFailure(error51) {
         safeMessage: "Codex quota or billing limit was reached.",
         causeCategory: state
       };
+    case "backend_unavailable":
+      return {
+        code: "backend_unavailable",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex app-server goal backend is temporarily blocked.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
+    case "goal_slice_exhausted":
+      return {
+        code: "goal_slice_exhausted",
+        retryable: true,
+        reconnectRequired: false,
+        safeMessage: "Codex app-server goal slice exhausted.",
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
+      };
     case "permission_required":
       return {
         code: "permission_required",
@@ -1682,12 +1811,251 @@ function classifyCodexFailure(error51) {
         retryable: true,
         reconnectRequired: false,
         safeMessage: "Codex runtime failed.",
-        causeCategory: state
+        causeCategory: state,
+        ...details === void 0 ? {} : { details }
       };
   }
 }
+function codexFailureMessage(error51) {
+  const process3 = processFailureLike(error51);
+  if (process3)
+    return `${process3.stdout ?? ""}
+${process3.stderr ?? ""}`;
+  return error51 instanceof Error ? error51.message : String(error51);
+}
+function codexFailureDetails(error51, message) {
+  const details = {};
+  const process3 = processFailureLike(error51);
+  if (process3?.exitCode !== void 0) {
+    details.exitCode = String(process3.exitCode);
+  }
+  if (process3?.stderr) {
+    details.stderrTail = safeTail(process3.stderr);
+  }
+  if (process3?.stdout) {
+    details.stdoutTail = safeTail(process3.stdout);
+  }
+  const lastOutputText = lastOutputTextFromError(error51);
+  if (lastOutputText) {
+    details.lastOutputTail = safeTail(lastOutputText);
+  }
+  const parsed = parseProcessFailureMessage(message);
+  if (details.exitCode === void 0 && parsed?.exitCode !== void 0) {
+    details.exitCode = parsed.exitCode;
+  }
+  if (details.stderrTail === void 0 && parsed?.stderrTail) {
+    details.stderrTail = parsed.stderrTail;
+  }
+  if (message.trim()) {
+    details.rawCause = safeTail(message);
+  }
+  return Object.keys(details).length === 0 ? void 0 : details;
+}
+function lastOutputTextFromError(error51) {
+  if (typeof error51 !== "object" || error51 === null)
+    return null;
+  const value = error51.lastOutputText;
+  return typeof value === "string" && value.trim() ? value : null;
+}
+function processFailureLike(error51) {
+  if (typeof error51 !== "object" || error51 === null)
+    return null;
+  const record2 = error51;
+  const exitCode = typeof record2.exitCode === "number" && Number.isInteger(record2.exitCode) ? record2.exitCode : void 0;
+  const stdout = typeof record2.stdout === "string" ? record2.stdout : void 0;
+  const stderr = typeof record2.stderr === "string" ? record2.stderr : void 0;
+  if (exitCode === void 0 && stdout === void 0 && stderr === void 0) {
+    return null;
+  }
+  return {
+    ...exitCode === void 0 ? {} : { exitCode },
+    ...stdout === void 0 ? {} : { stdout },
+    ...stderr === void 0 ? {} : { stderr }
+  };
+}
+function parseProcessFailureMessage(message) {
+  const match = /\b(?:node_process_runner_failed|codex_json_exec_failed|codex_cli_exec_failed):(\d+):(.*)$/s.exec(message);
+  if (!match)
+    return null;
+  return {
+    exitCode: match[1],
+    stderrTail: safeTail(match[2] ?? "")
+  };
+}
+function safeTail(value) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > 1e3 ? compact.slice(-1e3) : compact;
+}
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/structured-output.js
+function parseCodexStructuredOutput(outputText, errorCode) {
+  const direct = parseJson(outputText);
+  if (direct.ok)
+    return direct.value;
+  const candidate = parseLastJsonCandidate(outputText);
+  if (candidate)
+    return candidate.value;
+  throw new Error(errorCode);
+}
+function parseJson(value) {
+  try {
+    return { ok: true, value: JSON.parse(value) };
+  } catch {
+    return { ok: false };
+  }
+}
+function parseLastJsonCandidate(value) {
+  const candidates = [...jsonCandidates(value)];
+  let lastCandidate = null;
+  for (const candidate of outerJsonCandidates(candidates)) {
+    if (!lastCandidate || candidate.index > lastCandidate.index) {
+      lastCandidate = candidate;
+    }
+  }
+  return lastCandidate;
+}
+function outerJsonCandidates(candidates) {
+  const outer = /* @__PURE__ */ new Set();
+  let maxEnd = -1;
+  for (const candidate of [...candidates].sort((left, right) => left.index - right.index || right.end - left.end)) {
+    if (maxEnd >= candidate.end)
+      continue;
+    outer.add(candidate);
+    maxEnd = candidate.end;
+  }
+  return candidates.filter((candidate) => outer.has(candidate));
+}
+function* jsonCandidates(value) {
+  yield* fencedJsonCandidates(value);
+  yield* balancedJsonCandidates(value, nonJsonFenceRanges(value));
+}
+function* fencedJsonCandidates(value) {
+  for (const match of value.matchAll(/```\s*(?:json)?\s*([\s\S]*?)```/gi)) {
+    const content = match[1];
+    if (!content)
+      continue;
+    const parsed = parseJson(content.trim());
+    if (parsed.ok) {
+      yield {
+        index: match.index ?? 0,
+        end: (match.index ?? 0) + match[0].length,
+        value: parsed.value
+      };
+    }
+  }
+}
+function* balancedJsonCandidates(value, excludedRanges = []) {
+  const stack = [];
+  let inString = false;
+  let escape2 = false;
+  let excludedRangeIndex = 0;
+  for (let index = 0; index < value.length; index++) {
+    while (excludedRangeIndex < excludedRanges.length && index >= excludedRanges[excludedRangeIndex].end) {
+      excludedRangeIndex += 1;
+    }
+    const excludedRange = excludedRanges[excludedRangeIndex];
+    if (excludedRange && index >= excludedRange.start) {
+      stack.length = 0;
+      inString = false;
+      escape2 = false;
+      index = excludedRange.end - 1;
+      continue;
+    }
+    const char = value[index];
+    if (stack.length > 0) {
+      if (inString && (char === "\n" || char === "\r")) {
+        stack.length = 0;
+        inString = false;
+        escape2 = false;
+        continue;
+      }
+      if (escape2) {
+        escape2 = false;
+        continue;
+      }
+      if (char === "\\" && inString) {
+        escape2 = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString)
+        continue;
+    } else {
+      inString = false;
+      escape2 = false;
+    }
+    if (char === "{" || char === "[") {
+      stack.push({
+        index,
+        closing: char === "{" ? "}" : "]"
+      });
+      continue;
+    }
+    if (char !== "}" && char !== "]")
+      continue;
+    const bracket = stack.at(-1);
+    if (!bracket || bracket.closing !== char) {
+      stack.length = 0;
+      inString = false;
+      escape2 = false;
+      continue;
+    }
+    stack.pop();
+    const parsed = parseJson(value.slice(bracket.index, index + 1));
+    if (parsed.ok) {
+      yield {
+        index: bracket.index,
+        end: index + 1,
+        value: parsed.value
+      };
+    }
+  }
+}
+function nonJsonFenceRanges(value) {
+  const ranges = [];
+  let searchFrom = 0;
+  while (searchFrom < value.length) {
+    const fence = nextFence(value, searchFrom);
+    if (!fence)
+      break;
+    const headerStart = fence.start + fence.marker.length;
+    const lineEnd = firstLineEnd(value, headerStart);
+    const header = value.slice(headerStart, lineEnd.index);
+    const language = header.trim().split(/\s+/)[0]?.toLowerCase();
+    const nextSearchFrom = lineEnd.end;
+    if (!language || language === "json") {
+      searchFrom = nextSearchFrom;
+      continue;
+    }
+    const fenceEnd = value.indexOf(fence.marker, nextSearchFrom);
+    const end = fenceEnd < 0 ? value.length : fenceEnd + fence.marker.length;
+    ranges.push({ start: fence.start, end });
+    searchFrom = end;
+  }
+  return ranges;
+}
+function nextFence(value, searchFrom) {
+  const backtick = value.indexOf("```", searchFrom);
+  const tilde = value.indexOf("~~~", searchFrom);
+  if (backtick < 0 && tilde < 0)
+    return null;
+  if (tilde < 0 || backtick >= 0 && backtick <= tilde) {
+    return { start: backtick, marker: "```" };
+  }
+  return { start: tilde, marker: "~~~" };
+}
+function firstLineEnd(value, start) {
+  const lineFeed = value.indexOf("\n", start);
+  if (lineFeed < 0)
+    return { index: value.length, end: value.length };
+  const carriageReturnIndex = lineFeed > start && value[lineFeed - 1] === "\r" ? lineFeed - 1 : lineFeed;
+  return { index: carriageReturnIndex, end: lineFeed + 1 };
+}
+
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-execution-engine.js
 var defaultTimeoutMs = 10 * 60 * 1e3;
 var defaultMaxOutputBytes = 512 * 1024;
 var PackagedCodexJsonExecutionEngine = class {
@@ -1706,51 +2074,61 @@ var PackagedCodexJsonExecutionEngine = class {
     }
   }
   async run(input) {
-    const args = buildCodexJsonExecArgs({
-      jsonFlag: this.options.jsonFlag ?? "--json",
-      model: input.model,
-      reasoningEffort: input.reasoningEffort,
-      ...input.serviceTier === void 0 ? {} : { serviceTier: input.serviceTier },
-      ...input.sandboxMode === void 0 ? {} : { sandboxMode: input.sandboxMode }
-    });
-    const result = await input.runner.run({
-      command: this.options.codexBinaryPath,
-      args,
-      cwd: input.workspacePath,
-      env: {
-        ...pruneCodexChildEnv(this.options.sourceEnv ?? process.env),
-        ...input.session.env,
-        CI: "true"
-      },
-      stdin: new TextEncoder().encode(composeCodexPrompt({
-        prompt: input.prompt,
-        systemPrompt: input.systemPrompt
-      })),
-      timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
-      abortSignal: input.abortSignal
-    });
-    const stdout = input.redactor.redact(result.stdout);
-    const stderr = input.redactor.redact(result.stderr);
-    input.redactor.assertNoKnownSecret(stdout, "codex-json-stdout");
-    input.redactor.assertNoKnownSecret(stderr, "codex-json-stderr");
-    assertOutputWithinBounds(stdout, this.options.maxOutputBytes);
-    assertOutputWithinBounds(stderr, this.options.maxOutputBytes);
-    if (result.exitCode !== 0) {
-      throw new Error(`codex_json_exec_failed:${result.exitCode}:${safeTail(`${stdout}
-${stderr}`)}`);
-    }
-    const outputText = extractFinalAssistantText(stdout);
-    if (input.outputSchema) {
+    const schemaFile = await writeOutputSchemaFile(input.outputSchema);
+    try {
+      const args = buildCodexJsonExecArgs({
+        jsonFlag: this.options.jsonFlag ?? "--json",
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        ...input.serviceTier === void 0 ? {} : { serviceTier: input.serviceTier },
+        ...input.sandboxMode === void 0 ? {} : { sandboxMode: input.sandboxMode },
+        ...schemaFile === null ? {} : { outputSchemaPath: schemaFile.path }
+      });
+      const result = await input.runner.run({
+        command: this.options.codexBinaryPath,
+        args,
+        cwd: input.workspacePath,
+        env: {
+          ...pruneCodexChildEnv(this.options.sourceEnv ?? process.env),
+          ...input.session.env,
+          CI: "true"
+        },
+        stdin: new TextEncoder().encode(composeCodexPrompt({
+          prompt: input.prompt,
+          systemPrompt: input.systemPrompt
+        })),
+        timeoutMs: this.options.timeoutMs ?? defaultTimeoutMs,
+        abortSignal: input.abortSignal
+      });
+      const stdout = input.redactor.redact(result.stdout);
+      const stderr = input.redactor.redact(result.stderr);
+      input.redactor.assertNoKnownSecret(stdout, "codex-json-stdout");
+      input.redactor.assertNoKnownSecret(stderr, "codex-json-stderr");
+      assertOutputWithinBounds(stdout, this.options.maxOutputBytes);
+      assertOutputWithinBounds(stderr, this.options.maxOutputBytes);
+      if (result.exitCode !== 0) {
+        throw Object.assign(new Error(`codex_json_exec_failed:${result.exitCode}:${safeTail2(`${stdout}
+${stderr}`)}`), {
+          exitCode: result.exitCode,
+          stdout,
+          stderr
+        });
+      }
+      const outputText = extractFinalAssistantText(stdout);
+      if (input.outputSchema) {
+        return {
+          outputText,
+          structuredOutput: parseStructuredOutput(outputText),
+          warnings: []
+        };
+      }
       return {
         outputText,
-        structuredOutput: parseStructuredOutput(outputText),
         warnings: []
       };
+    } finally {
+      await schemaFile?.dispose();
     }
-    return {
-      outputText,
-      warnings: []
-    };
   }
   async prewarm() {
     return {
@@ -1799,6 +2177,7 @@ function buildCodexJsonExecArgs(input) {
     "features.shell_snapshot=false",
     "--config",
     "features.skill_mcp_dependency_install=false",
+    ...input.outputSchemaPath ? ["--output-schema", input.outputSchemaPath] : [],
     "--ephemeral",
     "--ignore-user-config",
     "--ignore-rules",
@@ -1808,10 +2187,53 @@ function buildCodexJsonExecArgs(input) {
     "-"
   ];
 }
-function codexSandboxModeForPermissionMode(mode) {
-  if (mode === "allow-edits")
+async function writeOutputSchemaFile(outputSchema) {
+  const schema = codexOutputSchemaPayload(outputSchema);
+  if (schema === void 0)
+    return null;
+  const dir = await createCodexRuntimeTempRoot({
+    prefix: "subscription-runtime-codex-schema-"
+  });
+  const path = (0, import_node_path4.join)(dir, "schema.json");
+  await (0, import_promises3.writeFile)(path, `${JSON.stringify(schema, null, 2)}
+`, {
+    encoding: "utf8",
+    mode: 384
+  });
+  return {
+    path,
+    async dispose() {
+      await (0, import_promises3.rm)(dir, { recursive: true, force: true });
+    }
+  };
+}
+function codexOutputSchemaPayload(outputSchema) {
+  if (outputSchema === void 0 || outputSchema === null)
+    return void 0;
+  if (typeof outputSchema !== "object")
+    return outputSchema;
+  if ("schema" in outputSchema) {
+    return outputSchema.schema;
+  }
+  if ("type" in outputSchema || "$schema" in outputSchema || "properties" in outputSchema) {
+    return outputSchema;
+  }
+  return void 0;
+}
+function codexSandboxModeForControls(controls) {
+  assertProviderSandboxModeAllowed(controls);
+  if (controls?.providerSandboxMode !== void 0) {
+    return controls.providerSandboxMode;
+  }
+  if (controls?.editMode === "allow-edits")
     return "workspace-write";
   return "read-only";
+}
+function assertProviderSandboxModeAllowed(controls) {
+  if (controls?.providerSandboxMode === void 0 || controls.editMode === "allow-edits") {
+    return;
+  }
+  throw new Error("codex_provider_sandbox_mode_requires_allow_edits");
 }
 function codexExecutionFailure(error51) {
   return {
@@ -1852,12 +2274,32 @@ function extractTextFromEvent(event) {
   if (!event || typeof event !== "object")
     return null;
   const record2 = event;
+  const type = typeof record2.type === "string" ? record2.type : null;
+  if (!hasAssistantRole(record2))
+    return null;
+  if (type === "item.completed") {
+    const item = record2.item;
+    return item && typeof item === "object" ? extractTextFromRecord(item) : null;
+  }
+  if (type === "response.completed") {
+    const response = record2.response;
+    return response && typeof response === "object" ? extractTextFromRecord(response) : null;
+  }
+  if (type && !isAssistantTextEventType(type))
+    return null;
+  return extractTextFromRecord(record2);
+}
+function isAssistantTextEventType(type) {
+  return type === "agent_message" || type === "assistant_message" || type === "message" || type === "result";
+}
+function extractTextFromRecord(record2) {
   for (const key of [
     "message",
     "text",
     "output_text",
     "last_message",
-    "content"
+    "content",
+    "output"
   ]) {
     const value = record2[key];
     const text = stringifyContent(value);
@@ -1875,36 +2317,50 @@ function stringifyContent(value) {
   if (typeof value === "string" && value.trim())
     return value;
   if (Array.isArray(value)) {
-    const parts = value.map((entry) => {
-      if (typeof entry === "string")
-        return entry;
-      if (entry && typeof entry === "object") {
-        const record2 = entry;
-        return stringifyContent(record2.text ?? record2.content);
-      }
-      return null;
-    }).filter((entry) => typeof entry === "string");
+    const parts = value.map((entry) => stringifyContentEntry(entry)).filter((entry) => typeof entry === "string");
     return parts.length > 0 ? parts.join("") : null;
+  }
+  if (value && typeof value === "object") {
+    const record2 = value;
+    if (!isAssistantContentRecord(record2))
+      return null;
+    return stringifyContent(record2.text ?? record2.output_text ?? record2.content ?? record2.output);
   }
   return null;
 }
+function stringifyContentEntry(entry) {
+  if (typeof entry === "string")
+    return entry;
+  if (!entry || typeof entry !== "object")
+    return null;
+  const record2 = entry;
+  if (!isAssistantContentRecord(record2))
+    return null;
+  return stringifyContent(record2.text ?? record2.output_text ?? record2.content ?? record2.output);
+}
+function isAssistantContentRecord(record2) {
+  const type = typeof record2.type === "string" ? record2.type : null;
+  if (!hasAssistantRole(record2))
+    return false;
+  return !type || type === "agentMessage" || type === "agent_message" || type === "assistant_message" || type === "message" || type === "output_text" || type === "text";
+}
+function hasAssistantRole(record2) {
+  const role = record2.role;
+  return typeof role !== "string" || role === "assistant";
+}
 function parseStructuredOutput(outputText) {
-  try {
-    return JSON.parse(outputText);
-  } catch (error51) {
-    throw new Error("codex_structured_output_invalid", { cause: error51 });
-  }
+  return parseCodexStructuredOutput(outputText, "codex_structured_output_invalid");
 }
 function assertOutputWithinBounds(output, maxOutputBytes = defaultMaxOutputBytes) {
   if (Buffer.byteLength(output, "utf8") > maxOutputBytes) {
     throw new Error("codex_json_output_too_large");
   }
 }
-function safeTail(value) {
+function safeTail2(value) {
   return value.slice(-4096);
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-execution-profile.js
 var statelessCompletionBaseInstructions = [
   "You are a fast backend inference worker.",
   "Return only the requested final answer.",
@@ -1913,21 +2369,22 @@ var statelessCompletionBaseInstructions = [
   "If JSON is requested, return valid JSON only."
 ].join(" ");
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-session-materializer.js
 var import_node_crypto4 = require("node:crypto");
-var import_promises2 = require("node:fs/promises");
-var import_node_os = require("node:os");
-var import_node_path2 = require("node:path");
+var import_promises4 = require("node:fs/promises");
+var import_node_path5 = require("node:path");
 var CodexEphemeralSessionMaterializer = class {
   mode = "ephemeral";
   async materialize(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await (0, import_promises2.mkdtemp)((0, import_node_path2.join)((0, import_node_os.tmpdir)(), "subscription-runtime-codex-"));
-    const home = (0, import_node_path2.join)(tempRoot, "home");
-    const codexHome = (0, import_node_path2.join)(tempRoot, "codex-home");
-    await (0, import_promises2.mkdir)(home, { recursive: true, mode: 448 });
-    await (0, import_promises2.mkdir)(codexHome, { recursive: true, mode: 448 });
+    const tempRoot = await createCodexRuntimeTempRoot({
+      prefix: "subscription-runtime-codex-"
+    });
+    const home = (0, import_node_path5.join)(tempRoot, "home");
+    const codexHome = (0, import_node_path5.join)(tempRoot, "codex-home");
+    await (0, import_promises4.mkdir)(home, { recursive: true, mode: 448 });
+    await (0, import_promises4.mkdir)(codexHome, { recursive: true, mode: 448 });
     await writeCodexJsonHomeSnapshot({ codexHome, authJson });
     return {
       home,
@@ -1945,7 +2402,7 @@ var CodexEphemeralSessionMaterializer = class {
             tempCodexHome: codexHome
           });
         } catch {
-          await (0, import_promises2.rm)(tempRoot, { recursive: true, force: true });
+          await (0, import_promises4.rm)(tempRoot, { recursive: true, force: true });
         }
       })
     };
@@ -1997,14 +2454,14 @@ async function writeCodexJsonHomeSnapshot(input) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await writeFileAtomic((0, import_node_path2.join)(input.codexHome, "config.toml"), config2);
+  await writeFileAtomic((0, import_node_path5.join)(input.codexHome, "config.toml"), config2);
   await writeCodexAuthJson(input);
 }
 async function writeCodexAuthJson(input) {
-  await writeFileAtomic((0, import_node_path2.join)(input.codexHome, "auth.json"), input.authJson);
+  await writeFileAtomic((0, import_node_path5.join)(input.codexHome, "auth.json"), input.authJson);
 }
 async function snapshotCodexSession(input) {
-  const authJson = await (0, import_promises2.readFile)((0, import_node_path2.join)(input.codexHome, "auth.json"), "utf8");
+  const authJson = await (0, import_promises4.readFile)((0, import_node_path5.join)(input.codexHome, "auth.json"), "utf8");
   return sessionArtifactFromCodexAuthJson(authJson);
 }
 function sessionArtifactHash(session) {
@@ -2015,8 +2472,8 @@ function stableHash(value) {
 }
 async function writeFileAtomic(path, value) {
   const tempPath = `${path}.${process.pid}.${(0, import_node_crypto4.randomUUID)()}.tmp`;
-  await (0, import_promises2.writeFile)(tempPath, value, { mode: 384 });
-  await (0, import_promises2.rename)(tempPath, path);
+  await (0, import_promises4.writeFile)(tempPath, value, { mode: 384 });
+  await (0, import_promises4.rename)(tempPath, path);
 }
 function once(fn) {
   let called = false;
@@ -2028,7 +2485,7 @@ function once(fn) {
   };
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-json-agent-driver.js
 var CodexJsonAgentDriver = class {
   options;
   agentId = codexJsonAgentId;
@@ -2038,7 +2495,9 @@ var CodexJsonAgentDriver = class {
   model;
   reasoningEffort;
   serviceTier;
+  outputSchemas;
   sessionMaterializer;
+  managedRunSessions = /* @__PURE__ */ new Map();
   constructor(options) {
     this.options = options;
     this.engine = "engine" in options ? options.engine : new PackagedCodexJsonExecutionEngine({
@@ -2049,6 +2508,7 @@ var CodexJsonAgentDriver = class {
     this.model = options.model ?? defaultCodexModel;
     this.reasoningEffort = options.reasoningEffort ?? "low";
     this.serviceTier = options.serviceTier;
+    this.outputSchemas = options.outputSchemas ?? {};
     this.sessionMaterializer = options.sessionMaterializer ?? new CodexEphemeralSessionMaterializer();
   }
   async runTask(input) {
@@ -2078,11 +2538,13 @@ var CodexJsonAgentDriver = class {
       });
       const outputSchemaName = input.task.controls?.outputSchemaName ?? input.task.outputSchemaName;
       const goalObjective = readTaskGoalObjective(input.task);
+      const runId = readTaskManagedRunId(input.task);
       const result = await this.engine.run({
+        ...runId ? { runId } : {},
         prompt: input.task.prompt,
         ...goalObjective ? { goalObjective } : {},
         ...input.task.systemPrompt !== void 0 ? { systemPrompt: input.task.systemPrompt } : {},
-        outputSchema: outputSchemaName ? { name: outputSchemaName } : void 0,
+        outputSchema: this.outputSchemaRequest(outputSchemaName),
         session: materialized,
         workspacePath: input.workspace.path,
         runner: input.runner,
@@ -2090,9 +2552,27 @@ var CodexJsonAgentDriver = class {
         model: input.task.controls?.model ?? this.model,
         reasoningEffort: this.reasoningEffort,
         ...this.serviceTier === void 0 ? {} : { serviceTier: this.serviceTier },
-        sandboxMode: codexSandboxModeForPermissionMode(input.task.controls?.permissionMode),
+        sandboxMode: codexSandboxModeForControls(input.task.controls),
         abortSignal: input.abortSignal
       });
+      if (result.status === "waiting_for_input") {
+        this.managedRunSessions.set(result.runId, materialized);
+        materialized = null;
+        return {
+          status: "waiting_for_input",
+          runId: result.runId,
+          outputText: result.outputText,
+          ...result.structuredOutput === void 0 ? {} : { structuredOutput: result.structuredOutput },
+          request: result.request,
+          resumeHandle: result.resumeHandle,
+          telemetry: {
+            durationMs: Date.now() - startedAt,
+            finishReason: "waiting_for_input",
+            ...result.usage === void 0 ? {} : { usage: result.usage }
+          },
+          warnings: result.warnings
+        };
+      }
       const snapshot = await snapshotSessionUpdate({
         materialized,
         previousSession: input.session,
@@ -2105,7 +2585,8 @@ var CodexJsonAgentDriver = class {
         ...snapshot.sessionUpdate ? { sessionUpdate: snapshot.sessionUpdate } : {},
         telemetry: {
           durationMs: Date.now() - startedAt,
-          finishReason: "completed"
+          finishReason: "completed",
+          ...result.usage === void 0 ? {} : { usage: result.usage }
         },
         warnings: [...result.warnings, ...snapshot.warnings]
       };
@@ -2121,6 +2602,107 @@ var CodexJsonAgentDriver = class {
     } finally {
       await materialized?.release();
     }
+  }
+  async resumeManagedRun(input) {
+    if (!this.engine.resume) {
+      return {
+        status: "failed",
+        failure: {
+          code: "task_mode_unsupported",
+          retryable: false,
+          reconnectRequired: false,
+          safeMessage: "Codex execution engine does not support managed run resume."
+        },
+        warnings: []
+      };
+    }
+    const startedAt = Date.now();
+    let materialized = this.managedRunSessions.get(input.runId) ?? null;
+    let ownsMaterialized = false;
+    if (!materialized) {
+      materialized = await this.sessionMaterializer.materialize({
+        session: input.session,
+        redactor: input.redactor
+      });
+      ownsMaterialized = true;
+    }
+    try {
+      const outputSchemaName = input.task?.controls?.outputSchemaName ?? input.task?.outputSchemaName;
+      const result = await this.engine.resume({
+        runId: input.runId,
+        requestId: input.requestId,
+        answer: input.answer,
+        resumeHandle: input.resumeHandle,
+        session: materialized,
+        workspacePath: input.workspace.path,
+        runner: input.runner,
+        redactor: input.redactor,
+        model: input.task?.controls?.model ?? this.model,
+        reasoningEffort: this.reasoningEffort,
+        ...this.serviceTier === void 0 ? {} : { serviceTier: this.serviceTier },
+        sandboxMode: codexSandboxModeForControls(input.task?.controls),
+        outputSchema: this.outputSchemaRequest(outputSchemaName),
+        abortSignal: input.abortSignal
+      });
+      if (result.status === "waiting_for_input") {
+        if (result.runId !== input.runId) {
+          this.managedRunSessions.delete(input.runId);
+        }
+        this.managedRunSessions.set(result.runId, materialized);
+        ownsMaterialized = false;
+        return {
+          status: "waiting_for_input",
+          runId: result.runId,
+          outputText: result.outputText,
+          ...result.structuredOutput === void 0 ? {} : { structuredOutput: result.structuredOutput },
+          request: result.request,
+          resumeHandle: result.resumeHandle,
+          telemetry: {
+            durationMs: Date.now() - startedAt,
+            finishReason: "waiting_for_input",
+            ...result.usage === void 0 ? {} : { usage: result.usage }
+          },
+          warnings: result.warnings
+        };
+      }
+      this.managedRunSessions.delete(input.runId);
+      ownsMaterialized = true;
+      const snapshot = await snapshotSessionUpdate({
+        materialized,
+        previousSession: input.session,
+        redactor: input.redactor
+      });
+      return {
+        status: "completed",
+        outputText: result.outputText,
+        structuredOutput: result.structuredOutput,
+        ...snapshot.sessionUpdate ? { sessionUpdate: snapshot.sessionUpdate } : {},
+        telemetry: {
+          durationMs: Date.now() - startedAt,
+          finishReason: "completed",
+          ...result.usage === void 0 ? {} : { usage: result.usage }
+        },
+        warnings: [...result.warnings, ...snapshot.warnings]
+      };
+    } catch (error51) {
+      this.managedRunSessions.delete(input.runId);
+      ownsMaterialized = true;
+      const failure = codexExecutionFailure(error51);
+      return {
+        ...failure,
+        telemetry: {
+          durationMs: Date.now() - startedAt,
+          finishReason: finishReasonForFailure(failure.failure.code)
+        }
+      };
+    } finally {
+      if (ownsMaterialized) {
+        await materialized.release();
+      }
+    }
+  }
+  hasManagedRunSession(runId) {
+    return this.managedRunSessions.has(runId);
   }
   classifyRunFailure(error51) {
     return classifyCodexFailure(error51);
@@ -2172,7 +2754,10 @@ var CodexJsonAgentDriver = class {
     }
   }
   async dispose() {
+    const managedSessions = [...this.managedRunSessions.values()];
+    this.managedRunSessions.clear();
     const results = await Promise.allSettled([
+      ...managedSessions.map((session) => Promise.resolve().then(() => session.release())),
       Promise.resolve().then(() => this.engine.dispose?.()),
       Promise.resolve().then(() => this.sessionMaterializer.dispose?.())
     ]);
@@ -2182,6 +2767,15 @@ var CodexJsonAgentDriver = class {
       error51.code = "codex_json_agent_dispose_failed";
       throw error51;
     }
+  }
+  outputSchemaRequest(outputSchemaName) {
+    if (!outputSchemaName)
+      return void 0;
+    const schema = this.outputSchemas[outputSchemaName];
+    return {
+      name: outputSchemaName,
+      ...schema === void 0 ? {} : { schema }
+    };
   }
 };
 async function snapshotSessionUpdate(input) {
@@ -2216,23 +2810,33 @@ function readTaskGoalObjective(task) {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
 }
+function readTaskManagedRunId(task) {
+  const value = task.metadata?.codexManagedRunId ?? task.metadata?.runId;
+  if (typeof value !== "string")
+    return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
 function finishReasonForFailure(code) {
   if (code === "task_cancelled")
     return "cancelled";
   if (code === "task_timeout")
     return "timeout";
+  if (code === "goal_slice_exhausted")
+    return "max_turns";
   return "provider_error";
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-app-server-execution-engine.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-app-server-execution-engine.js
 var defaultTimeoutMs2 = 10 * 60 * 1e3;
+var defaultStartupTimeoutMs = 2 * 60 * 1e3;
 var defaultControlRequestTimeoutMs = 30 * 1e3;
+var defaultReconnectGraceMs = 10 * 60 * 1e3;
 var defaultMaxOutputBytes2 = 512 * 1024;
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
-var import_promises3 = require("node:fs/promises");
-var import_node_os2 = require("node:os");
-var import_node_path3 = require("node:path");
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/provider-codex/codex-cli-session-driver.js
+var import_promises5 = require("node:fs/promises");
+var import_node_path6 = require("node:path");
 var CodexCliSessionDriver = class {
   options;
   providerId = codexProviderId;
@@ -2251,14 +2855,17 @@ var CodexCliSessionDriver = class {
   async refreshSession(input) {
     const authJson = codexAuthJsonFromArtifact(input.session);
     input.redactor.registerSecret(authJson, "codex-auth-json");
-    const tempRoot = await (0, import_promises3.mkdtemp)((0, import_node_path3.join)((0, import_node_os2.tmpdir)(), "subscription-runtime-codex-"));
-    const tempHome = (0, import_node_path3.join)(tempRoot, "home");
-    const tempCodexHome = (0, import_node_path3.join)(tempRoot, "codex-home");
-    const emptyWorkingDirectory = (0, import_node_path3.join)(tempRoot, "empty-workdir");
-    const authJsonPath = (0, import_node_path3.join)(tempCodexHome, "auth.json");
-    await (0, import_promises3.mkdir)(tempHome, { recursive: true, mode: 448 });
-    await (0, import_promises3.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
-    await (0, import_promises3.mkdir)(emptyWorkingDirectory, { recursive: true, mode: 448 });
+    const tempRoot = await createCodexRuntimeTempRoot({
+      prefix: "subscription-runtime-codex-",
+      sourceEnv: this.options.sourceEnv
+    });
+    const tempHome = (0, import_node_path6.join)(tempRoot, "home");
+    const tempCodexHome = (0, import_node_path6.join)(tempRoot, "codex-home");
+    const emptyWorkingDirectory = (0, import_node_path6.join)(tempRoot, "empty-workdir");
+    const authJsonPath = (0, import_node_path6.join)(tempCodexHome, "auth.json");
+    await (0, import_promises5.mkdir)(tempHome, { recursive: true, mode: 448 });
+    await (0, import_promises5.mkdir)(tempCodexHome, { recursive: true, mode: 448 });
+    await (0, import_promises5.mkdir)(emptyWorkingDirectory, { recursive: true, mode: 448 });
     try {
       await writeCodexHomeSnapshot({ codexHome: tempCodexHome, authJson });
       const plan = buildCodexRefreshBootstrapPlan({
@@ -2281,7 +2888,7 @@ var CodexCliSessionDriver = class {
         timeoutMs: 5 * 60 * 1e3,
         abortSignal: input.abortSignal
       });
-      const refreshedAuthJson = await (0, import_promises3.readFile)(authJsonPath, "utf8");
+      const refreshedAuthJson = await (0, import_promises5.readFile)(authJsonPath, "utf8");
       const refreshed = sessionArtifactFromCodexAuthJson(refreshedAuthJson);
       const providerState = refreshedAuthJson === authJson ? "unchanged" : "refreshed";
       return {
@@ -2414,15 +3021,15 @@ async function writeCodexHomeSnapshot(input) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises3.writeFile)((0, import_node_path3.join)(input.codexHome, "config.toml"), config2, {
+  await (0, import_promises5.writeFile)((0, import_node_path6.join)(input.codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises3.writeFile)((0, import_node_path3.join)(input.codexHome, "auth.json"), input.authJson, {
+  await (0, import_promises5.writeFile)((0, import_node_path6.join)(input.codexHome, "auth.json"), input.authJson, {
     mode: 384
   });
 }
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/capabilities.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/capabilities.js
 var githubActionRunnerCapabilities = {
   runnerId: "github-action",
   supportsEnvAllowlist: true,
@@ -2435,17 +3042,20 @@ var githubActionRunnerCapabilities = {
   platform: "github-actions"
 };
 
-// node_modules/.pnpm/@vioxen+subscription-runtime@https+++codeload.github.com+777genius+ar+tar.gz+842a37727d433a6de4f389c126d20d26403a4b72/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
+// node_modules/.pnpm/@vioxen+subscription-runtime@git+https+++git@github.com+777genius+ar.git+c02350860e2263_313a512534f6af68cc7f88c74e3bab86/node_modules/@vioxen/subscription-runtime/dist/runner-github-action/github-action-runner.js
 var import_node_child_process = require("node:child_process");
 var defaultMaxCapturedOutputBytes = 256e3;
+var defaultKillGraceMs = 5e3;
 var GitHubActionRunner = class {
   runnerId = githubActionRunnerCapabilities.runnerId;
   capabilities = githubActionRunnerCapabilities;
   redactor;
   maxCapturedOutputBytes;
+  killGraceMs;
   constructor(options = {}) {
     this.redactor = options.redactor ?? new DefaultRedactor();
     this.maxCapturedOutputBytes = options.maxCapturedOutputBytes ?? defaultMaxCapturedOutputBytes;
+    this.killGraceMs = options.killGraceMs ?? defaultKillGraceMs;
   }
   run(input) {
     try {
@@ -2462,6 +3072,8 @@ var GitHubActionRunner = class {
       const stderrChunks = [];
       let capturedBytes = 0;
       let settled = false;
+      let terminalError = null;
+      let forceKillTimer = null;
       const child = (0, import_node_child_process.spawn)(input.command, input.args, {
         cwd: input.cwd,
         env: input.env,
@@ -2469,6 +3081,8 @@ var GitHubActionRunner = class {
       });
       const cleanup = () => {
         clearTimeout(timer);
+        if (forceKillTimer)
+          clearTimeout(forceKillTimer);
         input.abortSignal.removeEventListener("abort", abort);
       };
       const settleReject = (error51) => {
@@ -2478,33 +3092,72 @@ var GitHubActionRunner = class {
         cleanup();
         reject(error51);
       };
-      const abort = () => {
+      const terminate = () => {
+        if (child.exitCode !== null || child.signalCode !== null)
+          return;
         child.kill("SIGTERM");
-        settleReject(new Error("process_aborted"));
+        forceKillTimer ??= setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, this.killGraceMs);
+      };
+      const failAfterExit = (error51) => {
+        if (settled || terminalError)
+          return;
+        terminalError = error51;
+        terminate();
+      };
+      const abort = () => {
+        failAfterExit(new Error("process_aborted"));
       };
       const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        settleReject(new Error("process_timeout"));
+        failAfterExit(new Error("process_timeout"));
       }, input.timeoutMs);
+      const failOutputSink = (streamName, error51) => {
+        const message = error51 instanceof Error ? error51.message : String(error51);
+        failAfterExit(new Error(`process_output_sink_failed:${streamName}:${message}`));
+      };
+      const failStdin = (error51) => {
+        const message = error51 instanceof Error ? error51.message : String(error51);
+        failAfterExit(new Error(`process_stdin_failed:${message}`));
+      };
       input.abortSignal.addEventListener("abort", abort, { once: true });
       child.stdout.on("data", (chunk) => {
         const buffer = Buffer.from(chunk);
-        writeRedacted(input.stdout, this.redactor, buffer);
+        try {
+          writeRedacted(input.stdout, this.redactor, buffer);
+        } catch (error51) {
+          failOutputSink("stdout", error51);
+          return;
+        }
         capturedBytes = appendCapturedChunk(stdoutChunks, capturedBytes, buffer, this.maxCapturedOutputBytes);
       });
       child.stderr.on("data", (chunk) => {
         const buffer = Buffer.from(chunk);
-        writeRedacted(input.stderr, this.redactor, buffer);
+        try {
+          writeRedacted(input.stderr, this.redactor, buffer);
+        } catch (error51) {
+          failOutputSink("stderr", error51);
+          return;
+        }
         capturedBytes = appendCapturedChunk(stderrChunks, capturedBytes, buffer, this.maxCapturedOutputBytes);
       });
       child.on("error", (error51) => {
+        if (terminalError)
+          return;
         settleReject(error51 instanceof Error ? error51 : new Error(String(error51)));
       });
+      child.stdin.on("error", failStdin);
       child.on("close", (code) => {
         if (settled)
           return;
         settled = true;
         cleanup();
+        if (terminalError) {
+          reject(terminalError);
+          return;
+        }
         const stdout = this.redactor.redact(Buffer.concat(stdoutChunks).toString("utf8"));
         const stderr = this.redactor.redact(Buffer.concat(stderrChunks).toString("utf8"));
         const durationMs = Date.now() - startedAt;
@@ -2520,7 +3173,11 @@ var GitHubActionRunner = class {
         reject(new Error(`process_failed:${input.command}:${code ?? "signal"}:${safeFailureOutput(`${stdout}
 ${stderr}`)}`));
       });
-      child.stdin.end(input.stdin ? Buffer.from(input.stdin) : void 0);
+      try {
+        child.stdin.end(input.stdin ? Buffer.from(input.stdin) : void 0);
+      } catch (error51) {
+        failStdin(error51);
+      }
     });
   }
 };
@@ -2567,9 +3224,9 @@ function safeFailureOutput(output) {
 }
 
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
-var import_promises4 = require("node:fs/promises");
-var import_node_os3 = require("node:os");
-var import_node_path4 = require("node:path");
+var import_promises6 = require("node:fs/promises");
+var import_node_os2 = require("node:os");
+var import_node_path7 = require("node:path");
 
 // node_modules/.pnpm/zod@4.4.2/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -4185,8 +4842,8 @@ function emoji() {
 }
 var ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$/;
 var ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
-var mac = (delimiter) => {
-  const escapedDelim = escapeRegex(delimiter ?? ":");
+var mac = (delimiter2) => {
+  const escapedDelim = escapeRegex(delimiter2 ?? ":");
   return new RegExp(`^(?:[0-9A-F]{2}${escapedDelim}){5}[0-9A-F]{2}$|^(?:[0-9a-f]{2}${escapedDelim}){5}[0-9a-f]{2}$`);
 };
 var cidrv4 = /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/([0-9]|[1-2][0-9]|3[0-2])$/;
@@ -20902,6 +21559,12 @@ var reviewCheckpointFinalizationMarkerSchema = external_exports.object({
   expectedVersion: external_exports.number().int().positive(),
   snapshotAdvancementRequired: external_exports.boolean().optional()
 }).strict();
+var FinalizedReviewCheckpointMarkerReadStatus = /* @__PURE__ */ ((FinalizedReviewCheckpointMarkerReadStatus2) => {
+  FinalizedReviewCheckpointMarkerReadStatus2["Missing"] = "missing";
+  FinalizedReviewCheckpointMarkerReadStatus2["Valid"] = "valid";
+  FinalizedReviewCheckpointMarkerReadStatus2["Invalid"] = "invalid";
+  return FinalizedReviewCheckpointMarkerReadStatus2;
+})(FinalizedReviewCheckpointMarkerReadStatus || {});
 var reviewCheckpointClearResponseSchema = external_exports.discriminatedUnion("status", [
   external_exports.object({
     protocolVersion: external_exports.literal(1),
@@ -21092,19 +21755,19 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
         });
         const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
         try {
-          const reviewSnapshotInputPath = (0, import_node_path4.join)(
+          const reviewSnapshotInputPath = (0, import_node_path7.join)(
             reviewHome,
             reviewSnapshotInputFileName
           );
-          const reviewSnapshotOutputPath = (0, import_node_path4.join)(
+          const reviewSnapshotOutputPath = (0, import_node_path7.join)(
             reviewHome,
             reviewSnapshotOutputFileName
           );
-          const reviewCheckpointFinalizationPath = (0, import_node_path4.join)(
+          const reviewCheckpointFinalizationPath = (0, import_node_path7.join)(
             reviewHome,
             reviewCheckpointFinalizationFileName
           );
-          await (0, import_promises4.writeFile)(
+          await (0, import_promises6.writeFile)(
             reviewSnapshotInputPath,
             JSON.stringify(reviewSnapshotForRuntime),
             { encoding: "utf8", mode: 384 }
@@ -21131,13 +21794,13 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           } catch (error51) {
             reviewRuntimeFailure = error51;
           }
-          const finalizedCheckpointMarker = await tryReadFinalizedReviewCheckpointMarker({
+          const finalizedCheckpointMarkerRead = await tryReadFinalizedReviewCheckpointMarker({
             markerPath: reviewCheckpointFinalizationPath,
             event,
             io
           });
           await settleFinalizedReviewCheckpoint({
-            marker: finalizedCheckpointMarker,
+            markerRead: finalizedCheckpointMarkerRead,
             runtimeCompleted: didReviewRuntimeComplete(reviewRuntimeFailure),
             commitSnapshot: () => tryCommitReviewSnapshot({
               fetchImpl,
@@ -21592,7 +22255,7 @@ async function readPullRequestEvent(env, reviewDrafts) {
   if (!eventPath) {
     throw new Error("missing_github_event_path");
   }
-  const event = JSON.parse(await (0, import_promises4.readFile)(eventPath, "utf8"));
+  const event = JSON.parse(await (0, import_promises6.readFile)(eventPath, "utf8"));
   const repository = requireString(event.repository?.full_name, "event_repo");
   const headRepo = requireString(
     event.pull_request?.head?.repo?.full_name,
@@ -21657,7 +22320,7 @@ async function readForkPullRequestTargetEvent(env) {
   if (!eventPath) {
     throw new Error("missing_github_event_path");
   }
-  const event = JSON.parse(await (0, import_promises4.readFile)(eventPath, "utf8"));
+  const event = JSON.parse(await (0, import_promises6.readFile)(eventPath, "utf8"));
   const repository = requireString(event.repository?.full_name, "event_repo");
   const headRepo = requireString(
     event.pull_request?.head?.repo?.full_name,
@@ -21758,13 +22421,21 @@ async function tryRestoreReviewSnapshot(input) {
   }
 }
 async function settleFinalizedReviewCheckpoint(input) {
-  if (!input.marker || !input.runtimeCompleted) return;
-  if (input.marker.snapshotAdvancementRequired === false) {
-    await input.clearCheckpoint(input.marker);
+  if (!input.runtimeCompleted) return;
+  if (input.markerRead.status === "invalid" /* Invalid */) {
+    return;
+  }
+  if (input.markerRead.status === "missing" /* Missing */) {
+    await input.commitSnapshot();
+    return;
+  }
+  const marker = input.markerRead.marker;
+  if (marker.snapshotAdvancementRequired === false) {
+    await input.clearCheckpoint(marker);
     return;
   }
   if (await input.commitSnapshot()) {
-    await input.clearCheckpoint(input.marker);
+    await input.clearCheckpoint(marker);
   }
 }
 function didReviewRuntimeComplete(error51) {
@@ -21773,7 +22444,7 @@ function didReviewRuntimeComplete(error51) {
 async function tryCommitReviewSnapshot(input) {
   let candidateStats;
   try {
-    candidateStats = await (0, import_promises4.stat)(input.candidatePath);
+    candidateStats = await (0, import_promises6.stat)(input.candidatePath);
   } catch {
     return false;
   }
@@ -21781,7 +22452,7 @@ async function tryCommitReviewSnapshot(input) {
     if (!candidateStats.isFile() || candidateStats.size > maxReviewSnapshotCandidateBytes) {
       throw new Error("review_snapshot_candidate_size_invalid");
     }
-    const rawCandidate = await (0, import_promises4.readFile)(input.candidatePath, "utf8");
+    const rawCandidate = await (0, import_promises6.readFile)(input.candidatePath, "utf8");
     const parsedCandidate = reviewSnapshotCandidateSchema.safeParse(
       JSON.parse(rawCandidate)
     );
@@ -21882,12 +22553,12 @@ async function tryClearFinalizedReviewCheckpoint(input) {
 }
 async function tryReadFinalizedReviewCheckpointMarker(input) {
   try {
-    const markerStats = await (0, import_promises4.stat)(input.markerPath);
+    const markerStats = await (0, import_promises6.stat)(input.markerPath);
     if (!markerStats.isFile() || markerStats.size > 8192) {
       throw new Error("review_checkpoint_marker_size_invalid");
     }
     const parsedMarker = reviewCheckpointFinalizationMarkerSchema.safeParse(
-      JSON.parse(await (0, import_promises4.readFile)(input.markerPath, "utf8"))
+      JSON.parse(await (0, import_promises6.readFile)(input.markerPath, "utf8"))
     );
     if (!parsedMarker.success) {
       throw new Error("review_checkpoint_marker_invalid");
@@ -21895,13 +22566,19 @@ async function tryReadFinalizedReviewCheckpointMarker(input) {
     if (parsedMarker.data.pullRequestNumber !== input.event.number || parsedMarker.data.headSha !== input.event.headSha) {
       throw new Error("review_checkpoint_marker_context_mismatch");
     }
-    return parsedMarker.data;
-  } catch {
+    return {
+      status: "valid" /* Valid */,
+      marker: parsedMarker.data
+    };
+  } catch (error51) {
+    if (error51.code === "ENOENT") {
+      return { status: "missing" /* Missing */ };
+    }
     notice(
       input.io,
-      "ReviewRouter did not advance the incremental snapshot because batch finalization was not confirmed."
+      "ReviewRouter ignored an invalid batch finalization marker and will only settle a validated snapshot candidate."
     );
-    return null;
+    return { status: "invalid" /* Invalid */ };
   }
 }
 async function fetchCurrentPullRequestHeadSha(input) {
@@ -22162,22 +22839,22 @@ function closeHttpServer(server) {
 }
 async function resolveCodexBinary(env) {
   const actionPath = resolveGitHubActionPath(env);
-  const bundleRoot = (0, import_node_path4.join)(
+  const bundleRoot = (0, import_node_path7.join)(
     actionPath,
     "action-dist",
     "codex",
     bundledCodexPlatform
   );
-  const archivePath = (0, import_node_path4.join)(bundleRoot, bundledCodexArchiveName);
-  const manifestPath = (0, import_node_path4.join)(bundleRoot, "manifest.json");
+  const archivePath = (0, import_node_path7.join)(bundleRoot, bundledCodexArchiveName);
+  const manifestPath = (0, import_node_path7.join)(bundleRoot, "manifest.json");
   let resolvedBundleRoot;
   let resolvedArchivePath;
   let resolvedManifestPath;
   try {
     [resolvedBundleRoot, resolvedArchivePath, resolvedManifestPath] = await Promise.all([
-      (0, import_promises4.realpath)(bundleRoot),
-      (0, import_promises4.realpath)(archivePath),
-      (0, import_promises4.realpath)(manifestPath)
+      (0, import_promises6.realpath)(bundleRoot),
+      (0, import_promises6.realpath)(archivePath),
+      (0, import_promises6.realpath)(manifestPath)
     ]);
   } catch (error51) {
     throw new Error("codex_bundled_binary_missing", { cause: error51 });
@@ -22186,9 +22863,9 @@ async function resolveCodexBinary(env) {
     throw new Error("codex_bundled_binary_escape");
   }
   const [archiveLinkStats, manifestLinkStats, archiveStats, manifest] = await Promise.all([
-    (0, import_promises4.lstat)(archivePath),
-    (0, import_promises4.lstat)(manifestPath),
-    (0, import_promises4.stat)(resolvedArchivePath),
+    (0, import_promises6.lstat)(archivePath),
+    (0, import_promises6.lstat)(manifestPath),
+    (0, import_promises6.stat)(resolvedArchivePath),
     readCodexBinaryManifest(resolvedManifestPath)
   ]);
   if (archiveLinkStats.isSymbolicLink() || manifestLinkStats.isSymbolicLink()) {
@@ -22202,8 +22879,8 @@ async function resolveCodexBinary(env) {
   if (archiveSha256 !== manifest.archiveSha256) {
     throw new Error("codex_bundled_archive_hash_mismatch");
   }
-  const extractionRoot = await (0, import_promises4.mkdtemp)(
-    (0, import_node_path4.join)(env.RUNNER_TEMP ?? (0, import_node_os3.tmpdir)(), "reviewrouter-codex-bundle-")
+  const extractionRoot = await (0, import_promises6.mkdtemp)(
+    (0, import_node_path7.join)(env.RUNNER_TEMP ?? (0, import_node_os2.tmpdir)(), "reviewrouter-codex-bundle-")
   );
   await runProcess({
     command: "tar",
@@ -22214,16 +22891,16 @@ async function resolveCodexBinary(env) {
     },
     timeoutMs: 6e4
   });
-  const extractedBinaryPath = (0, import_node_path4.join)(
+  const extractedBinaryPath = (0, import_node_path7.join)(
     extractionRoot,
     manifest.binaryPathInArchive
   );
-  const resolvedExtractionRoot = await (0, import_promises4.realpath)(extractionRoot);
-  const resolvedBinaryPath = await (0, import_promises4.realpath)(extractedBinaryPath);
+  const resolvedExtractionRoot = await (0, import_promises6.realpath)(extractionRoot);
+  const resolvedBinaryPath = await (0, import_promises6.realpath)(extractedBinaryPath);
   if (!resolvedBinaryPath.startsWith(`${resolvedExtractionRoot}/`)) {
     throw new Error("codex_bundled_binary_escape");
   }
-  const binaryStats = await (0, import_promises4.stat)(resolvedBinaryPath);
+  const binaryStats = await (0, import_promises6.stat)(resolvedBinaryPath);
   if (!binaryStats.isFile() || binaryStats.size !== manifest.size) {
     throw new Error("codex_bundled_binary_manifest_mismatch");
   }
@@ -22231,8 +22908,8 @@ async function resolveCodexBinary(env) {
   if (binarySha256 !== manifest.sha256) {
     throw new Error("codex_bundled_binary_hash_mismatch");
   }
-  await (0, import_promises4.chmod)(resolvedBinaryPath, 493);
-  await (0, import_promises4.access)(resolvedBinaryPath, import_node_fs.constants.X_OK);
+  await (0, import_promises6.chmod)(resolvedBinaryPath, 493);
+  await (0, import_promises6.access)(resolvedBinaryPath, import_node_fs2.constants.X_OK);
   return resolvedBinaryPath;
 }
 function resolveGitHubActionPath(env) {
@@ -22241,14 +22918,14 @@ function resolveGitHubActionPath(env) {
     return explicitActionPath;
   }
   if (typeof __dirname === "string" && __dirname.endsWith("action-dist")) {
-    return (0, import_node_path4.join)(__dirname, "..");
+    return (0, import_node_path7.join)(__dirname, "..");
   }
   throw new Error("missing_github_action_path");
 }
 async function readCodexBinaryManifest(manifestPath) {
   try {
     return JSON.parse(
-      await (0, import_promises4.readFile)(manifestPath, "utf8")
+      await (0, import_promises6.readFile)(manifestPath, "utf8")
     );
   } catch (error51) {
     throw new Error("codex_bundled_binary_manifest_invalid", { cause: error51 });
@@ -22266,7 +22943,7 @@ function validateCodexBinaryManifest(manifest, archiveSize) {
 function sha256File(path) {
   return new Promise((resolve, reject) => {
     const hash2 = (0, import_node_crypto6.createHash)("sha256");
-    const stream = (0, import_node_fs.createReadStream)(path);
+    const stream = (0, import_node_fs2.createReadStream)(path);
     stream.on("data", (chunk) => hash2.update(chunk));
     stream.on("error", reject);
     stream.on("end", () => resolve(hash2.digest("hex")));
@@ -22274,14 +22951,14 @@ function sha256File(path) {
 }
 async function getAvailableDiskBytes(path) {
   try {
-    const stats = await (0, import_promises4.statfs)(path);
+    const stats = await (0, import_promises6.statfs)(path);
     return stats.bavail * stats.bsize;
   } catch (error51) {
     throw new Error("runner_disk_budget_unavailable", { cause: error51 });
   }
 }
 async function writeCodexAuthSnapshot(codexHome, authJson) {
-  await (0, import_promises4.mkdir)(codexHome, { recursive: true, mode: 448 });
+  await (0, import_promises6.mkdir)(codexHome, { recursive: true, mode: 448 });
   const config2 = [
     'cli_auth_credentials_store = "file"',
     'approval_policy = "never"',
@@ -22312,14 +22989,14 @@ async function writeCodexAuthSnapshot(codexHome, authJson) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises4.writeFile)((0, import_node_path4.join)(codexHome, "config.toml"), config2, {
+  await (0, import_promises6.writeFile)((0, import_node_path7.join)(codexHome, "config.toml"), config2, {
     mode: 384
   });
-  await (0, import_promises4.writeFile)((0, import_node_path4.join)(codexHome, "auth.json"), authJson, { mode: 384 });
+  await (0, import_promises6.writeFile)((0, import_node_path7.join)(codexHome, "auth.json"), authJson, { mode: 384 });
 }
 async function writeCodexProxySnapshot(input) {
-  await (0, import_promises4.mkdir)(input.codexHome, { recursive: true, mode: 448 });
-  await (0, import_promises4.rm)((0, import_node_path4.join)(input.codexHome, "auth.json"), { force: true });
+  await (0, import_promises6.mkdir)(input.codexHome, { recursive: true, mode: 448 });
+  await (0, import_promises6.rm)((0, import_node_path7.join)(input.codexHome, "auth.json"), { force: true });
   const config2 = [
     `model = ${JSON.stringify(input.model)}`,
     'model_provider = "reviewrouter_proxy"',
@@ -22356,7 +23033,7 @@ async function writeCodexProxySnapshot(input) {
     'include_only = ["PATH", "HOME", "CI", "CODEX_HOME"]',
     ""
   ].join("\n");
-  await (0, import_promises4.writeFile)((0, import_node_path4.join)(input.codexHome, "config.toml"), config2, {
+  await (0, import_promises6.writeFile)((0, import_node_path7.join)(input.codexHome, "config.toml"), config2, {
     mode: 384
   });
 }
@@ -22387,7 +23064,7 @@ async function refreshCodexAuthJson(input) {
     await writeCodexAuthSnapshot(input.tempCodexHome, input.authJson);
     await runCodexBootstrap(input);
     return {
-      authJson: await (0, import_promises4.readFile)((0, import_node_path4.join)(input.tempCodexHome, "auth.json"), "utf8"),
+      authJson: await (0, import_promises6.readFile)((0, import_node_path7.join)(input.tempCodexHome, "auth.json"), "utf8"),
       writebackCommittedByRuntime: false
     };
   }
@@ -22692,8 +23369,8 @@ function shouldUseSubscriptionRuntimeCodex(env) {
   return value !== "0" && value !== "false";
 }
 async function safeCheckoutPullRequest(input) {
-  const askPass = (0, import_node_path4.join)(input.workspace, ".reviewrouter-askpass.sh");
-  await (0, import_promises4.writeFile)(
+  const askPass = (0, import_node_path7.join)(input.workspace, ".reviewrouter-askpass.sh");
+  await (0, import_promises6.writeFile)(
     askPass,
     [
       "#!/usr/bin/env bash",
@@ -22706,7 +23383,7 @@ async function safeCheckoutPullRequest(input) {
     ].join("\n"),
     { mode: 448 }
   );
-  await (0, import_promises4.chmod)(askPass, 448);
+  await (0, import_promises6.chmod)(askPass, 448);
   const gitEnv = buildSafeCheckoutGitEnv({
     sourceEnv: input.env,
     workspace: input.workspace,
@@ -22793,7 +23470,7 @@ function buildSafeCheckoutGitEnv(input) {
   return {
     ...pruneCodexRotatingChildEnv(input.sourceEnv),
     HOME: input.workspace,
-    XDG_CONFIG_HOME: (0, import_node_path4.join)(input.workspace, ".config"),
+    XDG_CONFIG_HOME: (0, import_node_path7.join)(input.workspace, ".config"),
     GIT_ASKPASS: input.askPass,
     GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_NOSYSTEM: "1",
@@ -22826,7 +23503,7 @@ async function assertCheckoutConfigDoesNotPersistCredentials(input) {
 async function assertGitConfigDoesNotPersistCredentials(input) {
   let gitConfig;
   try {
-    gitConfig = await (0, import_promises4.readFile)((0, import_node_path4.join)(input.workspace, ".git", "config"), "utf8");
+    gitConfig = await (0, import_promises6.readFile)((0, import_node_path7.join)(input.workspace, ".git", "config"), "utf8");
   } catch (error51) {
     throw new Error("checkout_config_missing", { cause: error51 });
   }
@@ -22844,8 +23521,8 @@ async function resolveForkSandboxWorkspace(env) {
   if (!githubWorkspace) {
     throw new Error("missing_github_workspace");
   }
-  const resolvedWorkspace = await (0, import_promises4.realpath)(workspace);
-  const resolvedRoot = await (0, import_promises4.realpath)(githubWorkspace);
+  const resolvedWorkspace = await (0, import_promises6.realpath)(workspace);
+  const resolvedRoot = await (0, import_promises6.realpath)(githubWorkspace);
   if (resolvedWorkspace !== resolvedRoot && !resolvedWorkspace.startsWith(`${resolvedRoot}/`)) {
     throw new Error("fork_sandbox_workspace_outside_github_workspace");
   }
@@ -22855,7 +23532,7 @@ async function resolveForkSandboxWorkspace(env) {
   return resolvedWorkspace;
 }
 async function assertForkSandboxWorkspace(workspace) {
-  const stats = await (0, import_promises4.lstat)(workspace);
+  const stats = await (0, import_promises6.lstat)(workspace);
   if (!stats.isDirectory()) {
     throw new Error("fork_sandbox_workspace_not_directory");
   }
@@ -22866,20 +23543,20 @@ async function makeForkSandboxCodexHomeDirectory(env) {
   if (!githubWorkspace) {
     throw new Error("missing_github_workspace");
   }
-  const resolvedWorkspaceRoot = await (0, import_promises4.realpath)(githubWorkspace);
-  const codexHomeRoot = (0, import_node_path4.join)(resolvedWorkspaceRoot, ".reviewrouter-codex-home");
-  await (0, import_promises4.mkdir)(codexHomeRoot, { recursive: true, mode: 448 });
-  const codexHomeRootStats = await (0, import_promises4.lstat)(codexHomeRoot);
+  const resolvedWorkspaceRoot = await (0, import_promises6.realpath)(githubWorkspace);
+  const codexHomeRoot = (0, import_node_path7.join)(resolvedWorkspaceRoot, ".reviewrouter-codex-home");
+  await (0, import_promises6.mkdir)(codexHomeRoot, { recursive: true, mode: 448 });
+  const codexHomeRootStats = await (0, import_promises6.lstat)(codexHomeRoot);
   if (!codexHomeRootStats.isDirectory() || codexHomeRootStats.isSymbolicLink()) {
     throw new Error("fork_sandbox_codex_home_root_invalid");
   }
-  const resolvedCodexHomeRoot = await (0, import_promises4.realpath)(codexHomeRoot);
+  const resolvedCodexHomeRoot = await (0, import_promises6.realpath)(codexHomeRoot);
   if (resolvedCodexHomeRoot !== codexHomeRoot && !resolvedCodexHomeRoot.startsWith(`${resolvedWorkspaceRoot}/`)) {
     throw new Error("fork_sandbox_codex_home_root_escape");
   }
-  const codexHome = await (0, import_promises4.mkdtemp)((0, import_node_path4.join)(resolvedCodexHomeRoot, "run-"));
-  await (0, import_promises4.chmod)(codexHome, 448);
-  const resolvedCodexHome = await (0, import_promises4.realpath)(codexHome);
+  const codexHome = await (0, import_promises6.mkdtemp)((0, import_node_path7.join)(resolvedCodexHomeRoot, "run-"));
+  await (0, import_promises6.chmod)(codexHome, 448);
+  const resolvedCodexHome = await (0, import_promises6.realpath)(codexHome);
   if (!resolvedCodexHome.startsWith(`${resolvedCodexHomeRoot}/`)) {
     throw new Error("fork_sandbox_codex_home_escape");
   }
@@ -22887,15 +23564,15 @@ async function makeForkSandboxCodexHomeDirectory(env) {
 }
 async function runFullReviewRouterRuntime(input) {
   const actionPath = resolveGitHubActionPath(input.env);
-  const runtimePath = (0, import_node_path4.join)(actionPath, "dist", "index.js");
-  await (0, import_promises4.access)(runtimePath, import_node_fs.constants.R_OK);
+  const runtimePath = (0, import_node_path7.join)(actionPath, "dist", "index.js");
+  await (0, import_promises6.access)(runtimePath, import_node_fs2.constants.R_OK);
   const reviewThreadLifecycleResolveToken = input.env[reviewThreadLifecycleResolveTokenEnvKey]?.trim() || void 0;
   if (reviewThreadLifecycleResolveToken) {
     mask(input.io, reviewThreadLifecycleResolveToken);
   }
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
-    await (0, import_promises4.symlink)(input.codexBinaryPath, (0, import_node_path4.join)(codexBinDir, "codex"));
+    await (0, import_promises6.symlink)(input.codexBinaryPath, (0, import_node_path7.join)(codexBinDir, "codex"));
     const runtimeTimeoutMs = createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3;
     const executionDeadlineEpochMs = Date.now() + runtimeTimeoutMs;
     const childEnv = buildFullReviewRuntimeEnv({
@@ -22958,8 +23635,8 @@ function buildFullReviewRuntimeEnv(input) {
     CODEX_HOME: input.tempCodexHome,
     GITHUB_WORKSPACE: input.workspace,
     CI: "true",
-    PATH: `${input.codexBinDir}:${(0, import_node_path4.join)(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
-    GITHUB_OUTPUT: (0, import_node_path4.join)(input.tempHome, "github-output"),
+    PATH: `${input.codexBinDir}:${(0, import_node_path7.join)(input.tempHome, ".local", "bin")}:${input.sourceEnv.PATH ?? process.env.PATH ?? ""}`,
+    GITHUB_OUTPUT: (0, import_node_path7.join)(input.tempHome, "github-output"),
     GITHUB_TOKEN: input.commentToken,
     PR_NUMBER: String(input.event.number),
     REVIEW_AUTH_MODE: reviewAuthMode,
@@ -23488,7 +24165,7 @@ function sanitizeProcessLogChunk(output) {
   ).replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]").replace(/[A-Za-z0-9._~+/=-]{120,}/g, "[redacted]");
 }
 async function removeTree(path) {
-  await (0, import_promises4.rm)(path, {
+  await (0, import_promises6.rm)(path, {
     recursive: true,
     force: true,
     maxRetries: 5,
@@ -23496,7 +24173,7 @@ async function removeTree(path) {
   });
 }
 async function makeTempDirectory(prefix) {
-  return (0, import_promises4.mkdtemp)((0, import_node_path4.join)((0, import_node_os3.tmpdir)(), prefix));
+  return (0, import_promises6.mkdtemp)((0, import_node_path7.join)((0, import_node_os2.tmpdir)(), prefix));
 }
 function buildWritebackIdempotencyKey(env, leaseId) {
   const runId = env.GITHUB_RUN_ID || "local";
@@ -23614,6 +24291,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  FinalizedReviewCheckpointMarkerReadStatus,
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
   buildFullReviewRuntimeEnv,

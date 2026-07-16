@@ -311,6 +311,24 @@ const reviewCheckpointFinalizationMarkerSchema = z
   })
   .strict();
 
+export enum FinalizedReviewCheckpointMarkerReadStatus {
+  Missing = "missing",
+  Valid = "valid",
+  Invalid = "invalid",
+}
+
+type FinalizedReviewCheckpointMarkerReadResult =
+  | {
+      readonly status: FinalizedReviewCheckpointMarkerReadStatus.Missing;
+    }
+  | {
+      readonly status: FinalizedReviewCheckpointMarkerReadStatus.Invalid;
+    }
+  | {
+      readonly status: FinalizedReviewCheckpointMarkerReadStatus.Valid;
+      readonly marker: z.infer<typeof reviewCheckpointFinalizationMarkerSchema>;
+    };
+
 const reviewCheckpointClearResponseSchema = z.discriminatedUnion("status", [
   z
     .object({
@@ -627,14 +645,14 @@ export async function runCodexRotatingGitHubAction(
           } catch (error) {
             reviewRuntimeFailure = error;
           }
-          const finalizedCheckpointMarker =
+          const finalizedCheckpointMarkerRead =
             await tryReadFinalizedReviewCheckpointMarker({
               markerPath: reviewCheckpointFinalizationPath,
               event,
               io,
             });
           await settleFinalizedReviewCheckpoint({
-            marker: finalizedCheckpointMarker,
+            markerRead: finalizedCheckpointMarkerRead,
             runtimeCompleted: didReviewRuntimeComplete(reviewRuntimeFailure),
             commitSnapshot: () =>
               tryCommitReviewSnapshot({
@@ -1421,22 +1439,34 @@ async function tryRestoreReviewSnapshot(input: {
 }
 
 export async function settleFinalizedReviewCheckpoint(input: {
-  readonly marker: z.infer<
-    typeof reviewCheckpointFinalizationMarkerSchema
-  > | null;
+  readonly markerRead: FinalizedReviewCheckpointMarkerReadResult;
   readonly runtimeCompleted: boolean;
   readonly commitSnapshot: () => Promise<boolean>;
   readonly clearCheckpoint: (
     marker: z.infer<typeof reviewCheckpointFinalizationMarkerSchema>,
   ) => Promise<void>;
 }): Promise<void> {
-  if (!input.marker || !input.runtimeCompleted) return;
-  if (input.marker.snapshotAdvancementRequired === false) {
-    await input.clearCheckpoint(input.marker);
+  if (!input.runtimeCompleted) return;
+  if (
+    input.markerRead.status ===
+    FinalizedReviewCheckpointMarkerReadStatus.Invalid
+  ) {
+    return;
+  }
+  if (
+    input.markerRead.status ===
+    FinalizedReviewCheckpointMarkerReadStatus.Missing
+  ) {
+    await input.commitSnapshot();
+    return;
+  }
+  const marker = input.markerRead.marker;
+  if (marker.snapshotAdvancementRequired === false) {
+    await input.clearCheckpoint(marker);
     return;
   }
   if (await input.commitSnapshot()) {
-    await input.clearCheckpoint(input.marker);
+    await input.clearCheckpoint(marker);
   }
 }
 
@@ -1584,7 +1614,7 @@ async function tryReadFinalizedReviewCheckpointMarker(input: {
   readonly markerPath: string;
   readonly event: PullRequestEvent;
   readonly io: ActionIO;
-}): Promise<z.infer<typeof reviewCheckpointFinalizationMarkerSchema> | null> {
+}): Promise<FinalizedReviewCheckpointMarkerReadResult> {
   try {
     const markerStats = await stat(input.markerPath);
     if (!markerStats.isFile() || markerStats.size > 8_192) {
@@ -1602,13 +1632,19 @@ async function tryReadFinalizedReviewCheckpointMarker(input: {
     ) {
       throw new Error("review_checkpoint_marker_context_mismatch");
     }
-    return parsedMarker.data;
-  } catch {
+    return {
+      status: FinalizedReviewCheckpointMarkerReadStatus.Valid,
+      marker: parsedMarker.data,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: FinalizedReviewCheckpointMarkerReadStatus.Missing };
+    }
     notice(
       input.io,
-      "ReviewRouter did not advance the incremental snapshot because batch finalization was not confirmed.",
+      "ReviewRouter ignored an invalid batch finalization marker and will only settle a validated snapshot candidate.",
     );
-    return null;
+    return { status: FinalizedReviewCheckpointMarkerReadStatus.Invalid };
   }
 }
 

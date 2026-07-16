@@ -376,6 +376,7 @@ exit 17
 
     expect(workflow).toContain("pull_request:");
     expect(workflow).toContain("pull_request_target:");
+    expect(workflow).toContain("converted_to_draft");
     expect(workflow).toContain(
       "github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'",
     );
@@ -402,7 +403,8 @@ exit 17
     expect(workflow).not.toContain("merge_group:");
     expect(workflow).not.toContain("actions/checkout");
     expect(workflow).not.toContain("run:");
-    expect(workflow.match(/^\s+concurrency:$/gm)).toHaveLength(2);
+    expect(workflow).not.toMatch(/^concurrency:/m);
+    expect(workflow.match(/^ {4}concurrency:$/gm)).toHaveLength(2);
     expect(workflow.match(/^\s+queue: max$/gm)).toHaveLength(2);
     expect(workflow.match(/^\s+cancel-in-progress: false$/gm)).toHaveLength(2);
     expect(workflow).toContain(
@@ -463,6 +465,25 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(mismatchedTimeoutInput).errors,
     ).toContain("review_job_timeout_variable_mismatch");
+
+    const unsafeWorkflowCancellation = workflow.replace(
+      "permissions: {}",
+      "concurrency:\n  group: unsafe\n  cancel-in-progress: true\n\npermissions: {}",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(unsafeWorkflowCancellation).errors,
+    ).toContain("workflow_concurrency_not_allowed");
+
+    const mismatchedFixedTimeout = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:test",
+      timeoutMinutes: 180,
+      refreshScheduleCron: null,
+    }).replace('review-timeout-minutes: "180"', 'review-timeout-minutes: "60"');
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(mismatchedFixedTimeout).errors,
+    ).toContain("review_job_timeout_value_mismatch");
 
     const legacyWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "777genius/review-router@main",

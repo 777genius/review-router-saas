@@ -166,7 +166,7 @@ export class InMemoryReviewExecutionCheckpointRepository implements ReviewExecut
         checkpoint: cloneRoot(aggregate.checkpoint),
       };
     }
-    const acceptedFindings = countFindings(aggregate.batchResults);
+    const acceptedFindings = aggregate.checkpoint.acceptedFindings;
     const nextAcceptedBytes =
       aggregate.checkpoint.acceptedBytes + input.batchResult.byteCount;
     const nextAcceptedFindings =
@@ -186,6 +186,7 @@ export class InMemoryReviewExecutionCheckpointRepository implements ReviewExecut
       ...aggregate.checkpoint,
       version: aggregate.checkpoint.version + 1,
       acceptedBytes: nextAcceptedBytes,
+      acceptedFindings: nextAcceptedFindings,
       updatedAt: input.updatedAt,
       expiresAt: input.expiresAt,
     };
@@ -360,13 +361,6 @@ function checkpointConflict(
         currentPlanHash: checkpoint.planHash,
       }
     : { currentVersion: 0 };
-}
-
-function countFindings(results: readonly ReviewExecutionBatchResult[]): number {
-  return results.reduce(
-    (total, result) => total + result.payload.findings.length,
-    0,
-  );
 }
 
 function scopeKey(scope: ReviewExecutionCheckpointScope): string {
