@@ -8,8 +8,9 @@ const githubKnownHost =
   "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n";
 
 const runPnpmInstall = (env = process.env) => {
+  const installEnv = { ...env, NODE_ENV: "development" };
   const result = spawnSync("pnpm", ["install", ...process.argv.slice(2)], {
-    env,
+    env: installEnv,
     stdio: "inherit",
   });
   if (result.signal) {
