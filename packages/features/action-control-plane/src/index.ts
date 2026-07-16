@@ -26,6 +26,7 @@ export * from "./application/use-cases/preflight-codex-rotating-oauth-writeback.
 export * from "./application/use-cases/writeback-codex-rotating-oauth.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-checkout-token.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-comment-token.js";
+export * from "./application/use-cases/issue-codex-rotating-review-snapshot-head-token.js";
 export * from "./application/use-cases/restore-codex-rotating-review-snapshot.js";
 export * from "./application/use-cases/commit-codex-rotating-review-snapshot.js";
 export * from "./application/use-cases/get-action-runtime-config.js";

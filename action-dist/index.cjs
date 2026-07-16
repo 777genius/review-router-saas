@@ -20851,7 +20851,7 @@ var reviewSnapshotFindingCandidateSchema = external_exports.object({
   startLine: external_exports.number().int().positive().optional(),
   line: external_exports.number().int().positive(),
   endLine: external_exports.number().int().positive().optional(),
-  severity: external_exports.enum(["critical", "major", "minor", "info"]),
+  severity: external_exports.enum(["critical", "major", "minor"]),
   title: external_exports.string().min(1).max(1e3),
   message: external_exports.string().min(1).max(2e4),
   provider: external_exports.string().min(1).max(500).optional(),
@@ -21082,29 +21082,33 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
             JSON.stringify(reviewSnapshotForRuntime),
             { encoding: "utf8", mode: 384 }
           );
-          await fullReviewRuntimeRunner({
-            inputs,
-            leaseId: prelease.leaseId,
-            codexBinaryPath,
-            env,
-            io,
-            workspace,
-            tempHome: reviewHome,
-            tempCodexHome,
-            event,
-            commentToken: commentToken.token,
-            runtimeConfigVersion: finalize2.runtimeConfigVersion,
-            runtimeEnv: finalize2.runtimeEnv,
-            reviewSnapshotInputPath,
-            reviewSnapshotOutputPath
-          });
+          let reviewRuntimeFailure;
+          try {
+            await fullReviewRuntimeRunner({
+              inputs,
+              leaseId: prelease.leaseId,
+              codexBinaryPath,
+              env,
+              io,
+              workspace,
+              tempHome: reviewHome,
+              tempCodexHome,
+              event,
+              commentToken: commentToken.token,
+              runtimeConfigVersion: finalize2.runtimeConfigVersion,
+              runtimeEnv: finalize2.runtimeEnv,
+              reviewSnapshotInputPath,
+              reviewSnapshotOutputPath
+            });
+          } catch (error51) {
+            reviewRuntimeFailure = error51;
+          }
           if (reviewSnapshotOutputPath) {
             await tryCommitReviewSnapshot({
               fetchImpl,
               inputs,
               leaseId: prelease.leaseId,
               event,
-              commentToken: commentToken.token,
               candidatePath: reviewSnapshotOutputPath,
               io
             });
@@ -21119,6 +21123,9 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
             });
           } catch {
             notice(io, "ReviewRouter could not clean up progress comments.");
+          }
+          if (reviewRuntimeFailure) {
+            throw reviewRuntimeFailure;
           }
         } finally {
           await removeTree(reviewHome);
@@ -21730,9 +21737,22 @@ async function tryCommitReviewSnapshot(input) {
     if (candidate.pullRequestNumber !== input.event.number || candidate.reviewedHeadSha !== input.event.headSha || candidate.baseSha !== input.event.baseSha) {
       throw new Error("review_snapshot_candidate_context_mismatch");
     }
+    const headToken = await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_review_snapshot_head_token",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/head-token`,
+      body: {
+        leaseId: input.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId
+      }
+    });
+    if (headToken.repository !== input.event.repository) {
+      throw new Error("review_snapshot_head_token_repository_mismatch");
+    }
+    mask(input.io, headToken.token);
     const currentHeadSha = await fetchCurrentPullRequestHeadSha({
       fetchImpl: input.fetchImpl,
-      token: input.commentToken,
+      token: headToken.token,
       event: input.event
     });
     if (currentHeadSha !== input.event.headSha) {

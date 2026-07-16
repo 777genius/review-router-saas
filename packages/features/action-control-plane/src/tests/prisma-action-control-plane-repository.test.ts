@@ -178,6 +178,17 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
         now,
       }),
     ).resolves.toMatchObject({ status: "ready" });
+    await expect(
+      repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+        completedLeaseTtlMs: codexRotatingReviewSnapshotAccessTtlMs,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      writeTarget: { repositoryFullName: "777genius/example" },
+    });
 
     const expired = buildCodexRotatingRepository({
       status: "completed",
@@ -210,6 +221,26 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       }),
     ).resolves.toEqual({ status: "lease_not_active" });
   });
+
+  it("uses the immutable lease repository after the provider is rebound", async () => {
+    const { prisma, repository } = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(now.getTime() - 20 * 60 * 1000),
+    });
+
+    await expect(
+      repository.authorizeReviewSnapshotAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      scope: { workspaceId: "workspace_1", repositoryId: "repo_1" },
+    });
+    expect(prisma.codexOAuthProviderInstance).toBeUndefined();
+  });
 });
 
 function buildCodexRotatingRepository(lease: {
@@ -218,8 +249,9 @@ function buildCodexRotatingRepository(lease: {
   readonly completedAt: Date | null;
 }) {
   const prisma = {
-    codexOAuthProviderInstance: {
-      findUnique: vi.fn().mockResolvedValue({
+    codexOAuthLease: {
+      findFirst: vi.fn().mockResolvedValue({
+        workspaceId: "workspace_1",
         repository: {
           id: "repo_1",
           workspaceId: "workspace_1",
@@ -234,13 +266,9 @@ function buildCodexRotatingRepository(lease: {
             status: "active",
           },
         },
-        leases: [
-          {
-            ...lease,
-            githubRunId: "9001",
-            githubRunAttempt: "2",
-          },
-        ],
+        ...lease,
+        githubRunId: "9001",
+        githubRunAttempt: "2",
       }),
     },
   } as unknown as PrismaClient;

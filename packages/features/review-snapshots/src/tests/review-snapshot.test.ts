@@ -130,6 +130,28 @@ describe("review snapshot", () => {
     });
   });
 
+  it("does not treat a changed base SHA as an idempotent retry", async () => {
+    const snapshots = new InMemoryReviewSnapshotRepository();
+    await commitReviewSnapshot(
+      { expectedVersion: 0, candidate: candidate() },
+      { snapshots, now },
+    );
+
+    await expect(
+      commitReviewSnapshot(
+        {
+          expectedVersion: 0,
+          candidate: { ...candidate(), baseSha: "c".repeat(40) },
+        },
+        { snapshots, now },
+      ),
+    ).resolves.toEqual({
+      status: "conflict",
+      currentVersion: 1,
+      currentHeadSha: headSha,
+    });
+  });
+
   it("rejects malformed or oversized durable payloads", async () => {
     const snapshots = new InMemoryReviewSnapshotRepository();
     await expect(
@@ -197,31 +219,6 @@ describe("review snapshot", () => {
     );
   });
 
-  it("keeps provider-neutral informational findings", () => {
-    const record = prepareReviewSnapshotRecord(
-      {
-        ...candidate(),
-        payload: {
-          reviewSummary: "Informational review",
-          findings: [
-            {
-              file: "src/index.ts",
-              line: 12,
-              severity: ReviewSnapshotSeverity.Info,
-              title: "Optional cleanup",
-              message: "This does not block publication.",
-            },
-          ],
-        },
-      },
-      { now, version: 1 },
-    );
-
-    expect(record.payload.findings[0]?.severity).toBe(
-      ReviewSnapshotSeverity.Info,
-    );
-  });
-
   it("prunes expired snapshots through a bounded maintenance use case", async () => {
     const snapshots = new InMemoryReviewSnapshotRepository(
       prepareReviewSnapshotRecord(candidate(), {
@@ -267,6 +264,141 @@ describe("review snapshot", () => {
       },
     });
   });
+
+  it("treats a corrupted Prisma payload as unavailable", async () => {
+    const record = prepareReviewSnapshotRecord(candidate(), {
+      now,
+      version: 3,
+    });
+    const findUnique = vi.fn().mockResolvedValue({
+      ...toPrismaSnapshot(record),
+      payload: { reviewSummary: 42, findings: [] },
+    });
+    const repository = new PrismaReviewSnapshotRepository({
+      reviewSnapshot: { findUnique },
+    } as unknown as PrismaClient);
+
+    await expect(
+      repository.find({
+        workspaceId: "workspace_1",
+        repositoryId,
+        pullRequestNumber,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      restoreReviewSnapshot(
+        {
+          workspaceId: "workspace_1",
+          repositoryId,
+          pullRequestNumber,
+          baseSha,
+        },
+        { snapshots: repository, now },
+      ),
+    ).resolves.toEqual({
+      status: ReviewSnapshotRestoreStatus.Missing,
+      expectedVersion: 0,
+    });
+  });
+
+  it.each([
+    {
+      reviewSummary: "summary",
+      findings: [],
+      rawAuth: { accessToken: "must-not-leave-storage" },
+    },
+    {
+      reviewSummary: "summary",
+      findings: [
+        {
+          file: "src/index.ts",
+          line: 1,
+          severity: ReviewSnapshotSeverity.Major,
+          title: "title",
+          message: "message",
+          rawEvidence: "must-not-leave-storage",
+        },
+      ],
+    },
+    {
+      reviewSummary: "summary",
+      findings: [
+        {
+          file: "src/index.ts",
+          line: 1,
+          severity: "info",
+          title: "unsupported severity",
+          message: "must not enter the current runtime contract",
+        },
+      ],
+    },
+  ])(
+    "rejects persisted payloads outside the durable schema",
+    async (payload) => {
+      const record = prepareReviewSnapshotRecord(candidate(), {
+        now,
+        version: 3,
+      });
+      const repository = new PrismaReviewSnapshotRepository({
+        reviewSnapshot: {
+          findUnique: vi.fn().mockResolvedValue({
+            ...toPrismaSnapshot(record),
+            payload,
+          }),
+        },
+      } as unknown as PrismaClient);
+
+      await expect(
+        repository.find({
+          workspaceId: "workspace_1",
+          repositoryId,
+          pullRequestNumber,
+        }),
+      ).resolves.toBeNull();
+    },
+  );
+
+  it.each(["create", "update"] as const)(
+    "rejects an invalid payload during Prisma %s conversion",
+    async (operation) => {
+      const current = prepareReviewSnapshotRecord(candidate(), {
+        now,
+        version: 1,
+      });
+      const invalid = Object.defineProperty(
+        prepareReviewSnapshotRecord(
+          {
+            ...candidate(),
+            reviewedHeadSha: operation === "create" ? headSha : "d".repeat(40),
+          },
+          {
+            now: new Date(now.getTime() + 1_000),
+            version: operation === "create" ? 1 : 2,
+          },
+        ),
+        "payload",
+        { value: { reviewSummary: "summary", findings: "invalid" } },
+      );
+      const repository = new PrismaReviewSnapshotRepository({
+        reviewSnapshot: {
+          findUnique: vi
+            .fn()
+            .mockResolvedValue(
+              operation === "create" ? null : toPrismaSnapshot(current),
+            ),
+          create: vi.fn(),
+          updateMany: vi.fn(),
+        },
+      } as unknown as PrismaClient);
+
+      await expect(
+        repository.commit({
+          expectedVersion: operation === "create" ? 0 : 1,
+          record: invalid,
+        }),
+      ).rejects.toThrow("review_snapshot_payload_invalid");
+    },
+  );
 
   it("recreates a snapshot if bounded pruning deletes it during CAS", async () => {
     const current = prepareReviewSnapshotRecord(candidate(), {
@@ -361,6 +493,7 @@ class InMemoryReviewSnapshotRepository implements ReviewSnapshotRepositoryPort {
     if (
       this.record &&
       this.record.reviewedHeadSha === input.record.reviewedHeadSha &&
+      this.record.baseSha === input.record.baseSha &&
       this.record.compatibilityKey === input.record.compatibilityKey &&
       this.record.payloadHash === input.record.payloadHash
     ) {

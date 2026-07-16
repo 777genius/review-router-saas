@@ -29,6 +29,7 @@ model Workspace {
   memorySuggestions        MemorySuggestion[]
   memoryUsageEvents        MemoryUsageEvent[]
   codexOAuthProviders      CodexOAuthProviderInstance[]
+  codexOAuthLeases         CodexOAuthLease[]
   codexOAuthSetupManifests CodexOAuthSetupManifest[]
   reviewSnapshots          ReviewSnapshot[]
 }
@@ -188,6 +189,7 @@ model RepositoryConnection {
   memorySuggestions        MemorySuggestion[]
   memoryUsageEvents        MemoryUsageEvent[]
   codexOAuthProviders      CodexOAuthProviderInstance[]
+  codexOAuthLeases         CodexOAuthLease[]
   codexOAuthSetupManifests CodexOAuthSetupManifest[]
   reviewSnapshots          ReviewSnapshot[]
 
@@ -356,6 +358,8 @@ model CodexOAuthLease {
   id                      String    @id @default(cuid())
   providerInstanceRowId   String
   providerInstanceId      String
+  workspaceId             String
+  repositoryId            String
   githubRunId             String
   githubRunAttempt        String
   leaseKey                String    @unique
@@ -370,9 +374,13 @@ model CodexOAuthLease {
   completedAt             DateTime?
 
   providerInstance CodexOAuthProviderInstance  @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository       RepositoryConnection        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   writebackIntents CodexOAuthWritebackIntent[]
 
   @@index([providerInstanceId, status])
+  @@index([workspaceId, status])
+  @@index([repositoryId, status])
   @@index([expiresAt])
 }
 

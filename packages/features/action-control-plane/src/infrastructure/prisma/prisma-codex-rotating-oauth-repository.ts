@@ -203,6 +203,8 @@ export class PrismaCodexRotatingOAuthRepository
         create: {
           providerInstanceRowId: provider.id,
           providerInstanceId: input.providerInstanceId,
+          workspaceId: input.repository.workspaceId,
+          repositoryId: input.repository.repositoryId,
           githubRunId: input.githubRunId,
           githubRunAttempt: input.githubRunAttempt,
           leaseKey,
@@ -572,6 +574,7 @@ export class PrismaCodexRotatingOAuthRepository
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly now: Date;
+    readonly completedLeaseTtlMs?: number | undefined;
   }): Promise<
     | {
         readonly status: "ready";
@@ -614,27 +617,24 @@ export class PrismaCodexRotatingOAuthRepository
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly now: Date;
-    readonly completedLeaseTtlMs?: number;
+    readonly completedLeaseTtlMs?: number | undefined;
   }) {
-    const provider = await this.prisma.codexOAuthProviderInstance.findUnique({
-      where: { providerInstanceId: input.providerInstanceId },
+    const lease = await this.prisma.codexOAuthLease.findFirst({
+      where: {
+        id: input.leaseId,
+        providerInstanceId: input.providerInstanceId,
+      },
       select: {
         repository: { select: codexRotatingRepositoryContextSelect },
-        leases: {
-          where: { id: input.leaseId },
-          take: 1,
-          select: {
-            status: true,
-            expiresAt: true,
-            completedAt: true,
-            githubRunId: true,
-            githubRunAttempt: true,
-          },
-        },
+        workspaceId: true,
+        status: true,
+        expiresAt: true,
+        completedAt: true,
+        githubRunId: true,
+        githubRunAttempt: true,
       },
     });
-    const lease = provider?.leases[0];
-    if (!provider || !lease) {
+    if (!lease) {
       return { status: "lease_not_active" as const };
     }
     if (lease.status !== "completed" || !lease.completedAt) {
@@ -654,7 +654,10 @@ export class PrismaCodexRotatingOAuthRepository
     ) {
       return { status: "lease_not_active" as const };
     }
-    const repository = requireGitHubRepositoryContext(provider.repository);
+    const repository = requireGitHubRepositoryContext(lease.repository);
+    if (repository.workspaceId !== lease.workspaceId) {
+      return { status: "lease_not_active" as const };
+    }
     return {
       status: "ready" as const,
       repository,

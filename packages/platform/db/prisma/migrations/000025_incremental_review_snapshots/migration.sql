@@ -1,3 +1,26 @@
+-- Preserve the repository scope that authorized each lease. Provider bindings
+-- may be reconfigured after completion, while snapshot access remains valid.
+ALTER TABLE "CodexOAuthLease"
+  ADD COLUMN "workspaceId" TEXT,
+  ADD COLUMN "repositoryId" TEXT;
+
+UPDATE "CodexOAuthLease" AS lease
+SET
+  "workspaceId" = provider."workspaceId",
+  "repositoryId" = provider."repositoryId"
+FROM "CodexOAuthProviderInstance" AS provider
+WHERE lease."providerInstanceRowId" = provider."id";
+
+ALTER TABLE "CodexOAuthLease"
+  ALTER COLUMN "workspaceId" SET NOT NULL,
+  ALTER COLUMN "repositoryId" SET NOT NULL;
+
+CREATE INDEX "CodexOAuthLease_workspaceId_status_idx" ON "CodexOAuthLease"("workspaceId", "status");
+CREATE INDEX "CodexOAuthLease_repositoryId_status_idx" ON "CodexOAuthLease"("repositoryId", "status");
+
+ALTER TABLE "CodexOAuthLease" ADD CONSTRAINT "CodexOAuthLease_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "Workspace"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "CodexOAuthLease" ADD CONSTRAINT "CodexOAuthLease_repositoryId_fkey" FOREIGN KEY ("repositoryId") REFERENCES "RepositoryConnection"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
 -- CreateTable
 CREATE TABLE "ReviewSnapshot" (
     "id" TEXT NOT NULL,

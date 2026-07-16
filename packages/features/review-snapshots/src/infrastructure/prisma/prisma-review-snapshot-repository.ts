@@ -1,8 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ReviewSnapshotRepositoryPort } from "../../application/ports/review-snapshot-repository-port";
-import type {
-  ReviewSnapshotPayload,
-  ReviewSnapshotRecord,
+import {
+  decodeReviewSnapshotPayload,
+  type ReviewSnapshotPayload,
+  type ReviewSnapshotRecord,
 } from "../../domain/review-snapshot";
 
 export class PrismaReviewSnapshotRepository implements ReviewSnapshotRepositoryPort {
@@ -52,7 +53,7 @@ export class PrismaReviewSnapshotRepository implements ReviewSnapshotRepositoryP
         const created = await this.prisma.reviewSnapshot.create({
           data: toCreateInput(input.record),
         });
-        return { status: "committed", snapshot: toDomain(created) };
+        return { status: "committed", snapshot: toDomainOrThrow(created) };
       } catch (error) {
         if (!isUniqueConstraintError(error)) throw error;
         return this.conflictAfterRace(input.record);
@@ -128,7 +129,10 @@ export class PrismaReviewSnapshotRepository implements ReviewSnapshotRepositoryP
         const created = await this.prisma.reviewSnapshot.create({
           data: toCreateInput(record),
         });
-        return { status: "committed" as const, snapshot: toDomain(created) };
+        return {
+          status: "committed" as const,
+          snapshot: toDomainOrThrow(created),
+        };
       } catch (error) {
         if (!isUniqueConstraintError(error)) throw error;
         return this.resolveAfterWriteRace(record, false);
@@ -156,6 +160,20 @@ type PrismaReviewSnapshot = Awaited<
 
 function toDomain(
   record: NonNullable<PrismaReviewSnapshot>,
+): ReviewSnapshotRecord | null {
+  const payload = decodeReviewSnapshotPayload(record.payload);
+  return payload ? mapToDomain(record, payload) : null;
+}
+
+function toDomainOrThrow(
+  record: NonNullable<PrismaReviewSnapshot>,
+): ReviewSnapshotRecord {
+  return mapToDomain(record, requireReviewSnapshotPayload(record.payload));
+}
+
+function mapToDomain(
+  record: NonNullable<PrismaReviewSnapshot>,
+  payload: ReviewSnapshotPayload,
 ): ReviewSnapshotRecord {
   return {
     workspaceId: record.workspaceId,
@@ -166,7 +184,7 @@ function toDomain(
     reviewedHeadSha: record.reviewedHeadSha,
     baseSha: record.baseSha,
     compatibilityKey: record.compatibilityKey,
-    payload: record.payload as unknown as ReviewSnapshotPayload,
+    payload,
     payloadHash: record.payloadHash,
     sourceRunId: record.sourceRunId,
     sourceRunAttempt: record.sourceRunAttempt,
@@ -187,7 +205,7 @@ function toCreateInput(
     reviewedHeadSha: record.reviewedHeadSha,
     baseSha: record.baseSha,
     compatibilityKey: record.compatibilityKey,
-    payload: record.payload as Prisma.InputJsonValue,
+    payload: toPrismaPayload(record.payload),
     payloadHash: record.payloadHash,
     sourceRunId: record.sourceRunId,
     sourceRunAttempt: record.sourceRunAttempt,
@@ -205,13 +223,23 @@ function toUpdateInput(
     reviewedHeadSha: record.reviewedHeadSha,
     baseSha: record.baseSha,
     compatibilityKey: record.compatibilityKey,
-    payload: record.payload as Prisma.InputJsonValue,
+    payload: toPrismaPayload(record.payload),
     payloadHash: record.payloadHash,
     sourceRunId: record.sourceRunId,
     sourceRunAttempt: record.sourceRunAttempt,
     reviewedAt: record.reviewedAt,
     expiresAt: record.expiresAt,
   };
+}
+
+function requireReviewSnapshotPayload(payload: unknown): ReviewSnapshotPayload {
+  const decoded = decodeReviewSnapshotPayload(payload);
+  if (!decoded) throw new Error("review_snapshot_payload_invalid");
+  return decoded;
+}
+
+function toPrismaPayload(payload: unknown): Prisma.InputJsonValue {
+  return requireReviewSnapshotPayload(payload) as Prisma.InputJsonValue;
 }
 
 function isIdempotent(

@@ -56,7 +56,12 @@ export class InMemoryCodexRotatingOAuthRepository
   private readonly leaseExpiresAtById = new Map<string, Date>();
   private readonly leaseSourceById = new Map<
     string,
-    { readonly runId: string; readonly runAttempt: string }
+    {
+      readonly providerInstanceId: string;
+      readonly repository: ActionRepositoryContext;
+      readonly runId: string;
+      readonly runAttempt: string;
+    }
   >();
 
   constructor(bindings: readonly CodexRotatingProviderBinding[] = []) {
@@ -126,11 +131,15 @@ export class InMemoryCodexRotatingOAuthRepository
       now: input.now,
       ttlSeconds: 15 * 60,
     });
-    this.leaseExpiresAtById.set(lease.leaseId, lease.expiresAt);
-    this.leaseSourceById.set(lease.leaseId, {
-      runId: input.githubRunId,
-      runAttempt: input.githubRunAttempt,
-    });
+    if (lease.status !== "conflict") {
+      this.leaseExpiresAtById.set(lease.leaseId, lease.expiresAt);
+      this.leaseSourceById.set(lease.leaseId, {
+        providerInstanceId: input.providerInstanceId,
+        repository: input.repository,
+        runId: input.githubRunId,
+        runAttempt: input.githubRunAttempt,
+      });
+    }
     if (provider && lease.status !== "conflict") {
       this.providers.set(input.providerInstanceId, {
         ...provider,
@@ -328,6 +337,7 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly now: Date;
+    readonly completedLeaseTtlMs?: number | undefined;
   }): Promise<
     | {
         readonly status: "ready";
@@ -377,11 +387,10 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly now: Date;
-    readonly completedLeaseTtlMs?: number;
+    readonly completedLeaseTtlMs?: number | undefined;
   }): CompletedLeaseContext {
-    const provider = this.providers.get(input.providerInstanceId);
     const source = this.leaseSourceById.get(input.leaseId);
-    if (!provider?.repository || !source) {
+    if (!source || source.providerInstanceId !== input.providerInstanceId) {
       return { status: "lease_not_active" as const };
     }
     const writeback = [...this.writebacks.values()].find(
@@ -413,7 +422,7 @@ export class InMemoryCodexRotatingOAuthRepository
     }
     return {
       status: "ready" as const,
-      repository: provider.repository,
+      repository: source.repository,
       source,
     };
   }

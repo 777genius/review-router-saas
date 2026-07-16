@@ -1788,6 +1788,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     const claudeInstallEnvLog = join(tempDir, "claude-install-env.log");
     const requestBodies: string[] = [];
     const invokedUrls: string[] = [];
+    const pullRequestAuthorizationHeaders: string[] = [];
     const refreshedAuthJson = JSON.stringify({
       auth_mode: "chatgpt",
       tokens: {
@@ -2069,9 +2070,20 @@ describe("Codex rotating GitHub Action runtime", () => {
         });
       }
       if (
+        href.endsWith("/api/action/v1/codex-oauth/review-snapshot/head-token")
+      ) {
+        return jsonResponse({
+          token: "ghs_snapshot_head_token",
+          repository: "777genius/agent-teams-ai",
+        });
+      }
+      if (
         href ===
         "https://api.github.com/repos/777genius/agent-teams-ai/pulls/118"
       ) {
+        pullRequestAuthorizationHeaders.push(
+          new Headers(init?.headers).get("authorization") ?? "",
+        );
         return jsonResponse({
           head: { sha: "0123456789abcdef0123456789abcdef01234567" },
         });
@@ -2177,6 +2189,12 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(
         invokedUrls.some((url) => url.endsWith("/review-snapshot/commit")),
       ).toBe(true);
+      expect(
+        invokedUrls.some((url) => url.endsWith("/review-snapshot/head-token")),
+      ).toBe(true);
+      expect(pullRequestAuthorizationHeaders).toEqual([
+        "Bearer ghs_snapshot_head_token",
+      ]);
       const snapshotCommitBody = requestBodies
         .map((body) => JSON.parse(body) as Record<string, unknown>)
         .find((body) => body.compatibilityKey === "c".repeat(64));
@@ -2366,6 +2384,18 @@ describe("Codex rotating GitHub Action runtime", () => {
       fakeFullRuntime,
       [
         "#!/usr/bin/env node",
+        "const { readFileSync, writeFileSync } = require('node:fs');",
+        "const restored = JSON.parse(readFileSync(process.env.REVIEWROUTER_INCREMENTAL_SNAPSHOT_INPUT_PATH, 'utf8'));",
+        "writeFileSync(process.env.REVIEWROUTER_INCREMENTAL_SNAPSHOT_OUTPUT_PATH, JSON.stringify({",
+        "  protocolVersion: 1,",
+        "  expectedVersion: restored.expectedVersion,",
+        "  pullRequestNumber: Number(process.env.PR_NUMBER),",
+        "  schemaVersion: 1,",
+        "  reviewedHeadSha: process.env.REVIEWROUTER_HEAD_SHA,",
+        "  baseSha: process.env.REVIEWROUTER_BASE_SHA,",
+        `  compatibilityKey: ${JSON.stringify("c".repeat(64))},`,
+        "  payload: { reviewSummary: 'Blocking review complete', findings: [] },",
+        "}));",
         "process.stderr.write('::error::ReviewRouter found 2 major+ finding(s). Review comments were posted before failing this check.\\n');",
         "process.exit(1);",
         "",
@@ -2379,6 +2409,30 @@ describe("Codex rotating GitHub Action runtime", () => {
     const fetchImpl = vi.fn(async (url: string | URL) => {
       const href = String(url);
       invokedUrls.push(href);
+      if (
+        href.endsWith("/api/action/v1/codex-oauth/review-snapshot/head-token")
+      ) {
+        return jsonResponse({
+          token: "ghs_snapshot_head_token",
+          repository: "777genius/agent-teams-ai",
+        });
+      }
+      if (
+        href ===
+        "https://api.github.com/repos/777genius/agent-teams-ai/pulls/118"
+      ) {
+        return jsonResponse({
+          head: { sha: "0123456789abcdef0123456789abcdef01234567" },
+        });
+      }
+      if (href.endsWith("/api/action/v1/codex-oauth/review-snapshot/commit")) {
+        return jsonResponse({
+          protocolVersion: 1,
+          status: "committed",
+          version: 1,
+          reviewedHeadSha: "0123456789abcdef0123456789abcdef01234567",
+        });
+      }
       if (href.startsWith("https://oidc.actions.test/token")) {
         return jsonResponse({ value: "oidc.jwt.value" });
       }
@@ -2477,6 +2531,9 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(invokedUrls.some((url) => url.endsWith("/comment-token"))).toBe(
         true,
       );
+      expect(
+        invokedUrls.some((url) => url.endsWith("/review-snapshot/commit")),
+      ).toBe(true);
 
       const childStdout = stdoutWrite.mock.calls
         .map(([chunk]) => String(chunk))

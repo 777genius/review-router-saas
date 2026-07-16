@@ -358,6 +358,20 @@ describe("Codex rotating OAuth local E2E", () => {
     }>();
     expect(preleaseBody.currentGeneration).toBe(1);
 
+    const conflictingLease = await codexRotatingOAuth.acquirePrelease({
+      repository,
+      providerInstanceId,
+      githubRunId: "9004",
+      githubRunAttempt: "1",
+      now: firstRunAt,
+    });
+    expect(conflictingLease).toMatchObject({
+      leaseId: preleaseBody.leaseId,
+      status: "conflict",
+      runId: "9003",
+      runAttempt: "1",
+    });
+
     const restoredGenerationHash = computeCodexAuthGenerationHash({
       authJsonBytes: initialAuthJson,
       generationHashSalt: preleaseBody.generationHashSalt,
@@ -449,6 +463,21 @@ describe("Codex rotating OAuth local E2E", () => {
       repository: repository.fullName,
     });
 
+    const snapshotHeadToken = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/head-token",
+      payload: {
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+      },
+    });
+    expect(snapshotHeadToken.statusCode).toBe(200);
+    expect(snapshotHeadToken.json()).toMatchObject({
+      protocolVersion: 1,
+      repository: repository.fullName,
+      permissions: { contents: "read", pullRequests: "read" },
+    });
+
     const missingSnapshot = await app.inject({
       method: "POST",
       url: "/api/action/v1/codex-oauth/review-snapshot/restore",
@@ -520,6 +549,33 @@ describe("Codex rotating OAuth local E2E", () => {
       repositoryId: repository.repositoryId,
       sourceRunId: "9003",
       sourceRunAttempt: "1",
+    });
+
+    const conflictingSnapshot = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/commit",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        expectedVersion: 0,
+        pullRequestNumber: 240,
+        schemaVersion: 1,
+        reviewedHeadSha: "d".repeat(40),
+        baseSha: "b".repeat(40),
+        compatibilityKey: "c".repeat(64),
+        payload: {
+          reviewSummary: "Conflicting review",
+          findings: [],
+        },
+      },
+    });
+    expect(conflictingSnapshot.statusCode).toBe(200);
+    expect(conflictingSnapshot.json()).toEqual({
+      protocolVersion: 1,
+      status: "conflict",
+      currentVersion: 1,
+      currentHeadSha: "a".repeat(40),
     });
 
     const restoredSnapshot = await app.inject({

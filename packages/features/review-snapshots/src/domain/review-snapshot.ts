@@ -9,7 +9,6 @@ export enum ReviewSnapshotSeverity {
   Critical = "critical",
   Major = "major",
   Minor = "minor",
-  Info = "info",
 }
 
 export enum ReviewSnapshotRestoreStatus {
@@ -133,6 +132,17 @@ export function hashReviewSnapshotPayload(
   return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
+export function decodeReviewSnapshotPayload(
+  payload: unknown,
+): ReviewSnapshotPayload | null {
+  try {
+    assertReviewSnapshotPayload(payload);
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 export function assertReviewSnapshotCandidate(
   candidate: ReviewSnapshotCandidate,
 ): void {
@@ -153,11 +163,12 @@ export function assertReviewSnapshotCandidate(
 }
 
 export function assertReviewSnapshotPayload(
-  payload: ReviewSnapshotPayload,
-): void {
-  if (!payload || typeof payload !== "object") {
+  payload: unknown,
+): asserts payload is ReviewSnapshotPayload {
+  if (!isUnknownRecord(payload)) {
     throw new Error("review_snapshot_payload_invalid");
   }
+  assertExactKeys(payload, ["reviewSummary", "findings"], "payload_fields");
   assertBoundedString(payload.reviewSummary, 100_000, "review_summary");
   if (
     !Array.isArray(payload.findings) ||
@@ -176,15 +187,43 @@ export function assertReviewSnapshotPayload(
   }
 }
 
-function assertReviewSnapshotFinding(finding: ReviewSnapshotFinding): void {
-  if (!finding || typeof finding !== "object") {
+function assertReviewSnapshotFinding(
+  finding: unknown,
+): asserts finding is ReviewSnapshotFinding {
+  if (!isUnknownRecord(finding)) {
     throw new Error("review_snapshot_finding_invalid");
   }
+  assertExactKeys(
+    finding,
+    [
+      "file",
+      "startLine",
+      "line",
+      "endLine",
+      "severity",
+      "title",
+      "message",
+      "provider",
+      "providers",
+      "actualModel",
+      "providerVoteKeys",
+      "providerPoolSize",
+      "confidence",
+      "category",
+      "hasConsensus",
+    ],
+    "finding_fields",
+  );
   assertBoundedString(finding.file, 4_096, "finding_file");
   assertPositiveInteger(finding.line, "finding_line");
   assertOptionalPositiveInteger(finding.startLine, "finding_start_line");
   assertOptionalPositiveInteger(finding.endLine, "finding_end_line");
-  if (!Object.values(ReviewSnapshotSeverity).includes(finding.severity)) {
+  if (
+    typeof finding.severity !== "string" ||
+    !Object.values(ReviewSnapshotSeverity).some(
+      (severity) => severity === finding.severity,
+    )
+  ) {
     throw new Error("review_snapshot_finding_severity_invalid");
   }
   assertBoundedString(finding.title, 1_000, "finding_title");
@@ -203,7 +242,8 @@ function assertReviewSnapshotFinding(finding: ReviewSnapshotFinding): void {
   );
   if (
     finding.confidence !== undefined &&
-    (!Number.isFinite(finding.confidence) ||
+    (typeof finding.confidence !== "number" ||
+      !Number.isFinite(finding.confidence) ||
       finding.confidence < 0 ||
       finding.confidence > 1)
   ) {
@@ -276,34 +316,55 @@ function redactReviewSnapshotSecrets(value: string): string {
     );
 }
 
-function assertIdentifier(value: string, field: string): void {
-  assertBoundedString(value, 200, field);
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function assertSha(value: string, field: string): void {
-  if (!/^[a-f0-9]{40}$/i.test(value)) {
+function assertExactKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+  field: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
     throw new Error(`review_snapshot_${field}_invalid`);
   }
 }
 
-function assertPositiveInteger(value: number, field: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
+function assertIdentifier(
+  value: unknown,
+  field: string,
+): asserts value is string {
+  assertBoundedString(value, 200, field);
+}
+
+function assertSha(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || !/^[a-f0-9]{40}$/i.test(value)) {
+    throw new Error(`review_snapshot_${field}_invalid`);
+  }
+}
+
+function assertPositiveInteger(
+  value: unknown,
+  field: string,
+): asserts value is number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`review_snapshot_${field}_invalid`);
   }
 }
 
 function assertOptionalPositiveInteger(
-  value: number | undefined,
+  value: unknown,
   field: string,
-): void {
+): asserts value is number | undefined {
   if (value !== undefined) assertPositiveInteger(value, field);
 }
 
 function assertBoundedString(
-  value: string,
+  value: unknown,
   maxLength: number,
   field: string,
-): void {
+): asserts value is string {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
@@ -314,17 +375,17 @@ function assertBoundedString(
 }
 
 function assertOptionalBoundedString(
-  value: string | undefined,
+  value: unknown,
   maxLength: number,
   field: string,
-): void {
+): asserts value is string | undefined {
   if (value !== undefined) assertBoundedString(value, maxLength, field);
 }
 
 function assertOptionalStringArray(
-  value: readonly string[] | undefined,
+  value: unknown,
   field: string,
-): void {
+): asserts value is readonly string[] | undefined {
   if (value === undefined) return;
   if (!Array.isArray(value) || value.length > 50) {
     throw new Error(`review_snapshot_${field}_invalid`);

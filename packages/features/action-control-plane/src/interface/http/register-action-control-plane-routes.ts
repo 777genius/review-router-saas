@@ -50,6 +50,10 @@ import {
   type IssueCodexRotatingOAuthCommentTokenDependencies,
 } from "../../application/use-cases/issue-codex-rotating-oauth-comment-token.js";
 import {
+  issueCodexRotatingReviewSnapshotHeadToken,
+  type IssueCodexRotatingReviewSnapshotHeadTokenDependencies,
+} from "../../application/use-cases/issue-codex-rotating-review-snapshot-head-token.js";
+import {
   restoreCodexRotatingReviewSnapshot,
   type RestoreCodexRotatingReviewSnapshotDependencies,
 } from "../../application/use-cases/restore-codex-rotating-review-snapshot.js";
@@ -97,6 +101,7 @@ export type RegisterActionControlPlaneRoutesDependencies =
     Partial<WritebackCodexRotatingOAuthDependencies> &
     Partial<IssueCodexRotatingOAuthCheckoutTokenDependencies> &
     Partial<IssueCodexRotatingOAuthCommentTokenDependencies> &
+    Partial<IssueCodexRotatingReviewSnapshotHeadTokenDependencies> &
     Partial<RestoreCodexRotatingReviewSnapshotDependencies> &
     Partial<CommitCodexRotatingReviewSnapshotDependencies> &
     GetActionRuntimeConfigDependencies &
@@ -606,6 +611,43 @@ export async function registerActionControlPlaneRoutes(
       }
     };
 
+  const createCodexRotatingReviewSnapshotHeadTokenHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingOAuth ||
+        !dependencies.codexRotatingCheckoutTokens
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "review_snapshot_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingLeaseBodySchema.parse(request.body);
+        const result = await issueCodexRotatingReviewSnapshotHeadToken(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+          },
+          dependencies as IssueCodexRotatingReviewSnapshotHeadTokenDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
   const createCodexRotatingReviewSnapshotCommitHandler =
     (errorFormat: ActionErrorFormat) =>
     async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -902,6 +944,11 @@ export async function registerActionControlPlaneRoutes(
     "/api/action/v1/codex-oauth/review-snapshot/restore",
     { bodyLimit: 8_192 },
     createCodexRotatingReviewSnapshotRestoreHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/review-snapshot/head-token",
+    { bodyLimit: 4_096 },
+    createCodexRotatingReviewSnapshotHeadTokenHandler("v1"),
   );
   app.post(
     "/api/action/v1/codex-oauth/review-snapshot/commit",
