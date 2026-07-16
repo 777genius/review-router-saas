@@ -23,3 +23,35 @@ export function createReviewExecutionBudget(
     runtimeTimeoutMinutes: jobTimeoutMinutes - reviewCleanupReserveMinutes,
   };
 }
+
+export function createReviewExecutionDeadlineEpochMs(input: {
+  readonly jobTimeoutMinutes: number;
+  readonly executionStartedAtEpochMs: number;
+}): number {
+  if (
+    !Number.isSafeInteger(input.executionStartedAtEpochMs) ||
+    input.executionStartedAtEpochMs < 0
+  ) {
+    throw new Error(
+      "invalid_review_execution_budget:executionStartedAtEpochMs",
+    );
+  }
+  const runtimeTimeoutMs =
+    createReviewExecutionBudget(input.jobTimeoutMinutes).runtimeTimeoutMinutes *
+    60 *
+    1000;
+  return input.executionStartedAtEpochMs + runtimeTimeoutMs;
+}
+
+export function remainingReviewExecutionBudgetMs(input: {
+  readonly executionDeadlineEpochMs: number;
+  readonly nowEpochMs: number;
+}): number {
+  if (
+    !Number.isSafeInteger(input.executionDeadlineEpochMs) ||
+    !Number.isSafeInteger(input.nowEpochMs)
+  ) {
+    throw new Error("invalid_review_execution_budget:epochMs");
+  }
+  return Math.max(0, input.executionDeadlineEpochMs - input.nowEpochMs);
+}

@@ -29,8 +29,11 @@ import {
   resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
+  runProcess,
+  runReviewRuntimeWithinExecutionBudget,
   sanitizeReviewComment,
   settleFinalizedReviewCheckpoint,
+  signalProcessTree,
   shouldAutoRunCodexRotatingAction,
   shouldUseSubscriptionRuntimeCodex,
   shouldSuppressTopLevelActionError,
@@ -57,6 +60,73 @@ describe("Codex rotating GitHub Action runtime", () => {
       "Review failed [required_provider_unhealthy]: A required review provider was unavailable or unhealthy.",
     );
   });
+
+  it("signals a Unix process group and keeps a Windows direct-child fallback", () => {
+    const directKill = vi.fn(() => true);
+    const groupKill = vi.fn(() => true);
+    const child = {
+      pid: 4242,
+      kill: directKill,
+    } as unknown as Parameters<typeof signalProcessTree>[0];
+
+    expect(
+      signalProcessTree(child, "SIGTERM", {
+        platform: "linux",
+        killProcessGroup: groupKill as unknown as typeof process.kill,
+      }),
+    ).toBe(true);
+    expect(groupKill).toHaveBeenCalledWith(-4242, "SIGTERM");
+    expect(directKill).not.toHaveBeenCalled();
+
+    expect(signalProcessTree(child, "SIGKILL", { platform: "win32" })).toBe(
+      true,
+    );
+    expect(directKill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "terminates a timed-out Unix subprocess tree after the grace period",
+    async () => {
+      const tempDir = await mkdtemp(
+        join(tmpdir(), "reviewrouter-process-test-"),
+      );
+      const grandchildPidPath = join(tempDir, "grandchild.pid");
+      let grandchildPid: number | undefined;
+      try {
+        await expect(
+          runProcess({
+            command: process.execPath,
+            args: [
+              "-e",
+              [
+                "const { spawn } = require('node:child_process');",
+                "const { writeFileSync } = require('node:fs');",
+                "const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
+                "writeFileSync(process.env.GRANDCHILD_PID_PATH, String(child.pid));",
+                "process.on('SIGTERM', () => {});",
+                "setInterval(() => {}, 1000);",
+              ].join("\n"),
+            ],
+            env: {
+              PATH: process.env.PATH ?? "",
+              GRANDCHILD_PID_PATH: grandchildPidPath,
+            },
+            timeoutMs: 500,
+            terminationGracePeriodMs: 50,
+          }),
+        ).rejects.toThrow("process_timeout");
+
+        grandchildPid = Number(readFileSync(grandchildPidPath, "utf8"));
+        expect(Number.isSafeInteger(grandchildPid)).toBe(true);
+        await expectProcessToExit(grandchildPid);
+      } finally {
+        if (grandchildPid !== undefined && processIsAlive(grandchildPid)) {
+          process.kill(grandchildPid, "SIGKILL");
+        }
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("clears finalized checkpoints directly when no snapshot advancement is required", async () => {
     const commitSnapshot = vi.fn().mockResolvedValue(true);
@@ -126,6 +196,31 @@ describe("Codex rotating GitHub Action runtime", () => {
     });
 
     expect(commitSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("preserves a finalized checkpoint when the runtime deadline interrupts completion", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+    const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
+
+    await settleFinalizedReviewCheckpoint({
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Valid,
+        marker: {
+          protocolVersion: 1,
+          pullRequestNumber: 118,
+          headSha: "0".repeat(40),
+          planHash: "1".repeat(64),
+          expectedVersion: 9,
+          snapshotAdvancementRequired: true,
+        },
+      },
+      runtimeCompleted: false,
+      commitSnapshot,
+      clearCheckpoint,
+    });
+
+    expect(commitSnapshot).not.toHaveBeenCalled();
+    expect(clearCheckpoint).not.toHaveBeenCalled();
   });
 
   it("does not advance a snapshot after an invalid finalization marker", async () => {
@@ -349,6 +444,19 @@ describe("Codex rotating GitHub Action runtime", () => {
     }
   });
 
+  it("fails before runtime launch when OAuth prework exhausts the budget", async () => {
+    const run = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runReviewRuntimeWithinExecutionBudget({
+        executionDeadlineEpochMs: 10_000,
+        now: () => 10_001,
+        run,
+      }),
+    ).rejects.toThrow("review_runtime_budget_exhausted_before_launch");
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("reads fork agentic sandbox action inputs through the rotating contract", () => {
     const inputs = readActionInputs({
       INPUT_MODE: "fork-agentic-sandbox",
@@ -373,6 +481,11 @@ describe("Codex rotating GitHub Action runtime", () => {
   });
 
   it("runs fork agentic sandbox review from a sanitized workspace without checkout token", async () => {
+    const executionStartedAtEpochMs = 1_750_000_000_000;
+    const now = vi
+      .fn()
+      .mockReturnValueOnce(executionStartedAtEpochMs)
+      .mockReturnValue(executionStartedAtEpochMs + 7 * 60 * 1000);
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-fork-test-"));
     const eventPath = join(tempDir, "event.json");
     const githubWorkspace = join(tempDir, "github-workspace");
@@ -506,6 +619,9 @@ describe("Codex rotating GitHub Action runtime", () => {
       throw new Error(`unexpected_fetch:${href}`);
     }) as unknown as typeof fetch;
     const fullReviewRuntimeRunner = vi.fn(async (input) => {
+      expect(input.executionDeadlineEpochMs).toBe(
+        executionStartedAtEpochMs + 55 * 60 * 1000,
+      );
       expect(input.workspace).toBe(await realpath(safeWorkspace));
       const resolvedGithubWorkspace = await realpath(githubWorkspace);
       expect(input.tempCodexHome).toContain(
@@ -571,6 +687,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         },
         fetchImpl,
         fullReviewRuntimeRunner,
+        now,
         io: {
           stdout: { write: vi.fn() },
           stderr: { write: vi.fn() },
@@ -3030,4 +3147,21 @@ function supportedRunnerEnv(actionPath: string): NodeJS.ProcessEnv {
     ImageOS: "ubuntu24",
     ImageVersion: "20260518.1.0",
   };
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function expectProcessToExit(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processIsAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`process_still_alive:${pid}`);
 }

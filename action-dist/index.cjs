@@ -42,15 +42,19 @@ __export(github_action_exports, {
   postPullRequestComment: () => postPullRequestComment,
   readActionAuthJson: () => readActionAuthJson,
   readActionInputs: () => readActionInputs,
+  requireRemainingReviewExecutionBudgetMs: () => requireRemainingReviewExecutionBudgetMs,
   resolveCodexBinary: () => resolveCodexBinary,
   resolveCodexProxyUpstreamResponsesUrl: () => resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest: () => routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction: () => runCodexRotatingGitHubAction,
+  runProcess: () => runProcess,
+  runReviewRuntimeWithinExecutionBudget: () => runReviewRuntimeWithinExecutionBudget,
   sanitizeReviewComment: () => sanitizeReviewComment,
   settleFinalizedReviewCheckpoint: () => settleFinalizedReviewCheckpoint,
   shouldAutoRunCodexRotatingAction: () => shouldAutoRunCodexRotatingAction,
   shouldSuppressTopLevelActionError: () => shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex: () => shouldUseSubscriptionRuntimeCodex,
+  signalProcessTree: () => signalProcessTree,
   startCodexLocalProviderProxy: () => startCodexLocalProviderProxy
 });
 module.exports = __toCommonJS(github_action_exports);
@@ -21180,6 +21184,21 @@ function createReviewExecutionBudget(jobTimeoutMinutes) {
     runtimeTimeoutMinutes: jobTimeoutMinutes - reviewCleanupReserveMinutes
   };
 }
+function createReviewExecutionDeadlineEpochMs(input) {
+  if (!Number.isSafeInteger(input.executionStartedAtEpochMs) || input.executionStartedAtEpochMs < 0) {
+    throw new Error(
+      "invalid_review_execution_budget:executionStartedAtEpochMs"
+    );
+  }
+  const runtimeTimeoutMs = createReviewExecutionBudget(input.jobTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3;
+  return input.executionStartedAtEpochMs + runtimeTimeoutMs;
+}
+function remainingReviewExecutionBudgetMs(input) {
+  if (!Number.isSafeInteger(input.executionDeadlineEpochMs) || !Number.isSafeInteger(input.nowEpochMs)) {
+    throw new Error("invalid_review_execution_budget:epochMs");
+  }
+  return Math.max(0, input.executionDeadlineEpochMs - input.nowEpochMs);
+}
 
 // packages/features/codex-oauth-rotating/src/domain/codex-oauth-rotating.ts
 var codexRotatingAuthMode = "codex_subscription_oauth_rotating";
@@ -21470,6 +21489,7 @@ var reviewSnapshotInputFileName = "incremental-snapshot-input.json";
 var reviewSnapshotOutputFileName = "incremental-snapshot-output.json";
 var reviewCheckpointFinalizationFileName = "review-checkpoint-finalization.json";
 var maxReviewSnapshotCandidateBytes = 512 * 1024 + 16 * 1024;
+var processTerminationGracePeriodMs = 5e3;
 var reviewSnapshotRestoreResponseSchema = external_exports.object({
   protocolVersion: external_exports.literal(1),
   status: external_exports.enum(["found", "missing", "expired", "base_changed"]),
@@ -21577,6 +21597,8 @@ var reviewCheckpointClearResponseSchema = external_exports.discriminatedUnion("s
   }).strict()
 ]);
 async function runCodexRotatingGitHubAction(runtime = {}) {
+  const now = runtime.now ?? Date.now;
+  const executionStartedAtEpochMs = now();
   const env = runtime.env ?? process.env;
   const io = runtime.io ?? { stdout: process.stdout, stderr: process.stderr };
   const fetchImpl = runtime.fetchImpl ?? fetch;
@@ -21585,12 +21607,18 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   maskProviderSecretInputs(io, inputs.providerSecrets);
   clearActionProviderSecretEnv(env);
   if (inputs.mode === forkAgenticSandboxActionMode) {
+    const executionDeadlineEpochMs2 = createReviewExecutionDeadlineEpochMs({
+      jobTimeoutMinutes: inputs.reviewTimeoutMinutes,
+      executionStartedAtEpochMs
+    });
     await runForkAgenticSandboxGitHubAction({
       inputs,
       env,
       io,
       fetchImpl,
-      fullReviewRuntimeRunner
+      fullReviewRuntimeRunner,
+      executionDeadlineEpochMs: executionDeadlineEpochMs2,
+      now
     });
     return;
   }
@@ -21606,6 +21634,10 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
   if (inputs.mode !== codexRotatingRuntimeAuthMode) {
     throw new Error(`unsupported_reviewrouter_action_mode:${inputs.mode}`);
   }
+  const executionDeadlineEpochMs = createReviewExecutionDeadlineEpochMs({
+    jobTimeoutMinutes: inputs.reviewTimeoutMinutes,
+    executionStartedAtEpochMs
+  });
   const event = await readPullRequestEvent(env, inputs.reviewDrafts);
   assertSameRepositoryPullRequest(event, env);
   const admission = decidePullRequestReviewAdmission({
@@ -21774,22 +21806,27 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           );
           let reviewRuntimeFailure;
           try {
-            await fullReviewRuntimeRunner({
-              inputs,
-              leaseId: prelease.leaseId,
-              codexBinaryPath,
-              env,
-              io,
-              workspace,
-              tempHome: reviewHome,
-              tempCodexHome,
-              event,
-              commentToken: commentToken.token,
-              runtimeConfigVersion: finalize2.runtimeConfigVersion,
-              runtimeEnv: finalize2.runtimeEnv,
-              reviewSnapshotInputPath,
-              reviewSnapshotOutputPath,
-              reviewCheckpointFinalizationPath
+            await runReviewRuntimeWithinExecutionBudget({
+              executionDeadlineEpochMs,
+              now,
+              run: () => fullReviewRuntimeRunner({
+                inputs,
+                leaseId: prelease.leaseId,
+                codexBinaryPath,
+                env,
+                io,
+                workspace,
+                tempHome: reviewHome,
+                tempCodexHome,
+                event,
+                commentToken: commentToken.token,
+                runtimeConfigVersion: finalize2.runtimeConfigVersion,
+                runtimeEnv: finalize2.runtimeEnv,
+                reviewSnapshotInputPath,
+                reviewSnapshotOutputPath,
+                reviewCheckpointFinalizationPath,
+                executionDeadlineEpochMs
+              })
             });
           } catch (error51) {
             reviewRuntimeFailure = error51;
@@ -22053,19 +22090,24 @@ async function runForkAgenticSandboxGitHubAction(input) {
       });
       const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
       try {
-        await input.fullReviewRuntimeRunner({
-          inputs: input.inputs,
-          leaseId: prelease.leaseId,
-          codexBinaryPath,
-          env: input.env,
-          io: input.io,
-          workspace,
-          tempHome: reviewHome,
-          tempCodexHome,
-          event,
-          commentToken: commentToken.token,
-          runtimeConfigVersion: finalize2.runtimeConfigVersion,
-          runtimeEnv
+        await runReviewRuntimeWithinExecutionBudget({
+          executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+          now: input.now,
+          run: () => input.fullReviewRuntimeRunner({
+            inputs: input.inputs,
+            leaseId: prelease.leaseId,
+            codexBinaryPath,
+            env: input.env,
+            io: input.io,
+            workspace,
+            tempHome: reviewHome,
+            tempCodexHome,
+            event,
+            commentToken: commentToken.token,
+            runtimeConfigVersion: finalize2.runtimeConfigVersion,
+            runtimeEnv,
+            executionDeadlineEpochMs: input.executionDeadlineEpochMs
+          })
         });
         try {
           await deleteFullRuntimeProgressComments({
@@ -23562,6 +23604,20 @@ async function makeForkSandboxCodexHomeDirectory(env) {
   }
   return resolvedCodexHome;
 }
+function requireRemainingReviewExecutionBudgetMs(input) {
+  const remainingMs = remainingReviewExecutionBudgetMs(input);
+  if (remainingMs === 0) {
+    throw new Error("review_runtime_budget_exhausted_before_launch");
+  }
+  return remainingMs;
+}
+async function runReviewRuntimeWithinExecutionBudget(input) {
+  requireRemainingReviewExecutionBudgetMs({
+    executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+    nowEpochMs: input.now()
+  });
+  await input.run();
+}
 async function runFullReviewRouterRuntime(input) {
   const actionPath = resolveGitHubActionPath(input.env);
   const runtimePath = (0, import_node_path7.join)(actionPath, "dist", "index.js");
@@ -23573,8 +23629,6 @@ async function runFullReviewRouterRuntime(input) {
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
     await (0, import_promises6.symlink)(input.codexBinaryPath, (0, import_node_path7.join)(codexBinDir, "codex"));
-    const runtimeTimeoutMs = createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3;
-    const executionDeadlineEpochMs = Date.now() + runtimeTimeoutMs;
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
       inputs: input.inputs,
@@ -23591,13 +23645,25 @@ async function runFullReviewRouterRuntime(input) {
       reviewSnapshotInputPath: input.reviewSnapshotInputPath,
       reviewSnapshotOutputPath: input.reviewSnapshotOutputPath,
       reviewCheckpointFinalizationPath: input.reviewCheckpointFinalizationPath,
-      executionDeadlineEpochMs
+      executionDeadlineEpochMs: input.executionDeadlineEpochMs
     });
+    const toolInstallTimeoutMs = Math.min(
+      2 * 60 * 1e3,
+      requireRemainingReviewExecutionBudgetMs({
+        executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+        nowEpochMs: Date.now()
+      })
+    );
     await ensureFullReviewRuntimeTools({
       env: childEnv,
       io: input.io,
       workspace: input.workspace,
-      runtimeEnv: input.runtimeEnv
+      runtimeEnv: input.runtimeEnv,
+      timeoutMs: toolInstallTimeoutMs
+    });
+    const runtimeTimeoutMs = requireRemainingReviewExecutionBudgetMs({
+      executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+      nowEpochMs: Date.now()
     });
     await runProcess({
       command: process.execPath,
@@ -23624,8 +23690,10 @@ function buildFullReviewRuntimeEnv(input) {
   const reviewThreadLifecycleResolveEnv = input.reviewThreadLifecycleResolveToken ? {
     [reviewThreadLifecycleResolveTokenEnvKey]: input.reviewThreadLifecycleResolveToken
   } : {};
-  const runtimeTimeoutMs = createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3;
-  const executionDeadlineEpochMs = input.executionDeadlineEpochMs ?? Date.now() + runtimeTimeoutMs;
+  const executionDeadlineEpochMs = input.executionDeadlineEpochMs ?? createReviewExecutionDeadlineEpochMs({
+    jobTimeoutMinutes: input.inputs.reviewTimeoutMinutes,
+    executionStartedAtEpochMs: Date.now()
+  });
   return {
     ...inherited,
     ...runtimeEnv,
@@ -23700,7 +23768,7 @@ async function ensureFullReviewRuntimeTools(input) {
     cwd: input.workspace,
     env: buildToolInstallEnv(input.env),
     streamOutput: input.io,
-    timeoutMs: 2 * 60 * 1e3
+    timeoutMs: input.timeoutMs
   });
 }
 function buildToolInstallEnv(env) {
@@ -24030,18 +24098,51 @@ var ProcessExecutionError = class extends Error {
 var AlreadyReportedRuntimeFailure = class extends Error {
   alreadyReportedToGitHub = true;
 };
+function signalProcessTree(child, signal, options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32" && child.pid !== void 0) {
+    try {
+      (options.killProcessGroup ?? process.kill)(-child.pid, signal);
+      return true;
+    } catch (error51) {
+      if (error51 instanceof Error && "code" in error51 && error51.code === "ESRCH") {
+        return false;
+      }
+    }
+  }
+  return child.kill(signal);
+}
 function runProcess(input) {
   return new Promise((resolve, reject) => {
     const outputChunks = [];
     let outputBytes = 0;
+    let timedOut = false;
+    let settled = false;
+    let forceKillTimer;
     const child = (0, import_node_child_process2.spawn)(input.command, input.args, {
       cwd: input.cwd,
       env: input.env,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     });
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (result.error !== void 0) {
+        reject(result.error);
+      } else {
+        resolve();
+      }
+    };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("process_timeout"));
+      timedOut = true;
+      signalProcessTree(child, "SIGTERM");
+      forceKillTimer = setTimeout(() => {
+        signalProcessTree(child, "SIGKILL");
+        settle({ error: new Error("process_timeout") });
+      }, input.terminationGracePeriodMs ?? processTerminationGracePeriodMs);
     }, input.timeoutMs);
     child.stdout.on("data", (chunk) => {
       writeProcessLogChunk(input.streamOutput?.stdout, chunk);
@@ -24060,22 +24161,28 @@ function runProcess(input) {
       );
     });
     child.on("error", (error51) => {
-      clearTimeout(timer);
-      reject(error51);
+      if (timedOut && process.platform !== "win32") return;
+      settle({ error: timedOut ? new Error("process_timeout") : error51 });
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      if (timedOut) {
+        if (process.platform === "win32") {
+          settle({ error: new Error("process_timeout") });
+        }
+        return;
+      }
       if (code === 0) {
-        resolve();
+        settle({});
       } else {
-        reject(
-          new ProcessExecutionError(
+        settle({
+          error: new ProcessExecutionError(
             `process_failed:${input.command}:${code ?? "signal"}`,
             Buffer.concat(outputChunks).toString("utf8")
           )
-        );
+        });
       }
     });
+    child.stdin.on("error", () => void 0);
     child.stdin.end(input.stdin ?? "");
   });
 }
@@ -24104,6 +24211,12 @@ function classifyCodexBootstrapFailure(error51) {
   );
 }
 function classifyPostWritebackCodexFailure(error51) {
+  if (error51 instanceof Error && error51.message === "review_runtime_budget_exhausted_before_launch") {
+    return error51;
+  }
+  if (error51 instanceof Error && error51.message === "process_timeout") {
+    return new Error("review_runtime_timeout");
+  }
   const output = getProcessFailureOutput(error51);
   const reviewFailure = extractReviewRouterRuntimeFailure(output);
   if (reviewFailure) {
@@ -24135,6 +24248,10 @@ function formatTopLevelActionErrorMessage(error51) {
       return "quota_limited: Codex usage, rate, or billing limit was reached. Add credits, wait for reset, or change account entitlement.";
     case "permission_required":
       return "permission_required: Codex permission is required.";
+    case "review_runtime_budget_exhausted_before_launch":
+      return "review_runtime_budget_exhausted_before_launch: ReviewRouter prework consumed the runtime budget; the review was not launched so cleanup can finish safely.";
+    case "review_runtime_timeout":
+      return "review_runtime_timeout: ReviewRouter stopped the review at its cleanup deadline; resumable progress remains available for the next run.";
     default:
       return message;
   }
@@ -24303,14 +24420,18 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,
+  requireRemainingReviewExecutionBudgetMs,
   resolveCodexBinary,
   resolveCodexProxyUpstreamResponsesUrl,
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
+  runProcess,
+  runReviewRuntimeWithinExecutionBudget,
   sanitizeReviewComment,
   settleFinalizedReviewCheckpoint,
   shouldAutoRunCodexRotatingAction,
   shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex,
+  signalProcessTree,
   startCodexLocalProviderProxy
 });

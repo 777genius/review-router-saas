@@ -44,6 +44,42 @@ const validAuthJson = JSON.stringify({
   last_refresh: "2026-05-24T12:00:00.000Z",
 });
 
+function renderLegacySchemaOneWorkflow(input: {
+  readonly actionRef: string;
+  readonly apiUrl: string;
+  readonly providerInstanceId: string;
+}): string {
+  return renderCodexRotatingAdvisoryWorkflow({
+    ...input,
+    refreshScheduleCron: null,
+  })
+    .replaceAll(", converted_to_draft", "")
+    .replace(
+      "  pull_request_target:\n    types: [opened, synchronize, reopened, ready_for_review]\n",
+      "",
+    )
+    .replace(
+      "          review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}\n",
+      "",
+    )
+    .replace(
+      "if: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true')) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}",
+      "if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}",
+    )
+    .replace(
+      "          max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}\n",
+      "",
+    )
+    .replace(
+      "          review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}\n",
+      "",
+    )
+    .replace(
+      "    timeout-minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
+      "    timeout-minutes: 60",
+    );
+}
+
 function withRenderedInstallerCommandFixture(input: {
   readonly installerBody: string;
   readonly run: (fixture: {
@@ -405,7 +441,7 @@ exit 17
     expect(workflow).not.toContain("run:");
     expect(workflow).not.toMatch(/^concurrency:/m);
     expect(workflow.match(/^ {4}concurrency:$/gm)).toHaveLength(2);
-    expect(workflow.match(/^\s+queue: max$/gm)).toHaveLength(2);
+    expect(workflow).not.toMatch(/^\s+queue:/m);
     expect(workflow.match(/^\s+cancel-in-progress: false$/gm)).toHaveLength(2);
     expect(workflow).toContain(
       "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-777genius-agent-teams-ai",
@@ -466,6 +502,88 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(missingTimeoutInput).errors,
     ).toContain("review_job_timeout_input_required");
+
+    const trulyOldSchemaOneWorkflow = renderLegacySchemaOneWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+    });
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(trulyOldSchemaOneWorkflow),
+    ).toEqual({
+      valid: true,
+      errors: [],
+    });
+    const queuedLegacySchemaOneWorkflow = trulyOldSchemaOneWorkflow.replace(
+      "      cancel-in-progress: false",
+      "      queue: max\n      cancel-in-progress: false",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(queuedLegacySchemaOneWorkflow),
+    ).toEqual({ valid: true, errors: [] });
+
+    const currentWorkflowMissingBothInputs = workflow
+      .replace(
+        "          max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}\n",
+        "",
+      )
+      .replace(
+        "          review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}\n",
+        "",
+      );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(currentWorkflowMissingBothInputs)
+        .errors,
+    ).toEqual(
+      expect.arrayContaining([
+        "review_job_max_changed_lines_input_required",
+        "review_job_timeout_input_required",
+      ]),
+    );
+
+    const backlogWorkflow = workflow.replaceAll(
+      "      cancel-in-progress: false",
+      "      queue: max\n      cancel-in-progress: false",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(backlogWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const explicitSingleQueueWorkflow = workflow.replaceAll(
+      "      cancel-in-progress: false",
+      "      queue: single\n      cancel-in-progress: false",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(explicitSingleQueueWorkflow),
+    ).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const arbitraryQueueWorkflow = workflow.replace(
+      "      cancel-in-progress: false",
+      "      queue: newest\n      cancel-in-progress: false",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(arbitraryQueueWorkflow).errors,
+    ).toContain("review_job_provider_concurrency_required");
+
+    const duplicateQueueWorkflow = workflow.replace(
+      "      cancel-in-progress: false",
+      "      queue: single\n      queue: max\n      cancel-in-progress: false",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(duplicateQueueWorkflow).errors,
+    ).toContain("review_job_provider_concurrency_required");
+
+    const wrongConcurrencyGroup = workflow.replace(
+      "group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-777genius-agent-teams-ai",
+      "group: unrelated-provider-queue",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(wrongConcurrencyGroup).errors,
+    ).toContain("review_job_provider_concurrency_required");
 
     const mismatchedTimeoutInput = workflow.replace(
       "review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}",

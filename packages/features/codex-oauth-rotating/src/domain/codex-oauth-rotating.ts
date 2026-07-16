@@ -439,7 +439,6 @@ jobs:
     timeout-minutes: ${reviewJobTimeout}
     concurrency:
       group: ${concurrencyGroup}
-      queue: max
       cancel-in-progress: false
     if: \${{ ((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.${codexRotatingReviewDraftsVariableName} == 'true')) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
     permissions:
@@ -467,7 +466,6 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
     timeout-minutes: ${reviewJobTimeout}
     concurrency:
       group: ${concurrencyGroup}
-      queue: max
       cancel-in-progress: false
     if: \${{ github.event_name == 'pull_request_target' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name != github.repository && vars.${codexForkAgenticSandboxCertificationVariable} == '${codexForkAgenticSandboxCertificationValue}' }}
     permissions:
@@ -537,7 +535,6 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
     timeout-minutes: ${timeoutMinutes}
     concurrency:
       group: ${concurrencyGroup}
-      queue: max
       cancel-in-progress: false
     if: \${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     permissions:
@@ -620,6 +617,65 @@ type ParsedWorkflowPermissions =
       readonly kind: "entries";
       readonly entries: readonly WorkflowPermissionEntry[];
     };
+
+type ExtractedCodexRotatingWorkflowSourceMetadata = ReturnType<
+  typeof extractCodexRotatingWorkflowSourceMetadata
+>;
+
+function isLegacySchemaOneWorkflowUsingActionDefaults(input: {
+  readonly workflow: string;
+  readonly reviewJob: string;
+  readonly source: ExtractedCodexRotatingWorkflowSourceMetadata;
+}): boolean {
+  const legacyTriggerTypes =
+    "types: [opened, synchronize, reopened, ready_for_review]";
+  const legacyTriggerCount = input.workflow
+    .split("\n")
+    .filter((line) => line.trim() === legacyTriggerTypes).length;
+  return (
+    input.source.workflowSchemaVersion === 1 &&
+    legacyTriggerCount >= 1 &&
+    legacyTriggerCount <= 2 &&
+    !input.workflow.includes("converted_to_draft") &&
+    !input.reviewJob.includes(
+      `max-changed-lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
+    ) &&
+    !input.reviewJob.includes("review-timeout-minutes:") &&
+    !input.reviewJob.includes(codexRotatingMaxChangedLinesVariableName) &&
+    !input.reviewJob.includes(codexRotatingTimeoutMinutesVariableName) &&
+    new RegExp(
+      `^ {4}timeout-minutes:\\s*["']?${codexRotatingDefaultTimeoutMinutes}["']?\\s*$`,
+      "m",
+    ).test(input.reviewJob)
+  );
+}
+
+function workflowJobUsesExpectedConcurrency(input: {
+  readonly job: string;
+  readonly expectedGroup: string | undefined;
+}): boolean {
+  if (!input.expectedGroup) {
+    return false;
+  }
+  const groupValues = [...input.job.matchAll(/^ {6}group:\s*(.+?)\s*$/gm)].map(
+    (match) => match[1],
+  );
+  const cancelValues = [
+    ...input.job.matchAll(/^ {6}cancel-in-progress:\s*(\S+)\s*$/gm),
+  ].map((match) => match[1]);
+  const queueValues = [
+    ...input.job.matchAll(/^ {6}queue:\s*([^\s#]+)\s*$/gm),
+  ].map((match) => match[1]);
+  return (
+    groupValues.length === 1 &&
+    groupValues[0] === input.expectedGroup &&
+    cancelValues.length === 1 &&
+    cancelValues[0] === "false" &&
+    (queueValues.length === 0 ||
+      (queueValues.length === 1 &&
+        (queueValues[0] === "single" || queueValues[0] === "max")))
+  );
+}
 
 export function scanCodexRotatingAdvisoryWorkflow(
   workflow: string,
@@ -706,12 +762,41 @@ export function scanCodexRotatingAdvisoryWorkflow(
       errors.push("refresh_schedule_required");
     }
   }
+  const source = extractCodexRotatingWorkflowSourceMetadata(workflow);
   const reviewJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
+  const legacySchemaOneWorkflow = isLegacySchemaOneWorkflowUsingActionDefaults({
+    workflow,
+    reviewJob,
+    source,
+  });
+  const expectedConcurrencyGroup = source.providerInstanceId
+    ? renderCodexRotatingConcurrencyGroup(source.providerInstanceId)
+    : undefined;
   if (
-    !reviewJob.includes("queue: max") ||
-    !reviewJob.includes("cancel-in-progress: false")
+    !workflowJobUsesExpectedConcurrency({
+      job: reviewJob,
+      expectedGroup: expectedConcurrencyGroup,
+    })
   ) {
     errors.push("review_job_provider_concurrency_required");
+  }
+  if (
+    forkSandboxEnabled &&
+    !workflowJobUsesExpectedConcurrency({
+      job: extractWorkflowJobSection(workflow, "fork-sandbox-review") ?? "",
+      expectedGroup: expectedConcurrencyGroup,
+    })
+  ) {
+    errors.push("fork_job_provider_concurrency_required");
+  }
+  if (
+    refreshEnabled &&
+    !workflowJobUsesExpectedConcurrency({
+      job: extractWorkflowJobSection(workflow, "codex-refresh") ?? "",
+      expectedGroup: expectedConcurrencyGroup,
+    })
+  ) {
+    errors.push("refresh_job_provider_concurrency_required");
   }
   if (!reviewJob.includes("github.event.pull_request.draft == false")) {
     errors.push("review_job_draft_guard_required");
@@ -725,13 +810,17 @@ export function scanCodexRotatingAdvisoryWorkflow(
     errors.push("review_job_draft_input_required");
   }
   if (
+    !legacySchemaOneWorkflow &&
     !reviewJob.includes(
       `max-changed-lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
     )
   ) {
     errors.push("review_job_max_changed_lines_input_required");
   }
-  if (!reviewJob.includes("review-timeout-minutes:")) {
+  if (
+    !legacySchemaOneWorkflow &&
+    !reviewJob.includes("review-timeout-minutes:")
+  ) {
     errors.push("review_job_timeout_input_required");
   }
   if (
@@ -749,6 +838,7 @@ export function scanCodexRotatingAdvisoryWorkflow(
     /^ {10}review-timeout-minutes:\s*["']?(\d+)["']?$/m,
   )?.[1];
   if (
+    !legacySchemaOneWorkflow &&
     (fixedJobTimeout || fixedActionTimeout) &&
     fixedJobTimeout !== fixedActionTimeout
   ) {
@@ -812,7 +902,6 @@ export function scanCodexRotatingAdvisoryWorkflow(
       errors.push("fork_env_block_count_invalid");
     }
   }
-  const source = extractCodexRotatingWorkflowSourceMetadata(workflow);
   if (!source.providerInstanceId) {
     errors.push("provider_instance_id_required");
   }
