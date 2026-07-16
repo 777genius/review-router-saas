@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
+import type {
+  ReviewSnapshotRecord,
+  ReviewSnapshotRepositoryPort,
+} from "@reviewrouter/features-review-snapshots";
 import {
   computeCodexAuthGenerationHash,
   encryptCodexRotatingAuthForGitHubSecret,
@@ -276,6 +280,7 @@ describe("Codex rotating OAuth local E2E", () => {
       },
     ]);
     const tokenFakes = buildTokenFakes();
+    const reviewSnapshots = new InMemoryReviewSnapshotRepository();
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef,
       apiUrl: "https://reviewrouter.site",
@@ -298,6 +303,8 @@ describe("Codex rotating OAuth local E2E", () => {
         recordHealthReport: vi.fn(),
       },
       codexRotatingOAuth,
+      codexRotatingReviewSnapshotAccess: codexRotatingOAuth,
+      reviewSnapshots,
       codexRotatingWorkflowSourceVerifier: {
         verifyWorkflowSource: vi.fn().mockResolvedValue({
           binding: {
@@ -350,6 +357,20 @@ describe("Codex rotating OAuth local E2E", () => {
       readonly currentGeneration: number;
     }>();
     expect(preleaseBody.currentGeneration).toBe(1);
+
+    const conflictingLease = await codexRotatingOAuth.acquirePrelease({
+      repository,
+      providerInstanceId,
+      githubRunId: "9004",
+      githubRunAttempt: "1",
+      now: firstRunAt,
+    });
+    expect(conflictingLease).toMatchObject({
+      leaseId: preleaseBody.leaseId,
+      status: "conflict",
+      runId: "9003",
+      runAttempt: "1",
+    });
 
     const restoredGenerationHash = computeCodexAuthGenerationHash({
       authJsonBytes: initialAuthJson,
@@ -440,6 +461,144 @@ describe("Codex rotating OAuth local E2E", () => {
     expect(comment.json()).toMatchObject({
       protocolVersion: 1,
       repository: repository.fullName,
+    });
+
+    const snapshotHeadToken = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/head-token",
+      payload: {
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+      },
+    });
+    expect(snapshotHeadToken.statusCode).toBe(200);
+    expect(snapshotHeadToken.json()).toMatchObject({
+      protocolVersion: 1,
+      repository: repository.fullName,
+      permissions: { contents: "read", pullRequests: "read" },
+    });
+
+    const missingSnapshot = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/restore",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        pullRequestNumber: 240,
+        baseSha: "b".repeat(40),
+      },
+    });
+    expect(missingSnapshot.statusCode).toBe(200);
+    expect(missingSnapshot.json()).toEqual({
+      protocolVersion: 1,
+      status: "missing",
+      expectedVersion: 0,
+    });
+
+    const forgedScope = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/restore",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        repositoryId: "attacker_repo",
+        pullRequestNumber: 240,
+        baseSha: "b".repeat(40),
+      },
+    });
+    expect(forgedScope.statusCode).toBe(400);
+
+    const committedSnapshot = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/commit",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        expectedVersion: 0,
+        pullRequestNumber: 240,
+        schemaVersion: 1,
+        reviewedHeadSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+        compatibilityKey: "c".repeat(64),
+        payload: {
+          reviewSummary: "Review complete",
+          findings: [
+            {
+              file: "src/index.ts",
+              line: 12,
+              severity: "major",
+              title: "Persist the state",
+              message: "The state must be durable between runs.",
+            },
+          ],
+        },
+      },
+    });
+    expect(committedSnapshot.statusCode).toBe(200);
+    expect(committedSnapshot.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "committed",
+      version: 1,
+      reviewedHeadSha: "a".repeat(40),
+    });
+    expect(reviewSnapshots.record).toMatchObject({
+      workspaceId: repository.workspaceId,
+      repositoryId: repository.repositoryId,
+      sourceRunId: "9003",
+      sourceRunAttempt: "1",
+    });
+
+    const conflictingSnapshot = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/commit",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        expectedVersion: 0,
+        pullRequestNumber: 240,
+        schemaVersion: 1,
+        reviewedHeadSha: "d".repeat(40),
+        baseSha: "b".repeat(40),
+        compatibilityKey: "c".repeat(64),
+        payload: {
+          reviewSummary: "Conflicting review",
+          findings: [],
+        },
+      },
+    });
+    expect(conflictingSnapshot.statusCode).toBe(200);
+    expect(conflictingSnapshot.json()).toEqual({
+      protocolVersion: 1,
+      status: "conflict",
+      currentVersion: 1,
+      currentHeadSha: "a".repeat(40),
+    });
+
+    const restoredSnapshot = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/review-snapshot/restore",
+      payload: {
+        protocolVersion: 1,
+        leaseId: preleaseBody.leaseId,
+        providerInstanceId,
+        pullRequestNumber: 240,
+        baseSha: "b".repeat(40),
+      },
+    });
+    expect(restoredSnapshot.statusCode).toBe(200);
+    expect(restoredSnapshot.json()).toMatchObject({
+      protocolVersion: 1,
+      status: "found",
+      expectedVersion: 1,
+      snapshot: {
+        version: 1,
+        reviewedHeadSha: "a".repeat(40),
+        baseSha: "b".repeat(40),
+      },
     });
 
     const replay = await app.inject({
@@ -661,6 +820,42 @@ describe("Codex rotating OAuth local E2E", () => {
     });
   });
 });
+
+class InMemoryReviewSnapshotRepository implements ReviewSnapshotRepositoryPort {
+  record: ReviewSnapshotRecord | null = null;
+
+  async find(input: {
+    readonly workspaceId: string;
+    readonly repositoryId: string;
+    readonly pullRequestNumber: number;
+  }): Promise<ReviewSnapshotRecord | null> {
+    return this.record?.workspaceId === input.workspaceId &&
+      this.record.repositoryId === input.repositoryId &&
+      this.record.pullRequestNumber === input.pullRequestNumber
+      ? this.record
+      : null;
+  }
+
+  async commit(input: {
+    readonly expectedVersion: number;
+    readonly record: ReviewSnapshotRecord;
+  }) {
+    if ((this.record?.version ?? 0) !== input.expectedVersion) {
+      return {
+        status: "conflict" as const,
+        currentVersion: this.record?.version ?? 0,
+        currentHeadSha:
+          this.record?.reviewedHeadSha ?? input.record.reviewedHeadSha,
+      };
+    }
+    this.record = input.record;
+    return { status: "committed" as const, snapshot: input.record };
+  }
+
+  async pruneExpired(): Promise<number> {
+    return 0;
+  }
+}
 
 function githubOidcClaims(input: {
   readonly runId: string;

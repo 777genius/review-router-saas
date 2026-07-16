@@ -8,12 +8,16 @@ import {
   type CodexRotatingProviderBinding,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
-import { isCodexRotatingCompletedLeasePostingWindowActive } from "../../domain/codex-rotating-oauth-posting-window.js";
+import {
+  codexRotatingReviewSnapshotAccessTtlMs,
+  isCodexRotatingCompletedLeasePostingWindowActive,
+} from "../../domain/codex-rotating-oauth-posting-window.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
   CodexRotatingSecretWriteTarget,
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
+import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
 
 const codexRotatingRepositoryContextSelect = {
   id: true,
@@ -32,7 +36,11 @@ const codexRotatingRepositoryContextSelect = {
   },
 } as const;
 
-export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRepositoryPort {
+export class PrismaCodexRotatingOAuthRepository
+  implements
+    CodexRotatingOAuthRepositoryPort,
+    CodexRotatingReviewSnapshotAccessPort
+{
   constructor(
     private readonly prisma: PrismaClient,
     private readonly options: {
@@ -195,6 +203,8 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
         create: {
           providerInstanceRowId: provider.id,
           providerInstanceId: input.providerInstanceId,
+          workspaceId: input.repository.workspaceId,
+          repositoryId: input.repository.repositoryId,
           githubRunId: input.githubRunId,
           githubRunAttempt: input.githubRunAttempt,
           leaseKey,
@@ -564,6 +574,7 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly now: Date;
+    readonly completedLeaseTtlMs?: number | undefined;
   }): Promise<
     | {
         readonly status: "ready";
@@ -573,23 +584,57 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
         readonly status: "lease_not_completed" | "lease_not_active";
       }
   > {
-    const provider = await this.prisma.codexOAuthProviderInstance.findUnique({
-      where: { providerInstanceId: input.providerInstanceId },
+    const context = await this.findCompletedLeaseContext(input);
+    if (context.status !== "ready") return context;
+    return {
+      status: "ready" as const,
+      writeTarget: toSecretWriteTarget(context.repository),
+    };
+  }
+
+  async authorizeReviewSnapshotAccess(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly now: Date;
+  }) {
+    const context = await this.findCompletedLeaseContext({
+      ...input,
+      completedLeaseTtlMs: codexRotatingReviewSnapshotAccessTtlMs,
+    });
+    if (context.status !== "ready") return context;
+    return {
+      status: "ready" as const,
+      scope: {
+        workspaceId: context.repository.workspaceId,
+        repositoryId: context.repository.id,
+        sourceRunId: context.sourceRunId,
+        sourceRunAttempt: context.sourceRunAttempt,
+      },
+    };
+  }
+
+  private async findCompletedLeaseContext(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly now: Date;
+    readonly completedLeaseTtlMs?: number | undefined;
+  }) {
+    const lease = await this.prisma.codexOAuthLease.findFirst({
+      where: {
+        id: input.leaseId,
+        providerInstanceId: input.providerInstanceId,
+      },
       select: {
         repository: { select: codexRotatingRepositoryContextSelect },
-        leases: {
-          where: { id: input.leaseId },
-          take: 1,
-          select: {
-            status: true,
-            expiresAt: true,
-            completedAt: true,
-          },
-        },
+        workspaceId: true,
+        status: true,
+        expiresAt: true,
+        completedAt: true,
+        githubRunId: true,
+        githubRunAttempt: true,
       },
     });
-    const lease = provider?.leases[0];
-    if (!provider || !lease) {
+    if (!lease) {
       return { status: "lease_not_active" as const };
     }
     if (lease.status !== "completed" || !lease.completedAt) {
@@ -602,15 +647,22 @@ export class PrismaCodexRotatingOAuthRepository implements CodexRotatingOAuthRep
       !isCodexRotatingCompletedLeasePostingWindowActive({
         completedAt: lease.completedAt,
         now: input.now,
+        ...(input.completedLeaseTtlMs
+          ? { ttlMs: input.completedLeaseTtlMs }
+          : {}),
       })
     ) {
       return { status: "lease_not_active" as const };
     }
+    const repository = requireGitHubRepositoryContext(lease.repository);
+    if (repository.workspaceId !== lease.workspaceId) {
+      return { status: "lease_not_active" as const };
+    }
     return {
       status: "ready" as const,
-      writeTarget: toSecretWriteTarget(
-        requireGitHubRepositoryContext(provider.repository),
-      ),
+      repository,
+      sourceRunId: lease.githubRunId,
+      sourceRunAttempt: lease.githubRunAttempt,
     };
   }
 

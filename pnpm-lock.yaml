@@ -183,6 +183,9 @@ importers:
       '@reviewrouter/features-rate-limits':
         specifier: workspace:*
         version: link:../../packages/features/rate-limits
+      '@reviewrouter/features-review-snapshots':
+        specifier: workspace:*
+        version: link:../../packages/features/review-snapshots
       '@reviewrouter/features-system-health':
         specifier: workspace:*
         version: link:../../packages/features/system-health
@@ -354,6 +357,9 @@ importers:
       '@reviewrouter/features-review-config':
         specifier: workspace:*
         version: link:../../packages/features/review-config
+      '@reviewrouter/features-review-snapshots':
+        specifier: workspace:*
+        version: link:../../packages/features/review-snapshots
       '@reviewrouter/platform-config':
         specifier: workspace:*
         version: link:../../packages/platform/config
@@ -384,6 +390,9 @@ importers:
       '@reviewrouter/features-review-providers':
         specifier: workspace:*
         version: link:../review-providers
+      '@reviewrouter/features-review-snapshots':
+        specifier: workspace:*
+        version: link:../review-snapshots
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -639,6 +648,12 @@ importers:
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
+
+  packages/features/review-snapshots:
+    dependencies:
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
 
   packages/features/support-diagnostics:
     dependencies:

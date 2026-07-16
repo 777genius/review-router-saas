@@ -1,4 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import {
+  reviewSnapshotMaxPayloadBytes,
+  reviewSnapshotSchemaVersion,
+  ReviewSnapshotRestoreStatus,
+  ReviewSnapshotSeverity,
+} from "@reviewrouter/features-review-snapshots";
 import { z } from "zod";
 import {
   actionConflictReviewDispatchPayloadSchema,
@@ -44,6 +50,18 @@ import {
   type IssueCodexRotatingOAuthCommentTokenDependencies,
 } from "../../application/use-cases/issue-codex-rotating-oauth-comment-token.js";
 import {
+  issueCodexRotatingReviewSnapshotHeadToken,
+  type IssueCodexRotatingReviewSnapshotHeadTokenDependencies,
+} from "../../application/use-cases/issue-codex-rotating-review-snapshot-head-token.js";
+import {
+  restoreCodexRotatingReviewSnapshot,
+  type RestoreCodexRotatingReviewSnapshotDependencies,
+} from "../../application/use-cases/restore-codex-rotating-review-snapshot.js";
+import {
+  commitCodexRotatingReviewSnapshot,
+  type CommitCodexRotatingReviewSnapshotDependencies,
+} from "../../application/use-cases/commit-codex-rotating-review-snapshot.js";
+import {
   getActionRuntimeConfig,
   type GetActionRuntimeConfigDependencies,
 } from "../../application/use-cases/get-action-runtime-config.js";
@@ -83,6 +101,9 @@ export type RegisterActionControlPlaneRoutesDependencies =
     Partial<WritebackCodexRotatingOAuthDependencies> &
     Partial<IssueCodexRotatingOAuthCheckoutTokenDependencies> &
     Partial<IssueCodexRotatingOAuthCommentTokenDependencies> &
+    Partial<IssueCodexRotatingReviewSnapshotHeadTokenDependencies> &
+    Partial<RestoreCodexRotatingReviewSnapshotDependencies> &
+    Partial<CommitCodexRotatingReviewSnapshotDependencies> &
     GetActionRuntimeConfigDependencies &
     RequestConflictReviewPostingSessionDependencies &
     PostConflictReviewSummaryDependencies &
@@ -145,6 +166,55 @@ const codexRotatingLeaseBodySchema = z
 const codexRotatingCommentTokenBodySchema = codexRotatingLeaseBodySchema
   .extend({
     authCleared: z.literal(true),
+  })
+  .strict();
+
+const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/i);
+
+const codexRotatingReviewSnapshotRestoreBodySchema =
+  codexRotatingLeaseBodySchema
+    .extend({
+      protocolVersion: z.literal(1),
+      pullRequestNumber: z.number().int().positive(),
+      baseSha: gitShaSchema,
+    })
+    .strict();
+
+const reviewSnapshotFindingSchema = z
+  .object({
+    file: z.string().min(1).max(4_096),
+    startLine: z.number().int().positive().optional(),
+    line: z.number().int().positive(),
+    endLine: z.number().int().positive().optional(),
+    severity: z.nativeEnum(ReviewSnapshotSeverity),
+    title: z.string().min(1).max(1_000),
+    message: z.string().min(1).max(20_000),
+    provider: z.string().min(1).max(500).optional(),
+    providers: z.array(z.string().min(1).max(500)).max(50).optional(),
+    actualModel: z.string().min(1).max(500).optional(),
+    providerVoteKeys: z.array(z.string().min(1).max(500)).max(50).optional(),
+    providerPoolSize: z.number().int().positive().optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    category: z.string().min(1).max(500).optional(),
+    hasConsensus: z.boolean().optional(),
+  })
+  .strict();
+
+const codexRotatingReviewSnapshotCommitBodySchema = codexRotatingLeaseBodySchema
+  .extend({
+    protocolVersion: z.literal(1),
+    expectedVersion: z.number().int().nonnegative(),
+    pullRequestNumber: z.number().int().positive(),
+    schemaVersion: z.literal(reviewSnapshotSchemaVersion),
+    reviewedHeadSha: gitShaSchema,
+    baseSha: gitShaSchema,
+    compatibilityKey: z.string().regex(/^[a-f0-9]{64}$/i),
+    payload: z
+      .object({
+        reviewSummary: z.string().min(1).max(100_000),
+        findings: z.array(reviewSnapshotFindingSchema).max(500),
+      })
+      .strict(),
   })
   .strict();
 
@@ -482,6 +552,163 @@ export async function registerActionControlPlaneRoutes(
       }
     };
 
+  const createCodexRotatingReviewSnapshotRestoreHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingReviewSnapshotAccess ||
+        !dependencies.reviewSnapshots
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "review_snapshot_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingReviewSnapshotRestoreBodySchema.parse(
+          request.body,
+        );
+        const result = await restoreCodexRotatingReviewSnapshot(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+            pullRequestNumber: body.pullRequestNumber,
+            baseSha: body.baseSha,
+          },
+          dependencies as RestoreCodexRotatingReviewSnapshotDependencies,
+        );
+        return reply.send({
+          protocolVersion: 1,
+          status: result.status,
+          expectedVersion: result.expectedVersion,
+          ...(result.status === ReviewSnapshotRestoreStatus.Found
+            ? {
+                snapshot: {
+                  version: result.snapshot.version,
+                  schemaVersion: result.snapshot.schemaVersion,
+                  reviewedHeadSha: result.snapshot.reviewedHeadSha,
+                  baseSha: result.snapshot.baseSha,
+                  compatibilityKey: result.snapshot.compatibilityKey,
+                  payload: result.snapshot.payload,
+                  reviewedAt: result.snapshot.reviewedAt.toISOString(),
+                  expiresAt: result.snapshot.expiresAt.toISOString(),
+                },
+              }
+            : {}),
+        });
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingReviewSnapshotHeadTokenHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingOAuth ||
+        !dependencies.codexRotatingCheckoutTokens
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "review_snapshot_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingLeaseBodySchema.parse(request.body);
+        const result = await issueCodexRotatingReviewSnapshotHeadToken(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+          },
+          dependencies as IssueCodexRotatingReviewSnapshotHeadTokenDependencies,
+        );
+        return reply.send(result);
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
+  const createCodexRotatingReviewSnapshotCommitHandler =
+    (errorFormat: ActionErrorFormat) =>
+    async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
+      if (dependencies.controlPlaneEnabled === false) {
+        return sendActionErrorCode(
+          reply,
+          "action_control_plane_disabled",
+          503,
+          errorFormat,
+        );
+      }
+      if (
+        !dependencies.codexRotatingReviewSnapshotAccess ||
+        !dependencies.reviewSnapshots
+      ) {
+        return sendActionErrorCode(
+          reply,
+          "review_snapshot_unavailable",
+          503,
+          errorFormat,
+        );
+      }
+      try {
+        const body = codexRotatingReviewSnapshotCommitBodySchema.parse(
+          request.body,
+        );
+        const result = await commitCodexRotatingReviewSnapshot(
+          {
+            leaseId: body.leaseId,
+            providerInstanceId: body.providerInstanceId,
+            expectedVersion: body.expectedVersion,
+            candidate: {
+              pullRequestNumber: body.pullRequestNumber,
+              schemaVersion: body.schemaVersion,
+              reviewedHeadSha: body.reviewedHeadSha,
+              baseSha: body.baseSha,
+              compatibilityKey: body.compatibilityKey,
+              payload: body.payload,
+            },
+          },
+          dependencies as CommitCodexRotatingReviewSnapshotDependencies,
+        );
+        if (result.status === "conflict") {
+          return reply.send({
+            protocolVersion: 1,
+            status: result.status,
+            currentVersion: result.currentVersion,
+            currentHeadSha: result.currentHeadSha,
+          });
+        }
+        return reply.send({
+          protocolVersion: 1,
+          status: result.status,
+          version: result.snapshot.version,
+          reviewedHeadSha: result.snapshot.reviewedHeadSha,
+        });
+      } catch (error) {
+        return sendActionError(reply, error, errorFormat);
+      }
+    };
+
   const createConfigHandler =
     (errorFormat: ActionErrorFormat) =>
     async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -712,6 +939,21 @@ export async function registerActionControlPlaneRoutes(
     "/api/action/v1/codex-oauth/comment-token",
     { bodyLimit: 4_096 },
     createCodexRotatingCommentTokenHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/review-snapshot/restore",
+    { bodyLimit: 8_192 },
+    createCodexRotatingReviewSnapshotRestoreHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/review-snapshot/head-token",
+    { bodyLimit: 4_096 },
+    createCodexRotatingReviewSnapshotHeadTokenHandler("v1"),
+  );
+  app.post(
+    "/api/action/v1/codex-oauth/review-snapshot/commit",
+    { bodyLimit: reviewSnapshotMaxPayloadBytes + 16_384 },
+    createCodexRotatingReviewSnapshotCommitHandler("v1"),
   );
   app.get("/api/action/config", createConfigHandler("legacy"));
   app.get("/api/action/v1/config", createConfigHandler("v1"));

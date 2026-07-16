@@ -79,6 +79,7 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly now: Date;
+    readonly completedLeaseTtlMs?: number | undefined;
   }): Promise<
     | {
         readonly status: "ready";

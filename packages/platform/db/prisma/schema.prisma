@@ -29,7 +29,9 @@ model Workspace {
   memorySuggestions        MemorySuggestion[]
   memoryUsageEvents        MemoryUsageEvent[]
   codexOAuthProviders      CodexOAuthProviderInstance[]
+  codexOAuthLeases         CodexOAuthLease[]
   codexOAuthSetupManifests CodexOAuthSetupManifest[]
+  reviewSnapshots          ReviewSnapshot[]
 }
 
 model User {
@@ -187,7 +189,9 @@ model RepositoryConnection {
   memorySuggestions        MemorySuggestion[]
   memoryUsageEvents        MemoryUsageEvent[]
   codexOAuthProviders      CodexOAuthProviderInstance[]
+  codexOAuthLeases         CodexOAuthLease[]
   codexOAuthSetupManifests CodexOAuthSetupManifest[]
+  reviewSnapshots          ReviewSnapshot[]
 
   @@unique([provider, externalRepositoryId, sourceBaseUrl])
   @@unique([workspaceId, provider, fullName, sourceBaseUrl])
@@ -354,6 +358,8 @@ model CodexOAuthLease {
   id                      String    @id @default(cuid())
   providerInstanceRowId   String
   providerInstanceId      String
+  workspaceId             String
+  repositoryId            String
   githubRunId             String
   githubRunAttempt        String
   leaseKey                String    @unique
@@ -368,9 +374,13 @@ model CodexOAuthLease {
   completedAt             DateTime?
 
   providerInstance CodexOAuthProviderInstance  @relation(fields: [providerInstanceRowId], references: [id], onDelete: Cascade)
+  workspace        Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository       RepositoryConnection        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   writebackIntents CodexOAuthWritebackIntent[]
 
   @@index([providerInstanceId, status])
+  @@index([workspaceId, status])
+  @@index([repositoryId, status])
   @@index([expiresAt])
 }
 
@@ -429,6 +439,34 @@ model ActionRunHealthReport {
 
   @@unique([repositoryId, githubRunId, githubRunAttempt])
   @@index([workspaceId, receivedAt])
+}
+
+model ReviewSnapshot {
+  id                String   @id @default(cuid())
+  workspaceId       String
+  repositoryId      String
+  pullRequestNumber Int
+  version           Int      @default(1)
+  schemaVersion     Int      @default(1)
+  reviewedHeadSha   String
+  baseSha           String
+  compatibilityKey  String
+  payload           Json
+  payloadHash       String
+  sourceRunId       String
+  sourceRunAttempt  String
+  reviewedAt        DateTime
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, repositoryId, pullRequestNumber])
+  @@index([expiresAt, id])
+  @@index([workspaceId, expiresAt])
+  @@index([repositoryId, expiresAt])
 }
 
 model ConflictReviewAttempt {

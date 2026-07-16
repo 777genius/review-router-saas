@@ -43,6 +43,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   codexRotatingRefreshRuntimeMode,
   codexRotatingRuntimeAuthMode,
@@ -105,6 +106,9 @@ const providerNeutralReviewFindingsArtifactFileName =
   "reviewrouter-findings.json";
 const reviewThreadLifecycleResolveTokenEnvKey =
   "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN";
+const reviewSnapshotInputFileName = "incremental-snapshot-input.json";
+const reviewSnapshotOutputFileName = "incremental-snapshot-output.json";
+const maxReviewSnapshotCandidateBytes = 512 * 1024 + 16 * 1024;
 
 type FetchLike = typeof fetch;
 
@@ -193,6 +197,111 @@ type CommentTokenResponse = {
   readonly repository: string;
 };
 
+const reviewSnapshotRestoreResponseSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    status: z.enum(["found", "missing", "expired", "base_changed"]),
+    expectedVersion: z.number().int().nonnegative(),
+    snapshot: z
+      .object({
+        version: z.number().int().positive(),
+        schemaVersion: z.literal(1),
+        reviewedHeadSha: z.string().regex(/^[a-f0-9]{40}$/i),
+        baseSha: z.string().regex(/^[a-f0-9]{40}$/i),
+        compatibilityKey: z.string().regex(/^[a-f0-9]{64}$/i),
+        payload: z.unknown(),
+        reviewedAt: z.string().datetime(),
+        expiresAt: z.string().datetime(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.status === "found") {
+      if (!value.snapshot) {
+        context.addIssue({
+          code: "custom",
+          message: "snapshot is required when status is found",
+          path: ["snapshot"],
+        });
+      } else if (value.expectedVersion !== value.snapshot.version) {
+        context.addIssue({
+          code: "custom",
+          message: "snapshot version must match expected version",
+          path: ["expectedVersion"],
+        });
+      }
+    } else if (value.snapshot) {
+      context.addIssue({
+        code: "custom",
+        message: "snapshot is not allowed when status is not found",
+        path: ["snapshot"],
+      });
+    }
+  });
+
+const reviewSnapshotFindingCandidateSchema = z
+  .object({
+    file: z.string().min(1).max(4_096),
+    startLine: z.number().int().positive().optional(),
+    line: z.number().int().positive(),
+    endLine: z.number().int().positive().optional(),
+    severity: z.enum(["critical", "major", "minor"]),
+    title: z.string().min(1).max(1_000),
+    message: z.string().min(1).max(20_000),
+    provider: z.string().min(1).max(500).optional(),
+    providers: z.array(z.string().min(1).max(500)).max(50).optional(),
+    actualModel: z.string().min(1).max(500).optional(),
+    providerVoteKeys: z.array(z.string().min(1).max(500)).max(50).optional(),
+    providerPoolSize: z.number().int().positive().optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    category: z.string().min(1).max(500).optional(),
+    hasConsensus: z.boolean().optional(),
+  })
+  .strict();
+
+const reviewSnapshotCandidateSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    expectedVersion: z.number().int().nonnegative(),
+    pullRequestNumber: z.number().int().positive(),
+    schemaVersion: z.literal(1),
+    reviewedHeadSha: z.string().regex(/^[a-f0-9]{40}$/i),
+    baseSha: z.string().regex(/^[a-f0-9]{40}$/i),
+    compatibilityKey: z.string().regex(/^[a-f0-9]{64}$/i),
+    payload: z
+      .object({
+        reviewSummary: z.string().min(1).max(100_000),
+        findings: z.array(reviewSnapshotFindingCandidateSchema).max(500),
+      })
+      .strict(),
+  })
+  .strict();
+
+const reviewSnapshotCommitResponseSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.enum(["committed", "idempotent"]),
+      version: z.number().int().positive(),
+      reviewedHeadSha: z.string().regex(/^[a-f0-9]{40}$/i),
+    })
+    .strict(),
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.literal("conflict"),
+      currentVersion: z.number().int().nonnegative(),
+      currentHeadSha: z.string().regex(/^[a-f0-9]{40}$/i),
+    })
+    .strict(),
+]);
+
+type ReviewSnapshotRestoreResponse = z.infer<
+  typeof reviewSnapshotRestoreResponseSchema
+>;
+
 type GitHubIssueCommentResponse = {
   readonly id: number;
   readonly body?: string | null;
@@ -222,6 +331,8 @@ type FullReviewRuntimeRunner = (input: {
   readonly commentToken: string;
   readonly runtimeConfigVersion: number;
   readonly runtimeEnv: Record<string, string>;
+  readonly reviewSnapshotInputPath?: string | undefined;
+  readonly reviewSnapshotOutputPath?: string | undefined;
 }) => Promise<void>;
 
 type CodexBinaryManifest = {
@@ -389,12 +500,42 @@ export async function runCodexRotatingGitHubAction(
         });
         mask(io, checkout.token);
 
-        await safeCheckoutPullRequest({
+        const restoredReviewSnapshot = await tryRestoreReviewSnapshot({
+          fetchImpl,
+          inputs,
+          leaseId: prelease.leaseId,
+          event,
+          io,
+        });
+
+        const previousHeadFetched = await safeCheckoutPullRequest({
           env,
           workspace,
           event,
           checkoutToken: checkout.token,
+          previousReviewedHeadSha:
+            restoredReviewSnapshot?.status === "found"
+              ? restoredReviewSnapshot.snapshot?.reviewedHeadSha
+              : undefined,
         });
+        if (!previousHeadFetched) {
+          notice(
+            io,
+            "ReviewRouter could not fetch the previous reviewed commit; the runtime will safely review the full PR diff.",
+          );
+        }
+        const reviewSnapshotForRuntime =
+          !previousHeadFetched && restoredReviewSnapshot?.status === "found"
+            ? {
+                protocolVersion: 1 as const,
+                status: "missing" as const,
+                expectedVersion: restoredReviewSnapshot.expectedVersion,
+              }
+            : (restoredReviewSnapshot ?? {
+                protocolVersion: 1 as const,
+                status: "missing" as const,
+                expectedVersion: 0,
+              });
 
         const commentToken = await postJson<CommentTokenResponse>({
           fetchImpl,
@@ -417,20 +558,50 @@ export async function runCodexRotatingGitHubAction(
 
         const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
         try {
-          await fullReviewRuntimeRunner({
-            inputs,
-            leaseId: prelease.leaseId,
-            codexBinaryPath,
-            env,
-            io,
-            workspace,
-            tempHome: reviewHome,
-            tempCodexHome,
-            event,
-            commentToken: commentToken.token,
-            runtimeConfigVersion: finalize.runtimeConfigVersion,
-            runtimeEnv: finalize.runtimeEnv,
-          });
+          const reviewSnapshotInputPath = join(
+            reviewHome,
+            reviewSnapshotInputFileName,
+          );
+          const reviewSnapshotOutputPath = join(
+            reviewHome,
+            reviewSnapshotOutputFileName,
+          );
+          await writeFile(
+            reviewSnapshotInputPath,
+            JSON.stringify(reviewSnapshotForRuntime),
+            { encoding: "utf8", mode: 0o600 },
+          );
+          let reviewRuntimeFailure: unknown;
+          try {
+            await fullReviewRuntimeRunner({
+              inputs,
+              leaseId: prelease.leaseId,
+              codexBinaryPath,
+              env,
+              io,
+              workspace,
+              tempHome: reviewHome,
+              tempCodexHome,
+              event,
+              commentToken: commentToken.token,
+              runtimeConfigVersion: finalize.runtimeConfigVersion,
+              runtimeEnv: finalize.runtimeEnv,
+              reviewSnapshotInputPath,
+              reviewSnapshotOutputPath,
+            });
+          } catch (error) {
+            reviewRuntimeFailure = error;
+          }
+          if (reviewSnapshotOutputPath) {
+            await tryCommitReviewSnapshot({
+              fetchImpl,
+              inputs,
+              leaseId: prelease.leaseId,
+              event,
+              candidatePath: reviewSnapshotOutputPath,
+              io,
+            });
+          }
           try {
             await deleteFullRuntimeProgressComments({
               fetchImpl,
@@ -441,6 +612,9 @@ export async function runCodexRotatingGitHubAction(
             });
           } catch {
             notice(io, "ReviewRouter could not clean up progress comments.");
+          }
+          if (reviewRuntimeFailure) {
+            throw reviewRuntimeFailure;
           }
         } finally {
           await removeTree(reviewHome);
@@ -1152,6 +1326,169 @@ async function postJson<T = unknown>(input: {
     throw new Error(safeRemoteError(parsed, response.status));
   }
   return parsed as T;
+}
+
+async function tryRestoreReviewSnapshot(input: {
+  readonly fetchImpl: FetchLike;
+  readonly inputs: ActionInputs;
+  readonly leaseId: string;
+  readonly event: PullRequestEvent;
+  readonly io: ActionIO;
+}): Promise<ReviewSnapshotRestoreResponse | null> {
+  try {
+    const response = await postJson<unknown>({
+      fetchImpl: input.fetchImpl,
+      label: "api_review_snapshot_restore",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/restore`,
+      body: {
+        protocolVersion: 1,
+        leaseId: input.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        pullRequestNumber: input.event.number,
+        baseSha: input.event.baseSha,
+      },
+    });
+    const parsed = reviewSnapshotRestoreResponseSchema.safeParse(response);
+    if (!parsed.success) {
+      throw new Error("review_snapshot_restore_response_invalid");
+    }
+    if (
+      parsed.data.status === "found" &&
+      parsed.data.snapshot?.baseSha !== input.event.baseSha
+    ) {
+      throw new Error("review_snapshot_restore_base_mismatch");
+    }
+    return parsed.data;
+  } catch {
+    notice(
+      input.io,
+      "ReviewRouter incremental snapshot restore is unavailable; running a full review.",
+    );
+    return null;
+  }
+}
+
+async function tryCommitReviewSnapshot(input: {
+  readonly fetchImpl: FetchLike;
+  readonly inputs: ActionInputs;
+  readonly leaseId: string;
+  readonly event: PullRequestEvent;
+  readonly candidatePath: string;
+  readonly io: ActionIO;
+}): Promise<void> {
+  let candidateStats;
+  try {
+    candidateStats = await stat(input.candidatePath);
+  } catch {
+    return;
+  }
+  try {
+    if (
+      !candidateStats.isFile() ||
+      candidateStats.size > maxReviewSnapshotCandidateBytes
+    ) {
+      throw new Error("review_snapshot_candidate_size_invalid");
+    }
+    const rawCandidate = await readFile(input.candidatePath, "utf8");
+    const parsedCandidate = reviewSnapshotCandidateSchema.safeParse(
+      JSON.parse(rawCandidate),
+    );
+    if (!parsedCandidate.success) {
+      throw new Error("review_snapshot_candidate_invalid");
+    }
+    const candidate = parsedCandidate.data;
+    if (
+      candidate.pullRequestNumber !== input.event.number ||
+      candidate.reviewedHeadSha !== input.event.headSha ||
+      candidate.baseSha !== input.event.baseSha
+    ) {
+      throw new Error("review_snapshot_candidate_context_mismatch");
+    }
+
+    const headToken = await postJson<CheckoutTokenResponse>({
+      fetchImpl: input.fetchImpl,
+      label: "api_review_snapshot_head_token",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/head-token`,
+      body: {
+        leaseId: input.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+      },
+    });
+    if (headToken.repository !== input.event.repository) {
+      throw new Error("review_snapshot_head_token_repository_mismatch");
+    }
+    mask(input.io, headToken.token);
+    const currentHeadSha = await fetchCurrentPullRequestHeadSha({
+      fetchImpl: input.fetchImpl,
+      token: headToken.token,
+      event: input.event,
+    });
+    if (currentHeadSha !== input.event.headSha) {
+      notice(
+        input.io,
+        "ReviewRouter skipped a stale incremental snapshot because the PR head changed.",
+      );
+      return;
+    }
+
+    const response = await postJson<unknown>({
+      fetchImpl: input.fetchImpl,
+      label: "api_review_snapshot_commit",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/commit`,
+      body: {
+        ...candidate,
+        leaseId: input.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+      },
+    });
+    const parsedResponse =
+      reviewSnapshotCommitResponseSchema.safeParse(response);
+    if (!parsedResponse.success) {
+      throw new Error("review_snapshot_commit_response_invalid");
+    }
+    if (parsedResponse.data.status === "conflict") {
+      notice(
+        input.io,
+        "ReviewRouter kept a newer incremental snapshot from another run.",
+      );
+    }
+  } catch {
+    notice(
+      input.io,
+      "ReviewRouter completed the review but could not persist its incremental snapshot.",
+    );
+  }
+}
+
+async function fetchCurrentPullRequestHeadSha(input: {
+  readonly fetchImpl: FetchLike;
+  readonly token: string;
+  readonly event: PullRequestEvent;
+}): Promise<string> {
+  const response = await fetchWithRetry({
+    fetchImpl: input.fetchImpl,
+    label: "github_pull_request_head",
+    timeoutMs: githubRequestTimeoutMs,
+    url: `https://api.github.com/repos/${encodeURIComponent(input.event.owner)}/${encodeURIComponent(input.event.repo)}/pulls/${input.event.number}`,
+    init: {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${input.token}`,
+        "x-github-api-version": "2022-11-28",
+      },
+    },
+  });
+  const body = (await response.json()) as {
+    readonly head?: { readonly sha?: unknown };
+  };
+  if (
+    !response.ok ||
+    typeof body.head?.sha !== "string" ||
+    !/^[a-f0-9]{40}$/i.test(body.head.sha)
+  ) {
+    throw new Error("github_pull_request_head_fetch_failed");
+  }
+  return body.head.sha;
 }
 
 async function fetchGitHubRepositoryPublicKey(input: {
@@ -2187,7 +2524,8 @@ async function safeCheckoutPullRequest(input: {
   readonly workspace: string;
   readonly event: PullRequestEvent;
   readonly checkoutToken: string;
-}): Promise<void> {
+  readonly previousReviewedHeadSha?: string | undefined;
+}): Promise<boolean> {
   const askPass = join(input.workspace, ".reviewrouter-askpass.sh");
   await writeFile(
     askPass,
@@ -2226,6 +2564,33 @@ async function safeCheckoutPullRequest(input: {
     input.workspace,
     gitEnv,
   );
+  let previousHeadFetched = true;
+  if (
+    input.previousReviewedHeadSha &&
+    input.previousReviewedHeadSha !== input.event.headSha &&
+    input.previousReviewedHeadSha !== input.event.baseSha
+  ) {
+    try {
+      await runGit(
+        [
+          "-c",
+          "protocol.file.allow=never",
+          "-c",
+          "protocol.ext.allow=never",
+          "fetch",
+          "--no-tags",
+          "--no-recurse-submodules",
+          "--depth=1",
+          "origin",
+          input.previousReviewedHeadSha,
+        ],
+        input.workspace,
+        gitEnv,
+      );
+    } catch {
+      previousHeadFetched = false;
+    }
+  }
   await runGit(
     [
       "-c",
@@ -2260,6 +2625,7 @@ async function safeCheckoutPullRequest(input: {
     workspace: input.workspace,
     checkoutToken: input.checkoutToken,
   });
+  return previousHeadFetched;
 }
 
 function buildSafeCheckoutGitEnv(input: {
@@ -2411,6 +2777,8 @@ async function runFullReviewRouterRuntime(input: {
   readonly commentToken: string;
   readonly runtimeConfigVersion: number;
   readonly runtimeEnv: Record<string, string>;
+  readonly reviewSnapshotInputPath?: string | undefined;
+  readonly reviewSnapshotOutputPath?: string | undefined;
 }): Promise<void> {
   const actionPath = resolveGitHubActionPath(input.env);
   const runtimePath = join(actionPath, "dist", "index.js");
@@ -2437,6 +2805,8 @@ async function runFullReviewRouterRuntime(input: {
       runtimeConfigVersion: input.runtimeConfigVersion,
       runtimeEnv: input.runtimeEnv,
       reviewThreadLifecycleResolveToken,
+      reviewSnapshotInputPath: input.reviewSnapshotInputPath,
+      reviewSnapshotOutputPath: input.reviewSnapshotOutputPath,
     });
     await ensureFullReviewRuntimeTools({
       env: childEnv,
@@ -2476,6 +2846,8 @@ export function buildFullReviewRuntimeEnv(input: {
   readonly runtimeConfigVersion: number;
   readonly runtimeEnv: Record<string, string>;
   readonly reviewThreadLifecycleResolveToken?: string | undefined;
+  readonly reviewSnapshotInputPath?: string | undefined;
+  readonly reviewSnapshotOutputPath?: string | undefined;
 }): Record<string, string> {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
   const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
@@ -2530,6 +2902,19 @@ export function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
+    REVIEWROUTER_INCREMENTAL_SNAPSHOT_REQUIRED: "true",
+    ...(input.reviewSnapshotInputPath
+      ? {
+          REVIEWROUTER_INCREMENTAL_SNAPSHOT_INPUT_PATH:
+            input.reviewSnapshotInputPath,
+        }
+      : {}),
+    ...(input.reviewSnapshotOutputPath
+      ? {
+          REVIEWROUTER_INCREMENTAL_SNAPSHOT_OUTPUT_PATH:
+            input.reviewSnapshotOutputPath,
+        }
+      : {}),
   };
 }
 

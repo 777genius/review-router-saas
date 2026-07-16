@@ -17,6 +17,7 @@ export * from "./application/ports/github-app-comment-token-issuer-port.js";
 export * from "./application/ports/github-actions-oidc-token-verifier-port.js";
 export * from "./application/ports/github-review-thread-lifecycle-resolver-port.js";
 export * from "./application/ports/codex-rotating-oauth-repository-port.js";
+export * from "./application/ports/codex-rotating-review-snapshot-access-port.js";
 export * from "./application/use-cases/exchange-github-oidc-token.js";
 export * from "./application/use-cases/prelease-codex-rotating-oauth.js";
 export * from "./application/use-cases/finalize-codex-rotating-oauth-lease.js";
@@ -25,6 +26,9 @@ export * from "./application/use-cases/preflight-codex-rotating-oauth-writeback.
 export * from "./application/use-cases/writeback-codex-rotating-oauth.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-checkout-token.js";
 export * from "./application/use-cases/issue-codex-rotating-oauth-comment-token.js";
+export * from "./application/use-cases/issue-codex-rotating-review-snapshot-head-token.js";
+export * from "./application/use-cases/restore-codex-rotating-review-snapshot.js";
+export * from "./application/use-cases/commit-codex-rotating-review-snapshot.js";
 export * from "./application/use-cases/get-action-runtime-config.js";
 export * from "./application/use-cases/issue-action-comment-token.js";
 export * from "./application/use-cases/post-conflict-review-status.js";

@@ -89,12 +89,17 @@ try {
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'RateLimitBucket') AS rate_limit_table,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'DistributedLock') AS distributed_lock_table,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ActionOidcReplayNonce') AS replay_nonce_table,
+      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ReviewSnapshot') AS review_snapshot_table,
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'workspaceId' AND is_nullable = 'NO') AS lease_workspace_scope,
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'repositoryId' AND is_nullable = 'NO') AS lease_repository_scope,
       (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ActionRunHealthReport' AND indexname = 'ActionRunHealthReport_repositoryId_githubRunId_githubRunAtt_key') AS health_unique_index,
+      (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ReviewSnapshot' AND indexname = 'ReviewSnapshot_workspaceId_repositoryId_pullRequestNumber_key') AS review_snapshot_unique_index,
+      (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'CodexOAuthLease' AND indexname = 'CodexOAuthLease_repositoryId_status_idx') AS lease_repository_scope_index,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '_prisma_migrations') AS migrations_table;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
-  if (output !== "1|1|1|1|1|1|1") {
+  if (output !== "1|1|1|1|1|1|1|1|1|1|1|1") {
     console.error(output);
     fail("Migrated schema invariants failed");
   }

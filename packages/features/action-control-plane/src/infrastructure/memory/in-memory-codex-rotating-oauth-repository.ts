@@ -6,11 +6,15 @@ import {
   type CodexRotatingProviderBinding,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
-import { isCodexRotatingCompletedLeasePostingWindowActive } from "../../domain/codex-rotating-oauth-posting-window.js";
+import {
+  codexRotatingReviewSnapshotAccessTtlMs,
+  isCodexRotatingCompletedLeasePostingWindowActive,
+} from "../../domain/codex-rotating-oauth-posting-window.js";
 import type {
   CodexRotatingOAuthRepositoryPort,
   CodexRotatingPreleaseRecord,
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
+import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
 
 type ProviderRecord = {
   readonly binding: CodexRotatingProviderBinding;
@@ -31,11 +35,34 @@ type WritebackRecord = {
   readonly completedAt?: Date;
 };
 
-export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthRepositoryPort {
+type CompletedLeaseContext =
+  | {
+      readonly status: "ready";
+      readonly repository: ActionRepositoryContext;
+      readonly source: { readonly runId: string; readonly runAttempt: string };
+    }
+  | {
+      readonly status: "lease_not_completed" | "lease_not_active";
+    };
+
+export class InMemoryCodexRotatingOAuthRepository
+  implements
+    CodexRotatingOAuthRepositoryPort,
+    CodexRotatingReviewSnapshotAccessPort
+{
   private readonly leases = new InMemoryCodexRotatingLeaseStore();
   private readonly providers = new Map<string, ProviderRecord>();
   private readonly writebacks = new Map<string, WritebackRecord>();
   private readonly leaseExpiresAtById = new Map<string, Date>();
+  private readonly leaseSourceById = new Map<
+    string,
+    {
+      readonly providerInstanceId: string;
+      readonly repository: ActionRepositoryContext;
+      readonly runId: string;
+      readonly runAttempt: string;
+    }
+  >();
 
   constructor(bindings: readonly CodexRotatingProviderBinding[] = []) {
     for (const binding of bindings) {
@@ -104,7 +131,15 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
       now: input.now,
       ttlSeconds: 15 * 60,
     });
-    this.leaseExpiresAtById.set(lease.leaseId, lease.expiresAt);
+    if (lease.status !== "conflict") {
+      this.leaseExpiresAtById.set(lease.leaseId, lease.expiresAt);
+      this.leaseSourceById.set(lease.leaseId, {
+        providerInstanceId: input.providerInstanceId,
+        repository: input.repository,
+        runId: input.githubRunId,
+        runAttempt: input.githubRunAttempt,
+      });
+    }
     if (provider && lease.status !== "conflict") {
       this.providers.set(input.providerInstanceId, {
         ...provider,
@@ -302,6 +337,7 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
     readonly leaseId: string;
     readonly providerInstanceId: string;
     readonly now: Date;
+    readonly completedLeaseTtlMs?: number | undefined;
   }): Promise<
     | {
         readonly status: "ready";
@@ -318,9 +354,44 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
         readonly status: "lease_not_completed" | "lease_not_active";
       }
   > {
-    const provider = this.providers.get(input.providerInstanceId);
-    if (!provider?.repository) {
-      return { status: "lease_not_active" };
+    const context = this.findCompletedLeaseContext(input);
+    if (context.status !== "ready") return context;
+    return {
+      status: "ready" as const,
+      writeTarget: toWriteTarget(context.repository),
+    };
+  }
+
+  async authorizeReviewSnapshotAccess(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly now: Date;
+  }) {
+    const context = this.findCompletedLeaseContext({
+      ...input,
+      completedLeaseTtlMs: codexRotatingReviewSnapshotAccessTtlMs,
+    });
+    if (context.status !== "ready") return context;
+    return {
+      status: "ready" as const,
+      scope: {
+        workspaceId: context.repository.workspaceId,
+        repositoryId: context.repository.repositoryId,
+        sourceRunId: context.source.runId,
+        sourceRunAttempt: context.source.runAttempt,
+      },
+    };
+  }
+
+  private findCompletedLeaseContext(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly now: Date;
+    readonly completedLeaseTtlMs?: number | undefined;
+  }): CompletedLeaseContext {
+    const source = this.leaseSourceById.get(input.leaseId);
+    if (!source || source.providerInstanceId !== input.providerInstanceId) {
+      return { status: "lease_not_active" as const };
     }
     const writeback = [...this.writebacks.values()].find(
       (record) =>
@@ -334,21 +405,25 @@ export class InMemoryCodexRotatingOAuthRepository implements CodexRotatingOAuthR
     ) {
       const expiresAt = this.leaseExpiresAtById.get(input.leaseId);
       if (expiresAt && expiresAt <= input.now) {
-        return { status: "lease_not_active" };
+        return { status: "lease_not_active" as const };
       }
-      return { status: "lease_not_completed" };
+      return { status: "lease_not_completed" as const };
     }
     if (
       !isCodexRotatingCompletedLeasePostingWindowActive({
         completedAt: writeback.completedAt,
         now: input.now,
+        ...(input.completedLeaseTtlMs
+          ? { ttlMs: input.completedLeaseTtlMs }
+          : {}),
       })
     ) {
-      return { status: "lease_not_active" };
+      return { status: "lease_not_active" as const };
     }
     return {
-      status: "ready",
-      writeTarget: toWriteTarget(provider.repository),
+      status: "ready" as const,
+      repository: source.repository,
+      source,
     };
   }
 

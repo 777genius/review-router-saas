@@ -1,4 +1,5 @@
 export const codexRotatingCommentTokenRefreshTtlMs = 60 * 60 * 1000;
+export const codexRotatingReviewSnapshotAccessTtlMs = 6 * 60 * 60 * 1000;
 
 export function isCodexRotatingCompletedLeasePostingWindowActive(input: {
   readonly completedAt: Date;

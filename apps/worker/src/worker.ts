@@ -34,6 +34,10 @@ import {
   pruneExpiredRateLimitBuckets,
 } from "@reviewrouter/features-rate-limits";
 import {
+  PrismaReviewSnapshotRepository,
+  pruneExpiredReviewSnapshots,
+} from "@reviewrouter/features-review-snapshots";
+import {
   OctokitGitHubRepositorySource,
   PrismaRepositoryConnectionRepository,
 } from "@reviewrouter/features-repositories";
@@ -88,6 +92,7 @@ async function main(): Promise<void> {
       prisma,
       clock,
     );
+    const pruneReviewSnapshots = createReviewSnapshotMaintenance(prisma, clock);
     const expirePendingMemorySuggestions =
       createMemorySuggestionExpiryMaintenanceRunner(prisma, clock);
     const expireActiveMemoryItems = createMemoryItemExpiryMaintenanceRunner(
@@ -116,6 +121,7 @@ async function main(): Promise<void> {
           : emptyOutboxBatchResult();
       await pruneRateLimits();
       await pruneActionOidcReplayNonces();
+      await pruneReviewSnapshots();
       await expirePendingMemorySuggestions();
       await expireActiveMemoryItems();
       await pruneTerminalMemoryItems();
@@ -325,6 +331,42 @@ function createActionOidcReplayNonceMaintenance(
       }
     } catch (error: unknown) {
       logger.warn("ReviewRouter action OIDC replay nonce maintenance failed", {
+        safeErrorSummary: safeWorkerErrorSummary(error),
+      });
+    }
+  };
+}
+
+function createReviewSnapshotMaintenance(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  const snapshots = new PrismaReviewSnapshotRepository(prisma);
+  const limit = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_REVIEW_SNAPSHOT_PRUNE_BATCH_SIZE",
+    500,
+  );
+  const intervalMs = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_REVIEW_SNAPSHOT_PRUNE_INTERVAL_MS",
+    5 * 60 * 1000,
+  );
+  let lastAttemptAtMs = 0;
+
+  return async () => {
+    const now = clock.now();
+    if (now.getTime() - lastAttemptAtMs < intervalMs) return;
+    lastAttemptAtMs = now.getTime();
+
+    try {
+      const result = await pruneExpiredReviewSnapshots(
+        { expiredBefore: now, limit },
+        { snapshots },
+      );
+      if (result.deleted > 0) {
+        logger.info("ReviewRouter pruned expired review snapshots", result);
+      }
+    } catch (error: unknown) {
+      logger.warn("ReviewRouter review snapshot maintenance failed", {
         safeErrorSummary: safeWorkerErrorSummary(error),
       });
     }
