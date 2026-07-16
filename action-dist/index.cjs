@@ -30,6 +30,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var github_action_exports = {};
 __export(github_action_exports, {
+  FinalizedReviewCheckpointMarkerReadStatus: () => FinalizedReviewCheckpointMarkerReadStatus,
   assertSupportedRunnerEnvironment: () => assertSupportedRunnerEnvironment,
   buildCodexCommand: () => buildCodexCommand,
   buildFullReviewRuntimeEnv: () => buildFullReviewRuntimeEnv,
@@ -21558,6 +21559,12 @@ var reviewCheckpointFinalizationMarkerSchema = external_exports.object({
   expectedVersion: external_exports.number().int().positive(),
   snapshotAdvancementRequired: external_exports.boolean().optional()
 }).strict();
+var FinalizedReviewCheckpointMarkerReadStatus = /* @__PURE__ */ ((FinalizedReviewCheckpointMarkerReadStatus2) => {
+  FinalizedReviewCheckpointMarkerReadStatus2["Missing"] = "missing";
+  FinalizedReviewCheckpointMarkerReadStatus2["Valid"] = "valid";
+  FinalizedReviewCheckpointMarkerReadStatus2["Invalid"] = "invalid";
+  return FinalizedReviewCheckpointMarkerReadStatus2;
+})(FinalizedReviewCheckpointMarkerReadStatus || {});
 var reviewCheckpointClearResponseSchema = external_exports.discriminatedUnion("status", [
   external_exports.object({
     protocolVersion: external_exports.literal(1),
@@ -21787,13 +21794,13 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           } catch (error51) {
             reviewRuntimeFailure = error51;
           }
-          const finalizedCheckpointMarker = await tryReadFinalizedReviewCheckpointMarker({
+          const finalizedCheckpointMarkerRead = await tryReadFinalizedReviewCheckpointMarker({
             markerPath: reviewCheckpointFinalizationPath,
             event,
             io
           });
           await settleFinalizedReviewCheckpoint({
-            marker: finalizedCheckpointMarker,
+            markerRead: finalizedCheckpointMarkerRead,
             runtimeCompleted: didReviewRuntimeComplete(reviewRuntimeFailure),
             commitSnapshot: () => tryCommitReviewSnapshot({
               fetchImpl,
@@ -22415,16 +22422,20 @@ async function tryRestoreReviewSnapshot(input) {
 }
 async function settleFinalizedReviewCheckpoint(input) {
   if (!input.runtimeCompleted) return;
-  if (!input.marker) {
+  if (input.markerRead.status === "invalid" /* Invalid */) {
+    return;
+  }
+  if (input.markerRead.status === "missing" /* Missing */) {
     await input.commitSnapshot();
     return;
   }
-  if (input.marker.snapshotAdvancementRequired === false) {
-    await input.clearCheckpoint(input.marker);
+  const marker = input.markerRead.marker;
+  if (marker.snapshotAdvancementRequired === false) {
+    await input.clearCheckpoint(marker);
     return;
   }
   if (await input.commitSnapshot()) {
-    await input.clearCheckpoint(input.marker);
+    await input.clearCheckpoint(marker);
   }
 }
 function didReviewRuntimeComplete(error51) {
@@ -22555,14 +22566,19 @@ async function tryReadFinalizedReviewCheckpointMarker(input) {
     if (parsedMarker.data.pullRequestNumber !== input.event.number || parsedMarker.data.headSha !== input.event.headSha) {
       throw new Error("review_checkpoint_marker_context_mismatch");
     }
-    return parsedMarker.data;
+    return {
+      status: "valid" /* Valid */,
+      marker: parsedMarker.data
+    };
   } catch (error51) {
-    if (error51.code === "ENOENT") return null;
+    if (error51.code === "ENOENT") {
+      return { status: "missing" /* Missing */ };
+    }
     notice(
       input.io,
       "ReviewRouter ignored an invalid batch finalization marker and will only settle a validated snapshot candidate."
     );
-    return null;
+    return { status: "invalid" /* Invalid */ };
   }
 }
 async function fetchCurrentPullRequestHeadSha(input) {
@@ -24275,6 +24291,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  FinalizedReviewCheckpointMarkerReadStatus,
   assertSupportedRunnerEnvironment,
   buildCodexCommand,
   buildFullReviewRuntimeEnv,

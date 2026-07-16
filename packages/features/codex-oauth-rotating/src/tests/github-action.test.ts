@@ -20,6 +20,7 @@ import {
   deleteStaleCodexRotatingSummaryComments,
   didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure,
+  FinalizedReviewCheckpointMarkerReadStatus,
   formatTopLevelActionErrorMessage,
   postPullRequestComment,
   readActionAuthJson,
@@ -70,7 +71,10 @@ describe("Codex rotating GitHub Action runtime", () => {
     };
 
     await settleFinalizedReviewCheckpoint({
-      marker,
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Valid,
+        marker,
+      },
       runtimeCompleted: true,
       commitSnapshot,
       clearCheckpoint,
@@ -81,7 +85,10 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     clearCheckpoint.mockClear();
     await settleFinalizedReviewCheckpoint({
-      marker,
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Valid,
+        marker,
+      },
       runtimeCompleted: false,
       commitSnapshot,
       clearCheckpoint,
@@ -94,7 +101,9 @@ describe("Codex rotating GitHub Action runtime", () => {
     const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
 
     await settleFinalizedReviewCheckpoint({
-      marker: null,
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Missing,
+      },
       runtimeCompleted: true,
       commitSnapshot,
       clearCheckpoint,
@@ -108,13 +117,32 @@ describe("Codex rotating GitHub Action runtime", () => {
     const commitSnapshot = vi.fn().mockResolvedValue(true);
 
     await settleFinalizedReviewCheckpoint({
-      marker: null,
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Missing,
+      },
       runtimeCompleted: false,
       commitSnapshot,
       clearCheckpoint: vi.fn(),
     });
 
     expect(commitSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("does not advance a snapshot after an invalid finalization marker", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+    const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
+
+    await settleFinalizedReviewCheckpoint({
+      markerRead: {
+        status: FinalizedReviewCheckpointMarkerReadStatus.Invalid,
+      },
+      runtimeCompleted: true,
+      commitSnapshot,
+      clearCheckpoint,
+    });
+
+    expect(commitSnapshot).not.toHaveBeenCalled();
+    expect(clearCheckpoint).not.toHaveBeenCalled();
   });
 
   it("treats an already-reported policy failure as a completed review runtime", () => {
