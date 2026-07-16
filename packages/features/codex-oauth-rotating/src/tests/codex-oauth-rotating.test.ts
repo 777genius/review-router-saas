@@ -426,6 +426,15 @@ exit 17
       errors: [],
     });
 
+    const preDraftReviewWorkflow = workflow.replaceAll(
+      ", converted_to_draft",
+      "",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(preDraftReviewWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
     const unguardedDraftWorkflow = workflow.replace(
       "((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true'))",
       "true",
