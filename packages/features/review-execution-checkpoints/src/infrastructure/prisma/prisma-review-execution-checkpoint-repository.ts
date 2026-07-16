@@ -1,6 +1,8 @@
 import {
   Prisma,
   ReviewExecutionCheckpointState as PrismaCheckpointState,
+  type ReviewExecutionBatchResult as BatchResultRecord,
+  type ReviewExecutionCheckpoint as CheckpointRecord,
   type PrismaClient,
 } from "@prisma/client";
 import type {
@@ -19,6 +21,7 @@ import {
   ReviewExecutionCheckpointState,
   assertReviewExecutionBatchResult,
   assertReviewExecutionCheckpointAggregate,
+  assertReviewExecutionCheckpointRoot,
   decodeReviewExecutionBatchPayload,
   hashReviewExecutionBatchPayload,
   isReviewExecutionCheckpointStartIdempotent,
@@ -99,16 +102,6 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
               checkpoint: current.checkpoint,
             });
           }
-          if (
-            !currentExpired &&
-            current.checkpoint.state ===
-              ReviewExecutionCheckpointState.Finalized
-          ) {
-            return result<StartOrReplaceReviewExecutionCheckpointResult>({
-              status: ReviewExecutionCheckpointStartStatus.Finalized,
-              checkpoint: current.checkpoint,
-            });
-          }
           if (current.checkpoint.version !== input.expectedVersion) {
             return result<StartOrReplaceReviewExecutionCheckpointResult>(
               startConflict(current.checkpoint),
@@ -118,10 +111,6 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
             where: {
               id: currentRecord.id,
               version: input.expectedVersion,
-              OR: [
-                { state: PrismaCheckpointState.active },
-                { expiresAt: { lte: input.checkpoint.updatedAt } },
-              ],
             },
             data: toRootUpdateInput(input.checkpoint),
           });
@@ -161,7 +150,6 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
         async (tx) => {
           const currentRecord = await tx.reviewExecutionCheckpoint.findUnique({
             where: scopedUnique(input.scope),
-            include: { batchResults: { orderBy: { batchIndex: "asc" } } },
           });
           if (!currentRecord) {
             return result<CommitReviewExecutionBatchResult>({
@@ -169,7 +157,7 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
               currentVersion: 0,
             });
           }
-          const current = toAggregate(currentRecord);
+          const current = mapValidRoot(currentRecord);
           if (!current) {
             return result<CommitReviewExecutionBatchResult>({
               status: ReviewExecutionBatchCommitStatus.Corrupted,
@@ -177,43 +165,50 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
             });
           }
           if (
-            current.checkpoint.headSha !== input.headSha ||
-            current.checkpoint.planHash !== input.planHash ||
-            current.checkpoint.expiresAt <= input.updatedAt
+            current.headSha !== input.headSha ||
+            current.planHash !== input.planHash ||
+            current.expiresAt <= input.updatedAt
           ) {
             return result<CommitReviewExecutionBatchResult>({
               status: ReviewExecutionBatchCommitStatus.Conflict,
-              ...checkpointConflict(current.checkpoint),
+              ...checkpointConflict(current),
             });
           }
-          const existing = current.batchResults.find(
-            (batchResult) => batchResult.workKey === input.batchResult.workKey,
+          const existingRecord = await tx.reviewExecutionBatchResult.findUnique(
+            {
+              where: {
+                checkpointId_workKey: {
+                  checkpointId: currentRecord.id,
+                  workKey: input.batchResult.workKey,
+                },
+              },
+            },
           );
-          if (existing) {
+          if (existingRecord) {
+            const existing = mapBatchResultOrNull(existingRecord);
+            if (!existing) {
+              return result<CommitReviewExecutionBatchResult>({
+                status: ReviewExecutionBatchCommitStatus.Corrupted,
+                currentVersion: current.version,
+              });
+            }
             return result(
-              resolveExistingBatchResult(
-                current.checkpoint,
-                existing,
-                input.batchResult,
-              ),
+              resolveExistingBatchResult(current, existing, input.batchResult),
             );
           }
-          if (
-            current.checkpoint.state ===
-            ReviewExecutionCheckpointState.Finalized
-          ) {
+          if (current.state === ReviewExecutionCheckpointState.Finalized) {
             return result<CommitReviewExecutionBatchResult>({
               status: ReviewExecutionBatchCommitStatus.Finalized,
-              checkpoint: current.checkpoint,
+              checkpoint: current,
             });
           }
-          if (current.checkpoint.version !== input.expectedVersion) {
+          if (current.version !== input.expectedVersion) {
             return result<CommitReviewExecutionBatchResult>({
               status: ReviewExecutionBatchCommitStatus.Conflict,
-              ...checkpointConflict(current.checkpoint),
+              ...checkpointConflict(current),
             });
           }
-          const plannedIndex = current.checkpoint.plannedWorkKeys.indexOf(
+          const plannedIndex = current.plannedWorkKeys.indexOf(
             input.batchResult.workKey,
           );
           if (
@@ -222,12 +217,12 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
           ) {
             return result<CommitReviewExecutionBatchResult>({
               status: ReviewExecutionBatchCommitStatus.UnplannedWork,
-              checkpoint: current.checkpoint,
+              checkpoint: current,
             });
           }
-          const acceptedFindings = countFindings(current.batchResults);
+          const acceptedFindings = current.acceptedFindings;
           const nextAcceptedBytes =
-            current.checkpoint.acceptedBytes + input.batchResult.byteCount;
+            current.acceptedBytes + input.batchResult.byteCount;
           const nextAcceptedFindings =
             acceptedFindings + input.batchResult.payload.findings.length;
           if (
@@ -236,8 +231,8 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
           ) {
             return result<CommitReviewExecutionBatchResult>({
               status: ReviewExecutionBatchCommitStatus.BudgetExceeded,
-              checkpoint: current.checkpoint,
-              acceptedBytes: current.checkpoint.acceptedBytes,
+              checkpoint: current,
+              acceptedBytes: current.acceptedBytes,
               acceptedFindings,
             });
           }
@@ -246,7 +241,8 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
               id: currentRecord.id,
               version: input.expectedVersion,
               state: PrismaCheckpointState.active,
-              acceptedBytes: current.checkpoint.acceptedBytes,
+              acceptedBytes: current.acceptedBytes,
+              acceptedFindings: current.acceptedFindings,
               headSha: input.headSha,
               planHash: input.planHash,
               expiresAt: { gt: input.updatedAt },
@@ -254,6 +250,7 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
             data: {
               version: input.expectedVersion + 1,
               acceptedBytes: nextAcceptedBytes,
+              acceptedFindings: nextAcceptedFindings,
               updatedAt: input.updatedAt,
               expiresAt: input.expiresAt,
             },
@@ -265,9 +262,10 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
           return result<CommitReviewExecutionBatchResult>({
             status: ReviewExecutionBatchCommitStatus.Committed,
             checkpoint: {
-              ...current.checkpoint,
+              ...current,
               version: input.expectedVersion + 1,
               acceptedBytes: nextAcceptedBytes,
+              acceptedFindings: nextAcceptedFindings,
               updatedAt: input.updatedAt,
               expiresAt: input.expiresAt,
             },
@@ -554,8 +552,6 @@ export class PrismaReviewExecutionCheckpointRepository implements ReviewExecutio
 type CheckpointWithResults = Prisma.ReviewExecutionCheckpointGetPayload<{
   include: { batchResults: true };
 }>;
-type CheckpointRecord = Prisma.ReviewExecutionCheckpointGetPayload<object>;
-type BatchResultRecord = Prisma.ReviewExecutionBatchResultGetPayload<object>;
 
 function toAggregate(
   record: CheckpointWithResults,
@@ -590,6 +586,7 @@ function mapRoot(record: CheckpointRecord): ReviewExecutionCheckpointRoot {
     planHash: record.planHash,
     plannedWorkKeys: record.plannedWorkKeys,
     acceptedBytes: record.acceptedBytes,
+    acceptedFindings: record.acceptedFindings,
     sourceRunId: record.sourceRunId,
     sourceRunAttempt: record.sourceRunAttempt,
     updatedAt: record.updatedAt,
@@ -627,6 +624,28 @@ function mapBatchResultOrThrow(
   };
 }
 
+function mapBatchResultOrNull(
+  record: BatchResultRecord,
+): ReviewExecutionBatchResult | null {
+  try {
+    return mapBatchResultOrThrow(record);
+  } catch {
+    return null;
+  }
+}
+
+function mapValidRoot(
+  record: CheckpointRecord,
+): ReviewExecutionCheckpointRoot | null {
+  try {
+    const checkpoint = mapRoot(record);
+    assertReviewExecutionCheckpointRoot(checkpoint);
+    return checkpoint;
+  } catch {
+    return null;
+  }
+}
+
 function toRootCreateInput(
   checkpoint: ReviewExecutionCheckpointRoot,
 ): Prisma.ReviewExecutionCheckpointUncheckedCreateInput {
@@ -658,6 +677,7 @@ function toRootMutationInput(checkpoint: ReviewExecutionCheckpointRoot) {
     planHash: checkpoint.planHash,
     plannedWorkKeys: [...checkpoint.plannedWorkKeys],
     acceptedBytes: checkpoint.acceptedBytes,
+    acceptedFindings: checkpoint.acceptedFindings,
     sourceRunId: checkpoint.sourceRunId,
     sourceRunAttempt: checkpoint.sourceRunAttempt,
     updatedAt: checkpoint.updatedAt,
@@ -762,13 +782,6 @@ function scopedUnique(scope: ReviewExecutionCheckpointScope) {
       pullRequestNumber: scope.pullRequestNumber,
     },
   };
-}
-
-function countFindings(results: readonly ReviewExecutionBatchResult[]): number {
-  return results.reduce(
-    (count, result) => count + result.payload.findings.length,
-    0,
-  );
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

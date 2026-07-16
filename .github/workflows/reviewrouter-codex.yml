@@ -2,7 +2,9 @@ name: ReviewRouter Codex OAuth
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 permissions: {}
 
@@ -10,8 +12,12 @@ jobs:
   codex-review:
     name: codex-review
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
+    timeout-minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}
+    concurrency:
+      group: reviewrouter-codex-oauth-${{ github.repository_id }}-codex-rotating-1228690265
+      queue: max
+      cancel-in-progress: false
+    if: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true')) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
     permissions:
       id-token: write
     steps:
@@ -23,6 +29,7 @@ jobs:
           api-url: "https://api.reviewrouter.site"
           provider-instance-id: "codex-rotating:1228690265"
           workflow-schema-version: "1"
+          review-drafts: ${{ vars.REVIEW_ROUTER_REVIEW_DRAFTS == 'true' }}
           max-changed-lines: ${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}
           review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}
           auth-json: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}

@@ -34,6 +34,7 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
     const checkpoint = root({
       version: 3,
       acceptedBytes: first.byteCount + second.byteCount,
+      acceptedFindings: 2,
     });
     const mock = prismaMock();
     mock.txCheckpoint.findUnique.mockResolvedValue(
@@ -61,6 +62,7 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
     const checkpoint = root({
       version: 2,
       acceptedBytes: result.byteCount,
+      acceptedFindings: 1,
     });
     const mock = prismaMock();
     mock.txCheckpoint.findUnique.mockResolvedValue(
@@ -92,6 +94,7 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
     const current = root({
       version: 2,
       acceptedBytes: currentBatch.byteCount,
+      acceptedFindings: 1,
     });
     const replacement = root({
       version: 3,
@@ -123,10 +126,6 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
         where: expect.objectContaining({
           id: "checkpoint_1",
           version: 2,
-          OR: [
-            { state: "active" },
-            { expiresAt: { lte: replacement.updatedAt } },
-          ],
         }),
       }),
     );
@@ -136,6 +135,48 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
     expect(
       mock.txCheckpoint.updateMany.mock.invocationCallOrder[0],
     ).toBeLessThan(mock.txBatch.deleteMany.mock.invocationCallOrder[0]!);
+  });
+
+  it("replaces a finalized checkpoint when a newer review plan arrives", async () => {
+    const first = batchResult(0);
+    const second = batchResult(1);
+    const finalized = root({
+      version: 4,
+      state: ReviewExecutionCheckpointState.Finalized,
+      finalizedAt: now,
+      acceptedBytes: first.byteCount + second.byteCount,
+      acceptedFindings: 2,
+    });
+    const replacement = root({
+      version: 5,
+      headSha: "d".repeat(40),
+      planHash: "9".repeat(64),
+      plannedWorkKeys: ["3".repeat(64)],
+    });
+    const mock = prismaMock();
+    mock.txCheckpoint.findUnique.mockResolvedValue(
+      prismaRoot(finalized, [prismaBatch(first), prismaBatch(second)]),
+    );
+    mock.txCheckpoint.updateMany.mockResolvedValue({ count: 1 });
+    mock.txBatch.deleteMany.mockResolvedValue({ count: 0 });
+    const repository = new PrismaReviewExecutionCheckpointRepository(
+      mock.prisma as unknown as PrismaClient,
+    );
+
+    await expect(
+      repository.startOrReplace({
+        expectedVersion: finalized.version,
+        checkpoint: replacement,
+      }),
+    ).resolves.toMatchObject({
+      status: ReviewExecutionCheckpointStartStatus.Replaced,
+      checkpoint: { headSha: replacement.headSha, version: 5 },
+    });
+    expect(mock.txCheckpoint.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "checkpoint_1", version: finalized.version },
+      }),
+    );
   });
 
   it("increments root CAS and accepted bytes before inserting an immutable child", async () => {
@@ -161,7 +202,22 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
       }),
     ).resolves.toMatchObject({
       status: ReviewExecutionBatchCommitStatus.Committed,
-      checkpoint: { version: 2, acceptedBytes: result.byteCount },
+      checkpoint: {
+        version: 2,
+        acceptedBytes: result.byteCount,
+        acceptedFindings: 1,
+      },
+    });
+    expect(mock.txCheckpoint.findUnique).toHaveBeenCalledWith({
+      where: { workspaceId_repositoryId_pullRequestNumber: scope },
+    });
+    expect(mock.txBatch.findUnique).toHaveBeenCalledWith({
+      where: {
+        checkpointId_workKey: {
+          checkpointId: "checkpoint_1",
+          workKey: result.workKey,
+        },
+      },
     });
     expect(mock.txCheckpoint.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -170,10 +226,12 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
           version: 1,
           state: "active",
           acceptedBytes: 0,
+          acceptedFindings: 0,
         }),
         data: expect.objectContaining({
           version: 2,
           acceptedBytes: result.byteCount,
+          acceptedFindings: 1,
         }),
       }),
     );
@@ -195,11 +253,11 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
     const checkpoint = root({
       version: 2,
       acceptedBytes: existing.byteCount,
+      acceptedFindings: 1,
     });
     const mock = prismaMock();
-    mock.txCheckpoint.findUnique.mockResolvedValue(
-      prismaRoot(checkpoint, [prismaBatch(existing)]),
-    );
+    mock.txCheckpoint.findUnique.mockResolvedValue(prismaRoot(checkpoint));
+    mock.txBatch.findUnique.mockResolvedValue(prismaBatch(existing));
     const repository = new PrismaReviewExecutionCheckpointRepository(
       mock.prisma as unknown as PrismaClient,
     );
@@ -243,6 +301,7 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
     const incomplete = root({
       version: 2,
       acceptedBytes: first.byteCount,
+      acceptedFindings: 1,
     });
     const mock = prismaMock();
     mock.txCheckpoint.findUnique.mockResolvedValueOnce(
@@ -272,6 +331,7 @@ describe("PrismaReviewExecutionCheckpointRepository", () => {
     const complete = root({
       version: 3,
       acceptedBytes: first.byteCount + second.byteCount,
+      acceptedFindings: 2,
     });
     mock.txCheckpoint.findUnique.mockResolvedValueOnce(
       prismaRoot(complete, [prismaBatch(first), prismaBatch(second)]),
@@ -445,6 +505,7 @@ function prismaMock() {
   const txBatch = {
     create: vi.fn(),
     deleteMany: vi.fn(),
+    findUnique: vi.fn(),
   };
   const topCheckpoint = {
     findUnique: vi.fn(),

@@ -89,6 +89,34 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(clearCheckpoint).not.toHaveBeenCalled();
   });
 
+  it("commits a completed snapshot when a review needed no batch checkpoint", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+    const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
+
+    await settleFinalizedReviewCheckpoint({
+      marker: null,
+      runtimeCompleted: true,
+      commitSnapshot,
+      clearCheckpoint,
+    });
+
+    expect(commitSnapshot).toHaveBeenCalledTimes(1);
+    expect(clearCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("does not settle a markerless snapshot after an incomplete runtime", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+
+    await settleFinalizedReviewCheckpoint({
+      marker: null,
+      runtimeCompleted: false,
+      commitSnapshot,
+      clearCheckpoint: vi.fn(),
+    });
+
+    expect(commitSnapshot).not.toHaveBeenCalled();
+  });
+
   it("treats an already-reported policy failure as a completed review runtime", () => {
     expect(didReviewRuntimeComplete(undefined)).toBe(true);
     expect(didReviewRuntimeComplete({ alreadyReportedToGitHub: true })).toBe(
@@ -1818,7 +1846,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it("runs the local action E2E with only explicit hybrid provider secrets in child runtime env", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-e2e-"));

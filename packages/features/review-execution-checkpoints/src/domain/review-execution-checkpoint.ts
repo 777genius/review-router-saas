@@ -157,6 +157,7 @@ export type ReviewExecutionCheckpointRoot = ReviewExecutionCheckpointScope & {
   readonly planHash: string;
   readonly plannedWorkKeys: readonly string[];
   readonly acceptedBytes: number;
+  readonly acceptedFindings: number;
   readonly sourceRunId: string;
   readonly sourceRunAttempt: string;
   readonly updatedAt: Date;
@@ -169,6 +170,7 @@ export type ReviewExecutionCheckpointCandidate = Omit<
   | "version"
   | "state"
   | "acceptedBytes"
+  | "acceptedFindings"
   | "updatedAt"
   | "expiresAt"
   | "finalizedAt"
@@ -209,6 +211,7 @@ export function prepareReviewExecutionCheckpointRoot(
     version: input.version,
     state: ReviewExecutionCheckpointState.Active,
     acceptedBytes: 0,
+    acceptedFindings: 0,
     updatedAt: input.now,
     expiresAt: new Date(input.now.getTime() + reviewExecutionCheckpointTtlMs),
   };
@@ -424,50 +427,8 @@ export function assertReviewExecutionCheckpointAggregate(
   aggregate: ReviewExecutionCheckpointAggregate,
 ): void {
   const { checkpoint, batchResults } = aggregate;
-  assertScope(checkpoint);
-  assertPositiveInteger(checkpoint.version, "version");
-  if (
-    !Object.values(ReviewExecutionCheckpointState).includes(checkpoint.state)
-  ) {
-    throw new Error("review_execution_checkpoint_state_invalid");
-  }
-  if (checkpoint.schemaVersion !== reviewExecutionCheckpointSchemaVersion) {
-    throw new Error("review_execution_checkpoint_schema_version_unsupported");
-  }
-  assertSha(checkpoint.baseSha, "base_sha");
-  assertSha(checkpoint.headSha, "head_sha");
-  assertSha256(checkpoint.compatibilityKey, "compatibility_key");
-  assertSha256(checkpoint.planHash, "plan_hash");
-  const plannedWorkKeys = normalizeStringArray(checkpoint.plannedWorkKeys, {
-    field: "planned_work_keys",
-    maxItems: reviewExecutionCheckpointMaxPlannedWorkKeys,
-    maxLength: 64,
-    unique: true,
-    itemValidator: assertSha256,
-  });
-  assertNonNegativeInteger(checkpoint.acceptedBytes, "accepted_bytes");
-  if (checkpoint.acceptedBytes > reviewExecutionCheckpointMaxAggregateBytes) {
-    throw new Error("review_execution_checkpoint_aggregate_payload_too_large");
-  }
-  assertIdentifier(checkpoint.sourceRunId, "source_run_id");
-  assertIdentifier(checkpoint.sourceRunAttempt, "source_run_attempt");
-  assertDate(checkpoint.updatedAt, "updated_at");
-  assertDate(checkpoint.expiresAt, "expires_at");
-  if (checkpoint.finalizedAt !== undefined) {
-    assertDate(checkpoint.finalizedAt, "finalized_at");
-  }
-  if (
-    checkpoint.state === ReviewExecutionCheckpointState.Active &&
-    checkpoint.finalizedAt !== undefined
-  ) {
-    throw new Error("review_execution_checkpoint_active_finalized_at_invalid");
-  }
-  if (
-    checkpoint.state === ReviewExecutionCheckpointState.Finalized &&
-    checkpoint.finalizedAt === undefined
-  ) {
-    throw new Error("review_execution_checkpoint_finalized_at_required");
-  }
+  assertReviewExecutionCheckpointRoot(checkpoint);
+  const plannedWorkKeys = checkpoint.plannedWorkKeys;
   if (batchResults.length > plannedWorkKeys.length) {
     throw new Error("review_execution_checkpoint_batch_results_invalid");
   }
@@ -490,14 +451,67 @@ export function assertReviewExecutionCheckpointAggregate(
   if (acceptedBytes !== checkpoint.acceptedBytes) {
     throw new Error("review_execution_checkpoint_accepted_bytes_invalid");
   }
-  if (findingCount > reviewExecutionCheckpointMaxFindings) {
-    throw new Error("review_execution_checkpoint_findings_limit_exceeded");
+  if (findingCount !== checkpoint.acceptedFindings) {
+    throw new Error("review_execution_checkpoint_accepted_findings_invalid");
   }
   if (
     checkpoint.state === ReviewExecutionCheckpointState.Finalized &&
     seen.size !== plannedWorkKeys.length
   ) {
     throw new Error("review_execution_checkpoint_finalized_incomplete");
+  }
+}
+
+export function assertReviewExecutionCheckpointRoot(
+  checkpoint: ReviewExecutionCheckpointRoot,
+): void {
+  assertScope(checkpoint);
+  assertPositiveInteger(checkpoint.version, "version");
+  if (
+    !Object.values(ReviewExecutionCheckpointState).includes(checkpoint.state)
+  ) {
+    throw new Error("review_execution_checkpoint_state_invalid");
+  }
+  if (checkpoint.schemaVersion !== reviewExecutionCheckpointSchemaVersion) {
+    throw new Error("review_execution_checkpoint_schema_version_unsupported");
+  }
+  assertSha(checkpoint.baseSha, "base_sha");
+  assertSha(checkpoint.headSha, "head_sha");
+  assertSha256(checkpoint.compatibilityKey, "compatibility_key");
+  assertSha256(checkpoint.planHash, "plan_hash");
+  normalizeStringArray(checkpoint.plannedWorkKeys, {
+    field: "planned_work_keys",
+    maxItems: reviewExecutionCheckpointMaxPlannedWorkKeys,
+    maxLength: 64,
+    unique: true,
+    itemValidator: assertSha256,
+  });
+  assertNonNegativeInteger(checkpoint.acceptedBytes, "accepted_bytes");
+  if (checkpoint.acceptedBytes > reviewExecutionCheckpointMaxAggregateBytes) {
+    throw new Error("review_execution_checkpoint_aggregate_payload_too_large");
+  }
+  assertNonNegativeInteger(checkpoint.acceptedFindings, "accepted_findings");
+  if (checkpoint.acceptedFindings > reviewExecutionCheckpointMaxFindings) {
+    throw new Error("review_execution_checkpoint_findings_limit_exceeded");
+  }
+  assertIdentifier(checkpoint.sourceRunId, "source_run_id");
+  assertIdentifier(checkpoint.sourceRunAttempt, "source_run_attempt");
+  assertDate(checkpoint.updatedAt, "updated_at");
+  assertDate(checkpoint.expiresAt, "expires_at");
+  if (checkpoint.finalizedAt !== undefined) {
+    assertDate(checkpoint.finalizedAt, "finalized_at");
+  }
+  if (
+    checkpoint.state === ReviewExecutionCheckpointState.Active &&
+    checkpoint.finalizedAt !== undefined
+  ) {
+    throw new Error("review_execution_checkpoint_active_finalized_at_invalid");
+  }
+  if (
+    checkpoint.state === ReviewExecutionCheckpointState.Finalized &&
+    checkpoint.finalizedAt === undefined
+  ) {
+    throw new Error("review_execution_checkpoint_finalized_at_required");
   }
 }
 

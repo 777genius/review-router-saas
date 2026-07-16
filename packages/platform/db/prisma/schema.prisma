@@ -486,6 +486,7 @@ model ReviewExecutionCheckpoint {
   planHash          String
   plannedWorkKeys   String[]
   acceptedBytes     Int                            @default(0)
+  acceptedFindings  Int                            @default(0)
   sourceRunId       String
   sourceRunAttempt  String
   updatedAt         DateTime                       @default(now()) @updatedAt

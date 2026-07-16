@@ -1430,7 +1430,11 @@ export async function settleFinalizedReviewCheckpoint(input: {
     marker: z.infer<typeof reviewCheckpointFinalizationMarkerSchema>,
   ) => Promise<void>;
 }): Promise<void> {
-  if (!input.marker || !input.runtimeCompleted) return;
+  if (!input.runtimeCompleted) return;
+  if (!input.marker) {
+    await input.commitSnapshot();
+    return;
+  }
   if (input.marker.snapshotAdvancementRequired === false) {
     await input.clearCheckpoint(input.marker);
     return;
@@ -1603,10 +1607,11 @@ async function tryReadFinalizedReviewCheckpointMarker(input: {
       throw new Error("review_checkpoint_marker_context_mismatch");
     }
     return parsedMarker.data;
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     notice(
       input.io,
-      "ReviewRouter did not advance the incremental snapshot because batch finalization was not confirmed.",
+      "ReviewRouter ignored an invalid batch finalization marker and will only settle a validated snapshot candidate.",
     );
     return null;
   }
