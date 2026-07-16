@@ -307,6 +307,7 @@ const reviewCheckpointFinalizationMarkerSchema = z
     headSha: z.string().regex(/^[a-f0-9]{40}$/i),
     planHash: z.string().regex(/^[a-f0-9]{64}$/i),
     expectedVersion: z.number().int().positive(),
+    snapshotAdvancementRequired: z.boolean().optional(),
   })
   .strict();
 
@@ -632,25 +633,27 @@ export async function runCodexRotatingGitHubAction(
               event,
               io,
             });
-          if (reviewSnapshotOutputPath && finalizedCheckpointMarker) {
-            const snapshotCommitted = await tryCommitReviewSnapshot({
-              fetchImpl,
-              inputs,
-              leaseId: prelease.leaseId,
-              event,
-              candidatePath: reviewSnapshotOutputPath,
-              io,
-            });
-            if (snapshotCommitted) {
-              await tryClearFinalizedReviewCheckpoint({
+          await settleFinalizedReviewCheckpoint({
+            marker: finalizedCheckpointMarker,
+            runtimeCompleted: didReviewRuntimeComplete(reviewRuntimeFailure),
+            commitSnapshot: () =>
+              tryCommitReviewSnapshot({
                 fetchImpl,
                 inputs,
                 leaseId: prelease.leaseId,
-                marker: finalizedCheckpointMarker,
+                event,
+                candidatePath: reviewSnapshotOutputPath,
                 io,
-              });
-            }
-          }
+              }),
+            clearCheckpoint: (marker) =>
+              tryClearFinalizedReviewCheckpoint({
+                fetchImpl,
+                inputs,
+                leaseId: prelease.leaseId,
+                marker,
+                io,
+              }),
+          });
           try {
             await deleteFullRuntimeProgressComments({
               fetchImpl,
@@ -1415,6 +1418,30 @@ async function tryRestoreReviewSnapshot(input: {
     );
     return null;
   }
+}
+
+export async function settleFinalizedReviewCheckpoint(input: {
+  readonly marker: z.infer<
+    typeof reviewCheckpointFinalizationMarkerSchema
+  > | null;
+  readonly runtimeCompleted: boolean;
+  readonly commitSnapshot: () => Promise<boolean>;
+  readonly clearCheckpoint: (
+    marker: z.infer<typeof reviewCheckpointFinalizationMarkerSchema>,
+  ) => Promise<void>;
+}): Promise<void> {
+  if (!input.marker || !input.runtimeCompleted) return;
+  if (input.marker.snapshotAdvancementRequired === false) {
+    await input.clearCheckpoint(input.marker);
+    return;
+  }
+  if (await input.commitSnapshot()) {
+    await input.clearCheckpoint(input.marker);
+  }
+}
+
+export function didReviewRuntimeComplete(error: unknown): boolean {
+  return error === undefined || shouldSuppressTopLevelActionError(error);
 }
 
 async function tryCommitReviewSnapshot(input: {

@@ -18,6 +18,7 @@ import {
   buildFullReviewRuntimeEnv,
   deleteFullRuntimeProgressComments,
   deleteStaleCodexRotatingSummaryComments,
+  didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure,
   formatTopLevelActionErrorMessage,
   postPullRequestComment,
@@ -28,6 +29,7 @@ import {
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
+  settleFinalizedReviewCheckpoint,
   shouldAutoRunCodexRotatingAction,
   shouldUseSubscriptionRuntimeCodex,
   shouldSuppressTopLevelActionError,
@@ -53,6 +55,46 @@ describe("Codex rotating GitHub Action runtime", () => {
     ).toBe(
       "Review failed [required_provider_unhealthy]: A required review provider was unavailable or unhealthy.",
     );
+  });
+
+  it("clears finalized checkpoints directly when no snapshot advancement is required", async () => {
+    const commitSnapshot = vi.fn().mockResolvedValue(true);
+    const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
+    const marker = {
+      protocolVersion: 1 as const,
+      pullRequestNumber: 118,
+      headSha: "0".repeat(40),
+      planHash: "1".repeat(64),
+      expectedVersion: 9,
+      snapshotAdvancementRequired: false,
+    };
+
+    await settleFinalizedReviewCheckpoint({
+      marker,
+      runtimeCompleted: true,
+      commitSnapshot,
+      clearCheckpoint,
+    });
+
+    expect(commitSnapshot).not.toHaveBeenCalled();
+    expect(clearCheckpoint).toHaveBeenCalledWith(marker);
+
+    clearCheckpoint.mockClear();
+    await settleFinalizedReviewCheckpoint({
+      marker,
+      runtimeCompleted: false,
+      commitSnapshot,
+      clearCheckpoint,
+    });
+    expect(clearCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("treats an already-reported policy failure as a completed review runtime", () => {
+    expect(didReviewRuntimeComplete(undefined)).toBe(true);
+    expect(didReviewRuntimeComplete({ alreadyReportedToGitHub: true })).toBe(
+      true,
+    );
+    expect(didReviewRuntimeComplete(new Error("process crashed"))).toBe(false);
   });
 
   it("declares a real node action entrypoint without pre or post hooks", () => {
@@ -2445,7 +2487,14 @@ describe("Codex rotating GitHub Action runtime", () => {
         `  compatibilityKey: ${JSON.stringify("c".repeat(64))},`,
         "  payload: { reviewSummary: 'Blocking review complete', findings: [] },",
         "}));",
-        "writeFileSync(process.env.REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH, '{malformed');",
+        "writeFileSync(process.env.REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH, JSON.stringify({",
+        "  protocolVersion: 1,",
+        "  pullRequestNumber: Number(process.env.PR_NUMBER),",
+        "  headSha: process.env.REVIEWROUTER_HEAD_SHA,",
+        `  planHash: ${JSON.stringify("d".repeat(64))},`,
+        "  expectedVersion: 9,",
+        "  snapshotAdvancementRequired: true,",
+        "}));",
         "process.stderr.write('::error::ReviewRouter found 2 major+ finding(s). Review comments were posted before failing this check.\\n');",
         "process.exit(1);",
         "",
@@ -2482,6 +2531,13 @@ describe("Codex rotating GitHub Action runtime", () => {
           version: 1,
           reviewedHeadSha: "0123456789abcdef0123456789abcdef01234567",
         });
+      }
+      if (
+        href.endsWith(
+          "/api/action/v1/codex-oauth/review-execution-checkpoint/clear",
+        )
+      ) {
+        return jsonResponse({ protocolVersion: 1, status: "cleared" });
       }
       if (href.startsWith("https://oidc.actions.test/token")) {
         return jsonResponse({ value: "oidc.jwt.value" });
@@ -2583,7 +2639,12 @@ describe("Codex rotating GitHub Action runtime", () => {
       );
       expect(
         invokedUrls.some((url) => url.endsWith("/review-snapshot/commit")),
-      ).toBe(false);
+      ).toBe(true);
+      expect(
+        invokedUrls.some((url) =>
+          url.endsWith("/review-execution-checkpoint/clear"),
+        ),
+      ).toBe(true);
 
       const childStdout = stdoutWrite.mock.calls
         .map(([chunk]) => String(chunk))

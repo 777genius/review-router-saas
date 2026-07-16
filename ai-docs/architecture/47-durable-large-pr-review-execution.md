@@ -54,13 +54,16 @@ Replanning starts or replaces an active checkpoint through CAS; it never
 interprets old results under a new plan.
 
 Every mutation carries `expectedVersion`. Start/replace, each accepted batch, and
-finalization advance the monotonic version atomically. A batch is resumable only
-after the server acknowledges it. Repeating the same work key and payload hash is
-idempotent; a different payload for that key, stale version, changed head/plan,
-unplanned work, expiry, or finalized state is a conflict. Head, plan, version,
-state, accepted bytes, and expiry are repeated in the atomic persistence predicate,
-so a preflight read cannot authorize a stale write. Clients restore and reconcile
-instead of overwriting concurrent progress.
+finalization advance the monotonic version atomically by exactly one. The client
+rejects a state-changing acknowledgement unless it returns
+`expectedVersion + 1`; only an idempotent acknowledgement may return a later
+non-regressing version. A batch is resumable only after the server acknowledges
+it. Repeating the same work key and payload hash is idempotent; a different payload
+for that key, stale version, changed head/plan, unplanned work, expiry, or finalized
+state is a conflict. Head, plan, version, state, accepted bytes, and expiry are
+repeated in the atomic persistence predicate, so a preflight read cannot authorize
+a stale write. Clients restore and reconcile instead of overwriting concurrent
+progress.
 
 ## Execution invariants
 
@@ -87,10 +90,11 @@ instead of overwriting concurrent progress.
 6. Finalization is allowed only when every planned work key is server-accepted.
    This freezes the accepted execution before snapshot handoff but does not advance
    the completed snapshot. The runtime writes a strict finalization marker only
-   after the server acknowledges finalization. The parent validates that marker,
-   then verifies the current head and commits
-   the completed snapshot; only a successful or idempotent snapshot commit permits
-   CAS-clearing the finalized checkpoint. A snapshot failure retains the finalized
+   after the server acknowledges finalization. The marker states whether snapshot
+   advancement is required. After a successful runtime, the parent validates the
+   marker and either verifies the current head and commits the completed snapshot
+   before CAS-clearing, or clears directly when snapshots are disabled or coverage
+   is incomplete. A runtime or required snapshot failure retains the finalized
    checkpoint for a safe retry.
 
 ## Incomplete GitHub input
@@ -132,6 +136,11 @@ payload, and provider-reported `totalTokens` is retained independently because
 some providers include token categories not represented by prompt/completion
 counters.
 
+Credentialed checkpoint requests require HTTPS, except for explicit loopback
+development endpoints. Redirects are rejected instead of followed so a control
+plane response cannot forward lease credentials to another origin or downgrade
+them to plaintext HTTP.
+
 ## Observability
 
 Structured telemetry must make correctness auditable without content leakage:
@@ -169,8 +178,9 @@ Release verification uses only a disposable hosted repository. It must cover a
 multi-batch run interrupted after at least one server acknowledgement, an identical
 rerun that skips only acknowledged work, honest partial publication with no
 snapshot advancement, complete finalization followed by snapshot commit and clear,
-snapshot-commit failure retaining the finalized checkpoint, and deadline retry
-suppression. A disposable 3,000-plus-file fixture verifies the GitHub ceiling and
+direct clear when snapshot advancement is not required, snapshot-commit failure
+retaining the finalized checkpoint, and deadline retry suppression. A disposable
+3,000-plus-file fixture verifies the GitHub ceiling and
 partial-coverage claim; deterministic adapter tests cover page/load failures.
 
 Evidence records run IDs, head/base SHAs, safe plan/work hashes, checkpoint

@@ -158,6 +158,7 @@ After all planned work is server-acknowledged, checkpoint finalization still doe
 not advance this aggregate. The parent first validates the runtime's strict
 server-finalization marker, then verifies the current head and commits the completed
 snapshot. A missing, malformed, or mismatched marker prevents snapshot advancement.
-Only a successful or idempotent snapshot commit permits
-the finalized checkpoint to be cleared; otherwise it remains available for a safe
-retry.
+The marker explicitly records whether snapshot advancement is required. When it is,
+only a successful or idempotent snapshot commit permits the finalized checkpoint to
+be cleared. When it is not, a successful runtime clears the checkpoint directly.
+Runtime or snapshot failure retains the checkpoint for a safe retry.

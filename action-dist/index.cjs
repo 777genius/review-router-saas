@@ -35,6 +35,7 @@ __export(github_action_exports, {
   buildFullReviewRuntimeEnv: () => buildFullReviewRuntimeEnv,
   deleteFullRuntimeProgressComments: () => deleteFullRuntimeProgressComments,
   deleteStaleCodexRotatingSummaryComments: () => deleteStaleCodexRotatingSummaryComments,
+  didReviewRuntimeComplete: () => didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure: () => extractReviewRouterRuntimeFailure,
   formatTopLevelActionErrorMessage: () => formatTopLevelActionErrorMessage,
   postPullRequestComment: () => postPullRequestComment,
@@ -45,6 +46,7 @@ __export(github_action_exports, {
   routeCodexLocalProviderRequest: () => routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction: () => runCodexRotatingGitHubAction,
   sanitizeReviewComment: () => sanitizeReviewComment,
+  settleFinalizedReviewCheckpoint: () => settleFinalizedReviewCheckpoint,
   shouldAutoRunCodexRotatingAction: () => shouldAutoRunCodexRotatingAction,
   shouldSuppressTopLevelActionError: () => shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex: () => shouldUseSubscriptionRuntimeCodex,
@@ -20897,7 +20899,8 @@ var reviewCheckpointFinalizationMarkerSchema = external_exports.object({
   pullRequestNumber: external_exports.number().int().positive(),
   headSha: external_exports.string().regex(/^[a-f0-9]{40}$/i),
   planHash: external_exports.string().regex(/^[a-f0-9]{64}$/i),
-  expectedVersion: external_exports.number().int().positive()
+  expectedVersion: external_exports.number().int().positive(),
+  snapshotAdvancementRequired: external_exports.boolean().optional()
 }).strict();
 var reviewCheckpointClearResponseSchema = external_exports.discriminatedUnion("status", [
   external_exports.object({
@@ -21133,25 +21136,25 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
             event,
             io
           });
-          if (reviewSnapshotOutputPath && finalizedCheckpointMarker) {
-            const snapshotCommitted = await tryCommitReviewSnapshot({
+          await settleFinalizedReviewCheckpoint({
+            marker: finalizedCheckpointMarker,
+            runtimeCompleted: didReviewRuntimeComplete(reviewRuntimeFailure),
+            commitSnapshot: () => tryCommitReviewSnapshot({
               fetchImpl,
               inputs,
               leaseId: prelease.leaseId,
               event,
               candidatePath: reviewSnapshotOutputPath,
               io
-            });
-            if (snapshotCommitted) {
-              await tryClearFinalizedReviewCheckpoint({
-                fetchImpl,
-                inputs,
-                leaseId: prelease.leaseId,
-                marker: finalizedCheckpointMarker,
-                io
-              });
-            }
-          }
+            }),
+            clearCheckpoint: (marker) => tryClearFinalizedReviewCheckpoint({
+              fetchImpl,
+              inputs,
+              leaseId: prelease.leaseId,
+              marker,
+              io
+            })
+          });
           try {
             await deleteFullRuntimeProgressComments({
               fetchImpl,
@@ -21753,6 +21756,19 @@ async function tryRestoreReviewSnapshot(input) {
     );
     return null;
   }
+}
+async function settleFinalizedReviewCheckpoint(input) {
+  if (!input.marker || !input.runtimeCompleted) return;
+  if (input.marker.snapshotAdvancementRequired === false) {
+    await input.clearCheckpoint(input.marker);
+    return;
+  }
+  if (await input.commitSnapshot()) {
+    await input.clearCheckpoint(input.marker);
+  }
+}
+function didReviewRuntimeComplete(error51) {
+  return error51 === void 0 || shouldSuppressTopLevelActionError(error51);
 }
 async function tryCommitReviewSnapshot(input) {
   let candidateStats;
@@ -23603,6 +23619,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   buildFullReviewRuntimeEnv,
   deleteFullRuntimeProgressComments,
   deleteStaleCodexRotatingSummaryComments,
+  didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure,
   formatTopLevelActionErrorMessage,
   postPullRequestComment,
@@ -23613,6 +23630,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   routeCodexLocalProviderRequest,
   runCodexRotatingGitHubAction,
   sanitizeReviewComment,
+  settleFinalizedReviewCheckpoint,
   shouldAutoRunCodexRotatingAction,
   shouldSuppressTopLevelActionError,
   shouldUseSubscriptionRuntimeCodex,
