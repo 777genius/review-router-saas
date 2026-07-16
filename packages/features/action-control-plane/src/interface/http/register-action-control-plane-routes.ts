@@ -91,6 +91,10 @@ import {
 } from "../../application/use-cases/request-conflict-review-posting-session.js";
 import type { GitHubAppCommentTokenIssuerPort } from "../../application/ports/github-app-comment-token-issuer-port.js";
 import type { GitHubReviewThreadLifecycleResolverPort } from "../../application/ports/github-review-thread-lifecycle-resolver-port.js";
+import {
+  registerCodexRotatingReviewExecutionCheckpointRoutes,
+  type RegisterCodexRotatingReviewExecutionCheckpointRoutesDependencies,
+} from "./register-codex-rotating-review-execution-checkpoint-routes.js";
 
 export type RegisterActionControlPlaneRoutesDependencies =
   ExchangeGitHubOidcTokenDependencies &
@@ -104,6 +108,7 @@ export type RegisterActionControlPlaneRoutesDependencies =
     Partial<IssueCodexRotatingReviewSnapshotHeadTokenDependencies> &
     Partial<RestoreCodexRotatingReviewSnapshotDependencies> &
     Partial<CommitCodexRotatingReviewSnapshotDependencies> &
+    RegisterCodexRotatingReviewExecutionCheckpointRoutesDependencies &
     GetActionRuntimeConfigDependencies &
     RequestConflictReviewPostingSessionDependencies &
     PostConflictReviewSummaryDependencies &
@@ -955,6 +960,11 @@ export async function registerActionControlPlaneRoutes(
     { bodyLimit: reviewSnapshotMaxPayloadBytes + 16_384 },
     createCodexRotatingReviewSnapshotCommitHandler("v1"),
   );
+  registerCodexRotatingReviewExecutionCheckpointRoutes(app, dependencies, {
+    sendError: (reply, error) => sendActionError(reply, error, "v1"),
+    sendErrorCode: (reply, code, statusCode) =>
+      sendActionErrorCode(reply, code, statusCode, "v1"),
+  });
   app.get("/api/action/config", createConfigHandler("legacy"));
   app.get("/api/action/v1/config", createConfigHandler("v1"));
   app.post("/api/action/comment-token", createCommentTokenHandler("legacy"));
@@ -1059,7 +1069,8 @@ function statusCodeForActionError(message: string): number {
     message.includes("conflict_review_runtime_disabled") ||
     message.includes("conflict_review_posting_session_unavailable") ||
     message.includes("conflict_review_posting_token_unavailable") ||
-    message.includes("codex_rotating_oauth_unavailable")
+    message.includes("codex_rotating_oauth_unavailable") ||
+    message.includes("review_execution_checkpoint_unavailable")
   ) {
     return 503;
   }
@@ -1196,6 +1207,9 @@ function safeActionErrorCode(message: string): string {
   if (message.includes("codex_rotating_oauth_unavailable")) {
     return "codex_rotating_oauth_unavailable";
   }
+  if (message.includes("review_execution_checkpoint_unavailable")) {
+    return "review_execution_checkpoint_unavailable";
+  }
   if (message.includes("codex_rotating_lease_not_active")) {
     return "codex_rotating_lease_not_active";
   }
@@ -1263,6 +1277,8 @@ function safeActionErrorMessage(code: string): string {
       return "ReviewRouter App comment identity is temporarily unavailable.";
     case "codex_rotating_oauth_unavailable":
       return "Codex OAuth rotating writeback is temporarily unavailable.";
+    case "review_execution_checkpoint_unavailable":
+      return "Review execution checkpoints are temporarily unavailable.";
     case "codex_rotating_lease_not_active":
       return "Codex OAuth rotating lease is not active for this request.";
     case "codex_rotating_lease_conflict":
@@ -1331,6 +1347,7 @@ function isRetryableActionError(code: string): boolean {
     code === "action_control_plane_disabled" ||
     code === "comment_token_unavailable" ||
     code === "codex_rotating_oauth_unavailable" ||
+    code === "review_execution_checkpoint_unavailable" ||
     code === "codex_rotating_lease_conflict" ||
     code === "conflict_review_runtime_disabled"
   );

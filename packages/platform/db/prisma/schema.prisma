@@ -13,25 +13,26 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  members                  WorkspaceMember[]
-  installations            GitHubInstallation[]
-  gitLabInstallations      GitLabInstallation[]
-  repositories             RepositoryConnection[]
-  provisioning             WorkflowProvisioning[]
-  orgRulesets              OrgRulesetProvisioning[]
-  reviewConfigs            ReviewConfiguration[]
-  providerSetup            ProviderSetupState[]
-  actionHealth             ActionRunHealthReport[]
-  conflictReviewAttempts   ConflictReviewAttempt[]
-  auditEvents              AuditEvent[]
-  entitlement              WorkspaceEntitlement?
-  memoryItems              MemoryItem[]
-  memorySuggestions        MemorySuggestion[]
-  memoryUsageEvents        MemoryUsageEvent[]
-  codexOAuthProviders      CodexOAuthProviderInstance[]
-  codexOAuthLeases         CodexOAuthLease[]
-  codexOAuthSetupManifests CodexOAuthSetupManifest[]
-  reviewSnapshots          ReviewSnapshot[]
+  members                    WorkspaceMember[]
+  installations              GitHubInstallation[]
+  gitLabInstallations        GitLabInstallation[]
+  repositories               RepositoryConnection[]
+  provisioning               WorkflowProvisioning[]
+  orgRulesets                OrgRulesetProvisioning[]
+  reviewConfigs              ReviewConfiguration[]
+  providerSetup              ProviderSetupState[]
+  actionHealth               ActionRunHealthReport[]
+  conflictReviewAttempts     ConflictReviewAttempt[]
+  auditEvents                AuditEvent[]
+  entitlement                WorkspaceEntitlement?
+  memoryItems                MemoryItem[]
+  memorySuggestions          MemorySuggestion[]
+  memoryUsageEvents          MemoryUsageEvent[]
+  codexOAuthProviders        CodexOAuthProviderInstance[]
+  codexOAuthLeases           CodexOAuthLease[]
+  codexOAuthSetupManifests   CodexOAuthSetupManifest[]
+  reviewSnapshots            ReviewSnapshot[]
+  reviewExecutionCheckpoints ReviewExecutionCheckpoint[]
 }
 
 model User {
@@ -175,23 +176,24 @@ model RepositoryConnection {
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
 
-  workspace                Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  installation             GitHubInstallation?          @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  gitlabInstallation       GitLabInstallation?          @relation(fields: [gitlabInstallationId], references: [id], onDelete: Cascade)
-  provisioning             WorkflowProvisioning[]
-  reviewConfigs            ReviewConfiguration[]
-  providerSetup            ProviderSetupState[]
-  actionHealth             ActionRunHealthReport[]
-  conflictReviewAttempts   ConflictReviewAttempt[]
-  rulesetSources           OrgRulesetProvisioning[]     @relation("OrgRulesetSourceRepository")
-  permissionCache          RepositoryPermissionCache[]
-  memoryItems              MemoryItem[]
-  memorySuggestions        MemorySuggestion[]
-  memoryUsageEvents        MemoryUsageEvent[]
-  codexOAuthProviders      CodexOAuthProviderInstance[]
-  codexOAuthLeases         CodexOAuthLease[]
-  codexOAuthSetupManifests CodexOAuthSetupManifest[]
-  reviewSnapshots          ReviewSnapshot[]
+  workspace                  Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  installation               GitHubInstallation?          @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  gitlabInstallation         GitLabInstallation?          @relation(fields: [gitlabInstallationId], references: [id], onDelete: Cascade)
+  provisioning               WorkflowProvisioning[]
+  reviewConfigs              ReviewConfiguration[]
+  providerSetup              ProviderSetupState[]
+  actionHealth               ActionRunHealthReport[]
+  conflictReviewAttempts     ConflictReviewAttempt[]
+  rulesetSources             OrgRulesetProvisioning[]     @relation("OrgRulesetSourceRepository")
+  permissionCache            RepositoryPermissionCache[]
+  memoryItems                MemoryItem[]
+  memorySuggestions          MemorySuggestion[]
+  memoryUsageEvents          MemoryUsageEvent[]
+  codexOAuthProviders        CodexOAuthProviderInstance[]
+  codexOAuthLeases           CodexOAuthLease[]
+  codexOAuthSetupManifests   CodexOAuthSetupManifest[]
+  reviewSnapshots            ReviewSnapshot[]
+  reviewExecutionCheckpoints ReviewExecutionCheckpoint[]
 
   @@unique([provider, externalRepositoryId, sourceBaseUrl])
   @@unique([workspaceId, provider, fullName, sourceBaseUrl])
@@ -362,6 +364,7 @@ model CodexOAuthLease {
   repositoryId            String
   githubRunId             String
   githubRunAttempt        String
+  pullRequestNumber       Int?
   leaseKey                String    @unique
   status                  String    @default("preleased")
   restoredGenerationHash  String?
@@ -467,6 +470,56 @@ model ReviewSnapshot {
   @@index([expiresAt, id])
   @@index([workspaceId, expiresAt])
   @@index([repositoryId, expiresAt])
+}
+
+model ReviewExecutionCheckpoint {
+  id                String                         @id @default(cuid())
+  workspaceId       String
+  repositoryId      String
+  pullRequestNumber Int
+  version           Int                            @default(1)
+  state             ReviewExecutionCheckpointState @default(active)
+  schemaVersion     Int                            @default(1)
+  baseSha           String
+  headSha           String
+  compatibilityKey  String
+  planHash          String
+  plannedWorkKeys   String[]
+  acceptedBytes     Int                            @default(0)
+  sourceRunId       String
+  sourceRunAttempt  String
+  updatedAt         DateTime                       @default(now()) @updatedAt
+  expiresAt         DateTime
+  finalizedAt       DateTime?
+  createdAt         DateTime                       @default(now())
+
+  workspace    Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository   RepositoryConnection         @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  batchResults ReviewExecutionBatchResult[]
+
+  @@unique([workspaceId, repositoryId, pullRequestNumber])
+  @@index([expiresAt, id])
+  @@index([workspaceId, expiresAt])
+  @@index([repositoryId, expiresAt])
+}
+
+model ReviewExecutionBatchResult {
+  id               String   @id @default(cuid())
+  checkpointId     String
+  workKey          String
+  batchId          String
+  batchIndex       Int
+  payload          Json
+  payloadHash      String
+  byteCount        Int
+  sourceRunId      String
+  sourceRunAttempt String
+  completedAt      DateTime
+
+  checkpoint ReviewExecutionCheckpoint @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+
+  @@unique([checkpointId, workKey])
+  @@index([checkpointId, batchIndex])
 }
 
 model ConflictReviewAttempt {
@@ -967,4 +1020,9 @@ enum ConflictReviewPostingIntentStatus {
   completed
   failed
   ambiguous
+}
+
+enum ReviewExecutionCheckpointState {
+  active
+  finalized
 }

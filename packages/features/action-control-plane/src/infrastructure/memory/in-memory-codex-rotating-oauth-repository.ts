@@ -7,6 +7,7 @@ import {
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
 import {
+  codexRotatingReviewExecutionCheckpointAccessTtlMs,
   codexRotatingReviewSnapshotAccessTtlMs,
   isCodexRotatingCompletedLeasePostingWindowActive,
 } from "../../domain/codex-rotating-oauth-posting-window.js";
@@ -15,6 +16,7 @@ import type {
   CodexRotatingPreleaseRecord,
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
 import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
+import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
 
 type ProviderRecord = {
   readonly binding: CodexRotatingProviderBinding;
@@ -39,7 +41,11 @@ type CompletedLeaseContext =
   | {
       readonly status: "ready";
       readonly repository: ActionRepositoryContext;
-      readonly source: { readonly runId: string; readonly runAttempt: string };
+      readonly source: {
+        readonly runId: string;
+        readonly runAttempt: string;
+        readonly pullRequestNumber?: number | undefined;
+      };
     }
   | {
       readonly status: "lease_not_completed" | "lease_not_active";
@@ -48,7 +54,8 @@ type CompletedLeaseContext =
 export class InMemoryCodexRotatingOAuthRepository
   implements
     CodexRotatingOAuthRepositoryPort,
-    CodexRotatingReviewSnapshotAccessPort
+    CodexRotatingReviewSnapshotAccessPort,
+    CodexRotatingReviewExecutionCheckpointAccessPort
 {
   private readonly leases = new InMemoryCodexRotatingLeaseStore();
   private readonly providers = new Map<string, ProviderRecord>();
@@ -61,6 +68,7 @@ export class InMemoryCodexRotatingOAuthRepository
       readonly repository: ActionRepositoryContext;
       readonly runId: string;
       readonly runAttempt: string;
+      readonly pullRequestNumber?: number | undefined;
     }
   >();
 
@@ -114,6 +122,7 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly providerInstanceId: string;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
+    readonly pullRequestNumber?: number | undefined;
     readonly now: Date;
   }): Promise<CodexRotatingPreleaseRecord> {
     const provider = this.providers.get(input.providerInstanceId);
@@ -138,6 +147,9 @@ export class InMemoryCodexRotatingOAuthRepository
         repository: input.repository,
         runId: input.githubRunId,
         runAttempt: input.githubRunAttempt,
+        ...(input.pullRequestNumber
+          ? { pullRequestNumber: input.pullRequestNumber }
+          : {}),
       });
     }
     if (provider && lease.status !== "conflict") {
@@ -365,13 +377,19 @@ export class InMemoryCodexRotatingOAuthRepository
   async authorizeReviewSnapshotAccess(input: {
     readonly leaseId: string;
     readonly providerInstanceId: string;
+    readonly pullRequestNumber: number;
     readonly now: Date;
   }) {
     const context = this.findCompletedLeaseContext({
       ...input,
       completedLeaseTtlMs: codexRotatingReviewSnapshotAccessTtlMs,
     });
-    if (context.status !== "ready") return context;
+    if (
+      context.status !== "ready" ||
+      context.source.pullRequestNumber !== input.pullRequestNumber
+    ) {
+      return { status: "lease_not_active" as const };
+    }
     return {
       status: "ready" as const,
       scope: {
@@ -379,6 +397,35 @@ export class InMemoryCodexRotatingOAuthRepository
         repositoryId: context.repository.repositoryId,
         sourceRunId: context.source.runId,
         sourceRunAttempt: context.source.runAttempt,
+        pullRequestNumber: context.source.pullRequestNumber,
+      },
+    };
+  }
+
+  async authorizeReviewExecutionCheckpointAccess(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly pullRequestNumber: number;
+    readonly now: Date;
+  }) {
+    const context = this.findCompletedLeaseContext({
+      ...input,
+      completedLeaseTtlMs: codexRotatingReviewExecutionCheckpointAccessTtlMs,
+    });
+    if (
+      context.status !== "ready" ||
+      context.source.pullRequestNumber !== input.pullRequestNumber
+    ) {
+      return { status: "lease_not_active" as const };
+    }
+    return {
+      status: "ready" as const,
+      scope: {
+        workspaceId: context.repository.workspaceId,
+        repositoryId: context.repository.repositoryId,
+        sourceRunId: context.source.runId,
+        sourceRunAttempt: context.source.runAttempt,
+        pullRequestNumber: context.source.pullRequestNumber,
       },
     };
   }

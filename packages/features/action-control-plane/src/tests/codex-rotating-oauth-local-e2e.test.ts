@@ -869,6 +869,7 @@ function githubOidcClaims(input: {
     repository_id: repository.githubRepositoryId,
     repository_visibility: "private",
     event_name: "pull_request",
+    ref: "refs/pull/240/merge",
     run_id: input.runId,
     run_attempt: "1",
     workflow_ref:

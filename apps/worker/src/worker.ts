@@ -38,6 +38,10 @@ import {
   pruneExpiredReviewSnapshots,
 } from "@reviewrouter/features-review-snapshots";
 import {
+  PrismaReviewExecutionCheckpointRepository,
+  pruneExpiredReviewExecutionCheckpoints,
+} from "@reviewrouter/features-review-execution-checkpoints";
+import {
   OctokitGitHubRepositorySource,
   PrismaRepositoryConnectionRepository,
 } from "@reviewrouter/features-repositories";
@@ -93,6 +97,8 @@ async function main(): Promise<void> {
       clock,
     );
     const pruneReviewSnapshots = createReviewSnapshotMaintenance(prisma, clock);
+    const pruneReviewExecutionCheckpoints =
+      createReviewExecutionCheckpointMaintenance(prisma, clock);
     const expirePendingMemorySuggestions =
       createMemorySuggestionExpiryMaintenanceRunner(prisma, clock);
     const expireActiveMemoryItems = createMemoryItemExpiryMaintenanceRunner(
@@ -122,6 +128,7 @@ async function main(): Promise<void> {
       await pruneRateLimits();
       await pruneActionOidcReplayNonces();
       await pruneReviewSnapshots();
+      await pruneReviewExecutionCheckpoints();
       await expirePendingMemorySuggestions();
       await expireActiveMemoryItems();
       await pruneTerminalMemoryItems();
@@ -369,6 +376,46 @@ function createReviewSnapshotMaintenance(
       logger.warn("ReviewRouter review snapshot maintenance failed", {
         safeErrorSummary: safeWorkerErrorSummary(error),
       });
+    }
+  };
+}
+
+function createReviewExecutionCheckpointMaintenance(
+  prisma: ReturnType<typeof createPrismaClient>,
+  clock: SystemClock,
+): () => Promise<void> {
+  const checkpoints = new PrismaReviewExecutionCheckpointRepository(prisma);
+  const limit = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_REVIEW_EXECUTION_CHECKPOINT_PRUNE_BATCH_SIZE",
+    500,
+  );
+  const intervalMs = readPositiveIntegerEnv(
+    "REVIEW_ROUTER_REVIEW_EXECUTION_CHECKPOINT_PRUNE_INTERVAL_MS",
+    5 * 60 * 1000,
+  );
+  let lastAttemptAtMs = 0;
+
+  return async () => {
+    const now = clock.now();
+    if (now.getTime() - lastAttemptAtMs < intervalMs) return;
+    lastAttemptAtMs = now.getTime();
+
+    try {
+      const result = await pruneExpiredReviewExecutionCheckpoints(
+        { expiredBefore: now, limit },
+        { checkpoints },
+      );
+      if (result.deleted > 0) {
+        logger.info(
+          "ReviewRouter pruned expired review execution checkpoints",
+          result,
+        );
+      }
+    } catch (error: unknown) {
+      logger.warn(
+        "ReviewRouter review execution checkpoint maintenance failed",
+        { safeErrorSummary: safeWorkerErrorSummary(error) },
+      );
     }
   };
 }

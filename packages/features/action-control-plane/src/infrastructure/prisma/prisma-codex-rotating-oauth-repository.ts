@@ -9,6 +9,7 @@ import {
 } from "@reviewrouter/features-codex-oauth-rotating";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
 import {
+  codexRotatingReviewExecutionCheckpointAccessTtlMs,
   codexRotatingReviewSnapshotAccessTtlMs,
   isCodexRotatingCompletedLeasePostingWindowActive,
 } from "../../domain/codex-rotating-oauth-posting-window.js";
@@ -18,6 +19,7 @@ import type {
   CodexRotatingSecretWriteTarget,
 } from "../../application/ports/codex-rotating-oauth-repository-port.js";
 import type { CodexRotatingReviewSnapshotAccessPort } from "../../application/ports/codex-rotating-review-snapshot-access-port.js";
+import type { CodexRotatingReviewExecutionCheckpointAccessPort } from "../../application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
 
 const codexRotatingRepositoryContextSelect = {
   id: true,
@@ -39,7 +41,8 @@ const codexRotatingRepositoryContextSelect = {
 export class PrismaCodexRotatingOAuthRepository
   implements
     CodexRotatingOAuthRepositoryPort,
-    CodexRotatingReviewSnapshotAccessPort
+    CodexRotatingReviewSnapshotAccessPort,
+    CodexRotatingReviewExecutionCheckpointAccessPort
 {
   constructor(
     private readonly prisma: PrismaClient,
@@ -96,6 +99,7 @@ export class PrismaCodexRotatingOAuthRepository
     readonly providerInstanceId: string;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
+    readonly pullRequestNumber?: number | undefined;
     readonly now: Date;
   }): Promise<CodexRotatingPreleaseRecord> {
     const expiresAt = new Date(input.now.getTime() + 15 * 60 * 1000);
@@ -135,6 +139,7 @@ export class PrismaCodexRotatingOAuthRepository
             id: true,
             githubRunId: true,
             githubRunAttempt: true,
+            pullRequestNumber: true,
             status: true,
             expiresAt: true,
           },
@@ -199,6 +204,9 @@ export class PrismaCodexRotatingOAuthRepository
         update: {
           status: "preleased",
           expiresAt,
+          ...(input.pullRequestNumber
+            ? { pullRequestNumber: input.pullRequestNumber }
+            : {}),
         },
         create: {
           providerInstanceRowId: provider.id,
@@ -207,6 +215,9 @@ export class PrismaCodexRotatingOAuthRepository
           repositoryId: input.repository.repositoryId,
           githubRunId: input.githubRunId,
           githubRunAttempt: input.githubRunAttempt,
+          ...(input.pullRequestNumber
+            ? { pullRequestNumber: input.pullRequestNumber }
+            : {}),
           leaseKey,
           status: "preleased",
           expiresAt,
@@ -595,13 +606,19 @@ export class PrismaCodexRotatingOAuthRepository
   async authorizeReviewSnapshotAccess(input: {
     readonly leaseId: string;
     readonly providerInstanceId: string;
+    readonly pullRequestNumber: number;
     readonly now: Date;
   }) {
     const context = await this.findCompletedLeaseContext({
       ...input,
       completedLeaseTtlMs: codexRotatingReviewSnapshotAccessTtlMs,
     });
-    if (context.status !== "ready") return context;
+    if (
+      context.status !== "ready" ||
+      context.pullRequestNumber !== input.pullRequestNumber
+    ) {
+      return { status: "lease_not_active" as const };
+    }
     return {
       status: "ready" as const,
       scope: {
@@ -609,6 +626,35 @@ export class PrismaCodexRotatingOAuthRepository
         repositoryId: context.repository.id,
         sourceRunId: context.sourceRunId,
         sourceRunAttempt: context.sourceRunAttempt,
+        pullRequestNumber: context.pullRequestNumber,
+      },
+    };
+  }
+
+  async authorizeReviewExecutionCheckpointAccess(input: {
+    readonly leaseId: string;
+    readonly providerInstanceId: string;
+    readonly pullRequestNumber: number;
+    readonly now: Date;
+  }) {
+    const context = await this.findCompletedLeaseContext({
+      ...input,
+      completedLeaseTtlMs: codexRotatingReviewExecutionCheckpointAccessTtlMs,
+    });
+    if (
+      context.status !== "ready" ||
+      context.pullRequestNumber !== input.pullRequestNumber
+    ) {
+      return { status: "lease_not_active" as const };
+    }
+    return {
+      status: "ready" as const,
+      scope: {
+        workspaceId: context.repository.workspaceId,
+        repositoryId: context.repository.id,
+        sourceRunId: context.sourceRunId,
+        sourceRunAttempt: context.sourceRunAttempt,
+        pullRequestNumber: context.pullRequestNumber,
       },
     };
   }
@@ -632,6 +678,7 @@ export class PrismaCodexRotatingOAuthRepository
         completedAt: true,
         githubRunId: true,
         githubRunAttempt: true,
+        pullRequestNumber: true,
       },
     });
     if (!lease) {
@@ -663,6 +710,7 @@ export class PrismaCodexRotatingOAuthRepository
       repository,
       sourceRunId: lease.githubRunId,
       sourceRunAttempt: lease.githubRunAttempt,
+      pullRequestNumber: lease.pullRequestNumber,
     };
   }
 

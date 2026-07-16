@@ -633,6 +633,7 @@ exit 17
       repository_id: "123456",
       repository_visibility: "private",
       event_name: "pull_request" as const,
+      ref: "refs/pull/240/merge",
       run_id: "9001",
       run_attempt: "1",
       workflow_ref:

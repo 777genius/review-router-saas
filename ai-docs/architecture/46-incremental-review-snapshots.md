@@ -13,11 +13,15 @@ Action-session adapters without changing the aggregate or persistence schema.
 
 The Action control plane exposes authorization through the dedicated
 `CodexRotatingReviewSnapshotAccessPort`. It validates a completed lease and returns
-the server-owned workspace and repository scope. Snapshot use cases depend on this
+the server-owned workspace, repository, and pull-request scope. For
+`pull_request`, the PR number comes from the GitHub-signed OIDC `ref`; for
+`pull_request_target`, it is resolved from the signed workflow run and verified
+against the run event, attempt, repository, and associated PR. It is never trusted
+from the snapshot request. Snapshot use cases depend on this
 narrow port, not on the rotating-OAuth repository, and clients cannot choose or
 override the persistence scope.
 
-The lease captures that workspace and repository scope immutably when acquired.
+The lease captures that workspace, repository, and PR scope immutably when acquired.
 Rebinding a provider later cannot move an already completed run's snapshot access
 to another repository.
 
@@ -143,7 +147,17 @@ The test used a dedicated repository-scoped OAuth login. No account identity,
 credential material, source payload, or snapshot prose is retained in this
 evidence.
 
-Batch-level resume is intentionally a separate future aggregate. Provider results
-and synthesis state have different retention, size, and compatibility requirements;
-mixing partial execution checkpoints into the completed-review snapshot would make
-the snapshot transaction ambiguous and retain substantially more repository data.
+Batch-level resume is implemented as a separate aggregate; see
+[47-durable-large-pr-review-execution.md](./47-durable-large-pr-review-execution.md).
+Provider results and partial coverage have different retention, size, and
+compatibility requirements and never enter this completed-review snapshot. A
+partial or incompletely loaded run may publish honest partial coverage and retain
+its execution checkpoint, but it cannot create or advance `ReviewSnapshot`.
+
+After all planned work is server-acknowledged, checkpoint finalization still does
+not advance this aggregate. The parent first validates the runtime's strict
+server-finalization marker, then verifies the current head and commits the completed
+snapshot. A missing, malformed, or mismatched marker prevents snapshot advancement.
+Only a successful or idempotent snapshot commit permits
+the finalized checkpoint to be cleared; otherwise it remains available for a safe
+retry.

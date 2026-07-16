@@ -17,6 +17,7 @@
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
+    "@reviewrouter/features-review-execution-checkpoints": "workspace:*",
     "@reviewrouter/features-review-snapshots": "workspace:*",
     "@reviewrouter/features-system-health": "workspace:*",
     "@reviewrouter/platform-config": "workspace:*",

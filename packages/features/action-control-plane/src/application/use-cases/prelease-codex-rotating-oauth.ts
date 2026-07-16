@@ -11,6 +11,7 @@ import type {
   CodexRotatingWorkflowSourceVerifierPort,
 } from "../ports/codex-rotating-oauth-repository-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../ports/github-actions-oidc-token-verifier-port.js";
+import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
 
 export type PreleaseCodexRotatingOAuthDependencies = {
   readonly oidcVerifier: GitHubActionsOidcTokenVerifierPort;
@@ -96,6 +97,11 @@ export async function preleaseCodexRotatingOAuth(
     requestedWorkflowSchemaVersion: input.workflowSchemaVersion,
     now: dependencies.clock.now(),
   });
+  const pullRequestNumber = await resolvePullRequestNumber({
+    claims,
+    repository,
+    workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
+  });
   await consumeCodexRotatingOidcReplayNonce({
     claims,
     now: dependencies.clock.now(),
@@ -106,6 +112,7 @@ export async function preleaseCodexRotatingOAuth(
     providerInstanceId: input.providerInstanceId,
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
+    ...(pullRequestNumber ? { pullRequestNumber } : {}),
     now: dependencies.clock.now(),
   });
   if (lease.status === "conflict") {
@@ -123,6 +130,35 @@ export async function preleaseCodexRotatingOAuth(
       : {}),
     expiresAt: lease.expiresAt.toISOString(),
   };
+}
+
+async function resolvePullRequestNumber(input: {
+  readonly claims: CodexRotatingOidcClaims;
+  readonly repository: ActionRepositoryContext;
+  readonly workflowSourceVerifier: CodexRotatingWorkflowSourceVerifierPort;
+}): Promise<number | undefined> {
+  if (input.claims.event_name === "pull_request") {
+    const match = /^refs\/pull\/([1-9][0-9]*)\/(?:merge|head)$/.exec(
+      input.claims.ref ?? "",
+    );
+    if (!match) throw new Error("oidc_pull_request_ref_invalid");
+    const pullRequestNumber = Number(match[1]);
+    if (!Number.isSafeInteger(pullRequestNumber)) {
+      throw new Error("oidc_pull_request_ref_invalid");
+    }
+    return pullRequestNumber;
+  }
+  if (input.claims.event_name !== "pull_request_target") return undefined;
+  const resolve = input.workflowSourceVerifier.resolveWorkflowRunPullRequest;
+  if (!resolve) {
+    throw new Error("codex_rotating_workflow_run_resolver_unavailable");
+  }
+  return await resolve.call(input.workflowSourceVerifier, {
+    repository: input.repository,
+    githubRunId: input.claims.run_id,
+    githubRunAttempt: input.claims.run_attempt,
+    eventName: input.claims.event_name,
+  });
 }
 
 async function consumeCodexRotatingOidcReplayNonce(input: {

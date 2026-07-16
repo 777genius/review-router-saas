@@ -32,6 +32,7 @@ export async function commitCodexRotatingReviewSnapshot(
       {
         leaseId: input.leaseId,
         providerInstanceId: input.providerInstanceId,
+        pullRequestNumber: input.candidate.pullRequestNumber,
         now,
       },
     );

@@ -16,6 +16,7 @@ type InstallationTokenResponse = {
   readonly token?: unknown;
   readonly expiresAt?: unknown;
   readonly permissions?: {
+    readonly actions?: unknown;
     readonly contents?: unknown;
     readonly pull_requests?: unknown;
     readonly secrets?: unknown;
@@ -28,12 +29,17 @@ type SecretPutResponse = {
 
 type SecretPermission = "read" | "write";
 type InstallationPermission = {
+  readonly actions?: "read";
   readonly secrets?: SecretPermission;
   readonly contents?: "read";
   readonly pull_requests?: "read";
 };
 
 type ContentsResponse = {
+  readonly data?: unknown;
+};
+
+type WorkflowRunResponse = {
   readonly data?: unknown;
 };
 
@@ -208,6 +214,41 @@ export class OctokitCodexRotatingGitHubSecretGateway
     };
   }
 
+  async resolveWorkflowRunPullRequest(input: {
+    readonly repository: {
+      readonly githubInstallationId: string;
+      readonly githubRepositoryId: string;
+      readonly fullName: string;
+      readonly owner: string;
+    };
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+    readonly eventName: "pull_request_target";
+  }): Promise<number> {
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: input.repository.githubInstallationId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      permissions: { actions: "read" },
+    });
+    const response = (await githubRequest(
+      "GET /repos/{owner}/{repo}/actions/runs/{run_id}",
+      {
+        owner: input.repository.owner,
+        repo: repoNameFromFullName(input.repository.fullName),
+        run_id: parsePositiveSafeInteger(
+          input.githubRunId,
+          "codex_rotating_workflow_run_id_invalid",
+        ),
+        headers: { authorization: `Bearer ${token.token}` },
+      },
+    )) as WorkflowRunResponse;
+    return decodeWorkflowRunPullRequest(response.data, {
+      eventName: input.eventName,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      githubRunAttempt: input.githubRunAttempt,
+    });
+  }
+
   private async mintRepositorySecretsToken(input: {
     readonly githubInstallationId: string;
     readonly githubRepositoryId: string;
@@ -282,6 +323,12 @@ export class OctokitCodexRotatingGitHubSecretGateway
       throw new Error("codex_rotating_installation_token_invalid_response");
     }
     if (
+      input.permissions.actions &&
+      data.permissions?.actions !== input.permissions.actions
+    ) {
+      throw new Error("codex_rotating_installation_token_permissions_mismatch");
+    }
+    if (
       input.permissions.contents &&
       data.permissions?.contents !== input.permissions.contents
     ) {
@@ -295,6 +342,46 @@ export class OctokitCodexRotatingGitHubSecretGateway
     }
     return { token: data.token, expiresAt };
   }
+}
+
+function decodeWorkflowRunPullRequest(
+  data: unknown,
+  expected: {
+    readonly eventName: "pull_request_target";
+    readonly githubRepositoryId: string;
+    readonly githubRunAttempt: string;
+  },
+): number {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("codex_rotating_workflow_run_invalid_response");
+  }
+  const run = data as {
+    readonly event?: unknown;
+    readonly run_attempt?: unknown;
+    readonly repository?: { readonly id?: unknown };
+    readonly pull_requests?: readonly { readonly number?: unknown }[];
+  };
+  const expectedAttempt = parsePositiveSafeInteger(
+    expected.githubRunAttempt,
+    "codex_rotating_workflow_run_attempt_invalid",
+  );
+  if (
+    run.event !== expected.eventName ||
+    run.run_attempt !== expectedAttempt ||
+    String(run.repository?.id ?? "") !== expected.githubRepositoryId ||
+    !Array.isArray(run.pull_requests) ||
+    run.pull_requests.length !== 1
+  ) {
+    throw new Error("codex_rotating_workflow_run_identity_mismatch");
+  }
+  const pullRequestNumber = run.pull_requests[0]?.number;
+  if (
+    !Number.isSafeInteger(pullRequestNumber) ||
+    (pullRequestNumber as number) <= 0
+  ) {
+    throw new Error("codex_rotating_workflow_run_pull_request_invalid");
+  }
+  return pullRequestNumber as number;
 }
 
 function parsePositiveSafeInteger(value: string, errorCode: string): number {
