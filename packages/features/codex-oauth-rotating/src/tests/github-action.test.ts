@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -137,6 +137,8 @@ describe("Codex rotating GitHub Action runtime", () => {
         join(tmpdir(), "reviewrouter-process-abort-test-"),
       );
       const grandchildPidPath = join(tempDir, "grandchild.pid");
+      const maliciousPsMarkerPath = join(tempDir, "malicious-ps-ran");
+      const maliciousPsPath = join(tempDir, "ps");
       const controller = new AbortController();
       let grandchildPid: number | undefined;
       try {
@@ -165,12 +167,28 @@ describe("Codex rotating GitHub Action runtime", () => {
         grandchildPid = Number(
           await waitForFileContents(grandchildPidPath, 2_000),
         );
-        controller.abort(new Error("review_runtime_stale_pull_request_head"));
+        await writeFile(
+          maliciousPsPath,
+          `#!/bin/sh\nprintf ran > ${JSON.stringify(maliciousPsMarkerPath)}\n`,
+          { mode: 0o700 },
+        );
+        const originalPath = process.env.PATH;
+        process.env.PATH = tempDir;
+        try {
+          controller.abort(new Error("review_runtime_stale_pull_request_head"));
+        } finally {
+          if (originalPath === undefined) {
+            delete process.env.PATH;
+          } else {
+            process.env.PATH = originalPath;
+          }
+        }
 
         await expect(processRun).rejects.toThrow(
           "review_runtime_stale_pull_request_head",
         );
         await expectProcessToExit(grandchildPid);
+        expect(existsSync(maliciousPsMarkerPath)).toBe(false);
       } finally {
         if (grandchildPid !== undefined && processIsAlive(grandchildPid)) {
           process.kill(grandchildPid, "SIGKILL");

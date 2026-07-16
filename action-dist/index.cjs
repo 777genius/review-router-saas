@@ -22787,13 +22787,18 @@ async function fetchCurrentPullRequestHeadSha(input) {
       },
       ...input.signal ? { signal: input.signal } : {}
     },
-    consume: async (response2) => ({
-      response: response2,
-      body: response2.status === 401 ? void 0 : await response2.json()
-    })
+    consume: async (response2) => {
+      if (response2.status === 401) {
+        await discardResponseBody(response2);
+        return { response: response2, body: void 0 };
+      }
+      return {
+        response: response2,
+        body: await response2.json()
+      };
+    }
   });
   if (response.status === 401) {
-    await discardResponseBody(response);
     throw new Error("github_pull_request_head_auth_expired");
   }
   if (body === void 0 || !response.ok || typeof body.head?.sha !== "string" || !/^[a-f0-9]{40}$/i.test(body.head.sha)) {
@@ -22902,6 +22907,17 @@ async function discardResponseBody(response) {
     await response.arrayBuffer();
   } catch {
   }
+}
+async function consumeResponseBody(response) {
+  await discardResponseBody(response);
+  return response;
+}
+async function consumeJsonResponse(response) {
+  if (!response.ok) {
+    await discardResponseBody(response);
+    return { response, body: void 0 };
+  }
+  return { response, body: await response.json() };
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -24184,7 +24200,7 @@ function safeEnvKeyLabel(key) {
 }
 async function postPullRequestComment(input) {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await fetchWithRetry({
+  const { response: commentsResponse, body: comments } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_comment_lookup",
     timeoutMs: githubRequestTimeoutMs,
@@ -24195,12 +24211,12 @@ async function postPullRequestComment(input) {
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
       }
-    }
+    },
+    consume: consumeJsonResponse
   });
   if (!commentsResponse.ok) {
     throw new Error("github_comment_lookup_failed");
   }
-  const comments = await commentsResponse.json();
   if (!Array.isArray(comments)) {
     throw new Error("github_comment_lookup_invalid");
   }
@@ -24222,7 +24238,8 @@ async function postPullRequestComment(input) {
           "x-github-api-version": "2022-11-28"
         },
         body: JSON.stringify({ body: input.body })
-      }
+      },
+      consume: consumeResponseBody
     });
     if (!updateResponse.ok) {
       throw new Error("github_comment_update_failed");
@@ -24243,7 +24260,8 @@ async function postPullRequestComment(input) {
         "x-github-api-version": "2022-11-28"
       },
       body: JSON.stringify({ body: input.body })
-    }
+    },
+    consume: consumeResponseBody
   });
   if (!createResponse.ok) {
     throw new Error("github_comment_post_failed");
@@ -24251,7 +24269,7 @@ async function postPullRequestComment(input) {
 }
 async function deleteStaleCodexRotatingSummaryComments(input) {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await fetchWithRetry({
+  const { response: commentsResponse, body: comments } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_stale_comment_lookup",
     timeoutMs: githubRequestTimeoutMs,
@@ -24262,12 +24280,12 @@ async function deleteStaleCodexRotatingSummaryComments(input) {
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
       }
-    }
+    },
+    consume: consumeJsonResponse
   });
   if (!commentsResponse.ok) {
     throw new Error("github_stale_comment_lookup_failed");
   }
-  const comments = await commentsResponse.json();
   if (!Array.isArray(comments)) {
     throw new Error("github_stale_comment_lookup_invalid");
   }
@@ -24289,7 +24307,8 @@ async function deleteStaleCodexRotatingSummaryComments(input) {
           authorization: `Bearer ${input.token}`,
           "x-github-api-version": "2022-11-28"
         }
-      }
+      },
+      consume: consumeResponseBody
     });
     if (!deleteResponse.ok) {
       throw new Error("github_stale_comment_delete_failed");
@@ -24321,7 +24340,7 @@ async function deleteFullRuntimeProgressCommentsWithTokenRefresh(input) {
 }
 async function deleteFullRuntimeProgressComments(input) {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await fetchWithRetry({
+  const { response: commentsResponse, body: comments } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_progress_comment_lookup",
     timeoutMs: githubRequestTimeoutMs,
@@ -24332,7 +24351,8 @@ async function deleteFullRuntimeProgressComments(input) {
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
       }
-    }
+    },
+    consume: consumeJsonResponse
   });
   if (!commentsResponse.ok) {
     throw new GitHubProgressCommentRequestError(
@@ -24340,7 +24360,6 @@ async function deleteFullRuntimeProgressComments(input) {
       commentsResponse.status
     );
   }
-  const comments = await commentsResponse.json();
   if (!Array.isArray(comments)) {
     throw new Error("github_progress_comment_lookup_invalid");
   }
@@ -24362,7 +24381,8 @@ async function deleteFullRuntimeProgressComments(input) {
           authorization: `Bearer ${input.token}`,
           "x-github-api-version": "2022-11-28"
         }
-      }
+      },
+      consume: consumeResponseBody
     });
     if (!deleteResponse.ok) {
       throw new GitHubProgressCommentRequestError(
@@ -24402,8 +24422,9 @@ var AlreadyReportedRuntimeFailure = class extends Error {
 function captureUnixProcessTree(rootPid) {
   if (process.platform === "win32") return null;
   try {
-    const output = (0, import_node_child_process2.execFileSync)("ps", ["-A", "-o", "pid=,ppid=,pgid="], {
+    const output = (0, import_node_child_process2.execFileSync)("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid="], {
       encoding: "utf8",
+      env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
       timeout: 2e3,
       maxBuffer: 4 * 1024 * 1024
     });

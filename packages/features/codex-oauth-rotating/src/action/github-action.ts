@@ -1809,18 +1809,20 @@ async function fetchCurrentPullRequestHeadSha(input: {
       },
       ...(input.signal ? { signal: input.signal } : {}),
     },
-    consume: async (response) => ({
-      response,
-      body:
-        response.status === 401
-          ? undefined
-          : ((await response.json()) as {
-              readonly head?: { readonly sha?: unknown };
-            }),
-    }),
+    consume: async (response) => {
+      if (response.status === 401) {
+        await discardResponseBody(response);
+        return { response, body: undefined };
+      }
+      return {
+        response,
+        body: (await response.json()) as {
+          readonly head?: { readonly sha?: unknown };
+        },
+      };
+    },
   });
   if (response.status === 401) {
-    await discardResponseBody(response);
     throw new Error("github_pull_request_head_auth_expired");
   }
   if (
@@ -1965,6 +1967,22 @@ async function discardResponseBody(response: Response): Promise<void> {
   } catch {
     // Best effort only. The retry path should not fail because body cleanup did.
   }
+}
+
+async function consumeResponseBody(response: Response): Promise<Response> {
+  await discardResponseBody(response);
+  return response;
+}
+
+async function consumeJsonResponse(response: Response): Promise<{
+  readonly response: Response;
+  readonly body: unknown;
+}> {
+  if (!response.ok) {
+    await discardResponseBody(response);
+    return { response, body: undefined };
+  }
+  return { response, body: await response.json() };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -3690,7 +3708,7 @@ export async function postPullRequestComment(input: {
   readonly body: string;
 }): Promise<void> {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await fetchWithRetry({
+  const { response: commentsResponse, body: comments } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_comment_lookup",
     timeoutMs: githubRequestTimeoutMs,
@@ -3702,11 +3720,11 @@ export async function postPullRequestComment(input: {
         "x-github-api-version": "2022-11-28",
       },
     },
+    consume: consumeJsonResponse,
   });
   if (!commentsResponse.ok) {
     throw new Error("github_comment_lookup_failed");
   }
-  const comments = (await commentsResponse.json()) as unknown;
   if (!Array.isArray(comments)) {
     throw new Error("github_comment_lookup_invalid");
   }
@@ -3734,6 +3752,7 @@ export async function postPullRequestComment(input: {
         },
         body: JSON.stringify({ body: input.body }),
       },
+      consume: consumeResponseBody,
     });
     if (!updateResponse.ok) {
       throw new Error("github_comment_update_failed");
@@ -3756,6 +3775,7 @@ export async function postPullRequestComment(input: {
       },
       body: JSON.stringify({ body: input.body }),
     },
+    consume: consumeResponseBody,
   });
   if (!createResponse.ok) {
     throw new Error("github_comment_post_failed");
@@ -3770,7 +3790,7 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
   readonly issueNumber: number;
 }): Promise<void> {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await fetchWithRetry({
+  const { response: commentsResponse, body: comments } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_stale_comment_lookup",
     timeoutMs: githubRequestTimeoutMs,
@@ -3782,11 +3802,11 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
         "x-github-api-version": "2022-11-28",
       },
     },
+    consume: consumeJsonResponse,
   });
   if (!commentsResponse.ok) {
     throw new Error("github_stale_comment_lookup_failed");
   }
-  const comments = (await commentsResponse.json()) as unknown;
   if (!Array.isArray(comments)) {
     throw new Error("github_stale_comment_lookup_invalid");
   }
@@ -3814,6 +3834,7 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
           "x-github-api-version": "2022-11-28",
         },
       },
+      consume: consumeResponseBody,
     });
     if (!deleteResponse.ok) {
       throw new Error("github_stale_comment_delete_failed");
@@ -3865,7 +3886,7 @@ export async function deleteFullRuntimeProgressComments(input: {
   readonly issueNumber: number;
 }): Promise<void> {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
-  const commentsResponse = await fetchWithRetry({
+  const { response: commentsResponse, body: comments } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_progress_comment_lookup",
     timeoutMs: githubRequestTimeoutMs,
@@ -3877,6 +3898,7 @@ export async function deleteFullRuntimeProgressComments(input: {
         "x-github-api-version": "2022-11-28",
       },
     },
+    consume: consumeJsonResponse,
   });
   if (!commentsResponse.ok) {
     throw new GitHubProgressCommentRequestError(
@@ -3884,7 +3906,6 @@ export async function deleteFullRuntimeProgressComments(input: {
       commentsResponse.status,
     );
   }
-  const comments = (await commentsResponse.json()) as unknown;
   if (!Array.isArray(comments)) {
     throw new Error("github_progress_comment_lookup_invalid");
   }
@@ -3912,6 +3933,7 @@ export async function deleteFullRuntimeProgressComments(input: {
           "x-github-api-version": "2022-11-28",
         },
       },
+      consume: consumeResponseBody,
     });
     if (!deleteResponse.ok) {
       throw new GitHubProgressCommentRequestError(
@@ -3980,8 +4002,9 @@ function captureUnixProcessTree(
 ): CapturedUnixProcessTree | null {
   if (process.platform === "win32") return null;
   try {
-    const output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], {
+    const output = execFileSync("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid="], {
       encoding: "utf8",
+      env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
       timeout: 2_000,
       maxBuffer: 4 * 1024 * 1024,
     });
