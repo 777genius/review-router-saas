@@ -9,7 +9,7 @@ services:
     plan: starter
     region: frankfurt
     branch: main
-    buildCommand: pnpm --version && node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
+    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     preDeployCommand: pnpm db:migrate:deploy
     startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm web:start
     healthCheckPath: /
@@ -32,7 +32,7 @@ services:
     plan: starter
     region: frankfurt
     branch: main
-    buildCommand: pnpm --version && node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
+    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     preDeployCommand: pnpm db:migrate:deploy
     startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm api:start
     healthCheckPath: /health
@@ -75,7 +75,7 @@ services:
     plan: starter
     region: frankfurt
     branch: main
-    buildCommand: pnpm --version && node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
+    buildCommand: pnpm --version && NODE_ENV=development node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     preDeployCommand: pnpm db:migrate:deploy
     startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm worker:start
     autoDeployTrigger: commit
