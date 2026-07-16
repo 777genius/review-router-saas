@@ -9,9 +9,9 @@ services:
     plan: starter
     region: frankfurt
     branch: main
-    buildCommand: pnpm --version && pnpm install --frozen-lockfile && pnpm db:generate && pnpm build
+    buildCommand: pnpm --version && node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     preDeployCommand: pnpm db:migrate:deploy
-    startCommand: pnpm web:start
+    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm web:start
     healthCheckPath: /
     autoDeployTrigger: commit
     maxShutdownDelaySeconds: 60
@@ -32,9 +32,9 @@ services:
     plan: starter
     region: frankfurt
     branch: main
-    buildCommand: pnpm --version && pnpm install --frozen-lockfile && pnpm db:generate && pnpm build
+    buildCommand: pnpm --version && node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     preDeployCommand: pnpm db:migrate:deploy
-    startCommand: HOST=0.0.0.0 pnpm api:start
+    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 HOST=0.0.0.0 pnpm api:start
     healthCheckPath: /health
     autoDeployTrigger: commit
     maxShutdownDelaySeconds: 60
@@ -75,9 +75,9 @@ services:
     plan: starter
     region: frankfurt
     branch: main
-    buildCommand: pnpm --version && pnpm install --frozen-lockfile && pnpm db:generate && pnpm build
+    buildCommand: pnpm --version && node scripts/install-private-dependencies.mjs --frozen-lockfile && pnpm db:generate && pnpm build
     preDeployCommand: pnpm db:migrate:deploy
-    startCommand: pnpm worker:start
+    startCommand: env -u SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 pnpm worker:start
     autoDeployTrigger: commit
     maxShutdownDelaySeconds: 120
     envVars:
@@ -108,6 +108,8 @@ envVarGroups:
         generateValue: true
       - key: REVIEW_ROUTER_ACTION_SESSION_SECRET
         generateValue: true
+      - key: SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64
+        sync: false
       - key: REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS
         value: "1"
       - key: REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING

@@ -75,7 +75,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-client-17
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        env:
+          SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
+        run: node scripts/install-private-dependencies.mjs --frozen-lockfile
 
       - name: Generate Prisma client
         run: pnpm db:generate
