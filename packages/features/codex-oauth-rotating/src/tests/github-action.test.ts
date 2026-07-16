@@ -128,6 +128,55 @@ describe("Codex rotating GitHub Action runtime", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "terminates the subprocess tree when cooperative cancellation is requested",
+    async () => {
+      const tempDir = await mkdtemp(
+        join(tmpdir(), "reviewrouter-process-abort-test-"),
+      );
+      const grandchildPidPath = join(tempDir, "grandchild.pid");
+      const controller = new AbortController();
+      let grandchildPid: number | undefined;
+      try {
+        const processRun = runProcess({
+          command: process.execPath,
+          args: [
+            "-e",
+            [
+              "const { spawn } = require('node:child_process');",
+              "const { writeFileSync } = require('node:fs');",
+              "const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
+              "writeFileSync(process.env.GRANDCHILD_PID_PATH, String(child.pid));",
+              "process.on('SIGTERM', () => {});",
+              "setInterval(() => {}, 1000);",
+            ].join("\n"),
+          ],
+          env: {
+            PATH: process.env.PATH ?? "",
+            GRANDCHILD_PID_PATH: grandchildPidPath,
+          },
+          timeoutMs: 10_000,
+          terminationGracePeriodMs: 20,
+          abortSignal: controller.signal,
+        });
+        grandchildPid = Number(
+          await waitForFileContents(grandchildPidPath, 2_000),
+        );
+        controller.abort(new Error("review_runtime_stale_pull_request_head"));
+
+        await expect(processRun).rejects.toThrow(
+          "review_runtime_stale_pull_request_head",
+        );
+        await expectProcessToExit(grandchildPid);
+      } finally {
+        if (grandchildPid !== undefined && processIsAlive(grandchildPid)) {
+          process.kill(grandchildPid, "SIGKILL");
+        }
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("clears finalized checkpoints directly when no snapshot advancement is required", async () => {
     const commitSnapshot = vi.fn().mockResolvedValue(true);
     const clearCheckpoint = vi.fn().mockResolvedValue(undefined);
@@ -312,6 +361,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       tempCodexHome: "/tmp/codex-home",
       codexBinDir: "/tmp/codex-bin",
       commentToken: "comment-token",
+      commentTokenExpiresAt: "2026-07-16T14:00:00.000Z",
       runtimeConfigVersion: 7,
       runtimeEnv: {
         REVIEW_PROVIDERS: "codex/gpt-5.5",
@@ -326,6 +376,12 @@ describe("Codex rotating GitHub Action runtime", () => {
 
     expect(childEnv.PATH).toContain("/tmp/codex-bin");
     expect(childEnv.GITHUB_TOKEN).toBe("comment-token");
+    expect(childEnv.REVIEWROUTER_COMMENT_TOKEN_MODE).toBe(
+      "codex-oauth-rotating",
+    );
+    expect(childEnv.REVIEWROUTER_COMMENT_TOKEN_EXPIRES_AT).toBe(
+      "2026-07-16T14:00:00.000Z",
+    );
     expect(childEnv.OPENAI_API_KEY).toBeUndefined();
     expect(childEnv.REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN).toBe(
       "repo-scoped-lifecycle-token",
@@ -2013,6 +2069,8 @@ describe("Codex rotating GitHub Action runtime", () => {
     const requestBodies: string[] = [];
     const invokedUrls: string[] = [];
     const pullRequestAuthorizationHeaders: string[] = [];
+    const issueCommentAuthorizationHeaders: string[] = [];
+    let commentTokenIssueCount = 0;
     const refreshedAuthJson = JSON.stringify({
       auth_mode: "chatgpt",
       tokens: {
@@ -2298,8 +2356,12 @@ describe("Codex rotating GitHub Action runtime", () => {
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/comment-token")) {
+        commentTokenIssueCount += 1;
         return jsonResponse({
-          token: "ghs_comment_token",
+          token:
+            commentTokenIssueCount === 1
+              ? "ghs_comment_token"
+              : "ghs_refreshed_comment_token",
           repository: "777genius/agent-teams-ai",
         });
       }
@@ -2315,9 +2377,15 @@ describe("Codex rotating GitHub Action runtime", () => {
         href ===
         "https://api.github.com/repos/777genius/agent-teams-ai/pulls/118"
       ) {
-        pullRequestAuthorizationHeaders.push(
-          new Headers(init?.headers).get("authorization") ?? "",
-        );
+        const authorization =
+          new Headers(init?.headers).get("authorization") ?? "";
+        pullRequestAuthorizationHeaders.push(authorization);
+        if (authorization === "Bearer ghs_comment_token") {
+          return new Response(JSON.stringify({ message: "Bad credentials" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
         return jsonResponse({
           head: { sha: "0123456789abcdef0123456789abcdef01234567" },
         });
@@ -2341,6 +2409,9 @@ describe("Codex rotating GitHub Action runtime", () => {
         href ===
         "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100"
       ) {
+        issueCommentAuthorizationHeaders.push(
+          new Headers(init?.headers).get("authorization") ?? "",
+        );
         return jsonResponse([
           {
             id: 123,
@@ -2442,7 +2513,14 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(snapshotCommitIndex).toBeGreaterThanOrEqual(0);
       expect(checkpointClearIndex).toBeGreaterThan(snapshotCommitIndex);
       expect(pullRequestAuthorizationHeaders).toEqual([
+        "Bearer ghs_comment_token",
+        "Bearer ghs_refreshed_comment_token",
         "Bearer ghs_snapshot_head_token",
+      ]);
+      expect(commentTokenIssueCount).toBe(2);
+      expect(issueCommentAuthorizationHeaders).toEqual([
+        "Bearer ghs_comment_token",
+        "Bearer ghs_refreshed_comment_token",
       ]);
       const snapshotCommitBody = requestBodies
         .map((body) => JSON.parse(body) as Record<string, unknown>)
@@ -2486,7 +2564,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         providers:
           "codex/gpt-5.5,claude/sonnet,openrouter/openai/gpt-5.3-codex",
         runtimeMode: "static",
-        commentTokenMode: "github-token",
+        commentTokenMode: "codex-oauth-rotating",
         commentTokenRefreshUrl:
           "https://api.reviewrouter.site/api/action/v1/codex-oauth/comment-token",
         commentTokenLeaseId: "lease_1",
@@ -3156,6 +3234,21 @@ function processIsAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+async function waitForFileContents(
+  path: string,
+  timeoutMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error("test_file_wait_timeout");
 }
 
 async function expectProcessToExit(pid: number): Promise<void> {

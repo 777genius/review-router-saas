@@ -21445,6 +21445,58 @@ function assertNonNegativeSafeInteger(value, field) {
   }
 }
 
+// packages/features/codex-oauth-rotating/src/action/pull-request-head-supervisor.ts
+var stalePullRequestHeadErrorCode = "review_runtime_stale_pull_request_head";
+async function startPullRequestHeadSupervisor(input) {
+  const controller = new AbortController();
+  const pollIntervalMs = input.pollIntervalMs ?? 3e4;
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+    throw new Error("pull_request_head_poll_interval_invalid");
+  }
+  let stopped = false;
+  let timer;
+  const pollAbortController = new AbortController();
+  const checkHead = async () => {
+    try {
+      const currentHeadSha = await input.readCurrentHeadSha(
+        pollAbortController.signal
+      );
+      if (!stopped && currentHeadSha.toLowerCase() !== input.expectedHeadSha.toLowerCase()) {
+        controller.abort(new Error(stalePullRequestHeadErrorCode));
+      }
+    } catch (error51) {
+      if (!stopped) {
+        try {
+          input.onPollFailure?.(error51);
+        } catch {
+        }
+      }
+    }
+  };
+  const scheduleNextCheck = () => {
+    if (stopped || controller.signal.aborted) return;
+    timer = setTimeout(() => {
+      void (async () => {
+        await checkHead();
+        scheduleNextCheck();
+      })();
+    }, pollIntervalMs);
+  };
+  await checkHead();
+  scheduleNextCheck();
+  return {
+    signal: controller.signal,
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      pollAbortController.abort();
+    }
+  };
+}
+function isStalePullRequestHeadError(error51) {
+  return error51 instanceof Error && error51.message === stalePullRequestHeadErrorCode;
+}
+
 // packages/features/codex-oauth-rotating/src/action/github-action.ts
 var defaultOidcAudience = "reviewrouter";
 var forkAgenticSandboxActionMode = "fork-agentic-sandbox";
@@ -21778,6 +21830,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           }
         });
         mask(io, commentToken.token);
+        let cleanupCommentToken = commentToken.token;
         await deleteStaleCodexRotatingSummaryComments({
           fetchImpl,
           token: commentToken.token,
@@ -21815,17 +21868,22 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
                 codexBinaryPath,
                 env,
                 io,
+                fetchImpl,
                 workspace,
                 tempHome: reviewHome,
                 tempCodexHome,
                 event,
                 commentToken: commentToken.token,
+                commentTokenExpiresAt: commentToken.expiresAt,
                 runtimeConfigVersion: finalize2.runtimeConfigVersion,
                 runtimeEnv: finalize2.runtimeEnv,
                 reviewSnapshotInputPath,
                 reviewSnapshotOutputPath,
                 reviewCheckpointFinalizationPath,
-                executionDeadlineEpochMs
+                executionDeadlineEpochMs,
+                onCommentTokenUpdated: (token) => {
+                  cleanupCommentToken = token;
+                }
               })
             });
           } catch (error51) {
@@ -21858,13 +21916,20 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
           try {
             await deleteFullRuntimeProgressComments({
               fetchImpl,
-              token: commentToken.token,
+              token: cleanupCommentToken,
               owner: event.owner,
               repo: event.repo,
               issueNumber: event.number
             });
           } catch {
             notice(io, "ReviewRouter could not clean up progress comments.");
+          }
+          if (isStalePullRequestHeadError(reviewRuntimeFailure)) {
+            notice(
+              io,
+              "ReviewRouter stopped a stale review because the PR head changed; the newer run will review the current head."
+            );
+            return;
           }
           if (reviewRuntimeFailure) {
             throw reviewRuntimeFailure;
@@ -22069,6 +22134,7 @@ async function runForkAgenticSandboxGitHubAction(input) {
       }
     });
     mask(input.io, commentToken.token);
+    let cleanupCommentToken = commentToken.token;
     await deleteStaleCodexRotatingSummaryComments({
       fetchImpl: input.fetchImpl,
       token: commentToken.token,
@@ -22090,29 +22156,39 @@ async function runForkAgenticSandboxGitHubAction(input) {
       });
       const reviewHome = await makeTempDirectory("reviewrouter-review-home-");
       try {
-        await runReviewRuntimeWithinExecutionBudget({
-          executionDeadlineEpochMs: input.executionDeadlineEpochMs,
-          now: input.now,
-          run: () => input.fullReviewRuntimeRunner({
-            inputs: input.inputs,
-            leaseId: prelease.leaseId,
-            codexBinaryPath,
-            env: input.env,
-            io: input.io,
-            workspace,
-            tempHome: reviewHome,
-            tempCodexHome,
-            event,
-            commentToken: commentToken.token,
-            runtimeConfigVersion: finalize2.runtimeConfigVersion,
-            runtimeEnv,
-            executionDeadlineEpochMs: input.executionDeadlineEpochMs
-          })
-        });
+        let reviewRuntimeFailure;
+        try {
+          await runReviewRuntimeWithinExecutionBudget({
+            executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+            now: input.now,
+            run: () => input.fullReviewRuntimeRunner({
+              inputs: input.inputs,
+              leaseId: prelease.leaseId,
+              codexBinaryPath,
+              env: input.env,
+              io: input.io,
+              fetchImpl: input.fetchImpl,
+              workspace,
+              tempHome: reviewHome,
+              tempCodexHome,
+              event,
+              commentToken: commentToken.token,
+              commentTokenExpiresAt: commentToken.expiresAt,
+              runtimeConfigVersion: finalize2.runtimeConfigVersion,
+              runtimeEnv,
+              executionDeadlineEpochMs: input.executionDeadlineEpochMs,
+              onCommentTokenUpdated: (token) => {
+                cleanupCommentToken = token;
+              }
+            })
+          });
+        } catch (error51) {
+          reviewRuntimeFailure = error51;
+        }
         try {
           await deleteFullRuntimeProgressComments({
             fetchImpl: input.fetchImpl,
-            token: commentToken.token,
+            token: cleanupCommentToken,
             owner: event.owner,
             repo: event.repo,
             issueNumber: event.number
@@ -22122,6 +22198,16 @@ async function runForkAgenticSandboxGitHubAction(input) {
             input.io,
             "ReviewRouter could not clean up progress comments."
           );
+        }
+        if (isStalePullRequestHeadError(reviewRuntimeFailure)) {
+          notice(
+            input.io,
+            "ReviewRouter stopped a stale review because the PR head changed; the newer run will review the current head."
+          );
+          return;
+        }
+        if (reviewRuntimeFailure) {
+          throw reviewRuntimeFailure;
         }
       } finally {
         await removeTree(reviewHome);
@@ -22422,7 +22508,8 @@ async function postJson(input) {
     init: {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(input.body)
+      body: JSON.stringify(input.body),
+      ...input.signal ? { signal: input.signal } : {}
     }
   });
   const text = await response.text();
@@ -22634,9 +22721,14 @@ async function fetchCurrentPullRequestHeadSha(input) {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
-      }
+      },
+      ...input.signal ? { signal: input.signal } : {}
     }
   });
+  if (response.status === 401) {
+    await discardResponseBody(response);
+    throw new Error("github_pull_request_head_auth_expired");
+  }
   const body = await response.json();
   if (!response.ok || typeof body.head?.sha !== "string" || !/^[a-f0-9]{40}$/i.test(body.head.sha)) {
     throw new Error("github_pull_request_head_fetch_failed");
@@ -22668,6 +22760,16 @@ async function fetchWithRetry(input) {
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const controller = new AbortController();
+    const externalSignal = input.init?.signal;
+    if (externalSignal?.aborted) {
+      throw new Error(
+        `network_request_aborted:${safeNetworkLabel(input.label)}`
+      );
+    }
+    const abortFromExternalSignal = () => controller.abort();
+    externalSignal?.addEventListener("abort", abortFromExternalSignal, {
+      once: true
+    });
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -22679,6 +22781,7 @@ async function fetchWithRetry(input) {
         signal: controller.signal
       });
       clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
       if (shouldRetryHttpStatus(response.status) && attempt < maxAttempts) {
         await discardResponseBody(response);
         await sleep(networkRetryDelayMs(attempt));
@@ -22687,7 +22790,14 @@ async function fetchWithRetry(input) {
       return response;
     } catch (error51) {
       clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
       lastError = error51;
+      if (externalSignal?.aborted) {
+        throw new Error(
+          `network_request_aborted:${safeNetworkLabel(input.label)}`,
+          { cause: error51 }
+        );
+      }
       if (attempt < maxAttempts) {
         await sleep(networkRetryDelayMs(attempt));
         continue;
@@ -23627,7 +23737,60 @@ async function runFullReviewRouterRuntime(input) {
     mask(input.io, reviewThreadLifecycleResolveToken);
   }
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
+  let headSupervisor;
   try {
+    let headCheckToken = input.commentToken;
+    let headCheckFailureReported = false;
+    headSupervisor = await startPullRequestHeadSupervisor({
+      expectedHeadSha: input.event.headSha,
+      readCurrentHeadSha: async (signal) => {
+        try {
+          return await fetchCurrentPullRequestHeadSha({
+            fetchImpl: input.fetchImpl,
+            token: headCheckToken,
+            event: input.event,
+            signal
+          });
+        } catch (error51) {
+          if (!(error51 instanceof Error) || error51.message !== "github_pull_request_head_auth_expired") {
+            throw error51;
+          }
+          const refreshedToken = await postJson({
+            fetchImpl: input.fetchImpl,
+            label: "api_comment_token_refresh",
+            url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+            body: {
+              leaseId: input.leaseId,
+              providerInstanceId: input.inputs.providerInstanceId,
+              authCleared: true
+            },
+            signal
+          });
+          if (refreshedToken.repository !== input.event.repository) {
+            throw new Error("comment_token_repository_mismatch", {
+              cause: error51
+            });
+          }
+          mask(input.io, refreshedToken.token);
+          headCheckToken = refreshedToken.token;
+          input.onCommentTokenUpdated?.(refreshedToken.token);
+          return fetchCurrentPullRequestHeadSha({
+            fetchImpl: input.fetchImpl,
+            token: headCheckToken,
+            event: input.event,
+            signal
+          });
+        }
+      },
+      onPollFailure: () => {
+        if (headCheckFailureReported) return;
+        headCheckFailureReported = true;
+        notice(
+          input.io,
+          "ReviewRouter could not verify the live PR head; the current review continues and will be rechecked."
+        );
+      }
+    });
     await (0, import_promises6.symlink)(input.codexBinaryPath, (0, import_node_path7.join)(codexBinDir, "codex"));
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
@@ -23639,6 +23802,7 @@ async function runFullReviewRouterRuntime(input) {
       tempCodexHome: input.tempCodexHome,
       codexBinDir,
       commentToken: input.commentToken,
+      commentTokenExpiresAt: input.commentTokenExpiresAt,
       runtimeConfigVersion: input.runtimeConfigVersion,
       runtimeEnv: input.runtimeEnv,
       reviewThreadLifecycleResolveToken,
@@ -23659,7 +23823,8 @@ async function runFullReviewRouterRuntime(input) {
       io: input.io,
       workspace: input.workspace,
       runtimeEnv: input.runtimeEnv,
-      timeoutMs: toolInstallTimeoutMs
+      timeoutMs: toolInstallTimeoutMs,
+      abortSignal: headSupervisor.signal
     });
     const runtimeTimeoutMs = requireRemainingReviewExecutionBudgetMs({
       executionDeadlineEpochMs: input.executionDeadlineEpochMs,
@@ -23671,11 +23836,13 @@ async function runFullReviewRouterRuntime(input) {
       cwd: input.workspace,
       env: childEnv,
       streamOutput: input.io,
-      timeoutMs: runtimeTimeoutMs
+      timeoutMs: runtimeTimeoutMs,
+      abortSignal: headSupervisor.signal
     });
   } catch (error51) {
     throw classifyPostWritebackCodexFailure(error51);
   } finally {
+    headSupervisor?.stop();
     await removeTree(codexBinDir);
   }
 }
@@ -23712,10 +23879,13 @@ function buildFullReviewRuntimeEnv(input) {
     FAIL_ON_NO_HEALTHY_PROVIDERS: runtimeEnv.FAIL_ON_NO_HEALTHY_PROVIDERS ?? "true",
     REVIEWROUTER_RUNTIME_CONFIG_MODE: "static",
     REVIEWROUTER_STATIC_CONFIG_FALLBACK: "false",
-    REVIEWROUTER_COMMENT_TOKEN_MODE: "github-token",
+    REVIEWROUTER_COMMENT_TOKEN_MODE: "codex-oauth-rotating",
     REVIEWROUTER_COMMENT_TOKEN_REFRESH_URL: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
     REVIEWROUTER_COMMENT_TOKEN_LEASE_ID: input.leaseId,
     REVIEWROUTER_COMMENT_TOKEN_PROVIDER_INSTANCE_ID: input.inputs.providerInstanceId,
+    ...input.commentTokenExpiresAt ? {
+      REVIEWROUTER_COMMENT_TOKEN_EXPIRES_AT: input.commentTokenExpiresAt
+    } : {},
     REVIEWROUTER_SCM_PROVIDER: "github",
     REVIEWROUTER_FINDINGS_ARTIFACT_PATH: providerNeutralReviewFindingsArtifactFileName,
     REVIEWROUTER_REPOSITORY_EXTERNAL_ID: input.event.repositoryId ?? input.event.repository,
@@ -23768,7 +23938,8 @@ async function ensureFullReviewRuntimeTools(input) {
     cwd: input.workspace,
     env: buildToolInstallEnv(input.env),
     streamOutput: input.io,
-    timeoutMs: input.timeoutMs
+    timeoutMs: input.timeoutMs,
+    abortSignal: input.abortSignal
   });
 }
 function buildToolInstallEnv(env) {
@@ -24113,11 +24284,14 @@ function signalProcessTree(child, signal, options = {}) {
   return child.kill(signal);
 }
 function runProcess(input) {
+  if (input.abortSignal?.aborted) {
+    return Promise.reject(processAbortError(input.abortSignal));
+  }
   return new Promise((resolve, reject) => {
     const outputChunks = [];
     let outputBytes = 0;
-    let timedOut = false;
     let settled = false;
+    let terminationError;
     let forceKillTimer;
     const child = (0, import_node_child_process2.spawn)(input.command, input.args, {
       cwd: input.cwd,
@@ -24130,20 +24304,29 @@ function runProcess(input) {
       settled = true;
       clearTimeout(timer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
+      input.abortSignal?.removeEventListener("abort", onAbort);
       if (result.error !== void 0) {
         reject(result.error);
       } else {
         resolve();
       }
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const requestTermination = (error51) => {
+      if (settled || terminationError !== void 0) return;
+      terminationError = error51;
       signalProcessTree(child, "SIGTERM");
       forceKillTimer = setTimeout(() => {
         signalProcessTree(child, "SIGKILL");
-        settle({ error: new Error("process_timeout") });
+        settle({ error: terminationError });
       }, input.terminationGracePeriodMs ?? processTerminationGracePeriodMs);
-    }, input.timeoutMs);
+    };
+    const onAbort = () => {
+      requestTermination(processAbortError(input.abortSignal));
+    };
+    const timer = setTimeout(
+      () => requestTermination(new Error("process_timeout")),
+      input.timeoutMs
+    );
     child.stdout.on("data", (chunk) => {
       writeProcessLogChunk(input.streamOutput?.stdout, chunk);
       outputBytes = appendCapturedChunk2(
@@ -24161,13 +24344,15 @@ function runProcess(input) {
       );
     });
     child.on("error", (error51) => {
-      if (timedOut && process.platform !== "win32") return;
-      settle({ error: timedOut ? new Error("process_timeout") : error51 });
+      if (terminationError !== void 0 && process.platform !== "win32") {
+        return;
+      }
+      settle({ error: terminationError ?? error51 });
     });
     child.on("close", (code) => {
-      if (timedOut) {
+      if (terminationError !== void 0) {
         if (process.platform === "win32") {
-          settle({ error: new Error("process_timeout") });
+          settle({ error: terminationError });
         }
         return;
       }
@@ -24182,9 +24367,16 @@ function runProcess(input) {
         });
       }
     });
+    input.abortSignal?.addEventListener("abort", onAbort, { once: true });
+    if (input.abortSignal?.aborted) {
+      onAbort();
+    }
     child.stdin.on("error", () => void 0);
     child.stdin.end(input.stdin ?? "");
   });
+}
+function processAbortError(signal) {
+  return signal.reason instanceof Error ? signal.reason : new Error("process_aborted");
 }
 function writeProcessLogChunk(stream, chunk) {
   if (!stream) return;
@@ -24211,6 +24403,9 @@ function classifyCodexBootstrapFailure(error51) {
   );
 }
 function classifyPostWritebackCodexFailure(error51) {
+  if (isStalePullRequestHeadError(error51)) {
+    return error51;
+  }
   if (error51 instanceof Error && error51.message === "review_runtime_budget_exhausted_before_launch") {
     return error51;
   }
