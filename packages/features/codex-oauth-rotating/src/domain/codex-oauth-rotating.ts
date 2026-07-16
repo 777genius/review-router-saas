@@ -693,9 +693,6 @@ export function scanCodexRotatingAdvisoryWorkflow(
       errors.push(code);
     }
   }
-  if (!workflow.includes("converted_to_draft")) {
-    errors.push("converted_to_draft_trigger_required");
-  }
   const hasRefreshTrigger =
     /\bworkflow_dispatch\s*:/.test(workflow) || /\bschedule\s*:/.test(workflow);
   if (hasRefreshTrigger && !refreshEnabled) {

@@ -154,13 +154,13 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     ).rejects.toThrow("codex_rotating_secret_put_unexpected_status");
   });
 
-  it("verifies the exact workflow source at workflow_sha before prelease", async () => {
+  it("verifies a legacy workflow source at workflow_sha before prelease", async () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef:
         "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
       apiUrl: "https://reviewrouter.site",
       providerInstanceId: "codex-rotating:123456",
-    });
+    }).replaceAll(", converted_to_draft", "");
     mocks.auth.mockResolvedValueOnce({
       token: "ghs_contents_read_token",
       expiresAt: "2026-05-25T12:15:00.000Z",
