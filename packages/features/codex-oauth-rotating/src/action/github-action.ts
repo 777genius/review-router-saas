@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, createReadStream } from "node:fs";
 import http from "node:http";
@@ -711,12 +711,20 @@ export async function runCodexRotatingGitHubAction(
               }),
           });
           try {
-            await deleteFullRuntimeProgressComments({
+            await deleteFullRuntimeProgressCommentsWithTokenRefresh({
               fetchImpl,
               token: cleanupCommentToken,
               owner: event.owner,
               repo: event.repo,
               issueNumber: event.number,
+              refreshToken: () =>
+                refreshCleanupCommentToken({
+                  fetchImpl,
+                  inputs,
+                  leaseId: prelease.leaseId,
+                  event,
+                  io,
+                }),
             });
           } catch {
             notice(io, "ReviewRouter could not clean up progress comments.");
@@ -1018,12 +1026,20 @@ async function runForkAgenticSandboxGitHubAction(input: {
           reviewRuntimeFailure = error;
         }
         try {
-          await deleteFullRuntimeProgressComments({
+          await deleteFullRuntimeProgressCommentsWithTokenRefresh({
             fetchImpl: input.fetchImpl,
             token: cleanupCommentToken,
             owner: event.owner,
             repo: event.repo,
             issueNumber: event.number,
+            refreshToken: () =>
+              refreshCleanupCommentToken({
+                fetchImpl: input.fetchImpl,
+                inputs: input.inputs,
+                leaseId: prelease.leaseId,
+                event,
+                io: input.io,
+              }),
           });
         } catch {
           notice(
@@ -1429,14 +1445,17 @@ async function requestGitHubActionsOidcToken(input: {
     throw new Error("github_oidc_unavailable");
   }
   const separator = requestUrl.includes("?") ? "&" : "?";
-  const response = await fetchWithRetry({
+  const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_oidc",
     timeoutMs: oidcRequestTimeoutMs,
     url: `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
     init: { headers: { authorization: `bearer ${requestToken}` } },
+    consume: async (response) => ({
+      response,
+      body: (await response.json()) as { readonly value?: unknown },
+    }),
   });
-  const body = (await response.json()) as { readonly value?: unknown };
   if (
     !response.ok ||
     typeof body.value !== "string" ||
@@ -1454,7 +1473,7 @@ async function postJson<T = unknown>(input: {
   readonly body: unknown;
   readonly signal?: AbortSignal | undefined;
 }): Promise<T> {
-  const response = await fetchWithRetry({
+  const { response, text } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: input.label,
     timeoutMs: controlPlaneRequestTimeoutMs,
@@ -1465,13 +1484,37 @@ async function postJson<T = unknown>(input: {
       body: JSON.stringify(input.body),
       ...(input.signal ? { signal: input.signal } : {}),
     },
+    consume: async (response) => ({ response, text: await response.text() }),
   });
-  const text = await response.text();
   const parsed = text ? (JSON.parse(text) as unknown) : {};
   if (!response.ok) {
     throw new Error(safeRemoteError(parsed, response.status));
   }
   return parsed as T;
+}
+
+async function refreshCleanupCommentToken(input: {
+  readonly fetchImpl: FetchLike;
+  readonly inputs: ActionInputs;
+  readonly leaseId: string;
+  readonly event: PullRequestEvent;
+  readonly io: ActionIO;
+}): Promise<string> {
+  const refreshedToken = await postJson<CommentTokenResponse>({
+    fetchImpl: input.fetchImpl,
+    label: "api_comment_token_cleanup_refresh",
+    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    body: {
+      leaseId: input.leaseId,
+      providerInstanceId: input.inputs.providerInstanceId,
+      authCleared: true,
+    },
+  });
+  if (refreshedToken.repository !== input.event.repository) {
+    throw new Error("comment_token_repository_mismatch");
+  }
+  mask(input.io, refreshedToken.token);
+  return refreshedToken.token;
 }
 
 async function tryRestoreReviewSnapshot(input: {
@@ -1613,22 +1656,45 @@ async function tryCommitReviewSnapshot(input: {
       return false;
     }
 
-    const response = await postJson<unknown>({
-      fetchImpl: input.fetchImpl,
-      label: "api_review_snapshot_commit",
-      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/commit`,
-      body: {
-        ...candidate,
-        leaseId: input.leaseId,
-        providerInstanceId: input.inputs.providerInstanceId,
-      },
-    });
-    const parsedResponse =
-      reviewSnapshotCommitResponseSchema.safeParse(response);
-    if (!parsedResponse.success) {
-      throw new Error("review_snapshot_commit_response_invalid");
+    const commitSnapshot = async (expectedVersion: number) => {
+      const response = await postJson<unknown>({
+        fetchImpl: input.fetchImpl,
+        label: "api_review_snapshot_commit",
+        url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/commit`,
+        body: {
+          ...candidate,
+          expectedVersion,
+          leaseId: input.leaseId,
+          providerInstanceId: input.inputs.providerInstanceId,
+        },
+      });
+      const parsedResponse =
+        reviewSnapshotCommitResponseSchema.safeParse(response);
+      if (!parsedResponse.success) {
+        throw new Error("review_snapshot_commit_response_invalid");
+      }
+      return parsedResponse.data;
+    };
+    let commitResult = await commitSnapshot(candidate.expectedVersion);
+    if (
+      commitResult.status === "conflict" &&
+      commitResult.currentHeadSha !== candidate.reviewedHeadSha
+    ) {
+      const recheckedHeadSha = await fetchCurrentPullRequestHeadSha({
+        fetchImpl: input.fetchImpl,
+        token: headToken.token,
+        event: input.event,
+      });
+      if (recheckedHeadSha !== candidate.reviewedHeadSha) {
+        notice(
+          input.io,
+          "ReviewRouter skipped a stale incremental snapshot because the PR head changed.",
+        );
+        return false;
+      }
+      commitResult = await commitSnapshot(commitResult.currentVersion);
     }
-    if (parsedResponse.data.status === "conflict") {
+    if (commitResult.status === "conflict") {
       notice(
         input.io,
         "ReviewRouter kept a newer incremental snapshot from another run.",
@@ -1730,7 +1796,7 @@ async function fetchCurrentPullRequestHeadSha(input: {
   readonly event: PullRequestEvent;
   readonly signal?: AbortSignal | undefined;
 }): Promise<string> {
-  const response = await fetchWithRetry({
+  const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_pull_request_head",
     timeoutMs: githubRequestTimeoutMs,
@@ -1743,15 +1809,22 @@ async function fetchCurrentPullRequestHeadSha(input: {
       },
       ...(input.signal ? { signal: input.signal } : {}),
     },
+    consume: async (response) => ({
+      response,
+      body:
+        response.status === 401
+          ? undefined
+          : ((await response.json()) as {
+              readonly head?: { readonly sha?: unknown };
+            }),
+    }),
   });
   if (response.status === 401) {
     await discardResponseBody(response);
     throw new Error("github_pull_request_head_auth_expired");
   }
-  const body = (await response.json()) as {
-    readonly head?: { readonly sha?: unknown };
-  };
   if (
+    body === undefined ||
     !response.ok ||
     typeof body.head?.sha !== "string" ||
     !/^[a-f0-9]{40}$/i.test(body.head.sha)
@@ -1767,7 +1840,7 @@ async function fetchGitHubRepositoryPublicKey(input: {
   readonly repo: string;
   readonly token: string;
 }): Promise<GitHubPublicKeyResponse> {
-  const response = await fetchWithRetry({
+  const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_public_key",
     timeoutMs: githubRequestTimeoutMs,
@@ -1779,8 +1852,11 @@ async function fetchGitHubRepositoryPublicKey(input: {
         "x-github-api-version": "2022-11-28",
       },
     },
+    consume: async (response) => ({
+      response,
+      body: (await response.json()) as Partial<GitHubPublicKeyResponse>,
+    }),
   });
-  const body = (await response.json()) as Partial<GitHubPublicKeyResponse>;
   if (
     !response.ok ||
     typeof body.key !== "string" ||
@@ -1791,14 +1867,15 @@ async function fetchGitHubRepositoryPublicKey(input: {
   return { key: body.key, key_id: body.key_id };
 }
 
-async function fetchWithRetry(input: {
+async function fetchWithRetry<T = Response>(input: {
   readonly fetchImpl: FetchLike;
   readonly label: string;
   readonly url: string;
   readonly init?: RequestInit;
   readonly timeoutMs: number;
   readonly maxAttempts?: number;
-}): Promise<Response> {
+  readonly consume?: ((response: Response) => Promise<T>) | undefined;
+}): Promise<T> {
   const maxAttempts = input.maxAttempts ?? networkRetryMaxAttempts;
   let lastError: unknown;
 
@@ -1819,23 +1896,32 @@ async function fetchWithRetry(input: {
       timedOut = true;
       controller.abort();
     }, input.timeoutMs);
+    let cleanedUp = false;
+    const cleanup = (): void => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
+    };
 
     try {
       const response = await input.fetchImpl(input.url, {
         ...input.init,
         signal: controller.signal,
       });
-      clearTimeout(timeout);
-      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
       if (shouldRetryHttpStatus(response.status) && attempt < maxAttempts) {
         await discardResponseBody(response);
+        cleanup();
         await sleep(networkRetryDelayMs(attempt));
         continue;
       }
-      return response;
+      const result = input.consume
+        ? await input.consume(response)
+        : (response as T);
+      cleanup();
+      return result;
     } catch (error) {
-      clearTimeout(timeout);
-      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
+      cleanup();
       lastError = error;
       if (externalSignal?.aborted) {
         throw new Error(
@@ -1920,6 +2006,8 @@ export async function startCodexLocalProviderProxy(input: {
 }): Promise<LocalProviderProxy> {
   const nonce = randomBytes(24).toString("base64url");
   let requestCount = 0;
+  let closing = false;
+  const activeUpstreamRequests = new Set<AbortController>();
   const server = http.createServer((req, res) => {
     void (async () => {
       try {
@@ -1940,15 +2028,26 @@ export async function startCodexLocalProviderProxy(input: {
           writeProxyError(res, 429, "proxy_request_budget_exceeded");
           return;
         }
-        const upstream = await input.fetchImpl(input.upstreamResponsesUrl, {
-          method: "POST",
-          headers: buildCodexProxyUpstreamHeaders({
-            requestHeaders: req.headers,
-            fallbackAccessToken: input.accessToken,
-          }),
-          body: new Uint8Array(body),
-        });
-        await writeProxyUpstreamResponse(res, upstream);
+        if (closing) {
+          writeProxyError(res, 503, "proxy_closing");
+          return;
+        }
+        const upstreamController = new AbortController();
+        activeUpstreamRequests.add(upstreamController);
+        try {
+          const upstream = await input.fetchImpl(input.upstreamResponsesUrl, {
+            method: "POST",
+            headers: buildCodexProxyUpstreamHeaders({
+              requestHeaders: req.headers,
+              fallbackAccessToken: input.accessToken,
+            }),
+            body: new Uint8Array(body),
+            signal: upstreamController.signal,
+          });
+          await writeProxyUpstreamResponse(res, upstream);
+        } finally {
+          activeUpstreamRequests.delete(upstreamController);
+        }
       } catch {
         writeProxyError(res, 502, "proxy_upstream_failed");
       }
@@ -1969,7 +2068,15 @@ export async function startCodexLocalProviderProxy(input: {
   }
   return {
     baseUrl: `http://127.0.0.1:${address.port}/${nonce}/v1`,
-    close: () => closeHttpServer(server),
+    close: async () => {
+      closing = true;
+      for (const controller of activeUpstreamRequests) {
+        controller.abort(new Error("proxy_closing"));
+      }
+      const closePromise = closeHttpServer(server);
+      server.closeAllConnections();
+      await closePromise;
+    },
   };
 }
 
@@ -3154,6 +3261,7 @@ async function runFullReviewRouterRuntime(input: {
           });
         }
       },
+      shouldFailOpen: (error) => !isPermanentPullRequestHeadPollFailure(error),
       onPollFailure: () => {
         if (headCheckFailureReported) return;
         headCheckFailureReported = true;
@@ -3218,6 +3326,14 @@ async function runFullReviewRouterRuntime(input: {
     headSupervisor?.stop();
     await removeTree(codexBinDir);
   }
+}
+
+function isPermanentPullRequestHeadPollFailure(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message === "comment_token_repository_mismatch" ||
+      error.message === "github_pull_request_head_auth_expired")
+  );
 }
 
 export function buildFullReviewRuntimeEnv(input: {
@@ -3705,6 +3821,42 @@ export async function deleteStaleCodexRotatingSummaryComments(input: {
   }
 }
 
+class GitHubProgressCommentRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+export async function deleteFullRuntimeProgressCommentsWithTokenRefresh(input: {
+  readonly fetchImpl: FetchLike;
+  readonly token: string;
+  readonly owner: string;
+  readonly repo: string;
+  readonly issueNumber: number;
+  readonly refreshToken: () => Promise<string>;
+}): Promise<string> {
+  try {
+    await deleteFullRuntimeProgressComments(input);
+    return input.token;
+  } catch (error) {
+    if (
+      !(error instanceof GitHubProgressCommentRequestError) ||
+      error.status !== 401
+    ) {
+      throw error;
+    }
+    const refreshedToken = await input.refreshToken();
+    await deleteFullRuntimeProgressComments({
+      ...input,
+      token: refreshedToken,
+    });
+    return refreshedToken;
+  }
+}
+
 export async function deleteFullRuntimeProgressComments(input: {
   readonly fetchImpl: FetchLike;
   readonly token: string;
@@ -3727,7 +3879,10 @@ export async function deleteFullRuntimeProgressComments(input: {
     },
   });
   if (!commentsResponse.ok) {
-    throw new Error("github_progress_comment_lookup_failed");
+    throw new GitHubProgressCommentRequestError(
+      "github_progress_comment_lookup_failed",
+      commentsResponse.status,
+    );
   }
   const comments = (await commentsResponse.json()) as unknown;
   if (!Array.isArray(comments)) {
@@ -3759,7 +3914,10 @@ export async function deleteFullRuntimeProgressComments(input: {
       },
     });
     if (!deleteResponse.ok) {
-      throw new Error("github_progress_comment_delete_failed");
+      throw new GitHubProgressCommentRequestError(
+        "github_progress_comment_delete_failed",
+        deleteResponse.status,
+      );
     }
   }
 }
@@ -3806,6 +3964,104 @@ class AlreadyReportedRuntimeFailure extends Error {
 
 type KillableChildProcess = Pick<ReturnType<typeof spawn>, "pid" | "kill">;
 
+type UnixProcessEntry = {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly processGroupId: number;
+};
+
+type CapturedUnixProcessTree = {
+  readonly rootPid: number;
+  readonly processGroupIds: readonly number[];
+};
+
+function captureUnixProcessTree(
+  rootPid: number,
+): CapturedUnixProcessTree | null {
+  if (process.platform === "win32") return null;
+  try {
+    const output = execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], {
+      encoding: "utf8",
+      timeout: 2_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const entries = output
+      .split("\n")
+      .map((line): UnixProcessEntry | null => {
+        const [pid, parentPid, processGroupId] = line
+          .trim()
+          .split(/\s+/)
+          .map(Number);
+        if (
+          !Number.isSafeInteger(pid) ||
+          !Number.isSafeInteger(parentPid) ||
+          !Number.isSafeInteger(processGroupId)
+        ) {
+          return null;
+        }
+        return {
+          pid: pid!,
+          parentPid: parentPid!,
+          processGroupId: processGroupId!,
+        };
+      })
+      .filter((entry): entry is UnixProcessEntry => entry !== null);
+    const descendants = new Set<number>([rootPid]);
+    let foundNewDescendant = true;
+    while (foundNewDescendant) {
+      foundNewDescendant = false;
+      for (const entry of entries) {
+        if (descendants.has(entry.parentPid) && !descendants.has(entry.pid)) {
+          descendants.add(entry.pid);
+          foundNewDescendant = true;
+        }
+      }
+    }
+    const ownProcessGroupId = entries.find(
+      (entry) => entry.pid === process.pid,
+    )?.processGroupId;
+    const processGroupIds = new Set<number>();
+    for (const entry of entries) {
+      if (
+        descendants.has(entry.pid) &&
+        entry.processGroupId > 0 &&
+        entry.processGroupId !== ownProcessGroupId
+      ) {
+        processGroupIds.add(entry.processGroupId);
+      }
+    }
+    if (processGroupIds.size === 0 && rootPid > 0) {
+      processGroupIds.add(rootPid);
+    }
+    return {
+      rootPid,
+      processGroupIds: [...processGroupIds].sort((left, right) => {
+        if (left === rootPid) return 1;
+        if (right === rootPid) return -1;
+        return left - right;
+      }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function signalCapturedUnixProcessTree(
+  tree: CapturedUnixProcessTree,
+  signal: NodeJS.Signals,
+): boolean {
+  let signaled = false;
+  for (const processGroupId of tree.processGroupIds) {
+    try {
+      process.kill(-processGroupId, signal);
+      signaled = true;
+    } catch {
+      // Continue signaling the remaining captured groups; termination is best effort.
+    }
+  }
+  return signaled;
+}
+
 export function signalProcessTree(
   child: KillableChildProcess,
   signal: NodeJS.Signals,
@@ -3847,6 +4103,7 @@ export function runProcess(input: {
     let outputBytes = 0;
     let settled = false;
     let terminationError: unknown;
+    let terminationProcessTree: CapturedUnixProcessTree | null = null;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
@@ -3869,9 +4126,19 @@ export function runProcess(input: {
     const requestTermination = (error: unknown): void => {
       if (settled || terminationError !== undefined) return;
       terminationError = error;
-      signalProcessTree(child, "SIGTERM");
+      terminationProcessTree =
+        child.pid === undefined ? null : captureUnixProcessTree(child.pid);
+      if (terminationProcessTree) {
+        signalCapturedUnixProcessTree(terminationProcessTree, "SIGTERM");
+      } else {
+        signalProcessTree(child, "SIGTERM");
+      }
       forceKillTimer = setTimeout(() => {
-        signalProcessTree(child, "SIGKILL");
+        if (terminationProcessTree) {
+          signalCapturedUnixProcessTree(terminationProcessTree, "SIGKILL");
+        } else {
+          signalProcessTree(child, "SIGKILL");
+        }
         settle({ error: terminationError });
       }, input.terminationGracePeriodMs ?? processTerminationGracePeriodMs);
     };

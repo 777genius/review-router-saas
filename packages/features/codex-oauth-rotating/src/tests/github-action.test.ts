@@ -17,6 +17,7 @@ import {
   buildCodexCommand,
   buildFullReviewRuntimeEnv,
   deleteFullRuntimeProgressComments,
+  deleteFullRuntimeProgressCommentsWithTokenRefresh,
   deleteStaleCodexRotatingSummaryComments,
   didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure,
@@ -101,7 +102,8 @@ describe("Codex rotating GitHub Action runtime", () => {
               [
                 "const { spawn } = require('node:child_process');",
                 "const { writeFileSync } = require('node:fs');",
-                "const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
+                "const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore', detached: true });",
+                "child.unref();",
                 "writeFileSync(process.env.GRANDCHILD_PID_PATH, String(child.pid));",
                 "process.on('SIGTERM', () => {});",
                 "setInterval(() => {}, 1000);",
@@ -145,7 +147,8 @@ describe("Codex rotating GitHub Action runtime", () => {
             [
               "const { spawn } = require('node:child_process');",
               "const { writeFileSync } = require('node:fs');",
-              "const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
+              "const child = spawn(process.execPath, ['-e', `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`], { stdio: 'ignore', detached: true });",
+              "child.unref();",
               "writeFileSync(process.env.GRANDCHILD_PID_PATH, String(child.pid));",
               "process.on('SIGTERM', () => {});",
               "setInterval(() => {}, 1000);",
@@ -1554,6 +1557,41 @@ describe("Codex rotating GitHub Action runtime", () => {
     }
   });
 
+  it("aborts an in-flight upstream request when the local provider proxy closes", async () => {
+    let observedSignal: AbortSignal | undefined;
+    let markUpstreamStarted: (() => void) | undefined;
+    const upstreamStarted = new Promise<void>((resolve) => {
+      markUpstreamStarted = resolve;
+    });
+    const proxy = await startCodexLocalProviderProxy({
+      accessToken: "proxy-access-token",
+      upstreamResponsesUrl: "https://api.openai.test/v1/responses",
+      fetchImpl: vi.fn(
+        async (_url: string | URL, init?: RequestInit): Promise<Response> => {
+          observedSignal = init?.signal ?? undefined;
+          markUpstreamStarted?.();
+          return new Promise((_resolve, reject) => {
+            observedSignal?.addEventListener(
+              "abort",
+              () => reject(new Error("upstream_aborted")),
+              { once: true },
+            );
+          });
+        },
+      ) as unknown as typeof fetch,
+    });
+
+    const downstreamRequest = fetch(`${proxy.baseUrl}/responses`, {
+      method: "POST",
+      body: JSON.stringify({ input: "review" }),
+    }).catch(() => undefined);
+    await upstreamStarted;
+    await proxy.close();
+    await downstreamRequest;
+
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
   it("redacts token-like values before posting the PR comment", () => {
     const comment = sanitizeReviewComment(
       '<!-- reviewrouter:codex-oauth-rotating head=0123456789abcdef0123456789abcdef01234567 -->\nFinding\nrefresh_token = "secret-refresh"\naccess_token: secret-access\nid_token: secret-id',
@@ -1707,6 +1745,40 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(methods).not.toContain(
       "DELETE https://api.github.com/repos/777genius/agent-teams-ai/issues/comments/456",
     );
+  });
+
+  it("refreshes an expired comment token once before progress cleanup", async () => {
+    const authorizationHeaders: string[] = [];
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const authorization =
+        new Headers(init?.headers).get("authorization") ?? "";
+      authorizationHeaders.push(authorization);
+      if (authorization === "Bearer expired-token") {
+        return new Response(JSON.stringify({ message: "Bad credentials" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return jsonResponse([]);
+    }) as unknown as typeof fetch;
+    const refreshToken = vi.fn().mockResolvedValue("fresh-token");
+
+    await expect(
+      deleteFullRuntimeProgressCommentsWithTokenRefresh({
+        fetchImpl,
+        token: "expired-token",
+        owner: "777genius",
+        repo: "agent-teams-ai",
+        issueNumber: 118,
+        refreshToken,
+      }),
+    ).resolves.toBe("fresh-token");
+
+    expect(refreshToken).toHaveBeenCalledTimes(1);
+    expect(authorizationHeaders).toEqual([
+      "Bearer expired-token",
+      "Bearer fresh-token",
+    ]);
   });
 
   it("runs fork sandbox E2E with certified provider context in the child runtime", async () => {
@@ -2071,6 +2143,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     const pullRequestAuthorizationHeaders: string[] = [];
     const issueCommentAuthorizationHeaders: string[] = [];
     let commentTokenIssueCount = 0;
+    let snapshotCommitCount = 0;
     const refreshedAuthJson = JSON.stringify({
       auth_mode: "chatgpt",
       tokens: {
@@ -2391,10 +2464,19 @@ describe("Codex rotating GitHub Action runtime", () => {
         });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/review-snapshot/commit")) {
+        snapshotCommitCount += 1;
+        if (snapshotCommitCount === 1) {
+          return jsonResponse({
+            protocolVersion: 1,
+            status: "conflict",
+            currentVersion: 5,
+            currentHeadSha: "f".repeat(40),
+          });
+        }
         return jsonResponse({
           protocolVersion: 1,
           status: "committed",
-          version: 1,
+          version: 6,
           reviewedHeadSha: "0123456789abcdef0123456789abcdef01234567",
         });
       }
@@ -2516,6 +2598,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         "Bearer ghs_comment_token",
         "Bearer ghs_refreshed_comment_token",
         "Bearer ghs_snapshot_head_token",
+        "Bearer ghs_snapshot_head_token",
       ]);
       expect(commentTokenIssueCount).toBe(2);
       expect(issueCommentAuthorizationHeaders).toEqual([
@@ -2532,6 +2615,11 @@ describe("Codex rotating GitHub Action runtime", () => {
         expectedVersion: 4,
         pullRequestNumber: 118,
       });
+      const snapshotCommitVersions = requestBodies
+        .map((body) => JSON.parse(body) as Record<string, unknown>)
+        .filter((body) => body.compatibilityKey === "c".repeat(64))
+        .map((body) => body.expectedVersion);
+      expect(snapshotCommitVersions).toEqual([4, 5]);
       const checkpointClearBody = requestBodies
         .map((body) => JSON.parse(body) as Record<string, unknown>)
         .find((body) => body.planHash === "d".repeat(64));

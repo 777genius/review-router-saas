@@ -11,6 +11,7 @@ export async function startPullRequestHeadSupervisor(input: {
   readonly readCurrentHeadSha: (signal: AbortSignal) => Promise<string>;
   readonly pollIntervalMs?: number;
   readonly onPollFailure?: (error: unknown) => void;
+  readonly shouldFailOpen?: (error: unknown) => boolean;
 }): Promise<PullRequestHeadSupervisor> {
   const controller = new AbortController();
   const pollIntervalMs = input.pollIntervalMs ?? 30_000;
@@ -35,6 +36,16 @@ export async function startPullRequestHeadSupervisor(input: {
       }
     } catch (error) {
       if (!stopped) {
+        if (input.shouldFailOpen?.(error) === false) {
+          controller.abort(
+            error instanceof Error
+              ? error
+              : new Error("pull_request_head_supervisor_fatal_error", {
+                  cause: error,
+                }),
+          );
+          return;
+        }
         try {
           input.onPollFailure?.(error);
         } catch {

@@ -58,6 +58,22 @@ describe("pull request head supervisor", () => {
     supervisor.stop();
   });
 
+  it("fails closed when the caller classifies a poll failure as permanent", async () => {
+    const fatalError = new Error("comment_token_repository_mismatch");
+    const onPollFailure = vi.fn();
+    const supervisor = await startPullRequestHeadSupervisor({
+      expectedHeadSha: "a".repeat(40),
+      readCurrentHeadSha: vi.fn().mockRejectedValue(fatalError),
+      shouldFailOpen: () => false,
+      onPollFailure,
+    });
+
+    expect(supervisor.signal.aborted).toBe(true);
+    expect(supervisor.signal.reason).toBe(fatalError);
+    expect(onPollFailure).not.toHaveBeenCalled();
+    supervisor.stop();
+  });
+
   it("does not schedule more checks after stop", async () => {
     vi.useFakeTimers();
     const readCurrentHeadSha = vi

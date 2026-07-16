@@ -35,6 +35,7 @@ __export(github_action_exports, {
   buildCodexCommand: () => buildCodexCommand,
   buildFullReviewRuntimeEnv: () => buildFullReviewRuntimeEnv,
   deleteFullRuntimeProgressComments: () => deleteFullRuntimeProgressComments,
+  deleteFullRuntimeProgressCommentsWithTokenRefresh: () => deleteFullRuntimeProgressCommentsWithTokenRefresh,
   deleteStaleCodexRotatingSummaryComments: () => deleteStaleCodexRotatingSummaryComments,
   didReviewRuntimeComplete: () => didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure: () => extractReviewRouterRuntimeFailure,
@@ -21466,6 +21467,14 @@ async function startPullRequestHeadSupervisor(input) {
       }
     } catch (error51) {
       if (!stopped) {
+        if (input.shouldFailOpen?.(error51) === false) {
+          controller.abort(
+            error51 instanceof Error ? error51 : new Error("pull_request_head_supervisor_fatal_error", {
+              cause: error51
+            })
+          );
+          return;
+        }
         try {
           input.onPollFailure?.(error51);
         } catch {
@@ -21914,12 +21923,19 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
             })
           });
           try {
-            await deleteFullRuntimeProgressComments({
+            await deleteFullRuntimeProgressCommentsWithTokenRefresh({
               fetchImpl,
               token: cleanupCommentToken,
               owner: event.owner,
               repo: event.repo,
-              issueNumber: event.number
+              issueNumber: event.number,
+              refreshToken: () => refreshCleanupCommentToken({
+                fetchImpl,
+                inputs,
+                leaseId: prelease.leaseId,
+                event,
+                io
+              })
             });
           } catch {
             notice(io, "ReviewRouter could not clean up progress comments.");
@@ -22186,12 +22202,19 @@ async function runForkAgenticSandboxGitHubAction(input) {
           reviewRuntimeFailure = error51;
         }
         try {
-          await deleteFullRuntimeProgressComments({
+          await deleteFullRuntimeProgressCommentsWithTokenRefresh({
             fetchImpl: input.fetchImpl,
             token: cleanupCommentToken,
             owner: event.owner,
             repo: event.repo,
-            issueNumber: event.number
+            issueNumber: event.number,
+            refreshToken: () => refreshCleanupCommentToken({
+              fetchImpl: input.fetchImpl,
+              inputs: input.inputs,
+              leaseId: prelease.leaseId,
+              event,
+              io: input.io
+            })
           });
         } catch {
           notice(
@@ -22486,21 +22509,24 @@ async function requestGitHubActionsOidcToken(input) {
     throw new Error("github_oidc_unavailable");
   }
   const separator = requestUrl.includes("?") ? "&" : "?";
-  const response = await fetchWithRetry({
+  const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_oidc",
     timeoutMs: oidcRequestTimeoutMs,
     url: `${requestUrl}${separator}audience=${encodeURIComponent(input.audience)}`,
-    init: { headers: { authorization: `bearer ${requestToken}` } }
+    init: { headers: { authorization: `bearer ${requestToken}` } },
+    consume: async (response2) => ({
+      response: response2,
+      body: await response2.json()
+    })
   });
-  const body = await response.json();
   if (!response.ok || typeof body.value !== "string" || body.value.length === 0) {
     throw new Error("github_oidc_request_failed");
   }
   return body.value;
 }
 async function postJson(input) {
-  const response = await fetchWithRetry({
+  const { response, text } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: input.label,
     timeoutMs: controlPlaneRequestTimeoutMs,
@@ -22510,14 +22536,31 @@ async function postJson(input) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input.body),
       ...input.signal ? { signal: input.signal } : {}
-    }
+    },
+    consume: async (response2) => ({ response: response2, text: await response2.text() })
   });
-  const text = await response.text();
   const parsed = text ? JSON.parse(text) : {};
   if (!response.ok) {
     throw new Error(safeRemoteError(parsed, response.status));
   }
   return parsed;
+}
+async function refreshCleanupCommentToken(input) {
+  const refreshedToken = await postJson({
+    fetchImpl: input.fetchImpl,
+    label: "api_comment_token_cleanup_refresh",
+    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/comment-token`,
+    body: {
+      leaseId: input.leaseId,
+      providerInstanceId: input.inputs.providerInstanceId,
+      authCleared: true
+    }
+  });
+  if (refreshedToken.repository !== input.event.repository) {
+    throw new Error("comment_token_repository_mismatch");
+  }
+  mask(input.io, refreshedToken.token);
+  return refreshedToken.token;
 }
 async function tryRestoreReviewSnapshot(input) {
   try {
@@ -22617,21 +22660,41 @@ async function tryCommitReviewSnapshot(input) {
       );
       return false;
     }
-    const response = await postJson({
-      fetchImpl: input.fetchImpl,
-      label: "api_review_snapshot_commit",
-      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/commit`,
-      body: {
-        ...candidate,
-        leaseId: input.leaseId,
-        providerInstanceId: input.inputs.providerInstanceId
+    const commitSnapshot = async (expectedVersion) => {
+      const response = await postJson({
+        fetchImpl: input.fetchImpl,
+        label: "api_review_snapshot_commit",
+        url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-snapshot/commit`,
+        body: {
+          ...candidate,
+          expectedVersion,
+          leaseId: input.leaseId,
+          providerInstanceId: input.inputs.providerInstanceId
+        }
+      });
+      const parsedResponse = reviewSnapshotCommitResponseSchema.safeParse(response);
+      if (!parsedResponse.success) {
+        throw new Error("review_snapshot_commit_response_invalid");
       }
-    });
-    const parsedResponse = reviewSnapshotCommitResponseSchema.safeParse(response);
-    if (!parsedResponse.success) {
-      throw new Error("review_snapshot_commit_response_invalid");
+      return parsedResponse.data;
+    };
+    let commitResult = await commitSnapshot(candidate.expectedVersion);
+    if (commitResult.status === "conflict" && commitResult.currentHeadSha !== candidate.reviewedHeadSha) {
+      const recheckedHeadSha = await fetchCurrentPullRequestHeadSha({
+        fetchImpl: input.fetchImpl,
+        token: headToken.token,
+        event: input.event
+      });
+      if (recheckedHeadSha !== candidate.reviewedHeadSha) {
+        notice(
+          input.io,
+          "ReviewRouter skipped a stale incremental snapshot because the PR head changed."
+        );
+        return false;
+      }
+      commitResult = await commitSnapshot(commitResult.currentVersion);
     }
-    if (parsedResponse.data.status === "conflict") {
+    if (commitResult.status === "conflict") {
       notice(
         input.io,
         "ReviewRouter kept a newer incremental snapshot from another run."
@@ -22711,7 +22774,7 @@ async function tryReadFinalizedReviewCheckpointMarker(input) {
   }
 }
 async function fetchCurrentPullRequestHeadSha(input) {
-  const response = await fetchWithRetry({
+  const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_pull_request_head",
     timeoutMs: githubRequestTimeoutMs,
@@ -22723,20 +22786,23 @@ async function fetchCurrentPullRequestHeadSha(input) {
         "x-github-api-version": "2022-11-28"
       },
       ...input.signal ? { signal: input.signal } : {}
-    }
+    },
+    consume: async (response2) => ({
+      response: response2,
+      body: response2.status === 401 ? void 0 : await response2.json()
+    })
   });
   if (response.status === 401) {
     await discardResponseBody(response);
     throw new Error("github_pull_request_head_auth_expired");
   }
-  const body = await response.json();
-  if (!response.ok || typeof body.head?.sha !== "string" || !/^[a-f0-9]{40}$/i.test(body.head.sha)) {
+  if (body === void 0 || !response.ok || typeof body.head?.sha !== "string" || !/^[a-f0-9]{40}$/i.test(body.head.sha)) {
     throw new Error("github_pull_request_head_fetch_failed");
   }
   return body.head.sha;
 }
 async function fetchGitHubRepositoryPublicKey(input) {
-  const response = await fetchWithRetry({
+  const { response, body } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
     label: "github_public_key",
     timeoutMs: githubRequestTimeoutMs,
@@ -22747,9 +22813,12 @@ async function fetchGitHubRepositoryPublicKey(input) {
         authorization: `Bearer ${input.token}`,
         "x-github-api-version": "2022-11-28"
       }
-    }
+    },
+    consume: async (response2) => ({
+      response: response2,
+      body: await response2.json()
+    })
   });
-  const body = await response.json();
   if (!response.ok || typeof body.key !== "string" || typeof body.key_id !== "string") {
     throw new Error("github_public_key_fetch_failed");
   }
@@ -22775,22 +22844,29 @@ async function fetchWithRetry(input) {
       timedOut = true;
       controller.abort();
     }, input.timeoutMs);
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
+    };
     try {
       const response = await input.fetchImpl(input.url, {
         ...input.init,
         signal: controller.signal
       });
-      clearTimeout(timeout);
-      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
       if (shouldRetryHttpStatus(response.status) && attempt < maxAttempts) {
         await discardResponseBody(response);
+        cleanup();
         await sleep(networkRetryDelayMs(attempt));
         continue;
       }
-      return response;
+      const result = input.consume ? await input.consume(response) : response;
+      cleanup();
+      return result;
     } catch (error51) {
-      clearTimeout(timeout);
-      externalSignal?.removeEventListener("abort", abortFromExternalSignal);
+      cleanup();
       lastError = error51;
       if (externalSignal?.aborted) {
         throw new Error(
@@ -22851,6 +22927,8 @@ function routeCodexLocalProviderRequest(input) {
 async function startCodexLocalProviderProxy(input) {
   const nonce = (0, import_node_crypto6.randomBytes)(24).toString("base64url");
   let requestCount = 0;
+  let closing = false;
+  const activeUpstreamRequests = /* @__PURE__ */ new Set();
   const server = import_node_http.default.createServer((req, res) => {
     void (async () => {
       try {
@@ -22871,15 +22949,26 @@ async function startCodexLocalProviderProxy(input) {
           writeProxyError(res, 429, "proxy_request_budget_exceeded");
           return;
         }
-        const upstream = await input.fetchImpl(input.upstreamResponsesUrl, {
-          method: "POST",
-          headers: buildCodexProxyUpstreamHeaders({
-            requestHeaders: req.headers,
-            fallbackAccessToken: input.accessToken
-          }),
-          body: new Uint8Array(body)
-        });
-        await writeProxyUpstreamResponse(res, upstream);
+        if (closing) {
+          writeProxyError(res, 503, "proxy_closing");
+          return;
+        }
+        const upstreamController = new AbortController();
+        activeUpstreamRequests.add(upstreamController);
+        try {
+          const upstream = await input.fetchImpl(input.upstreamResponsesUrl, {
+            method: "POST",
+            headers: buildCodexProxyUpstreamHeaders({
+              requestHeaders: req.headers,
+              fallbackAccessToken: input.accessToken
+            }),
+            body: new Uint8Array(body),
+            signal: upstreamController.signal
+          });
+          await writeProxyUpstreamResponse(res, upstream);
+        } finally {
+          activeUpstreamRequests.delete(upstreamController);
+        }
       } catch {
         writeProxyError(res, 502, "proxy_upstream_failed");
       }
@@ -22899,7 +22988,15 @@ async function startCodexLocalProviderProxy(input) {
   }
   return {
     baseUrl: `http://127.0.0.1:${address.port}/${nonce}/v1`,
-    close: () => closeHttpServer(server)
+    close: async () => {
+      closing = true;
+      for (const controller of activeUpstreamRequests) {
+        controller.abort(new Error("proxy_closing"));
+      }
+      const closePromise = closeHttpServer(server);
+      server.closeAllConnections();
+      await closePromise;
+    }
   };
 }
 function resolveCodexProxyUpstreamResponsesUrl(env) {
@@ -23782,6 +23879,7 @@ async function runFullReviewRouterRuntime(input) {
           });
         }
       },
+      shouldFailOpen: (error51) => !isPermanentPullRequestHeadPollFailure(error51),
       onPollFailure: () => {
         if (headCheckFailureReported) return;
         headCheckFailureReported = true;
@@ -23845,6 +23943,9 @@ async function runFullReviewRouterRuntime(input) {
     headSupervisor?.stop();
     await removeTree(codexBinDir);
   }
+}
+function isPermanentPullRequestHeadPollFailure(error51) {
+  return error51 instanceof Error && (error51.message === "comment_token_repository_mismatch" || error51.message === "github_pull_request_head_auth_expired");
 }
 function buildFullReviewRuntimeEnv(input) {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
@@ -24195,6 +24296,29 @@ async function deleteStaleCodexRotatingSummaryComments(input) {
     }
   }
 }
+var GitHubProgressCommentRequestError = class extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+  status;
+};
+async function deleteFullRuntimeProgressCommentsWithTokenRefresh(input) {
+  try {
+    await deleteFullRuntimeProgressComments(input);
+    return input.token;
+  } catch (error51) {
+    if (!(error51 instanceof GitHubProgressCommentRequestError) || error51.status !== 401) {
+      throw error51;
+    }
+    const refreshedToken = await input.refreshToken();
+    await deleteFullRuntimeProgressComments({
+      ...input,
+      token: refreshedToken
+    });
+    return refreshedToken;
+  }
+}
 async function deleteFullRuntimeProgressComments(input) {
   const commentsUrl = `https://api.github.com/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/issues/${input.issueNumber}/comments`;
   const commentsResponse = await fetchWithRetry({
@@ -24211,7 +24335,10 @@ async function deleteFullRuntimeProgressComments(input) {
     }
   });
   if (!commentsResponse.ok) {
-    throw new Error("github_progress_comment_lookup_failed");
+    throw new GitHubProgressCommentRequestError(
+      "github_progress_comment_lookup_failed",
+      commentsResponse.status
+    );
   }
   const comments = await commentsResponse.json();
   if (!Array.isArray(comments)) {
@@ -24238,7 +24365,10 @@ async function deleteFullRuntimeProgressComments(input) {
       }
     });
     if (!deleteResponse.ok) {
-      throw new Error("github_progress_comment_delete_failed");
+      throw new GitHubProgressCommentRequestError(
+        "github_progress_comment_delete_failed",
+        deleteResponse.status
+      );
     }
   }
 }
@@ -24269,6 +24399,71 @@ var ProcessExecutionError = class extends Error {
 var AlreadyReportedRuntimeFailure = class extends Error {
   alreadyReportedToGitHub = true;
 };
+function captureUnixProcessTree(rootPid) {
+  if (process.platform === "win32") return null;
+  try {
+    const output = (0, import_node_child_process2.execFileSync)("ps", ["-A", "-o", "pid=,ppid=,pgid="], {
+      encoding: "utf8",
+      timeout: 2e3,
+      maxBuffer: 4 * 1024 * 1024
+    });
+    const entries = output.split("\n").map((line) => {
+      const [pid, parentPid, processGroupId] = line.trim().split(/\s+/).map(Number);
+      if (!Number.isSafeInteger(pid) || !Number.isSafeInteger(parentPid) || !Number.isSafeInteger(processGroupId)) {
+        return null;
+      }
+      return {
+        pid,
+        parentPid,
+        processGroupId
+      };
+    }).filter((entry) => entry !== null);
+    const descendants = /* @__PURE__ */ new Set([rootPid]);
+    let foundNewDescendant = true;
+    while (foundNewDescendant) {
+      foundNewDescendant = false;
+      for (const entry of entries) {
+        if (descendants.has(entry.parentPid) && !descendants.has(entry.pid)) {
+          descendants.add(entry.pid);
+          foundNewDescendant = true;
+        }
+      }
+    }
+    const ownProcessGroupId = entries.find(
+      (entry) => entry.pid === process.pid
+    )?.processGroupId;
+    const processGroupIds = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      if (descendants.has(entry.pid) && entry.processGroupId > 0 && entry.processGroupId !== ownProcessGroupId) {
+        processGroupIds.add(entry.processGroupId);
+      }
+    }
+    if (processGroupIds.size === 0 && rootPid > 0) {
+      processGroupIds.add(rootPid);
+    }
+    return {
+      rootPid,
+      processGroupIds: [...processGroupIds].sort((left, right) => {
+        if (left === rootPid) return 1;
+        if (right === rootPid) return -1;
+        return left - right;
+      })
+    };
+  } catch {
+    return null;
+  }
+}
+function signalCapturedUnixProcessTree(tree, signal) {
+  let signaled = false;
+  for (const processGroupId of tree.processGroupIds) {
+    try {
+      process.kill(-processGroupId, signal);
+      signaled = true;
+    } catch {
+    }
+  }
+  return signaled;
+}
 function signalProcessTree(child, signal, options = {}) {
   const platform = options.platform ?? process.platform;
   if (platform !== "win32" && child.pid !== void 0) {
@@ -24292,6 +24487,7 @@ function runProcess(input) {
     let outputBytes = 0;
     let settled = false;
     let terminationError;
+    let terminationProcessTree = null;
     let forceKillTimer;
     const child = (0, import_node_child_process2.spawn)(input.command, input.args, {
       cwd: input.cwd,
@@ -24314,9 +24510,18 @@ function runProcess(input) {
     const requestTermination = (error51) => {
       if (settled || terminationError !== void 0) return;
       terminationError = error51;
-      signalProcessTree(child, "SIGTERM");
+      terminationProcessTree = child.pid === void 0 ? null : captureUnixProcessTree(child.pid);
+      if (terminationProcessTree) {
+        signalCapturedUnixProcessTree(terminationProcessTree, "SIGTERM");
+      } else {
+        signalProcessTree(child, "SIGTERM");
+      }
       forceKillTimer = setTimeout(() => {
-        signalProcessTree(child, "SIGKILL");
+        if (terminationProcessTree) {
+          signalCapturedUnixProcessTree(terminationProcessTree, "SIGKILL");
+        } else {
+          signalProcessTree(child, "SIGKILL");
+        }
         settle({ error: terminationError });
       }, input.terminationGracePeriodMs ?? processTerminationGracePeriodMs);
     };
@@ -24608,6 +24813,7 @@ if (shouldAutoRunCodexRotatingAction({ env: process.env, argv: process.argv })) 
   buildCodexCommand,
   buildFullReviewRuntimeEnv,
   deleteFullRuntimeProgressComments,
+  deleteFullRuntimeProgressCommentsWithTokenRefresh,
   deleteStaleCodexRotatingSummaryComments,
   didReviewRuntimeComplete,
   extractReviewRouterRuntimeFailure,
