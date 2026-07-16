@@ -20624,6 +20624,7 @@ var codexRotatingOidcClaimsSchema = external_exports.object({
     "workflow_dispatch",
     "schedule"
   ]),
+  ref: external_exports.string().min(1).optional(),
   run_id: external_exports.string().min(1),
   run_attempt: external_exports.string().min(1),
   workflow_ref: external_exports.string().min(1),
@@ -20808,6 +20809,7 @@ var providerNeutralReviewFindingsArtifactFileName = "reviewrouter-findings.json"
 var reviewThreadLifecycleResolveTokenEnvKey = "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN";
 var reviewSnapshotInputFileName = "incremental-snapshot-input.json";
 var reviewSnapshotOutputFileName = "incremental-snapshot-output.json";
+var reviewCheckpointFinalizationFileName = "review-checkpoint-finalization.json";
 var maxReviewSnapshotCandidateBytes = 512 * 1024 + 16 * 1024;
 var reviewSnapshotRestoreResponseSchema = external_exports.object({
   protocolVersion: external_exports.literal(1),
@@ -20888,6 +20890,24 @@ var reviewSnapshotCommitResponseSchema = external_exports.discriminatedUnion("st
     status: external_exports.literal("conflict"),
     currentVersion: external_exports.number().int().nonnegative(),
     currentHeadSha: external_exports.string().regex(/^[a-f0-9]{40}$/i)
+  }).strict()
+]);
+var reviewCheckpointFinalizationMarkerSchema = external_exports.object({
+  protocolVersion: external_exports.literal(1),
+  pullRequestNumber: external_exports.number().int().positive(),
+  headSha: external_exports.string().regex(/^[a-f0-9]{40}$/i),
+  planHash: external_exports.string().regex(/^[a-f0-9]{64}$/i),
+  expectedVersion: external_exports.number().int().positive()
+}).strict();
+var reviewCheckpointClearResponseSchema = external_exports.discriminatedUnion("status", [
+  external_exports.object({
+    protocolVersion: external_exports.literal(1),
+    status: external_exports.enum(["cleared", "missing"])
+  }).strict(),
+  external_exports.object({
+    protocolVersion: external_exports.literal(1),
+    status: external_exports.literal("conflict"),
+    currentVersion: external_exports.number().int().nonnegative()
   }).strict()
 ]);
 async function runCodexRotatingGitHubAction(runtime = {}) {
@@ -21077,6 +21097,10 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
             reviewHome,
             reviewSnapshotOutputFileName
           );
+          const reviewCheckpointFinalizationPath = (0, import_node_path4.join)(
+            reviewHome,
+            reviewCheckpointFinalizationFileName
+          );
           await (0, import_promises4.writeFile)(
             reviewSnapshotInputPath,
             JSON.stringify(reviewSnapshotForRuntime),
@@ -21098,13 +21122,19 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
               runtimeConfigVersion: finalize2.runtimeConfigVersion,
               runtimeEnv: finalize2.runtimeEnv,
               reviewSnapshotInputPath,
-              reviewSnapshotOutputPath
+              reviewSnapshotOutputPath,
+              reviewCheckpointFinalizationPath
             });
           } catch (error51) {
             reviewRuntimeFailure = error51;
           }
-          if (reviewSnapshotOutputPath) {
-            await tryCommitReviewSnapshot({
+          const finalizedCheckpointMarker = await tryReadFinalizedReviewCheckpointMarker({
+            markerPath: reviewCheckpointFinalizationPath,
+            event,
+            io
+          });
+          if (reviewSnapshotOutputPath && finalizedCheckpointMarker) {
+            const snapshotCommitted = await tryCommitReviewSnapshot({
               fetchImpl,
               inputs,
               leaseId: prelease.leaseId,
@@ -21112,6 +21142,15 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
               candidatePath: reviewSnapshotOutputPath,
               io
             });
+            if (snapshotCommitted) {
+              await tryClearFinalizedReviewCheckpoint({
+                fetchImpl,
+                inputs,
+                leaseId: prelease.leaseId,
+                marker: finalizedCheckpointMarker,
+                io
+              });
+            }
           }
           try {
             await deleteFullRuntimeProgressComments({
@@ -21720,7 +21759,7 @@ async function tryCommitReviewSnapshot(input) {
   try {
     candidateStats = await (0, import_promises4.stat)(input.candidatePath);
   } catch {
-    return;
+    return false;
   }
   try {
     if (!candidateStats.isFile() || candidateStats.size > maxReviewSnapshotCandidateBytes) {
@@ -21760,7 +21799,7 @@ async function tryCommitReviewSnapshot(input) {
         input.io,
         "ReviewRouter skipped a stale incremental snapshot because the PR head changed."
       );
-      return;
+      return false;
     }
     const response = await postJson({
       fetchImpl: input.fetchImpl,
@@ -21781,12 +21820,72 @@ async function tryCommitReviewSnapshot(input) {
         input.io,
         "ReviewRouter kept a newer incremental snapshot from another run."
       );
+      return false;
     }
+    return true;
   } catch {
     notice(
       input.io,
       "ReviewRouter completed the review but could not persist its incremental snapshot."
     );
+    return false;
+  }
+}
+async function tryClearFinalizedReviewCheckpoint(input) {
+  try {
+    const response = await postJson({
+      fetchImpl: input.fetchImpl,
+      label: "api_review_checkpoint_clear",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-execution-checkpoint/clear`,
+      body: {
+        protocolVersion: 1,
+        leaseId: input.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        pullRequestNumber: input.marker.pullRequestNumber,
+        expectedVersion: input.marker.expectedVersion,
+        headSha: input.marker.headSha,
+        planHash: input.marker.planHash
+      }
+    });
+    const parsedResponse = reviewCheckpointClearResponseSchema.safeParse(response);
+    if (!parsedResponse.success) {
+      throw new Error("review_checkpoint_clear_response_invalid");
+    }
+    if (parsedResponse.data.status === "conflict") {
+      notice(
+        input.io,
+        "ReviewRouter kept a newer review checkpoint from another run."
+      );
+    }
+  } catch {
+    notice(
+      input.io,
+      "ReviewRouter kept the finalized batch checkpoint for a safe retry."
+    );
+  }
+}
+async function tryReadFinalizedReviewCheckpointMarker(input) {
+  try {
+    const markerStats = await (0, import_promises4.stat)(input.markerPath);
+    if (!markerStats.isFile() || markerStats.size > 8192) {
+      throw new Error("review_checkpoint_marker_size_invalid");
+    }
+    const parsedMarker = reviewCheckpointFinalizationMarkerSchema.safeParse(
+      JSON.parse(await (0, import_promises4.readFile)(input.markerPath, "utf8"))
+    );
+    if (!parsedMarker.success) {
+      throw new Error("review_checkpoint_marker_invalid");
+    }
+    if (parsedMarker.data.pullRequestNumber !== input.event.number || parsedMarker.data.headSha !== input.event.headSha) {
+      throw new Error("review_checkpoint_marker_context_mismatch");
+    }
+    return parsedMarker.data;
+  } catch {
+    notice(
+      input.io,
+      "ReviewRouter did not advance the incremental snapshot because batch finalization was not confirmed."
+    );
+    return null;
   }
 }
 async function fetchCurrentPullRequestHeadSha(input) {
@@ -22781,6 +22880,8 @@ async function runFullReviewRouterRuntime(input) {
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
     await (0, import_promises4.symlink)(input.codexBinaryPath, (0, import_node_path4.join)(codexBinDir, "codex"));
+    const runtimeTimeoutMs = createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3;
+    const executionDeadlineEpochMs = Date.now() + runtimeTimeoutMs;
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
       inputs: input.inputs,
@@ -22795,7 +22896,9 @@ async function runFullReviewRouterRuntime(input) {
       runtimeEnv: input.runtimeEnv,
       reviewThreadLifecycleResolveToken,
       reviewSnapshotInputPath: input.reviewSnapshotInputPath,
-      reviewSnapshotOutputPath: input.reviewSnapshotOutputPath
+      reviewSnapshotOutputPath: input.reviewSnapshotOutputPath,
+      reviewCheckpointFinalizationPath: input.reviewCheckpointFinalizationPath,
+      executionDeadlineEpochMs
     });
     await ensureFullReviewRuntimeTools({
       env: childEnv,
@@ -22809,7 +22912,7 @@ async function runFullReviewRouterRuntime(input) {
       cwd: input.workspace,
       env: childEnv,
       streamOutput: input.io,
-      timeoutMs: createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3
+      timeoutMs: runtimeTimeoutMs
     });
   } catch (error51) {
     throw classifyPostWritebackCodexFailure(error51);
@@ -22828,6 +22931,8 @@ function buildFullReviewRuntimeEnv(input) {
   const reviewThreadLifecycleResolveEnv = input.reviewThreadLifecycleResolveToken ? {
     [reviewThreadLifecycleResolveTokenEnvKey]: input.reviewThreadLifecycleResolveToken
   } : {};
+  const runtimeTimeoutMs = createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes).runtimeTimeoutMinutes * 60 * 1e3;
+  const executionDeadlineEpochMs = input.executionDeadlineEpochMs ?? Date.now() + runtimeTimeoutMs;
   return {
     ...inherited,
     ...runtimeEnv,
@@ -22860,6 +22965,8 @@ function buildFullReviewRuntimeEnv(input) {
     REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
+    REVIEWROUTER_EXECUTION_DEADLINE_EPOCH_MS: String(executionDeadlineEpochMs),
+    REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH: input.reviewCheckpointFinalizationPath ?? "",
     REVIEWROUTER_INCREMENTAL_SNAPSHOT_REQUIRED: "true",
     ...input.reviewSnapshotInputPath ? {
       REVIEWROUTER_INCREMENTAL_SNAPSHOT_INPUT_PATH: input.reviewSnapshotInputPath

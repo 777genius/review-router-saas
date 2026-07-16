@@ -90,16 +90,21 @@ try {
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'DistributedLock') AS distributed_lock_table,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ActionOidcReplayNonce') AS replay_nonce_table,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ReviewSnapshot') AS review_snapshot_table,
+      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ReviewExecutionCheckpoint') AS review_execution_checkpoint_table,
+      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'ReviewExecutionBatchResult') AS review_execution_batch_result_table,
       (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'workspaceId' AND is_nullable = 'NO') AS lease_workspace_scope,
       (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'repositoryId' AND is_nullable = 'NO') AS lease_repository_scope,
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'CodexOAuthLease' AND column_name = 'pullRequestNumber') AS lease_pull_request_scope,
       (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ActionRunHealthReport' AND indexname = 'ActionRunHealthReport_repositoryId_githubRunId_githubRunAtt_key') AS health_unique_index,
       (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ReviewSnapshot' AND indexname = 'ReviewSnapshot_workspaceId_repositoryId_pullRequestNumber_key') AS review_snapshot_unique_index,
+      (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ReviewExecutionCheckpoint' AND indexname = 'ReviewExecutionCheckpoint_workspaceId_repositoryId_pullRequestNumber_key') AS review_execution_checkpoint_unique_index,
+      (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ReviewExecutionBatchResult' AND indexname = 'ReviewExecutionBatchResult_checkpointId_workKey_key') AS review_execution_batch_result_unique_index,
       (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'CodexOAuthLease' AND indexname = 'CodexOAuthLease_repositoryId_status_idx') AS lease_repository_scope_index,
       (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '_prisma_migrations') AS migrations_table;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
-  if (output !== "1|1|1|1|1|1|1|1|1|1|1|1") {
+  if (output !== "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1") {
     console.error(output);
     fail("Migrated schema invariants failed");
   }

@@ -68,6 +68,7 @@ import {
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { PrismaReviewSnapshotRepository } from "@reviewrouter/features-review-snapshots";
+import { PrismaReviewExecutionCheckpointRepository } from "@reviewrouter/features-review-execution-checkpoints";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
@@ -258,6 +259,9 @@ export async function createApiApp(
             codexRotatingOAuth,
             codexRotatingReviewSnapshotAccess: codexRotatingOAuth,
             reviewSnapshots: new PrismaReviewSnapshotRepository(prisma),
+            codexRotatingReviewExecutionCheckpointAccess: codexRotatingOAuth,
+            reviewExecutionCheckpoints:
+              new PrismaReviewExecutionCheckpointRepository(prisma),
             codexRotatingRuntimeGate: {
               assertCodexRotatingOAuthEnabled(input: {
                 readonly repositoryFullName: string;

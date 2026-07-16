@@ -33,6 +33,7 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly providerInstanceId: string;
     readonly githubRunId: string;
     readonly githubRunAttempt: string;
+    readonly pullRequestNumber?: number | undefined;
     readonly now: Date;
   }): Promise<CodexRotatingPreleaseRecord>;
 
@@ -174,4 +175,11 @@ export interface CodexRotatingWorkflowSourceVerifierPort {
     readonly binding: CodexRotatingProviderBinding;
     readonly workflowSourceSha256: string;
   }>;
+
+  resolveWorkflowRunPullRequest?(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly githubRunId: string;
+    readonly githubRunAttempt: string;
+    readonly eventName: "pull_request_target";
+  }): Promise<number>;
 }

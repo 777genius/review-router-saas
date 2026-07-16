@@ -108,6 +108,8 @@ const reviewThreadLifecycleResolveTokenEnvKey =
   "REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN";
 const reviewSnapshotInputFileName = "incremental-snapshot-input.json";
 const reviewSnapshotOutputFileName = "incremental-snapshot-output.json";
+const reviewCheckpointFinalizationFileName =
+  "review-checkpoint-finalization.json";
 const maxReviewSnapshotCandidateBytes = 512 * 1024 + 16 * 1024;
 
 type FetchLike = typeof fetch;
@@ -298,6 +300,32 @@ const reviewSnapshotCommitResponseSchema = z.discriminatedUnion("status", [
     .strict(),
 ]);
 
+const reviewCheckpointFinalizationMarkerSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    pullRequestNumber: z.number().int().positive(),
+    headSha: z.string().regex(/^[a-f0-9]{40}$/i),
+    planHash: z.string().regex(/^[a-f0-9]{64}$/i),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+
+const reviewCheckpointClearResponseSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.enum(["cleared", "missing"]),
+    })
+    .strict(),
+  z
+    .object({
+      protocolVersion: z.literal(1),
+      status: z.literal("conflict"),
+      currentVersion: z.number().int().nonnegative(),
+    })
+    .strict(),
+]);
+
 type ReviewSnapshotRestoreResponse = z.infer<
   typeof reviewSnapshotRestoreResponseSchema
 >;
@@ -333,6 +361,7 @@ type FullReviewRuntimeRunner = (input: {
   readonly runtimeEnv: Record<string, string>;
   readonly reviewSnapshotInputPath?: string | undefined;
   readonly reviewSnapshotOutputPath?: string | undefined;
+  readonly reviewCheckpointFinalizationPath?: string | undefined;
 }) => Promise<void>;
 
 type CodexBinaryManifest = {
@@ -566,6 +595,10 @@ export async function runCodexRotatingGitHubAction(
             reviewHome,
             reviewSnapshotOutputFileName,
           );
+          const reviewCheckpointFinalizationPath = join(
+            reviewHome,
+            reviewCheckpointFinalizationFileName,
+          );
           await writeFile(
             reviewSnapshotInputPath,
             JSON.stringify(reviewSnapshotForRuntime),
@@ -588,12 +621,19 @@ export async function runCodexRotatingGitHubAction(
               runtimeEnv: finalize.runtimeEnv,
               reviewSnapshotInputPath,
               reviewSnapshotOutputPath,
+              reviewCheckpointFinalizationPath,
             });
           } catch (error) {
             reviewRuntimeFailure = error;
           }
-          if (reviewSnapshotOutputPath) {
-            await tryCommitReviewSnapshot({
+          const finalizedCheckpointMarker =
+            await tryReadFinalizedReviewCheckpointMarker({
+              markerPath: reviewCheckpointFinalizationPath,
+              event,
+              io,
+            });
+          if (reviewSnapshotOutputPath && finalizedCheckpointMarker) {
+            const snapshotCommitted = await tryCommitReviewSnapshot({
               fetchImpl,
               inputs,
               leaseId: prelease.leaseId,
@@ -601,6 +641,15 @@ export async function runCodexRotatingGitHubAction(
               candidatePath: reviewSnapshotOutputPath,
               io,
             });
+            if (snapshotCommitted) {
+              await tryClearFinalizedReviewCheckpoint({
+                fetchImpl,
+                inputs,
+                leaseId: prelease.leaseId,
+                marker: finalizedCheckpointMarker,
+                io,
+              });
+            }
           }
           try {
             await deleteFullRuntimeProgressComments({
@@ -1375,12 +1424,12 @@ async function tryCommitReviewSnapshot(input: {
   readonly event: PullRequestEvent;
   readonly candidatePath: string;
   readonly io: ActionIO;
-}): Promise<void> {
+}): Promise<boolean> {
   let candidateStats;
   try {
     candidateStats = await stat(input.candidatePath);
   } catch {
-    return;
+    return false;
   }
   try {
     if (
@@ -1428,7 +1477,7 @@ async function tryCommitReviewSnapshot(input: {
         input.io,
         "ReviewRouter skipped a stale incremental snapshot because the PR head changed.",
       );
-      return;
+      return false;
     }
 
     const response = await postJson<unknown>({
@@ -1451,12 +1500,88 @@ async function tryCommitReviewSnapshot(input: {
         input.io,
         "ReviewRouter kept a newer incremental snapshot from another run.",
       );
+      return false;
     }
+    return true;
   } catch {
     notice(
       input.io,
       "ReviewRouter completed the review but could not persist its incremental snapshot.",
     );
+    return false;
+  }
+}
+
+async function tryClearFinalizedReviewCheckpoint(input: {
+  readonly fetchImpl: FetchLike;
+  readonly inputs: ActionInputs;
+  readonly leaseId: string;
+  readonly marker: z.infer<typeof reviewCheckpointFinalizationMarkerSchema>;
+  readonly io: ActionIO;
+}): Promise<void> {
+  try {
+    const response = await postJson<unknown>({
+      fetchImpl: input.fetchImpl,
+      label: "api_review_checkpoint_clear",
+      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/review-execution-checkpoint/clear`,
+      body: {
+        protocolVersion: 1,
+        leaseId: input.leaseId,
+        providerInstanceId: input.inputs.providerInstanceId,
+        pullRequestNumber: input.marker.pullRequestNumber,
+        expectedVersion: input.marker.expectedVersion,
+        headSha: input.marker.headSha,
+        planHash: input.marker.planHash,
+      },
+    });
+    const parsedResponse =
+      reviewCheckpointClearResponseSchema.safeParse(response);
+    if (!parsedResponse.success) {
+      throw new Error("review_checkpoint_clear_response_invalid");
+    }
+    if (parsedResponse.data.status === "conflict") {
+      notice(
+        input.io,
+        "ReviewRouter kept a newer review checkpoint from another run.",
+      );
+    }
+  } catch {
+    notice(
+      input.io,
+      "ReviewRouter kept the finalized batch checkpoint for a safe retry.",
+    );
+  }
+}
+
+async function tryReadFinalizedReviewCheckpointMarker(input: {
+  readonly markerPath: string;
+  readonly event: PullRequestEvent;
+  readonly io: ActionIO;
+}): Promise<z.infer<typeof reviewCheckpointFinalizationMarkerSchema> | null> {
+  try {
+    const markerStats = await stat(input.markerPath);
+    if (!markerStats.isFile() || markerStats.size > 8_192) {
+      throw new Error("review_checkpoint_marker_size_invalid");
+    }
+    const parsedMarker = reviewCheckpointFinalizationMarkerSchema.safeParse(
+      JSON.parse(await readFile(input.markerPath, "utf8")),
+    );
+    if (!parsedMarker.success) {
+      throw new Error("review_checkpoint_marker_invalid");
+    }
+    if (
+      parsedMarker.data.pullRequestNumber !== input.event.number ||
+      parsedMarker.data.headSha !== input.event.headSha
+    ) {
+      throw new Error("review_checkpoint_marker_context_mismatch");
+    }
+    return parsedMarker.data;
+  } catch {
+    notice(
+      input.io,
+      "ReviewRouter did not advance the incremental snapshot because batch finalization was not confirmed.",
+    );
+    return null;
   }
 }
 
@@ -2779,6 +2904,7 @@ async function runFullReviewRouterRuntime(input: {
   readonly runtimeEnv: Record<string, string>;
   readonly reviewSnapshotInputPath?: string | undefined;
   readonly reviewSnapshotOutputPath?: string | undefined;
+  readonly reviewCheckpointFinalizationPath?: string | undefined;
 }): Promise<void> {
   const actionPath = resolveGitHubActionPath(input.env);
   const runtimePath = join(actionPath, "dist", "index.js");
@@ -2792,6 +2918,12 @@ async function runFullReviewRouterRuntime(input: {
   const codexBinDir = await makeTempDirectory("reviewrouter-codex-bin-");
   try {
     await symlink(input.codexBinaryPath, join(codexBinDir, "codex"));
+    const runtimeTimeoutMs =
+      createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes)
+        .runtimeTimeoutMinutes *
+      60 *
+      1000;
+    const executionDeadlineEpochMs = Date.now() + runtimeTimeoutMs;
     const childEnv = buildFullReviewRuntimeEnv({
       sourceEnv: input.env,
       inputs: input.inputs,
@@ -2807,6 +2939,8 @@ async function runFullReviewRouterRuntime(input: {
       reviewThreadLifecycleResolveToken,
       reviewSnapshotInputPath: input.reviewSnapshotInputPath,
       reviewSnapshotOutputPath: input.reviewSnapshotOutputPath,
+      reviewCheckpointFinalizationPath: input.reviewCheckpointFinalizationPath,
+      executionDeadlineEpochMs,
     });
     await ensureFullReviewRuntimeTools({
       env: childEnv,
@@ -2820,11 +2954,7 @@ async function runFullReviewRouterRuntime(input: {
       cwd: input.workspace,
       env: childEnv,
       streamOutput: input.io,
-      timeoutMs:
-        createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes)
-          .runtimeTimeoutMinutes *
-        60 *
-        1000,
+      timeoutMs: runtimeTimeoutMs,
     });
   } catch (error) {
     throw classifyPostWritebackCodexFailure(error);
@@ -2848,6 +2978,8 @@ export function buildFullReviewRuntimeEnv(input: {
   readonly reviewThreadLifecycleResolveToken?: string | undefined;
   readonly reviewSnapshotInputPath?: string | undefined;
   readonly reviewSnapshotOutputPath?: string | undefined;
+  readonly reviewCheckpointFinalizationPath?: string | undefined;
+  readonly executionDeadlineEpochMs?: number | undefined;
 }): Record<string, string> {
   const inherited = pruneCodexRotatingChildEnv(input.sourceEnv);
   const runtimeEnv = normalizeFullReviewRuntimeEnv(input.runtimeEnv);
@@ -2866,6 +2998,13 @@ export function buildFullReviewRuntimeEnv(input: {
             input.reviewThreadLifecycleResolveToken,
         }
       : {};
+  const runtimeTimeoutMs =
+    createReviewExecutionBudget(input.inputs.reviewTimeoutMinutes)
+      .runtimeTimeoutMinutes *
+    60 *
+    1000;
+  const executionDeadlineEpochMs =
+    input.executionDeadlineEpochMs ?? Date.now() + runtimeTimeoutMs;
   return {
     ...inherited,
     ...runtimeEnv,
@@ -2902,6 +3041,9 @@ export function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
+    REVIEWROUTER_EXECUTION_DEADLINE_EPOCH_MS: String(executionDeadlineEpochMs),
+    REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH:
+      input.reviewCheckpointFinalizationPath ?? "",
     REVIEWROUTER_INCREMENTAL_SNAPSHOT_REQUIRED: "true",
     ...(input.reviewSnapshotInputPath
       ? {

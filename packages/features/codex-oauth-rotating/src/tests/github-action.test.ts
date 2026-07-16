@@ -126,6 +126,9 @@ describe("Codex rotating GitHub Action runtime", () => {
       reviewThreadLifecycleResolveToken: "repo-scoped-lifecycle-token",
       reviewSnapshotInputPath: "/tmp/home/snapshot-input.json",
       reviewSnapshotOutputPath: "/tmp/home/snapshot-output.json",
+      reviewCheckpointFinalizationPath:
+        "/tmp/home/checkpoint-finalization.json",
+      executionDeadlineEpochMs: 1_800_000_000_000,
     });
 
     expect(childEnv.PATH).toContain("/tmp/codex-bin");
@@ -139,6 +142,12 @@ describe("Codex rotating GitHub Action runtime", () => {
     );
     expect(childEnv.REVIEWROUTER_INCREMENTAL_SNAPSHOT_OUTPUT_PATH).toBe(
       "/tmp/home/snapshot-output.json",
+    );
+    expect(childEnv.REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH).toBe(
+      "/tmp/home/checkpoint-finalization.json",
+    );
+    expect(childEnv.REVIEWROUTER_EXECUTION_DEADLINE_EPOCH_MS).toBe(
+      "1800000000000",
     );
   });
 
@@ -1955,6 +1964,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         "  runtimeConfigVersion: process.env.REVIEWROUTER_CONFIG_VERSION,",
         "  snapshotInputPath: process.env.REVIEWROUTER_INCREMENTAL_SNAPSHOT_INPUT_PATH,",
         "  snapshotOutputPath: process.env.REVIEWROUTER_INCREMENTAL_SNAPSHOT_OUTPUT_PATH,",
+        "  checkpointFinalizationPath: process.env.REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH,",
         "  snapshotRequired: process.env.REVIEWROUTER_INCREMENTAL_SNAPSHOT_REQUIRED,",
         "}));",
         "if (process.env.REVIEWROUTER_INCREMENTAL_SNAPSHOT_OUTPUT_PATH) {",
@@ -1968,6 +1978,15 @@ describe("Codex rotating GitHub Action runtime", () => {
         "    baseSha: process.env.REVIEWROUTER_BASE_SHA,",
         `    compatibilityKey: ${JSON.stringify("c".repeat(64))},`,
         "    payload: { reviewSummary: 'Review complete', findings: [] },",
+        "  }));",
+        "}",
+        "if (process.env.REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH) {",
+        "  writeFileSync(process.env.REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH, JSON.stringify({",
+        "    protocolVersion: 1,",
+        "    pullRequestNumber: Number(process.env.PR_NUMBER),",
+        "    headSha: process.env.REVIEWROUTER_HEAD_SHA,",
+        `    planHash: ${JSON.stringify("d".repeat(64))},`,
+        "    expectedVersion: 9,",
         "  }));",
         "}",
         "process.stdout.write('runtime marker visible\\n');",
@@ -2097,6 +2116,13 @@ describe("Codex rotating GitHub Action runtime", () => {
         });
       }
       if (
+        href.endsWith(
+          "/api/action/v1/codex-oauth/review-execution-checkpoint/clear",
+        )
+      ) {
+        return jsonResponse({ protocolVersion: 1, status: "cleared" });
+      }
+      if (
         href ===
         "https://api.github.com/repos/777genius/agent-teams-ai/issues/118/comments?per_page=100"
       ) {
@@ -2192,6 +2218,14 @@ describe("Codex rotating GitHub Action runtime", () => {
       expect(
         invokedUrls.some((url) => url.endsWith("/review-snapshot/head-token")),
       ).toBe(true);
+      const snapshotCommitIndex = invokedUrls.findIndex((url) =>
+        url.endsWith("/review-snapshot/commit"),
+      );
+      const checkpointClearIndex = invokedUrls.findIndex((url) =>
+        url.endsWith("/review-execution-checkpoint/clear"),
+      );
+      expect(snapshotCommitIndex).toBeGreaterThanOrEqual(0);
+      expect(checkpointClearIndex).toBeGreaterThan(snapshotCommitIndex);
       expect(pullRequestAuthorizationHeaders).toEqual([
         "Bearer ghs_snapshot_head_token",
       ]);
@@ -2204,6 +2238,18 @@ describe("Codex rotating GitHub Action runtime", () => {
         providerInstanceId: "codex-rotating:123456",
         expectedVersion: 4,
         pullRequestNumber: 118,
+      });
+      const checkpointClearBody = requestBodies
+        .map((body) => JSON.parse(body) as Record<string, unknown>)
+        .find((body) => body.planHash === "d".repeat(64));
+      expect(checkpointClearBody).toEqual({
+        protocolVersion: 1,
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 118,
+        expectedVersion: 9,
+        headSha: "0123456789abcdef0123456789abcdef01234567",
+        planHash: "d".repeat(64),
       });
       const reviewEnv = JSON.parse(
         readFileSync(codexReviewEnvLog, "utf8"),
@@ -2244,6 +2290,9 @@ describe("Codex rotating GitHub Action runtime", () => {
         ),
         snapshotOutputPath: expect.stringContaining(
           "incremental-snapshot-output.json",
+        ),
+        checkpointFinalizationPath: expect.stringContaining(
+          "review-checkpoint-finalization.json",
         ),
         snapshotRequired: "true",
       });
@@ -2396,6 +2445,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         `  compatibilityKey: ${JSON.stringify("c".repeat(64))},`,
         "  payload: { reviewSummary: 'Blocking review complete', findings: [] },",
         "}));",
+        "writeFileSync(process.env.REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH, '{malformed');",
         "process.stderr.write('::error::ReviewRouter found 2 major+ finding(s). Review comments were posted before failing this check.\\n');",
         "process.exit(1);",
         "",
@@ -2533,7 +2583,7 @@ describe("Codex rotating GitHub Action runtime", () => {
       );
       expect(
         invokedUrls.some((url) => url.endsWith("/review-snapshot/commit")),
-      ).toBe(true);
+      ).toBe(false);
 
       const childStdout = stdoutWrite.mock.calls
         .map(([chunk]) => String(chunk))

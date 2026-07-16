@@ -26,6 +26,7 @@ export async function restoreCodexRotatingReviewSnapshot(
       {
         leaseId: input.leaseId,
         providerInstanceId: input.providerInstanceId,
+        pullRequestNumber: input.pullRequestNumber,
         now,
       },
     );

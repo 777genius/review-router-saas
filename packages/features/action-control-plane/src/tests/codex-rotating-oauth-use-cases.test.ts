@@ -33,6 +33,7 @@ const claims = {
   repository_id: "123456",
   repository_visibility: "private",
   event_name: "pull_request",
+  ref: "refs/pull/240/merge",
   run_id: "9001",
   run_attempt: "1",
   workflow_ref:
@@ -44,6 +45,12 @@ const claims = {
   nbf: Math.floor(now.getTime() / 1000) - 20,
   exp: Math.floor(now.getTime() / 1000) + 120,
   jti: "jti-123456789",
+} as const;
+
+const pullRequestTargetClaims = {
+  ...claims,
+  event_name: "pull_request_target",
+  ref: "refs/heads/main",
 } as const;
 
 describe("Codex rotating OAuth action control plane", () => {
@@ -60,7 +67,7 @@ describe("Codex rotating OAuth action control plane", () => {
     ]);
     const dependencies = {
       oidcVerifier: {
-        verify: vi.fn().mockResolvedValue(claims),
+        verify: vi.fn().mockResolvedValue(pullRequestTargetClaims),
       },
       repositories: {
         findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
@@ -81,6 +88,7 @@ describe("Codex rotating OAuth action control plane", () => {
           workflowSourceSha256:
             "workflow-source-sha256-012345678901234567890123456789",
         }),
+        resolveWorkflowRunPullRequest: vi.fn().mockResolvedValue(240),
       },
       replayNonces: {
         tryConsumeNonce: vi.fn().mockResolvedValue(true),
@@ -149,6 +157,15 @@ describe("Codex rotating OAuth action control plane", () => {
         expectedWorkflowSchemaVersion: 1,
       }),
     );
+    expect(
+      dependencies.codexRotatingWorkflowSourceVerifier
+        .resolveWorkflowRunPullRequest,
+    ).toHaveBeenCalledWith({
+      repository,
+      githubRunId: "9001",
+      githubRunAttempt: "1",
+      eventName: "pull_request_target",
+    });
 
     const finalized = await finalizeCodexRotatingOAuthLease(
       {
@@ -198,6 +215,29 @@ describe("Codex rotating OAuth action control plane", () => {
         dependencies,
       ),
     ).resolves.toEqual({ protocolVersion: 1, status: "accepted" });
+
+    await expect(
+      codexRotatingOAuth.authorizeReviewExecutionCheckpointAccess({
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      scope: { pullRequestNumber: 240 },
+    });
+    await expect(
+      codexRotatingOAuth.authorizeReviewSnapshotAccess({
+        leaseId: prelease.leaseId,
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      scope: { pullRequestNumber: 240 },
+    });
 
     await expect(
       issueCodexRotatingOAuthCheckoutToken(

@@ -889,6 +889,7 @@ export const codexRotatingOidcClaimsSchema = z
       "workflow_dispatch",
       "schedule",
     ]),
+    ref: z.string().min(1).optional(),
     run_id: z.string().min(1),
     run_attempt: z.string().min(1),
     workflow_ref: z.string().min(1),

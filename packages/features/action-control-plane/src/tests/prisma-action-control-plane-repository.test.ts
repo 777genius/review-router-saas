@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   codexRotatingCommentTokenRefreshTtlMs,
+  codexRotatingReviewExecutionCheckpointAccessTtlMs,
   codexRotatingReviewSnapshotAccessTtlMs,
 } from "../domain/codex-rotating-oauth-posting-window.js";
 import {
@@ -124,6 +125,7 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       repository.authorizeReviewSnapshotAccess({
         leaseId: "lease_1",
         providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
         now,
       }),
     ).resolves.toMatchObject({
@@ -175,6 +177,7 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       repository.authorizeReviewSnapshotAccess({
         leaseId: "lease_1",
         providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
         now,
       }),
     ).resolves.toMatchObject({ status: "ready" });
@@ -201,6 +204,69 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       expired.repository.authorizeReviewSnapshotAccess({
         leaseId: "lease_1",
         providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+  });
+
+  it("keeps checkpoint access open for eight hours without widening other access", async () => {
+    const completedAt = new Date(
+      now.getTime() - codexRotatingReviewSnapshotAccessTtlMs - 1,
+    );
+    const { repository } = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt,
+    });
+
+    await expect(
+      repository.findCompletedLeaseWriteTarget({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+    await expect(
+      repository.authorizeReviewSnapshotAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+    await expect(
+      repository.authorizeReviewExecutionCheckpointAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      scope: { workspaceId: "workspace_1", repositoryId: "repo_1" },
+    });
+    await expect(
+      repository.authorizeReviewExecutionCheckpointAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 241,
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+
+    const expired = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(
+        now.getTime() - codexRotatingReviewExecutionCheckpointAccessTtlMs - 1,
+      ),
+    });
+    await expect(
+      expired.repository.authorizeReviewExecutionCheckpointAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
         now,
       }),
     ).resolves.toEqual({ status: "lease_not_active" });
@@ -220,6 +286,14 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
         now,
       }),
     ).resolves.toEqual({ status: "lease_not_active" });
+    await expect(
+      repository.authorizeReviewExecutionCheckpointAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
   });
 
   it("uses the immutable lease repository after the provider is rebound", async () => {
@@ -233,6 +307,18 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
       repository.authorizeReviewSnapshotAccess({
         leaseId: "lease_1",
         providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: "ready",
+      scope: { workspaceId: "workspace_1", repositoryId: "repo_1" },
+    });
+    await expect(
+      repository.authorizeReviewExecutionCheckpointAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
         now,
       }),
     ).resolves.toMatchObject({
@@ -241,35 +327,80 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
     });
     expect(prisma.codexOAuthProviderInstance).toBeUndefined();
   });
+
+  it("fails closed for provider rebinding and cross-workspace lease scope", async () => {
+    const rebound = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(now.getTime() - 20 * 60 * 1000),
+    });
+    await expect(
+      rebound.repository.authorizeReviewExecutionCheckpointAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:rebound",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+
+    const mismatchedWorkspace = buildCodexRotatingRepository({
+      status: "completed",
+      expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
+      completedAt: new Date(now.getTime() - 20 * 60 * 1000),
+      leaseWorkspaceId: "workspace_other",
+    });
+    await expect(
+      mismatchedWorkspace.repository.authorizeReviewExecutionCheckpointAccess({
+        leaseId: "lease_1",
+        providerInstanceId: "codex-rotating:123456",
+        pullRequestNumber: 240,
+        now,
+      }),
+    ).resolves.toEqual({ status: "lease_not_active" });
+  });
 });
 
 function buildCodexRotatingRepository(lease: {
   readonly status: string;
   readonly expiresAt: Date;
   readonly completedAt: Date | null;
+  readonly leaseWorkspaceId?: string;
 }) {
+  const leaseRecord = {
+    workspaceId: lease.leaseWorkspaceId ?? "workspace_1",
+    repository: {
+      id: "repo_1",
+      workspaceId: "workspace_1",
+      provider: "github",
+      githubRepositoryId: 123456n,
+      fullName: "777genius/example",
+      owner: "777genius",
+      name: "example",
+      selected: true,
+      installation: {
+        githubInstallationId: 789n,
+        status: "active",
+      },
+    },
+    ...lease,
+    githubRunId: "9001",
+    githubRunAttempt: "2",
+    pullRequestNumber: 240,
+  };
   const prisma = {
     codexOAuthLease: {
-      findFirst: vi.fn().mockResolvedValue({
-        workspaceId: "workspace_1",
-        repository: {
-          id: "repo_1",
-          workspaceId: "workspace_1",
-          provider: "github",
-          githubRepositoryId: 123456n,
-          fullName: "777genius/example",
-          owner: "777genius",
-          name: "example",
-          selected: true,
-          installation: {
-            githubInstallationId: 789n,
-            status: "active",
-          },
-        },
-        ...lease,
-        githubRunId: "9001",
-        githubRunAttempt: "2",
-      }),
+      findFirst: vi.fn(
+        async (input: {
+          readonly where: {
+            readonly id: string;
+            readonly providerInstanceId: string;
+          };
+        }) =>
+          input.where.id === "lease_1" &&
+          input.where.providerInstanceId === "codex-rotating:123456"
+            ? leaseRecord
+            : null,
+      ),
     },
   } as unknown as PrismaClient;
 
