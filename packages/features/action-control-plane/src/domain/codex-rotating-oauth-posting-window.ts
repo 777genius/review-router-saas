@@ -1,5 +1,5 @@
-export const codexRotatingCommentTokenRefreshTtlMs = 60 * 60 * 1000;
-export const codexRotatingReviewSnapshotAccessTtlMs = 6 * 60 * 60 * 1000;
+export const codexRotatingCommentTokenRefreshTtlMs = 6 * 60 * 60 * 1000;
+export const codexRotatingReviewSnapshotAccessTtlMs = 7 * 60 * 60 * 1000;
 export const codexRotatingReviewExecutionCheckpointAccessTtlMs =
   8 * 60 * 60 * 1000;
 

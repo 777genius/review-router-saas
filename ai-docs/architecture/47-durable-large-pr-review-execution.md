@@ -109,6 +109,27 @@ parallel. Workflow-level `cancel-in-progress` is forbidden: cancellation after
 Codex refresh but before encrypted writeback can strand the current refresh token
 and force a manual reseed.
 
+After encrypted writeback completes, the hosted Action supervises only the child
+review process against the live pull-request head. It verifies the head before
+launch and then polls it at a bounded interval. A confirmed head change sends
+SIGTERM and then SIGKILL to every captured descendant process group, including
+provider processes that detached from the runtime wrapper. Fork-mode shutdown
+also aborts the parent-owned upstream Codex request before closing loopback
+connections. The parent continues cleanup and retains any server-accepted batch
+checkpoint. Transient GitHub failures fail open and are retried; repository
+binding mismatches and repeated authorization failures fail closed. Head-check
+response bodies remain under the poll abort signal and request timeout. This
+cooperative boundary stops obsolete LLM work without interrupting OAuth rotation
+or cancelling unrelated pull requests that share the provider.
+
+The comment-token refresh window is six hours, aligned with the maximum
+five-hour-fifty-five-minute child runtime. Completed snapshot access remains
+available for seven hours and checkpoint access for eight. The child receives
+the installation-token expiry, refreshes once through a single-flight provider
+five minutes before expiry, and retries one GitHub request after a 401. The
+parent keeps the latest observed token for stale-progress cleanup and requests
+one fresh token through the completed lease if cleanup itself receives a 401.
+
 Queue pressure is bounded through review admission, a configurable hard job and
 runtime deadline, risk-first batches, and durable resume. A queued run validates
 the signed target revision and auth generation when it starts. A stale revision

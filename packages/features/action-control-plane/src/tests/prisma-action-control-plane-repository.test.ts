@@ -104,7 +104,7 @@ describe("PrismaCodexRotatingOAuthRepository", () => {
     const { repository } = buildCodexRotatingRepository({
       status: "completed",
       expiresAt: new Date(now.getTime() - 5 * 60 * 1000),
-      completedAt: new Date(now.getTime() - 20 * 60 * 1000),
+      completedAt: new Date(now.getTime() - (5 * 60 + 55) * 60 * 1000),
     });
 
     await expect(
