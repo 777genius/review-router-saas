@@ -48,10 +48,17 @@ function renderLegacySchemaOneWorkflow(input: {
   readonly actionRef: string;
   readonly apiUrl: string;
   readonly providerInstanceId: string;
+  readonly refreshScheduleCron?: string | null;
+  readonly timeoutMinutes?: 30 | 60;
 }): string {
+  const {
+    refreshScheduleCron = null,
+    timeoutMinutes = 60,
+    ...workflowOptions
+  } = input;
   return renderCodexRotatingAdvisoryWorkflow({
-    ...input,
-    refreshScheduleCron: null,
+    ...workflowOptions,
+    refreshScheduleCron,
   })
     .replaceAll(", converted_to_draft", "")
     .replace(
@@ -74,9 +81,13 @@ function renderLegacySchemaOneWorkflow(input: {
       "          review-timeout-minutes: ${{ vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60' }}\n",
       "",
     )
-    .replace(
+    .replaceAll(
       "    timeout-minutes: ${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}",
+      `    timeout-minutes: ${timeoutMinutes}`,
+    )
+    .replaceAll(
       "    timeout-minutes: 60",
+      `    timeout-minutes: ${timeoutMinutes}`,
     );
 }
 
@@ -521,6 +532,32 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(queuedLegacySchemaOneWorkflow),
     ).toEqual({ valid: true, errors: [] });
+    const historicalThirtyMinuteWorkflow = renderLegacySchemaOneWorkflow({
+      actionRef: "777genius/review-router@main",
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId: "codex-rotating:777genius/agent-teams-ai",
+      refreshScheduleCron: "17 */6 * * *",
+      timeoutMinutes: 30,
+    }).replaceAll(
+      "      cancel-in-progress: false",
+      "      queue: max\n      cancel-in-progress: false",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(historicalThirtyMinuteWorkflow),
+    ).toEqual({ valid: true, errors: [] });
+    const unknownLegacyTimeoutWorkflow =
+      queuedLegacySchemaOneWorkflow.replaceAll(
+        "timeout-minutes: 60",
+        "timeout-minutes: 45",
+      );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(unknownLegacyTimeoutWorkflow).errors,
+    ).toEqual(
+      expect.arrayContaining([
+        "review_job_max_changed_lines_input_required",
+        "review_job_timeout_input_required",
+      ]),
+    );
 
     const currentWorkflowMissingBothInputs = workflow
       .replace(
