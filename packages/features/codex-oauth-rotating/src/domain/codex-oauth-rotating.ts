@@ -29,6 +29,11 @@ export const codexRotatingDefaultTimeoutMinutes =
 export const codexRotatingDefaultRefreshScheduleCron = "17 */6 * * *";
 export const codexRotatingOidcMaxTokenAgeSeconds = 10 * 60;
 
+const codexRotatingLegacySchemaOneTimeoutMinutes = new Set([
+  30,
+  codexRotatingDefaultTimeoutMinutes,
+]);
+
 const repoFullNamePattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const sha256HexPattern = /^[a-f0-9]{64}$/i;
 const fullShaPattern = /^[a-f0-9]{40}$/i;
@@ -632,6 +637,9 @@ function isLegacySchemaOneWorkflowUsingActionDefaults(input: {
   const legacyTriggerCount = input.workflow
     .split("\n")
     .filter((line) => line.trim() === legacyTriggerTypes).length;
+  const fixedJobTimeout = input.reviewJob.match(
+    /^ {4}timeout-minutes:\s*["']?(\d+)["']?\s*$/m,
+  )?.[1];
   return (
     input.source.workflowSchemaVersion === 1 &&
     legacyTriggerCount >= 1 &&
@@ -643,10 +651,8 @@ function isLegacySchemaOneWorkflowUsingActionDefaults(input: {
     !input.reviewJob.includes("review-timeout-minutes:") &&
     !input.reviewJob.includes(codexRotatingMaxChangedLinesVariableName) &&
     !input.reviewJob.includes(codexRotatingTimeoutMinutesVariableName) &&
-    new RegExp(
-      `^ {4}timeout-minutes:\\s*["']?${codexRotatingDefaultTimeoutMinutes}["']?\\s*$`,
-      "m",
-    ).test(input.reviewJob)
+    fixedJobTimeout !== undefined &&
+    codexRotatingLegacySchemaOneTimeoutMinutes.has(Number(fixedJobTimeout))
   );
 }
 
