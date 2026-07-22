@@ -23,7 +23,7 @@ Both SHAs must contain exactly 40 lowercase hexadecimal characters.
 ## 2. Dry-Run and Export
 
 ```bash
-pnpm protocol:export-public -- \
+pnpm protocol:export-public \
   --action-repo "$ACTION_REPO" \
   --target-branch "$ACTION_BRANCH" \
   --expected-head "$ACTION_BASE" \
@@ -33,7 +33,7 @@ pnpm protocol:export-public -- \
 Review the handoff, then write it:
 
 ```bash
-pnpm protocol:export-public -- \
+pnpm protocol:export-public \
   --action-repo "$ACTION_REPO" \
   --target-branch "$ACTION_BRANCH" \
   --expected-head "$ACTION_BASE" \
@@ -53,7 +53,7 @@ After the Action worktree is clean:
 export ACTION_RELEASE="$(git -C "$ACTION_REPO" rev-parse HEAD)"
 export RELEASE_MANIFEST="$(mktemp -d)/review-action-v2-release.json"
 
-pnpm protocol:release-manifest -- \
+pnpm protocol:release-manifest \
   --action-repo "$ACTION_REPO" \
   --target-branch "$ACTION_BRANCH" \
   --expected-head "$ACTION_RELEASE" \
@@ -66,7 +66,7 @@ an input to the manifest.
 ## 4. Cross-Repository Check
 
 ```bash
-pnpm protocol:release-manifest:check -- \
+pnpm protocol:release-manifest:check \
   --manifest "$RELEASE_MANIFEST" \
   --saas-repo "$(pwd)" \
   --action-repo "$ACTION_REPO"
