@@ -30,3 +30,5 @@ Decision records capture important product and architecture choices.
 - [ADR-024: Balanced Memory Search Capability Contract](./024-balanced-memory-search-capability-contract.md)
 - [ADR-025: Balanced Memory Dashboard Design Source](./025-balanced-memory-dashboard-design-source.md)
 - [ADR-026: Balanced Memory Transaction and Outbox Strategy](./026-balanced-memory-transaction-outbox.md)
+- [ADR-027: Branch-Aware Review Action v2 Contract Handoff](./027-review-action-v2-contract-handoff.md)
+- [ADR-028: Revision-Aware Review Evidence](./028-revision-aware-review-evidence.md)

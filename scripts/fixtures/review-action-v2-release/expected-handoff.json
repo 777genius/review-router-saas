@@ -1,0 +1,15 @@
+{
+  "canonicalizerDigest": "0e1ac8595ddf6941975a796aaa7dcb0d879f0df5e128c1b944163a2f00c77c48",
+  "contractExportVersion": 1,
+  "expectedPublicActionBaseCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "generatedFileDigests": {
+    "canonicalizer.js": "048518f9c007884ebc7d99a909af52fc41710f5c6e8719d476d6b1f42a77e8d0",
+    "golden/unsupported-protocol.json": "c7ffb736b9f46f1aa5597f27e5d1436e2d3f3931cf8dd55b52071040dbf3c6b1",
+    "manifest.json": "3f64f636a41d4f547a6da56627e36d3e555dbe94c20e4dcb477996636f6a0ece",
+    "schema.json": "26a613f5fe80c21d98f6a4dee516fbc4ed0ba7bf9bec3757fc32c73ed2072705"
+  },
+  "goldenFixtureDigest": "c7ffb736b9f46f1aa5597f27e5d1436e2d3f3931cf8dd55b52071040dbf3c6b1",
+  "protocolVersion": "2",
+  "saasSourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schemaDigest": "26a613f5fe80c21d98f6a4dee516fbc4ed0ba7bf9bec3757fc32c73ed2072705"
+}

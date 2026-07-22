@@ -217,6 +217,15 @@ SaaS can check whether a required secret exists only by safe health metadata fro
 
 ## Tests Required Before Productizing
 
+## Revision-Aware Ownership
+
+The public Action owns planning, final immutable invocation preparation, provider
+scheduling and current projection construction. SaaS owns authorization, durable
+execution/evidence and server-side publication. Provider adapters execute the same
+prepared object that was canonicalized; retries that change prompt/options receive
+a new invocation key. Subscription runtime remains credential/process custody and
+does not own ReviewRouter planning, evidence or lifecycle policy.
+
 - generated workflow maps SaaS config to current runtime env correctly
 - fork PR skips secret-backed review
 - same-repo PR restores Codex auth only in trusted event context

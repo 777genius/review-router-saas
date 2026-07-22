@@ -35,6 +35,7 @@ const result = (claimed: number) => ({
   processed: claimed,
   retried: 0,
   deadLettered: 0,
+  staleClaims: 0,
 });
 
 describe("outbox worker loop", () => {
@@ -70,6 +71,7 @@ describe("outbox worker loop", () => {
       processed: 3,
       retried: 0,
       deadLettered: 0,
+      staleClaims: 0,
       errors: 0,
     });
     expect(sleeps).toEqual([10, 100]);
@@ -85,6 +87,7 @@ describe("outbox worker loop", () => {
         processed: 0,
         retried: 0,
         deadLettered: 0,
+        staleClaims: 0,
       },
       result(0),
     ];

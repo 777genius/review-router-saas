@@ -2,6 +2,7 @@ packages:
   - apps/*
   - packages/ui
   - packages/shared
+  - packages/protocol-review-action-v2
   - packages/platform/*
   - packages/features/*
 

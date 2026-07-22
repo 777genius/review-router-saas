@@ -84,6 +84,15 @@ During rolling deploys:
 
 ## Tests
 
+## Review v2 Events And Fencing
+
+Review integration events use a closed type/version registry. Each source-state
+transition and outbox insert is one operation-specific transaction. Outbox claims
+carry never-reused `bigint` fencing terms; heartbeat and acknowledgement compare
+claim ID, owner and term. Dead-letter replay may wake the idempotent completion
+process but cannot create a publication attempt, receipt or business terminal
+state. Recovery scans independently find finalized artifacts missing a process.
+
 - unknown event version goes to safe dead letter
 - transient GitHub rate limit retries with backoff
 - permanent permission error stops retrying and is user-visible

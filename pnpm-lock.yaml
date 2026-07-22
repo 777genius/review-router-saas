@@ -183,9 +183,21 @@ importers:
       '@reviewrouter/features-rate-limits':
         specifier: workspace:*
         version: link:../../packages/features/rate-limits
+      '@reviewrouter/features-review-evidence':
+        specifier: workspace:*
+        version: link:../../packages/features/review-evidence
       '@reviewrouter/features-review-execution-checkpoints':
         specifier: workspace:*
         version: link:../../packages/features/review-execution-checkpoints
+      '@reviewrouter/features-review-executions':
+        specifier: workspace:*
+        version: link:../../packages/features/review-executions
+      '@reviewrouter/features-review-publishing':
+        specifier: workspace:*
+        version: link:../../packages/features/review-publishing
+      '@reviewrouter/features-review-run-control':
+        specifier: workspace:*
+        version: link:../../packages/features/review-run-control
       '@reviewrouter/features-review-snapshots':
         specifier: workspace:*
         version: link:../../packages/features/review-snapshots
@@ -201,6 +213,12 @@ importers:
       '@reviewrouter/platform-logger':
         specifier: workspace:*
         version: link:../../packages/platform/logger
+      '@reviewrouter/platform-signed-capabilities':
+        specifier: workspace:*
+        version: link:../../packages/platform/signed-capabilities
+      '@reviewrouter/protocol-review-action-v2':
+        specifier: workspace:*
+        version: link:../../packages/protocol-review-action-v2
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -363,6 +381,18 @@ importers:
       '@reviewrouter/features-review-execution-checkpoints':
         specifier: workspace:*
         version: link:../../packages/features/review-execution-checkpoints
+      '@reviewrouter/features-review-executions':
+        specifier: workspace:*
+        version: link:../../packages/features/review-executions
+      '@reviewrouter/features-review-processes':
+        specifier: workspace:*
+        version: link:../../packages/features/review-processes
+      '@reviewrouter/features-review-publishing':
+        specifier: workspace:*
+        version: link:../../packages/features/review-publishing
+      '@reviewrouter/features-review-run-control':
+        specifier: workspace:*
+        version: link:../../packages/features/review-run-control
       '@reviewrouter/features-review-snapshots':
         specifier: workspace:*
         version: link:../../packages/features/review-snapshots
@@ -378,6 +408,9 @@ importers:
       '@reviewrouter/platform-logger':
         specifier: workspace:*
         version: link:../../packages/platform/logger
+      '@reviewrouter/platform-signed-capabilities':
+        specifier: workspace:*
+        version: link:../../packages/platform/signed-capabilities
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -402,6 +435,9 @@ importers:
       '@reviewrouter/features-review-snapshots':
         specifier: workspace:*
         version: link:../review-snapshots
+      '@reviewrouter/protocol-review-action-v2':
+        specifier: workspace:*
+        version: link:../../protocol-review-action-v2
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
@@ -588,6 +624,10 @@ importers:
       zod:
         specifier: ^4.4.2
         version: 4.4.2
+    devDependencies:
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
 
   packages/features/provider-setup:
     dependencies:
@@ -646,7 +686,36 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/features/review-evidence:
+    dependencies:
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
+
   packages/features/review-execution-checkpoints:
+    dependencies:
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+    devDependencies:
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
+
+  packages/features/review-executions:
+    dependencies:
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+    devDependencies:
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
+
+  packages/features/review-processes:
     dependencies:
       '@prisma/client':
         specifier: 7.8.0
@@ -664,15 +733,41 @@ importers:
 
   packages/features/review-publishing:
     dependencies:
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
       '@reviewrouter/shared':
         specifier: workspace:*
         version: link:../../shared
+    devDependencies:
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
+
+  packages/features/review-run-control:
+    dependencies:
+      '@octokit/app':
+        specifier: ^16.1.2
+        version: 16.1.2
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/platform-signed-capabilities':
+        specifier: workspace:*
+        version: link:../../platform/signed-capabilities
+    devDependencies:
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
 
   packages/features/review-snapshots:
     dependencies:
       '@prisma/client':
         specifier: 7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
 
   packages/features/support-diagnostics:
     dependencies:
@@ -736,6 +831,14 @@ importers:
         version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
 
   packages/platform/logger: {}
+
+  packages/platform/signed-capabilities:
+    dependencies:
+      jose:
+        specifier: ^6.2.4
+        version: 6.2.4
+
+  packages/protocol-review-action-v2: {}
 
   packages/shared: {}
 
@@ -3055,6 +3158,9 @@ packages:
   jose@6.2.3:
     resolution: {integrity: sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw==}
 
+  jose@6.2.4:
+    resolution: {integrity: sha512-N8acGzVsQy6M/fjFcxtysNc4Q379TcM5dM/qKkNtsHFji88yANnXTr7BLeP75iPnFwBfQzM/jg2BZ9+HZrHCZA==}
+
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
 
@@ -4626,7 +4732,7 @@ snapshots:
       express: 5.2.1
       express-rate-limit: 8.5.2(express@5.2.1)
       hono: 4.12.18
-      jose: 6.2.3
+      jose: 6.2.4
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
@@ -6266,6 +6372,8 @@ snapshots:
   jose@4.15.9: {}
 
   jose@6.2.3: {}
+
+  jose@6.2.4: {}
 
   js-tokens@4.0.0: {}
 

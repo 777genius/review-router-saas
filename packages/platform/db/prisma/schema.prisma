@@ -155,26 +155,27 @@ model GitLabInstallation {
 }
 
 model RepositoryConnection {
-  id                   String                @id @default(cuid())
-  workspaceId          String
-  provider             ScmProvider           @default(github)
-  sourceBaseUrl        String                @default("https://github.com")
-  externalRepositoryId String
-  installationId       String?
-  githubRepositoryId   BigInt?               @unique
-  gitlabInstallationId String?
-  owner                String
-  name                 String
-  fullName             String
-  defaultBranch        String
-  visibility           RepositoryVisibility
-  selected             Boolean               @default(true)
-  archived             Boolean               @default(false)
-  stargazersCount      Int                   @default(0)
-  setupStatus          RepositorySetupStatus @default(not_configured)
-  lastSyncedAt         DateTime?
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
+  id                      String                @id @default(cuid())
+  workspaceId             String
+  provider                ScmProvider           @default(github)
+  sourceBaseUrl           String                @default("https://github.com")
+  externalRepositoryId    String
+  scmRepositoryIdentityId String?
+  installationId          String?
+  githubRepositoryId      BigInt?               @unique
+  gitlabInstallationId    String?
+  owner                   String
+  name                    String
+  fullName                String
+  defaultBranch           String
+  visibility              RepositoryVisibility
+  selected                Boolean               @default(true)
+  archived                Boolean               @default(false)
+  stargazersCount         Int                   @default(0)
+  setupStatus             RepositorySetupStatus @default(not_configured)
+  lastSyncedAt            DateTime?
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
 
   workspace                  Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   installation               GitHubInstallation?          @relation(fields: [installationId], references: [id], onDelete: Cascade)
@@ -197,6 +198,7 @@ model RepositoryConnection {
 
   @@unique([provider, externalRepositoryId, sourceBaseUrl])
   @@unique([workspaceId, provider, fullName, sourceBaseUrl])
+  @@unique([id, workspaceId, scmRepositoryIdentityId])
   @@index([installationId])
   @@index([gitlabInstallationId])
   @@index([workspaceId, setupStatus])
@@ -445,23 +447,29 @@ model ActionRunHealthReport {
 }
 
 model ReviewSnapshot {
-  id                String   @id @default(cuid())
-  workspaceId       String
-  repositoryId      String
-  pullRequestNumber Int
-  version           Int      @default(1)
-  schemaVersion     Int      @default(1)
-  reviewedHeadSha   String
-  baseSha           String
-  compatibilityKey  String
-  payload           Json
-  payloadHash       String
-  sourceRunId       String
-  sourceRunAttempt  String
-  reviewedAt        DateTime
-  expiresAt         DateTime
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @default(now()) @updatedAt
+  id                        String   @id @default(cuid())
+  workspaceId               String
+  repositoryId              String
+  pullRequestNumber         Int
+  version                   Int      @default(1)
+  schemaVersion             Int      @default(1)
+  reviewedHeadSha           String
+  baseSha                   String
+  compatibilityKey          String
+  payload                   Json
+  payloadHash               String
+  sourceRunId               String
+  sourceRunAttempt          String
+  scmRepositoryIdentityId   String?
+  sourceExecutionId         String?
+  sourceExecutionGeneration BigInt?
+  sourceArtifactHash        String?
+  sourceReviewRevisionHash  String?
+  publicationReceiptSetHash String?
+  reviewedAt                DateTime
+  expiresAt                 DateTime
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @default(now()) @updatedAt
 
   workspace  Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   repository RepositoryConnection @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
@@ -470,6 +478,7 @@ model ReviewSnapshot {
   @@index([expiresAt, id])
   @@index([workspaceId, expiresAt])
   @@index([repositoryId, expiresAt])
+  @@index([sourceExecutionId])
 }
 
 model ReviewExecutionCheckpoint {
@@ -521,6 +530,717 @@ model ReviewExecutionBatchResult {
 
   @@unique([checkpointId, workKey])
   @@index([checkpointId, batchIndex])
+}
+
+model ReviewProtocolLimitsV2 {
+  protocolLimitsProfileId     String   @id
+  limitsDigest                String   @unique
+  maxWorkSlots                Int
+  maxAttemptsPerSlot          Int
+  maxObservationBytes         Int
+  maxObservationFindings      Int
+  maxProjectionBytes          Int
+  maxProjectionFindings       Int
+  maxPublicationOperations    Int
+  maxPublicationChunks        Int
+  maxPublicationBodyBytes     Int
+  maxRequestBatchSize         Int
+  maxLeaseDurationMs          Int
+  maxResultReportDurationMs   Int
+  maxReconciliationDurationMs Int
+  registeredAt                DateTime
+
+  @@index([registeredAt, protocolLimitsProfileId])
+}
+
+model ReviewOperationalSloProfileV2 {
+  operationalSloProfileId     String   @id
+  sloDigest                   String   @unique
+  integrationEventDeliveryMs  Int
+  outboxClaimAgeMs            Int
+  missingCompletionProcessMs  Int
+  dueCompletionProcessMs      Int
+  publicationReconciliationMs Int
+  v1DrainMs                   Int
+  admissionMs                 Int
+  pruningBacklogAgeMs         Int
+  ownerRefs                   String[]
+  runbookRefs                 String[]
+  registeredAt                DateTime
+
+  @@index([registeredAt, operationalSloProfileId])
+}
+
+model ProducerRelease {
+  producerReleaseId       String                     @id
+  distributionKind        ProducerDistributionKindV2
+  actionCommitSha         String
+  runtimeCommitSha        String
+  wrapperEntrypointDigest String?
+  runtimeEntrypointDigest String
+  schemaDigest            String
+  capabilityProfile       String
+  protocolLimitsProfileId String
+  operationalSloProfileId String
+  state                   ProducerReleaseStateV2     @default(registered)
+  registeredAt            DateTime
+  revokedAt               DateTime?
+
+  @@unique([distributionKind, actionCommitSha, runtimeCommitSha, wrapperEntrypointDigest, runtimeEntrypointDigest, schemaDigest, capabilityProfile, protocolLimitsProfileId, operationalSloProfileId])
+  @@index([state, registeredAt])
+}
+
+model ScmRepositoryIdentity {
+  scmRepositoryIdentityId       String      @id
+  provider                      ScmProvider
+  normalizedSourceBaseUrl       String
+  externalRepositoryId          String
+  version                       Int         @default(1)
+  currentWorkspaceId            String?
+  currentRepositoryConnectionId String?
+  createdAt                     DateTime
+  boundAt                       DateTime?
+  unboundAt                     DateTime?
+
+  @@unique([provider, normalizedSourceBaseUrl, externalRepositoryId])
+  @@unique([currentRepositoryConnectionId])
+  @@index([currentWorkspaceId, currentRepositoryConnectionId])
+}
+
+model ReviewMutationAuthority {
+  scmRepositoryIdentityId      String
+  laneKind                     ReviewMutationLaneKindV2
+  version                      Int                      @default(1)
+  epoch                        BigInt                   @default(0)
+  mode                         ReviewMutationModeV2
+  drainPolicyVersion           Int?
+  drainStartedAt               DateTime?
+  v1AdmissionClosedAt          DateTime?
+  drainNotBefore               DateTime?
+  managedWorkflowInventoryHash String?
+  activationSafetyDecisionHash String?
+  initializedAt                DateTime
+  activatedAt                  DateTime?
+  pausedAt                     DateTime?
+
+  @@id([scmRepositoryIdentityId, laneKind])
+  @@index([mode, drainNotBefore])
+}
+
+model ReviewSafetyPolicy {
+  policyId                String                    @id
+  policyScope             ReviewSafetyPolicyScopeV2
+  capability              ReviewSafetyCapabilityV2
+  workspaceId             String?
+  repositoryConnectionId  String?
+  scmRepositoryIdentityId String?
+  version                 Int                       @default(1)
+  rolloutMode             ReviewSafetyRolloutModeV2 @default(disabled)
+  updatedBy               String
+  updatedAt               DateTime
+
+  @@unique([policyScope, capability, workspaceId, repositoryConnectionId, scmRepositoryIdentityId])
+  @@index([workspaceId, repositoryConnectionId, capability])
+}
+
+model ReviewSafetyPolicySelector {
+  policyId        String
+  selectorOrdinal Int
+  providerKind    ReviewProviderKindV2?
+  taskKind        ReviewTaskKindV2?
+
+  @@id([policyId, selectorOrdinal])
+  @@unique([policyId, providerKind, taskKind])
+}
+
+model ReviewSafetyEmergencyControl {
+  emergencyControlId      String                    @id
+  policyScope             ReviewSafetyPolicyScopeV2
+  workspaceId             String?
+  repositoryConnectionId  String?
+  scmRepositoryIdentityId String?
+  version                 Int                       @default(1)
+  stopped                 Boolean                   @default(true)
+  reason                  String
+  updatedBy               String
+  updatedAt               DateTime
+
+  @@unique([policyScope, workspaceId, repositoryConnectionId, scmRepositoryIdentityId])
+  @@index([stopped, updatedAt])
+}
+
+model ReviewRunAuthorization {
+  authorizationId                 String                        @id
+  version                         Int                           @default(1)
+  workspaceId                     String
+  repositoryConnectionId          String
+  scmRepositoryIdentityId         String
+  pullRequestNumber               Int
+  sourceRunId                     String
+  sourceRunAttempt                String
+  workflowIdentityHash            String
+  baseSha                         String
+  mergeBaseSha                    String
+  headSha                         String
+  reviewRevisionHash              String
+  trustDomain                     ReviewTrustDomainV2
+  producerReleaseId               String
+  selectedProtocolVersion         String
+  schemaDigest                    String
+  protocolLimitsProfileId         String
+  operationalSloProfileId         String
+  mutationEpoch                   BigInt
+  providerVoteLanes               Json
+  authorizationSafetyDecisionHash String
+  protocolOfferHash               String
+  oidcReplayKeyHash               String                        @unique
+  tokenSigningKeyId               String
+  tokenIssuer                     String
+  tokenAudience                   String
+  state                           ReviewRunAuthorizationStateV2 @default(active)
+  expiresAt                       DateTime
+  maxExpiresAt                    DateTime
+  createdAt                       DateTime
+  renewedAt                       DateTime?
+  revokedAt                       DateTime?
+
+  @@unique([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, sourceRunId, sourceRunAttempt, protocolOfferHash])
+  @@index([repositoryConnectionId, pullRequestNumber, state, expiresAt])
+  @@index([producerReleaseId, state])
+}
+
+model ReviewRunAuthorizationRenewalReceipt {
+  renewalReplayKeyHash String    @id
+  authorizationId      String
+  renewalProofHash     String
+  authorizationVersion Int
+  renewedExpiresAt     DateTime
+  renewedAt            DateTime?
+  createdAt            DateTime  @default(now())
+
+  @@index([authorizationId, createdAt])
+  @@index([createdAt, renewalReplayKeyHash])
+}
+
+model ReviewEvidenceObservation {
+  observationId                   String                     @id
+  workspaceId                     String
+  repositoryConnectionId          String
+  scmRepositoryIdentityId         String
+  pullRequestNumber               Int
+  manifestKey                     String
+  providerInvocationKey           String
+  providerVoteIdentityHash        String
+  manifestVersion                 Int
+  providerKind                    ReviewProviderKindV2
+  requestedModel                  String
+  actualModel                     String
+  providerRuntimeVersion          String
+  taskKindSet                     ReviewTaskKindV2[]
+  producerReleaseId               String
+  selectedProtocolVersion         String
+  trustedCapabilityProfile        String
+  executionProfile                ProviderExecutionProfileV2
+  trustDomain                     ReviewTrustDomainV2
+  authorizationScopeHash          String
+  sourceBaseSha                   String
+  sourceMergeBaseSha              String
+  sourceHeadSha                   String
+  sourceReviewRevisionHash        String
+  sourcePlanHash                  String
+  sourceExecutionId               String
+  sourceWorkSlotId                String
+  sourceAuthorizationId           String
+  evidenceWriteSafetyDecisionHash String
+  sourceRunId                     String
+  sourceRunAttempt                String
+  attemptId                       String
+  sourceLeaseId                   String
+  sourceFencingToken              BigInt
+  payloadJson                     Json
+  payloadHash                     String
+  byteCount                       Int
+  findingCount                    Int
+  qualityFlagsJson                Json
+  transportAttemptCount           Int
+  createdAt                       DateTime
+  reuseExpiresAt                  DateTime
+  retainUntil                     DateTime
+
+  @@unique([sourceExecutionId, providerVoteIdentityHash, attemptId])
+  @@index([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, trustDomain, providerInvocationKey, reuseExpiresAt])
+  @@index([reuseExpiresAt, observationId])
+  @@index([retainUntil, observationId])
+  @@index([sourceExecutionId])
+}
+
+model ReviewRequestedIntent {
+  requestId               String                       @id
+  version                 BigInt                       @default(1)
+  workspaceId             String
+  repositoryConnectionId  String
+  scmRepositoryIdentityId String
+  pullRequestNumber       Int
+  baseSha                 String
+  mergeBaseSha            String
+  headSha                 String
+  reviewRevisionHash      String
+  triggerKind             ReviewRequestedTriggerKindV2
+  deliveryIdentityHash    String                       @unique
+  canonicalRequestHash    String
+  state                   ReviewRequestedIntentStateV2 @default(pending_dispatch)
+  notBefore               DateTime
+  claimId                 String?                      @unique
+  claimOwnerIdHash        String?
+  claimFencingToken       BigInt?                      @unique
+  claimedAt               DateTime?
+  claimUntil              DateTime?
+  sourceRunId             String?
+  sourceRunAttempt        String?
+  authorizationId         String?
+  executionId             String?
+  supersededByRequestId   String?
+  createdAt               DateTime
+  updatedAt               DateTime
+  retainUntil             DateTime
+
+  @@index([state, notBefore, requestId])
+  @@index([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, state])
+  @@index([claimUntil, requestId])
+}
+
+model ReviewExecutionStreamV2 {
+  workspaceId               String
+  repositoryConnectionId    String
+  scmRepositoryIdentityId   String
+  pullRequestNumber         Int
+  version                   BigInt   @default(0)
+  activeExecutionId         String?
+  preparedExecutionId       String?
+  lastAllocatedGeneration   BigInt   @default(0)
+  currentBaseSha            String?
+  currentMergeBaseSha       String?
+  currentHeadSha            String?
+  currentReviewRevisionHash String?
+  updatedAt                 DateTime
+
+  @@id([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber])
+  @@index([activeExecutionId])
+  @@index([preparedExecutionId])
+}
+
+model ReviewExecutionV2 {
+  executionId                 String                 @id
+  workspaceId                 String
+  repositoryConnectionId      String
+  scmRepositoryIdentityId     String
+  pullRequestNumber           Int
+  generation                  BigInt
+  version                     BigInt                 @default(1)
+  baseSha                     String
+  mergeBaseSha                String
+  headSha                     String
+  reviewRevisionHash          String
+  compatibilityKey            String
+  planHash                    String
+  startIdentityHash           String
+  canonicalStartHash          String
+  state                       ReviewExecutionStateV2 @default(planned)
+  authorizationId             String
+  producerReleaseId           String
+  mutationEpoch               BigInt
+  admissionSafetyDecisionHash String
+  protocolLimitsProfileId     String
+  sourceRunId                 String
+  sourceRunAttempt            String
+  supersededByExecutionId     String?
+  finalizedArtifactId         String?
+  createdAt                   DateTime
+  updatedAt                   DateTime
+  admissionDeadlineAt         DateTime
+  admissionCheckedAt          DateTime?
+  executionDeadlineAt         DateTime
+  retainUntil                 DateTime
+
+  @@unique([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, generation])
+  @@unique([authorizationId, startIdentityHash])
+  @@index([workspaceId, repositoryConnectionId, pullRequestNumber, state])
+  @@index([retainUntil, executionId])
+}
+
+model ReviewExecutionWorkSlotV2 {
+  executionId              String
+  workSlotId               String
+  planOrdinal              Int
+  taskKind                 ReviewTaskKindV2
+  providerKind             ReviewProviderKindV2
+  providerVoteIdentityHash String
+  shardKey                 String
+  required                 Boolean
+  attemptBudget            Int
+  retryPolicyVersion       String
+  state                    ReviewWorkSlotStateV2 @default(pending)
+  nextAttemptOrdinal       Int                   @default(1)
+  activeLeaseId            String?
+  acceptedObservationRefId String?
+
+  @@id([executionId, workSlotId])
+  @@unique([executionId, planOrdinal])
+  @@unique([executionId, taskKind, providerVoteIdentityHash, shardKey])
+  @@index([executionId, state])
+}
+
+model ReviewInvocationLeaseV2 {
+  leaseId                 String                         @id
+  workspaceId             String
+  repositoryConnectionId  String
+  scmRepositoryIdentityId String
+  pullRequestNumber       Int
+  executionId             String
+  executionGeneration     BigInt
+  providerInvocationKey   String
+  preparedManifestCanonicalJson String?                      @db.Text
+  preparedManifestKey     String?
+  providerVoteIdentityHash String
+  workSlotId              String
+  purpose                 ReviewInvocationLeasePurposeV2
+  authorizationId         String
+  producerReleaseId       String
+  reviewRevisionHash      String
+  mutationEpoch           BigInt
+  leaseSafetyDecisionHash String
+  attemptId               String?                        @unique
+  sourceObservationId     String?
+  attemptOrdinal          Int
+  acquireRequestIdHash    String
+  acquireRequestHash      String
+  ownerIdHash             String
+  leaseCapabilityId       String                         @unique
+  capabilitySigningKeyId  String
+  fencingToken            BigInt                         @unique @default(autoincrement())
+  state                   ReviewInvocationLeaseStateV2   @default(active)
+  acquiredAt              DateTime
+  renewedAt               DateTime
+  expiresAt               DateTime
+  resultReportUntil       DateTime
+  retainUntil             DateTime
+
+  @@unique([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, executionGeneration, providerInvocationKey, acquireRequestIdHash])
+  @@index([expiresAt, leaseId])
+  @@index([workspaceId, executionGeneration])
+  @@index([executionId, workSlotId, state])
+}
+
+model ReviewInvocationLeaseTombstoneV2 {
+  leaseId                   String                       @id
+  leaseCapabilityId         String                       @unique
+  authorizationId           String
+  producerReleaseId         String
+  providerInvocationKeyHash String
+  fencingToken              BigInt                       @unique
+  terminalState             ReviewInvocationLeaseStateV2
+  expiresAt                 DateTime
+  resultReportUntil         DateTime
+  compactedAt               DateTime
+
+  @@index([compactedAt, leaseId])
+}
+
+model ReviewExecutionObservationRefV2 {
+  observationRefId         String                            @id
+  executionId              String
+  workSlotId               String
+  providerInvocationKey    String
+  observationId            String
+  providerVoteIdentityHash String
+  attachmentKind           ReviewObservationAttachmentKindV2
+  eligibilityPolicyVersion String
+  reuseSafetyDecisionHash  String?
+  sourceExecutionId        String
+  sourceLeaseId            String?
+  sourceFencingToken       BigInt?
+  payloadHash              String
+  byteCount                Int
+  findingCount             Int
+  attachedAt               DateTime
+
+  @@unique([executionId, workSlotId])
+  @@index([observationId])
+}
+
+model FinalizedReviewProjectionArtifactV2 {
+  artifactId                      String                @id
+  executionId                     String                @unique
+  artifactHash                    String
+  generation                      BigInt
+  reviewedHeadSha                 String
+  reviewRevisionHash              String
+  coverageState                   ReviewCoverageStateV2
+  projectionEnvelopeVersion       Int
+  projectionEnvelope              Json
+  projectionEnvelopeCanonicalJson String
+  projectionHash                  String
+  byteCount                       Int
+  findingCount                    Int
+  lifecycleStateHash              String
+  commandLedgerWatermark          BigInt
+  projectionPolicyVersion         String
+  authorizationId                 String
+  producerReleaseId               String
+  permitEpoch                     BigInt
+  publicationSafetyDecisionHash   String
+  publicationNotAfter             DateTime
+  createdAt                       DateTime
+  retainUntil                     DateTime
+
+  @@index([retainUntil, artifactId])
+  @@index([createdAt, executionId])
+}
+
+model ReviewSnapshotCommitReceiptV2 {
+  receiptId                   String                        @id
+  requestHash                 String
+  sourceExecutionId           String
+  sourceExecutionGeneration   BigInt
+  sourceArtifactHash          String
+  sourceReviewRevisionHash    String
+  outcome                     ReviewSnapshotCommitOutcomeV2
+  resultingSnapshotVersion    Int
+  resultingSnapshotGeneration BigInt
+  createdAt                   DateTime
+  retainUntil                 DateTime
+
+  @@unique([sourceExecutionId, sourceArtifactHash])
+  @@index([retainUntil, receiptId])
+}
+
+model ReviewPublicationAttemptV2 {
+  publicationAttemptId          String                              @id
+  requestHash                   String
+  requestFingerprint            String
+  workspaceId                   String
+  repositoryConnectionId        String
+  scmRepositoryIdentityId       String
+  pullRequestNumber             Int
+  executionId                   String
+  generation                    BigInt
+  reviewedHeadSha               String
+  reviewRevisionHash            String
+  authorizationId               String
+  producerReleaseId             String
+  projectionHash                String
+  permitEpoch                   BigInt
+  publicationSafetyDecisionHash String
+  publicationNotAfter           DateTime
+  lifecycleStateHash            String
+  commandLedgerWatermark        BigInt
+  version                       BigInt                              @default(1)
+  state                         ReviewPublicationAttemptStateV2     @default(pending)
+  terminalOutcome               ReviewPublicationTerminalOutcomeV2?
+  activeClaimId                 String?
+  createdAt                     DateTime
+  retainUntil                   DateTime
+
+  @@unique([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, executionId, generation, projectionHash])
+  @@index([state, publicationNotAfter])
+  @@index([retainUntil, publicationAttemptId])
+}
+
+model ReviewPublicationRequestReceiptV2 {
+  requestIdHash        String @id
+  publicationAttemptId String
+  requestHash          String
+  requestFingerprint   String
+
+  @@index([publicationAttemptId, requestIdHash])
+}
+
+model ReviewPublicationClaimTermV2 {
+  claimId                String                        @id
+  publicationAttemptId   String
+  ownerIdHash            String
+  acquireRequestIdHash   String
+  acquireRequestHash     String
+  commandFingerprint     String
+  claimCapabilityId      String                        @unique
+  capabilitySigningKeyId String
+  fencingToken           BigInt                        @unique @default(autoincrement())
+  state                  ReviewPublicationClaimStateV2 @default(active)
+  acquiredAt             DateTime
+  renewedAt              DateTime
+  expiresAt              DateTime
+  reportUntil            DateTime
+  retainUntil            DateTime
+
+  @@unique([publicationAttemptId, acquireRequestIdHash])
+  @@index([publicationAttemptId, state, expiresAt])
+}
+
+model ReviewPublicationOperationV2 {
+  publicationOperationId String                            @id
+  publicationAttemptId   String
+  publicationKind        ReviewPublicationKindV2
+  chunkIndex             Int
+  effectStrategy         ReviewPublicationEffectStrategyV2
+  role                   ReviewPublicationOperationRoleV2
+  markerHash             String
+  bodyHash               String
+  renderPolicyVersion    Int
+  targetCommitId         String
+  reviewRevisionHash     String
+  required               Boolean
+  dependsOnOperationId   String?
+  state                  ReviewPublicationOperationStateV2 @default(planned)
+  reconcileUntil         DateTime
+  retryCount             Int                               @default(0)
+  nextEligibleAt         DateTime                          @default(now())
+  lastErrorCode          String?
+
+  @@unique([publicationAttemptId, publicationKind, chunkIndex])
+  @@index([state, reconcileUntil, publicationOperationId])
+  @@index([state, nextEligibleAt, publicationOperationId])
+}
+
+model ReviewPublicationOperationAttemptV2 {
+  operationAttemptId     String                                   @id
+  publicationOperationId String
+  publicationAttemptId   String
+  claimId                String
+  acquireRequestIdHash   String
+  acquireRequestHash     String
+  commandFingerprint     String
+  operationCapabilityId  String                                   @unique
+  capabilitySigningKeyId String
+  effectReportId         String                                   @unique
+  claimFencingToken      BigInt
+  state                  ReviewPublicationOperationAttemptStateV2 @default(active)
+  startedAt              DateTime
+  effectReportUntil      DateTime
+  retainUntil            DateTime
+
+  @@unique([publicationOperationId, claimId, acquireRequestIdHash])
+  @@unique([operationAttemptId, effectReportId])
+  @@index([publicationAttemptId, state])
+}
+
+model ReviewPublicationExternalEffectV2 {
+  effectId               String                                @id
+  publicationAttemptId   String
+  publicationOperationId String
+  operationAttemptId     String
+  effectReportId         String
+  reportRequestHash      String
+  externalObjectId       String
+  observedObjectHash     String
+  effectKind             ReviewPublicationExternalEffectKindV2
+  observedAt             DateTime
+
+  @@unique([operationAttemptId, effectReportId])
+  @@index([publicationOperationId, effectKind, externalObjectId])
+}
+
+model ReviewPublicationReceiptV2 {
+  receiptId                 String   @unique
+  publicationAttemptId      String
+  publicationOperationId    String   @id
+  completionRequestIdHash   String
+  completionRequestHash     String
+  completionFingerprint     String
+  canonicalEffectId         String
+  canonicalExternalObjectId String
+  receiptHash               String
+  status                    String
+  updatedAt                 DateTime
+
+  @@unique([publicationAttemptId, completionRequestIdHash])
+}
+
+model ReviewPublicationAuditTombstoneV2 {
+  tombstoneId            String                             @id
+  publicationAttemptId   String
+  publicationOperationId String                             @unique
+  reviewRevisionHash     String
+  markerHash             String
+  bodyHash               String
+  knownExternalObjectIds String[]
+  finalOutcome           ReviewPublicationTerminalOutcomeV2
+  finalReason            String
+  lastErrorCode          String?
+  terminalizedBy         String
+  terminalizedAt         DateTime
+  retainUntil            DateTime
+
+  @@index([retainUntil, tombstoneId])
+}
+
+model ReviewPublicationOutcomeCorrectionV2 {
+  correctionId         String                             @id
+  publicationAttemptId String
+  correctionOrdinal    Int
+  priorOutcome         ReviewPublicationTerminalOutcomeV2
+  correctedOutcome     ReviewPublicationTerminalOutcomeV2
+  evidenceHash         String
+  safeReason           String
+  correctedBy          String
+  correctedAt          DateTime
+  retainUntil          DateTime
+
+  @@unique([publicationAttemptId, correctionOrdinal])
+  @@index([retainUntil, correctionId])
+}
+
+model ReviewCompletionProcess {
+  executionId             String                         @id
+  processVersion          BigInt                         @default(1)
+  finalizedArtifactId     String
+  publicationAttemptId    String?
+  snapshotCommitReceiptId String?
+  state                   ReviewCompletionProcessStateV2
+  lastWakeupKind          ReviewCompletionWakeupKindV2
+  lastWakeupAt            DateTime
+  nextActionAt            DateTime?
+  attemptCount            Int                            @default(0)
+  lastSafeReason          String?
+  claimId                 String?                        @unique
+  claimOwnerIdHash        String?
+  claimFencingToken       BigInt?                        @unique
+  claimUntil              DateTime?
+  createdAt               DateTime
+  updatedAt               DateTime
+  retainUntil             DateTime
+
+  @@index([state, nextActionAt, executionId])
+  @@index([retainUntil, executionId])
+}
+
+model ReviewV2MigrationLedger {
+  migrationVersion String
+  stepName         String
+  status           String
+  schemaDigest     String
+  checkpoint       Json?
+  startedAt        DateTime
+  updatedAt        DateTime
+  completedAt      DateTime?
+  lastErrorCode    String?
+
+  @@id([migrationVersion, stepName])
+  @@index([status, updatedAt])
+}
+
+model ReviewV2MigrationQuarantine {
+  quarantineId           BigInt    @id @default(autoincrement())
+  migrationVersion       String
+  stepName               String
+  repositoryConnectionId String
+  safeReason             String
+  evidence               Json
+  createdAt              DateTime  @default(now())
+  resolvedAt             DateTime?
+  resolvedBy             String?
+
+  @@unique([migrationVersion, stepName, repositoryConnectionId])
+  @@index([resolvedAt, quarantineId])
 }
 
 model ConflictReviewAttempt {
@@ -694,6 +1414,10 @@ model OutboxEvent {
   attempts             Int               @default(0)
   maxAttempts          Int               @default(5)
   nextAttemptAt        DateTime?
+  claimId              String?           @unique
+  claimVersion         BigInt?
+  claimOwnerHash       String?
+  claimUntil           DateTime?
   processedAt          DateTime?
   deadLetteredAt       DateTime?
   lastErrorCode        String?
@@ -703,9 +1427,18 @@ model OutboxEvent {
   updatedAt            DateTime          @default(now()) @updatedAt
 
   @@index([status, nextAttemptAt])
+  @@index([status, claimUntil])
   @@index([workspaceId, status])
   @@index([repositoryId, status])
   @@index([type, version, status])
+}
+
+model OutboxFencingControl {
+  id          Int       @id
+  enabled     Boolean   @default(false)
+  activatedAt DateTime?
+  activatedBy String?
+  updatedAt   DateTime  @default(now()) @updatedAt
 }
 
 model WorkspaceEntitlement {
@@ -859,6 +1592,238 @@ model ActionOidcReplayNonce {
   createdAt DateTime @default(now())
 
   @@index([expiresAt])
+}
+
+enum ProducerDistributionKindV2 {
+  hosted_composite
+  public_reusable
+}
+
+enum ProducerReleaseStateV2 {
+  registered
+  revoked
+}
+
+enum ReviewMutationLaneKindV2 {
+  hosted_reviewrouter_app
+}
+
+enum ReviewMutationModeV2 {
+  v1_open
+  v1_draining
+  v2_active
+  paused
+}
+
+enum ReviewSafetyPolicyScopeV2 {
+  global
+  workspace
+  repository
+}
+
+enum ReviewSafetyRolloutModeV2 {
+  disabled
+  shadow
+  allowlisted
+  enabled
+}
+
+enum ReviewSafetyCapabilityV2 {
+  run_authorization_v2
+  evidence_writes_v2
+  evidence_reuse_v2
+  prompt_only_reuse
+  context_gateway_reuse
+  publication_operations_v2
+  mutation_epoch_v2
+}
+
+enum ReviewRunAuthorizationStateV2 {
+  active
+  expired
+  revoked
+}
+
+enum ReviewProviderKindV2 {
+  codex
+  claude_code
+  openrouter
+}
+
+enum ReviewTaskKindV2 {
+  finding_discovery
+  lifecycle_revalidation
+  code_review
+  finding_revalidation
+  conflict_review
+}
+
+enum ProviderExecutionProfileV2 {
+  prompt_only_envelope_v1
+  agentic_unbounded_v1
+  context_gateway_v1
+}
+
+enum ReviewTrustDomainV2 {
+  trusted_managed
+  trusted_local
+  untrusted_contribution
+}
+
+enum ReviewRequestedTriggerKindV2 {
+  pull_request_synchronized
+  pull_request_ready_for_review
+  manual_command
+  lifecycle_changed
+}
+
+enum ReviewRequestedIntentStateV2 {
+  pending_dispatch
+  dispatching
+  awaiting_authorization
+  dispatched
+  superseded
+}
+
+enum ReviewExecutionStateV2 {
+  planned
+  running
+  superseded
+  completed
+  partial
+  failed
+}
+
+enum ReviewWorkSlotStateV2 {
+  pending
+  leased
+  satisfied
+  exhausted
+  cancelled
+}
+
+enum ReviewInvocationLeasePurposeV2 {
+  provider_execution
+  observation_adoption
+}
+
+enum ReviewInvocationLeaseStateV2 {
+  active
+  released
+  expired
+  revoked
+}
+
+enum ReviewObservationAttachmentKindV2 {
+  fresh_lease
+  observation_adoption
+  exact_revision_reuse
+  prompt_only_cross_revision_reuse
+  context_gateway_cross_revision_reuse
+}
+
+enum ReviewCoverageStateV2 {
+  completed
+  partial
+}
+
+enum ReviewSnapshotCommitOutcomeV2 {
+  committed
+  already_current
+  superseded_by_higher_generation
+}
+
+enum ReviewPublicationAttemptStateV2 {
+  pending
+  publishing
+  reconciling
+  terminal
+}
+
+enum ReviewPublicationTerminalOutcomeV2 {
+  succeeded
+  superseded_no_effect
+  failed_no_effect
+  stale_compensated
+  stale_visible
+  terminal_unknown
+}
+
+enum ReviewPublicationClaimStateV2 {
+  active
+  expired
+  released
+  revoked
+}
+
+enum ReviewPublicationKindV2 {
+  summary
+  managed_check
+  pending_review_create
+  pending_review_submit
+  submitted_review
+  thread_lifecycle
+}
+
+enum ReviewPublicationEffectStrategyV2 {
+  mutable_singleton
+  pending_then_submit
+  append_only_canonical_receipt
+  reversible_lifecycle
+}
+
+enum ReviewPublicationOperationStateV2 {
+  planned
+  in_flight
+  effect_observed
+  reconciling
+  completed
+  superseded_no_effect
+  failed_no_effect
+  stale_compensated
+  stale_visible
+  terminal_unknown
+}
+
+enum ReviewPublicationOperationRoleV2 {
+  standalone
+  pending_review_create
+  pending_review_submit
+}
+
+enum ReviewPublicationOperationAttemptStateV2 {
+  active
+  effect_observed
+  completed
+  stale
+  terminal_unknown
+}
+
+enum ReviewPublicationExternalEffectKindV2 {
+  mutation_acknowledged
+  marker_reconciled
+  lifecycle_compensated
+}
+
+enum ReviewCompletionProcessStateV2 {
+  pending_publication
+  awaiting_publication
+  pending_snapshot
+  completed
+  completed_superseded
+  blocked_partial
+  publication_not_applied
+  publication_stale_compensated
+  publication_stale_visible
+  blocked_publication_unknown
+}
+
+enum ReviewCompletionWakeupKindV2 {
+  finalized_artifact_event
+  publication_event
+  snapshot_event
+  due_scan
+  recovery_scan
 }
 
 enum WorkspaceRole {

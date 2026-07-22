@@ -101,6 +101,14 @@ Reject oversized action reports to preserve no-code/no-diff boundary.
 
 ## Error Format
 
+## V2 Operation Matrix
+
+Each v2 operation has a generated caller authority, natural idempotency preimage,
+timeout, retry class and exhaustive typed result/error registry. Mutable retries
+reuse the exact key and body hash; a reused key with another body is HTTP 409.
+Stale revision/generation/permit/watermark is 412, bounds are 413, expired or
+revoked capability is 410, and ambiguous mutation failures retry only the same
+request or enter reconciliation. Unknown enums and statuses fail closed.
 Action API errors should be structured:
 
 ```json

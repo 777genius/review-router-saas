@@ -826,6 +826,7 @@ try {
   const outboxResult = await processOutboxBatch(
     {
       limit: 100,
+      claimOwnerHash: "memory-flow-e2e-worker",
       handlers: createMemoryOutboxHandlers({
         memoryItems: new PrismaMemoryItemRepository(prisma),
         searchIndex: new PrismaMemorySearchIndex(prisma),

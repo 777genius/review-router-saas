@@ -142,6 +142,17 @@ This is the main bridge that makes ReviewRouter a real SaaS control plane while 
 
 ## Compatibility
 
+## Review Action Protocol v2
+
+The generated v2 Published Language owns authorize/renew, execution
+restore/start/supersede/attach/finalize, lease acquire/renew/release, evidence
+lookup/commit, snapshot restore and publication request/status. Every envelope
+binds protocol/schema/request identity; mutable commands also bind an idempotency
+key and canonical body hash. Only typed HTTP 426 from v2 authorize permits v1
+negotiation. Timeout, 404, malformed JSON and 5xx fail closed.
+
+Internal publication and snapshot mutation commands use worker/process identities,
+not Action authorization or an Action-held SCM write token.
 Current implementation exposes the versioned v1 endpoints and keeps legacy `/api/action/*` aliases during local beta.
 
 The current `777genius/review-router` Action runtime now attempts the OIDC config flow when `REVIEWROUTER_RUNTIME_CONFIG_MODE=oidc`:

@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": []
+  },
+  "include": ["src/v2/contract-source/index.ts"],
+  "exclude": [
+    "src/application/**",
+    "src/composition/**",
+    "src/infrastructure/**",
+    "src/testing/**",
+    "src/tests/**",
+    "src/v2/application/**",
+    "src/v2/composition/**",
+    "src/v2/infrastructure/**",
+    "src/v2/testing/**",
+    "src/v2/tests/**"
+  ]
+}

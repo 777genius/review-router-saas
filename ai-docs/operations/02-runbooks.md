@@ -1,5 +1,13 @@
 # Runbooks
 
+## Review v2 Worker Recovery
+
+Keep due and recovery schedulers disabled until the repository reaches the
+approved rollout phase. Monitor the release-bound completion-process SLOs. A due
+worker claims by ID/owner/`bigint` term; stale acknowledgement is ignored.
+Recovery uses bounded keyset full passes over finalized artifacts and is
+independent of outbox dead letters. `terminal_unknown` blocks snapshot advancement
+until reconciliation or audited manual terminalization.
 These runbooks are written for local/private beta. They must stay
 metadata-only: do not paste provider secrets, raw webhook payloads, repository
 code, pull request diffs, prompts, or model responses into tickets or logs.

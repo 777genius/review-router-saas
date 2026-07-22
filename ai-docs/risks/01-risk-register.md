@@ -359,7 +359,24 @@ Mitigation:
 
 ### R27 - Observability captures sensitive payloads
 
-Severity: high.
+### R28 - Cross-revision evidence treated as current truth
+
+- Impact: stale findings, false merge blocking or false resolution.
+- Control: evidence-only reuse, exact current projection, live lifecycle reload,
+  prompt-only T1 allowlist and global emergency stop.
+
+### R29 - Stale owner publishes after takeover
+
+- Impact: duplicate or old-head SCM mutation.
+- Control: monotonic `bigint` fencing, per-operation rechecks, immutable effects,
+  reconciliation and stale cleanup.
+
+### R30 - Migration identity collision or ABA reset
+
+- Impact: cross-tenant attachment or mutation epoch reset.
+- Control: permanent SCM identity, composite restrictive FKs, quarantine,
+  advisory-locked resumable migration and no destructive rollback.
+  Severity: high.
 
 Risk: logging/tracing/error tools capture request bodies, webhook payloads, prompts, code, diffs, or secrets.
 

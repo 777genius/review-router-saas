@@ -68,6 +68,10 @@ const outboxEvent = (payload: unknown): OutboxEvent => ({
   attempts: 1,
   maxAttempts: 5,
   nextAttemptAt: null,
+  claimId: "claim-1",
+  claimVersion: 1n,
+  claimOwnerHash: "worker-1",
+  claimUntil: new Date("2026-05-03T15:05:00.000Z"),
   occurredAt: fixedClock.now(),
 });
 

@@ -5,6 +5,9 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**", "!.next/dev/**"]
     },
+    "build:contract-source": {
+      "outputs": ["dist/contract-source/**", "dist/v2/contract-source/**"]
+    },
     "typecheck": {
       "dependsOn": ["^typecheck"],
       "outputs": []

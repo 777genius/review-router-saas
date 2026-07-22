@@ -57,6 +57,16 @@ workflow_provision_failure_total
 
 ## Runbooks Needed
 
+## Review v2 Safety Signals
+
+Emit bounded counters/gauges for admission denial, reuse tier/reason, stale lease
+and claim rejection, completion-process age, publication reconciliation outcome,
+unknown effects, migration quarantine and pruning backlog. Labels must be finite
+enums or release/profile IDs, never repository, PR, account, prompt or finding
+content. Alert thresholds, owner `team-reviewrouter` and runbook
+`operations/review-v2` are release-bound by ADR-028; missing telemetry blocks
+writer enablement.
+
 - GitHub webhook failure investigation
 - setup PR failed
 - installation removed/suspended

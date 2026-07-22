@@ -74,6 +74,7 @@ import type {
 import { signGitHubWebhookPayload } from "@reviewrouter/features-github-installations";
 import type { RegisterGitLabIntegrationRoutesDependencies } from "@reviewrouter/features-gitlab-integration";
 import type { Clock } from "@reviewrouter/shared";
+import { reviewActionV2GoldenFixtures } from "@reviewrouter/protocol-review-action-v2";
 import { createApiApp } from "./app.js";
 
 class InMemoryInstallations implements GitHubInstallationRepositoryPort {
@@ -793,11 +794,14 @@ class SameObjectMemoryTransaction implements MemoryTransactionPort {
 }
 
 class StaticActionOidcVerifier implements GitHubActionsOidcTokenVerifierPort {
+  public calls = 0;
+
   constructor(
     private readonly overrides: Partial<GitHubActionsOidcClaims> = {},
   ) {}
 
   async verify(): Promise<GitHubActionsOidcClaims> {
+    this.calls += 1;
     return {
       iss: githubActionsOidcIssuer,
       aud: defaultActionOidcAudience,
@@ -839,8 +843,10 @@ class InMemoryConflictReviewExchangeVerifier implements ActionConflictReviewExch
 
 class InMemoryActionReplayNonces implements ActionOidcReplayNonceStorePort {
   private readonly keys = new Set<string>();
+  public calls = 0;
 
   async tryConsumeNonce(input: { readonly key: string }): Promise<boolean> {
+    this.calls += 1;
     if (this.keys.has(input.key)) {
       return false;
     }
@@ -3155,6 +3161,99 @@ describe("API app", () => {
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(401);
     expect(second.json()).toEqual({ error: "invalid_action_token" });
+  });
+
+  it("registers the v2 426 bridge without consuming v1 OIDC replay state", async () => {
+    const verifier = new StaticActionOidcVerifier({ jti: "a0-bridge-jti" });
+    const replayNonces = new InMemoryActionReplayNonces();
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        replayNonces,
+        oidcVerifier: verifier,
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+      reviewRunControlV2Dependencies: {
+        readServerTime: async () => fixedClock.now(),
+        createRequestId: () => "generated_request_id",
+      },
+    });
+    const oidcToken = "same-opaque-token-for-v2-then-v1";
+    const v2Payload = {
+      protocolVersion: "2",
+      schemaDigest: "a".repeat(64),
+      requestId: "a0_api_bridge_request",
+      oidcToken,
+      supportedProtocols: [
+        { protocolVersion: "2", schemaDigest: "a".repeat(64) },
+      ],
+    };
+
+    const firstBridge = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-runs/authorize",
+      payload: v2Payload,
+    });
+    const secondBridge = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-runs/authorize",
+      payload: v2Payload,
+    });
+
+    expect(firstBridge.statusCode).toBe(426);
+    expect(secondBridge.statusCode).toBe(426);
+    expect(firstBridge.json()).toMatchObject({
+      requestId: v2Payload.requestId,
+      serverTime: fixedClock.now().toISOString(),
+      error: {
+        errorCode: "unsupported_protocol",
+        retryClass: "never",
+        details: { fallbackProtocolVersion: "1" },
+      },
+    });
+    expect(verifier.calls).toBe(0);
+    expect(replayNonces.calls).toBe(0);
+
+    const v1Exchange = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken },
+    });
+    expect(v1Exchange.statusCode).toBe(200);
+    expect(verifier.calls).toBe(1);
+    expect(replayNonces.calls).toBe(1);
+  });
+
+  it("composes the remaining v2 context registrars disabled by default", async () => {
+    const runtime = {
+      readServerTime: async () => fixedClock.now(),
+      createRequestId: () => "generated_request_id",
+    };
+    const app = await createApiApp({
+      reviewRunControlV2Dependencies: runtime,
+      reviewExecutionV2Dependencies: runtime,
+      reviewEvidenceV2Dependencies: runtime,
+      reviewSnapshotReadV2Dependencies: runtime,
+      reviewPublicationRequestV2Dependencies: runtime,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-executions/restore",
+      payload: reviewActionV2GoldenFixtures.review_execution_restore.request,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      error: {
+        errorCode: "capability_disabled",
+        retryClass: "never",
+      },
+    });
   });
 
   it("returns structured safe errors from versioned action endpoints", async () => {

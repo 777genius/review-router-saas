@@ -54,6 +54,15 @@ If queue grows:
 
 ## Abuse Cases
 
+## Review v2 Queues
+
+Admission is PR-scoped and durable before provider allocation. Enforce the
+release-bound work-slot, attempts-per-slot, request-batch and payload ceilings in
+Action planning, API validation and persistence. Provider queue contention uses
+bounded leases and retry budgets; commit storms supersede obsolete generations
+cooperatively. Never tight-loop a rate-limited provider, reconciliation or due
+process.
+
 - repeated setup PR clicks
 - malicious webhook-like traffic
 - OIDC exchange spam

@@ -44,7 +44,11 @@ try {
   };
 
   const deadLetterResult = await processOutboxBatch(
-    { limit: 5, handlers: [permanentFailureHandler] },
+    {
+      limit: 5,
+      claimOwnerHash: "outbox-maintenance-e2e-worker",
+      handlers: [permanentFailureHandler],
+    },
     { outbox, clock },
   );
   if (deadLetterResult.deadLettered !== 1) {
@@ -78,7 +82,11 @@ try {
     handle: async () => undefined,
   };
   const retriedResult = await processOutboxBatch(
-    { limit: 5, handlers: [successHandler] },
+    {
+      limit: 5,
+      claimOwnerHash: "outbox-maintenance-e2e-worker",
+      handlers: [successHandler],
+    },
     { outbox, clock },
   );
   if (retriedResult.processed !== 1) {
@@ -103,7 +111,13 @@ try {
   });
 
   const staleResult = await processOutboxBatch(
-    { limit: 5, processingStaleAfterMs: 60_000, handlers: [successHandler] },
+    {
+      limit: 5,
+      claimOwnerHash: "outbox-maintenance-e2e-worker",
+      processingLeaseMs: 60_000,
+      takeoverEnabled: true,
+      handlers: [successHandler],
+    },
     { outbox, clock },
   );
   if (staleResult.recoveredStale !== 1 || staleResult.processed !== 1) {

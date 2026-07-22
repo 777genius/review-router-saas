@@ -16,9 +16,13 @@ const fail = (message) => {
 };
 
 const requireCommand = (command) => {
-  const result = spawnSync("bash", ["-lc", `command -v ${command}`], {
-    stdio: "ignore",
-  });
+  const result = spawnSync(
+    "sh",
+    ["-c", 'command -v "$1" >/dev/null 2>&1', "sh", command],
+    {
+      stdio: "ignore",
+    },
+  );
   if (result.status !== 0) fail(`Missing required command: ${command}`);
 };
 
@@ -101,11 +105,48 @@ try {
       (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ReviewExecutionCheckpoint' AND indexname = 'ReviewExecutionCheckpoint_workspaceId_repositoryId_pullRequestNumber_key') AS review_execution_checkpoint_unique_index,
       (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'ReviewExecutionBatchResult' AND indexname = 'ReviewExecutionBatchResult_checkpointId_workKey_key') AS review_execution_batch_result_unique_index,
       (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'CodexOAuthLease' AND indexname = 'CodexOAuthLease_repositoryId_status_idx') AS lease_repository_scope_index,
-      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '_prisma_migrations') AS migrations_table;
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'OutboxEvent' AND column_name IN ('claimId', 'claimVersion', 'claimOwnerHash', 'claimUntil')) AS outbox_claim_columns,
+      (SELECT count(*) FROM pg_class WHERE relkind = 'S' AND relname = 'OutboxEvent_claimVersion_seq') AS outbox_claim_sequence,
+      (SELECT count(*) FROM information_schema.triggers WHERE event_object_schema = 'public' AND event_object_table = 'OutboxEvent' AND trigger_name = 'OutboxEvent_claim_transition_guard') AS outbox_claim_guard,
+      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'OutboxFencingControl') AS outbox_fencing_control,
+      (SELECT count(*) FROM "OutboxFencingControl" WHERE "id" = 1 AND "enabled" = false) AS outbox_fencing_initially_disabled,
+      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '_prisma_migrations') AS migrations_table,
+      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN (
+        'ReviewProtocolLimitsV2', 'ReviewOperationalSloProfileV2', 'ProducerRelease',
+        'ScmRepositoryIdentity', 'ReviewMutationAuthority', 'ReviewSafetyPolicy',
+        'ReviewSafetyPolicySelector', 'ReviewSafetyEmergencyControl', 'ReviewRunAuthorization',
+        'ReviewEvidenceObservation', 'ReviewRequestedIntent', 'ReviewExecutionStreamV2',
+        'ReviewExecutionV2', 'ReviewExecutionWorkSlotV2', 'ReviewInvocationLeaseV2',
+        'ReviewExecutionObservationRefV2', 'FinalizedReviewProjectionArtifactV2',
+        'ReviewSnapshotCommitReceiptV2', 'ReviewPublicationAttemptV2',
+        'ReviewPublicationClaimTermV2', 'ReviewPublicationOperationV2',
+        'ReviewPublicationOperationAttemptV2', 'ReviewPublicationExternalEffectV2',
+        'ReviewPublicationReceiptV2', 'ReviewPublicationAuditTombstoneV2',
+        'ReviewPublicationOutcomeCorrectionV2', 'ReviewCompletionProcess'
+      )) AS review_v2_core_tables,
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ReviewSnapshot' AND column_name IN (
+        'scmRepositoryIdentityId', 'sourceExecutionId', 'sourceExecutionGeneration',
+        'sourceArtifactHash', 'sourceReviewRevisionHash', 'publicationReceiptSetHash'
+      )) AS review_snapshot_v2_columns,
+      (SELECT count(*) FROM pg_class WHERE relkind = 'S' AND relname IN (
+        'ReviewRequestedIntent_claimFencingToken_seq', 'ReviewInvocationLeaseV2_fencingToken_seq',
+        'ReviewPublicationClaimTermV2_fencingToken_seq', 'ReviewCompletionProcess_claimFencingToken_seq'
+      )) AS review_v2_fencing_sequences,
+      (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
+        'ReviewExecutionV2_one_planned_per_scope',
+        'ReviewInvocationLeaseV2_one_active_provider_invocation',
+        'ReviewInvocationLeaseV2_one_active_work_slot',
+        'ReviewPublicationClaimTermV2_one_active_claim',
+        'ReviewPublicationExternalEffectV2_owned_object_unique'
+      )) AS review_v2_partial_owner_indexes,
+      (SELECT count(*) FROM "ReviewSafetyEmergencyControl" WHERE "policyScope" = 'global' AND "stopped" = true) AS review_v2_global_stop,
+      (SELECT count(*) FROM pg_constraint WHERE conname LIKE 'Review%_fkey' AND NOT convalidated) AS review_v2_pending_fk_validation;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
-  if (output !== "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1") {
+  if (
+    output !== "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43"
+  ) {
     console.error(output);
     fail("Migrated schema invariants failed");
   }

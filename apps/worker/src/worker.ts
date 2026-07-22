@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { config as loadDotenv } from "dotenv";
 import { App } from "@octokit/app";
 import {
@@ -21,6 +22,7 @@ import {
   processOutboxBatch,
   type ProcessOutboxBatchResult,
   type OutboxHandler,
+  type OutboxHandlerDefinition,
 } from "@reviewrouter/features-outbox";
 import {
   PrismaMemoryItemRepository,
@@ -67,6 +69,12 @@ import {
   safeWorkerErrorSummary,
   sleep,
 } from "./outbox-worker-loop";
+import {
+  createReviewV2WorkerFeature,
+  reviewExecutionFinalizedEventType,
+  reviewExecutionFinalizedEventVersion,
+} from "./review-v2-worker-runtime";
+import { createProductionReviewV2WorkerRuntime } from "./review-v2-production-runtime";
 
 loadDotenv({ path: "../../.env.local", override: false });
 loadDotenv({ path: "../../.env", override: false });
@@ -83,7 +91,27 @@ async function main(): Promise<void> {
   const prisma = createPrismaClient();
   try {
     const clock = new SystemClock();
-    const handlers = createOutboxHandlers(prisma, clock);
+    const reviewV2Worker = createReviewV2WorkerFeature({
+      env: process.env,
+      createEnabledRuntime: () => {
+        const githubAppId = process.env.GITHUB_APP_ID?.trim();
+        const githubPrivateKey = readGitHubAppPrivateKey();
+        if (!githubAppId || !githubPrivateKey) {
+          throw new Error("review_v2_worker_github_app_credentials_missing");
+        }
+        return createProductionReviewV2WorkerRuntime({
+          prisma,
+          clock,
+          env: process.env,
+          githubAppId,
+          githubPrivateKey,
+        });
+      },
+    });
+    const handlers = [
+      ...createOutboxHandlers(prisma, clock),
+      ...reviewV2Worker.handlers,
+    ];
     if (handlers.length === 0) {
       logger.warn(
         "ReviewRouter worker has no outbox handlers; maintenance tasks still enabled",
@@ -114,11 +142,28 @@ async function main(): Promise<void> {
       "REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS",
       15 * 60 * 1000,
     );
+    const heartbeatIntervalMs = readPositiveIntegerEnv(
+      "REVIEW_ROUTER_OUTBOX_HEARTBEAT_MS",
+      Math.max(1_000, Math.floor(processingStaleAfterMs / 3)),
+    );
+    const claimOwnerHash = createHash("sha256")
+      .update(randomUUID())
+      .digest("hex");
+    const takeoverEnabled =
+      process.env.REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED === "1";
     const processBatch = async () => {
       const result =
         handlers.length > 0
           ? await processOutboxBatch(
-              { limit, handlers, processingStaleAfterMs },
+              {
+                limit,
+                handlers,
+                knownHandlers: knownOutboxHandlers,
+                claimOwnerHash,
+                processingLeaseMs: processingStaleAfterMs,
+                heartbeatIntervalMs,
+                takeoverEnabled,
+              },
               {
                 outbox,
                 clock,
@@ -133,6 +178,7 @@ async function main(): Promise<void> {
       await expireActiveMemoryItems();
       await pruneTerminalMemoryItems();
       await pruneMemoryUsageTelemetry();
+      await reviewV2Worker.runMaintenance();
       return result;
     };
 
@@ -169,6 +215,26 @@ async function main(): Promise<void> {
     await prisma.$disconnect();
   }
 }
+
+const knownOutboxHandlers = [
+  {
+    type: reviewExecutionFinalizedEventType,
+    version: reviewExecutionFinalizedEventVersion,
+  },
+  { type: "installation.sync_requested", version: 1 },
+  { type: "org_ruleset.provision_requested", version: 1 },
+  { type: "conflict_review.detection_requested", version: 1 },
+  { type: "memory.item.created", version: 1 },
+  { type: "memory.item.deleted", version: 1 },
+  { type: "memory.item.disabled", version: 1 },
+  { type: "memory.item.edited", version: 1 },
+  { type: "memory.item.expired", version: 1 },
+  { type: "memory.suggestion.created", version: 1 },
+  { type: "memory.suggestion.confirmed", version: 1 },
+  { type: "memory.suggestion.rejected", version: 1 },
+  { type: "memory.embedding.reindex.requested", version: 1 },
+  { type: "memory.embedding.delete.requested", version: 1 },
+] as const satisfies readonly OutboxHandlerDefinition[];
 
 function createOutboxHandlers(
   prisma: ReturnType<typeof createPrismaClient>,
@@ -562,6 +628,7 @@ function emptyOutboxBatchResult(): ProcessOutboxBatchResult {
     processed: 0,
     retried: 0,
     deadLettered: 0,
+    staleClaims: 0,
   };
 }
 

@@ -56,6 +56,15 @@ Do not cascade-delete data accidentally through Prisma relation defaults.
 
 ## Migration Tests
 
+## Review v2 Constraints
+
+Use composite repository-scope foreign keys, restrictive retention edges,
+monotonic versions/generations and noncycling `bigint` sequences for lease,
+publication, outbox and completion-process fencing. Partial unique indexes permit
+only one active owner/planned execution per scope. Profile/SLO values are positive,
+scope rows are shape-checked, and v2 snapshots require a complete provenance
+column set. New foreign keys deploy `NOT VALID`, then validate after resumable
+backfill and quarantine review.
 Before public beta:
 
 - migration applies to empty DB

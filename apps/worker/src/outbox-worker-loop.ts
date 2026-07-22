@@ -38,6 +38,7 @@ export async function runOutboxWorkerLoop(
     processed: 0,
     retried: 0,
     deadLettered: 0,
+    staleClaims: 0,
     errors: 0,
   } satisfies OutboxWorkerLoopResult;
 
@@ -50,6 +51,7 @@ export async function runOutboxWorkerLoop(
       total.processed += result.processed;
       total.retried += result.retried;
       total.deadLettered += result.deadLettered;
+      total.staleClaims += result.staleClaims;
       dependencies.logger.info(
         "ReviewRouter worker processed outbox batch",
         result,

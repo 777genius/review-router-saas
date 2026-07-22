@@ -132,6 +132,15 @@ version 2. Production repositories are not used as smoke-test targets.
 
 ## Hosted verification evidence
 
+## Snapshot Schema v2
+
+V2 stores one completed projection, bounded lineage/provenance hints and immutable
+commit receipts. It advances only after completed coverage and reconciled
+successful publication. Lower generations record
+`superseded_by_higher_generation` without mutation; equal generation is
+idempotent only for the same artifact. V2 treats legacy rows as
+`legacy_untrusted`; hints-only restore never returns old findings, placement,
+lifecycle or gate state.
 The production rollout was verified on 2026-07-16 in the disposable private
 repository `777genius/rr-codex-rotating-e2e`, pull request 42:
 

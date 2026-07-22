@@ -227,6 +227,14 @@ checkpoint into a completed snapshot.
 
 ## Hosted verification
 
+## Protocol v2 Execution Amendment
+
+The v1 checkpoint aggregate remains unchanged. V2 persists bounded work slots,
+per-provider attempts, fenced leases and observation references under a PR-scoped
+generation stream. Finalization atomically writes the immutable projection
+artifact and publication permit; completed or partial states cannot exist without
+that artifact. A delayed old-head admission cannot advance generation, and only
+acknowledged provider observations resume.
 Release verification uses only a disposable hosted repository. It must cover a
 multi-batch run interrupted after at least one server acknowledgement, an identical
 rerun that skips only acknowledged work, honest partial publication with no

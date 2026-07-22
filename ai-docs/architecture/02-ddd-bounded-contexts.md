@@ -199,6 +199,14 @@ Main invariants:
 
 ### billing-entitlements
 
+## Revision-Aware Review Contexts
+
+Protocol v2 adds `review-run-control`, `review-executions`, `review-evidence` and
+the public Action's `review-projection`. `review-publishing` and
+`review-snapshots` gain isolated v2 subpaths. `review-processes` is a completion
+process manager, not a review-policy context. Cross-context dependencies are ports
+implemented only in API/worker composition; feature packages never import another
+context's infrastructure. See [ADR-028](../decisions/028-revision-aware-review-evidence.md).
 Responsibilities:
 
 - free plan now
