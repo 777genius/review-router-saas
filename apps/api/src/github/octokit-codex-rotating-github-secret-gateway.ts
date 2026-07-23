@@ -347,7 +347,9 @@ export class OctokitCodexRotatingGitHubSecretGateway
                 /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/.test(
                   metadata.actionRef,
                 ) &&
-                reviewWorkflow.includes("review_action_v2_mode: t0"),
+                reviewWorkflow.includes(
+                  "/.github/workflows/reviewrouter-t0-reusable.yml@",
+                ),
               );
         return {
           ref: reference.ref,
