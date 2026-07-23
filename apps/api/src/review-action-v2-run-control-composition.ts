@@ -149,7 +149,7 @@ export function createServerOwnedReviewActionV2AdmissionFacts(
         githubInstallationId: input.repository.githubInstallationId,
         owner: repositoryName.owner,
         repo: repositoryName.repo,
-        sourceRunId: input.claims.run_id,
+        sourceRunId: requestedIntent ? null : input.claims.run_id,
         pullRequestNumberHint,
       });
       if (
