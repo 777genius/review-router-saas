@@ -43,6 +43,37 @@ const allSafetyCapabilities = Object.freeze(
   Object.values(ReviewSafetyCapability),
 );
 
+export type ReviewV2CohortRolloutModes = Readonly<{
+  global: ReviewSafetyRolloutMode;
+  repository: ReviewSafetyRolloutMode;
+}>;
+
+export function reviewV2CohortRolloutModes(
+  capability: ReviewSafetyCapability,
+): ReviewV2CohortRolloutModes {
+  switch (capability) {
+    case ReviewSafetyCapability.RunAuthorizationV2:
+    case ReviewSafetyCapability.EvidenceWritesV2:
+    case ReviewSafetyCapability.EvidenceReuseV2:
+    case ReviewSafetyCapability.PublicationOperationsV2:
+    case ReviewSafetyCapability.MutationEpochV2:
+      return {
+        global: ReviewSafetyRolloutMode.Allowlisted,
+        repository: ReviewSafetyRolloutMode.Enabled,
+      };
+    case ReviewSafetyCapability.PromptOnlyReuse:
+    case ReviewSafetyCapability.ContextGatewayReuse:
+      return {
+        global: ReviewSafetyRolloutMode.Disabled,
+        repository: ReviewSafetyRolloutMode.Disabled,
+      };
+    default: {
+      const exhaustiveCapability: never = capability;
+      return exhaustiveCapability;
+    }
+  }
+}
+
 type ParsedArguments = Readonly<{
   positionals: readonly string[];
   options: Readonly<Record<string, string | true>>;
@@ -236,6 +267,7 @@ async function stageRepositoryCohort(
   } as const;
   const results = [];
   for (const capability of allSafetyCapabilities) {
+    const rolloutModes = reviewV2CohortRolloutModes(capability);
     const global =
       await runtime.repositories.safetyControls.findReviewSafetyPolicy({
         scope: globalScope,
@@ -246,7 +278,7 @@ async function stageRepositoryCohort(
         expectedVersion: global?.version ?? 0,
         scope: globalScope,
         capability,
-        rolloutMode: ReviewSafetyRolloutMode.Allowlisted,
+        rolloutMode: rolloutModes.global,
         updatedBy,
       }),
     );
@@ -260,7 +292,7 @@ async function stageRepositoryCohort(
         expectedVersion: repository?.version ?? 0,
         scope: repositoryScope,
         capability,
-        rolloutMode: ReviewSafetyRolloutMode.Enabled,
+        rolloutMode: rolloutModes.repository,
         updatedBy,
       }),
     );

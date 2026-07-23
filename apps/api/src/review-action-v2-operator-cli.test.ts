@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  ReviewSafetyCapability,
+  ReviewSafetyRolloutMode,
+} from "@reviewrouter/features-review-run-control";
+import {
   inspectEnvironment,
   parseArguments,
+  reviewV2CohortRolloutModes,
   serializeOperatorCliJson,
 } from "./review-action-v2-operator-cli";
 
@@ -66,5 +71,36 @@ describe("review action v2 operator CLI", () => {
       authority: { mutationEpoch: "7" },
       version: 2,
     });
+  });
+
+  it("stages only T0 capabilities and keeps deferred reuse disabled", () => {
+    const t0Capabilities = [
+      ReviewSafetyCapability.RunAuthorizationV2,
+      ReviewSafetyCapability.EvidenceWritesV2,
+      ReviewSafetyCapability.EvidenceReuseV2,
+      ReviewSafetyCapability.PublicationOperationsV2,
+      ReviewSafetyCapability.MutationEpochV2,
+    ] as const;
+    for (const capability of t0Capabilities) {
+      expect(reviewV2CohortRolloutModes(capability)).toEqual({
+        global: ReviewSafetyRolloutMode.Allowlisted,
+        repository: ReviewSafetyRolloutMode.Enabled,
+      });
+    }
+
+    const deferredCapabilities = [
+      ReviewSafetyCapability.PromptOnlyReuse,
+      ReviewSafetyCapability.ContextGatewayReuse,
+    ] as const;
+    for (const capability of deferredCapabilities) {
+      expect(reviewV2CohortRolloutModes(capability)).toEqual({
+        global: ReviewSafetyRolloutMode.Disabled,
+        repository: ReviewSafetyRolloutMode.Disabled,
+      });
+    }
+
+    expect([...t0Capabilities, ...deferredCapabilities].sort()).toEqual(
+      Object.values(ReviewSafetyCapability).sort(),
+    );
   });
 });
