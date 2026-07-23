@@ -157,6 +157,9 @@ describe("generated Review Action v2 negotiation contract", () => {
       successResultProperties(schema, "review_execution_start"),
     ).toHaveProperty("executionVersion");
     expect(
+      successResultProperties(schema, "review_execution_restore"),
+    ).toHaveProperty("streamVersion");
+    expect(
       successResultProperties(schema, "review_evidence_lookup"),
     ).toMatchObject({
       payloadCanonicalJson: expect.any(Object),

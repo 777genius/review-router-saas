@@ -1773,6 +1773,7 @@ function restoreResult(snapshot: ReviewExecutionSnapshot) {
     status: ReviewExecutionRestoreResultStatus.Found,
     executionId: snapshot.execution.executionId,
     generation: snapshot.execution.generation.toString(10),
+    streamVersion: snapshot.stream.version.toString(10),
     executionState: snapshot.execution.state,
     executionCanonicalJson: canonicalExecution(snapshot),
   };

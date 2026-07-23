@@ -104,6 +104,7 @@ export const reviewExecutionsActionContractFragment = Object.freeze({
       resultFields: Object.freeze([
         Object.freeze({ name: "executionId", type: "nullable_identifier" }),
         Object.freeze({ name: "generation", type: "nullable_decimal" }),
+        Object.freeze({ name: "streamVersion", type: "nullable_decimal" }),
         Object.freeze({ name: "executionState", type: "nullable_identifier" }),
         Object.freeze({
           name: "executionCanonicalJson",
