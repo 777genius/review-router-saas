@@ -1,6 +1,11 @@
 import { JoseRotatingCapabilityCodec } from "@reviewrouter/platform-signed-capabilities";
+import type { ProducerReleaseAttestationPort } from "../application/ports/producer-release-attestation-ports";
 import type { ProducerReleaseQueryPort } from "../application/ports/producer-release-ports";
-import type { Sha256DigestPort } from "../application/ports/platform-ports";
+import type {
+  ReviewRunAuthorizationTokenPort,
+  Sha256DigestPort,
+} from "../application/ports/platform-ports";
+import type { CanonicalReviewRevisionResolverPort } from "../application/ports/review-scm-revision-ports";
 import {
   ConfiguredProducerReleaseAttestationRegistry,
   readConfiguredProducerReleaseAttestations,
@@ -10,6 +15,12 @@ import { OctokitGitHubReviewRevisionSource } from "../infrastructure/github/octo
 import { createReviewRunAuthorizationKeyRingFromEnv } from "../infrastructure/signed-capabilities/env-review-run-authorization-key-ring";
 import { ReviewRunAuthorizationSignedCapabilityAdapter } from "../infrastructure/signed-capabilities/review-run-authorization-token-adapter";
 
+export type ProductionReviewRunAuthorizationPrerequisites = Readonly<{
+  revisionResolver: CanonicalReviewRevisionResolverPort;
+  releaseAttestations: ProducerReleaseAttestationPort;
+  tokens: ReviewRunAuthorizationTokenPort;
+}>;
+
 export function composeProductionReviewRunAuthorizationPrerequisites(input: {
   readonly githubAppId: string;
   readonly githubAppPrivateKey: string;
@@ -17,7 +28,7 @@ export function composeProductionReviewRunAuthorizationPrerequisites(input: {
   readonly releases: ProducerReleaseQueryPort;
   readonly digest: Sha256DigestPort;
   readonly maximumClockSkewSeconds?: number | undefined;
-}) {
+}): ProductionReviewRunAuthorizationPrerequisites {
   if (!input.githubAppId || !input.githubAppPrivateKey) {
     throw new Error("review_run_authorization_github_app_config_missing");
   }
