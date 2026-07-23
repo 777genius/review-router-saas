@@ -1,5 +1,10 @@
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  legacyReviewRouterWorkflowPath,
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
+} from "@reviewrouter/protocol-review-workflow";
+import {
   codexRotatingMaxChangedLinesVariableName,
   codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
@@ -61,11 +66,9 @@ export type WorkflowProviderCompatibility = {
   readonly missingRequirements: readonly WorkflowProviderRequirement[];
 };
 
-export const defaultWorkflowPath = ".github/workflows/reviewrouter.yml";
-export const defaultCodexRotatingWorkflowPath =
-  ".github/workflows/reviewrouter-codex.yml";
-export const defaultInteractionWorkflowPath =
-  ".github/workflows/reviewrouter-interaction.yml";
+export const defaultWorkflowPath = legacyReviewRouterWorkflowPath;
+export const defaultCodexRotatingWorkflowPath = managedCodexWorkflowPath;
+export const defaultInteractionWorkflowPath = managedInteractionWorkflowPath;
 export const defaultRequiredWorkflowPath =
   ".github/workflows/reviewrouter-required.yml";
 export const defaultSetupBranch = "reviewrouter/setup";
@@ -349,6 +352,16 @@ jobs:
 }
 
 export function renderCodexRotatingInteractionWorkflow(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  return renderCanonicalCodexRotatingInteractionWorkflowV1(options);
+}
+
+/**
+ * Immutable schema-v1 authority contract. Add a new versioned renderer when
+ * the managed interaction workflow changes; queued runs still attest v1.
+ */
+export function renderCanonicalCodexRotatingInteractionWorkflowV1(
   options: ReviewRouterWorkflowOptions,
 ): string {
   const runtimeRef = extractReusableRuntimeRef(options.actionRef);
@@ -1186,22 +1199,12 @@ export function renderReviewRouterWorkflowFiles(
       },
       {
         path: defaultInteractionWorkflowPath,
-        operation: "delete",
-        markerGroups:
-          getLegacyReviewRouterInteractionWorkflowDeletionMarkerGroups(),
+        content: renderCodexRotatingInteractionWorkflow({
+          actionRef: options.actionRef,
+          apiUrl: options.apiUrl,
+          runtimeConfigMode: options.runtimeConfigMode,
+        }),
       },
-      ...(options.codexRotatingReviewActionV2Mode === "t0"
-        ? []
-        : [
-            {
-              path: defaultInteractionWorkflowPath,
-              content: renderCodexRotatingInteractionWorkflow({
-                actionRef: options.actionRef,
-                apiUrl: options.apiUrl,
-                runtimeConfigMode: options.runtimeConfigMode,
-              }),
-            } satisfies ReviewRouterWorkflowFile,
-          ]),
     ];
   }
 

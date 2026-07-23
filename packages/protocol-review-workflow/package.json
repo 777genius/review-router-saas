@@ -1,5 +1,5 @@
 {
-  "name": "@reviewrouter/features-codex-oauth-rotating",
+  "name": "@reviewrouter/protocol-review-workflow",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,13 +9,6 @@
       "production": "./dist/index.js",
       "default": "./src/index.ts"
     }
-  },
-  "dependencies": {
-    "@777genius/subscription-runtime": "git+ssh://git@github.com/777genius/ar.git#v0.1.0-main.13",
-    "@reviewrouter/shared": "workspace:*",
-    "libsodium-wrappers": "^0.8.4",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

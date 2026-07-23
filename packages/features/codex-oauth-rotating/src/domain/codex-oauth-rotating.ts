@@ -19,6 +19,7 @@ export const codexRotatingMaxChangedLinesVariableName =
 export const codexRotatingTimeoutMinutesVariableName =
   "REVIEW_ROUTER_TIMEOUT_MINUTES";
 export const codexRotatingWorkflowSchemaVersion = 1;
+export const codexRotatingCanonicalT0WorkflowSchemaVersions = [1] as const;
 export const codexForkAgenticSandboxCertificationVariable =
   "REVIEW_ROUTER_FORK_AGENTIC_SANDBOX";
 export const codexForkAgenticSandboxCertificationValue = "certified";
@@ -433,6 +434,19 @@ export function renderCodexRotatingAdvisoryWorkflow(
     options.forkAgenticSandboxEnabled === true
   ) {
     throw new Error("codex_rotating_t0_fork_sandbox_not_supported");
+  }
+  if (
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
+    schemaVersion === 1
+  ) {
+    return renderCanonicalCodexRotatingT0WorkflowV1({
+      actionRef: options.actionRef,
+      apiUrl: options.apiUrl,
+      providerInstanceId: options.providerInstanceId,
+      refreshScheduleCron,
+      claudeCodeOAuthTokenSecret: options.claudeCodeOAuthTokenSecret === true,
+      openRouterApiKeySecret: options.openRouterApiKeySecret === true,
+    });
   }
   const reviewJob =
     reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0
@@ -1353,6 +1367,113 @@ export function readCodexRotatingWorkflowSourceMetadata(
     providerInstanceId: metadata.providerInstanceId,
     workflowSchemaVersion: metadata.workflowSchemaVersion,
   };
+}
+
+/**
+ * Immutable schema-v1 authority contract. Add a new renderer and schema
+ * version instead of changing this output; queued runs attest their own SHA.
+ */
+export function renderCanonicalCodexRotatingT0WorkflowV1(
+  input: Pick<
+    CodexRotatingWorkflowOptions,
+    | "actionRef"
+    | "apiUrl"
+    | "providerInstanceId"
+    | "refreshScheduleCron"
+    | "claudeCodeOAuthTokenSecret"
+    | "openRouterApiKeySecret"
+  >,
+): string {
+  assertSafeActionRef(input.actionRef);
+  const release = parseImmutableActionRelease(input.actionRef);
+  const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`;
+  const refreshScheduleCron =
+    input.refreshScheduleCron === undefined
+      ? "17 */6 * * *"
+      : input.refreshScheduleCron;
+  const providerSegment =
+    input.providerInstanceId
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 96) || "provider";
+  const concurrencyGroup = `reviewrouter-codex-oauth-\${{ github.repository_id }}-${providerSegment}`;
+
+  return `name: ReviewRouter Codex OAuth
+
+run-name: \${{ inputs.review_request_id != '' && format('ReviewRouter review {0}', inputs.review_request_id) || 'ReviewRouter Codex OAuth maintenance' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      review_request_id:
+        description: Durable ReviewRouter request identity
+        required: false
+        type: string
+      pr_number:
+        description: Pull request number selected by ReviewRouter
+        required: false
+        type: string
+      review_head_sha:
+        description: Expected pull request head selected by ReviewRouter
+        required: false
+        type: string${
+          refreshScheduleCron
+            ? `
+  schedule:
+    - cron: ${JSON.stringify(refreshScheduleCron)}`
+            : ""
+        }
+
+permissions: {}
+
+jobs:
+  codex-review:
+    name: codex-review
+    if: \${{ github.event_name == 'workflow_dispatch' && inputs.review_request_id != '' && inputs.pr_number != '' && inputs.review_head_sha != '' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    uses: ${reusableWorkflowRef}
+    with:
+      runtime_ref: ${JSON.stringify(release.commitSha)}
+      api_url: ${JSON.stringify(input.apiUrl)}
+      runtime_config_mode: oidc
+      pr_number: \${{ inputs.pr_number }}
+      review_head_sha: \${{ inputs.review_head_sha }}
+      provider_instance_id: ${JSON.stringify(input.providerInstanceId)}
+      workflow_schema_version: 1
+      max_changed_lines: \${{ vars.REVIEW_ROUTER_MAX_CHANGED_LINES }}
+      review_timeout_minutes: \${{ fromJSON(vars.REVIEW_ROUTER_TIMEOUT_MINUTES || '60') }}
+    secrets:
+      CODEX_AUTH_JSON: \${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}
+${input.claudeCodeOAuthTokenSecret === true ? "      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${input.openRouterApiKeySecret === true ? "      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
+    refreshScheduleCron
+      ? `
+  codex-refresh:
+    name: codex-refresh
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    concurrency:
+      group: ${concurrencyGroup}
+      cancel-in-progress: false
+    if: \${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.review_request_id == '') }}
+    permissions:
+      id-token: write
+    steps:
+      - name: ReviewRouter Codex OAuth refresh
+        id: refresh_codex
+        uses: ${input.actionRef}
+        with:
+          mode: codex-oauth-refresh
+          api-url: ${JSON.stringify(input.apiUrl)}
+          provider-instance-id: ${JSON.stringify(input.providerInstanceId)}
+          workflow-schema-version: "1"
+          auth-json: \${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}
+`
+      : ""
+  }`;
 }
 
 export const codexRotatingOidcClaimsSchema = z

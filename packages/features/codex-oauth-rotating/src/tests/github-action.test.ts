@@ -1150,14 +1150,19 @@ describe("Codex rotating GitHub Action runtime", () => {
         },
       }),
     );
-    let preleaseAttempts = 0;
-    const fetchImpl = vi.fn(async (url: string | URL) => {
+    let oidcAttempts = 0;
+    const preleaseTokens: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
       const href = String(url);
       if (href.startsWith("https://oidc.actions.test/token")) {
-        return jsonResponse({ value: "oidc.jwt.value" });
+        oidcAttempts += 1;
+        return jsonResponse({ value: `oidc.jwt.value.${oidcAttempts}` });
       }
       if (href.endsWith("/api/action/v1/codex-oauth/prelease")) {
-        preleaseAttempts += 1;
+        const body = JSON.parse(String(init?.body)) as {
+          readonly oidcToken: string;
+        };
+        preleaseTokens.push(body.oidcToken);
         throw new TypeError("fetch failed");
       }
       throw new Error(`unexpected_fetch:${href}`);
@@ -1187,7 +1192,12 @@ describe("Codex rotating GitHub Action runtime", () => {
           },
         }),
       ).rejects.toThrow("network_request_failed:api_prelease");
-      expect(preleaseAttempts).toBe(3);
+      expect(oidcAttempts).toBe(3);
+      expect(preleaseTokens).toEqual([
+        "oidc.jwt.value.1",
+        "oidc.jwt.value.2",
+        "oidc.jwt.value.3",
+      ]);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

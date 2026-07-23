@@ -1147,6 +1147,9 @@ function statusCodeForActionError(message: string): number {
   if (message.startsWith("rate_limit_exceeded:")) {
     return 429;
   }
+  if (message.startsWith("managed_workflow_source_temporarily_unavailable")) {
+    return 503;
+  }
   if (message.startsWith("action_version_blocked:")) {
     return 426;
   }
@@ -1210,6 +1213,9 @@ function safeActionErrorCode(message: string): string {
   }
   if (message.includes("codex_rotating_oauth_unavailable")) {
     return "codex_rotating_oauth_unavailable";
+  }
+  if (message.includes("managed_workflow_source_temporarily_unavailable")) {
+    return "workflow_source_temporarily_unavailable";
   }
   if (message.includes("review_execution_checkpoint_unavailable")) {
     return "review_execution_checkpoint_unavailable";
@@ -1283,6 +1289,8 @@ function safeActionErrorMessage(code: string): string {
       return "ReviewRouter App comment identity is temporarily unavailable.";
     case "codex_rotating_oauth_unavailable":
       return "Codex OAuth rotating writeback is temporarily unavailable.";
+    case "workflow_source_temporarily_unavailable":
+      return "Managed workflow verification is temporarily unavailable. Retry with a fresh OIDC token.";
     case "review_execution_checkpoint_unavailable":
       return "Review execution checkpoints are temporarily unavailable.";
     case "codex_rotating_lease_not_active":
@@ -1353,6 +1361,7 @@ function isRetryableActionError(code: string): boolean {
     code === "action_control_plane_disabled" ||
     code === "comment_token_unavailable" ||
     code === "codex_rotating_oauth_unavailable" ||
+    code === "workflow_source_temporarily_unavailable" ||
     code === "review_execution_checkpoint_unavailable" ||
     code === "codex_rotating_lease_conflict" ||
     code === "conflict_review_runtime_disabled"

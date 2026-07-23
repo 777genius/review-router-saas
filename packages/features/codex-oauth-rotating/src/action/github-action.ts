@@ -477,24 +477,13 @@ export async function runCodexRotatingGitHubAction(
     notice(io, formatReviewAdmissionSkipNotice(event.number, admission));
     return;
   }
-  const oidcToken = await requestGitHubActionsOidcToken({
+  const prelease = await requestCodexRotatingPreleaseWithFreshOidc({
     env,
+    io,
     fetchImpl,
-    audience: defaultOidcAudience,
-  });
-  mask(io, oidcToken);
-  clearOidcRequestEnv(env);
-
-  const prelease = await postJson<PreleaseResponse>({
-    fetchImpl,
-    label: "api_prelease",
-    url: `${inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
-    body: {
-      oidcToken,
-      audience: defaultOidcAudience,
-      providerInstanceId: inputs.providerInstanceId,
-      workflowSchemaVersion: inputs.workflowSchemaVersion,
-    },
+    apiUrl: inputs.apiUrl,
+    providerInstanceId: inputs.providerInstanceId,
+    workflowSchemaVersion: inputs.workflowSchemaVersion,
   });
 
   await assertSupportedRunnerEnvironment(env);
@@ -764,24 +753,13 @@ async function runCodexRefreshOnlyGitHubAction(input: {
   readonly fetchImpl: FetchLike;
 }): Promise<void> {
   try {
-    const oidcToken = await requestGitHubActionsOidcToken({
+    const prelease = await requestCodexRotatingPreleaseWithFreshOidc({
       env: input.env,
+      io: input.io,
       fetchImpl: input.fetchImpl,
-      audience: defaultOidcAudience,
-    });
-    mask(input.io, oidcToken);
-    clearOidcRequestEnv(input.env);
-
-    const prelease = await postJson<PreleaseResponse>({
-      fetchImpl: input.fetchImpl,
-      label: "api_prelease",
-      url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
-      body: {
-        oidcToken,
-        audience: defaultOidcAudience,
-        providerInstanceId: input.inputs.providerInstanceId,
-        workflowSchemaVersion: input.inputs.workflowSchemaVersion,
-      },
+      apiUrl: input.inputs.apiUrl,
+      providerInstanceId: input.inputs.providerInstanceId,
+      workflowSchemaVersion: input.inputs.workflowSchemaVersion,
     });
 
     await assertSupportedRunnerEnvironment(input.env);
@@ -876,24 +854,13 @@ async function runForkAgenticSandboxGitHubAction(input: {
   const workspace = await resolveForkSandboxWorkspace(input.env);
   await assertForkSandboxWorkspace(workspace);
 
-  const oidcToken = await requestGitHubActionsOidcToken({
+  const prelease = await requestCodexRotatingPreleaseWithFreshOidc({
     env: input.env,
+    io: input.io,
     fetchImpl: input.fetchImpl,
-    audience: defaultOidcAudience,
-  });
-  mask(input.io, oidcToken);
-  clearOidcRequestEnv(input.env);
-
-  const prelease = await postJson<PreleaseResponse>({
-    fetchImpl: input.fetchImpl,
-    label: "api_prelease",
-    url: `${input.inputs.apiUrl}/api/action/v1/codex-oauth/prelease`,
-    body: {
-      oidcToken,
-      audience: defaultOidcAudience,
-      providerInstanceId: input.inputs.providerInstanceId,
-      workflowSchemaVersion: input.inputs.workflowSchemaVersion,
-    },
+    apiUrl: input.inputs.apiUrl,
+    providerInstanceId: input.inputs.providerInstanceId,
+    workflowSchemaVersion: input.inputs.workflowSchemaVersion,
   });
 
   await assertSupportedRunnerEnvironment(input.env);
@@ -1466,12 +1433,73 @@ async function requestGitHubActionsOidcToken(input: {
   return body.value;
 }
 
+async function requestCodexRotatingPreleaseWithFreshOidc(input: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly io: ActionIO;
+  readonly fetchImpl: FetchLike;
+  readonly apiUrl: string;
+  readonly providerInstanceId: string;
+  readonly workflowSchemaVersion: number;
+}): Promise<PreleaseResponse> {
+  let lastError: unknown;
+  try {
+    for (let attempt = 1; attempt <= networkRetryMaxAttempts; attempt += 1) {
+      const oidcToken = await requestGitHubActionsOidcToken({
+        env: input.env,
+        fetchImpl: input.fetchImpl,
+        audience: defaultOidcAudience,
+      });
+      mask(input.io, oidcToken);
+      try {
+        return await postJson<PreleaseResponse>({
+          fetchImpl: input.fetchImpl,
+          label: "api_prelease",
+          url: `${input.apiUrl}/api/action/v1/codex-oauth/prelease`,
+          body: {
+            oidcToken,
+            audience: defaultOidcAudience,
+            providerInstanceId: input.providerInstanceId,
+            workflowSchemaVersion: input.workflowSchemaVersion,
+          },
+          maxAttempts: 1,
+        });
+      } catch (error) {
+        lastError = error;
+        if (
+          attempt >= networkRetryMaxAttempts ||
+          !isRetryableFreshOidcExchangeError(error)
+        ) {
+          throw error;
+        }
+        await sleep(networkRetryDelayMs(attempt));
+      }
+    }
+  } finally {
+    clearOidcRequestEnv(input.env);
+  }
+  throw lastError;
+}
+
+function isRetryableFreshOidcExchangeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.startsWith("network_request_timeout:api_prelease") ||
+    message.startsWith("network_request_failed:api_prelease") ||
+    message === "workflow_source_temporarily_unavailable" ||
+    message === "rate_limited" ||
+    message === "action_control_plane_disabled" ||
+    message === "codex_rotating_oauth_unavailable" ||
+    /^reviewrouter_api_error:(?:408|429|5\d\d)$/.test(message)
+  );
+}
+
 async function postJson<T = unknown>(input: {
   readonly fetchImpl: FetchLike;
   readonly label: string;
   readonly url: string;
   readonly body: unknown;
   readonly signal?: AbortSignal | undefined;
+  readonly maxAttempts?: number;
 }): Promise<T> {
   const { response, text } = await fetchWithRetry({
     fetchImpl: input.fetchImpl,
@@ -1484,6 +1512,9 @@ async function postJson<T = unknown>(input: {
       body: JSON.stringify(input.body),
       ...(input.signal ? { signal: input.signal } : {}),
     },
+    ...(input.maxAttempts === undefined
+      ? {}
+      : { maxAttempts: input.maxAttempts }),
     consume: async (response) => ({ response, text: await response.text() }),
   });
   const parsed = text ? (JSON.parse(text) as unknown) : {};

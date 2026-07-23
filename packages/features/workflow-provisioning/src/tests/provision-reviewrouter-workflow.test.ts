@@ -372,16 +372,12 @@ describe("provisionReviewRouterWorkflow", () => {
     const interactionWorkflow = interactionWorkflows.find(
       (file) => file.operation !== "delete",
     );
-    expect(workflowFiles).toHaveLength(4);
+    expect(workflowFiles).toHaveLength(3);
     expect(codexWorkflow).toMatchObject({
       path: ".github/workflows/reviewrouter-codex.yml",
     });
     expect(codexWorkflow?.operation).not.toBe("delete");
-    expect(interactionWorkflows).toHaveLength(2);
-    expect(interactionWorkflows[0]).toMatchObject({
-      path: ".github/workflows/reviewrouter-interaction.yml",
-      operation: "delete",
-    });
+    expect(interactionWorkflows).toHaveLength(1);
     expect(interactionWorkflow).toBeTruthy();
     const codexWorkflowContent =
       codexWorkflow && codexWorkflow.operation !== "delete"
@@ -437,10 +433,11 @@ describe("provisionReviewRouterWorkflow", () => {
           path: ".github/workflows/reviewrouter.yml",
           operation: "delete",
         }),
-        expect.objectContaining({
-          path: ".github/workflows/reviewrouter-interaction.yml",
-          operation: "delete",
-        }),
+      ]),
+    );
+    expect(interactionWorkflows).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: "delete" }),
       ]),
     );
     expect(provisioning.opened).toMatchObject({

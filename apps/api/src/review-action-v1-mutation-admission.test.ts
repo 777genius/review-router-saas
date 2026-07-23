@@ -117,41 +117,53 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
     );
   });
 
+  it("verifies the claimed workflow revision instead of the moving default branch", async () => {
+    const observed: unknown[] = [];
+    await expect(
+      createAdmission(ReviewMutationMode.V2Active, {
+        compatible: true,
+        observe: (input) => observed.push(input),
+      }).assertLegacyReviewMutationAllowed(
+        sessionExchangeInput(
+          "issue_comment",
+          ".github/workflows/reviewrouter-interaction.yml",
+          "b".repeat(40),
+        ),
+      ),
+    ).resolves.toBeUndefined();
+    expect(observed).toEqual([
+      expect.objectContaining({
+        workflowPath: ".github/workflows/reviewrouter-interaction.yml",
+        workflowSha: "b".repeat(40),
+      }),
+    ]);
+  });
+
   it.each([
     {
-      name: "stale workflow commit",
-      inputSha: "b".repeat(40),
-      inventory: {
-        compatible: true,
-        defaultBranchHeadSha: workflowSha,
-      },
-    },
-    {
-      name: "incompatible managed inventory",
+      name: "incompatible workflow source",
       inputSha: workflowSha,
-      inventory: {
+      verification: {
         compatible: false,
-        defaultBranchHeadSha: workflowSha,
       },
     },
     {
-      name: "missing inventory verifier",
+      name: "missing source verifier",
       inputSha: workflowSha,
-      inventory: null,
+      verification: null,
     },
     {
       name: "missing workflow commit claim",
       inputSha: null,
-      inventory: {
+      verification: {
         compatible: true,
-        defaultBranchHeadSha: workflowSha,
       },
     },
-  ])("blocks $name", async ({ inputSha, inventory }) => {
+  ])("blocks $name", async ({ inputSha, verification }) => {
     await expect(
       createAdmission(
         ReviewMutationMode.V2Active,
-        inventory,
+        verification,
       ).assertLegacyReviewMutationAllowed(
         sessionExchangeInput(
           "issue_comment",
@@ -184,12 +196,11 @@ function sessionExchangeInput(
 
 function createAdmission(
   mode: ReviewMutationMode | null,
-  inventory: {
+  verification: {
     readonly compatible: boolean;
-    readonly defaultBranchHeadSha: string;
+    readonly observe?: (input: unknown) => void;
   } | null = {
     compatible: true,
-    defaultBranchHeadSha: "a".repeat(40),
   },
 ) {
   const identity: ScmRepositoryIdentity = {
@@ -230,10 +241,13 @@ function createAdmission(
     mutationAuthorities: {
       findReviewMutationAuthority: async () => authority,
     },
-    ...(inventory
+    ...(verification
       ? {
-          workflowInventory: {
-            inspectReviewV2ManagedWorkflowInventory: async () => inventory,
+          workflowSourceVerifier: {
+            verifyManagedV2SessionBootstrapSource: async (input: unknown) => {
+              verification.observe?.(input);
+              return { compatible: verification.compatible };
+            },
           },
         }
       : {}),

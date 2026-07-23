@@ -68,18 +68,6 @@ export async function exchangeGitHubOidcToken(
     claims.workflow_ref,
     repository.fullName,
   );
-  await dependencies.legacyMutationAdmission?.assertLegacyReviewMutationAllowed(
-    {
-      operation: LegacyReviewMutationOperation.SessionExchange,
-      githubRepositoryId: repository.githubRepositoryId,
-      githubInstallationId: repository.githubInstallationId,
-      repositoryFullName: repository.fullName,
-      repositoryOwner: repository.owner,
-      eventName: claims.event_name,
-      workflowPath,
-      workflowSha: claims.workflow_sha?.toLowerCase() ?? null,
-    },
-  );
   const issuedAt = dependencies.clock.now();
   await consumeOidcReplayNonceIfConfigured({
     claims,
@@ -100,6 +88,18 @@ export async function exchangeGitHubOidcToken(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
   });
+  await dependencies.legacyMutationAdmission?.assertLegacyReviewMutationAllowed(
+    {
+      operation: LegacyReviewMutationOperation.SessionExchange,
+      githubRepositoryId: repository.githubRepositoryId,
+      githubInstallationId: repository.githubInstallationId,
+      repositoryFullName: repository.fullName,
+      repositoryOwner: repository.owner,
+      eventName: claims.event_name,
+      workflowPath,
+      workflowSha: claims.workflow_sha?.toLowerCase() ?? null,
+    },
+  );
   if (claims.event_name === "repository_dispatch") {
     await dependencies.conflictReviewRuntimeGate?.assertConflictReviewRuntimeEnabled(
       {

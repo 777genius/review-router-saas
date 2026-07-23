@@ -3,9 +3,8 @@ import type {
   LegacyReviewMutationAdmissionPort,
 } from "@reviewrouter/features-action-control-plane";
 import {
+  isManagedV2SessionBootstrapSource,
   LegacyReviewMutationOperation,
-  managedCodexWorkflowPath,
-  managedInteractionWorkflowPath,
 } from "@reviewrouter/features-action-control-plane";
 import {
   ReviewMutationLaneKind,
@@ -15,16 +14,15 @@ import {
   type ScmRepositoryIdentityQueryPort,
 } from "@reviewrouter/features-review-run-control";
 
-export interface ManagedV2SessionBootstrapInventoryPort {
-  inspectReviewV2ManagedWorkflowInventory(input: {
+export interface ManagedV2SessionBootstrapSourceVerifierPort {
+  verifyManagedV2SessionBootstrapSource(input: {
     readonly githubInstallationId: string;
     readonly githubRepositoryId: string;
     readonly repositoryFullName: string;
     readonly owner: string;
-  }): Promise<{
-    readonly compatible: boolean;
-    readonly defaultBranchHeadSha: string;
-  }>;
+    readonly workflowPath: string;
+    readonly workflowSha: string;
+  }): Promise<{ readonly compatible: boolean }>;
 }
 
 export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMutationAdmissionPort {
@@ -32,7 +30,7 @@ export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMuta
     private readonly dependencies: {
       readonly repositoryIdentities: ScmRepositoryIdentityQueryPort;
       readonly mutationAuthorities: ReviewMutationAuthorityQueryPort;
-      readonly workflowInventory?: ManagedV2SessionBootstrapInventoryPort;
+      readonly workflowSourceVerifier?: ManagedV2SessionBootstrapSourceVerifierPort;
     },
   ) {}
 
@@ -72,45 +70,23 @@ export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMuta
       return false;
     }
     if (
-      !isManagedV2SessionBootstrap(input) ||
+      !isManagedV2SessionBootstrapSource(input) ||
       !input.workflowSha ||
-      !this.dependencies.workflowInventory
+      !this.dependencies.workflowSourceVerifier
     ) {
       return false;
     }
-    const inventory =
-      await this.dependencies.workflowInventory.inspectReviewV2ManagedWorkflowInventory(
+    const verification =
+      await this.dependencies.workflowSourceVerifier.verifyManagedV2SessionBootstrapSource(
         {
           githubInstallationId: input.githubInstallationId,
           githubRepositoryId: input.githubRepositoryId,
           repositoryFullName: input.repositoryFullName,
           owner: input.repositoryOwner,
+          workflowPath: input.workflowPath,
+          workflowSha: input.workflowSha,
         },
       );
-    return (
-      inventory.compatible &&
-      inventory.defaultBranchHeadSha.toLowerCase() ===
-        input.workflowSha.toLowerCase()
-    );
+    return verification.compatible;
   }
-}
-
-function isManagedV2SessionBootstrap(
-  input: LegacyReviewMutationAdmissionInput,
-): boolean {
-  if (input.operation !== LegacyReviewMutationOperation.SessionExchange) {
-    return false;
-  }
-  if (
-    input.workflowPath === managedCodexWorkflowPath &&
-    input.eventName === "workflow_dispatch"
-  ) {
-    return true;
-  }
-  return (
-    input.workflowPath === managedInteractionWorkflowPath &&
-    (input.eventName === "issue_comment" ||
-      input.eventName === "pull_request_review_comment" ||
-      input.eventName === "workflow_dispatch")
-  );
 }

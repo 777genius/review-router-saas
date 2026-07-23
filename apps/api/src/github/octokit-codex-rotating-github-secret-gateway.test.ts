@@ -263,6 +263,114 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     });
   });
 
+  it("attests the canonical interaction workflow at the signed workflow revision", async () => {
+    const actionRef = `777genius/review-router@${"a".repeat(40)}`;
+    const codexWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    const interactionWorkflow = `# formatting is not authority
+${renderCodexRotatingInteractionWorkflow({
+  actionRef,
+  apiUrl: "https://api.reviewrouter.site",
+  runtimeConfigMode: "oidc",
+})}`;
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_contents_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { contents: "read" },
+    });
+    mocks.request
+      .mockResolvedValueOnce(fileContent(codexWorkflow))
+      .mockResolvedValueOnce(fileContent(interactionWorkflow));
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+      trustedActionRefs: [actionRef],
+    });
+
+    await expect(
+      gateway.verifyManagedV2SessionBootstrapSource({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+        workflowPath: ".github/workflows/reviewrouter-interaction.yml",
+        workflowSha: "b".repeat(40),
+      }),
+    ).resolves.toEqual({ compatible: true });
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+    expect(mocks.request).toHaveBeenNthCalledWith(
+      1,
+      "GET /repos/{owner}/{repo}/contents/{path}",
+      expect.objectContaining({ ref: "b".repeat(40) }),
+    );
+  });
+
+  it("rejects non-canonical or unregistered managed workflow source", async () => {
+    const actionRef = `777genius/review-router@${"a".repeat(40)}`;
+    const workflow = `${renderCodexRotatingAdvisoryWorkflow({
+      actionRef,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    })}
+
+  "unsafe-writer":
+    "runs-on": ubuntu-latest
+    "steps":
+      - "run": echo unsafe`;
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_contents_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { contents: "read" },
+    });
+    mocks.request.mockResolvedValueOnce(fileContent(workflow));
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+      trustedActionRefs: [actionRef],
+    });
+
+    await expect(
+      gateway.verifyManagedV2SessionBootstrapSource({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSha: "b".repeat(40),
+      }),
+    ).resolves.toEqual({ compatible: false });
+  });
+
+  it("reports transient GitHub source-read failures as retryable", async () => {
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_contents_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { contents: "read" },
+    });
+    mocks.request.mockRejectedValueOnce({ status: 503 });
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+      trustedActionRefs: [`777genius/review-router@${"a".repeat(40)}`],
+    });
+
+    await expect(
+      gateway.verifyManagedV2SessionBootstrapSource({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSha: "b".repeat(40),
+      }),
+    ).rejects.toThrow("managed_workflow_source_temporarily_unavailable");
+  });
+
   it("rejects a T0 workflow bound to an unexpected API endpoint", async () => {
     const actionSha = "a".repeat(40);
     const workflow = renderCodexRotatingAdvisoryWorkflow({
