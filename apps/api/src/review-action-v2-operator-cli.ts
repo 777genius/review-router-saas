@@ -645,7 +645,16 @@ function requireStringArray(input: Record<string, unknown>, name: string) {
 }
 
 function printJson(value: unknown) {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  process.stdout.write(`${serializeOperatorCliJson(value)}\n`);
+}
+
+export function serializeOperatorCliJson(value: unknown) {
+  return JSON.stringify(
+    value,
+    (_key, candidate) =>
+      typeof candidate === "bigint" ? candidate.toString() : candidate,
+    2,
+  );
 }
 
 function printUsage() {

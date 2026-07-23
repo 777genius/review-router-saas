@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   inspectEnvironment,
   parseArguments,
+  serializeOperatorCliJson,
 } from "./review-action-v2-operator-cli";
 
 describe("review action v2 operator CLI", () => {
@@ -51,5 +52,19 @@ describe("review action v2 operator CLI", () => {
       invalid: ["REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON"],
     });
     expect(JSON.stringify(result)).not.toContain(credential);
+  });
+
+  it("serializes bigint fencing values as decimal strings", () => {
+    expect(
+      JSON.parse(
+        serializeOperatorCliJson({
+          authority: { mutationEpoch: 7n },
+          version: 2,
+        }),
+      ),
+    ).toEqual({
+      authority: { mutationEpoch: "7" },
+      version: 2,
+    });
   });
 });
