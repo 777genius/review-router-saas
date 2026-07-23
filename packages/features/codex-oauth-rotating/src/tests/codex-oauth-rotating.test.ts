@@ -748,6 +748,17 @@ exit 17
         .providerInstanceId,
     ).toBe("codex-rotating:999");
 
+    const scheduledWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    expect(scanCodexRotatingAdvisoryWorkflow(scheduledWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
     const floatingRef = `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main`;
     expect(() =>
       renderCodexRotatingAdvisoryWorkflow({
