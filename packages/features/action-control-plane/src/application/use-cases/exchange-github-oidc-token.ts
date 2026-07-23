@@ -64,11 +64,17 @@ export async function exchangeGitHubOidcToken(
   }
 
   validateOidcClaimsAgainstRepository({ claims, repository });
+  const workflowPath = workflowPathFromRef(
+    claims.workflow_ref,
+    repository.fullName,
+  );
   await dependencies.legacyMutationAdmission?.assertLegacyReviewMutationAllowed(
     {
       operation: LegacyReviewMutationOperation.SessionExchange,
       githubRepositoryId: repository.githubRepositoryId,
       repositoryFullName: repository.fullName,
+      eventName: claims.event_name,
+      workflowPath,
     },
   );
   const issuedAt = dependencies.clock.now();
@@ -127,7 +133,7 @@ export async function exchangeGitHubOidcToken(
     githubRunId: claims.run_id,
     githubRunAttempt: claims.run_attempt,
     eventName: claims.event_name,
-    workflowPath: workflowPathFromRef(claims.workflow_ref, repository.fullName),
+    workflowPath,
     ...(conflictReview
       ? {
           reviewKind: conflictReview.reviewKind,

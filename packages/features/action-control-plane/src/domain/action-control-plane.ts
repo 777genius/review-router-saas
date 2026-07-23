@@ -23,10 +23,16 @@ export const actionConflictReviewPostingSessionAudience =
 export const actionSessionTtlSeconds = 15 * 60;
 export const actionConflictReviewPostingSessionTtlSeconds = 5 * 60;
 export const actionOidcReplayNonceFallbackTtlSeconds = actionSessionTtlSeconds;
+export const legacyReviewRouterWorkflowPath =
+  ".github/workflows/reviewrouter.yml";
+export const managedCodexWorkflowPath =
+  ".github/workflows/reviewrouter-codex.yml";
+export const managedInteractionWorkflowPath =
+  ".github/workflows/reviewrouter-interaction.yml";
 export const allowedWorkflowPaths = [
-  ".github/workflows/reviewrouter.yml",
-  ".github/workflows/reviewrouter-codex.yml",
-  ".github/workflows/reviewrouter-interaction.yml",
+  legacyReviewRouterWorkflowPath,
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
 ] as const;
 export const trustedReviewRouterReusableWorkflowRefPattern =
   /^777genius\/review-router\/\.github\/workflows\/(?:reviewrouter(?:-interaction)?-reusable\.ya?ml@(refs\/tags\/v1(?:\.[0-9]+\.[0-9]+)?|refs\/heads\/main|[a-fA-F0-9]{40})|reviewrouter-execution-reusable\.ya?ml@[a-fA-F0-9]{40})$/i;

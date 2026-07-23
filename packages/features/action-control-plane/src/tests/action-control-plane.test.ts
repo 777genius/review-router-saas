@@ -28,6 +28,7 @@ import type { ActionConflictReviewPostingGatewayPort } from "../application/port
 import type { ActionConflictReviewRuntimeGatePort } from "../application/ports/action-conflict-review-runtime-gate-port.js";
 import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
+import { LegacyReviewMutationOperation } from "../application/ports/legacy-review-mutation-admission-port.js";
 import type {
   GitHubAppCommentTokenIssuerPort,
   IssueGitHubAppCommentTokenInput,
@@ -657,7 +658,12 @@ describe("action control plane", () => {
           sessions,
           replayNonces,
           legacyMutationAdmission: {
-            assertLegacyReviewMutationAllowed: async () => {
+            assertLegacyReviewMutationAllowed: async (input) => {
+              expect(input).toMatchObject({
+                operation: LegacyReviewMutationOperation.SessionExchange,
+                eventName: "pull_request",
+                workflowPath: ".github/workflows/reviewrouter.yml",
+              });
               throw new Error("legacy_review_mutation_blocked:v1_draining");
             },
           },

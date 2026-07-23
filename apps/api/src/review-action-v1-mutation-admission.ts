@@ -1,6 +1,11 @@
 import type {
+  LegacyReviewMutationAdmissionInput,
   LegacyReviewMutationAdmissionPort,
+} from "@reviewrouter/features-action-control-plane";
+import {
   LegacyReviewMutationOperation,
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
 } from "@reviewrouter/features-action-control-plane";
 import {
   ReviewMutationLaneKind,
@@ -18,11 +23,9 @@ export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMuta
     },
   ) {}
 
-  async assertLegacyReviewMutationAllowed(input: {
-    readonly operation: LegacyReviewMutationOperation;
-    readonly githubRepositoryId: string;
-    readonly repositoryFullName: string;
-  }): Promise<void> {
+  async assertLegacyReviewMutationAllowed(
+    input: LegacyReviewMutationAdmissionInput,
+  ): Promise<void> {
     const identity =
       await this.dependencies.repositoryIdentities.findScmRepositoryIdentityByExternalIdentity(
         {
@@ -39,7 +42,32 @@ export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMuta
         laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
       });
     if (!authority || authority.mode === ReviewMutationMode.V1Open) return;
+    if (
+      authority.mode !== ReviewMutationMode.Paused &&
+      isManagedV2SessionBootstrap(input)
+    ) {
+      return;
+    }
 
     throw new Error(`legacy_review_mutation_blocked:${authority.mode}`);
   }
+}
+
+function isManagedV2SessionBootstrap(
+  input: LegacyReviewMutationAdmissionInput,
+): boolean {
+  if (input.operation !== LegacyReviewMutationOperation.SessionExchange) {
+    return false;
+  }
+  if (
+    input.workflowPath === managedCodexWorkflowPath &&
+    input.eventName === "workflow_dispatch"
+  ) {
+    return true;
+  }
+  return (
+    input.workflowPath === managedInteractionWorkflowPath &&
+    (input.eventName === "issue_comment" ||
+      input.eventName === "pull_request_review_comment")
+  );
 }

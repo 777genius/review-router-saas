@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { LegacyReviewMutationOperation } from "@reviewrouter/features-action-control-plane";
+import {
+  type GitHubActionsOidcClaims,
+  LegacyReviewMutationOperation,
+} from "@reviewrouter/features-action-control-plane";
 import {
   ReviewMutationLaneKind,
   ReviewMutationMode,
@@ -28,23 +31,99 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
 
   it("allows legacy mutation before an authority exists and while v1 is open", async () => {
     await expect(
-      createAdmission(null).assertLegacyReviewMutationAllowed({
-        operation: LegacyReviewMutationOperation.SessionExchange,
-        githubRepositoryId: "123",
-        repositoryFullName: "777genius/example",
-      }),
+      createAdmission(null).assertLegacyReviewMutationAllowed(
+        sessionExchangeInput(
+          "pull_request",
+          ".github/workflows/reviewrouter.yml",
+        ),
+      ),
     ).resolves.toBeUndefined();
     await expect(
       createAdmission(
         ReviewMutationMode.V1Open,
-      ).assertLegacyReviewMutationAllowed({
-        operation: LegacyReviewMutationOperation.SessionExchange,
-        githubRepositoryId: "123",
-        repositoryFullName: "777genius/example",
-      }),
+      ).assertLegacyReviewMutationAllowed(
+        sessionExchangeInput(
+          "pull_request",
+          ".github/workflows/reviewrouter.yml",
+        ),
+      ),
     ).resolves.toBeUndefined();
   });
+
+  it.each([
+    ["workflow_dispatch", ".github/workflows/reviewrouter-codex.yml"] as const,
+    [
+      "issue_comment",
+      ".github/workflows/reviewrouter-interaction.yml",
+    ] as const,
+    [
+      "pull_request_review_comment",
+      ".github/workflows/reviewrouter-interaction.yml",
+    ] as const,
+  ])(
+    "allows managed v2 session bootstrap for %s from %s",
+    async (eventName, workflowPath) => {
+      for (const mode of [
+        ReviewMutationMode.V1Draining,
+        ReviewMutationMode.V2Active,
+      ]) {
+        await expect(
+          createAdmission(mode).assertLegacyReviewMutationAllowed(
+            sessionExchangeInput(eventName, workflowPath),
+          ),
+        ).resolves.toBeUndefined();
+      }
+    },
+  );
+
+  it.each([
+    ["pull_request", ".github/workflows/reviewrouter-codex.yml"] as const,
+    ["workflow_dispatch", ".github/workflows/untrusted.yml"] as const,
+    ["issue_comment", ".github/workflows/reviewrouter-codex.yml"] as const,
+  ])(
+    "blocks unmanaged session bootstrap for %s from %s",
+    async (eventName, workflowPath) => {
+      for (const mode of [
+        ReviewMutationMode.V1Draining,
+        ReviewMutationMode.V2Active,
+      ]) {
+        await expect(
+          createAdmission(mode).assertLegacyReviewMutationAllowed(
+            sessionExchangeInput(eventName, workflowPath),
+          ),
+        ).rejects.toThrow(`legacy_review_mutation_blocked:${mode}`);
+      }
+    },
+  );
+
+  it("keeps the repository kill switch closed for managed session bootstrap", async () => {
+    await expect(
+      createAdmission(
+        ReviewMutationMode.Paused,
+      ).assertLegacyReviewMutationAllowed(
+        sessionExchangeInput(
+          "issue_comment",
+          ".github/workflows/reviewrouter-interaction.yml",
+        ),
+      ),
+    ).rejects.toThrow(
+      `legacy_review_mutation_blocked:${ReviewMutationMode.Paused}`,
+    );
+  });
 });
+
+function sessionExchangeInput(
+  eventName: GitHubActionsOidcClaims["event_name"],
+  workflowPath: string,
+) {
+  return {
+    operation: LegacyReviewMutationOperation.SessionExchange,
+    githubRepositoryId: "123",
+    repositoryFullName: "777genius/example",
+    eventName,
+    workflowPath,
+  } as const;
+}
 
 function createAdmission(mode: ReviewMutationMode | null) {
   const identity: ScmRepositoryIdentity = {

@@ -1,3 +1,5 @@
+import type { GitHubActionsOidcClaims } from "../../domain/action-control-plane.js";
+
 export enum LegacyReviewMutationOperation {
   SessionExchange = "session_exchange",
   CommentToken = "comment_token",
@@ -5,10 +7,25 @@ export enum LegacyReviewMutationOperation {
   ConflictPostingSession = "conflict_posting_session",
 }
 
+export type LegacyReviewMutationAdmissionInput =
+  | {
+      readonly operation: LegacyReviewMutationOperation.SessionExchange;
+      readonly githubRepositoryId: string;
+      readonly repositoryFullName: string;
+      readonly eventName: GitHubActionsOidcClaims["event_name"];
+      readonly workflowPath: string;
+    }
+  | {
+      readonly operation: Exclude<
+        LegacyReviewMutationOperation,
+        LegacyReviewMutationOperation.SessionExchange
+      >;
+      readonly githubRepositoryId: string;
+      readonly repositoryFullName: string;
+    };
+
 export interface LegacyReviewMutationAdmissionPort {
-  assertLegacyReviewMutationAllowed(input: {
-    readonly operation: LegacyReviewMutationOperation;
-    readonly githubRepositoryId: string;
-    readonly repositoryFullName: string;
-  }): Promise<void>;
+  assertLegacyReviewMutationAllowed(
+    input: LegacyReviewMutationAdmissionInput,
+  ): Promise<void>;
 }
