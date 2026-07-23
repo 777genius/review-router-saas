@@ -139,7 +139,7 @@ Why these are needed:
 - `issues: write` supports PR summary/setup/help conversations when App-bot identity or SaaS guidance is used
 - `secrets: write` verifies GitHub Actions secret names exist after provider setup and supports encrypted rotating Codex OAuth writeback; GitHub does not return secret values
 - `organization_secrets: read` verifies selected-repository organization secret metadata for org-owned repositories; GitHub does not return secret values
-- `actions: read` supports workflow run event metadata for live health/status updates
+- `actions: write` dispatches exact-revision T0 reviews and reads their run metadata for durable tracking
 - `checks: write` allows ReviewRouter-owned check runs when direct GitHub check integration is enabled
 - `statuses: write` allows ReviewRouter-owned commit statuses when direct GitHub status integration is enabled
 

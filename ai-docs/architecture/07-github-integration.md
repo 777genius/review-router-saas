@@ -125,15 +125,17 @@ Why each write permission exists:
 ```text
 contents: write      create setup/update branch commits
 workflows: write     modify .github/workflows/reviewrouter.yml
+actions: write       dispatch exact-revision T0 runs and inspect their status
 pull_requests: write open setup/update PRs and read setup PR state
 issues: write        support PR summary/setup/help conversations when App-bot identity or SaaS guidance is used
 ```
 
 The UI must explain that `workflows: write` is for ReviewRouter setup/update PRs, not for reading or running customer code in SaaS.
 
-Do not request `actions: write` in minimal v1. Runtime health reports use
-GitHub Actions OIDC. Keep `issues: write` scoped to PR summary/setup/help
-comments; it must not be used to read or store customer code in SaaS.
+Keep `actions: write` scoped to the durable T0 dispatcher and run inspection.
+Runtime authorization still uses GitHub Actions OIDC. Keep `issues: write`
+scoped to PR summary/setup/help comments; it must not be used to read or store
+customer code in SaaS.
 
 Do not imply that org-wide setup eliminates the secret boundary. Required
 workflow mode still runs provider commands in customer GitHub Actions. Codex

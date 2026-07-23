@@ -24,7 +24,7 @@ Request only permissions needed for v1:
 
 ```text
 metadata: read
-actions: read
+actions: write
 checks: write
 contents: write
 workflows: write

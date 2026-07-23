@@ -39,7 +39,7 @@ assertEqual(
   "default_events",
 );
 
-assertPermission("actions", "read");
+assertPermission("actions", "write");
 assertPermission("checks", "write");
 assertPermission("contents", "write");
 assertPermission("issues", "write");

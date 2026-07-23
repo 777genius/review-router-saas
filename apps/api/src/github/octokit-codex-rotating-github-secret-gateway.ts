@@ -240,10 +240,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       repo,
       path: reviewPath,
     });
-    const legacyPaths = [
-      ".github/workflows/reviewrouter.yml",
-      ".github/workflows/reviewrouter-interaction.yml",
-    ];
+    const legacyPaths = [".github/workflows/reviewrouter.yml"];
     const legacyPresence = await Promise.all(
       legacyPaths.map(async (path) => ({
         path,
@@ -257,6 +254,14 @@ export class OctokitCodexRotatingGitHubSecretGateway
           })) !== null,
       })),
     );
+    const interactionPath = ".github/workflows/reviewrouter-interaction.yml";
+    const interactionWorkflow = await this.readDefaultBranchWorkflow({
+      token: token.token,
+      owner: input.owner,
+      repo,
+      path: interactionPath,
+      missingAllowed: true,
+    });
     const scan = reviewWorkflow
       ? scanCodexRotatingAdvisoryWorkflow(reviewWorkflow)
       : { valid: false, errors: ["review_workflow_missing"] };
@@ -271,6 +276,12 @@ export class OctokitCodexRotatingGitHubSecretGateway
       ) &&
       reviewWorkflow?.includes("review_action_v2_mode: t0"),
     );
+    const reviewActionCommitSha =
+      metadata?.actionRef.match(/@([a-f0-9]{40})$/)?.[1] ?? null;
+    const interaction = inspectReviewV2InteractionWorkflow(
+      interactionWorkflow,
+      reviewActionCommitSha,
+    );
     const inventory = {
       reviewPath,
       reviewWorkflowSha256: reviewWorkflow
@@ -281,17 +292,18 @@ export class OctokitCodexRotatingGitHubSecretGateway
       workflowSchemaVersion: metadata?.workflowSchemaVersion ?? null,
       scanErrors: [...scan.errors].sort(),
       legacyPresence,
+      interaction,
     };
     return {
       compatible:
         scan.valid &&
         immutableT0 &&
-        legacyPresence.every((entry) => !entry.present),
+        legacyPresence.every((entry) => !entry.present) &&
+        interaction.compatible,
       inventoryHash: createHash("sha256")
         .update(JSON.stringify(inventory), "utf8")
         .digest("hex"),
-      actionCommitSha:
-        metadata?.actionRef.match(/@([a-f0-9]{40})$/)?.[1] ?? null,
+      actionCommitSha: reviewActionCommitSha,
     };
   }
 
@@ -455,6 +467,73 @@ export class OctokitCodexRotatingGitHubSecretGateway
       throw error;
     }
   }
+}
+
+function inspectReviewV2InteractionWorkflow(
+  workflow: string | null,
+  expectedActionCommitSha: string | null,
+) {
+  if (workflow === null) {
+    return {
+      path: ".github/workflows/reviewrouter-interaction.yml",
+      present: false,
+      compatible: true,
+      actionCommitSha: null,
+      errors: [] as string[],
+    };
+  }
+
+  const errors: string[] = [];
+  const runtimeRefs = [
+    ...workflow.matchAll(
+      /^\s*(RR_RUNTIME_REF|REVIEWROUTER_ACTION_VERSION):\s*["']?([a-f0-9]{40})["']?\s*$/gim,
+    ),
+  ];
+  const runtimeCommitShas = [
+    ...new Set(runtimeRefs.map((match) => match[2]!.toLowerCase())),
+  ];
+  const runtimeEnvNames = new Set(runtimeRefs.map((match) => match[1]!));
+  const checkoutRefs = [
+    ...workflow.matchAll(
+      /^\s*ref:\s*\$\{\{\s*env\.(RR_RUNTIME_REF|REVIEWROUTER_ACTION_VERSION)\s*\}\}\s*$/gm,
+    ),
+  ];
+  const actionCommitSha =
+    runtimeCommitShas.length === 1 ? runtimeCommitShas[0]! : null;
+  if (actionCommitSha === null) {
+    errors.push("interaction_runtime_ref_invalid");
+  } else if (actionCommitSha !== expectedActionCommitSha) {
+    errors.push("interaction_runtime_ref_mismatch");
+  }
+  if (
+    checkoutRefs.length !== 1 ||
+    !runtimeEnvNames.has(checkoutRefs[0]![1]!) ||
+    !/^\s*repository:\s*["']?777genius\/review-router["']?\s*$/m.test(workflow)
+  ) {
+    errors.push("interaction_runtime_checkout_invalid");
+  }
+  if (
+    !/^\s*REVIEWROUTER_RUNTIME_CONFIG_MODE:\s*["']oidc["']\s*$/m.test(workflow)
+  ) {
+    errors.push("interaction_runtime_config_not_oidc");
+  }
+  if (
+    !/^\s*REVIEW_ROUTER_REVIEW_WORKFLOW_FILE:\s*["']reviewrouter-codex\.yml["']\s*$/m.test(
+      workflow,
+    )
+  ) {
+    errors.push("interaction_review_workflow_binding_invalid");
+  }
+  if (!/^\s*id-token:\s*write\s*$/m.test(workflow)) {
+    errors.push("interaction_oidc_permission_missing");
+  }
+  return {
+    path: ".github/workflows/reviewrouter-interaction.yml",
+    present: true,
+    compatible: errors.length === 0,
+    actionCommitSha,
+    errors: errors.sort(),
+  };
 }
 
 function decodeWorkflowRunPullRequest(

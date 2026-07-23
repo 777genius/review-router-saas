@@ -17,7 +17,7 @@ If a permission cannot be explained clearly, do not request it until a feature n
 | Issues               |      Write | Support issue-style PR summary/setup/help conversations when App-bot identity or SaaS guidance is used.                                                                        |
 | Secrets              |      Write | Verify GitHub Actions secret metadata and write encrypted rotating Codex OAuth secret payloads after OIDC/writeback checks. Secret values are never readable through this API. |
 | Organization secrets |       Read | Verify selected-repository organization secret metadata for organization-owned repositories. Secret values are never readable.                                                 |
-| Actions              |       Read | Receive workflow run metadata for live health/status updates without managing workflow execution.                                                                              |
+| Actions              | Read/Write | Dispatch an exact-revision T0 review from a durable request and read the resulting run metadata. ReviewRouter does not cancel or mutate unrelated workflow runs.               |
 | Checks               |      Write | Create or update ReviewRouter-owned check runs when direct GitHub check integration is enabled.                                                                                |
 | Commit statuses      |      Write | Create or update ReviewRouter-owned commit statuses when direct GitHub status integration is enabled.                                                                          |
 

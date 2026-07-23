@@ -104,9 +104,10 @@ const permissionRows: readonly {
     reason: "Discover repository identity and default branch.",
   },
   {
-    permission: "actions: read",
-    className: "Read",
-    reason: "Read workflow run metadata for live setup and health state.",
+    permission: "actions: write",
+    className: "Write",
+    reason:
+      "Dispatch exact-revision review runs and read their metadata for durable request tracking.",
   },
   {
     permission: "checks: write",
