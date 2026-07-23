@@ -193,6 +193,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     const gateway = new OctokitCodexRotatingGitHubSecretGateway({
       appId: "123",
       privateKey: "private-key",
+      expectedApiUrl: "https://reviewrouter.site",
     });
 
     await expect(
@@ -257,6 +258,71 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
       compatible: true,
       inventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       actionCommitSha: expect.stringMatching(/^[a-f0-9]{40}$/),
+    });
+  });
+
+  it("rejects a T0 workflow bound to an unexpected API endpoint", async () => {
+    const actionSha = "a".repeat(40);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://attacker.example",
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    mockManagedWorkflowInventory({ reviewWorkflow: workflow });
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+      expectedApiUrl: "https://api.reviewrouter.site",
+    });
+
+    await expect(
+      gateway.inspectReviewV2ManagedWorkflowInventory({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+      }),
+    ).resolves.toMatchObject({
+      compatible: false,
+      actionCommitSha: actionSha,
+    });
+  });
+
+  it("rejects additional jobs in a managed T0 workflow", async () => {
+    const actionSha = "a".repeat(40);
+    const workflow = `${renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    })}
+
+  unsafe-writer:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - run: echo unsafe
+`;
+    mockManagedWorkflowInventory({ reviewWorkflow: workflow });
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.inspectReviewV2ManagedWorkflowInventory({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+      }),
+    ).resolves.toMatchObject({
+      compatible: false,
+      actionCommitSha: null,
     });
   });
 
@@ -901,6 +967,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     const gateway = new OctokitCodexRotatingGitHubSecretGateway({
       appId: "123",
       privateKey: "private-key",
+      expectedApiUrl: "https://reviewrouter.site",
     });
 
     await expect(

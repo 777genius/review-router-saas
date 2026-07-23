@@ -684,6 +684,7 @@ export type CodexRotatingWorkflowScanResult = {
 
 export type CodexRotatingWorkflowSourceMetadata = {
   readonly actionRef: string;
+  readonly apiUrl: string;
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
 };
@@ -1092,9 +1093,47 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   const reviewJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
   const refreshJob = extractWorkflowJobSection(workflow, "codex-refresh") ?? "";
   const refreshEnabled = refreshJob.length > 0;
+  const reviewWith = parseWorkflowFlatMapping(reviewJob, "with", 4);
+  const reviewSecrets = parseWorkflowFlatMapping(reviewJob, "secrets", 4);
   const expectedConcurrencyGroup = source.providerInstanceId
     ? renderCodexRotatingConcurrencyGroup(source.providerInstanceId)
     : undefined;
+
+  if (
+    !workflowJobIdsExactly(
+      workflow,
+      refreshEnabled ? ["codex-review", "codex-refresh"] : ["codex-review"],
+    )
+  ) {
+    errors.push("t0_job_inventory_invalid");
+  }
+  if (
+    !workflowMappingHasExactNames(reviewWith, [
+      "runtime_ref",
+      "api_url",
+      "runtime_config_mode",
+      "pr_number",
+      "review_head_sha",
+      "provider_instance_id",
+      "workflow_schema_version",
+      "max_changed_lines",
+      "review_timeout_minutes",
+    ])
+  ) {
+    errors.push("t0_review_with_invalid");
+  }
+  if (
+    !workflowMappingHasAllowedNames(reviewSecrets, {
+      required: ["CODEX_AUTH_JSON"],
+      allowed: [
+        "CODEX_AUTH_JSON",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "OPENROUTER_API_KEY",
+      ],
+    })
+  ) {
+    errors.push("t0_review_secrets_invalid");
+  }
 
   let release:
     | { readonly repository: string; readonly commitSha: string }
@@ -1110,6 +1149,9 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   }
   if (!source.providerInstanceId) {
     errors.push("provider_instance_id_required");
+  }
+  if (!source.apiUrl || !isSafeWorkflowApiUrl(source.apiUrl)) {
+    errors.push("api_url_invalid");
   }
   if (source.workflowSchemaVersion !== codexRotatingWorkflowSchemaVersion) {
     errors.push("workflow_schema_version_mismatch");
@@ -1166,6 +1208,36 @@ function scanCodexRotatingT0AdvisoryWorkflow(
       errors.push("t0_runtime_ref_mismatch");
     }
   }
+  if (
+    workflowMappingValue(reviewWith, "api_url") !==
+      (source.apiUrl ? JSON.stringify(source.apiUrl) : undefined) ||
+    workflowMappingValue(reviewWith, "runtime_config_mode") !== "oidc" ||
+    workflowMappingValue(reviewWith, "pr_number") !==
+      "${{ inputs.pr_number }}" ||
+    workflowMappingValue(reviewWith, "review_head_sha") !==
+      "${{ inputs.review_head_sha }}" ||
+    workflowMappingValue(reviewWith, "provider_instance_id") !==
+      (source.providerInstanceId
+        ? JSON.stringify(source.providerInstanceId)
+        : undefined) ||
+    workflowMappingValue(reviewWith, "workflow_schema_version") !==
+      String(source.workflowSchemaVersion)
+  ) {
+    errors.push("t0_review_binding_invalid");
+  }
+  if (
+    workflowMappingValue(reviewSecrets, "CODEX_AUTH_JSON") !==
+      `\${{ secrets.${codexRotatingSecretName} }}` ||
+    (workflowMappingValue(reviewSecrets, "CLAUDE_CODE_OAUTH_TOKEN") !==
+      undefined &&
+      workflowMappingValue(reviewSecrets, "CLAUDE_CODE_OAUTH_TOKEN") !==
+        "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}") ||
+    (workflowMappingValue(reviewSecrets, "OPENROUTER_API_KEY") !== undefined &&
+      workflowMappingValue(reviewSecrets, "OPENROUTER_API_KEY") !==
+        "${{ secrets.OPENROUTER_API_KEY }}")
+  ) {
+    errors.push("t0_review_secret_binding_invalid");
+  }
   for (const marker of [
     "runtime_config_mode: oidc",
     "provider_instance_id:",
@@ -1221,6 +1293,18 @@ function scanCodexRotatingT0AdvisoryWorkflow(
     if (release && !refreshJob.includes(`uses: ${source.actionRef}`)) {
       errors.push("refresh_action_ref_mismatch");
     }
+    for (const marker of [
+      `api-url: ${JSON.stringify(source.apiUrl)}`,
+      `provider-instance-id: ${JSON.stringify(source.providerInstanceId)}`,
+      `workflow-schema-version: ${JSON.stringify(
+        String(source.workflowSchemaVersion),
+      )}`,
+      `auth-json: \${{ secrets.${codexRotatingSecretName} }}`,
+    ]) {
+      if (!refreshJob.includes(marker)) {
+        errors.push(`refresh_binding_missing:${marker}`);
+      }
+    }
   }
   const usesRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)$/gm)].map(
     (match) => match[1]!,
@@ -1230,6 +1314,19 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   }
   if (workflow.includes("fork-sandbox-review:")) {
     errors.push("t0_fork_sandbox_not_allowed");
+  }
+  for (const [pattern, code] of [
+    [/(?:^|[\s{,])run\s*:/m, "t0_raw_run_not_allowed"],
+    [/(?:^|[\s{,])env\s*:/m, "t0_env_not_allowed"],
+    [/(?:^|[\s{,])strategy\s*:/m, "t0_strategy_not_allowed"],
+    [
+      /\b(?:issues|pull-requests):\s*write\b/m,
+      "t0_write_permission_not_allowed",
+    ],
+  ] as const) {
+    if (pattern.test(workflow)) {
+      errors.push(code);
+    }
   }
   return { valid: errors.length === 0, errors };
 }
@@ -1244,6 +1341,7 @@ export function readCodexRotatingWorkflowSourceMetadata(
   const metadata = extractCodexRotatingWorkflowSourceMetadata(workflow);
   if (
     !metadata.actionRef ||
+    !metadata.apiUrl ||
     !metadata.providerInstanceId ||
     metadata.workflowSchemaVersion === undefined
   ) {
@@ -1251,6 +1349,7 @@ export function readCodexRotatingWorkflowSourceMetadata(
   }
   return {
     actionRef: metadata.actionRef,
+    apiUrl: metadata.apiUrl,
     providerInstanceId: metadata.providerInstanceId,
     workflowSchemaVersion: metadata.workflowSchemaVersion,
   };
@@ -1697,11 +1796,13 @@ function assertOidcFreshness(input: {
 
 function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
   readonly actionRef?: string;
+  readonly apiUrl?: string;
   readonly providerInstanceId?: string;
   readonly workflowSchemaVersion?: number;
   readonly mode?: string;
 } {
-  const rawActionRef = workflow.match(/^\s*uses:\s*([^\s]+)$/m)?.[1];
+  const reviewJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
+  const rawActionRef = reviewJob.match(/^\s*uses:\s*([^\s]+)$/m)?.[1];
   const reusableRelease = rawActionRef?.match(
     /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/\.github\/workflows\/reviewrouter(?:-t0)?-reusable\.yml@([a-fA-F0-9]{40})$/,
   );
@@ -1712,11 +1813,25 @@ function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
   const actionRef = reusableRelease
     ? `${reusableRelease[1]}@${reusableRelease[2]!.toLowerCase()}`
     : rawActionRef;
+  const t0With = isDedicatedT0Workflow
+    ? parseWorkflowFlatMapping(reviewJob, "with", 4)
+    : undefined;
+  const apiUrl = unquoteWorkflowScalar(
+    isDedicatedT0Workflow
+      ? workflowMappingValue(t0With, "api_url")
+      : reviewJob.match(/^\s*api-url:\s*(.+)$/m)?.[1],
+  );
   const providerInstanceId = unquoteWorkflowScalar(
-    workflow.match(/^\s*provider(?:-|_)instance(?:-|_)id:\s*(.+)$/m)?.[1],
+    isDedicatedT0Workflow
+      ? workflowMappingValue(t0With, "provider_instance_id")
+      : reviewJob.match(/^\s*provider(?:-|_)instance(?:-|_)id:\s*(.+)$/m)?.[1],
   );
   const workflowSchemaVersionRaw = unquoteWorkflowScalar(
-    workflow.match(/^\s*workflow(?:-|_)schema(?:-|_)version:\s*(.+)$/m)?.[1],
+    isDedicatedT0Workflow
+      ? workflowMappingValue(t0With, "workflow_schema_version")
+      : reviewJob.match(
+          /^\s*workflow(?:-|_)schema(?:-|_)version:\s*(.+)$/m,
+        )?.[1],
   );
   const workflowSchemaVersion =
     workflowSchemaVersionRaw && /^[0-9]+$/.test(workflowSchemaVersionRaw)
@@ -1731,6 +1846,7 @@ function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
     );
   return {
     ...(actionRef ? { actionRef } : {}),
+    ...(apiUrl ? { apiUrl } : {}),
     ...(providerInstanceId ? { providerInstanceId } : {}),
     ...(workflowSchemaVersion !== undefined ? { workflowSchemaVersion } : {}),
     ...(mode ? { mode } : {}),
@@ -1757,6 +1873,140 @@ function extractWorkflowJobSection(
     ? afterStart + nextPeerMatch.index
     : workflow.length;
   return workflow.slice(start, end);
+}
+
+type WorkflowMappingEntry = {
+  readonly name: string;
+  readonly value: string;
+};
+
+type ParsedWorkflowFlatMapping =
+  | { readonly kind: "missing" }
+  | { readonly kind: "invalid" }
+  | {
+      readonly kind: "entries";
+      readonly entries: readonly WorkflowMappingEntry[];
+    };
+
+function parseWorkflowFlatMapping(
+  workflowSection: string,
+  mappingName: string,
+  mappingIndent: number,
+): ParsedWorkflowFlatMapping {
+  const lines = workflowSection.split("\n");
+  const mappingPattern = new RegExp(
+    `^ {${mappingIndent}}${escapeRegExp(mappingName)}:\\s*(.*)$`,
+  );
+  const mappingIndexes = lines
+    .map((line, index) => (mappingPattern.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+  if (mappingIndexes.length === 0) {
+    return { kind: "missing" };
+  }
+  if (mappingIndexes.length !== 1) {
+    return { kind: "invalid" };
+  }
+  const mappingLineIndex = mappingIndexes[0]!;
+  const mappingMatch = mappingPattern.exec(lines[mappingLineIndex] ?? "");
+  if (!mappingMatch || mappingMatch[1]!.trim().length > 0) {
+    return { kind: "invalid" };
+  }
+
+  const childIndent = mappingIndent + 2;
+  const entries: WorkflowMappingEntry[] = [];
+  const names = new Set<string>();
+  for (const line of lines.slice(mappingLineIndex + 1)) {
+    if (/^\s*(#.*)?$/.test(line)) {
+      continue;
+    }
+    const indent = countLeadingSpaces(line);
+    if (indent <= mappingIndent) {
+      break;
+    }
+    const entryMatch = new RegExp(
+      `^ {${childIndent}}([A-Za-z0-9_-]+):\\s*(.+?)\\s*$`,
+    ).exec(line);
+    if (!entryMatch || names.has(entryMatch[1]!)) {
+      return { kind: "invalid" };
+    }
+    names.add(entryMatch[1]!);
+    entries.push({ name: entryMatch[1]!, value: entryMatch[2]! });
+  }
+  return { kind: "entries", entries };
+}
+
+function workflowMappingValue(
+  mapping: ParsedWorkflowFlatMapping | undefined,
+  name: string,
+): string | undefined {
+  return mapping?.kind === "entries"
+    ? mapping.entries.find((entry) => entry.name === name)?.value
+    : undefined;
+}
+
+function workflowMappingHasExactNames(
+  mapping: ParsedWorkflowFlatMapping,
+  expectedNames: readonly string[],
+): boolean {
+  return (
+    mapping.kind === "entries" &&
+    mapping.entries.length === expectedNames.length &&
+    expectedNames.every((name) =>
+      mapping.entries.some((entry) => entry.name === name),
+    )
+  );
+}
+
+function workflowMappingHasAllowedNames(
+  mapping: ParsedWorkflowFlatMapping,
+  input: {
+    readonly required: readonly string[];
+    readonly allowed: readonly string[];
+  },
+): boolean {
+  return (
+    mapping.kind === "entries" &&
+    input.required.every((name) =>
+      mapping.entries.some((entry) => entry.name === name),
+    ) &&
+    mapping.entries.every((entry) => input.allowed.includes(entry.name))
+  );
+}
+
+function workflowJobIdsExactly(
+  workflow: string,
+  expectedJobIds: readonly string[],
+): boolean {
+  const jobsMatch = /^jobs:\s*$/m.exec(workflow);
+  if (!jobsMatch) {
+    return false;
+  }
+  const jobsSection = workflow.slice(jobsMatch.index + jobsMatch[0].length);
+  const nextTopLevel = /^\S.*$/m.exec(jobsSection);
+  const boundedJobsSection = nextTopLevel
+    ? jobsSection.slice(0, nextTopLevel.index)
+    : jobsSection;
+  const jobIds = [
+    ...boundedJobsSection.matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm),
+  ].map((match) => match[1]!);
+  return (
+    jobIds.length === expectedJobIds.length &&
+    expectedJobIds.every((jobId) => jobIds.includes(jobId))
+  );
+}
+
+function isSafeWorkflowApiUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
 }
 
 function parseWorkflowPermissions(

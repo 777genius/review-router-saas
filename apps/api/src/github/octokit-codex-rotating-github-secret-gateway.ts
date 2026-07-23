@@ -114,15 +114,20 @@ export class OctokitCodexRotatingGitHubSecretGateway
     CodexRotatingWorkflowSourceVerifierPort
 {
   private readonly app: App;
+  private readonly expectedApiUrl: string;
 
   constructor(options: {
     readonly appId: string;
     readonly privateKey: string;
+    readonly expectedApiUrl?: string;
   }) {
     this.app = new App({
       appId: options.appId,
       privateKey: options.privateKey,
     });
+    this.expectedApiUrl = normalizeWorkflowApiUrl(
+      options.expectedApiUrl ?? "https://api.reviewrouter.site",
+    );
   }
 
   async issueSecretsReadToken(input: {
@@ -256,6 +261,9 @@ export class OctokitCodexRotatingGitHubSecretGateway
     if (metadata.providerInstanceId !== input.expectedProviderInstanceId) {
       throw new Error("codex_rotating_workflow_provider_instance_mismatch");
     }
+    if (normalizeWorkflowApiUrl(metadata.apiUrl) !== this.expectedApiUrl) {
+      throw new Error("codex_rotating_workflow_api_url_mismatch");
+    }
     if (
       metadata.workflowSchemaVersion !== input.expectedWorkflowSchemaVersion
     ) {
@@ -362,6 +370,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
             ? createHash("sha256").update(reviewWorkflow, "utf8").digest("hex")
             : null,
           actionRef: metadata?.actionRef ?? null,
+          apiUrl: metadata?.apiUrl ?? null,
           actionCommitSha:
             metadata?.actionRef.match(/@([a-f0-9]{40})$/)?.[1] ?? null,
           providerInstanceId: metadata?.providerInstanceId ?? null,
@@ -383,6 +392,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       defaultInventory.actionRef?.startsWith(
         `${REVIEW_ROUTER_ACTION_REPOSITORY}@`,
       ) &&
+      defaultInventory.apiUrl === this.expectedApiUrl &&
       defaultInventory.providerInstanceId ===
         `codex-rotating:${input.githubRepositoryId}` &&
       defaultInventory.workflowSchemaVersion !== null,
@@ -419,6 +429,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
           (!reference.reviewWorkflowPresent ||
             (defaultBindingCompatible &&
               reference.actionRef === defaultInventory.actionRef &&
+              reference.apiUrl === defaultInventory.apiUrl &&
               reference.providerInstanceId ===
                 defaultInventory.providerInstanceId &&
               reference.workflowSchemaVersion ===
@@ -830,6 +841,19 @@ function decodeRepositoryDefaultBranch(
     throw new Error("codex_rotating_repository_identity_mismatch");
   }
   return repository.default_branch;
+}
+
+function normalizeWorkflowApiUrl(value: string): string {
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error("codex_rotating_workflow_api_url_invalid");
+  }
+  return url.toString().replace(/\/$/, "");
 }
 
 function decodeOpenPullRequests(
