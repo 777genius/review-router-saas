@@ -1047,6 +1047,20 @@ export async function resetReviewActionV2E2EDatabase(
         "Workspace"
       RESTART IDENTITY CASCADE
     `);
+    await prisma.reviewSafetyEmergencyControl.create({
+      data: {
+        emergencyControlId: "global-review-v2",
+        policyScope: "global",
+        workspaceId: null,
+        repositoryConnectionId: null,
+        scmRepositoryIdentityId: null,
+        version: 1,
+        stopped: true,
+        reason: "review_v2_not_promoted",
+        updatedBy: "migration:000029",
+        updatedAt: new Date(),
+      },
+    });
   } finally {
     await prisma.$disconnect();
   }
@@ -1212,14 +1226,10 @@ async function seedProductionControlPlane(
       activatedAt: now,
     },
   });
-  await prisma.reviewSafetyEmergencyControl.create({
+  await prisma.reviewSafetyEmergencyControl.update({
+    where: { emergencyControlId: "global-review-v2" },
     data: {
-      emergencyControlId: `${ids.prefix}-emergency`,
-      policyScope: "global",
-      workspaceId: null,
-      repositoryConnectionId: null,
-      scmRepositoryIdentityId: null,
-      version: 1,
+      version: 2,
       stopped: false,
       reason: "e2e_enabled",
       updatedBy: "reviewrouter-e2e",
