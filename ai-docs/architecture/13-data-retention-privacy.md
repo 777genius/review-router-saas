@@ -88,6 +88,14 @@ secret values
 
 ## Privacy Review Trigger
 
+## Review v2 Retention Order
+
+Prune only after downstream references expire: publication effects/operations and
+completion processes, snapshot receipts/snapshots, execution observation refs and
+leases, then observations and authorizations. Restrictive foreign keys and
+reference-aware predicates protect live evidence. Tombstones retain compact IDs,
+hashes, outcomes and timestamps only. No source, diff, prompt, credential, cookie,
+raw provider response or raw finding prose is added to operational telemetry.
 Any change that sends data from customer CI to SaaS must answer:
 
 1. Does it include code or diff?

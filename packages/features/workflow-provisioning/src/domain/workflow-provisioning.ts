@@ -5,6 +5,7 @@ import {
   type ReviewRouterDiscussionMode,
   type ReviewRouterWorkflowStyle,
 } from "./workflow-template";
+import type { CodexRotatingReviewActionV2Mode } from "@reviewrouter/features-codex-oauth-rotating";
 
 export type WorkflowProvisioningStatus =
   | "not_started"
@@ -27,6 +28,7 @@ export type ProvisionWorkflowInput = {
   readonly conflictReviewFallbackEnabled?: boolean;
   readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
+  readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
   readonly setupBranch?: string;
   readonly workflowPath?: string;
 };

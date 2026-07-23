@@ -1,0 +1,12 @@
+{
+  "protocolVersion": "2",
+  "schemaDigest": "563964813193272176bfeeea5a1f8d48e550f5e8a12f0c07ef1880406f29af7c",
+  "requestId": "rr_fixture_request_0001",
+  "oidcToken": "fixture.header.payload.signature",
+  "supportedProtocols": [
+    {
+      "protocolVersion": "2",
+      "schemaDigest": "563964813193272176bfeeea5a1f8d48e550f5e8a12f0c07ef1880406f29af7c"
+    }
+  ]
+}

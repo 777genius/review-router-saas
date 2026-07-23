@@ -1,7 +1,10 @@
 import { App } from "@octokit/app";
 import { request as githubRequest } from "@octokit/request";
 import { createHash } from "node:crypto";
-import { readCodexRotatingWorkflowSourceMetadata } from "@reviewrouter/features-codex-oauth-rotating";
+import {
+  readCodexRotatingWorkflowSourceMetadata,
+  scanCodexRotatingAdvisoryWorkflow,
+} from "@reviewrouter/features-codex-oauth-rotating";
 import type {
   CodexRotatingGitHubSecretTokenIssuerPort,
   CodexRotatingGitHubSecretWriterPort,
@@ -214,6 +217,84 @@ export class OctokitCodexRotatingGitHubSecretGateway
     };
   }
 
+  async inspectReviewV2ManagedWorkflowInventory(input: {
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly owner: string;
+  }): Promise<{
+    readonly compatible: boolean;
+    readonly inventoryHash: string;
+    readonly actionCommitSha: string | null;
+  }> {
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: input.githubInstallationId,
+      githubRepositoryId: input.githubRepositoryId,
+      permissions: { contents: "read" },
+    });
+    const repo = repoNameFromFullName(input.repositoryFullName);
+    const reviewPath = ".github/workflows/reviewrouter-codex.yml";
+    const reviewWorkflow = await this.readDefaultBranchWorkflow({
+      token: token.token,
+      owner: input.owner,
+      repo,
+      path: reviewPath,
+    });
+    const legacyPaths = [
+      ".github/workflows/reviewrouter.yml",
+      ".github/workflows/reviewrouter-interaction.yml",
+    ];
+    const legacyPresence = await Promise.all(
+      legacyPaths.map(async (path) => ({
+        path,
+        present:
+          (await this.readDefaultBranchWorkflow({
+            token: token.token,
+            owner: input.owner,
+            repo,
+            path,
+            missingAllowed: true,
+          })) !== null,
+      })),
+    );
+    const scan = reviewWorkflow
+      ? scanCodexRotatingAdvisoryWorkflow(reviewWorkflow)
+      : { valid: false, errors: ["review_workflow_missing"] };
+    const metadata =
+      scan.valid && reviewWorkflow
+        ? readCodexRotatingWorkflowSourceMetadata(reviewWorkflow)
+        : null;
+    const immutableT0 = Boolean(
+      metadata &&
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/.test(
+        metadata.actionRef,
+      ) &&
+      reviewWorkflow?.includes("review_action_v2_mode: t0"),
+    );
+    const inventory = {
+      reviewPath,
+      reviewWorkflowSha256: reviewWorkflow
+        ? createHash("sha256").update(reviewWorkflow, "utf8").digest("hex")
+        : null,
+      actionRef: metadata?.actionRef ?? null,
+      providerInstanceId: metadata?.providerInstanceId ?? null,
+      workflowSchemaVersion: metadata?.workflowSchemaVersion ?? null,
+      scanErrors: [...scan.errors].sort(),
+      legacyPresence,
+    };
+    return {
+      compatible:
+        scan.valid &&
+        immutableT0 &&
+        legacyPresence.every((entry) => !entry.present),
+      inventoryHash: createHash("sha256")
+        .update(JSON.stringify(inventory), "utf8")
+        .digest("hex"),
+      actionCommitSha:
+        metadata?.actionRef.match(/@([a-f0-9]{40})$/)?.[1] ?? null,
+    };
+  }
+
   async resolveWorkflowRunPullRequest(input: {
     readonly repository: {
       readonly githubInstallationId: string;
@@ -341,6 +422,38 @@ export class OctokitCodexRotatingGitHubSecretGateway
       throw new Error("codex_rotating_installation_token_permissions_mismatch");
     }
     return { token: data.token, expiresAt };
+  }
+
+  private async readDefaultBranchWorkflow(input: {
+    readonly token: string;
+    readonly owner: string;
+    readonly repo: string;
+    readonly path: string;
+    readonly missingAllowed?: boolean;
+  }): Promise<string | null> {
+    try {
+      const response = (await githubRequest(
+        "GET /repos/{owner}/{repo}/contents/{path}",
+        {
+          owner: input.owner,
+          repo: input.repo,
+          path: input.path,
+          headers: { authorization: `Bearer ${input.token}` },
+        },
+      )) as ContentsResponse;
+      return decodeWorkflowContent(response.data);
+    } catch (error) {
+      if (
+        input.missingAllowed === true &&
+        typeof error === "object" &&
+        error !== null &&
+        "status" in error &&
+        error.status === 404
+      ) {
+        return null;
+      }
+      throw error;
+    }
   }
 }
 

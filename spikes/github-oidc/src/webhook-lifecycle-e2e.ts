@@ -229,6 +229,7 @@ async function processInstallationSyncOutbox(): Promise<{
   return processOutboxBatch(
     {
       limit: 10,
+      claimOwnerHash: "webhook-lifecycle-e2e-worker",
       handlers: [
         createInstallationSyncRequestedHandler({
           github: new StaticGitHubRepositorySource([

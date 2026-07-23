@@ -75,6 +75,25 @@ Mitigation:
 
 ### Logging sensitive data
 
+### Forged reusable observation
+
+An Action may claim a matching manifest or historical result. The server rebuilds
+canonical identities, validates authorization plus signed lease/attempt facts,
+scope/trust domain, result window and safety decision, and stores only immutable
+schema-valid success. Agentic cross-head reuse is denied.
+
+### Stale publication capability
+
+A superseded worker may retain a token or observe an ambiguous SCM response.
+Publication requires current permit, mutation epoch, revision and lifecycle
+watermarks before each operation. Claim/operation fencing rejects stale owners;
+ambiguous effects reconcile under the server-side App identity.
+
+### Repository disconnect or transfer ABA
+
+Deleting tenant bindings must not reset authority. Permanent external SCM identity
+and mutation epoch survive disconnect/transfer; reconnect requires explicit rebind
+while paused and a strictly newer resume epoch.
 Mitigation:
 
 - redaction

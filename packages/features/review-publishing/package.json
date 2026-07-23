@@ -8,6 +8,26 @@
       "types": "./src/index.ts",
       "production": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./v2": {
+      "types": "./src/v2/index.ts",
+      "production": "./dist/v2/index.js",
+      "default": "./src/v2/index.ts"
+    },
+    "./v2/composition": {
+      "types": "./src/v2/composition/index.ts",
+      "production": "./dist/v2/composition/index.js",
+      "default": "./src/v2/composition/index.ts"
+    },
+    "./v2/contract-source": {
+      "types": "./src/v2/contract-source/index.ts",
+      "production": "./dist/v2/contract-source/index.js",
+      "default": "./src/v2/contract-source/index.ts"
+    },
+    "./v2/testing": {
+      "types": "./src/v2/testing/index.ts",
+      "production": "./dist/v2/testing/index.js",
+      "default": "./src/v2/testing/index.ts"
     }
   },
   "bin": {
@@ -15,10 +35,16 @@
     "reviewrouter-gitlab-review": "./bin/reviewrouter-gitlab-review.mjs"
   },
   "dependencies": {
+    "@prisma/client": "7.8.0",
     "@reviewrouter/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@reviewrouter/platform-db": "workspace:*"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:contract-source": "tsc -p tsconfig.contract-source.json",
+    "test": "vitest run --root ../../.. packages/features/review-publishing/src/v2/tests",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }

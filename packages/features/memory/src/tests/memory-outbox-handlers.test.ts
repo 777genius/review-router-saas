@@ -254,6 +254,10 @@ function outboxEvent(input: {
     attempts: 1,
     maxAttempts: 5,
     nextAttemptAt: null,
+    claimId: "claim_1",
+    claimVersion: 1n,
+    claimOwnerHash: "worker_1",
+    claimUntil: new Date(now.getTime() + 60_000),
     occurredAt: now,
   };
 }

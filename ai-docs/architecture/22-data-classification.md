@@ -131,4 +131,11 @@ environment dump
 
 ## Review Trigger
 
+## Revision-Aware Evidence
+
+Safe review evidence is customer-derived sensitive metadata. Persist only bounded
+normalized findings, safe usage counts, opaque IDs/hashes, model/runtime identity,
+quality flags and retention timestamps. Authorization payloads and provider
+credentials are prohibited. Projection/snapshot prose remains tenant/PR scoped and
+must not appear in metrics, traces, migration ledgers or quarantine evidence.
 Any new field entering SaaS must be classified before implementation.

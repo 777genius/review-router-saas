@@ -12,6 +12,10 @@
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-review-execution-checkpoints": "workspace:*",
+    "@reviewrouter/features-review-executions": "workspace:*",
+    "@reviewrouter/features-review-processes": "workspace:*",
+    "@reviewrouter/features-review-publishing": "workspace:*",
+    "@reviewrouter/features-review-run-control": "workspace:*",
     "@reviewrouter/features-review-snapshots": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-repositories": "workspace:*",
@@ -19,6 +23,7 @@
     "@reviewrouter/platform-db": "workspace:*",
     "@reviewrouter/platform-locks": "workspace:*",
     "@reviewrouter/platform-logger": "workspace:*",
+    "@reviewrouter/platform-signed-capabilities": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "@octokit/app": "^16.1.2"
   },

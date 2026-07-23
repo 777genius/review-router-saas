@@ -75,6 +75,13 @@ Rules:
 
 ## AI Discussion
 
+## Revision Changes During Review
+
+New commits do not publish stale findings. Completed provider observations may
+resume only when their exact invocation/revision remains valid; otherwise required
+work reruns. The current review always reloads human interaction and reports
+honest complete/partial coverage. A partial run never says `All Clear` and never
+advances the incremental snapshot.
 Future/optional:
 
 - if user replies with normal text to a review comment, ReviewRouter can answer with explanation

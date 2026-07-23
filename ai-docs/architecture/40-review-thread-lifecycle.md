@@ -3205,6 +3205,14 @@ If any answer is "no", do not ship auto-resolve.
 
 ## Short Summary
 
+## Revision-Aware Projection Amendment
+
+Every restored or reused run reloads normalized live thread inventory, human
+commands, dismissals and replies. Historical observations are evidence only;
+lineage, severity, placement, consensus, resolution and gate state are recomputed
+for the current revision. Snapshot lineage hints cannot override live SCM state.
+Publication compares lifecycle and command watermarks before each mutation group;
+stale output is compensated or visibly marked, never silently adopted.
 📌 The final design is:
 
 ```text

@@ -82,6 +82,12 @@ export async function provisionReviewRouterWorkflow(
               plan.codexRotatingProviderInstanceId,
           }
         : {}),
+      ...(plan.codexRotatingReviewActionV2Mode
+        ? {
+            codexRotatingReviewActionV2Mode:
+              plan.codexRotatingReviewActionV2Mode,
+          }
+        : {}),
       staticRuntimeEnv,
     });
 

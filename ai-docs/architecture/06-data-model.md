@@ -270,6 +270,18 @@ updatedAt
 
 ## Critical Constraints
 
+## Review Action v2
+
+The additive v2 model separates permanent SCM identity and mutation authority,
+release-bound limits/SLO profiles, run authorization, immutable evidence,
+execution streams/work/leases, finalized artifacts/permits, publication
+operations/receipts, completion processes and snapshot commit receipts. Evidence
+payloads never live inside execution aggregates. Legacy checkpoints and v1
+snapshots remain isolated until retention removes them.
+
+The complete ownership and field model is specified by
+[ADR-028](../decisions/028-revision-aware-review-evidence.md) and
+[plan 48](./48-revision-aware-review-evidence-plan.md).
 Tenant isolation constraints that should become Prisma schema constraints/indexes:
 
 ```text

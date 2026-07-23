@@ -1,5 +1,18 @@
 # Migrations, Backups, and Recovery
 
+## Review v2 Expand And Backfill
+
+Run `pnpm review-v2:migrate -- --status` before apply, then
+`pnpm review-v2:migrate -- --apply --actor=<operator>`. The job verifies the exact
+schema digest, takes a per-step advisory transaction lock, records checkpoint
+state, backfills permanent SCM identities, quarantines collisions and validates
+`NOT VALID` foreign keys. It is safe to resume an interrupted `running` step and
+refuses invalid/missing concurrent indexes. Rollback disables writers and retains
+all additive business/audit rows; it never drops v2 state.
+
+`pnpm review-v2:migration-rehearsal` must pass on a disposable database before
+writer rollout.
+
 ## Database Migrations
 
 Use Prisma migrations.

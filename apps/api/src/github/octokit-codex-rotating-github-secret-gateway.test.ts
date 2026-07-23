@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderCodexRotatingAdvisoryWorkflow } from "@reviewrouter/features-codex-oauth-rotating";
+import {
+  CodexRotatingReviewActionV2Mode,
+  renderCodexRotatingAdvisoryWorkflow,
+} from "@reviewrouter/features-codex-oauth-rotating";
 import { OctokitCodexRotatingGitHubSecretGateway } from "./octokit-codex-rotating-github-secret-gateway.js";
 
 const mocks = vi.hoisted(() => ({
@@ -226,6 +229,49 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
         },
       },
     );
+  });
+
+  it("accepts only an immutable T0 workflow inventory without legacy writers", async () => {
+    const actionSha = "a".repeat(40);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_contents_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { contents: "read" },
+    });
+    mocks.request
+      .mockResolvedValueOnce({
+        data: {
+          type: "file",
+          encoding: "base64",
+          content: Buffer.from(workflow, "utf8").toString("base64"),
+        },
+      })
+      .mockRejectedValueOnce({ status: 404 })
+      .mockRejectedValueOnce({ status: 404 });
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.inspectReviewV2ManagedWorkflowInventory({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+      }),
+    ).resolves.toMatchObject({
+      compatible: true,
+      inventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      actionCommitSha: expect.stringMatching(/^[a-f0-9]{40}$/),
+    });
   });
 
   it("resolves a pull_request_target scope from the signed workflow run", async () => {

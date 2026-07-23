@@ -17,6 +17,7 @@ env:
   NODE_VERSION: "24"
   DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci?schema=public
   TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public
+  REVIEW_ROUTER_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/review_router_ci_test?schema=public
   AUTH_SECRET: ci-auth-secret-not-used-for-production
   AUTH_TRUST_HOST: "true"
   GITHUB_WEBHOOK_SECRET: ci-webhook-secret-not-used-for-production
@@ -82,6 +83,12 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
 
+      - name: Review Action v2 protocol drift check
+        run: pnpm protocol:check
+
+      - name: Review Action v2 handoff contract tests
+        run: pnpm protocol:handoff:test
+
       - name: Create CI databases
         env:
           PGPASSWORD: postgres
@@ -97,6 +104,12 @@ jobs:
 
       - name: Migration smoke test
         run: pnpm db:migrate:smoke
+
+      - name: Review v2 migration rehearsal
+        run: pnpm review-v2:migration-rehearsal
+
+      - name: Review Action v2 production DB E2E
+        run: pnpm review-v2:e2e
 
       - name: Backup restore smoke test
         run: pnpm db:restore:smoke

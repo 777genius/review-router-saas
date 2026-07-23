@@ -368,6 +368,16 @@ Recommended:
 
 ## Feature Flags
 
+## Review Action v2 Release Order
+
+Deploy the typed 426 bridge first. Then deploy additive migrations and disabled
+SaaS readers, export the generated contract to a public Action feature branch,
+rebuild/commit `dist/index.js`, and register the exact final Action/runtime/schema
+digests. For an allowlisted repository: preflight all decisions and credentials,
+enter `v1_draining`, wait the release-bound drain window, prove no legacy/static
+writer, then activate the new mutation epoch as the final command. Failure after
+activation pauses v2 and reconciles effects; it never reopens v1. See
+[ADR-028](../decisions/028-revision-aware-review-evidence.md).
 Critical flags:
 
 ```text

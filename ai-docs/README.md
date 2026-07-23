@@ -32,6 +32,7 @@ This folder is the canonical planning and architecture knowledge base for Review
 26. [Frontend Clean Architecture](./architecture/37-frontend-clean-architecture.md)
 27. [Visual Direction](./product/08-visual-direction.md)
 28. [Review Thread Lifecycle and Auto-Resolve](./architecture/40-review-thread-lifecycle.md)
+29. [Review Action v2 Contract Handoff Runbook](./operations/review-action-v2-contract-handoff.md)
 
 ## Folder Map
 

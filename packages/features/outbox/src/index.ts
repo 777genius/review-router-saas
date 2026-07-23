@@ -6,3 +6,4 @@ export * from "./application/use-cases/list-workspace-outbox-failures";
 export * from "./application/use-cases/process-outbox-batch";
 export * from "./application/use-cases/retry-dead-letter-outbox-event";
 export * from "./infrastructure/prisma/prisma-outbox-event-repository";
+export * from "./infrastructure/memory/in-memory-outbox-event-repository";

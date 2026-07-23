@@ -110,6 +110,13 @@ unknown
 
 ## Tests
 
+## Review v2 Payloads
+
+Action requests carry canonical hashes and bounded normalized observations, not
+raw credentials or an SCM mutation token. SaaS derives tenant/repository/PR scope
+from signed authorization. Error details are finite safe codes. Contract and E2E
+fixtures scan payloads/logs for token, cookie, source, diff and prompt leakage.
+
 - health report with code-like diff is rejected
 - health report with PEM/API-key-like string is rejected
 - oversized report is rejected

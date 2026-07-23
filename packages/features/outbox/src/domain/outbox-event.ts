@@ -23,6 +23,10 @@ export const outboxEventSchema = z.object({
   attempts: z.number().int().min(0),
   maxAttempts: z.number().int().min(1).max(20),
   nextAttemptAt: z.date().nullable(),
+  claimId: z.string().min(1).nullable(),
+  claimVersion: z.bigint().positive().nullable(),
+  claimOwnerHash: z.string().min(1).nullable(),
+  claimUntil: z.date().nullable(),
   occurredAt: z.date(),
 });
 
@@ -88,6 +92,22 @@ export type RetryDeadLetterOutboxEventResult =
       readonly status: "not_dead_letter";
       readonly currentStatus: OutboxEventStatus;
     };
+
+export type OutboxClaimTerm = {
+  readonly claimId: string;
+  readonly claimVersion: bigint;
+  readonly claimOwnerHash: string;
+  readonly claimUntil: Date;
+};
+
+export type OutboxHandlerDefinition = {
+  readonly type: string;
+  readonly version: number;
+};
+
+export type OutboxClaimTransitionResult =
+  | { readonly status: "applied" }
+  | { readonly status: "stale_claim" };
 
 export const defaultOutboxProcessingStaleAfterMs = 15 * 60 * 1000;
 

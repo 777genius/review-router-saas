@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
 import { registerApiDemoRoutes } from "@reviewrouter/features-api-demo";
@@ -13,6 +14,18 @@ import {
   StaticActionRuntimeCompatibilityPolicy,
   type RegisterActionControlPlaneRoutesDependencies,
 } from "@reviewrouter/features-action-control-plane";
+import {
+  registerReviewEvidenceV2Routes,
+  registerReviewExecutionV2Routes,
+  registerReviewPublicationRequestV2Routes,
+  registerReviewRunControlV2Routes,
+  registerReviewSnapshotReadV2Routes,
+  type RegisterReviewEvidenceV2RoutesDependencies,
+  type RegisterReviewExecutionV2RoutesDependencies,
+  type RegisterReviewPublicationRequestV2RoutesDependencies,
+  type RegisterReviewRunControlV2RoutesDependencies,
+  type RegisterReviewSnapshotReadV2RoutesDependencies,
+} from "@reviewrouter/features-action-control-plane/v2";
 import {
   ConflictReviewPullRequestWebhookHandler,
   ConflictReviewPushWebhookHandler,
@@ -71,8 +84,10 @@ import { PrismaReviewSnapshotRepository } from "@reviewrouter/features-review-sn
 import { PrismaReviewExecutionCheckpointRepository } from "@reviewrouter/features-review-execution-checkpoints";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
+import { createPrismaReviewRunControlRepositories } from "@reviewrouter/features-review-run-control/composition";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
+import { ReviewRunControlLegacyMutationAdmission } from "./review-action-v1-mutation-admission.js";
 import {
   CompositePullRequestWebhookHandler,
   CompositePushWebhookHandler,
@@ -91,6 +106,11 @@ import {
   registerActionMemoryRoutes,
   type RegisterActionMemoryRoutesDependencies,
 } from "./action-memory-routes.js";
+import {
+  composeReviewActionV2RunControlRoutes,
+  type ReviewActionV2RunControlHandlerDependencies,
+} from "./review-action-v2-run-control-composition.js";
+import { composeReviewActionV2ProductionRoutes } from "./review-action-v2-production-composition.js";
 import { appRouter } from "./trpc.js";
 
 export type CreateApiAppOptions = {
@@ -98,6 +118,14 @@ export type CreateApiAppOptions = {
   readonly githubWebhookDependencies?: RegisterGitHubWebhookRoutesDependencies;
   readonly gitLabIntegrationDependencies?: RegisterGitLabIntegrationRoutesDependencies;
   readonly actionControlPlaneDependencies?: RegisterActionControlPlaneRoutesDependencies;
+  readonly reviewRunControlV2Dependencies?: RegisterReviewRunControlV2RoutesDependencies;
+  readonly reviewRunControlV2HandlerDependencies?: ReviewActionV2RunControlHandlerDependencies;
+  readonly reviewRunControlV2Enabled?: boolean;
+  readonly reviewActionV2Env?: Readonly<Record<string, string | undefined>>;
+  readonly reviewExecutionV2Dependencies?: RegisterReviewExecutionV2RoutesDependencies;
+  readonly reviewEvidenceV2Dependencies?: RegisterReviewEvidenceV2RoutesDependencies;
+  readonly reviewSnapshotReadV2Dependencies?: RegisterReviewSnapshotReadV2RoutesDependencies;
+  readonly reviewPublicationRequestV2Dependencies?: RegisterReviewPublicationRequestV2RoutesDependencies;
   readonly actionMemoryDependencies?: RegisterActionMemoryRoutesDependencies;
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
@@ -112,9 +140,15 @@ export async function createApiApp(
 ): Promise<FastifyInstance> {
   const logger = new ConsoleLogger();
   const app = Fastify({ logger: false });
+  const reviewActionV2Env = options.reviewActionV2Env ?? process.env;
+  const reviewRunControlV2Enabled =
+    options.reviewRunControlV2Enabled ??
+    reviewActionV2Env.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1";
   const prisma =
     options.prisma ??
-    (options.githubWebhookSecret || options.actionSessionSecret
+    (options.githubWebhookSecret ||
+    options.actionSessionSecret ||
+    reviewRunControlV2Enabled
       ? createPrismaClient()
       : undefined);
   const clock = new SystemClock();
@@ -220,6 +254,8 @@ export async function createApiApp(
           const ledgerSecret =
             process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
             options.actionSessionSecret;
+          const reviewRunControlRepositories =
+            createPrismaReviewRunControlRepositories(prisma);
           return {
             repositories: new PrismaActionControlPlaneRepository(prisma),
             ...(conflictReviewFallbackEnabled
@@ -256,6 +292,13 @@ export async function createApiApp(
               clock,
             ),
             replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
+            legacyMutationAdmission:
+              new ReviewRunControlLegacyMutationAdmission({
+                repositoryIdentities:
+                  reviewRunControlRepositories.repositoryIdentities,
+                mutationAuthorities:
+                  reviewRunControlRepositories.mutationAuthorities,
+              }),
             codexRotatingOAuth,
             codexRotatingReviewSnapshotAccess: codexRotatingOAuth,
             reviewSnapshots: new PrismaReviewSnapshotRepository(prisma),
@@ -333,6 +376,89 @@ export async function createApiApp(
 
   if (actionControlPlaneDependencies) {
     await registerActionControlPlaneRoutes(app, actionControlPlaneDependencies);
+  }
+
+  const disabledReviewActionV2RuntimeDependencies = prisma
+    ? {
+        readServerTime: () => readDatabaseServerTime(prisma),
+        createRequestId: randomUUID,
+      }
+    : undefined;
+  if (
+    reviewRunControlV2Enabled &&
+    !options.reviewRunControlV2Dependencies &&
+    !disabledReviewActionV2RuntimeDependencies
+  ) {
+    throw new Error("review_action_v2_run_control_dependencies_unavailable");
+  }
+  const productionReviewActionV2Dependencies =
+    reviewRunControlV2Enabled &&
+    !options.reviewRunControlV2Dependencies &&
+    !options.reviewRunControlV2HandlerDependencies &&
+    !options.reviewExecutionV2Dependencies &&
+    !options.reviewEvidenceV2Dependencies &&
+    !options.reviewSnapshotReadV2Dependencies &&
+    !options.reviewPublicationRequestV2Dependencies &&
+    disabledReviewActionV2RuntimeDependencies
+      ? composeReviewActionV2ProductionRoutes({
+          enabled: true,
+          env: reviewActionV2Env,
+          runtime: disabledReviewActionV2RuntimeDependencies,
+          ...(prisma ? { prisma } : {}),
+          ...(options.actionOidcAudience
+            ? { oidcAudience: options.actionOidcAudience }
+            : {}),
+        })
+      : undefined;
+  const reviewRunControlV2Dependencies =
+    options.reviewRunControlV2Dependencies ??
+    productionReviewActionV2Dependencies?.runControl ??
+    (disabledReviewActionV2RuntimeDependencies
+      ? composeReviewActionV2RunControlRoutes({
+          enabled: reviewRunControlV2Enabled,
+          runtime: disabledReviewActionV2RuntimeDependencies,
+          ...(options.reviewRunControlV2HandlerDependencies
+            ? { handlers: options.reviewRunControlV2HandlerDependencies }
+            : {}),
+        })
+      : undefined);
+
+  if (reviewRunControlV2Dependencies) {
+    await registerReviewRunControlV2Routes(app, reviewRunControlV2Dependencies);
+  }
+  const reviewExecutionV2Dependencies =
+    options.reviewExecutionV2Dependencies ??
+    productionReviewActionV2Dependencies?.execution ??
+    disabledReviewActionV2RuntimeDependencies;
+  if (reviewExecutionV2Dependencies) {
+    await registerReviewExecutionV2Routes(app, reviewExecutionV2Dependencies);
+  }
+  const reviewEvidenceV2Dependencies =
+    options.reviewEvidenceV2Dependencies ??
+    productionReviewActionV2Dependencies?.evidence ??
+    disabledReviewActionV2RuntimeDependencies;
+  if (reviewEvidenceV2Dependencies) {
+    await registerReviewEvidenceV2Routes(app, reviewEvidenceV2Dependencies);
+  }
+  const reviewSnapshotReadV2Dependencies =
+    options.reviewSnapshotReadV2Dependencies ??
+    productionReviewActionV2Dependencies?.snapshot ??
+    disabledReviewActionV2RuntimeDependencies;
+  if (reviewSnapshotReadV2Dependencies) {
+    await registerReviewSnapshotReadV2Routes(
+      app,
+      reviewSnapshotReadV2Dependencies,
+    );
+  }
+  const reviewPublicationRequestV2Dependencies =
+    options.reviewPublicationRequestV2Dependencies ??
+    productionReviewActionV2Dependencies?.publication ??
+    disabledReviewActionV2RuntimeDependencies;
+  if (reviewPublicationRequestV2Dependencies) {
+    await registerReviewPublicationRequestV2Routes(
+      app,
+      reviewPublicationRequestV2Dependencies,
+    );
   }
 
   const actionMemoryDependencies =
@@ -457,6 +583,17 @@ function definedOption<const Key extends string>(
   return value
     ? ({ [key]: value } as { readonly [Property in Key]: string })
     : {};
+}
+
+async function readDatabaseServerTime(prisma: PrismaClient): Promise<Date> {
+  const rows = await prisma.$queryRaw<Array<{ serverTime: Date }>>`
+    SELECT CURRENT_TIMESTAMP AS "serverTime"
+  `;
+  const serverTime = rows[0]?.serverTime;
+  if (!(serverTime instanceof Date) || !Number.isFinite(serverTime.getTime())) {
+    throw new Error("review_action_v2_database_time_unavailable");
+  }
+  return serverTime;
 }
 
 function isPublicDemoPath(url: string): boolean {

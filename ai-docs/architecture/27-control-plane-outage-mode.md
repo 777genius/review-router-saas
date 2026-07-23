@@ -62,6 +62,15 @@ Do not claim repo is broken solely because SaaS did not receive a recent report.
 
 ## Tests
 
+## Review v2 Outage Rule
+
+Read-only local diagnostics may continue, but no new v2 authorization, lease,
+evidence attachment, finalization or publication is inferred during control-plane
+outage. A lookup outage becomes a fresh provider call only inside an already valid
+execution; it never becomes a reuse hit. Ambiguous SCM mutation enters bounded
+reconciliation. Existing signed ownership terms remain valid only through their
+persisted expiry/report windows.
+
 - SaaS config fetch timeout falls back to static config
 - fallback disabled causes skipped result with clear reason
 - health report failure does not fail review

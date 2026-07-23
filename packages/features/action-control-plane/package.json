@@ -8,6 +8,16 @@
       "types": "./src/index.ts",
       "production": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./v2": {
+      "types": "./src/v2/interface/index.ts",
+      "production": "./dist/v2/interface/index.js",
+      "default": "./src/v2/interface/index.ts"
+    },
+    "./v2/contract-source": {
+      "types": "./src/v2/contract-source/index.ts",
+      "production": "./dist/v2/contract-source/index.js",
+      "default": "./src/v2/contract-source/index.ts"
     }
   },
   "dependencies": {
@@ -17,12 +27,14 @@
     "@reviewrouter/features-review-execution-checkpoints": "workspace:*",
     "@reviewrouter/features-review-providers": "workspace:*",
     "@reviewrouter/features-review-snapshots": "workspace:*",
+    "@reviewrouter/protocol-review-action-v2": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "jose": "^6.2.3",
     "zod": "^4.4.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:contract-source": "tsc -p tsconfig.contract-source.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }

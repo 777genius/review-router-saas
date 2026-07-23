@@ -1,0 +1,89 @@
+# Review Action v2 cutover
+
+This runbook activates repository-wide T0 review mutation authority. Activation
+is one-way: after `v2_active`, failure recovery uses `pause`, not a return to v1.
+
+## Preconditions
+
+- API and worker contain the same release and migration, with both v2 flags `0`.
+- The public Action release is committed, built, and represented by a validated
+  external release manifest.
+- Authorization and capability key rings are configured.
+- Producer release attestations, provider vote lanes, and projection policy are
+  configured without secrets in logs.
+- `REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256` is configured. Supply the
+  plaintext credential only to the one operator shell process; do not store it in
+  the shared Render environment group.
+
+Validate configuration without printing values:
+
+```bash
+pnpm review-v2:admin env-preflight
+```
+
+## Release bundle
+
+`release register` accepts one JSON object containing
+`protocolLimitsProfileId`, `limits`, `operationalSloProfileId`, `thresholds`,
+`ownerRefs`, `runbookRefs`, and `candidate`. The candidate comes from the
+validated public release manifest and must use the same profile IDs.
+
+```bash
+pnpm review-v2:admin release register \
+  --bundle /secure/path/review-v2-release-bundle.json \
+  --confirm release
+```
+
+## Repository cutover
+
+Use an exact `OWNER/REPO` confirmation on every mutation:
+
+```bash
+pnpm review-v2:admin cohort stage \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+
+pnpm review-v2:admin mutation initialize-v1 \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Provision the generated T0 workflow at the full 40-character Action release SHA
+through the existing workflow-provisioning application service. Verify on the
+default branch that `.github/workflows/reviewrouter-codex.yml` is valid and that
+legacy `reviewrouter.yml` and `reviewrouter-interaction.yml` are absent.
+
+Enable API and worker v2 composition and verify service health before closing v1
+admission. Start the drain with the registered release ID:
+
+```bash
+pnpm review-v2:admin mutation begin-drain \
+  --repo OWNER/REPO \
+  --release PRODUCER_RELEASE_ID \
+  --confirm OWNER/REPO
+```
+
+The CLI reads `v1DrainMs` from that release's registered SLO profile and refuses
+a shorter override. Do not bypass or backdate the drain.
+
+After `drainNotBefore`, activation collects and immediately revalidates a
+60-second proof covering legacy admission closure, default-branch workflow
+inventory, exact registered Action SHA, worker configuration, and safety policy:
+
+```bash
+pnpm review-v2:admin mutation activate \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Run one real review, inspect the managed check, inline findings, summary,
+publication receipts, worker logs, and operator status. On any ambiguous effect:
+
+```bash
+pnpm review-v2:admin mutation pause \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Do not resume until publication reconciliation reports no `stale_visible` or
+`terminal_unknown` outcomes and the resume proof is ready.

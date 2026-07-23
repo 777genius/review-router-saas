@@ -563,16 +563,20 @@ class InMemoryOutbox implements OutboxEventRepositoryPort {
     return [];
   }
 
-  async markProcessed(): Promise<void> {
-    return undefined;
+  async renewClaim(): Promise<{ readonly status: "applied" }> {
+    return { status: "applied" };
   }
 
-  async markRetry(): Promise<void> {
-    return undefined;
+  async markProcessed(): Promise<{ readonly status: "applied" }> {
+    return { status: "applied" };
   }
 
-  async markDeadLetter(): Promise<void> {
-    return undefined;
+  async markRetry(): Promise<{ readonly status: "applied" }> {
+    return { status: "applied" };
+  }
+
+  async markDeadLetter(): Promise<{ readonly status: "applied" }> {
+    return { status: "applied" };
   }
 }
 

@@ -392,7 +392,13 @@ export type CodexRotatingWorkflowOptions = {
   readonly timeoutMinutes?: number;
   readonly workflowSchemaVersion?: number;
   readonly refreshScheduleCron?: string | null;
+  readonly reviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
 };
+
+export enum CodexRotatingReviewActionV2Mode {
+  Disabled = "disabled",
+  T0 = "t0",
+}
 
 export function renderCodexRotatingAdvisoryWorkflow(
   options: CodexRotatingWorkflowOptions,
@@ -420,25 +426,28 @@ export function renderCodexRotatingAdvisoryWorkflow(
   const concurrencyGroup = renderCodexRotatingConcurrencyGroup(
     options.providerInstanceId,
   );
-  return `name: ReviewRouter Codex OAuth
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]${
-      refreshScheduleCron
-        ? `
-  workflow_dispatch:
-  schedule:
-    - cron: ${JSON.stringify(refreshScheduleCron)}`
-        : ""
-    }
-
-permissions: {}
-
-jobs:
-  codex-review:
+  const reviewActionV2Mode =
+    options.reviewActionV2Mode ?? CodexRotatingReviewActionV2Mode.Disabled;
+  if (
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
+    options.forkAgenticSandboxEnabled === true
+  ) {
+    throw new Error("codex_rotating_t0_fork_sandbox_not_supported");
+  }
+  const reviewJob =
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0
+      ? renderCodexRotatingT0ReviewJob({
+          actionRef: options.actionRef,
+          apiUrl: options.apiUrl,
+          providerInstanceId: options.providerInstanceId,
+          workflowSchemaVersion: schemaVersion,
+          reviewJobTimeout,
+          concurrencyGroup,
+          claudeCodeOAuthTokenSecret:
+            options.claudeCodeOAuthTokenSecret === true,
+          openRouterApiKeySecret: options.openRouterApiKeySecret === true,
+        })
+      : `  codex-review:
     name: codex-review
     runs-on: ${runnerLabel}
     timeout-minutes: ${reviewJobTimeout}
@@ -461,7 +470,26 @@ jobs:
           max-changed-lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
           review-timeout-minutes: ${reviewActionTimeout}
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
-${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}${
+${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}`;
+  return `name: ReviewRouter Codex OAuth
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]${
+      refreshScheduleCron
+        ? `
+  workflow_dispatch:
+  schedule:
+    - cron: ${JSON.stringify(refreshScheduleCron)}`
+        : ""
+    }
+
+permissions: {}
+
+jobs:
+${reviewJob}${
     options.forkAgenticSandboxEnabled === true
       ? `
 
@@ -557,6 +585,60 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
 `
       : ""
   }`;
+}
+
+function renderCodexRotatingT0ReviewJob(input: {
+  readonly actionRef: string;
+  readonly apiUrl: string;
+  readonly providerInstanceId: string;
+  readonly workflowSchemaVersion: number;
+  readonly reviewJobTimeout: string;
+  readonly concurrencyGroup: string;
+  readonly claudeCodeOAuthTokenSecret: boolean;
+  readonly openRouterApiKeySecret: boolean;
+}): string {
+  const release = parseImmutableActionRelease(input.actionRef);
+  const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-reusable.yml@${release.commitSha}`;
+  return `  codex-review:
+    name: codex-review
+    concurrency:
+      group: ${input.concurrencyGroup}
+      cancel-in-progress: false
+    if: \${{ ((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.${codexRotatingReviewDraftsVariableName} == 'true')) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    uses: ${reusableWorkflowRef}
+    with:
+      runtime_ref: ${JSON.stringify(release.commitSha)}
+      api_url: ${JSON.stringify(input.apiUrl)}
+      runtime_config_mode: oidc
+      review_action_v2_mode: t0
+      provider_instance_id: ${JSON.stringify(input.providerInstanceId)}
+      workflow_schema_version: ${input.workflowSchemaVersion}
+      review_drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}
+      max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
+      review_timeout_minutes: ${input.reviewJobTimeout}
+    secrets:
+      CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}
+${input.claudeCodeOAuthTokenSecret ? "      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${input.openRouterApiKeySecret ? "      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}`;
+}
+
+function parseImmutableActionRelease(actionRef: string): {
+  readonly repository: string;
+  readonly commitSha: string;
+} {
+  const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)@([a-fA-F0-9]{40})$/.exec(
+    actionRef,
+  );
+  if (!match) {
+    throw new Error("codex_rotating_t0_action_ref_must_be_full_sha");
+  }
+  return {
+    repository: match[1]!,
+    commitSha: match[2]!.toLowerCase(),
+  };
 }
 
 function renderCodexRotatingConcurrencyGroup(
@@ -686,6 +768,13 @@ function workflowJobUsesExpectedConcurrency(input: {
 export function scanCodexRotatingAdvisoryWorkflow(
   workflow: string,
 ): CodexRotatingWorkflowScanResult {
+  if (
+    /^ {4}uses:\s*[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/reviewrouter-reusable\.yml@/m.test(
+      workflow,
+    )
+  ) {
+    return scanCodexRotatingT0AdvisoryWorkflow(workflow);
+  }
   const errors: string[] = [];
   const forkSandboxEnabled = workflow.includes(
     `mode: ${codexForkAgenticSandboxRuntimeMode}`,
@@ -967,6 +1056,154 @@ export function scanCodexRotatingAdvisoryWorkflow(
     ) {
       errors.push("refresh_job_requires_id_token_write");
     }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+function scanCodexRotatingT0AdvisoryWorkflow(
+  workflow: string,
+): CodexRotatingWorkflowScanResult {
+  const errors: string[] = [];
+  const source = extractCodexRotatingWorkflowSourceMetadata(workflow);
+  const reviewJob = extractWorkflowJobSection(workflow, "codex-review") ?? "";
+  const refreshJob = extractWorkflowJobSection(workflow, "codex-refresh") ?? "";
+  const refreshEnabled = refreshJob.length > 0;
+  const expectedConcurrencyGroup = source.providerInstanceId
+    ? renderCodexRotatingConcurrencyGroup(source.providerInstanceId)
+    : undefined;
+
+  let release:
+    | { readonly repository: string; readonly commitSha: string }
+    | undefined;
+  if (source.actionRef) {
+    try {
+      release = parseImmutableActionRelease(source.actionRef);
+    } catch {
+      errors.push("t0_action_ref_must_be_full_sha");
+    }
+  } else {
+    errors.push("action_ref_invalid");
+  }
+  if (!source.providerInstanceId) {
+    errors.push("provider_instance_id_required");
+  }
+  if (source.workflowSchemaVersion !== codexRotatingWorkflowSchemaVersion) {
+    errors.push("workflow_schema_version_mismatch");
+  }
+  if (source.mode !== CodexRotatingReviewActionV2Mode.T0) {
+    errors.push("review_action_v2_t0_mode_required");
+  }
+  if (
+    !workflowJobUsesExpectedConcurrency({
+      job: reviewJob,
+      expectedGroup: expectedConcurrencyGroup,
+    })
+  ) {
+    errors.push("review_job_provider_concurrency_required");
+  }
+  if (!reviewJob.includes("github.event.pull_request.draft == false")) {
+    errors.push("review_job_draft_guard_required");
+  }
+  if (
+    !reviewJob.includes(
+      `review_drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}`,
+    )
+  ) {
+    errors.push("review_job_draft_input_required");
+  }
+  if (
+    !reviewJob.includes(
+      `max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
+    )
+  ) {
+    errors.push("review_job_max_changed_lines_input_required");
+  }
+  if (!reviewJob.includes("review_timeout_minutes:")) {
+    errors.push("review_job_timeout_input_required");
+  }
+  if (
+    !reviewJob.includes(
+      `CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}`,
+    )
+  ) {
+    errors.push("rotating_secret_must_be_literal_auth_json_input");
+  }
+  if (release) {
+    const expectedReusableRef = `${release.repository}/.github/workflows/reviewrouter-reusable.yml@${release.commitSha}`;
+    if (!reviewJob.includes(`uses: ${expectedReusableRef}`)) {
+      errors.push("t0_reusable_workflow_ref_mismatch");
+    }
+    if (
+      !reviewJob.includes(`runtime_ref: ${JSON.stringify(release.commitSha)}`)
+    ) {
+      errors.push("t0_runtime_ref_mismatch");
+    }
+  }
+  for (const marker of [
+    "runtime_config_mode: oidc",
+    "review_action_v2_mode: t0",
+    "provider_instance_id:",
+    "workflow_schema_version:",
+  ]) {
+    if (!reviewJob.includes(marker)) {
+      errors.push(`t0_marker_missing:${marker}`);
+    }
+  }
+  for (const [pattern, code] of [
+    [/^ {4}runs-on:/m, "t0_review_runner_not_allowed"],
+    [/^ {4}timeout-minutes:/m, "t0_review_job_timeout_not_allowed"],
+    [/^ {4}steps:/m, "t0_review_steps_not_allowed"],
+    [/^\s*run:\s*[|>]?/m, "raw_run_step_not_allowed"],
+    [/^\s*env\s*:/m, "workflow_env_not_allowed"],
+    [/^\s*strategy\s*:/m, "matrix_strategy_not_allowed"],
+    [/^concurrency\s*:/m, "workflow_concurrency_not_allowed"],
+  ] as const) {
+    if (pattern.test(reviewJob)) {
+      errors.push(code);
+    }
+  }
+  const workflowPermissions = parseWorkflowPermissions(workflow, 0);
+  if (!permissionsAreEmpty(workflowPermissions)) {
+    errors.push("workflow_permissions_must_be_empty");
+  }
+  const reviewJobPermissions = parseWorkflowPermissions(reviewJob, 4);
+  if (
+    !permissionsExactly(reviewJobPermissions, [
+      { name: "contents", value: "read" },
+      { name: "pull-requests", value: "read" },
+      { name: "id-token", value: "write" },
+    ])
+  ) {
+    errors.push("t0_review_job_permissions_invalid");
+  }
+  if (refreshEnabled) {
+    if (
+      !workflowJobUsesExpectedConcurrency({
+        job: refreshJob,
+        expectedGroup: expectedConcurrencyGroup,
+      })
+    ) {
+      errors.push("refresh_job_provider_concurrency_required");
+    }
+    if (
+      !permissionsExactly(parseWorkflowPermissions(refreshJob, 4), [
+        { name: "id-token", value: "write" },
+      ])
+    ) {
+      errors.push("refresh_job_requires_id_token_write");
+    }
+    if (release && !refreshJob.includes(`uses: ${source.actionRef}`)) {
+      errors.push("refresh_action_ref_mismatch");
+    }
+  }
+  const usesRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s]+)$/gm)].map(
+    (match) => match[1]!,
+  );
+  if (usesRefs.length !== (refreshEnabled ? 2 : 1)) {
+    errors.push("t0_action_ref_count_invalid");
+  }
+  if (workflow.includes("fork-sandbox-review:")) {
+    errors.push("t0_fork_sandbox_not_allowed");
   }
   return { valid: errors.length === 0, errors };
 }
@@ -1438,18 +1675,28 @@ function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
   readonly workflowSchemaVersion?: number;
   readonly mode?: string;
 } {
-  const actionRef = workflow.match(/^\s*uses:\s*([^\s]+)$/m)?.[1];
+  const rawActionRef = workflow.match(/^\s*uses:\s*([^\s]+)$/m)?.[1];
+  const reusableRelease = rawActionRef?.match(
+    /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/\.github\/workflows\/reviewrouter-reusable\.yml@([a-fA-F0-9]{40})$/,
+  );
+  const actionRef = reusableRelease
+    ? `${reusableRelease[1]}@${reusableRelease[2]!.toLowerCase()}`
+    : rawActionRef;
   const providerInstanceId = unquoteWorkflowScalar(
-    workflow.match(/^\s*provider-instance-id:\s*(.+)$/m)?.[1],
+    workflow.match(/^\s*provider(?:-|_)instance(?:-|_)id:\s*(.+)$/m)?.[1],
   );
   const workflowSchemaVersionRaw = unquoteWorkflowScalar(
-    workflow.match(/^\s*workflow-schema-version:\s*(.+)$/m)?.[1],
+    workflow.match(/^\s*workflow(?:-|_)schema(?:-|_)version:\s*(.+)$/m)?.[1],
   );
   const workflowSchemaVersion =
     workflowSchemaVersionRaw && /^[0-9]+$/.test(workflowSchemaVersionRaw)
       ? Number(workflowSchemaVersionRaw)
       : undefined;
-  const mode = unquoteWorkflowScalar(workflow.match(/^\s*mode:\s*(.+)$/m)?.[1]);
+  const mode = unquoteWorkflowScalar(
+    workflow.match(
+      /^\s*(?:mode|review(?:-|_)action(?:-|_)v2(?:-|_)mode):\s*(.+)$/m,
+    )?.[1],
+  );
   return {
     ...(actionRef ? { actionRef } : {}),
     ...(providerInstanceId ? { providerInstanceId } : {}),

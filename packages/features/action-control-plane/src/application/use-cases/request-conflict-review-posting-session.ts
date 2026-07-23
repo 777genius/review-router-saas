@@ -11,6 +11,10 @@ import type { ActionConflictReviewRuntimeGatePort } from "../ports/action-confli
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
 import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
+import {
+  LegacyReviewMutationOperation,
+  type LegacyReviewMutationAdmissionPort,
+} from "../ports/legacy-review-mutation-admission-port.js";
 
 export type RequestConflictReviewPostingSessionDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
@@ -20,6 +24,7 @@ export type RequestConflictReviewPostingSessionDependencies = {
   readonly conflictPrePostValidator?: ActionConflictReviewPrePostValidatorPort;
   readonly conflictPostingSessions?: ActionConflictReviewPostingSessionRepositoryPort;
   readonly postingSessions?: ActionConflictReviewPostingSessionTokenServicePort;
+  readonly legacyMutationAdmission?: LegacyReviewMutationAdmissionPort;
   readonly clock: Clock;
 };
 
@@ -63,6 +68,13 @@ export async function requestConflictReviewPostingSession(
     repositoryId: session.repositoryId,
     repositoryFullName: session.repository,
   });
+  await dependencies.legacyMutationAdmission?.assertLegacyReviewMutationAllowed(
+    {
+      operation: LegacyReviewMutationOperation.ConflictPostingSession,
+      githubRepositoryId: repository.githubRepositoryId,
+      repositoryFullName: repository.fullName,
+    },
+  );
   await dependencies.conflictReviewRuntimeGate?.assertConflictReviewRuntimeEnabled(
     {
       phase: "posting_session",

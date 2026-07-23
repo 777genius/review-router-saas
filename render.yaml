@@ -124,6 +124,28 @@ envVarGroups:
         value: reviewrouter
       - key: REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH
         value: "1"
+      # Revision-aware review v2 deploys additively. Writer capabilities are
+      # enabled only after release attestation and an explicit cohort cutover.
+      - key: REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED
+        value: "0"
+      - key: REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED
+        value: "0"
+      - key: REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID
+        sync: false
+      - key: REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON
+        sync: false
+      - key: REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID
+        sync: false
+      - key: REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON
+        sync: false
+      - key: REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON
+        sync: false
+      - key: REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON
+        sync: false
+      - key: REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION
+        value: "1"
+      - key: REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256
+        sync: false
       - key: REVIEW_ROUTER_DEFAULT_MODEL
         value: gpt-5.5
       - key: REVIEW_ROUTER_DEFAULT_EFFORT
