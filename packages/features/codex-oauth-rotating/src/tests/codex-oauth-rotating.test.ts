@@ -723,6 +723,14 @@ exit 17
     expect(workflowDocumentSemanticSha256(workflow)).toBe(
       "83ae0ba1aac0eaa24bbe44599b0e01b09866308fb326eaaa123e86e8fe8c96b8",
     );
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        workflow.replace("  codex-review:", '  "codex-review":'),
+      ),
+    ).toMatchObject({
+      actionRef: `777genius/review-router@${actionSha}`,
+      workflowSchemaVersion: 1,
+    });
 
     const siblingWriter = `${workflow}
 

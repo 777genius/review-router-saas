@@ -1517,7 +1517,19 @@ async function postJson<T = unknown>(input: {
       : { maxAttempts: input.maxAttempts }),
     consume: async (response) => ({ response, text: await response.text() }),
   });
-  const parsed = text ? (JSON.parse(text) as unknown) : {};
+  let parsed: unknown = {};
+  if (text) {
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch (error) {
+      if (!response.ok) {
+        throw new Error(`reviewrouter_api_error:${response.status}`, {
+          cause: error,
+        });
+      }
+      throw new Error("reviewrouter_api_response_invalid", { cause: error });
+    }
+  }
   if (!response.ok) {
     throw new Error(safeRemoteError(parsed, response.status));
   }

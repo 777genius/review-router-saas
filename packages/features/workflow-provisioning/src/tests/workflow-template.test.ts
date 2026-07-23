@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  areWorkflowDocumentsSemanticallyEqual,
   CodexRotatingReviewActionV2Mode,
   workflowDocumentSemanticSha256,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -321,6 +322,12 @@ describe("renderReviewRouterWorkflow", () => {
         }),
       ),
     ).toBe("7eeca74a1223227b5820dce022f6f770b18009b90534c9770849b150b55b4518");
+    expect(
+      areWorkflowDocumentsSemanticallyEqual(
+        workflow,
+        workflow.replace("  workflow_dispatch:", "  workflow_dispatch: .nan"),
+      ),
+    ).toBe(false);
   });
 
   it("exports readiness markers for the dedicated rotating Codex workflow", () => {

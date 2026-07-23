@@ -1132,7 +1132,7 @@ describe("Codex rotating GitHub Action runtime", () => {
     }
   });
 
-  it("labels repeated control-plane network failures without exposing auth-json", async () => {
+  it("retries malformed control-plane 503 responses only with fresh OIDC tokens", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-action-test-"));
     const eventPath = join(tempDir, "event.json");
     await writeFile(
@@ -1163,7 +1163,10 @@ describe("Codex rotating GitHub Action runtime", () => {
           readonly oidcToken: string;
         };
         preleaseTokens.push(body.oidcToken);
-        throw new TypeError("fetch failed");
+        return new Response("<html>temporary upstream failure</html>", {
+          status: 503,
+          headers: { "content-type": "text/html" },
+        });
       }
       throw new Error(`unexpected_fetch:${href}`);
     }) as unknown as typeof fetch;
@@ -1191,7 +1194,7 @@ describe("Codex rotating GitHub Action runtime", () => {
             stderr: { write: vi.fn() },
           },
         }),
-      ).rejects.toThrow("network_request_failed:api_prelease");
+      ).rejects.toThrow("reviewrouter_api_error:503");
       expect(oidcAttempts).toBe(3);
       expect(preleaseTokens).toEqual([
         "oidc.jwt.value.1",

@@ -22550,7 +22550,19 @@ async function postJson(input) {
     ...input.maxAttempts === void 0 ? {} : { maxAttempts: input.maxAttempts },
     consume: async (response2) => ({ response: response2, text: await response2.text() })
   });
-  const parsed = text ? JSON.parse(text) : {};
+  let parsed = {};
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch (error51) {
+      if (!response.ok) {
+        throw new Error(`reviewrouter_api_error:${response.status}`, {
+          cause: error51
+        });
+      }
+      throw new Error("reviewrouter_api_response_invalid", { cause: error51 });
+    }
+  }
   if (!response.ok) {
     throw new Error(safeRemoteError(parsed, response.status));
   }

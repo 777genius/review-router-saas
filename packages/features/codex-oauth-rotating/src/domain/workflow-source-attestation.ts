@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import {
-  codexRotatingCanonicalT0WorkflowSchemaVersions,
-  readCodexRotatingWorkflowSourceMetadata,
   renderCanonicalCodexRotatingT0WorkflowV1,
   type CodexRotatingWorkflowSourceMetadata,
 } from "./codex-oauth-rotating";
@@ -10,28 +8,30 @@ import {
 export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
   workflow: string,
 ): CodexRotatingWorkflowSourceMetadata {
-  const source = readCodexRotatingWorkflowSourceMetadata(workflow);
-  if (
-    !(
-      codexRotatingCanonicalT0WorkflowSchemaVersions as readonly number[]
-    ).includes(source.workflowSchemaVersion)
-  ) {
-    throw new Error("codex_rotating_t0_workflow_metadata_missing");
-  }
-
   const document = readCanonicalWorkflowDocument(workflow);
   const root = requireMapping(document);
   const jobs = requireMapping(root.jobs);
   const reviewJob = requireMapping(jobs["codex-review"]);
+  const reviewInputs = requireMapping(reviewJob.with);
+  const workflowSchemaVersion = reviewInputs.workflow_schema_version;
+  if (workflowSchemaVersion !== 1) {
+    throw new Error("codex_rotating_t0_workflow_metadata_missing");
+  }
+
+  const actionRef = readCanonicalT0ActionRef(reviewJob.uses);
+  const apiUrl = requireNonEmptyString(reviewInputs.api_url);
+  const providerInstanceId = requireNonEmptyString(
+    reviewInputs.provider_instance_id,
+  );
   const refreshScheduleCron =
     jobs["codex-refresh"] === undefined
       ? null
       : readCanonicalT0RefreshSchedule(root);
   const reviewSecrets = requireMapping(reviewJob.secrets);
   const expectedWorkflow = renderCanonicalCodexRotatingT0WorkflowV1({
-    actionRef: source.actionRef,
-    apiUrl: source.apiUrl,
-    providerInstanceId: source.providerInstanceId,
+    actionRef,
+    apiUrl,
+    providerInstanceId,
     refreshScheduleCron,
     claudeCodeOAuthTokenSecret: Object.hasOwn(
       reviewSecrets,
@@ -43,7 +43,12 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
     throw new Error("codex_rotating_t0_workflow_source_not_canonical");
   }
 
-  return source;
+  return {
+    actionRef,
+    apiUrl,
+    providerInstanceId,
+    workflowSchemaVersion,
+  };
 }
 
 export function areWorkflowDocumentsSemanticallyEqual(
@@ -81,6 +86,9 @@ function readCanonicalWorkflowDocument(source: string): unknown {
 }
 
 function canonicalizeWorkflowDocument(value: unknown): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error("codex_rotating_workflow_non_finite_number");
+  }
   if (Array.isArray(value)) {
     return value.map(canonicalizeWorkflowDocument);
   }
@@ -112,4 +120,23 @@ function requireMapping(value: unknown): Record<string, unknown> {
     throw new Error("codex_rotating_workflow_mapping_required");
   }
   return value as Record<string, unknown>;
+}
+
+function readCanonicalT0ActionRef(value: unknown): string {
+  const reusableWorkflow = requireNonEmptyString(value);
+  const match =
+    /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/\.github\/workflows\/reviewrouter-t0-reusable\.yml@([a-f0-9]{40})$/i.exec(
+      reusableWorkflow,
+    );
+  if (!match) {
+    throw new Error("codex_rotating_t0_action_ref_invalid");
+  }
+  return `${match[1]}@${match[2]!.toLowerCase()}`;
+}
+
+function requireNonEmptyString(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("codex_rotating_workflow_string_required");
+  }
+  return value;
 }
