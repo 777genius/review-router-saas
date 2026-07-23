@@ -103,6 +103,7 @@ import {
 import { composeReviewActionV2SnapshotPublicationRoutes } from "./review-action-v2-production-composition-snapshot-publication.js";
 import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-rotating-github-secret-gateway.js";
 import { ProductionReviewMutationAuthorityProofFacts } from "./review-action-v2-mutation-proof-facts.js";
+import { OctokitReviewV2DispatchCapabilityInspector } from "./github/octokit-review-v2-dispatch-capability-inspector.js";
 
 export const reviewActionV2CapabilityActiveKeyIdEnv =
   "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID";
@@ -173,6 +174,10 @@ export function composeReviewActionV2ProductionRunControl(input: {
     appId: githubAppId,
     privateKey: githubAppPrivateKey,
   });
+  const dispatchCapability = new OctokitReviewV2DispatchCapabilityInspector({
+    appId: githubAppId,
+    privateKey: githubAppPrivateKey,
+  });
   const mutationAuthorityProofFacts =
     new ProductionReviewMutationAuthorityProofFacts({
       prisma: input.prisma,
@@ -181,6 +186,7 @@ export function composeReviewActionV2ProductionRunControl(input: {
       actionRepositories,
       safety: mutationSafetyResolver,
       workflowInventory,
+      dispatchCapability,
       completionWorkerConfigured:
         input.env.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1",
       now: () => clock.now(),
