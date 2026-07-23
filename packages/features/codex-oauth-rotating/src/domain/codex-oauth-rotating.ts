@@ -625,7 +625,7 @@ function renderCodexRotatingT0ReviewJob(input: {
   readonly openRouterApiKeySecret: boolean;
 }): string {
   const release = parseImmutableActionRelease(input.actionRef);
-  const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-reusable.yml@${release.commitSha}`;
+  const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`;
   return `  codex-review:
     name: codex-review
     if: \${{ github.event_name == 'workflow_dispatch' && inputs.review_request_id != '' && inputs.pr_number != '' && inputs.review_head_sha != '' }}
@@ -638,12 +638,10 @@ function renderCodexRotatingT0ReviewJob(input: {
       runtime_ref: ${JSON.stringify(release.commitSha)}
       api_url: ${JSON.stringify(input.apiUrl)}
       runtime_config_mode: oidc
-      review_action_v2_mode: t0
       pr_number: \${{ inputs.pr_number }}
       review_head_sha: \${{ inputs.review_head_sha }}
       provider_instance_id: ${JSON.stringify(input.providerInstanceId)}
       workflow_schema_version: ${input.workflowSchemaVersion}
-      review_drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}
       max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}
       review_timeout_minutes: ${input.reviewJobTimeout}
     secrets:
@@ -795,7 +793,7 @@ export function scanCodexRotatingAdvisoryWorkflow(
   workflow: string,
 ): CodexRotatingWorkflowScanResult {
   if (
-    /^ {4}uses:\s*[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/reviewrouter-reusable\.yml@/m.test(
+    /^ {4}uses:\s*[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/reviewrouter(?:-t0)?-reusable\.yml@/m.test(
       workflow,
     )
   ) {
@@ -1142,13 +1140,6 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   }
   if (
     !reviewJob.includes(
-      `review_drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}`,
-    )
-  ) {
-    errors.push("review_job_draft_input_required");
-  }
-  if (
-    !reviewJob.includes(
       `max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
     )
   ) {
@@ -1165,7 +1156,7 @@ function scanCodexRotatingT0AdvisoryWorkflow(
     errors.push("rotating_secret_must_be_literal_auth_json_input");
   }
   if (release) {
-    const expectedReusableRef = `${release.repository}/.github/workflows/reviewrouter-reusable.yml@${release.commitSha}`;
+    const expectedReusableRef = `${release.repository}/.github/workflows/reviewrouter-t0-reusable.yml@${release.commitSha}`;
     if (!reviewJob.includes(`uses: ${expectedReusableRef}`)) {
       errors.push("t0_reusable_workflow_ref_mismatch");
     }
@@ -1177,7 +1168,6 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   }
   for (const marker of [
     "runtime_config_mode: oidc",
-    "review_action_v2_mode: t0",
     "provider_instance_id:",
     "workflow_schema_version:",
   ]) {
@@ -1713,8 +1703,12 @@ function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
 } {
   const rawActionRef = workflow.match(/^\s*uses:\s*([^\s]+)$/m)?.[1];
   const reusableRelease = rawActionRef?.match(
-    /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/\.github\/workflows\/reviewrouter-reusable\.yml@([a-fA-F0-9]{40})$/,
+    /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/\.github\/workflows\/reviewrouter(?:-t0)?-reusable\.yml@([a-fA-F0-9]{40})$/,
   );
+  const isDedicatedT0Workflow =
+    rawActionRef?.includes(
+      "/.github/workflows/reviewrouter-t0-reusable.yml@",
+    ) ?? false;
   const actionRef = reusableRelease
     ? `${reusableRelease[1]}@${reusableRelease[2]!.toLowerCase()}`
     : rawActionRef;
@@ -1728,11 +1722,13 @@ function extractCodexRotatingWorkflowSourceMetadata(workflow: string): {
     workflowSchemaVersionRaw && /^[0-9]+$/.test(workflowSchemaVersionRaw)
       ? Number(workflowSchemaVersionRaw)
       : undefined;
-  const mode = unquoteWorkflowScalar(
-    workflow.match(
-      /^\s*(?:mode|review(?:-|_)action(?:-|_)v2(?:-|_)mode):\s*(.+)$/m,
-    )?.[1],
-  );
+  const mode =
+    (isDedicatedT0Workflow ? CodexRotatingReviewActionV2Mode.T0 : undefined) ??
+    unquoteWorkflowScalar(
+      workflow.match(
+        /^\s*(?:mode|review(?:-|_)action(?:-|_)v2(?:-|_)mode):\s*(.+)$/m,
+      )?.[1],
+    );
   return {
     ...(actionRef ? { actionRef } : {}),
     ...(providerInstanceId ? { providerInstanceId } : {}),
