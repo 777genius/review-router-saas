@@ -712,12 +712,42 @@ Absence of a row is `uninitialized`, never an implicit mode. The internal
 from inception and the legacy-activity port proves that no v1 session or mutation
 capability was ever issued. Any uncertainty chooses `v1_open` and the normal drain.
 
-Activation also requires a fresh default-branch workflow inventory proving that
-known ReviewRouter workflows no longer use a static write-enabled lane. The
-inventory hash is persisted with the transition. SaaS cannot detect or revoke every
-arbitrary user workflow, so v2 reconciliation trusts only objects owned by the
-configured ReviewRouter App identity and carrying valid managed markers; external
-`github-actions` objects are never adopted as v2 receipts.
+Activation also requires a fresh executable-workflow authority inventory. It
+covers the default branch, every distinct current base branch of every open pull
+request including drafts, and the current GitHub test-merge commit of each
+mergeable pull request whose recorded base SHA still equals the current base
+branch tip. A merge commit built from an older base tip is represented as
+`stale_base` and excluded from current authority; any rerun of that historical
+ref remains subject to the v1 drain fence. A pull request with proven
+`mergeable: false` has no executable `pull_request` merge ref and is represented
+as conflicted; unknown mergeability fails closed. This follows GitHub's documented behavior that
+`pull_request` workflows do not run while a pull request has a merge conflict,
+whereas `pull_request_target` uses the trusted default-branch context. See
+[GitHub workflow trigger troubleshooting](https://docs.github.com/en/actions/how-tos/troubleshoot-workflows)
+and
+[GitHub pull request event semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target).
+
+Pull-request pagination, reference counts, and GitHub API concurrency are
+bounded. Every workflow is read by exact commit SHA. The repository metadata,
+complete open-PR set, mergeability, base tips, head SHAs, and current merge SHAs
+are resolved again after inspection; any movement discards the mixed snapshot.
+The canonical coverage/ref/workflow inventory hash is persisted with the
+transition and the proof-facts version is advanced whenever these semantics
+change.
+
+Historical workflow re-runs are a separate drain concern, not current-ref
+inventory: GitHub re-runs preserve the original `GITHUB_SHA` and `GITHUB_REF` for
+up to 30 days. Server-mediated v1 runs are fenced by closed v1 admission and
+expired capabilities. A native write-enabled historical workflow that bypasses
+SaaS requires an explicit longer quarantine or deletion of its rerunnable runs;
+current-ref compatibility alone cannot prove it safe. See
+[GitHub re-run semantics](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+
+SaaS cannot detect or revoke every arbitrary user workflow, so v2 reconciliation
+trusts only objects owned by the configured ReviewRouter App identity and carrying
+valid managed markers; external `github-actions` objects are never adopted as v2
+receipts. A future pull request targeting a previously uncovered branch still
+fails closed because v1 mutation admission remains closed.
 
 ### ReviewRunAuthorization
 
@@ -1470,7 +1500,10 @@ move into the mutation-gated inventory before release.
 
 This gate covers server-managed v1 lanes. A user-authored static workflow that
 uses its native SCM token cannot be fenced by SaaS, so fresh workflow inventory
-must block v2 activation while any supported static write-enabled form remains.
+must block v2 activation while any supported static write-enabled form remains on
+the default branch, an active pull-request base branch, or a current mergeable
+pull request test-merge commit. Historical native-write runs use the separate
+rerun quarantine rule above.
 
 `ReviewInvocationLeaseHistoryQueryPort` is read-only and exists only for bounded
 late-result/capability validation. Lease acquire, renew, release, expiry, adoption,
@@ -3477,8 +3510,12 @@ server proxy:
    stop issuing or renewing every descendant v1 mutation token.
 2. Persist and wait until `drainNotBefore`, derived from the longest configured v1
    workflow/session/token/retry chain, then verify tracked v1 activity is empty.
-3. Verify the current default-branch managed-workflow inventory contains no known
-   static write-enabled ReviewRouter lane and persist its hash.
+3. Verify the stable executable-workflow authority inventory - default branch,
+   every open pull request base branch, and every fresh mergeable pull request
+   test-merge SHA - contains no known static write-enabled ReviewRouter lane.
+   Classify old-base test merges as historical, prove conflicted PRs as
+   non-executable, fail closed on unknown mergeability, repeat the complete
+   coverage read, then persist its canonical hash.
 4. Atomically advance the mutation epoch and enable v2 authorization.
 5. Reject old hosted Action mutation in that migrated repository with
    `upgrade_required`.

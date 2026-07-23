@@ -49,12 +49,20 @@ pnpm review-v2:admin mutation initialize-v1 \
 ```
 
 Provision the generated T0 workflow at the full 40-character Action release SHA
-through the existing workflow-provisioning application service. Verify on the
-default branch that `.github/workflows/reviewrouter-codex.yml` is valid and that
-legacy `reviewrouter.yml` is absent. The interaction workflow may be absent. If
-`.github/workflows/reviewrouter-interaction.yml` is present, it must use OIDC,
-grant `id-token: write`, bind `reviewrouter-codex.yml`, and check out
-`777genius/review-router` through an environment variable pinned to the same
+through the existing workflow-provisioning application service. Verify the
+default branch, all base branches of open pull requests, and all current
+mergeable pull request test-merge commits whose recorded base SHA equals the
+current base tip. Test merges built from an older base tip are recorded as
+historical and handled by the v1 rerun drain fence. Each covered
+`.github/workflows/reviewrouter-codex.yml` must be absent or valid at the exact
+ref, and legacy `reviewrouter.yml` must be absent. The default branch must contain
+the valid managed workflow. A conflicted pull request is accepted only after
+GitHub reports `mergeable: false`; unknown mergeability fails closed.
+
+The interaction workflow may be absent. If
+`.github/workflows/reviewrouter-interaction.yml` is present on the default branch,
+it must use OIDC, grant `id-token: write`, bind `reviewrouter-codex.yml`, and check
+out `777genius/review-router` through an environment variable pinned to the same
 full 40-character Action release SHA. Inventory preflight rejects stale,
 unpinned, statically authenticated, or differently bound interaction writers.
 
@@ -72,8 +80,9 @@ The CLI reads `v1DrainMs` from that release's registered SLO profile and refuses
 a shorter override. Do not bypass or backdate the drain.
 
 After `drainNotBefore`, activation collects and immediately revalidates a
-60-second proof covering legacy admission closure, default-branch workflow
-inventory, exact registered Action SHA, worker configuration, and safety policy:
+60-second proof covering legacy admission closure, complete executable-workflow
+authority inventory, exact registered Action SHA, worker configuration, and
+safety policy:
 
 ```bash
 pnpm review-v2:admin mutation activate \
