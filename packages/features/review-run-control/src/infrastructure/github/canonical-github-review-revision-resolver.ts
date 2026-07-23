@@ -18,7 +18,12 @@ export class CanonicalGitHubReviewRevisionResolver implements CanonicalReviewRev
     input: Parameters<CanonicalReviewRevisionResolverPort["resolve"]>[0],
   ): ReturnType<CanonicalReviewRevisionResolverPort["resolve"]> {
     const runPullRequestNumbers = normalizePullRequestNumbers(
-      await this.source.findPullRequestNumbersForRun(input),
+      input.sourceRunId === null
+        ? []
+        : await this.source.findPullRequestNumbersForRun({
+            ...input,
+            sourceRunId: input.sourceRunId,
+          }),
     );
     const pullRequestNumber = selectPullRequestNumber(
       runPullRequestNumbers,

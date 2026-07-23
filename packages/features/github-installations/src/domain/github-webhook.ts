@@ -39,6 +39,14 @@ const senderSchema = z
 const pullRequestRefSchema = z
   .object({
     ref: z.string().min(1),
+    sha: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/i)
+      .optional(),
+    repo: z
+      .object({ full_name: z.string().min(1) })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 
@@ -48,10 +56,25 @@ const pullRequestSchema = z
     html_url: z.string().url(),
     state: z.string().min(1),
     merged: z.boolean().default(false),
+    draft: z.boolean().default(false),
+    user: z
+      .object({ type: z.string().min(1).default("User") })
+      .passthrough()
+      .optional(),
     base: pullRequestRefSchema,
     head: pullRequestRefSchema,
   })
   .passthrough();
+
+const pullRequestChangesSchema = z
+  .object({
+    base: z
+      .object({ ref: z.object({ from: z.string().min(1) }).passthrough() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+  .optional();
 
 const pullRequestRepositorySchema = z
   .object({
@@ -108,6 +131,7 @@ export const githubPullRequestWebhookPayloadSchema = z.object({
   installation: installationReferenceSchema,
   repository: pullRequestRepositorySchema,
   pull_request: pullRequestSchema,
+  changes: pullRequestChangesSchema,
   sender: senderSchema.optional(),
 });
 

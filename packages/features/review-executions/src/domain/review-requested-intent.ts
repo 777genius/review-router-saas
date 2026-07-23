@@ -35,6 +35,7 @@ export type ReviewRequestedClaim = {
 
 export type ReviewRequestedIntent = ReviewExecutionScope & {
   readonly requestId: string;
+  readonly dispatchAttempt: number;
   readonly version: bigint;
   readonly revision: ReviewRevision;
   readonly triggerKind: ReviewRequestedTriggerKind;
@@ -55,6 +56,7 @@ export type ReviewRequestedIntent = ReviewExecutionScope & {
 
 export type ReviewRequestedIntentCandidate = ReviewExecutionScope & {
   readonly requestId: string;
+  readonly dispatchAttempt?: number;
   readonly revision: ReviewRevision;
   readonly triggerKind: ReviewRequestedTriggerKind;
   readonly deliveryIdentityHash: string;
@@ -66,6 +68,7 @@ export type ReviewRequestedIntentCandidate = ReviewExecutionScope & {
 
 export enum ReviewRequestedRegistrationDecisionStatus {
   Register = "register",
+  RegisterSuperseded = "register_superseded",
   RegisterAndSupersede = "register_and_supersede",
   Restore = "restore",
   IdempotencyConflict = "idempotency_conflict",
@@ -74,6 +77,11 @@ export enum ReviewRequestedRegistrationDecisionStatus {
 export type ReviewRequestedRegistrationDecision =
   | {
       readonly status: ReviewRequestedRegistrationDecisionStatus.Register;
+      readonly intent: ReviewRequestedIntent;
+      readonly supersededIntent: null;
+    }
+  | {
+      readonly status: ReviewRequestedRegistrationDecisionStatus.RegisterSuperseded;
       readonly intent: ReviewRequestedIntent;
       readonly supersededIntent: null;
     }
@@ -105,6 +113,25 @@ export enum ReviewRequestedTransitionDecisionStatus {
   Conflict = "conflict",
 }
 
+export enum ReviewRequestedDispatchRecoveryDecisionStatus {
+  Replaced = "replaced",
+  Superseded = "superseded",
+  Conflict = "conflict",
+}
+
+export type ReviewRequestedDispatchRecoveryDecision =
+  | {
+      readonly status:
+        | ReviewRequestedDispatchRecoveryDecisionStatus.Replaced
+        | ReviewRequestedDispatchRecoveryDecisionStatus.Superseded;
+      readonly intent: ReviewRequestedIntent;
+      readonly successor: ReviewRequestedIntent | null;
+      readonly createSuccessor: boolean;
+    }
+  | {
+      readonly status: ReviewRequestedDispatchRecoveryDecisionStatus.Conflict;
+    };
+
 export type ReviewRequestedTransitionDecision =
   | {
       readonly status: ReviewRequestedTransitionDecisionStatus.Applied;
@@ -127,6 +154,7 @@ export function createReviewRequestedIntent(
   assertReviewRequestedIntentCandidate(candidate);
   return {
     ...candidate,
+    dispatchAttempt: candidate.dispatchAttempt ?? 1,
     revision: { ...candidate.revision },
     version: 1n,
     state: ReviewRequestedIntentState.PendingDispatch,
@@ -148,6 +176,14 @@ export function assertReviewRequestedIntentCandidate(
 ): void {
   assertReviewExecutionScope(candidate);
   assertIdentifier(candidate.requestId, "request_id");
+  if (
+    candidate.dispatchAttempt !== undefined &&
+    (!Number.isSafeInteger(candidate.dispatchAttempt) ||
+      candidate.dispatchAttempt <= 0 ||
+      candidate.dispatchAttempt > 10)
+  ) {
+    throw new Error("review_requested_dispatch_attempt_invalid");
+  }
   assertReviewRevision(candidate.revision);
   if (
     !Object.values(ReviewRequestedTriggerKind).includes(candidate.triggerKind)
@@ -177,7 +213,7 @@ export function decideReviewRequestedRegistration(input: {
   readonly candidate: ReviewRequestedIntentCandidate;
   readonly existingByDelivery: ReviewRequestedIntent | null;
   readonly existingByRequestId: ReviewRequestedIntent | null;
-  readonly pendingInScope: ReviewRequestedIntent | null;
+  readonly preAdmissionInScope: ReviewRequestedIntent | null;
 }): ReviewRequestedRegistrationDecision {
   assertReviewRequestedIntentCandidate(input.candidate);
   if (
@@ -194,8 +230,8 @@ export function decideReviewRequestedRegistration(input: {
     throw new Error("review_requested_request_index_corrupted");
   }
   if (
-    input.pendingInScope !== null &&
-    scopeKey(input.pendingInScope) !== scopeKey(input.candidate)
+    input.preAdmissionInScope !== null &&
+    scopeKey(input.preAdmissionInScope) !== scopeKey(input.candidate)
   ) {
     throw new Error("review_requested_scope_index_corrupted");
   }
@@ -216,13 +252,37 @@ export function decideReviewRequestedRegistration(input: {
     };
   }
   const intent = createReviewRequestedIntent(input.candidate);
-  const pending = input.pendingInScope;
-  if (pending?.state === ReviewRequestedIntentState.PendingDispatch) {
+  const preAdmission = input.preAdmissionInScope;
+  if (
+    preAdmission?.state === ReviewRequestedIntentState.PendingDispatch &&
+    compareIngressOrder(input.candidate, preAdmission) < 0
+  ) {
+    return {
+      status: ReviewRequestedRegistrationDecisionStatus.RegisterSuperseded,
+      intent: supersedeReviewRequestedIntent(
+        intent,
+        preAdmission.requestId,
+        input.candidate.createdAt,
+      ),
+      supersededIntent: null,
+    };
+  }
+  const supersedable =
+    preAdmission !== null &&
+    (preAdmission.state === ReviewRequestedIntentState.PendingDispatch ||
+      ((preAdmission.state === ReviewRequestedIntentState.Dispatching ||
+        preAdmission.state ===
+          ReviewRequestedIntentState.AwaitingAuthorization) &&
+        !reviewRevisionsEqual(
+          preAdmission.revision,
+          input.candidate.revision,
+        )));
+  if (preAdmission !== null && supersedable) {
     return {
       status: ReviewRequestedRegistrationDecisionStatus.RegisterAndSupersede,
       intent,
       supersededIntent: supersedeReviewRequestedIntent(
-        pending,
+        preAdmission,
         intent.requestId,
         input.candidate.createdAt,
       ),
@@ -233,6 +293,16 @@ export function decideReviewRequestedRegistration(input: {
     intent,
     supersededIntent: null,
   };
+}
+
+function compareIngressOrder(
+  candidate: ReviewRequestedIntentCandidate,
+  existing: ReviewRequestedIntent,
+): number {
+  return (
+    candidate.createdAt.getTime() - existing.createdAt.getTime() ||
+    candidate.requestId.localeCompare(existing.requestId)
+  );
 }
 
 export function assessReviewRequestedClaim(input: {
@@ -399,12 +469,103 @@ export function decideReviewRequestedAdmissionLink(input: {
   };
 }
 
-function supersedeReviewRequestedIntent(
+export function decideReviewRequestedDispatchRecovery(input: {
+  readonly intent: ReviewRequestedIntent;
+  readonly replacementPending: ReviewRequestedIntent | null;
+  readonly successorCandidate: ReviewRequestedIntentCandidate | null;
+  readonly sourceRunId: string;
+  readonly sourceRunAttempt: string;
+  readonly now: Date;
+}): ReviewRequestedDispatchRecoveryDecision {
+  assertIdentifier(input.sourceRunId, "source_run_id");
+  assertIdentifier(input.sourceRunAttempt, "source_run_attempt");
+  assertDate(input.now, "dispatch_recovered_at");
+  if (input.successorCandidate !== null) {
+    assertReviewRequestedIntentCandidate(input.successorCandidate);
+  }
+  if (
+    input.intent.state !== ReviewRequestedIntentState.AwaitingAuthorization ||
+    input.intent.sourceRunId !== input.sourceRunId ||
+    input.intent.sourceRunAttempt !== input.sourceRunAttempt ||
+    input.intent.authorizationId !== null ||
+    input.intent.executionId !== null
+  ) {
+    return {
+      status: ReviewRequestedDispatchRecoveryDecisionStatus.Conflict,
+    };
+  }
+  if (input.replacementPending !== null) {
+    if (
+      input.replacementPending.requestId === input.intent.requestId ||
+      scopeKey(input.replacementPending) !== scopeKey(input.intent) ||
+      input.replacementPending.state !==
+        ReviewRequestedIntentState.PendingDispatch
+    ) {
+      throw new Error("review_requested_recovery_replacement_invalid");
+    }
+    return {
+      status: ReviewRequestedDispatchRecoveryDecisionStatus.Superseded,
+      intent: supersedeReviewRequestedIntent(
+        input.intent,
+        input.replacementPending.requestId,
+        input.now,
+      ),
+      successor: input.replacementPending,
+      createSuccessor: false,
+    };
+  }
+  if (input.successorCandidate === null) {
+    return {
+      status: ReviewRequestedDispatchRecoveryDecisionStatus.Superseded,
+      intent: supersedeReviewRequestedIntent(input.intent, null, input.now),
+      successor: null,
+      createSuccessor: false,
+    };
+  }
+  const successor = createReviewRequestedIntent(input.successorCandidate);
+  if (
+    successor.requestId === input.intent.requestId ||
+    scopeKey(successor) !== scopeKey(input.intent) ||
+    !reviewRevisionsEqual(successor.revision, input.intent.revision) ||
+    successor.triggerKind !== input.intent.triggerKind ||
+    successor.dispatchAttempt !== input.intent.dispatchAttempt + 1
+  ) {
+    throw new Error("review_requested_recovery_successor_invalid");
+  }
+  return {
+    status: ReviewRequestedDispatchRecoveryDecisionStatus.Replaced,
+    intent: supersedeReviewRequestedIntent(
+      input.intent,
+      successor.requestId,
+      input.now,
+    ),
+    successor,
+    createSuccessor: true,
+  };
+}
+
+export function cancelReviewRequestedPreAdmissionIntent(
   intent: ReviewRequestedIntent,
-  supersededByRequestId: string,
   now: Date,
 ): ReviewRequestedIntent {
-  assertIdentifier(supersededByRequestId, "superseded_by_request_id");
+  if (
+    intent.state !== ReviewRequestedIntentState.PendingDispatch &&
+    intent.state !== ReviewRequestedIntentState.Dispatching &&
+    intent.state !== ReviewRequestedIntentState.AwaitingAuthorization
+  ) {
+    throw new Error("review_requested_intent_not_pre_admission");
+  }
+  return supersedeReviewRequestedIntent(intent, null, now);
+}
+
+function supersedeReviewRequestedIntent(
+  intent: ReviewRequestedIntent,
+  supersededByRequestId: string | null,
+  now: Date,
+): ReviewRequestedIntent {
+  if (supersededByRequestId !== null) {
+    assertIdentifier(supersededByRequestId, "superseded_by_request_id");
+  }
   assertDate(now, "superseded_at");
   return {
     ...intent,

@@ -10,9 +10,13 @@ Implementation in progress as of 2026-07-23:
   rehearsal, and disabled-by-default production composition are implemented.
 - Phase 2 T0 execution, same-execution recovery, server-owned publication,
   immutable reusable workflows, authenticated operator commands, v1 admission
-  drain, and production-shaped E2E are implemented locally. Cross-repository
-  contract handoff, release registration, deployment, and allowlisted
-  verification remain release gates, so production behavior is still disabled.
+  drain, durable webhook/manual request ingress, exact-head workflow dispatch,
+  provider-lane serialization, and production-shaped E2E are implemented locally.
+  The release candidate passes the full Action/SaaS suites, all 34 migrations on a
+  fresh PostgreSQL database, the real Prisma concurrency contract, and the
+  production-shaped fault-recovery E2E. Cross-repository release registration,
+  deployment, and allowlisted verification remain release gates, so production
+  behavior is still disabled.
 - Phases 3-5 remain deferred. No cross-revision reuse is enabled or implied by
   the T0 implementation.
 
@@ -2269,6 +2273,23 @@ Telemetry cannot prove that a request lost before durable admission existed.
 `review_queue_intent_lost_or_delayed_total` is therefore valid only for persisted
 intent/execution identities; Phase 0 workflow-inventory evidence is the gate for
 the pre-admission gap.
+
+The implemented T0 path makes the signed webhook fact event the first durable
+side effect after payload validation. Repository/workspace projections are
+resolved by the worker, where missing projections are retryable rather than a
+webhook-time loss. A dead-lettered idempotency identity is never reported as a
+successful restore. Dispatch uses GitHub's `return_run_details` response, records
+the returned run/attempt under a fenced claim, and passes the intended head SHA as
+an explicit workflow input. The reusable workflow validates and checks out that
+exact SHA; OIDC admission independently resolves the current PR revision and must
+match the persisted intent before provider work starts.
+
+T0 ingress activation is fail-closed unless the worker, exact workflow dispatch,
+and fenced outbox takeover are already ready. The required activation order is
+documented in
+[07-environments-and-release-management.md](../operations/07-environments-and-release-management.md);
+the additive provider-lane/request-dispatch preflight is documented in
+[04-migrations-backups-recovery.md](../operations/04-migrations-backups-recovery.md).
 
 ### Work leases and duplicate workers
 

@@ -11,6 +11,10 @@ import {
   ReviewActionV2RouteFailure,
 } from "@reviewrouter/features-action-control-plane/v2";
 import {
+  ReviewRequestedIntentState,
+  type ReviewRequestedIntent,
+} from "@reviewrouter/features-review-executions";
+import {
   ProducerDistributionKind,
   CanonicalReviewRevisionResolutionStatus,
   ProducerReleaseAttestationStatus,
@@ -84,6 +88,14 @@ export type ServerOwnedReviewActionV2AdmissionDependencies = {
   readonly revisionResolver: CanonicalReviewRevisionResolverPort;
   readonly releaseAttestations: ProducerReleaseAttestationPort;
   readonly providerVoteLanes: readonly ProviderVoteLane[];
+  readonly requestedIntents?: {
+    findByRepositorySourceRunIdentity(input: {
+      readonly repositoryConnectionId: string;
+      readonly sourceRunId: string;
+      readonly sourceRunAttempt: string;
+    }): Promise<ReviewRequestedIntent | null>;
+  };
+  readonly requestedIntentRequired?: boolean;
 };
 
 export function createServerOwnedReviewActionV2AdmissionFacts(
@@ -103,9 +115,30 @@ export function createServerOwnedReviewActionV2AdmissionFacts(
   return {
     async resolve(input) {
       const repositoryName = splitRepositoryFullName(input.repository.fullName);
-      const pullRequestNumberHint = pullRequestNumberHintFromClaims(
-        input.claims,
-      );
+      const requestedIntent = dependencies.requestedIntents
+        ? await dependencies.requestedIntents.findByRepositorySourceRunIdentity(
+            {
+              repositoryConnectionId: input.repository.repositoryId,
+              sourceRunId: input.claims.run_id,
+              sourceRunAttempt: input.claims.run_attempt,
+            },
+          )
+        : null;
+      if (
+        dependencies.requestedIntentRequired === true &&
+        (!requestedIntent ||
+          requestedIntent.state !==
+            ReviewRequestedIntentState.AwaitingAuthorization)
+      ) {
+        throw routeFailure(
+          403,
+          ReviewActionV2ProtocolErrorCode.Forbidden,
+          "review_request_intent_required",
+        );
+      }
+      const pullRequestNumberHint =
+        requestedIntent?.pullRequestNumber ??
+        pullRequestNumberHintFromClaims(input.claims);
       const producerActionCommitSha = producerActionCommitFromClaims(
         input.claims,
       );
@@ -123,6 +156,18 @@ export function createServerOwnedReviewActionV2AdmissionFacts(
         revision.status !== CanonicalReviewRevisionResolutionStatus.Resolved
       ) {
         throw revisionResolutionFailure(revision.status);
+      }
+      if (
+        requestedIntent &&
+        (requestedIntent.pullRequestNumber !== revision.pullRequestNumber ||
+          requestedIntent.revision.reviewRevisionHash !==
+            revision.reviewRevisionHash)
+      ) {
+        throw routeFailure(
+          412,
+          ReviewActionV2ProtocolErrorCode.StalePrecondition,
+          "review_request_revision_moved",
+        );
       }
       const attestation = await dependencies.releaseAttestations.attest({
         actionCommitSha: producerActionCommitSha,

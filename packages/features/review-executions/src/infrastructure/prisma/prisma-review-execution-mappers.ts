@@ -55,6 +55,7 @@ export function intentToDomain(record: IntentRecord): ReviewRequestedIntent {
   }
   return {
     requestId: record.requestId,
+    dispatchAttempt: record.dispatchAttempt,
     version: record.version,
     workspaceId: record.workspaceId,
     repositoryConnectionId: record.repositoryConnectionId,

@@ -67,7 +67,7 @@ export function isUniqueConstraintError(
 
 export function isTransactionConflictError(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
-  if (error.code === "P2034") return true;
+  if (error.code === "P2034" || error.code === "P2028") return true;
   if (error.code !== "P2010") return false;
   const details = `${safeJson(error.meta)} ${error.message}`;
   return /(?:^|\D)(?:40001|40P01)(?:\D|$)/u.test(details);

@@ -13,6 +13,28 @@ all additive business/audit rows; it never drops v2 state.
 `pnpm review-v2:migration-rehearsal` must pass on a disposable database before
 writer rollout.
 
+### Migration 000033 preflight
+
+`000033_review_request_dispatch_lanes` is additive, but intentionally fails before
+creating its partial unique indexes when any of these conditions exists:
+
+- more than one active `provider_execution` lease for a provider vote identity;
+- an active provider lease whose expiry is already in the past;
+- duplicate non-null repository/run/attempt request identities;
+- more than one `pending_dispatch` request for a PR scope.
+
+Do not delete conflicting rows to make deployment pass. Pause new v2 work, let the
+fenced worker expire/reconcile leases and intents, inspect the safe identifiers,
+then rerun the migration. The migration adds only `dispatchAttempt`, its bounded
+check, and partial unique indexes. Rollback disables intent ingress/dispatch and
+retains the column, intents, leases, and audit history; no down-migration is used.
+
+The release gate must apply all migrations to a newly created local database whose
+name contains `test` or `ci`, then run the real Prisma review-execution contract and
+the production-shaped review-v2 E2E. This verifies both cross-PR provider
+serialization and stale-claim takeover against PostgreSQL rather than only memory
+adapters.
+
 ## Database Migrations
 
 Use Prisma migrations.

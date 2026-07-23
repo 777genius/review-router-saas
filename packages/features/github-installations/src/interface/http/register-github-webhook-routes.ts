@@ -28,6 +28,7 @@ export type RegisterGitHubWebhookRoutesDependencies = {
   readonly ownerGrants?: InstallationWorkspaceOwnerGrantPort;
   readonly syncRequests?: InstallationSyncRequestPort;
   readonly appAuthorizations?: GitHubAppAuthorizationWebhookHandlerPort;
+  readonly preAdmissionPullRequests?: GitHubPullRequestWebhookHandlerPort;
   readonly pullRequests?: GitHubPullRequestWebhookHandlerPort;
   readonly pushes?: GitHubPushWebhookHandlerPort;
   readonly repositories?: GitHubRepositoryWebhookHandlerPort;
@@ -133,10 +134,28 @@ export async function registerGitHubWebhookRoutes(
       if (!parsedPullRequestPayload.success) {
         return reply.code(400).send({ error: "invalid_webhook_payload" });
       }
-      if (!dependencies.pullRequests) {
+      if (
+        !dependencies.preAdmissionPullRequests &&
+        !dependencies.pullRequests
+      ) {
         return reply
           .code(202)
           .send({ processed: false, ignored: true, eventName });
+      }
+
+      const envelope = {
+        deliveryId,
+        eventName,
+        payloadHash: hashGitHubWebhookPayload(rawPayload),
+        payload: parsedPullRequestPayload.data,
+      } as const;
+      const preAdmissionResult = dependencies.preAdmissionPullRequests
+        ? await dependencies.preAdmissionPullRequests.handleGitHubPullRequestWebhook(
+            envelope,
+          )
+        : null;
+      if (!dependencies.pullRequests) {
+        return reply.send(preAdmissionResult);
       }
 
       const started = await dependencies.deliveries.tryStartProcessing({
@@ -166,10 +185,7 @@ export async function registerGitHubWebhookRoutes(
       try {
         const result =
           await dependencies.pullRequests.handleGitHubPullRequestWebhook({
-            deliveryId,
-            eventName,
-            payloadHash: hashGitHubWebhookPayload(rawPayload),
-            payload: parsedPullRequestPayload.data,
+            ...envelope,
           });
         await dependencies.deliveries.markProcessed(deliveryId);
         return reply.send(result);

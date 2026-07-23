@@ -360,6 +360,9 @@ importers:
       '@reviewrouter/features-conflict-review':
         specifier: workspace:*
         version: link:../../packages/features/conflict-review
+      '@reviewrouter/features-github-installations':
+        specifier: workspace:*
+        version: link:../../packages/features/github-installations
       '@reviewrouter/features-memory':
         specifier: workspace:*
         version: link:../../packages/features/memory

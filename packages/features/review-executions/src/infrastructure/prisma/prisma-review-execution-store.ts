@@ -43,6 +43,7 @@ import {
   type ReviewExecutionSnapshot,
   type ReviewExecutionStream,
   type ReviewInvocationLease,
+  ReviewInvocationLeasePurpose,
   type ReviewWorkSlot,
 } from "../../domain/review-execution";
 import {
@@ -66,6 +67,7 @@ import {
   decideFreshObservationAttachment,
   decideLeaseAcquire,
   decideLeaseAcquireReplay,
+  decideLeaseExpiry,
   decideLeaseRelease,
   decideLeaseRenewal,
   decideObservationAdoption,
@@ -413,7 +415,37 @@ export class PrismaReviewExecutionStore
     try {
       return await this.prisma.$transaction(
         async (transaction) => {
-          await lockScope(transaction, command.scope);
+          let observedProviderIncumbent: LeaseRecord | null = null;
+          if (
+            command.purpose === ReviewInvocationLeasePurpose.ProviderExecution
+          ) {
+            await lockProviderLane(
+              transaction,
+              command.providerVoteIdentityHash,
+            );
+            const incumbents =
+              await transaction.reviewInvocationLeaseV2.findMany({
+                where: {
+                  providerVoteIdentityHash: command.providerVoteIdentityHash,
+                  purpose: leasePurposeToPrisma(
+                    ReviewInvocationLeasePurpose.ProviderExecution,
+                  ),
+                  state: PrismaLeaseState.active,
+                },
+                orderBy: { leaseId: "asc" },
+                take: 2,
+              });
+            if (incumbents.length > 1) {
+              throw new Error("review_provider_lane_invariant_violated");
+            }
+            observedProviderIncumbent = incumbents[0] ?? null;
+          }
+          await lockScopes(transaction, [
+            command.scope,
+            ...(observedProviderIncumbent
+              ? [leaseToDomain(observedProviderIncumbent)]
+              : []),
+          ]);
           const executionIdentity =
             await transaction.reviewExecutionV2.findUnique({
               where: { executionId: command.executionId },
@@ -467,53 +499,97 @@ export class PrismaReviewExecutionStore
             command.executionId,
             command.workSlotId,
           );
-          const snapshot = await loadSnapshot(transaction, command.executionId);
+          let snapshot = await loadSnapshot(transaction, command.executionId);
           if (snapshot === null) {
             return { status: ReviewInvocationLeaseAcquireStatus.Missing };
           }
-          const slot = snapshot.execution.workSlots.find(
-            (candidate) => candidate.workSlotId === command.workSlotId,
-          );
-          const activeLease =
-            slot?.activeLeaseId === null || slot === undefined
-              ? null
-              : await loadLease(transaction, slot.activeLeaseId);
           const now = await databaseNow(transaction);
-          const fencingToken = await nextLeaseFencingToken(transaction);
-          const decision = decideLeaseAcquire({
-            stream: snapshot.stream,
-            execution: snapshot.execution,
-            activeLease,
-            fencingToken,
-            ...command,
+          let decision = await decideLeaseAcquireForSnapshot(
+            transaction,
+            snapshot,
+            command,
             now,
-            expiresAt: databaseRelativeDate(
-              now,
-              command.now,
-              command.expiresAt,
-              "lease_deadline",
-            ),
-            resultReportUntil: databaseRelativeDate(
-              now,
-              command.now,
-              command.resultReportUntil,
-              "result_report_deadline",
-            ),
-            retainUntil: databaseRelativeDate(
-              now,
-              command.now,
-              command.retainUntil,
-              "lease_retention_deadline",
-            ),
-          });
-          if (decision.status === LeaseAcquireDecisionStatus.MissingSlot) {
-            return { status: ReviewInvocationLeaseAcquireStatus.Missing };
+          );
+          const early = await persistEarlyLeaseAcquireResult(
+            transaction,
+            decision,
+            snapshot,
+            command.executionId,
+          );
+          if (early !== null) {
+            return early;
           }
-          if (decision.status === LeaseAcquireDecisionStatus.NotRunnable) {
-            return { status: ReviewInvocationLeaseAcquireStatus.NotRunnable };
+          if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
+            throw new Error("review_lease_acquire_decision_unhandled");
           }
-          if (decision.status === LeaseAcquireDecisionStatus.Busy) {
-            return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+          if (
+            command.purpose === ReviewInvocationLeasePurpose.ProviderExecution
+          ) {
+            const incumbentRecords =
+              await transaction.reviewInvocationLeaseV2.findMany({
+                where: {
+                  providerVoteIdentityHash: command.providerVoteIdentityHash,
+                  purpose: leasePurposeToPrisma(
+                    ReviewInvocationLeasePurpose.ProviderExecution,
+                  ),
+                  state: PrismaLeaseState.active,
+                },
+                orderBy: { leaseId: "asc" },
+                take: 2,
+              });
+            if (incumbentRecords.length > 1) {
+              throw new Error("review_provider_lane_invariant_violated");
+            }
+            const incumbentRecord = incumbentRecords[0] ?? null;
+            if (incumbentRecord !== null) {
+              const incumbent = leaseToDomain(incumbentRecord);
+              const locallyExpiring =
+                decision.expiredLease?.leaseId === incumbent.leaseId;
+              if (!locallyExpiring && incumbent.expiresAt > now) {
+                return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+              }
+              if (!locallyExpiring) {
+                const incumbentExecutionRecord =
+                  await transaction.reviewExecutionV2.findUnique({
+                    where: { executionId: incumbent.executionId },
+                  });
+                const incumbentExecution = incumbentExecutionRecord
+                  ? await loadExecution(transaction, incumbentExecutionRecord)
+                  : null;
+                const expiry = decideLeaseExpiry({
+                  lease: incumbent,
+                  execution: incumbentExecution,
+                  now,
+                });
+                await persistLeaseTransition(
+                  transaction,
+                  incumbent,
+                  expiry.lease,
+                  incumbentExecution,
+                  expiry.execution,
+                );
+                snapshot = await loadSnapshot(transaction, command.executionId);
+                if (snapshot === null) {
+                  return { status: ReviewInvocationLeaseAcquireStatus.Missing };
+                }
+                decision = await decideLeaseAcquireForSnapshot(
+                  transaction,
+                  snapshot,
+                  command,
+                  now,
+                );
+                const recomputedEarly = await persistEarlyLeaseAcquireResult(
+                  transaction,
+                  decision,
+                  snapshot,
+                  command.executionId,
+                );
+                if (recomputedEarly !== null) return recomputedEarly;
+                if (decision.status !== LeaseAcquireDecisionStatus.Acquired) {
+                  throw new Error("review_lease_acquire_decision_unhandled");
+                }
+              }
+            }
           }
           if (decision.expiredLease !== null) {
             await persistSingleLeaseState(transaction, decision.expiredLease);
@@ -523,17 +599,6 @@ export class PrismaReviewExecutionStore
             snapshot.execution,
             decision.execution,
           );
-          if (
-            decision.status ===
-            LeaseAcquireDecisionStatus.AttemptBudgetExhausted
-          ) {
-            return {
-              status: ReviewInvocationLeaseAcquireStatus.AttemptBudgetExhausted,
-              snapshot: requiredSnapshot(
-                await loadSnapshot(transaction, command.executionId),
-              ),
-            };
-          }
           await assertLeaseIdentityNotTombstoned(transaction, decision.lease);
           await transaction.reviewInvocationLeaseV2.create({
             data: leaseCreateData(decision.lease),
@@ -898,6 +963,15 @@ export class PrismaReviewExecutionStore
           if (observedLease === null) {
             return { status: ReviewInvocationLeaseTransitionStatus.Missing };
           }
+          if (
+            observedLease.purpose ===
+            ReviewInvocationLeasePurpose.ProviderExecution
+          ) {
+            await lockProviderLane(
+              transaction,
+              observedLease.providerVoteIdentityHash,
+            );
+          }
           await lockScope(transaction, observedLease);
           await lockStream(transaction, observedLease);
           await lockExecution(transaction, observedLease.executionId);
@@ -1132,7 +1206,22 @@ export class PrismaReviewExecutionStore
       },
     });
     if (record === null) {
-      return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+      if (command.purpose === ReviewInvocationLeasePurpose.ProviderExecution) {
+        const incumbent = await this.prisma.reviewInvocationLeaseV2.findFirst({
+          where: {
+            providerVoteIdentityHash: command.providerVoteIdentityHash,
+            purpose: leasePurposeToPrisma(
+              ReviewInvocationLeasePurpose.ProviderExecution,
+            ),
+            state: PrismaLeaseState.active,
+          },
+          select: { leaseId: true },
+        });
+        if (incumbent !== null) {
+          return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+        }
+      }
+      throw new Error("review_execution_lease_unique_invariant_violated");
     }
     const lease = leaseToDomain(record);
     const replay = decideLeaseAcquireReplay({
@@ -1781,6 +1870,80 @@ function observationFacts(
   return { ...command, observationId, now };
 }
 
+async function decideLeaseAcquireForSnapshot(
+  transaction: Transaction,
+  snapshot: ReviewExecutionSnapshot,
+  command: AcquireReviewInvocationLeaseCommand,
+  now: Date,
+): Promise<ReturnType<typeof decideLeaseAcquire>> {
+  const slot = snapshot.execution.workSlots.find(
+    (candidate) => candidate.workSlotId === command.workSlotId,
+  );
+  const activeLease =
+    slot?.activeLeaseId === null || slot === undefined
+      ? null
+      : await loadLease(transaction, slot.activeLeaseId);
+  return decideLeaseAcquire({
+    stream: snapshot.stream,
+    execution: snapshot.execution,
+    activeLease,
+    fencingToken: await nextLeaseFencingToken(transaction),
+    ...command,
+    now,
+    expiresAt: databaseRelativeDate(
+      now,
+      command.now,
+      command.expiresAt,
+      "lease_deadline",
+    ),
+    resultReportUntil: databaseRelativeDate(
+      now,
+      command.now,
+      command.resultReportUntil,
+      "result_report_deadline",
+    ),
+    retainUntil: databaseRelativeDate(
+      now,
+      command.now,
+      command.retainUntil,
+      "lease_retention_deadline",
+    ),
+  });
+}
+
+async function persistEarlyLeaseAcquireResult(
+  transaction: Transaction,
+  decision: ReturnType<typeof decideLeaseAcquire>,
+  snapshot: ReviewExecutionSnapshot,
+  executionId: string,
+): Promise<ReviewInvocationLeaseAcquireResult | null> {
+  switch (decision.status) {
+    case LeaseAcquireDecisionStatus.MissingSlot:
+      return { status: ReviewInvocationLeaseAcquireStatus.Missing };
+    case LeaseAcquireDecisionStatus.NotRunnable:
+      return { status: ReviewInvocationLeaseAcquireStatus.NotRunnable };
+    case LeaseAcquireDecisionStatus.Busy:
+      return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+    case LeaseAcquireDecisionStatus.AttemptBudgetExhausted:
+      if (decision.expiredLease !== null) {
+        await persistSingleLeaseState(transaction, decision.expiredLease);
+      }
+      await persistExecutionUpdate(
+        transaction,
+        snapshot.execution,
+        decision.execution,
+      );
+      return {
+        status: ReviewInvocationLeaseAcquireStatus.AttemptBudgetExhausted,
+        snapshot: requiredSnapshot(
+          await loadSnapshot(transaction, executionId),
+        ),
+      };
+    case LeaseAcquireDecisionStatus.Acquired:
+      return null;
+  }
+}
+
 function admissionVerdict(
   value: ReviewExecutionAdmissionVerdict,
 ): ExecutionAdmissionVerdict {
@@ -1827,6 +1990,36 @@ async function lockScope(
   ]);
   await transaction.$executeRaw(
     Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+  );
+}
+
+async function lockScopes(
+  transaction: Transaction,
+  scopes: readonly ReviewExecutionScope[],
+): Promise<void> {
+  const unique = new Map<string, ReviewExecutionScope>();
+  for (const scope of scopes) {
+    unique.set(
+      JSON.stringify([
+        scope.workspaceId,
+        scope.repositoryConnectionId,
+        scope.scmRepositoryIdentityId,
+        scope.pullRequestNumber,
+      ]),
+      scope,
+    );
+  }
+  for (const key of [...unique.keys()].sort()) {
+    await lockScope(transaction, unique.get(key)!);
+  }
+}
+
+async function lockProviderLane(
+  transaction: Transaction,
+  providerVoteIdentityHash: string,
+): Promise<void> {
+  await transaction.$executeRaw(
+    Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`review-provider-lane:${providerVoteIdentityHash}`}, 0))`,
   );
 }
 

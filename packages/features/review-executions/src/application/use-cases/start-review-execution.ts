@@ -9,6 +9,7 @@ import {
   type ReviewExecutionScope,
   type ReviewWorkSlotPlan,
 } from "../../domain/review-execution";
+import { ReviewRequestedIntentState } from "../../domain/review-requested-intent";
 import {
   CurrentReviewRevisionStatus,
   ReviewExecutionAdmissionStatus,
@@ -22,6 +23,11 @@ import {
   type ReviewExecutionQueryPort,
   type Sha256DigestPort,
 } from "../ports/review-execution-ports";
+import {
+  ReviewRequestedTransitionStatus,
+  type ReviewRequestedIntentCommandPort,
+  type ReviewRequestedIntentQueryPort,
+} from "../ports/review-requested-intent-ports";
 
 export enum StartReviewExecutionStatus {
   Admitted = "admitted",
@@ -31,7 +37,28 @@ export enum StartReviewExecutionStatus {
   AuthorizationRejected = "authorization_rejected",
   IdempotencyConflict = "idempotency_conflict",
   ConcurrencyConflict = "concurrency_conflict",
+  RequestIntentMissing = "request_intent_missing",
+  RequestIntentConflict = "request_intent_conflict",
 }
+
+enum RequestedIntentResolutionStatus {
+  NotRequired = "not_required",
+  Resolved = "resolved",
+  Missing = "missing",
+  Conflict = "conflict",
+}
+
+type RequestedIntentResolution =
+  | { readonly status: RequestedIntentResolutionStatus.NotRequired }
+  | {
+      readonly status: RequestedIntentResolutionStatus.Resolved;
+      readonly requestId: string;
+    }
+  | {
+      readonly status:
+        | RequestedIntentResolutionStatus.Missing
+        | RequestedIntentResolutionStatus.Conflict;
+    };
 
 export type StartReviewExecutionInput = {
   readonly scope: ReviewExecutionScope;
@@ -60,6 +87,11 @@ export class StartReviewExecution {
     private readonly commands: ReviewExecutionCommandPort,
     private readonly digest: Sha256DigestPort,
     private readonly clock: ClockPort,
+    private readonly requestedIntentAdmission?: Readonly<{
+      queries: ReviewRequestedIntentQueryPort;
+      commands: ReviewRequestedIntentCommandPort;
+      required: boolean;
+    }>,
   ) {}
 
   async execute(
@@ -80,6 +112,28 @@ export class StartReviewExecution {
     if (!reviewRevisionsEqual(precheck.revision, authorization.revision)) {
       return { status: StartReviewExecutionStatus.StaleRevision };
     }
+
+    const requestedIntentResolution = await this.resolveRequestedIntent(
+      input,
+      authorization,
+    );
+    if (
+      requestedIntentResolution.status ===
+      RequestedIntentResolutionStatus.Missing
+    ) {
+      return { status: StartReviewExecutionStatus.RequestIntentMissing };
+    }
+    if (
+      requestedIntentResolution.status ===
+      RequestedIntentResolutionStatus.Conflict
+    ) {
+      return { status: StartReviewExecutionStatus.RequestIntentConflict };
+    }
+    const requestedIntent =
+      requestedIntentResolution.status ===
+      RequestedIntentResolutionStatus.Resolved
+        ? requestedIntentResolution.requestId
+        : null;
 
     const canonicalPlan = canonicalReviewExecutionPlanPreimage(input.workSlots);
     const startPreimage = canonicalReviewExecutionStartPreimage({
@@ -154,6 +208,20 @@ export class StartReviewExecution {
       prepared.execution.state !== ReviewExecutionState.Planned ||
       reviewExecutionIsTerminal(prepared.execution.state)
     ) {
+      if (
+        requestedIntent !== null &&
+        (await this.linkRequestedIntent(
+          requestedIntent,
+          input,
+          authorization,
+        )) === "conflict"
+      ) {
+        await this.compensateIntentConflict(prepared, authorization.revision);
+        return {
+          status: StartReviewExecutionStatus.RequestIntentConflict,
+          snapshot: prepared,
+        };
+      }
       return {
         status: StartReviewExecutionStatus.Restored,
         snapshot: prepared,
@@ -205,11 +273,49 @@ export class StartReviewExecution {
 
       switch (admission.status) {
         case ReviewExecutionAdmissionStatus.Admitted:
+          if (
+            requestedIntent !== null &&
+            (await this.linkRequestedIntent(
+              requestedIntent,
+              input,
+              authorization,
+            )) === "conflict"
+          ) {
+            await this.compensateIntentConflict(
+              admission.snapshot ?? admissionSnapshot,
+              postcheck.status === CurrentReviewRevisionStatus.Found
+                ? postcheck.revision
+                : authorization.revision,
+            );
+            return {
+              status: StartReviewExecutionStatus.RequestIntentConflict,
+              snapshot: admission.snapshot,
+            };
+          }
           return {
             status: StartReviewExecutionStatus.Admitted,
             snapshot: admission.snapshot,
           };
         case ReviewExecutionAdmissionStatus.Restored:
+          if (
+            requestedIntent !== null &&
+            (await this.linkRequestedIntent(
+              requestedIntent,
+              input,
+              authorization,
+            )) === "conflict"
+          ) {
+            await this.compensateIntentConflict(
+              admission.snapshot ?? admissionSnapshot,
+              postcheck.status === CurrentReviewRevisionStatus.Found
+                ? postcheck.revision
+                : authorization.revision,
+            );
+            return {
+              status: StartReviewExecutionStatus.RequestIntentConflict,
+              snapshot: admission.snapshot,
+            };
+          }
           return {
             status: StartReviewExecutionStatus.Restored,
             snapshot: admission.snapshot,
@@ -246,6 +352,70 @@ export class StartReviewExecution {
       scopeKey(current.scope) === scopeKey(scope)
       ? snapshotAuthorizationFacts(current)
       : null;
+  }
+
+  private async resolveRequestedIntent(
+    input: StartReviewExecutionInput,
+    authorization: ReviewExecutionAuthorizationFacts,
+  ): Promise<RequestedIntentResolution> {
+    const admission = this.requestedIntentAdmission;
+    if (!admission) {
+      return { status: RequestedIntentResolutionStatus.NotRequired };
+    }
+    const intent = await admission.queries.findBySourceRunIdentity({
+      ...input.scope,
+      sourceRunId: input.sourceRunId,
+      sourceRunAttempt: input.sourceRunAttempt,
+    });
+    if (!intent) {
+      return {
+        status: admission.required
+          ? RequestedIntentResolutionStatus.Missing
+          : RequestedIntentResolutionStatus.NotRequired,
+      };
+    }
+    return intent.state === ReviewRequestedIntentState.AwaitingAuthorization &&
+      reviewRevisionsEqual(intent.revision, authorization.revision)
+      ? {
+          status: RequestedIntentResolutionStatus.Resolved,
+          requestId: intent.requestId,
+        }
+      : { status: RequestedIntentResolutionStatus.Conflict };
+  }
+
+  private async linkRequestedIntent(
+    requestId: string,
+    input: StartReviewExecutionInput,
+    authorization: ReviewExecutionAuthorizationFacts,
+  ): Promise<"linked" | "conflict"> {
+    const admission = this.requestedIntentAdmission;
+    if (!admission) return "linked";
+    const linked = await admission.commands.linkAdmission({
+      requestId,
+      sourceRunId: input.sourceRunId,
+      sourceRunAttempt: input.sourceRunAttempt,
+      authorizationId: input.authorizationId,
+      executionId: input.executionId,
+      revision: authorization.revision,
+      now: this.clock.now(),
+    });
+    return linked.status === ReviewRequestedTransitionStatus.Applied ||
+      linked.status === ReviewRequestedTransitionStatus.Restored
+      ? "linked"
+      : "conflict";
+  }
+
+  private async compensateIntentConflict(
+    snapshot: ReviewExecutionSnapshot,
+    observedCurrentRevision: ReviewExecutionAuthorizationFacts["revision"],
+  ): Promise<void> {
+    await this.commands.supersedeExecution({
+      scope: snapshot.execution,
+      executionId: snapshot.execution.executionId,
+      expectedStreamVersion: snapshot.stream.version,
+      observedCurrentRevision,
+      now: this.clock.now(),
+    });
   }
 
   private async resolveCurrentAuthorization(

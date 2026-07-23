@@ -29,7 +29,24 @@ export class PrismaWebhookDeliveryRepository implements WebhookDeliveryRepositor
       return true;
     } catch (error) {
       if (isUniqueConstraintError(error)) {
-        return false;
+        const retried = await this.prisma.gitHubWebhookDelivery.updateMany({
+          where: {
+            deliveryId: delivery.deliveryId,
+            eventName: delivery.eventName,
+            action: delivery.action ?? null,
+            installationId: delivery.installationId
+              ? BigInt(delivery.installationId)
+              : null,
+            payloadHash: delivery.payloadHash ?? null,
+            status: "failed",
+          },
+          data: {
+            status: "processing",
+            errorSummary: null,
+            processedAt: null,
+          },
+        });
+        return retried.count === 1;
       }
       throw error;
     }

@@ -108,6 +108,12 @@ export const reviewActionV2ProviderVoteLanesEnv =
   "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON";
 export const reviewActionV2ProjectionPolicyVersionEnv =
   "REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION";
+export const reviewActionV2IntentAdmissionRequiredEnv =
+  "REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED";
+export const reviewActionV2IntentIngressEnabledEnv =
+  "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED";
+export const reviewActionV2WorkflowDispatchReadyEnv =
+  "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY";
 
 type ReviewActionV2RouteRuntime = Pick<
   RegisterReviewRunControlV2RoutesDependencies,
@@ -233,6 +239,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
   if (!input.prisma) {
     throw new Error("review_action_v2_prisma_unavailable");
   }
+  assertReviewIntentRolloutConfiguration(input.env);
 
   const {
     clock,
@@ -252,10 +259,16 @@ export function composeReviewActionV2ProductionRoutes(input: {
       : { oidcAudience: input.oidcAudience }),
   });
 
+  const requestedIntentStore = new PrismaReviewRequestedIntentStore(
+    input.prisma,
+  );
   const admissionFacts = createServerOwnedReviewActionV2AdmissionFacts({
     revisionResolver: prerequisites.revisionResolver,
     releaseAttestations: prerequisites.releaseAttestations,
     providerVoteLanes,
+    requestedIntents: requestedIntentStore,
+    requestedIntentRequired:
+      input.env[reviewActionV2IntentAdmissionRequiredEnv] === "1",
   });
   const revisionHashes: ReviewActionV2RevisionHashPort = {
     digest: (revision) => digest.digestUtf8(canonicalJson(revision)),
@@ -276,9 +289,6 @@ export function composeReviewActionV2ProductionRoutes(input: {
   } as const;
 
   const executionStore = new PrismaReviewExecutionStore(input.prisma);
-  const requestedIntentStore = new PrismaReviewRequestedIntentStore(
-    input.prisma,
-  );
   const currentRevision = new ProductionCurrentReviewRevisionAdapter({
     prisma: input.prisma,
     identities: repositories.repositoryIdentities,
@@ -300,6 +310,8 @@ export function composeReviewActionV2ProductionRoutes(input: {
     requestedIntentCommands: requestedIntentStore,
     digest,
     clock,
+    requestedIntentAdmissionRequired:
+      input.env[reviewActionV2IntentAdmissionRequiredEnv] === "1",
   });
 
   const observationStore = new PrismaReviewObservationStore(input.prisma);
@@ -397,6 +409,27 @@ export function composeReviewActionV2ProductionRoutes(input: {
     snapshot: snapshotPublication.snapshot,
     publication: snapshotPublication.publication,
   });
+}
+
+export function assertReviewIntentRolloutConfiguration(
+  env: Readonly<Record<string, string | undefined>>,
+): void {
+  const ingressEnabled = env[reviewActionV2IntentIngressEnabledEnv] === "1";
+  const admissionRequired =
+    env[reviewActionV2IntentAdmissionRequiredEnv] === "1";
+  const dispatchReady = env[reviewActionV2WorkflowDispatchReadyEnv] === "1";
+  const workerEnabled = env.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1";
+  const outboxTakeoverEnabled =
+    env.REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED === "1";
+  if (
+    ingressEnabled &&
+    (!dispatchReady || !workerEnabled || !outboxTakeoverEnabled)
+  ) {
+    throw new Error("review_action_v2_intent_ingress_dependencies_unavailable");
+  }
+  if (admissionRequired && !ingressEnabled) {
+    throw new Error("review_action_v2_intent_admission_without_ingress");
+  }
 }
 
 class ProductionReviewActionV2Digest {

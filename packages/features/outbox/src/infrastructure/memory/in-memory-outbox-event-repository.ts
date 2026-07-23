@@ -1,4 +1,5 @@
 import type { OutboxEventRepositoryPort } from "../../application/ports/outbox-event-repository-port";
+import type { OutboxEventStatusQueryPort } from "../../application/ports/outbox-event-repository-port";
 import type { OutboxMaintenanceRepositoryPort } from "../../application/ports/outbox-maintenance-repository-port";
 import {
   outboxHandlerKey,
@@ -21,7 +22,10 @@ type StoredOutboxEvent = OutboxEvent & {
 };
 
 export class InMemoryOutboxEventRepository
-  implements OutboxEventRepositoryPort, OutboxMaintenanceRepositoryPort
+  implements
+    OutboxEventRepositoryPort,
+    OutboxEventStatusQueryPort,
+    OutboxMaintenanceRepositoryPort
 {
   readonly events = new Map<string, StoredOutboxEvent>();
   private nextClaimVersion = 1n;
@@ -62,6 +66,11 @@ export class InMemoryOutboxEventRepository
       updatedAt: event.occurredAt,
     });
     return { created: true };
+  }
+
+  async findStatusByIdempotencyKey(idempotencyKey: string) {
+    const event = this.events.get(idempotencyKey);
+    return event ? { id: event.id, status: event.status } : null;
   }
 
   async recoverStaleProcessing(input: {

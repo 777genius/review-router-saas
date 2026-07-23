@@ -701,6 +701,9 @@ exit 17
       'provider_instance_id: "codex-rotating:1163183284"',
     );
     expect(workflow).toContain(`runtime_ref: "${actionSha}"`);
+    expect(workflow).toContain(
+      "review_head_sha: ${{ inputs.review_head_sha }}",
+    );
     expect(workflow).not.toContain("runs-on:");
     expect(workflow).not.toContain("steps:");
     expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({

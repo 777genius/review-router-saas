@@ -776,6 +776,7 @@ model ReviewEvidenceObservation {
 
 model ReviewRequestedIntent {
   requestId               String                       @id
+  dispatchAttempt         Int                          @default(1)
   version                 BigInt                       @default(1)
   workspaceId             String
   repositoryConnectionId  String

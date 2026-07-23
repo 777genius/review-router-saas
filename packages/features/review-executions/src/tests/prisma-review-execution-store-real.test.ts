@@ -18,7 +18,7 @@ import {
 
 const databaseUrl = process.env.REVIEW_ROUTER_TEST_DATABASE_URL;
 let prisma: PrismaClient;
-let currentWorkspaceId: string | null = null;
+const currentWorkspaceIds = new Set<string>();
 const limitsProfileId = "limits-contract";
 const sloProfileId = "slo-contract";
 
@@ -29,10 +29,10 @@ if (databaseUrl) {
   });
 
   afterEach(async () => {
-    if (currentWorkspaceId !== null) {
-      await cleanupScope(currentWorkspaceId);
-      currentWorkspaceId = null;
+    for (const workspaceId of currentWorkspaceIds) {
+      await cleanupScope(workspaceId);
     }
+    currentWorkspaceIds.clear();
   });
 
   afterAll(async () => {
@@ -370,6 +370,47 @@ if (databaseUrl) {
       ).toBe(90_000);
     });
 
+    it("serializes one provider lane across concurrent pull-request scopes", async () => {
+      const first = await createHarness();
+      const second = await createHarness();
+      const firstRunning = await prepareAndAdmit(first, "provider-lane-a");
+      const secondRunning = await prepareAndAdmit(second, "provider-lane-b");
+      const firstCommand = leaseCommand(
+        first,
+        firstRunning.snapshot,
+        "provider-lane-a",
+      );
+      const secondCommand = leaseCommand(
+        second,
+        secondRunning.snapshot,
+        "provider-lane-b",
+      );
+      expect(firstCommand.providerVoteIdentityHash).toBe(
+        secondCommand.providerVoteIdentityHash,
+      );
+
+      const results = await Promise.all([
+        first.executions.acquireLease(firstCommand),
+        second.executions.acquireLease(secondCommand),
+      ]);
+
+      expect(
+        results.filter((result) => result.status === "acquired"),
+      ).toHaveLength(1);
+      expect(results.filter((result) => result.status === "busy")).toHaveLength(
+        1,
+      );
+      await expect(
+        prisma.reviewInvocationLeaseV2.count({
+          where: {
+            providerVoteIdentityHash: firstCommand.providerVoteIdentityHash,
+            purpose: "provider_execution",
+            state: "active",
+          },
+        }),
+      ).resolves.toBe(1);
+    });
+
     it("prunes terminal requested intents only after retention expires", async () => {
       const harness = await createHarness();
       const intentStore =
@@ -447,7 +488,8 @@ async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
   const scmRepositoryIdentityId = `execution-scm-${suffix}`;
   const producerReleaseId = `execution-release-${suffix}`;
   const authorizationId = `execution-authorization-${suffix}`;
-  currentWorkspaceId = workspaceId;
+  const producerSchemaDigest = hashFromText(`schema-${suffix}`);
+  currentWorkspaceIds.add(workspaceId);
   const now = new Date();
 
   await prisma.workspace.create({
@@ -489,11 +531,11 @@ async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
     data: {
       producerReleaseId,
       distributionKind: "hosted_composite",
-      actionCommitSha: "d".repeat(40),
-      runtimeCommitSha: "e".repeat(40),
-      wrapperEntrypointDigest: hash(13),
-      runtimeEntrypointDigest: hash(14),
-      schemaDigest: hash(15),
+      actionCommitSha: hashFromText(`action-${suffix}`).slice(0, 40),
+      runtimeCommitSha: hashFromText(`runtime-${suffix}`).slice(0, 40),
+      wrapperEntrypointDigest: hashFromText(`wrapper-${suffix}`),
+      runtimeEntrypointDigest: hashFromText(`entrypoint-${suffix}`),
+      schemaDigest: producerSchemaDigest,
       capabilityProfile: "execution-contract",
       protocolLimitsProfileId: limitsProfileId,
       operationalSloProfileId: sloProfileId,
@@ -518,7 +560,7 @@ async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
       trustDomain: "trusted_managed",
       producerReleaseId,
       selectedProtocolVersion: "review-action-v2",
-      schemaDigest: hash(15),
+      schemaDigest: producerSchemaDigest,
       protocolLimitsProfileId: limitsProfileId,
       operationalSloProfileId: sloProfileId,
       mutationEpoch: 1n,
