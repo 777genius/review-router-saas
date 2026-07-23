@@ -639,7 +639,16 @@ async function createHarness(): Promise<ReviewExecutionStoreContractHarness> {
           attemptId: input.attemptId,
           sourceLeaseId: input.leaseId,
           sourceFencingToken: input.fencingToken,
-          payloadJson: { payloadVersion: 1, normalizedFindings: [] },
+          payloadJson: {
+            payloadVersion: 2,
+            normalizedFindings: [],
+            normalizedLifecycleRevalidations: [],
+            safeUsage: {
+              inputTokens: null,
+              outputTokens: null,
+              totalTokens: null,
+            },
+          },
           payloadHash: input.payloadHash,
           byteCount: 2,
           findingCount: 0,

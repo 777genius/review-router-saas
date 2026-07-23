@@ -107,8 +107,10 @@ export function payload(
         startLine: 10,
         endLine: 12,
         placementConfidence: 0.95,
+        suggestion: "Fence the compare-and-write.",
       },
     ],
+    normalizedLifecycleRevalidations: [],
     safeUsage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
     ...overrides,
   };

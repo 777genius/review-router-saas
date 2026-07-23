@@ -51,6 +51,13 @@ export enum ReviewFindingSeverity {
   Unknown = "unknown",
 }
 
+export enum ReviewLifecycleRevalidationVerdict {
+  Resolved = "resolved",
+  StillValid = "still_valid",
+  Uncertain = "uncertain",
+  Unknown = "unknown",
+}
+
 export type ReviewEvidenceScope = Readonly<{
   workspaceId: string;
   repositoryConnectionId: string;

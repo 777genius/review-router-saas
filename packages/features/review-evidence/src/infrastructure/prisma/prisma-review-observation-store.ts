@@ -17,6 +17,7 @@ import {
 import {
   ProviderExecutionProfile,
   ReviewFindingSeverity,
+  ReviewLifecycleRevalidationVerdict,
   ReviewObservationQualityFlag,
   ReviewObservationStatus,
   ReviewProviderKind,
@@ -27,6 +28,7 @@ import {
   createReviewObservation,
   sameReviewObservationAcceptance,
   type NormalizedReviewFinding,
+  type NormalizedLifecycleRevalidation,
   type ReviewObservation,
   type ReviewObservationPayload,
 } from "../../domain/review-observation";
@@ -268,7 +270,22 @@ function toPrismaPayload(
       startLine: finding.startLine,
       endLine: finding.endLine,
       placementConfidence: finding.placementConfidence,
+      suggestion: finding.suggestion,
     })),
+    normalizedLifecycleRevalidations:
+      payload.normalizedLifecycleRevalidations.map((revalidation) => ({
+        targetId: revalidation.targetId,
+        fingerprint: revalidation.fingerprint,
+        verdict: revalidation.verdict,
+        confidence: revalidation.confidence,
+        evidence: revalidation.evidence.map((item) => ({
+          path: item.path,
+          startLine: item.startLine,
+          endLine: item.endLine,
+          reason: item.reason,
+        })),
+        rationale: revalidation.rationale,
+      })),
     safeUsage: {
       inputTokens: payload.safeUsage.inputTokens,
       outputTokens: payload.safeUsage.outputTokens,
@@ -280,8 +297,9 @@ function toPrismaPayload(
 function decodePayload(value: Prisma.JsonValue): ReviewObservationPayload {
   const record = requireRecord(value, "review_observation_payload_invalid");
   if (
-    record.payloadVersion !== 1 ||
-    !Array.isArray(record.normalizedFindings)
+    record.payloadVersion !== 2 ||
+    !Array.isArray(record.normalizedFindings) ||
+    !Array.isArray(record.normalizedLifecycleRevalidations)
   ) {
     throw new Error("review_observation_payload_invalid");
   }
@@ -290,8 +308,10 @@ function decodePayload(value: Prisma.JsonValue): ReviewObservationPayload {
     "review_observation_safe_usage_invalid",
   );
   return {
-    payloadVersion: 1,
+    payloadVersion: 2,
     normalizedFindings: record.normalizedFindings.map(decodeFinding),
+    normalizedLifecycleRevalidations:
+      record.normalizedLifecycleRevalidations.map(decodeRevalidation),
     safeUsage: {
       inputTokens: nullableNumber(usage.inputTokens),
       outputTokens: nullableNumber(usage.outputTokens),
@@ -316,6 +336,38 @@ function decodeFinding(value: Prisma.JsonValue): NormalizedReviewFinding {
     startLine: nullableNumber(record.startLine),
     endLine: nullableNumber(record.endLine),
     placementConfidence: nullableNumber(record.placementConfidence),
+    suggestion: nullableString(record.suggestion),
+  };
+}
+
+function decodeRevalidation(
+  value: Prisma.JsonValue,
+): NormalizedLifecycleRevalidation {
+  const record = requireRecord(
+    value,
+    "review_observation_lifecycle_revalidation_invalid",
+  );
+  if (!Array.isArray(record.evidence)) {
+    throw new Error("review_observation_lifecycle_revalidation_invalid");
+  }
+  return {
+    targetId: requireString(record.targetId),
+    fingerprint: nullableString(record.fingerprint),
+    verdict: decodeRevalidationVerdict(record.verdict),
+    confidence: nullableNumber(record.confidence),
+    evidence: record.evidence.map((item) => {
+      const evidence = requireRecord(
+        item,
+        "review_observation_lifecycle_evidence_invalid",
+      );
+      return {
+        path: requireString(evidence.path),
+        startLine: nullableNumber(evidence.startLine),
+        endLine: nullableNumber(evidence.endLine),
+        reason: requireString(evidence.reason),
+      };
+    }),
+    rationale: nullableString(record.rationale),
   };
 }
 
@@ -347,6 +399,21 @@ function decodeFindingSeverity(
       return value;
     default:
       throw new Error("review_observation_finding_severity_invalid");
+  }
+}
+
+function decodeRevalidationVerdict(
+  value: Prisma.JsonValue | undefined,
+): ReviewLifecycleRevalidationVerdict {
+  switch (value) {
+    case ReviewLifecycleRevalidationVerdict.Resolved:
+    case ReviewLifecycleRevalidationVerdict.StillValid:
+    case ReviewLifecycleRevalidationVerdict.Uncertain:
+      return value;
+    default:
+      throw new Error(
+        "review_observation_lifecycle_revalidation_verdict_invalid",
+      );
   }
 }
 

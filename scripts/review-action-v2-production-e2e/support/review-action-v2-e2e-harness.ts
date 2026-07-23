@@ -401,6 +401,7 @@ export class ReviewActionV2E2EHarness {
     const payload: ReviewObservationPayload = {
       payloadVersion: reviewEvidencePayloadVersion,
       normalizedFindings: [],
+      normalizedLifecycleRevalidations: [],
       safeUsage: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
     };
     const preparedPayload = prepareReviewObservationPayload(payload);
