@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { createApiApp } from "./app.js";
 import {
+  assertReviewIntentRolloutConfiguration,
   composeReviewActionV2ProductionRoutes,
   reviewActionV2CapabilityActiveKeyIdEnv,
   reviewActionV2CapabilityKeysEnv,
@@ -113,6 +114,27 @@ describe("Review Action v2 production composition", () => {
         prisma: inertPrisma(),
       }),
     ).toThrow("review_action_v2_capability_key_invalid");
+  });
+
+  it("fails closed when intent admission is enabled before ingress dispatch is ready", () => {
+    expect(() =>
+      assertReviewIntentRolloutConfiguration({
+        REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED: "1",
+      }),
+    ).toThrow("review_action_v2_intent_admission_without_ingress");
+    expect(() =>
+      assertReviewIntentRolloutConfiguration({
+        REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "1",
+      }),
+    ).toThrow("review_action_v2_intent_ingress_dependencies_unavailable");
+    expect(() =>
+      assertReviewIntentRolloutConfiguration({
+        REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "1",
+        REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY: "1",
+        REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "1",
+        REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED: "1",
+      }),
+    ).not.toThrow();
   });
 });
 

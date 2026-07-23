@@ -75,7 +75,7 @@ export interface CanonicalReviewRevisionResolverPort {
     readonly githubInstallationId: string;
     readonly owner: string;
     readonly repo: string;
-    readonly sourceRunId: string;
+    readonly sourceRunId: string | null;
     readonly pullRequestNumberHint: number | null;
   }): Promise<CanonicalReviewRevisionResolution>;
 }

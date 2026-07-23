@@ -2,6 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { config as loadDotenv } from "dotenv";
 import { App } from "@octokit/app";
 import {
+  reviewRequestIngressEventType,
+  reviewRequestIngressEventVersion,
+} from "@reviewrouter/features-review-executions";
+import {
+  githubReviewRequestIngressEventType,
+  githubReviewRequestIngressEventVersion,
+} from "@reviewrouter/features-github-installations";
+import {
   PrismaActionOidcReplayNonceStore,
   pruneExpiredActionOidcReplayNonces,
 } from "@reviewrouter/features-action-control-plane";
@@ -217,6 +225,14 @@ async function main(): Promise<void> {
 }
 
 const knownOutboxHandlers = [
+  {
+    type: githubReviewRequestIngressEventType,
+    version: githubReviewRequestIngressEventVersion,
+  },
+  {
+    type: reviewRequestIngressEventType,
+    version: reviewRequestIngressEventVersion,
+  },
   {
     type: reviewExecutionFinalizedEventType,
     version: reviewExecutionFinalizedEventVersion,

@@ -31,6 +31,30 @@ describe("review v2 production worker composition", () => {
           verifyUntil: null,
         },
       ]),
+      REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID: "review-run-key-1",
+      REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: JSON.stringify([
+        {
+          keyId: "review-run-key-1",
+          secretBase64: Buffer.alloc(32, 8).toString("base64"),
+          verifyUntil: null,
+        },
+      ]),
+      REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
+        JSON.stringify([
+          {
+            producerReleaseId: "producer-release-1",
+            distributionKind: "public_reusable",
+            actionCommitSha: "a".repeat(40),
+            runtimeCommitSha: "b".repeat(40),
+            wrapperEntrypointDigest: null,
+            runtimeEntrypointDigest: "c".repeat(64),
+            schemaDigest: "d".repeat(64),
+            canonicalizerDigest: "e".repeat(64),
+            capabilityProfile: "exact_revision_v2",
+            protocolLimitsProfileId: "limits-1",
+            operationalSloProfileId: "slo-1",
+          },
+        ]),
     };
     const prisma = {} as ReturnType<typeof createPrismaClient>;
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
@@ -50,7 +74,11 @@ describe("review v2 production worker composition", () => {
     });
 
     expect(feature.enabled).toBe(true);
-    expect(feature.handlers).toHaveLength(1);
+    expect(feature.handlers.map((handler) => handler.type)).toEqual([
+      "review.execution.finalized",
+      "github.pull_request.review_request_ingress",
+      "review.request.ingress",
+    ]);
   });
 
   it("reports the missing enabled-only key explicitly", () => {

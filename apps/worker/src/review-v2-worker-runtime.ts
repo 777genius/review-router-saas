@@ -27,11 +27,24 @@ export type ReviewV2WorkerFeature = {
 };
 
 export type ReviewV2MaintenanceResult = {
+  readonly intentsScanned: number;
+  readonly intentsDispatched: number;
+  readonly intentsRecovered: number;
+  readonly intentDispatchFailures: number;
   readonly recovered: number;
   readonly advanced: number;
   readonly publicationProcessed: number;
   readonly publicationManualRequired: number;
   readonly publicationTerminalUnknown: number;
+};
+
+export type ReviewV2IntentMaintenanceRuntime = {
+  runMaintenance(): Promise<{
+    readonly scanned: number;
+    readonly dispatched: number;
+    readonly recovered: number;
+    readonly failed: number;
+  }>;
 };
 
 export type ReviewV2PublicationMaintenanceRuntime = {
@@ -68,7 +81,9 @@ export function createReviewV2WorkerFeature(input: {
     readonly wakeups: ReviewCompletionWakeupQueryPort;
     readonly ownerIdHash: string;
     readonly dueLimit: number;
+    readonly intents?: ReviewV2IntentMaintenanceRuntime;
     readonly publication?: ReviewV2PublicationMaintenanceRuntime;
+    readonly ingressHandlers?: readonly OutboxHandler[];
   };
 }): ReviewV2WorkerFeature {
   if (input.env[reviewV2WorkerEnabledEnv] !== "1") {
@@ -76,6 +91,10 @@ export function createReviewV2WorkerFeature(input: {
       enabled: false,
       handlers: [],
       runMaintenance: async () => ({
+        intentsScanned: 0,
+        intentsDispatched: 0,
+        intentsRecovered: 0,
+        intentDispatchFailures: 0,
         recovered: 0,
         advanced: 0,
         publicationProcessed: 0,
@@ -83,6 +102,12 @@ export function createReviewV2WorkerFeature(input: {
         publicationTerminalUnknown: 0,
       }),
     };
+  }
+  if (
+    input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED === "1" &&
+    input.env.REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED !== "1"
+  ) {
+    throw new Error("review_v2_ingress_requires_fenced_outbox_takeover");
   }
   if (!input.createEnabledRuntime) {
     throw new Error("review_v2_worker_enabled_composition_missing");
@@ -96,12 +121,14 @@ export function createReviewV2WorkerFeature(input: {
         wakeups: enabled.wakeups,
         ownerIdHash: enabled.ownerIdHash,
       }),
+      ...(enabled.ingressHandlers ?? []),
     ],
     runMaintenance: () =>
       runReviewV2Maintenance({
         runtime: enabled.runtime,
         ownerIdHash: enabled.ownerIdHash,
         dueLimit: enabled.dueLimit,
+        ...(enabled.intents ? { intents: enabled.intents } : {}),
         ...(enabled.publication ? { publication: enabled.publication } : {}),
       }),
   };
@@ -154,6 +181,7 @@ export async function runReviewV2Maintenance(input: {
   readonly runtime: ReviewV2CompletionRuntime;
   readonly ownerIdHash: string;
   readonly dueLimit: number;
+  readonly intents?: ReviewV2IntentMaintenanceRuntime;
   readonly publication?: ReviewV2PublicationMaintenanceRuntime;
 }): Promise<ReviewV2MaintenanceResult> {
   requireOwnerHash(input.ownerIdHash);
@@ -161,6 +189,7 @@ export async function runReviewV2Maintenance(input: {
     throw new Error("review_v2_worker_due_limit_invalid");
   }
   const recovery = await input.runtime.schedulers.recovery.scanNextPage();
+  const intents = await input.intents?.runMaintenance();
   const due = await input.runtime.schedulers.due.execute({
     ownerIdHash: input.ownerIdHash,
     limit: input.dueLimit,
@@ -183,6 +212,10 @@ export async function runReviewV2Maintenance(input: {
       result.status !== AdvanceReviewCompletionProcessStatus.StaleClaim,
   ).length;
   return {
+    intentsScanned: intents?.scanned ?? 0,
+    intentsDispatched: intents?.dispatched ?? 0,
+    intentsRecovered: intents?.recovered ?? 0,
+    intentDispatchFailures: intents?.failed ?? 0,
     recovered: recovery.createdOrRestored,
     advanced,
     publicationProcessed: publication?.processed ?? 0,

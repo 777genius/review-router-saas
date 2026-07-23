@@ -3,7 +3,15 @@ import type {
   OutboxClaimTerm,
   OutboxClaimTransitionResult,
   OutboxEvent,
+  OutboxEventStatus,
 } from "../../domain/outbox-event";
+
+export interface OutboxEventStatusQueryPort {
+  findStatusByIdempotencyKey(idempotencyKey: string): Promise<{
+    readonly id: string;
+    readonly status: OutboxEventStatus;
+  } | null>;
+}
 
 export interface OutboxEventRepositoryPort {
   enqueue(event: NewOutboxEvent): Promise<{ readonly created: boolean }>;

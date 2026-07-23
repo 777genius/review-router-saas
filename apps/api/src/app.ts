@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
 import { registerApiDemoRoutes } from "@reviewrouter/features-api-demo";
@@ -99,6 +99,9 @@ import { PrismaGitHubUserReviewThreadResolver } from "./github/prisma-github-use
 import { PrismaGitHubAppAuthorizationWebhookHandler } from "./github/prisma-github-app-authorization-webhook-handler.js";
 import { PrismaRepositoryWebhookHandler } from "./github/prisma-repository-webhook-handler.js";
 import { PrismaSetupPullRequestMergeHandler } from "./github/prisma-setup-pull-request-merge-handler.js";
+import { ReviewV2PullRequestWebhookHandler } from "./github/review-v2-pull-request-webhook-handler.js";
+import { ReviewV2GitHubRequestIngressOutbox } from "./review-v2-github-request-ingress-outbox.js";
+import { ReviewV2RequestIngressOutbox } from "./review-v2-request-ingress-outbox.js";
 import { FallbackGitLabRepositoryRegistry } from "./gitlab/fallback-gitlab-repository-registry.js";
 import { PrismaGitLabRepositoryRegistry } from "./gitlab/prisma-gitlab-repository-registry.js";
 import { PrismaHealthDependency } from "./prisma-health-dependency.js";
@@ -106,11 +109,15 @@ import {
   registerActionMemoryRoutes,
   type RegisterActionMemoryRoutesDependencies,
 } from "./action-memory-routes.js";
+import { registerReviewV2RequestCommandRoutes } from "./review-v2-request-command-routes.js";
 import {
   composeReviewActionV2RunControlRoutes,
   type ReviewActionV2RunControlHandlerDependencies,
 } from "./review-action-v2-run-control-composition.js";
-import { composeReviewActionV2ProductionRoutes } from "./review-action-v2-production-composition.js";
+import {
+  assertReviewIntentRolloutConfiguration,
+  composeReviewActionV2ProductionRoutes,
+} from "./review-action-v2-production-composition.js";
 import { appRouter } from "./trpc.js";
 
 export type CreateApiAppOptions = {
@@ -193,6 +200,7 @@ export async function createApiApp(
       ? createDefaultGitHubWebhookDependencies({
           webhookSecret: options.githubWebhookSecret,
           prisma,
+          env: reviewActionV2Env,
         })
       : undefined);
 
@@ -506,6 +514,35 @@ export async function createApiApp(
     await registerActionMemoryRoutes(app, actionMemoryDependencies);
   }
 
+  if (actionControlPlaneDependencies && prisma) {
+    const ingressEnabled =
+      reviewActionV2Env.REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED === "1";
+    const repositories = createPrismaReviewRunControlRepositories(prisma);
+    await registerReviewV2RequestCommandRoutes(app, {
+      repositories: actionControlPlaneDependencies.repositories,
+      repositoryIdentities: repositories.repositoryIdentities,
+      sessions: actionControlPlaneDependencies.sessions,
+      ingress: new ReviewV2RequestIngressOutbox(
+        new PrismaOutboxEventRepository(prisma),
+        {
+          async digestUtf8(value) {
+            return createHash("sha256").update(value, "utf8").digest("hex");
+          },
+        },
+      ),
+      ...(actionControlPlaneDependencies.entitlements
+        ? { entitlements: actionControlPlaneDependencies.entitlements }
+        : {}),
+      clock: actionControlPlaneDependencies.clock,
+      retentionMs: readPositiveInteger(
+        reviewActionV2Env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETENTION_MS,
+        30 * 24 * 60 * 60 * 1_000,
+        "review_v2_intent_retention_invalid",
+      ),
+      enabled: ingressEnabled,
+    });
+  }
+
   app.register(fastifyTRPCPlugin, {
     prefix: "/trpc",
     trpcOptions: { router: appRouter },
@@ -527,6 +564,7 @@ export async function createApiApp(
 function createDefaultGitHubWebhookDependencies(input: {
   readonly webhookSecret: string;
   readonly prisma: PrismaClient;
+  readonly env: Readonly<Record<string, string | undefined>>;
 }): RegisterGitHubWebhookRoutesDependencies {
   const conflictReviewFallbackEnabled = isConflictReviewFallbackEnabled();
   const conflictReviewRolloutPolicy = {
@@ -539,6 +577,7 @@ function createDefaultGitHubWebhookDependencies(input: {
     },
   };
   const outbox = new PrismaOutboxEventRepository(input.prisma);
+  const reviewV2IntentHandler = createReviewV2IntentWebhookHandler(input);
   return {
     webhookSecret: input.webhookSecret,
     installations: new PrismaGitHubInstallationRepository(input.prisma),
@@ -548,6 +587,9 @@ function createDefaultGitHubWebhookDependencies(input: {
     appAuthorizations: new PrismaGitHubAppAuthorizationWebhookHandler(
       input.prisma,
     ),
+    ...(reviewV2IntentHandler
+      ? { preAdmissionPullRequests: reviewV2IntentHandler }
+      : {}),
     pullRequests: new CompositePullRequestWebhookHandler([
       new PrismaSetupPullRequestMergeHandler(input.prisma),
       ...(conflictReviewFallbackEnabled
@@ -574,6 +616,37 @@ function createDefaultGitHubWebhookDependencies(input: {
     repositories: new PrismaRepositoryWebhookHandler(input.prisma),
     clock: new SystemClock(),
   };
+}
+
+function createReviewV2IntentWebhookHandler(input: {
+  readonly prisma: PrismaClient;
+  readonly env: Readonly<Record<string, string | undefined>>;
+}): ReviewV2PullRequestWebhookHandler | null {
+  if (input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED !== "1") {
+    return null;
+  }
+  assertReviewIntentRolloutConfiguration(input.env);
+  const ingress = new ReviewV2GitHubRequestIngressOutbox(
+    new PrismaOutboxEventRepository(input.prisma),
+    {
+      async digestUtf8(value) {
+        return createHash("sha256").update(value, "utf8").digest("hex");
+      },
+    },
+  );
+  const draftRepositories = new Set(
+    parseCommaSeparatedEnv(
+      input.env.REVIEW_ROUTER_REVIEW_V2_DRAFT_REPOSITORIES,
+    ).map((value) => value.toLowerCase()),
+  );
+  return new ReviewV2PullRequestWebhookHandler({
+    ingress,
+    clock: new SystemClock(),
+    policy: {
+      reviewDrafts: (repositoryFullName) =>
+        draftRepositories.has(repositoryFullName.toLowerCase()),
+    },
+  });
 }
 
 function definedOption<const Key extends string>(
@@ -614,6 +687,19 @@ function parseCommaSeparatedEnv(value: string | undefined): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+function readPositiveInteger(
+  value: string | undefined,
+  fallback: number,
+  errorCode: string,
+): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(errorCode);
+  }
+  return parsed;
 }
 
 function createDefaultGitLabIntegrationDependencies(input: {

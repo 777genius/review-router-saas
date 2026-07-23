@@ -1,5 +1,6 @@
 export * from "./domain/github-installation";
 export * from "./domain/github-webhook";
+export * from "./domain/github-review-request-ingress";
 export * from "./domain/github-webhook-normalization";
 export * from "./application/ports/github-installation-repository-port";
 export * from "./application/ports/installation-workspace-owner-grant-port";

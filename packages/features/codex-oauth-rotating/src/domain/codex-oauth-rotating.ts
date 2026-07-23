@@ -442,7 +442,6 @@ export function renderCodexRotatingAdvisoryWorkflow(
           providerInstanceId: options.providerInstanceId,
           workflowSchemaVersion: schemaVersion,
           reviewJobTimeout,
-          concurrencyGroup,
           claudeCodeOAuthTokenSecret:
             options.claudeCodeOAuthTokenSecret === true,
           openRouterApiKeySecret: options.openRouterApiKeySecret === true,
@@ -471,10 +470,29 @@ export function renderCodexRotatingAdvisoryWorkflow(
           review-timeout-minutes: ${reviewActionTimeout}
           auth-json: \${{ secrets.${codexRotatingSecretName} }}
 ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\n" : ""}${options.openRouterApiKeySecret === true ? "          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}\n" : ""}`;
-  return `name: ReviewRouter Codex OAuth
-
-on:
-  pull_request:
+  const triggers =
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0
+      ? `  workflow_dispatch:
+    inputs:
+      review_request_id:
+        description: Durable ReviewRouter request identity
+        required: false
+        type: string
+      pr_number:
+        description: Pull request number selected by ReviewRouter
+        required: false
+        type: string
+      review_head_sha:
+        description: Expected pull request head selected by ReviewRouter
+        required: false
+        type: string${
+          refreshScheduleCron
+            ? `
+  schedule:
+    - cron: ${JSON.stringify(refreshScheduleCron)}`
+            : ""
+        }`
+      : `  pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]${
@@ -484,7 +502,17 @@ on:
   schedule:
     - cron: ${JSON.stringify(refreshScheduleCron)}`
         : ""
-    }
+    }`;
+  const runName =
+    reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0
+      ? `run-name: \${{ inputs.review_request_id != '' && format('ReviewRouter review {0}', inputs.review_request_id) || 'ReviewRouter Codex OAuth maintenance' }}
+
+`
+      : "";
+  return `name: ReviewRouter Codex OAuth
+
+${runName}on:
+${triggers}
 
 permissions: {}
 
@@ -569,7 +597,7 @@ ${options.claudeCodeOAuthTokenSecret === true ? "          claude-code-oauth-tok
     concurrency:
       group: ${concurrencyGroup}
       cancel-in-progress: false
-    if: \${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: \${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && ${reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 ? "inputs.review_request_id == ''" : "true"}) }}
     permissions:
       id-token: write
     steps:
@@ -593,7 +621,6 @@ function renderCodexRotatingT0ReviewJob(input: {
   readonly providerInstanceId: string;
   readonly workflowSchemaVersion: number;
   readonly reviewJobTimeout: string;
-  readonly concurrencyGroup: string;
   readonly claudeCodeOAuthTokenSecret: boolean;
   readonly openRouterApiKeySecret: boolean;
 }): string {
@@ -601,10 +628,7 @@ function renderCodexRotatingT0ReviewJob(input: {
   const reusableWorkflowRef = `${release.repository}/.github/workflows/reviewrouter-reusable.yml@${release.commitSha}`;
   return `  codex-review:
     name: codex-review
-    concurrency:
-      group: ${input.concurrencyGroup}
-      cancel-in-progress: false
-    if: \${{ ((github.event_name == 'pull_request' && github.event.pull_request.draft == false) || (github.event_name == 'pull_request_target' && github.event.pull_request.draft == true && vars.${codexRotatingReviewDraftsVariableName} == 'true')) && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.type != 'Bot' }}
+    if: \${{ github.event_name == 'workflow_dispatch' && inputs.review_request_id != '' && inputs.pr_number != '' && inputs.review_head_sha != '' }}
     permissions:
       contents: read
       pull-requests: read
@@ -615,6 +639,8 @@ function renderCodexRotatingT0ReviewJob(input: {
       api_url: ${JSON.stringify(input.apiUrl)}
       runtime_config_mode: oidc
       review_action_v2_mode: t0
+      pr_number: \${{ inputs.pr_number }}
+      review_head_sha: \${{ inputs.review_head_sha }}
       provider_instance_id: ${JSON.stringify(input.providerInstanceId)}
       workflow_schema_version: ${input.workflowSchemaVersion}
       review_drafts: \${{ vars.${codexRotatingReviewDraftsVariableName} == 'true' }}
@@ -1093,16 +1119,26 @@ function scanCodexRotatingT0AdvisoryWorkflow(
   if (source.mode !== CodexRotatingReviewActionV2Mode.T0) {
     errors.push("review_action_v2_t0_mode_required");
   }
-  if (
-    !workflowJobUsesExpectedConcurrency({
-      job: reviewJob,
-      expectedGroup: expectedConcurrencyGroup,
-    })
-  ) {
-    errors.push("review_job_provider_concurrency_required");
+  if (/^ {4}concurrency:/m.test(reviewJob)) {
+    errors.push("t0_review_github_concurrency_forbidden");
   }
-  if (!reviewJob.includes("github.event.pull_request.draft == false")) {
-    errors.push("review_job_draft_guard_required");
+  if (
+    !reviewJob.includes("github.event_name == 'workflow_dispatch'") ||
+    !reviewJob.includes("inputs.review_request_id != ''") ||
+    !reviewJob.includes("inputs.pr_number != ''") ||
+    !reviewJob.includes("inputs.review_head_sha != ''") ||
+    !reviewJob.includes("pr_number: ${{ inputs.pr_number }}") ||
+    !reviewJob.includes("review_head_sha: ${{ inputs.review_head_sha }}")
+  ) {
+    errors.push("t0_review_durable_dispatch_required");
+  }
+  if (
+    !workflow.includes("review_request_id:") ||
+    !workflow.includes("review_head_sha:") ||
+    !workflow.includes("run-name: ${{ inputs.review_request_id") ||
+    /^ {2}pull_request(?:_target)?:/m.test(workflow)
+  ) {
+    errors.push("t0_workflow_dispatch_ingress_required");
   }
   if (
     !reviewJob.includes(

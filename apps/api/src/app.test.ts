@@ -1535,6 +1535,64 @@ describe("API app", () => {
     ]);
   });
 
+  it("persists pre-admission intent before claiming the generic webhook delivery", async () => {
+    const deliveries = new InMemoryDeliveries();
+    const pullRequests = new CapturingPullRequestWebhookHandler();
+    const secret = "webhook-secret";
+    const app = await createApiApp({
+      githubWebhookDependencies: {
+        webhookSecret: secret,
+        installations: new InMemoryInstallations(),
+        deliveries,
+        preAdmissionPullRequests: {
+          async handleGitHubPullRequestWebhook() {
+            throw new Error("pre_admission_unavailable");
+          },
+        },
+        pullRequests,
+        clock: fixedClock,
+      },
+    });
+    const payload = JSON.stringify({
+      action: "synchronize",
+      installation: { id: 129154876 },
+      repository: {
+        id: 123456,
+        name: "example",
+        full_name: "777genius/example",
+      },
+      pull_request: {
+        number: 7,
+        html_url: "https://github.com/777genius/example/pull/7",
+        state: "open",
+        merged: false,
+        draft: false,
+        base: { ref: "main", sha: "a".repeat(40) },
+        head: {
+          ref: "feature",
+          sha: "b".repeat(40),
+          repo: { full_name: "777genius/example" },
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-pre-admission-order",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signGitHubWebhookPayload(payload, secret),
+      },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(deliveries.deliveries.size).toBe(0);
+    expect(pullRequests.envelopes).toHaveLength(0);
+  });
+
   it("handles signed GitHub repository metadata webhooks", async () => {
     const repositories = new CapturingRepositoryWebhookHandler();
     const secret = "webhook-secret";

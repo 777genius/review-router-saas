@@ -438,6 +438,9 @@ export function decideLeaseAcquire(
   if (!slot) {
     return { status: LeaseAcquireDecisionStatus.MissingSlot };
   }
+  if (slot.providerVoteIdentityHash !== input.providerVoteIdentityHash) {
+    throw new Error("review_execution_provider_lane_identity_mismatch");
+  }
   if (
     slot.state === ReviewWorkSlotState.Satisfied ||
     slot.state === ReviewWorkSlotState.Cancelled ||
@@ -1311,6 +1314,15 @@ function expireLeaseDecision(input: {
         : input.lease,
     execution: clearLeaseFromExecution(input.execution, input.lease, input.now),
   };
+}
+
+export function decideLeaseExpiry(input: {
+  readonly lease: ReviewInvocationLease;
+  readonly execution: ReviewExecution | null;
+  readonly now: Date;
+}): LeaseTransitionDecision {
+  assertDate(input.now, "lease_expiry_now");
+  return expireLeaseDecision(input);
 }
 
 function unchangedLease(

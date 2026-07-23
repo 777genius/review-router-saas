@@ -1,10 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+import { PrismaActionControlPlaneRepository } from "@reviewrouter/features-action-control-plane";
 import {
   ReviewCoverageState,
+  DispatchDueReviewRequestedIntents,
+  RecoverReviewRequestedDispatches,
+  ReviewRequestedIntentService,
   type ReviewExecutionQueryPort,
 } from "@reviewrouter/features-review-executions";
-import { PrismaReviewExecutionStore } from "@reviewrouter/features-review-executions/composition";
+import type { OutboxHandler } from "@reviewrouter/features-outbox";
+import {
+  PrismaReviewExecutionStore,
+  PrismaReviewRequestedIntentStore,
+} from "@reviewrouter/features-review-executions/composition";
 import {
   ReviewCompletionSchedulerMode,
   PrismaReviewCompletionProcessRepository,
@@ -47,6 +55,8 @@ import {
   PrismaReviewMutationAuthorityRepository,
   PrismaReviewRunAuthorizationRepository,
   PrismaReviewSafetyControlRepository,
+  PrismaScmRepositoryIdentityRepository,
+  composeProductionReviewRunAuthorizationPrerequisites,
 } from "@reviewrouter/features-review-run-control/composition";
 import {
   SnapshotEffectivePublicationOutcome,
@@ -98,6 +108,13 @@ import {
   type ReviewV2CompletionRuntime,
   type ReviewV2PublicationMaintenanceRuntime,
 } from "./review-v2-worker-runtime";
+import { GitHubActionsReviewRequestedDispatchGateway } from "./review-v2-intent-dispatcher";
+import { GitHubReviewRequestEligibilityGateway } from "./review-v2-request-eligibility-gateway";
+import { createGitHubReviewRequestIngressHandler } from "./review-v2-github-request-ingress-handler";
+import {
+  ReviewRequestIngressApplicationService,
+  createReviewRequestIngressHandler,
+} from "./review-v2-request-ingress-handler";
 
 type PrismaClient = ReturnType<typeof createPrismaClient>;
 
@@ -111,7 +128,16 @@ export type ProductionReviewV2WorkerRuntime = {
   readonly wakeups: ReviewCompletionExecutionContextAdapter;
   readonly ownerIdHash: string;
   readonly dueLimit: number;
+  readonly intents: {
+    runMaintenance(): Promise<{
+      readonly scanned: number;
+      readonly dispatched: number;
+      readonly recovered: number;
+      readonly failed: number;
+    }>;
+  };
   readonly publication: ReviewV2PublicationMaintenanceRuntime;
+  readonly ingressHandlers: readonly OutboxHandler[];
 };
 
 export function createProductionReviewV2WorkerRuntime(input: {
@@ -256,6 +282,109 @@ export function createProductionReviewV2WorkerRuntime(input: {
   const ownerIdHash = createReviewV2WorkerOwnerId(
     `${hostname()}:${process.pid}:${randomUUID()}`,
   );
+  const requestedIntents = new PrismaReviewRequestedIntentStore(input.prisma);
+  const intentService = new ReviewRequestedIntentService(
+    requestedIntents,
+    requestedIntents,
+  );
+  const intentPrerequisites =
+    composeProductionReviewRunAuthorizationPrerequisites({
+      githubAppId: input.githubAppId,
+      githubAppPrivateKey: input.githubPrivateKey,
+      env: input.env,
+      releases,
+      digest: { digestUtf8: async (value) => sha256(value) },
+    });
+  const draftRepositories = new Set(
+    (input.env.REVIEW_ROUTER_REVIEW_V2_DRAFT_REPOSITORIES ?? "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const ingressApplicationDependencies = {
+    intents: intentService,
+    revisions: intentPrerequisites.revisionResolver,
+    eligibility: new GitHubReviewRequestEligibilityGateway({
+      appId: input.githubAppId,
+      privateKey: input.githubPrivateKey,
+    }),
+    digest: { digestUtf8: async (value: string) => sha256(value) },
+    clock: input.clock,
+    reviewDrafts: (repositoryFullName: string) =>
+      draftRepositories.has(repositoryFullName.toLowerCase()),
+  } as const;
+  const ingressApplication = new ReviewRequestIngressApplicationService(
+    ingressApplicationDependencies,
+  );
+  const ingressHandlers = [
+    createGitHubReviewRequestIngressHandler({
+      repositories: new PrismaActionControlPlaneRepository(input.prisma),
+      identities: new PrismaScmRepositoryIdentityRepository(input.prisma),
+      application: ingressApplication,
+      readyQuietPeriodMs: positiveInteger(
+        input.env.REVIEW_ROUTER_REVIEW_V2_READY_QUIET_PERIOD_MS,
+        15_000,
+        "review_v2_ready_quiet_period_invalid",
+      ),
+      draftQuietPeriodMs: positiveInteger(
+        input.env.REVIEW_ROUTER_REVIEW_V2_DRAFT_QUIET_PERIOD_MS,
+        45_000,
+        "review_v2_draft_quiet_period_invalid",
+      ),
+      retentionMs: positiveInteger(
+        input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETENTION_MS,
+        2_592_000_000,
+        "review_v2_intent_retention_invalid",
+      ),
+    }),
+    createReviewRequestIngressHandler(ingressApplicationDependencies),
+  ] as const;
+  const intentGateway = new GitHubActionsReviewRequestedDispatchGateway(
+    input.prisma,
+    { appId: input.githubAppId, privateKey: input.githubPrivateKey },
+    input.env.REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PATH?.trim() ||
+      ".github/workflows/reviewrouter-codex.yml",
+  );
+  const intentDispatcher = new DispatchDueReviewRequestedIntents(
+    requestedIntents,
+    requestedIntents,
+    intentGateway,
+    input.clock,
+    { nextClaimId: () => `review-request-dispatch-${randomUUID()}` },
+    positiveInteger(
+      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_CLAIM_MS,
+      60_000,
+      "review_v2_intent_claim_ms_invalid",
+    ),
+  );
+  const intentRecovery = new RecoverReviewRequestedDispatches(
+    requestedIntents,
+    requestedIntents,
+    intentGateway,
+    input.clock,
+    { nextRequestId: () => `review-request-${randomUUID()}` },
+    { digestUtf8: async (value) => sha256(value) },
+    positiveInteger(
+      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_AUTHORIZATION_TIMEOUT_MS,
+      300_000,
+      "review_v2_intent_authorization_timeout_ms_invalid",
+    ),
+    positiveInteger(
+      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETRY_MS,
+      30_000,
+      "review_v2_intent_retry_ms_invalid",
+    ),
+    positiveInteger(
+      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETENTION_MS,
+      2_592_000_000,
+      "review_v2_intent_retention_ms_invalid",
+    ),
+    positiveInteger(
+      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_MAX_DISPATCH_ATTEMPTS,
+      3,
+      "review_v2_intent_max_dispatch_attempts_invalid",
+    ),
+  );
   const publicationExecutor = new ExecuteReviewV2PublicationOperation(
     {
       attempts,
@@ -324,7 +453,28 @@ export function createProductionReviewV2WorkerRuntime(input: {
       25,
       "review_v2_due_limit_invalid",
     ),
+    intents: {
+      runMaintenance: async () => {
+        const limit = positiveInteger(
+          input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_BATCH_SIZE,
+          10,
+          "review_v2_intent_batch_size_invalid",
+        );
+        const recovery = await intentRecovery.execute({ limit });
+        const dispatch = await intentDispatcher.execute({
+          ownerIdHash,
+          limit,
+        });
+        return {
+          scanned: recovery.scanned + dispatch.scanned,
+          dispatched: dispatch.dispatched,
+          recovered: recovery.recovered,
+          failed: recovery.failed + dispatch.failed,
+        };
+      },
+    },
     publication,
+    ingressHandlers,
   };
 }
 

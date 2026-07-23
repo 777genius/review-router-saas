@@ -378,6 +378,37 @@ enter `v1_draining`, wait the release-bound drain window, prove no legacy/static
 writer, then activate the new mutation epoch as the final command. Failure after
 activation pauses v2 and reconciles effects; it never reopens v1. See
 [ADR-028](../decisions/028-revision-aware-review-evidence.md).
+
+### Durable T0 request ingress cutover
+
+Use this order. Do not combine the steps into one blind configuration update:
+
+1. Apply migration `000033_review_request_dispatch_lanes` while all new writers
+   remain disabled. Its preflight must find no duplicate/expired active provider
+   lane and no duplicate pending/source-run intent identity.
+2. Deploy the API, worker, and exact public Action commit with intent ingress and
+   admission requirement disabled.
+3. Install the generated T0 workflow pinned to that full Action SHA. Verify it has
+   `workflow_dispatch`, `review_request_id`, `pr_number`, `review_head_sha`, the
+   deterministic run name, and exact-head checkout.
+4. Register the immutable producer release/attestation and verify provider vote
+   lane, signing key, GitHub App Actions permission, and workflow dispatch path.
+5. Enable `REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED=1`, then
+   `REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED=1`, and prove the worker handles
+   both external and internal ingress event versions.
+6. Set `REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY=1` only after a disposable
+   repository dispatch returns a run ID and exact head.
+7. Enable `REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED=1`. The API must refuse
+   startup unless steps 5 and 6 are already true.
+8. After persisted intents dispatch and bind to OIDC runs correctly, enable
+   `REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED=1` for the cohort.
+
+Rollback before step 8 disables ingress first and drains persisted intents through
+the still-enabled worker. After intent-required admission or v2 mutation authority
+is active, pause the cohort and reconcile state; never route those runs back to an
+unfenced legacy writer. A dead-lettered ingress event requires explicit recovery,
+not replay through the same webhook idempotency key.
+
 Critical flags:
 
 ```text
@@ -388,6 +419,11 @@ REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS
 REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK
+REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED
+REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED
+REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY
+REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED
+REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED
 ```
 
 Flags must fail closed for security-sensitive features.

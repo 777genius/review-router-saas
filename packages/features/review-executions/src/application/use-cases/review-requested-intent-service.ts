@@ -1,4 +1,5 @@
 import type {
+  CancelReviewRequestedPreAdmissionCommand,
   ClaimReviewRequestedIntentCommand,
   LinkReviewRequestedAdmissionCommand,
   RecordReviewRequestedDispatchCommand,
@@ -27,6 +28,10 @@ export class ReviewRequestedIntentService {
 
   linkAdmission(command: LinkReviewRequestedAdmissionCommand) {
     return this.commands.linkAdmission(command);
+  }
+
+  cancelPreAdmission(command: CancelReviewRequestedPreAdmissionCommand) {
+    return this.commands.cancelPreAdmission(command);
   }
 
   listDue(now: Date, limit: number) {

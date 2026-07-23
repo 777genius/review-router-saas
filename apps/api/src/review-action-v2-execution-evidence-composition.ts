@@ -1892,8 +1892,10 @@ function mapStart(
     case StartReviewExecutionStatus.StaleRevision:
       return ReviewExecutionStartResultStatus.StaleRevision;
     case StartReviewExecutionStatus.AuthorizationRejected:
+    case StartReviewExecutionStatus.RequestIntentMissing:
       return ReviewExecutionStartResultStatus.AuthorizationRejected;
     case StartReviewExecutionStatus.IdempotencyConflict:
+    case StartReviewExecutionStatus.RequestIntentConflict:
       return ReviewExecutionStartResultStatus.IdempotencyConflict;
     case StartReviewExecutionStatus.ConcurrencyConflict:
       return ReviewExecutionStartResultStatus.ConcurrencyConflict;

@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   CurrentReviewRevisionStatus,
+  DispatchDueReviewRequestedIntents,
+  RecoverReviewRequestedDispatches,
   PublicationPermitValidationStatus,
   ReviewCoverageState,
   ReviewExecutionAdmissionStatus,
@@ -19,6 +21,7 @@ import {
   ReviewObservationAttachmentStatus,
   ReviewRequestedClaimStatus,
   ReviewRequestedClaimDecisionStatus,
+  ReviewRequestedDispatchRunStatus,
   ReviewRequestedIntentState,
   ReviewRequestedRegisterStatus,
   ReviewRequestedTransitionStatus,
@@ -123,7 +126,7 @@ describe("review execution domain", () => {
       candidate: first,
       existingByDelivery: null,
       existingByRequestId: null,
-      pendingInScope: null,
+      preAdmissionInScope: null,
     });
     expect(pending.status).toBe(
       ReviewRequestedRegistrationDecisionStatus.Register,
@@ -135,7 +138,7 @@ describe("review execution domain", () => {
       candidate: intentCandidate("request-2", "2", scope, nextRevision),
       existingByDelivery: null,
       existingByRequestId: null,
-      pendingInScope: pending.intent,
+      preAdmissionInScope: pending.intent,
     });
     expect(next.status).toBe(
       ReviewRequestedRegistrationDecisionStatus.RegisterAndSupersede,
@@ -152,6 +155,89 @@ describe("review execution domain", () => {
     expect(pending.intent.state).toBe(
       ReviewRequestedIntentState.PendingDispatch,
     );
+  });
+
+  it("keeps a newer same-scope request pending when an older ingress arrives late", async () => {
+    const intents = new InMemoryReviewRequestedIntentStore();
+    const newerCreatedAt = plus(10_000);
+    const newer = {
+      ...intentCandidate(
+        "request-newer-manual",
+        "81",
+        scope,
+        revision,
+        newerCreatedAt,
+      ),
+      triggerKind: ReviewRequestedTriggerKind.ManualCommand,
+      createdAt: newerCreatedAt,
+      retainUntil: plus(3_610_000),
+    };
+    await intents.registerIntent({ candidate: newer });
+
+    const older = intentCandidate(
+      "request-older-webhook",
+      "82",
+      scope,
+      revision,
+    );
+    const registered = await intents.registerIntent({ candidate: older });
+
+    expect(registered).toMatchObject({
+      status: ReviewRequestedRegisterStatus.Registered,
+      intent: {
+        requestId: older.requestId,
+        state: ReviewRequestedIntentState.Superseded,
+        supersededByRequestId: newer.requestId,
+      },
+    });
+    await expect(intents.findPendingByScope(scope)).resolves.toMatchObject({
+      requestId: newer.requestId,
+      state: ReviewRequestedIntentState.PendingDispatch,
+    });
+  });
+
+  it("reclaims an expired dispatch claim without losing the durable request", async () => {
+    const intents = new InMemoryReviewRequestedIntentStore();
+    await intents.registerIntent({
+      candidate: intentCandidate("request-dispatch", "31", scope, revision),
+    });
+    let now = baseTime;
+    let dispatchCalls = 0;
+    const dispatcher = new DispatchDueReviewRequestedIntents(
+      intents,
+      intents,
+      {
+        async dispatch() {
+          dispatchCalls += 1;
+          if (dispatchCalls === 1) throw new Error("provider_unavailable");
+          return { sourceRunId: "12345", sourceRunAttempt: "1" };
+        },
+        async inspect() {
+          return { status: ReviewRequestedDispatchRunStatus.Pending };
+        },
+      },
+      { now: () => now },
+      { nextClaimId: () => `claim-${dispatchCalls + 1}` },
+      1_000,
+    );
+
+    const failed = await dispatcher.execute({
+      ownerIdHash: hash("d"),
+      limit: 10,
+    });
+    expect(failed).toMatchObject({ claimed: 1, dispatched: 0, failed: 1 });
+
+    now = new Date(baseTime.getTime() + 1_001);
+    const recovered = await dispatcher.execute({
+      ownerIdHash: hash("d"),
+      limit: 10,
+    });
+    expect(recovered).toMatchObject({ claimed: 1, dispatched: 1, failed: 0 });
+    expect(await intents.findByRequestId("request-dispatch")).toMatchObject({
+      state: ReviewRequestedIntentState.AwaitingAuthorization,
+      sourceRunId: "12345",
+      sourceRunAttempt: "1",
+    });
   });
 
   it("makes preparation replay and expired claim takeover explicit domain outcomes", () => {
@@ -177,7 +263,7 @@ describe("review execution domain", () => {
       candidate: intentCandidate("request-1", "1", scope, revision),
       existingByDelivery: null,
       existingByRequestId: null,
-      pendingInScope: null,
+      preAdmissionInScope: null,
     });
     if (
       registered.status !== ReviewRequestedRegistrationDecisionStatus.Register
@@ -215,6 +301,65 @@ describe("review execution domain", () => {
 });
 
 describe("start and admission saga", () => {
+  it("rejects a missing required intent before creating a planned execution", async () => {
+    const executions = new InMemoryReviewExecutionStore();
+    const intents = new InMemoryReviewRequestedIntentStore();
+    const facts = authorizationFactsFixture(revision);
+    const useCase = startUseCaseWithPorts(executions, {
+      authorizationFind: async () => facts,
+      revisions: [revision],
+      requestedIntentAdmission: {
+        queries: intents,
+        commands: intents,
+        required: true,
+      },
+    });
+
+    expect(await useCase.execute(startInput("execution-1"))).toEqual({
+      status: StartReviewExecutionStatus.RequestIntentMissing,
+    });
+    expect(await executions.findStream(scope)).toBeNull();
+  });
+
+  it("links the exact durable intent only after execution admission", async () => {
+    const executions = new InMemoryReviewExecutionStore();
+    const intents = new InMemoryReviewRequestedIntentStore();
+    await intents.registerIntent({
+      candidate: intentCandidate("request-start", "71", scope, revision),
+    });
+    const claim = await intents.claimIntent(
+      claimIntent("request-start", "claim-start", "owner-start"),
+    );
+    await intents.recordDispatch({
+      requestId: "request-start",
+      claimId: "claim-start",
+      ownerIdHash: "owner-start",
+      fencingToken: claim.intent!.claim!.fencingToken,
+      sourceRunId: "run-1",
+      sourceRunAttempt: "1",
+      now: plus(1),
+    });
+    const facts = authorizationFactsFixture(revision);
+    const useCase = startUseCaseWithPorts(executions, {
+      authorizationFind: async () => facts,
+      revisions: [revision, revision],
+      requestedIntentAdmission: {
+        queries: intents,
+        commands: intents,
+        required: true,
+      },
+    });
+
+    expect((await useCase.execute(startInput("execution-1"))).status).toBe(
+      StartReviewExecutionStatus.Admitted,
+    );
+    expect(await intents.findByRequestId("request-start")).toMatchObject({
+      state: ReviewRequestedIntentState.Dispatched,
+      authorizationId: "authorization-1",
+      executionId: "execution-1",
+    });
+  });
+
   it("fails closed when authorization expires during the revision precheck", async () => {
     const store = new InMemoryReviewExecutionStore();
     const facts = authorizationFactsFixture(revision);
@@ -521,6 +666,18 @@ describe("work slots and fenced invocation leases", () => {
     expect(lease.status).toBe(ReviewInvocationLeaseAcquireStatus.NotRunnable);
   });
 
+  it("rejects a provider lane identity that does not match the work slot", async () => {
+    const store = new InMemoryReviewExecutionStore();
+    await prepareAndAdmit(store);
+
+    await expect(
+      store.acquireLease({
+        ...leaseCommand(),
+        providerVoteIdentityHash: hash("8"),
+      }),
+    ).rejects.toThrow("review_execution_provider_lane_identity_mismatch");
+  });
+
   it("restores a lost acquire response without consuming budget or a new fence", async () => {
     const store = new InMemoryReviewExecutionStore();
     await prepareAndAdmit(store);
@@ -575,6 +732,67 @@ describe("work slots and fenced invocation leases", () => {
     expect(
       (await store.findExecution("execution-1"))?.activeLeases,
     ).toHaveLength(1);
+  });
+
+  it("serializes one provider identity across different pull requests", async () => {
+    const store = new InMemoryReviewExecutionStore();
+    await prepareAndAdmit(store);
+    await prepareAndAdmit(store, "execution-2", "8", revision, 1, otherScope);
+    const first = await store.acquireLease(leaseCommand());
+    const second = await store.acquireLease(
+      leaseCommand({
+        scope: otherScope,
+        expectedExecutionId: "execution-2",
+        leaseId: "lease-2",
+        attemptId: "attempt-2",
+        requestSeed: "8",
+        ownerIdHash: "owner-2",
+        capabilityId: "capability-2",
+      }),
+    );
+
+    expect(first.status).toBe(ReviewInvocationLeaseAcquireStatus.Acquired);
+    expect(second.status).toBe(ReviewInvocationLeaseAcquireStatus.Busy);
+    expect(
+      (await store.findExecution("execution-2"))?.execution.workSlots[0],
+    ).toMatchObject({
+      state: ReviewWorkSlotState.Pending,
+      nextAttemptOrdinal: 1,
+    });
+  });
+
+  it("returns not-runnable before reporting a busy provider lane", async () => {
+    const store = new InMemoryReviewExecutionStore();
+    await prepareAndAdmit(store);
+    const other = await prepareAndAdmit(
+      store,
+      "execution-2",
+      "8",
+      revision,
+      1,
+      otherScope,
+    );
+    await store.acquireLease(leaseCommand());
+    await store.supersedeExecution({
+      scope: otherScope,
+      executionId: "execution-2",
+      expectedStreamVersion: other.stream.version,
+      observedCurrentRevision: nextRevision,
+      now: plus(2),
+    });
+
+    const result = await store.acquireLease(
+      leaseCommand({
+        scope: otherScope,
+        expectedExecutionId: "execution-2",
+        leaseId: "lease-2",
+        attemptId: "attempt-2",
+        requestSeed: "8",
+        ownerIdHash: "owner-2",
+        capabilityId: "capability-2",
+      }),
+    );
+    expect(result.status).toBe(ReviewInvocationLeaseAcquireStatus.NotRunnable);
   });
 
   it("reassigns an expired lease with a new bigint fence and rejects the old owner", async () => {
@@ -1079,6 +1297,37 @@ describe("durable ReviewRequested ingress", () => {
     );
   });
 
+  it("supersedes stale pre-admission work when a newer revision arrives", async () => {
+    const store = new InMemoryReviewRequestedIntentStore();
+    await store.registerIntent({
+      candidate: intentCandidate("request-old", "81", scope, revision),
+    });
+    const claim = await store.claimIntent(
+      claimIntent("request-old", "claim-old", "owner-old"),
+    );
+    await store.recordDispatch({
+      requestId: "request-old",
+      claimId: "claim-old",
+      ownerIdHash: "owner-old",
+      fencingToken: claim.intent!.claim!.fencingToken,
+      sourceRunId: "8001",
+      sourceRunAttempt: "1",
+      now: plus(1),
+    });
+
+    await store.registerIntent({
+      candidate: intentCandidate("request-new", "82", scope, nextRevision),
+    });
+
+    expect(await store.findByRequestId("request-old")).toMatchObject({
+      state: ReviewRequestedIntentState.Superseded,
+      supersededByRequestId: "request-new",
+    });
+    expect((await store.findPendingByScope(scope))?.requestId).toBe(
+      "request-new",
+    );
+  });
+
   it("restores a lost claim, fences takeover, and rejects the stale dispatcher acknowledgement", async () => {
     const tokens = new MonotonicBigIntFencingTokenSource(500n);
     const store = new InMemoryReviewRequestedIntentStore(tokens);
@@ -1162,6 +1411,118 @@ describe("durable ReviewRequested ingress", () => {
     expect(conflict.status).toBe(ReviewRequestedTransitionStatus.Conflict);
   });
 
+  it("replaces a terminal pre-admission run with a fresh request identity", async () => {
+    const store = new InMemoryReviewRequestedIntentStore();
+    await store.registerIntent({
+      candidate: intentCandidate("request-old", "61", scope, revision),
+    });
+    const claimed = await store.claimIntent(
+      claimIntent("request-old", "claim-old", "owner-old"),
+    );
+    await store.recordDispatch({
+      requestId: "request-old",
+      claimId: "claim-old",
+      ownerIdHash: "owner-old",
+      fencingToken: claimed.intent!.claim!.fencingToken,
+      sourceRunId: "9001",
+      sourceRunAttempt: "1",
+      now: plus(1_000),
+    });
+    const recovery = new RecoverReviewRequestedDispatches(
+      store,
+      store,
+      {
+        async dispatch() {
+          throw new Error("not_used");
+        },
+        async inspect() {
+          return {
+            status: ReviewRequestedDispatchRunStatus.TerminalCurrentRevision,
+          };
+        },
+      },
+      { now: () => plus(10_000) },
+      { nextRequestId: () => "request-retry" },
+      {
+        digestUtf8: async (value) =>
+          createHash("sha256").update(value).digest("hex"),
+      },
+      5_000,
+      2_000,
+      86_400_000,
+    );
+
+    expect(await recovery.execute({ limit: 10 })).toEqual({
+      scanned: 1,
+      pending: 0,
+      recovered: 1,
+      failed: 0,
+    });
+    expect(await store.findByRequestId("request-old")).toMatchObject({
+      state: ReviewRequestedIntentState.Superseded,
+      supersededByRequestId: "request-retry",
+      sourceRunId: "9001",
+    });
+    expect(await store.findPendingByScope(scope)).toMatchObject({
+      requestId: "request-retry",
+      state: ReviewRequestedIntentState.PendingDispatch,
+      sourceRunId: null,
+    });
+  });
+
+  it("terminalizes a stale-revision run without dispatching the old SHA again", async () => {
+    const store = new InMemoryReviewRequestedIntentStore();
+    await store.registerIntent({
+      candidate: intentCandidate("request-stale", "91", scope, revision),
+    });
+    const claimed = await store.claimIntent(
+      claimIntent("request-stale", "claim-stale", "owner-stale"),
+    );
+    await store.recordDispatch({
+      requestId: "request-stale",
+      claimId: "claim-stale",
+      ownerIdHash: "owner-stale",
+      fencingToken: claimed.intent!.claim!.fencingToken,
+      sourceRunId: "9002",
+      sourceRunAttempt: "1",
+      now: plus(1_000),
+    });
+    const recovery = new RecoverReviewRequestedDispatches(
+      store,
+      store,
+      {
+        async dispatch() {
+          throw new Error("not_used");
+        },
+        async inspect() {
+          return {
+            status: ReviewRequestedDispatchRunStatus.TerminalStaleRevision,
+          };
+        },
+      },
+      { now: () => plus(10_000) },
+      { nextRequestId: () => "must-not-be-used" },
+      {
+        digestUtf8: async () => {
+          throw new Error("must_not_hash_retry");
+        },
+      },
+      5_000,
+      2_000,
+      86_400_000,
+    );
+
+    expect(await recovery.execute({ limit: 10 })).toMatchObject({
+      recovered: 1,
+      failed: 0,
+    });
+    expect(await store.findByRequestId("request-stale")).toMatchObject({
+      state: ReviewRequestedIntentState.Superseded,
+      supersededByRequestId: null,
+    });
+    expect(await store.findPendingByScope(scope)).toBeNull();
+  });
+
   it("orders and bounds due intents", async () => {
     const store = new InMemoryReviewRequestedIntentStore();
     await store.registerIntent({
@@ -1201,11 +1562,12 @@ function prepareCommand(
     readonly revision?: ReviewRevision;
     readonly now?: Date;
     readonly attemptBudget?: number;
+    readonly scope?: ReviewExecutionScope;
   } = {},
 ): PrepareReviewExecutionCommand {
   const now = overrides.now ?? baseTime;
   return {
-    scope,
+    scope: overrides.scope ?? scope,
     expectedStreamVersion: overrides.expectedStreamVersion ?? 0n,
     executionId: overrides.executionId ?? "execution-1",
     authorizationId: "authorization-1",
@@ -1234,6 +1596,7 @@ async function prepareAndAdmit(
   identitySeed = "1",
   requestedRevision = revision,
   attemptBudget = 1,
+  requestedScope = scope,
 ) {
   const prepared = await store.prepareExecution(
     prepareCommand({
@@ -1241,10 +1604,11 @@ async function prepareAndAdmit(
       identitySeed,
       revision: requestedRevision,
       attemptBudget,
+      scope: requestedScope,
     }),
   );
   const admitted = await store.confirmAdmission({
-    scope,
+    scope: requestedScope,
     expectedStreamVersion: prepared.snapshot!.stream.version,
     executionId,
     authorizationId: "authorization-1",
@@ -1268,10 +1632,11 @@ function leaseCommand(
     readonly now?: Date;
     readonly expiresAt?: Date;
     readonly reportUntil?: Date;
+    readonly scope?: ReviewExecutionScope;
   } = {},
 ) {
   return {
-    scope,
+    scope: overrides.scope ?? scope,
     executionId: overrides.expectedExecutionId ?? "execution-1",
     workSlotId: "slot-1",
     purpose: ReviewInvocationLeasePurpose.ProviderExecution,
@@ -1493,6 +1858,11 @@ function startUseCaseWithPorts(
     readonly revisions: readonly (ReviewRevision | null)[];
     readonly clock?: ClockPort;
     readonly onRevisionResolve?: (index: number) => void;
+    readonly requestedIntentAdmission?: {
+      readonly queries: InMemoryReviewRequestedIntentStore;
+      readonly commands: InMemoryReviewRequestedIntentStore;
+      readonly required: boolean;
+    };
   },
 ) {
   const authorizationPort: ReviewExecutionAuthorizationFactsPort = {
@@ -1524,6 +1894,7 @@ function startUseCaseWithPorts(
     store,
     digest,
     clock,
+    input.requestedIntentAdmission,
   );
 }
 

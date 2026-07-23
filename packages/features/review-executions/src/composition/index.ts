@@ -28,6 +28,7 @@ export type ReviewExecutionsCompositionDependencies = Readonly<{
   requestedIntentCommands: ReviewRequestedIntentCommandPort;
   digest: Sha256DigestPort;
   clock: ClockPort;
+  requestedIntentAdmissionRequired?: boolean;
 }>;
 
 export type ReviewExecutionsComposition = Readonly<{
@@ -50,6 +51,11 @@ export function createReviewExecutionsUseCases(
       dependencies.executionCommands,
       dependencies.digest,
       dependencies.clock,
+      {
+        queries: dependencies.requestedIntentQueries,
+        commands: dependencies.requestedIntentCommands,
+        required: dependencies.requestedIntentAdmissionRequired === true,
+      },
     ),
     invocationLeases: new ReviewInvocationLeaseService(
       dependencies.executionCommands,

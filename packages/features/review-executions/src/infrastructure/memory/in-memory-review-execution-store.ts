@@ -29,6 +29,7 @@ import {
   ReviewObservationAttachmentStatus,
 } from "../../application/ports/review-execution-ports";
 import {
+  ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
   createEmptyReviewExecutionStream,
   reviewExecutionIsTerminal,
@@ -63,6 +64,7 @@ import {
   decideFreshObservationAttachment,
   decideLeaseAcquire,
   decideLeaseAcquireReplay,
+  decideLeaseExpiry,
   decideLeaseRelease,
   decideLeaseRenewal,
   decideObservationAdoption,
@@ -356,6 +358,48 @@ export class InMemoryReviewExecutionStore
       }
       if (decision.status === LeaseAcquireDecisionStatus.Busy) {
         return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+      }
+      if (
+        decision.status === LeaseAcquireDecisionStatus.Acquired &&
+        command.purpose === ReviewInvocationLeasePurpose.ProviderExecution
+      ) {
+        const incumbents = [...this.leases.values()].filter(
+          (candidate) =>
+            candidate.purpose ===
+              ReviewInvocationLeasePurpose.ProviderExecution &&
+            candidate.providerVoteIdentityHash ===
+              command.providerVoteIdentityHash &&
+            candidate.state === ReviewInvocationLeaseState.Active,
+        );
+        if (incumbents.length > 1) {
+          throw new Error("review_provider_lane_invariant_violated");
+        }
+        const incumbent = incumbents[0];
+        const locallyExpiring =
+          incumbent !== undefined &&
+          decision.expiredLease?.leaseId === incumbent.leaseId;
+        if (incumbent && !locallyExpiring) {
+          if (incumbent.expiresAt > command.now) {
+            return { status: ReviewInvocationLeaseAcquireStatus.Busy };
+          }
+          const incumbentRecord = this.recordForExecution(
+            incumbent.executionId,
+          );
+          const incumbentExecution =
+            incumbentRecord?.executions.get(incumbent.executionId) ?? null;
+          const expiry = decideLeaseExpiry({
+            lease: incumbent,
+            execution: incumbentExecution,
+            now: command.now,
+          });
+          this.leases.set(incumbent.leaseId, expiry.lease);
+          if (incumbentRecord && expiry.execution) {
+            incumbentRecord.executions.set(
+              expiry.execution.executionId,
+              expiry.execution,
+            );
+          }
+        }
       }
       if (decision.expiredLease !== null) {
         this.leases.set(decision.expiredLease.leaseId, decision.expiredLease);

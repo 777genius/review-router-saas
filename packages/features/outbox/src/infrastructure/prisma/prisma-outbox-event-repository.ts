@@ -10,10 +10,14 @@ import type {
   RetryDeadLetterOutboxEventResult,
 } from "../../domain/outbox-event";
 import type { OutboxEventRepositoryPort } from "../../application/ports/outbox-event-repository-port";
+import type { OutboxEventStatusQueryPort } from "../../application/ports/outbox-event-repository-port";
 import type { OutboxMaintenanceRepositoryPort } from "../../application/ports/outbox-maintenance-repository-port";
 
 export class PrismaOutboxEventRepository
-  implements OutboxEventRepositoryPort, OutboxMaintenanceRepositoryPort
+  implements
+    OutboxEventRepositoryPort,
+    OutboxEventStatusQueryPort,
+    OutboxMaintenanceRepositoryPort
 {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -53,6 +57,16 @@ export class PrismaOutboxEventRepository
       }
       throw error;
     }
+  }
+
+  async findStatusByIdempotencyKey(idempotencyKey: string) {
+    const event = await this.prisma.outboxEvent.findUnique({
+      where: { idempotencyKey },
+      select: { id: true, status: true },
+    });
+    return event
+      ? { id: event.id, status: event.status as OutboxEventStatus }
+      : null;
   }
 
   async recoverStaleProcessing(input: {

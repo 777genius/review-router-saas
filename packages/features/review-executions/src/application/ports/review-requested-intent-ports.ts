@@ -29,6 +29,12 @@ export enum ReviewRequestedTransitionStatus {
   Missing = "missing",
 }
 
+export enum ReviewRequestedDispatchRunStatus {
+  Pending = "pending",
+  TerminalCurrentRevision = "terminal_current_revision",
+  TerminalStaleRevision = "terminal_stale_revision",
+}
+
 export type RegisterReviewRequestedIntentCommand = {
   readonly candidate: ReviewRequestedIntentCandidate;
 };
@@ -64,6 +70,23 @@ export type LinkReviewRequestedAdmissionCommand = {
   readonly now: Date;
 };
 
+export type CancelReviewRequestedPreAdmissionCommand = ReviewExecutionScope & {
+  readonly now: Date;
+};
+
+export type RecoverReviewRequestedDispatchCommand = {
+  readonly requestId: string;
+  readonly sourceRunId: string;
+  readonly sourceRunAttempt: string;
+  readonly now: Date;
+  readonly successorCandidate: ReviewRequestedIntentCandidate | null;
+};
+
+export type ReviewRequestedSourceRunIdentity = ReviewExecutionScope & {
+  readonly sourceRunId: string;
+  readonly sourceRunAttempt: string;
+};
+
 export interface ReviewRequestedIntentQueryPort {
   findByRequestId(requestId: string): Promise<ReviewRequestedIntent | null>;
   findByDeliveryIdentity(
@@ -72,8 +95,21 @@ export interface ReviewRequestedIntentQueryPort {
   findPendingByScope(
     scope: ReviewExecutionScope,
   ): Promise<ReviewRequestedIntent | null>;
+  findBySourceRunIdentity(
+    identity: ReviewRequestedSourceRunIdentity,
+  ): Promise<ReviewRequestedIntent | null>;
+  findByRepositorySourceRunIdentity(input: {
+    readonly repositoryConnectionId: string;
+    readonly sourceRunId: string;
+    readonly sourceRunAttempt: string;
+  }): Promise<ReviewRequestedIntent | null>;
   listDue(input: {
     readonly now: Date;
+    readonly limit: number;
+  }): Promise<readonly ReviewRequestedIntent[]>;
+  listAwaitingAuthorization(input: {
+    readonly now: Date;
+    readonly minimumAgeMs: number;
     readonly limit: number;
   }): Promise<readonly ReviewRequestedIntent[]>;
 }
@@ -95,8 +131,25 @@ export interface ReviewRequestedIntentCommandPort {
     readonly status: ReviewRequestedTransitionStatus;
     readonly intent?: ReviewRequestedIntent | undefined;
   }>;
+  cancelPreAdmission(
+    command: CancelReviewRequestedPreAdmissionCommand,
+  ): Promise<{ readonly cancelled: number }>;
+  recoverDispatch(command: RecoverReviewRequestedDispatchCommand): Promise<{
+    readonly status: ReviewRequestedTransitionStatus;
+    readonly intent?: ReviewRequestedIntent | undefined;
+  }>;
 }
 
 export interface ReviewRequestedIntentPrunerPort {
   pruneRetainedIntents(input: { readonly limit: number }): Promise<number>;
+}
+
+export interface ReviewRequestedDispatchGatewayPort {
+  dispatch(input: { readonly intent: ReviewRequestedIntent }): Promise<{
+    readonly sourceRunId: string;
+    readonly sourceRunAttempt: string;
+  }>;
+  inspect(input: { readonly intent: ReviewRequestedIntent }): Promise<{
+    readonly status: ReviewRequestedDispatchRunStatus;
+  }>;
 }

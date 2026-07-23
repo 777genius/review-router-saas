@@ -48,6 +48,10 @@ describe("review v2 worker runtime", () => {
     expect(disabled.enabled).toBe(false);
     expect(disabled.handlers).toEqual([]);
     await expect(disabled.runMaintenance()).resolves.toEqual({
+      intentsScanned: 0,
+      intentsDispatched: 0,
+      intentsRecovered: 0,
+      intentDispatchFailures: 0,
       recovered: 0,
       advanced: 0,
       publicationProcessed: 0,
@@ -61,6 +65,18 @@ describe("review v2 worker runtime", () => {
         env: { [reviewV2WorkerEnabledEnv]: "1" },
       }),
     ).toThrow("review_v2_worker_enabled_composition_missing");
+
+    expect(() =>
+      createReviewV2WorkerFeature({
+        env: {
+          [reviewV2WorkerEnabledEnv]: "1",
+          REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "1",
+        },
+        createEnabledRuntime: () => {
+          throw new Error("must_not_compose");
+        },
+      }),
+    ).toThrow("review_v2_ingress_requires_fenced_outbox_takeover");
   });
 
   it("converges duplicate finalized events without duplicate publication requests", async () => {
@@ -115,6 +131,10 @@ describe("review v2 worker runtime", () => {
         },
       }),
     ).resolves.toEqual({
+      intentsScanned: 0,
+      intentsDispatched: 0,
+      intentsRecovered: 0,
+      intentDispatchFailures: 0,
       recovered: 1,
       advanced: 2,
       publicationProcessed: 3,

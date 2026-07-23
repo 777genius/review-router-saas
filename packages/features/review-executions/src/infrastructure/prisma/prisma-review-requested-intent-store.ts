@@ -4,15 +4,19 @@ import {
   ReviewRequestedRegisterStatus,
   ReviewRequestedTransitionStatus,
   type ClaimReviewRequestedIntentCommand,
+  type CancelReviewRequestedPreAdmissionCommand,
   type LinkReviewRequestedAdmissionCommand,
   type RecordReviewRequestedDispatchCommand,
+  type RecoverReviewRequestedDispatchCommand,
   type RegisterReviewRequestedIntentCommand,
   type ReviewRequestedIntentCommandPort,
   type ReviewRequestedIntentPrunerPort,
   type ReviewRequestedIntentQueryPort,
 } from "../../application/ports/review-requested-intent-ports";
 import {
+  cancelReviewRequestedPreAdmissionIntent,
   ReviewRequestedClaimDecisionStatus,
+  ReviewRequestedDispatchRecoveryDecisionStatus,
   ReviewRequestedRegistrationDecisionStatus,
   ReviewRequestedTransitionDecisionStatus,
   ReviewRequestedIntentState,
@@ -20,6 +24,7 @@ import {
   claimReviewRequestedIntent,
   decideReviewRequestedAdmissionLink,
   decideReviewRequestedDispatch,
+  decideReviewRequestedDispatchRecovery,
   decideReviewRequestedRegistration,
   type ReviewRequestedIntent,
 } from "../../domain/review-requested-intent";
@@ -75,6 +80,45 @@ export class PrismaReviewRequestedIntentStore
     return record === null ? null : intentToDomain(record);
   }
 
+  async findBySourceRunIdentity(input: {
+    readonly workspaceId: string;
+    readonly repositoryConnectionId: string;
+    readonly scmRepositoryIdentityId: string;
+    readonly pullRequestNumber: number;
+    readonly sourceRunId: string;
+    readonly sourceRunAttempt: string;
+  }): Promise<ReviewRequestedIntent | null> {
+    const records = await this.prisma.reviewRequestedIntent.findMany({
+      where: {
+        ...scopeWhere(input),
+        sourceRunId: input.sourceRunId,
+        sourceRunAttempt: input.sourceRunAttempt,
+      },
+      orderBy: { requestId: "asc" },
+      take: 2,
+    });
+    if (records.length > 1) {
+      throw new Error("review_requested_source_run_identity_corrupted");
+    }
+    return records[0] ? intentToDomain(records[0]) : null;
+  }
+
+  async findByRepositorySourceRunIdentity(input: {
+    readonly repositoryConnectionId: string;
+    readonly sourceRunId: string;
+    readonly sourceRunAttempt: string;
+  }): Promise<ReviewRequestedIntent | null> {
+    const records = await this.prisma.reviewRequestedIntent.findMany({
+      where: input,
+      orderBy: { requestId: "asc" },
+      take: 2,
+    });
+    if (records.length > 1) {
+      throw new Error("review_requested_source_run_identity_corrupted");
+    }
+    return records[0] ? intentToDomain(records[0]) : null;
+  }
+
   async listDue(input: {
     readonly now: Date;
     readonly limit: number;
@@ -86,9 +130,37 @@ export class PrismaReviewRequestedIntentStore
     >(Prisma.sql`
       SELECT intent.*
       FROM "ReviewRequestedIntent" AS intent
-      WHERE intent."state" = 'pending_dispatch'::"ReviewRequestedIntentStateV2"
+      WHERE (
+        intent."state" = 'pending_dispatch'::"ReviewRequestedIntentStateV2"
         AND intent."notBefore" <= (statement_timestamp() AT TIME ZONE 'UTC')
+      ) OR (
+        intent."state" = 'dispatching'::"ReviewRequestedIntentStateV2"
+        AND intent."claimUntil" <= (statement_timestamp() AT TIME ZONE 'UTC')
+      )
       ORDER BY intent."notBefore", intent."createdAt", intent."requestId"
+      LIMIT ${input.limit}
+    `);
+    return Object.freeze(records.map(intentToDomain));
+  }
+
+  async listAwaitingAuthorization(input: {
+    readonly now: Date;
+    readonly minimumAgeMs: number;
+    readonly limit: number;
+  }): Promise<readonly ReviewRequestedIntent[]> {
+    assertAwaitingQuery(input.minimumAgeMs, input.limit);
+    void input.now;
+    const records = await this.prisma.$queryRaw<
+      Awaited<ReturnType<PrismaClient["reviewRequestedIntent"]["findMany"]>>
+    >(Prisma.sql`
+      SELECT intent.*
+      FROM "ReviewRequestedIntent" AS intent
+      WHERE intent."state" = 'awaiting_authorization'::"ReviewRequestedIntentStateV2"
+        AND intent."updatedAt" <= (
+          (statement_timestamp() AT TIME ZONE 'UTC')
+          - (${input.minimumAgeMs} * INTERVAL '1 millisecond')
+        )
+      ORDER BY intent."updatedAt", intent."requestId"
       LIMIT ${input.limit}
     `);
     return Object.freeze(records.map(intentToDomain));
@@ -119,6 +191,22 @@ export class PrismaReviewRequestedIntentStore
               },
               orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
             });
+          const preAdmissionInScope =
+            pendingInScope ??
+            (await transaction.reviewRequestedIntent.findFirst({
+              where: {
+                ...scopeWhere(command.candidate),
+                state: {
+                  in: [
+                    intentStateToPrisma(ReviewRequestedIntentState.Dispatching),
+                    intentStateToPrisma(
+                      ReviewRequestedIntentState.AwaitingAuthorization,
+                    ),
+                  ],
+                },
+              },
+              orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
+            }));
           const decision = decideReviewRequestedRegistration({
             candidate: command.candidate,
             existingByDelivery:
@@ -129,8 +217,10 @@ export class PrismaReviewRequestedIntentStore
               existingByRequestId === null
                 ? null
                 : intentToDomain(existingByRequestId),
-            pendingInScope:
-              pendingInScope === null ? null : intentToDomain(pendingInScope),
+            preAdmissionInScope:
+              preAdmissionInScope === null
+                ? null
+                : intentToDomain(preAdmissionInScope),
           });
           if (
             decision.status ===
@@ -187,9 +277,16 @@ export class PrismaReviewRequestedIntentStore
   }
 
   async claimIntent(command: ClaimReviewRequestedIntentCommand) {
+    const observed = await this.prisma.reviewRequestedIntent.findUnique({
+      where: { requestId: command.requestId },
+    });
+    if (observed === null) {
+      return { status: ReviewRequestedClaimStatus.Missing };
+    }
     try {
       return await this.prisma.$transaction(
         async (transaction) => {
+          await lockScope(transaction, intentToDomain(observed));
           await lockIntent(transaction, command.requestId);
           const record = await transaction.reviewRequestedIntent.findUnique({
             where: { requestId: command.requestId },
@@ -199,6 +296,29 @@ export class PrismaReviewRequestedIntentStore
           }
           const intent = intentToDomain(record);
           const now = await databaseNow(transaction);
+          const laneBusy = await transaction.reviewRequestedIntent.findFirst({
+            where: {
+              ...scopeWhere(intent),
+              requestId: { not: intent.requestId },
+              OR: [
+                {
+                  state: intentStateToPrisma(
+                    ReviewRequestedIntentState.AwaitingAuthorization,
+                  ),
+                },
+                {
+                  state: intentStateToPrisma(
+                    ReviewRequestedIntentState.Dispatching,
+                  ),
+                  claimUntil: { gt: now },
+                },
+              ],
+            },
+            select: { requestId: true },
+          });
+          if (laneBusy !== null) {
+            return { status: ReviewRequestedClaimStatus.Busy };
+          }
           const claimUntil = databaseRelativeDate(
             now,
             command.now,
@@ -276,6 +396,132 @@ export class PrismaReviewRequestedIntentStore
           now: await databaseNow(transaction),
         }),
     );
+  }
+
+  async cancelPreAdmission(
+    command: CancelReviewRequestedPreAdmissionCommand,
+  ): Promise<{ readonly cancelled: number }> {
+    return this.prisma.$transaction(
+      async (transaction) => {
+        await lockScope(transaction, command);
+        const records = await transaction.reviewRequestedIntent.findMany({
+          where: {
+            ...scopeWhere(command),
+            state: {
+              in: [
+                intentStateToPrisma(ReviewRequestedIntentState.PendingDispatch),
+                intentStateToPrisma(ReviewRequestedIntentState.Dispatching),
+                intentStateToPrisma(
+                  ReviewRequestedIntentState.AwaitingAuthorization,
+                ),
+              ],
+            },
+          },
+          orderBy: { requestId: "asc" },
+        });
+        for (const record of records) {
+          const intent = intentToDomain(record);
+          await updateIntent(
+            transaction,
+            intent,
+            cancelReviewRequestedPreAdmissionIntent(intent, command.now),
+          );
+        }
+        return { cancelled: records.length };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  }
+
+  async recoverDispatch(command: RecoverReviewRequestedDispatchCommand) {
+    const observed = await this.prisma.reviewRequestedIntent.findUnique({
+      where: { requestId: command.requestId },
+    });
+    if (observed === null) {
+      return { status: ReviewRequestedTransitionStatus.Missing };
+    }
+    try {
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          await lockScope(transaction, intentToDomain(observed));
+          await lockIntent(transaction, command.requestId);
+          const record = await transaction.reviewRequestedIntent.findUnique({
+            where: { requestId: command.requestId },
+          });
+          if (record === null) {
+            return { status: ReviewRequestedTransitionStatus.Missing };
+          }
+          const intent = intentToDomain(record);
+          const replacementRecord =
+            await transaction.reviewRequestedIntent.findFirst({
+              where: {
+                ...scopeWhere(intent),
+                requestId: { not: intent.requestId },
+                state: intentStateToPrisma(
+                  ReviewRequestedIntentState.PendingDispatch,
+                ),
+              },
+              orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
+            });
+          const now = await databaseNow(transaction);
+          const decision = decideReviewRequestedDispatchRecovery({
+            intent,
+            replacementPending:
+              replacementRecord === null
+                ? null
+                : intentToDomain(replacementRecord),
+            successorCandidate: command.successorCandidate,
+            sourceRunId: command.sourceRunId,
+            sourceRunAttempt: command.sourceRunAttempt,
+            now,
+          });
+          if (
+            decision.status ===
+            ReviewRequestedDispatchRecoveryDecisionStatus.Conflict
+          ) {
+            return { status: ReviewRequestedTransitionStatus.Conflict };
+          }
+          if (decision.createSuccessor) {
+            if (
+              decision.successor === null ||
+              command.successorCandidate === null
+            ) {
+              throw new Error("review_requested_recovery_successor_missing");
+            }
+            await transaction.reviewRequestedIntent.create({
+              data: intentCreateData({
+                ...decision.successor,
+                createdAt: now,
+                updatedAt: now,
+                notBefore: databaseRelativeDate(
+                  now,
+                  command.successorCandidate.createdAt,
+                  command.successorCandidate.notBefore,
+                  "dispatch_recovery_deadline",
+                ),
+                retainUntil: databaseRelativeDate(
+                  now,
+                  command.successorCandidate.createdAt,
+                  command.successorCandidate.retainUntil,
+                  "dispatch_recovery_retention_deadline",
+                ),
+              }),
+            });
+          }
+          await updateIntent(transaction, intent, decision.intent);
+          return {
+            status: ReviewRequestedTransitionStatus.Applied,
+            intent: decision.intent,
+          };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      if (isConcurrencyError(error)) {
+        return { status: ReviewRequestedTransitionStatus.StaleClaim };
+      }
+      throw error;
+    }
   }
 
   async pruneRetainedIntents(input: {
@@ -387,6 +633,7 @@ export class PrismaReviewRequestedIntentStore
 function intentCreateData(intent: ReviewRequestedIntent) {
   return {
     requestId: intent.requestId,
+    dispatchAttempt: intent.dispatchAttempt,
     version: intent.version,
     workspaceId: intent.workspaceId,
     repositoryConnectionId: intent.repositoryConnectionId,
@@ -507,6 +754,17 @@ function assertLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 1_000) {
     throw new Error("review_requested_invalid_limit");
   }
+}
+
+function assertAwaitingQuery(minimumAgeMs: number, limit: number): void {
+  if (
+    !Number.isSafeInteger(minimumAgeMs) ||
+    minimumAgeMs <= 0 ||
+    minimumAgeMs > 86_400_000
+  ) {
+    throw new Error("review_requested_awaiting_age_invalid");
+  }
+  assertLimit(limit);
 }
 
 function isConcurrencyError(error: unknown): boolean {
