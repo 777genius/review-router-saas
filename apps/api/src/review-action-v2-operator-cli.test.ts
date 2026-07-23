@@ -7,6 +7,7 @@ import {
 import {
   inspectEnvironment,
   parseArguments,
+  reviewV2CohortEmergencyInitialization,
   reviewV2CohortRolloutModes,
   serializeOperatorCliJson,
 } from "./review-action-v2-operator-cli";
@@ -110,5 +111,17 @@ describe("review action v2 operator CLI", () => {
     expect([...t0Capabilities, ...deferredCapabilities].sort()).toEqual(
       Object.values(ReviewSafetyCapability).sort(),
     );
+  });
+
+  it("initializes missing emergency controls without clearing existing stops", () => {
+    expect(reviewV2CohortEmergencyInitialization(null)).toEqual({
+      expectedVersion: 0,
+      stopped: false,
+      reason: "review-v2-cohort-staged",
+    });
+    expect(
+      reviewV2CohortEmergencyInitialization({ stopped: false }),
+    ).toBeNull();
+    expect(reviewV2CohortEmergencyInitialization({ stopped: true })).toBeNull();
   });
 });

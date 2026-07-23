@@ -79,6 +79,17 @@ export function reviewV2CohortRolloutModes(
   }
 }
 
+export function reviewV2CohortEmergencyInitialization(
+  existing: { readonly stopped: boolean } | null,
+) {
+  if (existing) return null;
+  return {
+    expectedVersion: 0,
+    stopped: false,
+    reason: "review-v2-cohort-staged",
+  } as const;
+}
+
 type ParsedArguments = Readonly<{
   positionals: readonly string[];
   options: Readonly<Record<string, string | true>>;
@@ -321,12 +332,12 @@ async function updateRepositoryCohortPolicies(
         await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
           scope,
         );
+      const initialization = reviewV2CohortEmergencyInitialization(existing);
+      if (!initialization) continue;
       results.push(
         await runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
-          expectedVersion: existing?.version ?? 0,
+          ...initialization,
           scope,
-          stopped: false,
-          reason: "review-v2-cohort-staged",
           updatedBy,
         }),
       );
