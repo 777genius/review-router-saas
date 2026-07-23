@@ -51,7 +51,12 @@ pnpm review-v2:admin mutation initialize-v1 \
 Provision the generated T0 workflow at the full 40-character Action release SHA
 through the existing workflow-provisioning application service. Verify on the
 default branch that `.github/workflows/reviewrouter-codex.yml` is valid and that
-legacy `reviewrouter.yml` and `reviewrouter-interaction.yml` are absent.
+legacy `reviewrouter.yml` is absent. The interaction workflow may be absent. If
+`.github/workflows/reviewrouter-interaction.yml` is present, it must use OIDC,
+grant `id-token: write`, bind `reviewrouter-codex.yml`, and check out
+`777genius/review-router` through an environment variable pinned to the same
+full 40-character Action release SHA. Inventory preflight rejects stale,
+unpinned, statically authenticated, or differently bound interaction writers.
 
 Enable API and worker v2 composition and verify service health before closing v1
 admission. Start the drain with the registered release ID:
