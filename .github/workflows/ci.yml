@@ -80,14 +80,14 @@ jobs:
           SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64: ${{ secrets.SUBSCRIPTION_RUNTIME_DEPLOY_KEY_B64 }}
         run: node scripts/install-private-dependencies.mjs --frozen-lockfile
 
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
       - name: Review Action v2 protocol drift check
         run: pnpm protocol:check
 
       - name: Review Action v2 handoff contract tests
         run: pnpm protocol:handoff:test
-
-      - name: Generate Prisma client
-        run: pnpm db:generate
 
       - name: Create CI databases
         env:
