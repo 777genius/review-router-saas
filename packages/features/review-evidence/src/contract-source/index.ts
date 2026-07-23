@@ -117,6 +117,18 @@ export const reviewEvidenceActionContractFragment = Object.freeze({
           name: "eligibilityPolicyVersion",
           type: "nullable_identifier",
         }),
+        Object.freeze({
+          name: "sourceLeaseId",
+          type: "nullable_identifier",
+        }),
+        Object.freeze({
+          name: "sourceFencingToken",
+          type: "nullable_decimal",
+        }),
+        Object.freeze({
+          name: "sourceOwnerIdHash",
+          type: "nullable_hash",
+        }),
         Object.freeze({ name: "denialReasons", type: "identifier_array" }),
       ]),
     }),

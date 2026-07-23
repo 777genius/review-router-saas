@@ -1198,6 +1198,35 @@ async function lookupEvidence(
     };
   }
   const observation = selected.observation;
+  let adoptionSourceLease: ReviewInvocationLease | null = null;
+  if (observation.sourceExecutionId === request.executionId) {
+    adoptionSourceLease = await d.executionQueries.findLease(
+      observation.sourceLeaseId,
+    );
+    if (
+      adoptionSourceLease === null ||
+      adoptionSourceLease.executionId !== request.executionId ||
+      adoptionSourceLease.workSlotId !== request.workSlotId ||
+      adoptionSourceLease.leaseId !== observation.sourceLeaseId ||
+      adoptionSourceLease.fencingToken.toString(10) !==
+        observation.sourceFencingToken ||
+      adoptionSourceLease.providerInvocationKey !==
+        request.providerInvocationKey ||
+      adoptionSourceLease.providerVoteIdentityHash !==
+        request.providerVoteIdentityHash
+    ) {
+      return {
+        statusCode: 200 as const,
+        result: {
+          status: ReviewEvidenceLookupResultStatus.Miss,
+          denialReasons: [
+            ...result.denialReasons,
+            "adoption_source_facts_unavailable",
+          ],
+        },
+      };
+    }
+  }
   let attachmentCapability: string | null = null;
   let attachmentKind: ReviewObservationAttachmentKind | null = null;
   if (
@@ -1257,6 +1286,10 @@ async function lookupEvidence(
       attachmentKind,
       reuseSafetyDecisionHash: selected.reuseSafetyDecisionHash,
       eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+      sourceLeaseId: adoptionSourceLease?.leaseId ?? null,
+      sourceFencingToken:
+        adoptionSourceLease?.fencingToken.toString(10) ?? null,
+      sourceOwnerIdHash: adoptionSourceLease?.ownerIdHash ?? null,
       denialReasons: result.denialReasons,
     },
   };

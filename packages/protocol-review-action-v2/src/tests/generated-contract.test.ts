@@ -162,6 +162,9 @@ describe("generated Review Action v2 negotiation contract", () => {
       payloadCanonicalJson: expect.any(Object),
       attachmentCapability: expect.any(Object),
       eligibilityPolicyVersion: expect.any(Object),
+      sourceLeaseId: expect.any(Object),
+      sourceFencingToken: expect.any(Object),
+      sourceOwnerIdHash: expect.any(Object),
     });
     expect(
       successResultProperties(schema, "review_evidence_commit"),

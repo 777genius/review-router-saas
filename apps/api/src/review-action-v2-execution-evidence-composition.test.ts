@@ -224,6 +224,48 @@ describe("Review Action v2 execution/evidence composition", () => {
     expect(result.result).toMatchObject({
       status: ReviewEvidenceLookupResultStatus.Shadow,
       attachmentCapability: null,
+      sourceLeaseId: "lease-1",
+      sourceFencingToken: "7",
+      sourceOwnerIdHash: hash("d"),
+    });
+  });
+
+  it("fails same-execution lookup closed when adoption source facts drift", async () => {
+    const observation = reusableObservation({
+      sourceExecutionId: "execution-target",
+    });
+    const d = evidenceDependencies({
+      currentLease: lease({ fencingToken: 8n }),
+      evidenceLookup: vi.fn(async () => ({
+        ...reuseHit(observation),
+        status: LookupReviewEvidenceStatus.Shadow,
+        selected: {
+          ...reuseHit(observation).selected,
+          canAttach: false,
+          eligibility: ReuseEligibility.CandidateOnly,
+          reason: "same_execution_requires_adoption",
+          reuseSafetyDecisionHash: null,
+        },
+      })),
+    });
+
+    const result = await createReviewActionV2EvidenceHandlers(d).lookup.execute(
+      {
+        ...envelope("lookup-source-drift"),
+        authorizationToken: "authorization-token",
+        executionId: "execution-target",
+        workSlotId: "slot-1",
+        planHash: hash("9"),
+        manifestCanonicalJson: stableManifestJson(),
+        manifestKey: observation.manifestKey,
+        providerInvocationKey: observation.providerInvocationKey,
+        providerVoteIdentityHash: observation.providerVoteIdentityHash,
+      },
+    );
+
+    expect(result.result).toEqual({
+      status: ReviewEvidenceLookupResultStatus.Miss,
+      denialReasons: ["adoption_source_facts_unavailable"],
     });
   });
 
@@ -1440,6 +1482,8 @@ function reusableObservation(
     providerInvocationKey: hash("7"),
     providerVoteIdentityHash: hash("c"),
     sourceExecutionId: "execution-source",
+    sourceLeaseId: "lease-1",
+    sourceFencingToken: "7",
     payloadHash: hash("e"),
     byteCount: 100,
     findingCount: 0,
