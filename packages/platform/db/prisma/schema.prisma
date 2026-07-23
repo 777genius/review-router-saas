@@ -914,6 +914,8 @@ model ReviewInvocationLeaseV2 {
   attemptOrdinal          Int
   acquireRequestIdHash    String
   acquireRequestHash      String
+  lastRenewRequestIdHash  String?
+  lastRenewRequestHash    String?
   ownerIdHash             String
   leaseCapabilityId       String                         @unique
   capabilitySigningKeyId  String

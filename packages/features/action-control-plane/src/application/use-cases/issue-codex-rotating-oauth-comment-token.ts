@@ -1,10 +1,15 @@
 import type { Clock } from "@reviewrouter/shared";
 import type { GitHubAppCommentTokenIssuerPort } from "../ports/github-app-comment-token-issuer-port.js";
 import type { CodexRotatingOAuthRepositoryPort } from "../ports/codex-rotating-oauth-repository-port.js";
+import {
+  LegacyReviewMutationOperation,
+  type LegacyReviewMutationAdmissionPort,
+} from "../ports/legacy-review-mutation-admission-port.js";
 
 export type IssueCodexRotatingOAuthCommentTokenDependencies = {
   readonly codexRotatingOAuth: CodexRotatingOAuthRepositoryPort;
   readonly commentTokens: GitHubAppCommentTokenIssuerPort;
+  readonly legacyMutationAdmission?: LegacyReviewMutationAdmissionPort;
   readonly clock: Clock;
 };
 
@@ -38,6 +43,13 @@ export async function issueCodexRotatingOAuthCommentToken(
   if (target.status !== "ready") {
     throw new Error(`codex_rotating_${target.status}`);
   }
+  await dependencies.legacyMutationAdmission?.assertLegacyReviewMutationAllowed(
+    {
+      operation: LegacyReviewMutationOperation.CodexRotatingCommentToken,
+      githubRepositoryId: target.writeTarget.githubRepositoryId,
+      repositoryFullName: target.writeTarget.repositoryFullName,
+    },
+  );
 
   const issued = await dependencies.commentTokens.issueCommentToken(
     target.writeTarget,

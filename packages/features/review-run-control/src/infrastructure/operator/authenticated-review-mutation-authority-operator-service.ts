@@ -83,6 +83,16 @@ export class AuthenticatedReviewMutationAuthorityOperatorService {
     });
   }
 
+  async initializeV1(input: AuthenticatedOperatorCommand) {
+    await this.authorize(
+      input.credential,
+      ReviewMutationAuthorityCommandKind.InitializeV1,
+    );
+    return this.dependencies.useCases.initializeV1({
+      scmRepositoryIdentityId: input.scmRepositoryIdentityId,
+    });
+  }
+
   async initializeDirectV2(
     input: AuthenticatedOperatorCommand & {
       readonly proof: ReviewMutationAuthorityProofReference;

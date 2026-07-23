@@ -169,6 +169,8 @@ export class TestReviewMutationAuthorityProofFacts implements ReviewMutationAuth
       facts: {
         noTrackedLegacyActivity: true,
         workflowInventoryCompatible: true,
+        registeredReleaseSelected: true,
+        completionWorkerConfigured: true,
         managedWorkflowInventoryHash: "a".repeat(64),
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: "b".repeat(64),

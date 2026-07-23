@@ -19,6 +19,10 @@ import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-p
 import type { ActionRateLimitPolicyPort } from "../ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../ports/github-actions-oidc-token-verifier-port.js";
+import {
+  LegacyReviewMutationOperation,
+  type LegacyReviewMutationAdmissionPort,
+} from "../ports/legacy-review-mutation-admission-port.js";
 
 export type ExchangeGitHubOidcTokenDependencies = {
   readonly oidcVerifier: GitHubActionsOidcTokenVerifierPort;
@@ -29,6 +33,7 @@ export type ExchangeGitHubOidcTokenDependencies = {
   readonly replayNonces?: ActionOidcReplayNonceStorePort;
   readonly conflictReviews?: ActionConflictReviewExchangeVerifierPort;
   readonly conflictReviewRuntimeGate?: ActionConflictReviewRuntimeGatePort;
+  readonly legacyMutationAdmission?: LegacyReviewMutationAdmissionPort;
   readonly clock: Clock;
 };
 
@@ -59,6 +64,13 @@ export async function exchangeGitHubOidcToken(
   }
 
   validateOidcClaimsAgainstRepository({ claims, repository });
+  await dependencies.legacyMutationAdmission?.assertLegacyReviewMutationAllowed(
+    {
+      operation: LegacyReviewMutationOperation.SessionExchange,
+      githubRepositoryId: repository.githubRepositoryId,
+      repositoryFullName: repository.fullName,
+    },
+  );
   const issuedAt = dependencies.clock.now();
   await consumeOidcReplayNonceIfConfigured({
     claims,

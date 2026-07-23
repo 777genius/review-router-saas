@@ -644,6 +644,31 @@ describe("action control plane", () => {
     });
   });
 
+  it("does not consume the OIDC nonce or sign a new v1 session after legacy admission closes", async () => {
+    const sessions = new StaticSessionTokenService();
+    const replayNonces = new InMemoryActionOidcReplayNonceStore();
+
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        {
+          oidcVerifier: new StaticOidcVerifier(githubOidcClaims()),
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions,
+          replayNonces,
+          legacyMutationAdmission: {
+            assertLegacyReviewMutationAllowed: async () => {
+              throw new Error("legacy_review_mutation_blocked:v1_draining");
+            },
+          },
+          clock,
+        },
+      ),
+    ).rejects.toThrow("legacy_review_mutation_blocked:v1_draining");
+    expect(sessions.signedClaims).toBeNull();
+    expect(replayNonces.consumed.size).toBe(0);
+  });
+
   it("accepts explicit workflow claims when GitHub echoes workflow_ref in job_workflow_ref", async () => {
     const sessions = new StaticSessionTokenService();
     await exchangeGitHubOidcToken(
@@ -2095,6 +2120,28 @@ describe("action control plane", () => {
         repositoryFullName: "777genius/example",
       },
     ]);
+  });
+
+  it("does not mint a new v1 comment token after legacy admission closes", async () => {
+    const commentTokens = new InMemoryCommentTokenIssuer();
+
+    await expect(
+      issueActionCommentToken(
+        { sessionToken: "session" },
+        {
+          repositories: new InMemoryActionControlPlaneRepository(),
+          sessions: new StaticSessionTokenService(),
+          commentTokens,
+          legacyMutationAdmission: {
+            assertLegacyReviewMutationAllowed: async () => {
+              throw new Error("legacy_review_mutation_blocked:v2_active");
+            },
+          },
+          clock,
+        },
+      ),
+    ).rejects.toThrow("legacy_review_mutation_blocked:v2_active");
+    expect(commentTokens.calls).toEqual([]);
   });
 
   it("revalidates repository state before issuing branded comment tokens", async () => {

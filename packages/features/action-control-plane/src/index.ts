@@ -43,6 +43,7 @@ export * from "./application/use-cases/prune-expired-action-oidc-replay-nonces.j
 export * from "./application/use-cases/resolve-action-review-thread-lifecycle.js";
 export * from "./application/use-cases/record-action-health-report.js";
 export * from "./application/use-cases/request-conflict-review-posting-session.js";
+export * from "./application/ports/legacy-review-mutation-admission-port.js";
 export * from "./infrastructure/oidc/jose-github-actions-oidc-token-verifier.js";
 export * from "./infrastructure/crypto/hmac-action-ledger-key.js";
 export * from "./infrastructure/prisma/prisma-action-control-plane-repository.js";

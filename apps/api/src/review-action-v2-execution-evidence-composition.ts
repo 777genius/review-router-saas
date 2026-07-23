@@ -559,6 +559,8 @@ async function renewLease(
     ownerIdHash: request.ownerIdHash,
     leaseCapabilityId: authority.capabilityId,
     fencingToken: decimal(request.fencingToken),
+    renewRequestIdHash: await d.digest.digestUtf8(request.renewRequestId),
+    renewRequestHash: request.requestBodyHash,
     now,
     expiresAt: minDate(
       add(lease.acquiredAt, limits.maxLeaseDurationMs),
@@ -567,6 +569,15 @@ async function renewLease(
     resultReportUntil: lease.resultReportUntil,
     limits,
   });
+  if (
+    result.status === ReviewInvocationLeaseTransitionStatus.IdempotencyConflict
+  ) {
+    throw failure(
+      409,
+      ReviewActionV2ProtocolErrorCode.IdempotencyConflict,
+      "lease_renewal_replay_conflict",
+    );
+  }
   const leaseCapability = result.lease
     ? await d.capabilities.issueLease(
         result.lease,
@@ -811,7 +822,7 @@ async function adoptObservation(
     request.authorizationToken,
     d,
   );
-  let snapshot = await requireExecution(
+  const snapshot = await requireExecution(
     request.executionId,
     authorization,
     d.executionQueries,
@@ -949,35 +960,12 @@ async function adoptObservation(
       "adoption_safety_rejected",
     );
   }
-  if (sourceLease.state === ReviewInvocationLeaseState.Active) {
-    const released = await d.executions.invocationLeases.release({
-      leaseId: sourceLease.leaseId,
-      ownerIdHash: sourceLease.ownerIdHash,
-      leaseCapabilityId: sourceLease.leaseCapabilityId,
-      fencingToken: sourceLease.fencingToken,
-      now,
-    });
-    if (
-      released.status !== ReviewInvocationLeaseTransitionStatus.Applied &&
-      released.status !== ReviewInvocationLeaseTransitionStatus.Expired
-    ) {
-      throw failure(
-        412,
-        ReviewActionV2ProtocolErrorCode.StalePrecondition,
-        "adoption_source_lease_release_conflict",
-      );
-    }
-    snapshot = await requireExecution(
-      request.executionId,
-      authorization,
-      d.executionQueries,
-    );
-  }
-
   const adoptionCapabilityIdentity = await d.capabilities.prepareIdentity();
   const outcome = await d.executions.observationAttachments.adoptAccepted({
     scope: toExecutionScope(authorization),
     executionId: request.executionId,
+    expectedStreamVersion: decimal(request.expectedStreamVersion),
+    expectedExecutionVersion: decimal(request.expectedExecutionVersion),
     workSlotId: request.workSlotId,
     sourceLeaseId: request.sourceLeaseId,
     sourceFencingToken: decimal(request.sourceFencingToken),
@@ -1205,15 +1193,16 @@ async function lookupEvidence(
     );
     if (
       adoptionSourceLease === null ||
-      adoptionSourceLease.executionId !== request.executionId ||
-      adoptionSourceLease.workSlotId !== request.workSlotId ||
-      adoptionSourceLease.leaseId !== observation.sourceLeaseId ||
-      adoptionSourceLease.fencingToken.toString(10) !==
-        observation.sourceFencingToken ||
-      adoptionSourceLease.providerInvocationKey !==
-        request.providerInvocationKey ||
-      adoptionSourceLease.providerVoteIdentityHash !==
-        request.providerVoteIdentityHash
+      !(await isAdoptionLookupSourceValid({
+        request,
+        authorization,
+        snapshot,
+        observation,
+        sourceLease: adoptionSourceLease,
+        scopeHash,
+        now: d.now(),
+        digest: d.digest,
+      }))
     ) {
       return {
         statusCode: 200 as const,
@@ -2038,6 +2027,58 @@ function assertAdoptionSourceLease(
       "adoption_source_lease_authority_mismatch",
     );
   }
+}
+
+async function isAdoptionLookupSourceValid(input: {
+  readonly request: ReviewEvidenceLookupRequest;
+  readonly authorization: ReviewRunAuthorization;
+  readonly snapshot: ReviewExecutionSnapshot;
+  readonly observation: ReviewObservation;
+  readonly sourceLease: ReviewInvocationLease;
+  readonly scopeHash: string;
+  readonly now: Date;
+  readonly digest: ReviewActionV2DigestPort;
+}): Promise<boolean> {
+  const { request, authorization, snapshot, observation, sourceLease } = input;
+  const prepared = prepareReviewObservationPayload(observation.payload);
+  return (
+    sourceLease.state !== ReviewInvocationLeaseState.Revoked &&
+    sourceLease.purpose === ReviewInvocationLeasePurpose.ProviderExecution &&
+    sourceLease.attemptId !== null &&
+    sourceLease.resultReportUntil >= input.now &&
+    sourceLease.executionId === request.executionId &&
+    sourceLease.executionGeneration === snapshot.execution.generation &&
+    sourceLease.workSlotId === request.workSlotId &&
+    sourceLease.leaseId === observation.sourceLeaseId &&
+    sourceLease.fencingToken.toString(10) === observation.sourceFencingToken &&
+    sourceLease.authorizationId === authorization.authorizationId &&
+    sourceLease.producerReleaseId === authorization.producerReleaseId &&
+    sourceLease.mutationEpoch === authorization.mutationEpoch &&
+    sourceLease.reviewRevisionHash === authorization.reviewRevisionHash &&
+    sourceLease.providerInvocationKey === request.providerInvocationKey &&
+    sourceLease.providerVoteIdentityHash === request.providerVoteIdentityHash &&
+    sourceLease.preparedManifestCanonicalJson ===
+      request.manifestCanonicalJson &&
+    sourceLease.preparedManifestKey === request.manifestKey &&
+    observation.sourceExecutionId === request.executionId &&
+    observation.attemptId === sourceLease.attemptId &&
+    observation.manifestKey === request.manifestKey &&
+    observation.providerInvocationKey === request.providerInvocationKey &&
+    observation.providerVoteIdentityHash === request.providerVoteIdentityHash &&
+    observation.scope.workspaceId === authorization.workspaceId &&
+    observation.scope.repositoryConnectionId ===
+      authorization.repositoryConnectionId &&
+    observation.scope.scmRepositoryIdentityId ===
+      authorization.scmRepositoryIdentityId &&
+    observation.scope.pullRequestNumber === authorization.pullRequestNumber &&
+    observation.scope.authorizationScopeHash === input.scopeHash &&
+    observation.sourceRevision.reviewRevisionHash ===
+      authorization.reviewRevisionHash &&
+    (await input.digest.digest(prepared.canonicalBytes)) ===
+      observation.payloadHash &&
+    prepared.byteCount === observation.byteCount &&
+    prepared.findingCount === observation.findingCount
+  );
 }
 async function assertAdoptionObservation(
   request: ReviewExecutionObservationAdoptRequest,

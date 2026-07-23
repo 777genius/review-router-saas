@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CurrentReviewRevisionStatus,
   PublicationPermitValidationStatus,
@@ -384,6 +384,26 @@ describe("start and admission saga", () => {
     expect(results[0]?.snapshot?.stream.lastAllocatedGeneration).toBe(1n);
   });
 
+  it("rechecks revision and authorization after an admission CAS conflict", async () => {
+    const store = new InMemoryReviewExecutionStore();
+    const confirmAdmission = store.confirmAdmission.bind(store);
+    const confirmSpy = vi
+      .spyOn(store, "confirmAdmission")
+      .mockResolvedValueOnce({
+        status: ReviewExecutionAdmissionStatus.ConcurrencyConflict,
+      })
+      .mockImplementation(confirmAdmission);
+    const useCase = startUseCase(store, {
+      authorizationRevision: revision,
+      revisions: [revision, revision, revision],
+    });
+
+    const result = await useCase.execute(startInput("execution-1"));
+
+    expect(result.status).toBe(StartReviewExecutionStatus.Admitted);
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
+  });
+
   it("does not restore a running execution for a different authorization term", async () => {
     const store = new InMemoryReviewExecutionStore();
     const admitted = await prepareAndAdmit(store);
@@ -605,6 +625,8 @@ describe("work slots and fenced invocation leases", () => {
     const term = leaseTerm(acquired.lease!);
     const renewed = await store.renewLease({
       ...term,
+      renewRequestIdHash: hash("8"),
+      renewRequestHash: hash("9"),
       now: plus(5_000),
       expiresAt: plus(55_000),
       resultReportUntil: plus(110_000),
@@ -621,6 +643,8 @@ describe("work slots and fenced invocation leases", () => {
     });
     const invalid = await store.renewLease({
       ...term,
+      renewRequestIdHash: hash("a"),
+      renewRequestHash: hash("b"),
       now: plus(6_000),
       expiresAt: plus(90_000),
       resultReportUntil: plus(130_000),
@@ -628,6 +652,19 @@ describe("work slots and fenced invocation leases", () => {
     });
     expect(invalid.status).toBe(
       ReviewInvocationLeaseTransitionStatus.InvalidDeadline,
+    );
+
+    const conflictingReplay = await store.renewLease({
+      ...term,
+      renewRequestIdHash: hash("8"),
+      renewRequestHash: hash("c"),
+      now: plus(7_000),
+      expiresAt: plus(55_000),
+      resultReportUntil: plus(110_000),
+      limits,
+    });
+    expect(conflictingReplay.status).toBe(
+      ReviewInvocationLeaseTransitionStatus.IdempotencyConflict,
     );
   });
 
@@ -786,12 +823,13 @@ describe("observation references and finalization", () => {
     const store = new InMemoryReviewExecutionStore(tokens);
     await prepareAndAdmit(store, "execution-1", "1", revision, 2);
     const source = (await store.acquireLease(leaseCommand())).lease!;
-    await store.releaseLease({ ...leaseTerm(source), now: plus(5_000) });
-    const before = (await store.findExecution("execution-1"))!.execution
-      .workSlots[0]!;
+    const adoptionTarget = (await store.findExecution("execution-1"))!;
+    const before = adoptionTarget.execution.workSlots[0]!;
     const adopted = await store.adoptObservation({
       scope,
       executionId: "execution-1",
+      expectedStreamVersion: adoptionTarget.stream.version,
+      expectedExecutionVersion: adoptionTarget.execution.version,
       workSlotId: "slot-1",
       sourceLeaseId: source.leaseId,
       sourceFencingToken: source.fencingToken,
@@ -818,6 +856,55 @@ describe("observation references and finalization", () => {
       before.nextAttemptOrdinal,
     );
     expect((await store.findLease("adoption-lease-1"))?.fencingToken).toBe(2n);
+    expect((await store.findLease(source.leaseId))?.state).toBe(
+      ReviewInvocationLeaseState.Released,
+    );
+  });
+
+  it("keeps the source lease active when an adoption CAS fence is stale", async () => {
+    const store = new InMemoryReviewExecutionStore(
+      new MonotonicBigIntFencingTokenSource(),
+    );
+    await prepareAndAdmit(store, "execution-1", "1", revision, 2);
+    const source = (await store.acquireLease(leaseCommand())).lease!;
+    const target = (await store.findExecution("execution-1"))!;
+
+    const stale = await store.adoptObservation({
+      scope,
+      executionId: "execution-1",
+      expectedStreamVersion: target.stream.version + 1n,
+      expectedExecutionVersion: target.execution.version,
+      workSlotId: "slot-1",
+      sourceLeaseId: source.leaseId,
+      sourceFencingToken: source.fencingToken,
+      sourceObservationId: "observation-1",
+      observationRefId: "observation-ref-stale",
+      providerInvocationKey: source.providerInvocationKey,
+      providerVoteIdentityHash: hash("1"),
+      payloadHash: hash("6"),
+      byteCount: 100,
+      findingCount: 1,
+      eligibilityPolicyVersion: "eligibility-v1",
+      adoptionLeaseId: "adoption-lease-stale",
+      adoptionAcquireRequestIdHash: hash("2"),
+      adoptionAcquireRequestHash: hash("3"),
+      ownerIdHash: "owner-adoption",
+      leaseCapabilityId: "capability-adoption",
+      capabilitySigningKeyId: "signing-key-1",
+      leaseSafetyDecisionHash: hash("4"),
+      now: plus(6_000),
+      retainUntil: plus(300_000),
+    });
+
+    expect(stale.status).toBe(ReviewObservationAttachmentStatus.Ineligible);
+    expect(await store.findLease(source.leaseId)).toMatchObject({
+      state: ReviewInvocationLeaseState.Active,
+    });
+    expect(await store.findLease("adoption-lease-stale")).toBeNull();
+    expect(
+      (await store.findExecution("execution-1"))?.execution.workSlots[0]
+        ?.activeLeaseId,
+    ).toBe(source.leaseId);
   });
 
   it("derives completed coverage from persisted required slots and issues an immutable permit", async () => {

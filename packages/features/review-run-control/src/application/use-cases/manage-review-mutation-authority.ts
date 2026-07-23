@@ -34,6 +34,7 @@ import type { ReviewMutationAuthorityInitializationPolicyPort } from "../ports/r
 import type { ReviewMutationAuthorityProofCollector } from "../services/review-mutation-authority-proof-collector";
 
 export enum ReviewMutationAuthorityCommandKind {
+  InitializeV1 = "initialize_v1",
   DirectV2Initialize = "direct_v2_initialize",
   BeginDrain = "begin_drain",
   AbortDrain = "abort_drain",
@@ -178,6 +179,16 @@ export class ManageReviewMutationAuthority {
         transition.authority,
       );
     }
+    const transition = initializeReviewMutationAuthority({
+      ...input,
+      initializedAt: this.dependencies.clock.now(),
+    });
+    return this.dependencies.commands.initializeReviewMutationAuthority(
+      transition.authority,
+    );
+  }
+
+  async initializeV1(input: { readonly scmRepositoryIdentityId: string }) {
     const transition = initializeReviewMutationAuthority({
       ...input,
       initializedAt: this.dependencies.clock.now(),
@@ -388,6 +399,7 @@ export class ManageReviewMutationAuthority {
 export type ReviewMutationAuthorityOperatorUseCases = Pick<
   ManageReviewMutationAuthority,
   | "preflight"
+  | "initializeV1"
   | "initializeDirectV2"
   | "beginDrain"
   | "abortDrain"
@@ -407,6 +419,7 @@ function proofKindFor(
     case ReviewMutationAuthorityCommandKind.Resume:
       return ReviewMutationAuthorityProofKind.Resume;
     case ReviewMutationAuthorityCommandKind.DirectV2Initialize:
+    case ReviewMutationAuthorityCommandKind.InitializeV1:
     case ReviewMutationAuthorityCommandKind.BeginDrain:
     case ReviewMutationAuthorityCommandKind.Pause:
       return null;
@@ -417,6 +430,9 @@ function modeBlockers(
   operation: ReviewMutationAuthorityCommandKind,
   mode: ReviewMutationMode,
 ): readonly string[] {
+  if (operation === ReviewMutationAuthorityCommandKind.InitializeV1) {
+    return Object.freeze(["authority_already_initialized"]);
+  }
   const ready =
     (operation === ReviewMutationAuthorityCommandKind.BeginDrain &&
       (mode === ReviewMutationMode.V1Open ||

@@ -2,16 +2,17 @@
 
 ## Status
 
-Implementation in progress as of 2026-07-22:
+Implementation in progress as of 2026-07-23:
 
 - Phase 0 characterization and exact-revision hardening are implemented in the
   release worktrees.
 - Phase 1 bounded contexts, additive persistence, generated protocol, migration
   rehearsal, and disabled-by-default production composition are implemented.
-- Phase 2 T0 execution, same-execution recovery, server-owned publication, and
-  production-shaped E2E are implemented locally. Cross-repository contract
-  handoff, release registration, deployment, and allowlisted verification remain
-  release gates, so production behavior is still disabled.
+- Phase 2 T0 execution, same-execution recovery, server-owned publication,
+  immutable reusable workflows, authenticated operator commands, v1 admission
+  drain, and production-shaped E2E are implemented locally. Cross-repository
+  contract handoff, release registration, deployment, and allowlisted
+  verification remain release gates, so production behavior is still disabled.
 - Phases 3-5 remain deferred. No cross-revision reuse is enabled or implied by
   the T0 implementation.
 

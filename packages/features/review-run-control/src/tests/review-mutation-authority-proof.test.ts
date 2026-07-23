@@ -329,6 +329,8 @@ describe("ReviewMutationAuthority proof contract", () => {
         ...harness.facts.activation.facts,
         noTrackedLegacyActivity: false,
         workflowInventoryCompatible: false,
+        registeredReleaseSelected: false,
+        completionWorkerConfigured: false,
         safetyDecisionEnabled: false,
       },
     };
@@ -341,6 +343,8 @@ describe("ReviewMutationAuthority proof contract", () => {
       blockers: [
         ReviewMutationAuthorityProofBlocker.LegacyActivityExists,
         ReviewMutationAuthorityProofBlocker.WorkflowInventoryIncompatible,
+        ReviewMutationAuthorityProofBlocker.RegisteredReleaseMissing,
+        ReviewMutationAuthorityProofBlocker.CompletionWorkerUnavailable,
         ReviewMutationAuthorityProofBlocker.MutationSafetyDisabled,
       ],
     });
@@ -391,6 +395,8 @@ class MutableProofFacts implements ReviewMutationAuthorityProofFactsQueryPorts {
       facts: {
         noTrackedLegacyActivity: true,
         workflowInventoryCompatible: true,
+        registeredReleaseSelected: true,
+        completionWorkerConfigured: true,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,

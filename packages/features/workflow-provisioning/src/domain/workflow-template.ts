@@ -4,6 +4,7 @@ import {
   codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
   codexRotatingTimeoutMinutesVariableName,
+  type CodexRotatingReviewActionV2Mode,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -22,6 +23,7 @@ export type ReviewRouterWorkflowOptions = {
   readonly conflictReviewFallbackEnabled?: boolean;
   readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
+  readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
   readonly discussionMode?: ReviewRouterDiscussionMode;
 };
 
@@ -1166,6 +1168,11 @@ export function renderReviewRouterWorkflowFiles(
           actionRef: options.actionRef,
           apiUrl: options.apiUrl,
           providerInstanceId: options.codexRotatingProviderInstanceId,
+          ...(options.codexRotatingReviewActionV2Mode
+            ? {
+                reviewActionV2Mode: options.codexRotatingReviewActionV2Mode,
+              }
+            : {}),
           ...codexRotatingProviderSecretInputsForRuntimeEnv(
             options.staticRuntimeEnv,
           ),
@@ -1183,14 +1190,18 @@ export function renderReviewRouterWorkflowFiles(
         markerGroups:
           getLegacyReviewRouterInteractionWorkflowDeletionMarkerGroups(),
       },
-      {
-        path: defaultInteractionWorkflowPath,
-        content: renderCodexRotatingInteractionWorkflow({
-          actionRef: options.actionRef,
-          apiUrl: options.apiUrl,
-          runtimeConfigMode: options.runtimeConfigMode,
-        }),
-      },
+      ...(options.codexRotatingReviewActionV2Mode === "t0"
+        ? []
+        : [
+            {
+              path: defaultInteractionWorkflowPath,
+              content: renderCodexRotatingInteractionWorkflow({
+                actionRef: options.actionRef,
+                apiUrl: options.apiUrl,
+                runtimeConfigMode: options.runtimeConfigMode,
+              }),
+            } satisfies ReviewRouterWorkflowFile,
+          ]),
     ];
   }
 

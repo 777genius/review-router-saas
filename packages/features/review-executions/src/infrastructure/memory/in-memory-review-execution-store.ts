@@ -412,6 +412,13 @@ export class InMemoryReviewExecutionStore
           status: ReviewInvocationLeaseTransitionStatus.InvalidDeadline,
         };
       }
+      if (
+        decision.status === LeaseTransitionDecisionStatus.IdempotencyConflict
+      ) {
+        return {
+          status: ReviewInvocationLeaseTransitionStatus.IdempotencyConflict,
+        };
+      }
       this.persistLeaseTransition(record, decision.lease, decision.execution);
       if (decision.status === LeaseTransitionDecisionStatus.Expired) {
         return { status: ReviewInvocationLeaseTransitionStatus.Expired };
@@ -547,6 +554,8 @@ export class InMemoryReviewExecutionStore
           this.observationRefs.get(command.observationRefId) ?? null,
         existingAdoptionLease: this.leases.get(command.adoptionLeaseId) ?? null,
         sourceLease: sourceLease ?? null,
+        expectedStreamVersion: command.expectedStreamVersion,
+        expectedExecutionVersion: command.expectedExecutionVersion,
         sourceLeaseId: command.sourceLeaseId,
         sourceFencingToken: command.sourceFencingToken,
         adoptionLeaseId: command.adoptionLeaseId,
@@ -931,8 +940,8 @@ export class InMemoryReviewExecutionStore
           decision.execution.executionId,
           decision.execution,
         );
-        if (decision.lease !== null) {
-          this.leases.set(decision.lease.leaseId, decision.lease);
+        for (const lease of decision.leases) {
+          this.leases.set(lease.leaseId, lease);
         }
         return {
           status: ReviewObservationAttachmentStatus.Attached,

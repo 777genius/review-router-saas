@@ -51,6 +51,7 @@ export enum ReviewInvocationLeaseTransitionStatus {
   Expired = "expired",
   Missing = "missing",
   InvalidDeadline = "invalid_deadline",
+  IdempotencyConflict = "idempotency_conflict",
 }
 
 export enum ReviewObservationAttachmentStatus {
@@ -148,6 +149,8 @@ export type ReviewInvocationLeaseTerm = {
 };
 
 export type RenewReviewInvocationLeaseCommand = ReviewInvocationLeaseTerm & {
+  readonly renewRequestIdHash: string;
+  readonly renewRequestHash: string;
   readonly now: Date;
   readonly expiresAt: Date;
   readonly resultReportUntil: Date;
@@ -197,6 +200,8 @@ export type AttachReusableReviewObservationCommand = {
 export type AdoptAcceptedReviewObservationCommand = {
   readonly scope: ReviewExecutionScope;
   readonly executionId: string;
+  readonly expectedStreamVersion: bigint;
+  readonly expectedExecutionVersion: bigint;
   readonly workSlotId: string;
   readonly sourceLeaseId: string;
   readonly sourceFencingToken: bigint;

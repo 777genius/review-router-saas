@@ -7,12 +7,17 @@ import type { ActionEntitlementPolicyPort } from "../ports/action-entitlement-po
 import type { ActionControlPlaneRepositoryPort } from "../ports/action-control-plane-repository-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
 import type { GitHubAppCommentTokenIssuerPort } from "../ports/github-app-comment-token-issuer-port.js";
+import {
+  LegacyReviewMutationOperation,
+  type LegacyReviewMutationAdmissionPort,
+} from "../ports/legacy-review-mutation-admission-port.js";
 
 export type IssueActionCommentTokenDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
   readonly sessions: ActionSessionTokenServicePort;
   readonly commentTokens: GitHubAppCommentTokenIssuerPort;
   readonly entitlements?: ActionEntitlementPolicyPort;
+  readonly legacyMutationAdmission?: LegacyReviewMutationAdmissionPort;
   readonly clock: Clock;
 };
 
@@ -41,6 +46,13 @@ export async function issueActionCommentToken(
     repositoryId: session.repositoryId,
     repositoryFullName: session.repository,
   });
+  await dependencies.legacyMutationAdmission?.assertLegacyReviewMutationAllowed(
+    {
+      operation: LegacyReviewMutationOperation.CommentToken,
+      githubRepositoryId: repository.githubRepositoryId,
+      repositoryFullName: repository.fullName,
+    },
+  );
 
   const issued = await dependencies.commentTokens.issueCommentToken({
     githubInstallationId: repository.githubInstallationId,

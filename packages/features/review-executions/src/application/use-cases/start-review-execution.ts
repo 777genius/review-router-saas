@@ -160,64 +160,78 @@ export class StartReviewExecution {
       };
     }
 
-    const postcheck = await this.currentRevision.resolve(input.scope);
-    const admissionAuthorization = await this.resolveCurrentAuthorization(
-      authorization,
-      input.scope,
-    );
-    if (admissionAuthorization === null) {
-      return {
-        status: StartReviewExecutionStatus.AuthorizationRejected,
-        snapshot: prepared,
-      };
-    }
-    const verdict =
-      postcheck.status === CurrentReviewRevisionStatus.Unavailable
-        ? ReviewExecutionAdmissionVerdict.Unavailable
-        : reviewRevisionsEqual(postcheck.revision, authorization.revision)
-          ? ReviewExecutionAdmissionVerdict.Current
-          : ReviewExecutionAdmissionVerdict.Stale;
-    const admission = await this.commands.confirmAdmission({
-      scope: input.scope,
-      expectedStreamVersion: prepared.stream.version,
-      executionId: prepared.execution.executionId,
-      authorizationId: authorization.authorizationId,
-      mutationEpoch: authorization.mutationEpoch,
-      requestedRevision: authorization.revision,
-      observedRevision:
-        postcheck.status === CurrentReviewRevisionStatus.Found
-          ? postcheck.revision
-          : null,
-      verdict,
-      checkedAt: admissionAuthorization.observedAt,
-    });
+    let admissionSnapshot = prepared;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) {
+        const reloaded = await this.queries.findExecution(
+          prepared.execution.executionId,
+        );
+        if (reloaded === null) {
+          return { status: StartReviewExecutionStatus.ConcurrencyConflict };
+        }
+        admissionSnapshot = reloaded;
+      }
+      const postcheck = await this.currentRevision.resolve(input.scope);
+      const admissionAuthorization = await this.resolveCurrentAuthorization(
+        authorization,
+        input.scope,
+      );
+      if (admissionAuthorization === null) {
+        return {
+          status: StartReviewExecutionStatus.AuthorizationRejected,
+          snapshot: admissionSnapshot,
+        };
+      }
+      const verdict =
+        postcheck.status === CurrentReviewRevisionStatus.Unavailable
+          ? ReviewExecutionAdmissionVerdict.Unavailable
+          : reviewRevisionsEqual(postcheck.revision, authorization.revision)
+            ? ReviewExecutionAdmissionVerdict.Current
+            : ReviewExecutionAdmissionVerdict.Stale;
+      const admission = await this.commands.confirmAdmission({
+        scope: input.scope,
+        expectedStreamVersion: admissionSnapshot.stream.version,
+        executionId: prepared.execution.executionId,
+        authorizationId: authorization.authorizationId,
+        mutationEpoch: authorization.mutationEpoch,
+        requestedRevision: authorization.revision,
+        observedRevision:
+          postcheck.status === CurrentReviewRevisionStatus.Found
+            ? postcheck.revision
+            : null,
+        verdict,
+        checkedAt: admissionAuthorization.observedAt,
+      });
 
-    switch (admission.status) {
-      case ReviewExecutionAdmissionStatus.Admitted:
-        return {
-          status: StartReviewExecutionStatus.Admitted,
-          snapshot: admission.snapshot,
-        };
-      case ReviewExecutionAdmissionStatus.Restored:
-        return {
-          status: StartReviewExecutionStatus.Restored,
-          snapshot: admission.snapshot,
-        };
-      case ReviewExecutionAdmissionStatus.Deferred:
-        return {
-          status: StartReviewExecutionStatus.AdmissionDeferred,
-          snapshot: admission.snapshot,
-        };
-      case ReviewExecutionAdmissionStatus.Superseded:
-        return {
-          status: StartReviewExecutionStatus.StaleRevision,
-          snapshot: admission.snapshot,
-        };
-      case ReviewExecutionAdmissionStatus.ConcurrencyConflict:
-      case ReviewExecutionAdmissionStatus.Missing:
-      case ReviewExecutionAdmissionStatus.NotPrepared:
-        return { status: StartReviewExecutionStatus.ConcurrencyConflict };
+      switch (admission.status) {
+        case ReviewExecutionAdmissionStatus.Admitted:
+          return {
+            status: StartReviewExecutionStatus.Admitted,
+            snapshot: admission.snapshot,
+          };
+        case ReviewExecutionAdmissionStatus.Restored:
+          return {
+            status: StartReviewExecutionStatus.Restored,
+            snapshot: admission.snapshot,
+          };
+        case ReviewExecutionAdmissionStatus.Deferred:
+          return {
+            status: StartReviewExecutionStatus.AdmissionDeferred,
+            snapshot: admission.snapshot,
+          };
+        case ReviewExecutionAdmissionStatus.Superseded:
+          return {
+            status: StartReviewExecutionStatus.StaleRevision,
+            snapshot: admission.snapshot,
+          };
+        case ReviewExecutionAdmissionStatus.ConcurrencyConflict:
+          continue;
+        case ReviewExecutionAdmissionStatus.Missing:
+        case ReviewExecutionAdmissionStatus.NotPrepared:
+          return { status: StartReviewExecutionStatus.ConcurrencyConflict };
+      }
     }
+    return { status: StartReviewExecutionStatus.ConcurrencyConflict };
   }
 
   private async resolveInitialAuthorization(

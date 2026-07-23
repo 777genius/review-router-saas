@@ -463,6 +463,8 @@ CREATE TABLE "ReviewInvocationLeaseV2" (
     "attemptOrdinal" INTEGER NOT NULL,
     "acquireRequestIdHash" TEXT NOT NULL,
     "acquireRequestHash" TEXT NOT NULL,
+    "lastRenewRequestIdHash" TEXT,
+    "lastRenewRequestHash" TEXT,
     "ownerIdHash" TEXT NOT NULL,
     "leaseCapabilityId" TEXT NOT NULL,
     "capabilitySigningKeyId" TEXT NOT NULL,
@@ -1107,6 +1109,8 @@ ALTER TABLE "ReviewInvocationLeaseV2" ADD CONSTRAINT "ReviewInvocationLeaseV2_va
     ) AND
     "retainUntil" >= "resultReportUntil"
   );
+ALTER TABLE "ReviewInvocationLeaseV2" ADD CONSTRAINT "ReviewInvocationLeaseV2_valid_renew_replay_identity"
+  CHECK (("lastRenewRequestIdHash" IS NULL) = ("lastRenewRequestHash" IS NULL));
 ALTER TABLE "ReviewSnapshot" ADD CONSTRAINT "ReviewSnapshot_v2_columns_complete"
   CHECK ("schemaVersion" <> 2 OR ("scmRepositoryIdentityId" IS NOT NULL AND "sourceExecutionId" IS NOT NULL AND "sourceExecutionGeneration" IS NOT NULL AND "sourceArtifactHash" IS NOT NULL AND "sourceReviewRevisionHash" IS NOT NULL AND "publicationReceiptSetHash" IS NOT NULL));
 ALTER TABLE "ReviewPublicationAttemptV2" ADD CONSTRAINT "ReviewPublicationAttemptV2_terminal_outcome_consistent"

@@ -965,7 +965,7 @@ export class ReviewActionV2E2EHarness {
       run_attempt: "1",
       workflow_ref: `${owner}/${repo}/.github/workflows/reviewrouter.yml@refs/pull/${pullRequestNumber}/merge`,
       workflow_sha: this.fakeGitHub.revision.headSha,
-      job_workflow_ref: `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${actionCommitSha}`,
+      job_workflow_ref: `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${actionCommitSha}`,
       job_workflow_sha: actionCommitSha,
       actor: "reviewrouter-e2e",
       jti: `${this.prefix}-oidc-${this.oidcOrdinal}`,

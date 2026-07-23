@@ -192,10 +192,10 @@ describe("Review Action v2 execution/evidence composition", () => {
   });
 
   it("never issues generic reuse authority for same-execution recovery", async () => {
-    const observation = reusableObservation({
-      sourceExecutionId: "execution-target",
-    });
+    const { manifestCanonicalJson, identity, sourceLease, observation } =
+      await committedAdoptionFixture();
     const d = evidenceDependencies({
+      currentLease: sourceLease,
       evidenceLookup: vi.fn(async () => ({
         ...reuseHit(observation),
         status: LookupReviewEvidenceStatus.Shadow,
@@ -215,9 +215,9 @@ describe("Review Action v2 execution/evidence composition", () => {
         executionId: "execution-target",
         workSlotId: "slot-1",
         planHash: hash("9"),
-        manifestCanonicalJson: stableManifestJson(),
-        manifestKey: observation.manifestKey,
-        providerInvocationKey: observation.providerInvocationKey,
+        manifestCanonicalJson,
+        manifestKey: identity.manifestKey,
+        providerInvocationKey: identity.providerInvocationKey,
         providerVoteIdentityHash: observation.providerVoteIdentityHash,
       },
     );
@@ -231,11 +231,10 @@ describe("Review Action v2 execution/evidence composition", () => {
   });
 
   it("fails same-execution lookup closed when adoption source facts drift", async () => {
-    const observation = reusableObservation({
-      sourceExecutionId: "execution-target",
-    });
+    const { manifestCanonicalJson, identity, sourceLease, observation } =
+      await committedAdoptionFixture();
     const d = evidenceDependencies({
-      currentLease: lease({ fencingToken: 8n }),
+      currentLease: { ...sourceLease, fencingToken: 8n },
       evidenceLookup: vi.fn(async () => ({
         ...reuseHit(observation),
         status: LookupReviewEvidenceStatus.Shadow,
@@ -256,9 +255,50 @@ describe("Review Action v2 execution/evidence composition", () => {
         executionId: "execution-target",
         workSlotId: "slot-1",
         planHash: hash("9"),
-        manifestCanonicalJson: stableManifestJson(),
-        manifestKey: observation.manifestKey,
-        providerInvocationKey: observation.providerInvocationKey,
+        manifestCanonicalJson,
+        manifestKey: identity.manifestKey,
+        providerInvocationKey: identity.providerInvocationKey,
+        providerVoteIdentityHash: observation.providerVoteIdentityHash,
+      },
+    );
+
+    expect(result.result).toEqual({
+      status: ReviewEvidenceLookupResultStatus.Miss,
+      denialReasons: ["adoption_source_facts_unavailable"],
+    });
+  });
+
+  it("fails same-execution lookup closed after the result-report deadline", async () => {
+    const { manifestCanonicalJson, identity, sourceLease, observation } =
+      await committedAdoptionFixture();
+    const d = evidenceDependencies({
+      currentLease: {
+        ...sourceLease,
+        resultReportUntil: new Date(now.getTime() - 1),
+      },
+      evidenceLookup: vi.fn(async () => ({
+        ...reuseHit(observation),
+        status: LookupReviewEvidenceStatus.Shadow,
+        selected: {
+          ...reuseHit(observation).selected,
+          canAttach: false,
+          eligibility: ReuseEligibility.CandidateOnly,
+          reason: "same_execution_requires_adoption",
+          reuseSafetyDecisionHash: null,
+        },
+      })),
+    });
+
+    const result = await createReviewActionV2EvidenceHandlers(d).lookup.execute(
+      {
+        ...envelope("lookup-source-expired"),
+        authorizationToken: "authorization-token",
+        executionId: "execution-target",
+        workSlotId: "slot-1",
+        planHash: hash("9"),
+        manifestCanonicalJson,
+        manifestKey: identity.manifestKey,
+        providerInvocationKey: identity.providerInvocationKey,
         providerVoteIdentityHash: observation.providerVoteIdentityHash,
       },
     );
@@ -322,8 +362,46 @@ describe("Review Action v2 execution/evidence composition", () => {
       result: { status: ReviewInvocationLeaseResultStatus.StaleTerm },
     });
     expect(renew).toHaveBeenCalledWith(
-      expect.objectContaining({ fencingToken: 6n }),
+      expect.objectContaining({
+        fencingToken: 6n,
+        renewRequestIdHash: await digest.digestUtf8("renew-request-1"),
+        renewRequestHash: request.requestBodyHash,
+      }),
     );
+  });
+
+  it("rejects a renewal replay identity reused with a different body", async () => {
+    const capabilities = capabilityAdapter();
+    const currentLease = lease();
+    const leaseCapability = await capabilities.issueLease(
+      currentLease,
+      manifest().scopeHash,
+    );
+    const renew = vi.fn(async () => ({
+      status: ReviewInvocationLeaseTransitionStatus.IdempotencyConflict,
+    }));
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvocationLeaseRenew,
+      {
+        ...envelope("renew-conflict"),
+        leaseCapability,
+        idempotencyKey: "renew-conflict",
+        requestBodyHash: hash("0"),
+        leaseId: currentLease.leaseId,
+        ownerIdHash: currentLease.ownerIdHash,
+        fencingToken: currentLease.fencingToken.toString(10),
+        renewRequestId: "renew-request-reused",
+      },
+    );
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(
+        executionDependencies({ capabilities, currentLease, renew }),
+      ).renewLease.execute(request),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      issues: ["lease_renewal_replay_conflict"],
+    });
   });
 
   it("returns a renewed capability, rejects old ownership, and keeps late reporting valid", async () => {
@@ -695,21 +773,12 @@ describe("Review Action v2 execution/evidence composition", () => {
       executionVersion: 3n,
       activeLeases: [sourceLease],
     });
-    const releasedSnapshot = snapshotWithSlot({
-      state: ReviewWorkSlotState.Pending,
-      activeLeaseId: null,
-      executionVersion: 4n,
-    });
     const adoptedSnapshot = snapshotWithSlot({
       state: ReviewWorkSlotState.Satisfied,
       activeLeaseId: null,
       acceptedObservationRefId: "obsref-adopted",
       executionVersion: 5n,
     });
-    const release = vi.fn(async () => ({
-      status: ReviewInvocationLeaseTransitionStatus.Applied,
-      lease: { ...sourceLease, state: ReviewInvocationLeaseState.Released },
-    }));
     const adoptAccepted = vi.fn(async () => ({
       status: ReviewObservationAttachmentStatus.Attached,
       snapshot: adoptedSnapshot,
@@ -717,12 +786,8 @@ describe("Review Action v2 execution/evidence composition", () => {
     const d = executionDependencies({
       currentLease: sourceLease,
       observation,
-      release,
       adoptAccepted,
-      findExecution: vi
-        .fn()
-        .mockResolvedValueOnce(leasedSnapshot)
-        .mockResolvedValueOnce(releasedSnapshot),
+      findExecution: vi.fn().mockResolvedValue(leasedSnapshot),
       findLease: vi.fn(async () => sourceLease),
       leaseSafety: vi.fn(async () => ({
         allowed: true,
@@ -752,7 +817,6 @@ describe("Review Action v2 execution/evidence composition", () => {
         observationFactsCanonicalJson: expect.any(String),
       },
     });
-    expect(release).toHaveBeenCalledTimes(1);
     expect(adoptAccepted).toHaveBeenCalledTimes(1);
     expect(adoptAccepted).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -762,6 +826,8 @@ describe("Review Action v2 execution/evidence composition", () => {
         providerInvocationKey: identity.providerInvocationKey,
         leaseCapabilityId: "capability-generated",
         capabilitySigningKeyId: "test-key",
+        expectedExecutionVersion: leasedSnapshot.execution.version,
+        expectedStreamVersion: leasedSnapshot.stream.version,
       }),
     );
   });

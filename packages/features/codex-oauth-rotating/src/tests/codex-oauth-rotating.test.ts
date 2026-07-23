@@ -20,6 +20,7 @@ import {
   codexRotatingOidcClaimsSchema,
   codexRotatingAuthMode,
   codexRotatingSecretName,
+  CodexRotatingReviewActionV2Mode,
   computeCodexAuthGenerationHash,
   computeEncryptedPayloadDigest,
   decodeCodexRotatingSetupManifest,
@@ -680,6 +681,51 @@ exit 17
     expect(scanCodexRotatingAdvisoryWorkflow(inlineStrategy).errors).toContain(
       "matrix_strategy_not_allowed",
     );
+  });
+
+  it("renders T0 review through an immutable public reusable workflow", () => {
+    const actionSha = "a".repeat(40);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+
+    expect(workflow).toContain(
+      `uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${actionSha}`,
+    );
+    expect(workflow).toContain("review_action_v2_mode: t0");
+    expect(workflow).toContain(
+      'provider_instance_id: "codex-rotating:1163183284"',
+    );
+    expect(workflow).toContain(`runtime_ref: "${actionSha}"`);
+    expect(workflow).not.toContain("runs-on:");
+    expect(workflow).not.toContain("steps:");
+    expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const floatingRef = `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@main`;
+    expect(() =>
+      renderCodexRotatingAdvisoryWorkflow({
+        actionRef: "777genius/review-router@main",
+        apiUrl: "https://api.reviewrouter.site",
+        providerInstanceId: "codex-rotating:1163183284",
+        refreshScheduleCron: null,
+        reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      }),
+    ).toThrow("codex_rotating_t0_action_ref_must_be_full_sha");
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(
+        workflow.replace(
+          `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${actionSha}`,
+          floatingRef,
+        ),
+      ).valid,
+    ).toBe(false);
   });
 
   it("accepts job-scoped and legacy top-level id-token workflow permissions", () => {

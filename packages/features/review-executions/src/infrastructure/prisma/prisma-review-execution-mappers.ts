@@ -189,6 +189,8 @@ export function leaseToDomain(record: LeaseRecord): ReviewInvocationLease {
     attemptOrdinal: record.attemptOrdinal,
     acquireRequestIdHash: record.acquireRequestIdHash,
     acquireRequestHash: record.acquireRequestHash,
+    lastRenewRequestIdHash: record.lastRenewRequestIdHash,
+    lastRenewRequestHash: record.lastRenewRequestHash,
     ownerIdHash: record.ownerIdHash,
     leaseCapabilityId: record.leaseCapabilityId,
     capabilitySigningKeyId: record.capabilitySigningKeyId,

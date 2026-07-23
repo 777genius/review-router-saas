@@ -57,6 +57,7 @@ import {
   ReviewProviderKind,
   ReviewRunAuthorizationState as RunAuthorizationState,
   ReviewSafetyDecisionKind,
+  ResolveReviewSafetyPolicy,
   ReviewTaskKind,
   canonicalJson,
   type CanonicalReviewRevisionResolverPort,
@@ -96,6 +97,8 @@ import {
   type ReviewActionV2RevisionHashPort,
 } from "./review-action-v2-run-control-composition.js";
 import { composeReviewActionV2SnapshotPublicationRoutes } from "./review-action-v2-production-composition-snapshot-publication.js";
+import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-rotating-github-secret-gateway.js";
+import { ProductionReviewMutationAuthorityProofFacts } from "./review-action-v2-mutation-proof-facts.js";
 
 export const reviewActionV2CapabilityActiveKeyIdEnv =
   "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID";
@@ -119,6 +122,98 @@ export type ReviewActionV2ProductionRoutes = Readonly<{
   publication: RegisterReviewPublicationRequestV2RoutesDependencies;
 }>;
 
+export function composeReviewActionV2ProductionRunControl(input: {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly prisma: PrismaClient;
+  readonly oidcAudience?: string | undefined;
+}) {
+  const githubAppId = requiredEnv(input.env, "GITHUB_APP_ID");
+  const githubAppPrivateKey = readGitHubAppPrivateKey(input.env);
+  if (!githubAppPrivateKey) {
+    throw new Error("review_action_v2_github_app_private_key_missing");
+  }
+  const oidcAudience =
+    input.oidcAudience ??
+    requiredEnv(input.env, "REVIEW_ROUTER_ACTION_OIDC_AUDIENCE");
+  const providerVoteLanes = readProviderVoteLanes(input.env);
+  const projectionPolicyVersion = requiredEnv(
+    input.env,
+    reviewActionV2ProjectionPolicyVersionEnv,
+  );
+  const clock = new SystemClock();
+  const digest = new ProductionReviewActionV2Digest();
+  const repositories = createPrismaReviewRunControlRepositories(input.prisma);
+  const actionRepositories = new PrismaActionControlPlaneRepository(
+    input.prisma,
+  );
+  const prerequisites = composeProductionReviewRunAuthorizationPrerequisites({
+    githubAppId,
+    githubAppPrivateKey,
+    env: input.env,
+    releases: repositories.producerReleases,
+    digest,
+  });
+  const mutationSafetyResolver = new ResolveReviewSafetyPolicy({
+    clock,
+    digest,
+    policyQueries: repositories.safetyControls,
+    emergencyQueries: repositories.safetyControls,
+  });
+  const workflowInventory = new OctokitCodexRotatingGitHubSecretGateway({
+    appId: githubAppId,
+    privateKey: githubAppPrivateKey,
+  });
+  const mutationAuthorityProofFacts =
+    new ProductionReviewMutationAuthorityProofFacts({
+      prisma: input.prisma,
+      identities: repositories.repositoryIdentities,
+      authorities: repositories.mutationAuthorities,
+      actionRepositories,
+      safety: mutationSafetyResolver,
+      workflowInventory,
+      completionWorkerConfigured:
+        input.env.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1",
+      now: () => clock.now(),
+    });
+  const runControl = composeReviewRunControl({
+    clock,
+    identifiers: { nextId: (prefix) => `${prefix}-${randomUUID()}` },
+    digest,
+    tokens: prerequisites.tokens,
+    protocolLimitsQueries: repositories.producerReleases,
+    protocolLimitsCommands: repositories.producerReleases,
+    operationalSloQueries: repositories.producerReleases,
+    operationalSloCommands: repositories.producerReleases,
+    releaseQueries: repositories.producerReleases,
+    releaseCommands: repositories.producerReleases,
+    identityQueries: repositories.repositoryIdentities,
+    identityCommands: repositories.repositoryIdentities,
+    authorityQueries: repositories.mutationAuthorities,
+    authorityCommands: repositories.mutationAuthorities,
+    mutationAuthorityProofFacts,
+    policyQueries: repositories.safetyControls,
+    policyCommands: repositories.safetyControls,
+    emergencyQueries: repositories.safetyControls,
+    emergencyCommands: repositories.safetyControls,
+    safetyInspections: repositories.safetyControls,
+    authorizationQueries: repositories.authorizations,
+    authorizationCommands: repositories.authorizations,
+    absoluteProtocolMaxima,
+  });
+  return Object.freeze({
+    clock,
+    digest,
+    repositories,
+    actionRepositories,
+    prerequisites,
+    runControl,
+    oidcAudience,
+    providerVoteLanes,
+    projectionPolicyVersion,
+    workflowInventory,
+  });
+}
+
 export function composeReviewActionV2ProductionRoutes(input: {
   readonly enabled: boolean;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -139,58 +234,24 @@ export function composeReviewActionV2ProductionRoutes(input: {
     throw new Error("review_action_v2_prisma_unavailable");
   }
 
-  const githubAppId = requiredEnv(input.env, "GITHUB_APP_ID");
-  const githubAppPrivateKey = readGitHubAppPrivateKey(input.env);
-  if (!githubAppPrivateKey) {
-    throw new Error("review_action_v2_github_app_private_key_missing");
-  }
-  const oidcAudience =
-    input.oidcAudience ??
-    requiredEnv(input.env, "REVIEW_ROUTER_ACTION_OIDC_AUDIENCE");
-  const providerVoteLanes = readProviderVoteLanes(input.env);
-  const projectionPolicyVersion = requiredEnv(
-    input.env,
-    reviewActionV2ProjectionPolicyVersionEnv,
-  );
-
-  const clock = new SystemClock();
-  const digest = new ProductionReviewActionV2Digest();
-  const repositories = createPrismaReviewRunControlRepositories(input.prisma);
-  const prerequisites = composeProductionReviewRunAuthorizationPrerequisites({
-    githubAppId,
-    githubAppPrivateKey,
-    env: input.env,
-    releases: repositories.producerReleases,
-    digest,
-  });
-  const runControl = composeReviewRunControl({
+  const {
     clock,
-    identifiers: { nextId: (prefix) => `${prefix}-${randomUUID()}` },
     digest,
-    tokens: prerequisites.tokens,
-    protocolLimitsQueries: repositories.producerReleases,
-    protocolLimitsCommands: repositories.producerReleases,
-    operationalSloQueries: repositories.producerReleases,
-    operationalSloCommands: repositories.producerReleases,
-    releaseQueries: repositories.producerReleases,
-    releaseCommands: repositories.producerReleases,
-    identityQueries: repositories.repositoryIdentities,
-    identityCommands: repositories.repositoryIdentities,
-    authorityQueries: repositories.mutationAuthorities,
-    authorityCommands: repositories.mutationAuthorities,
-    policyQueries: repositories.safetyControls,
-    policyCommands: repositories.safetyControls,
-    emergencyQueries: repositories.safetyControls,
-    emergencyCommands: repositories.safetyControls,
-    safetyInspections: repositories.safetyControls,
-    authorizationQueries: repositories.authorizations,
-    authorizationCommands: repositories.authorizations,
-    absoluteProtocolMaxima,
+    repositories,
+    actionRepositories,
+    prerequisites,
+    runControl,
+    oidcAudience,
+    providerVoteLanes,
+    projectionPolicyVersion,
+  } = composeReviewActionV2ProductionRunControl({
+    env: input.env,
+    prisma: input.prisma,
+    ...(input.oidcAudience === undefined
+      ? {}
+      : { oidcAudience: input.oidcAudience }),
   });
 
-  const actionRepositories = new PrismaActionControlPlaneRepository(
-    input.prisma,
-  );
   const admissionFacts = createServerOwnedReviewActionV2AdmissionFacts({
     revisionResolver: prerequisites.revisionResolver,
     releaseAttestations: prerequisites.releaseAttestations,

@@ -106,6 +106,9 @@ export function createServerOwnedReviewActionV2AdmissionFacts(
       const pullRequestNumberHint = pullRequestNumberHintFromClaims(
         input.claims,
       );
+      const producerActionCommitSha = producerActionCommitFromClaims(
+        input.claims,
+      );
       const revision = await dependencies.revisionResolver.resolve({
         workspaceId: input.repository.workspaceId,
         repositoryConnectionId: input.repository.repositoryId,
@@ -121,9 +124,6 @@ export function createServerOwnedReviewActionV2AdmissionFacts(
       ) {
         throw revisionResolutionFailure(revision.status);
       }
-      const producerActionCommitSha = producerActionCommitFromClaims(
-        input.claims,
-      );
       const attestation = await dependencies.releaseAttestations.attest({
         actionCommitSha: producerActionCommitSha,
         expectedSchemaDigest: reviewActionV2PublishedSchemaDigest,
@@ -198,7 +198,9 @@ function producerActionCommitFromClaims(
 ): string {
   const actionCommitSha = claims.job_workflow_sha?.toLowerCase();
   const workflowRefCommit = claims.job_workflow_ref
-    ? /@([a-f0-9]{40})$/i.exec(claims.job_workflow_ref)?.[1]?.toLowerCase()
+    ? /^777genius\/review-router\/\.github\/workflows\/reviewrouter-execution-reusable\.yml@([a-f0-9]{40})$/i
+        .exec(claims.job_workflow_ref)?.[1]
+        ?.toLowerCase()
     : undefined;
   if (
     !actionCommitSha ||

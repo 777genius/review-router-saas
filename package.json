@@ -54,6 +54,7 @@
     "review-v2:migrate": "node scripts/run-with-env.mjs node scripts/review-v2-migrate.mjs",
     "review-v2:migration-rehearsal": "node scripts/run-with-env.mjs node scripts/check-review-v2-migration-rehearsal.mjs",
     "review-v2:e2e": "REVIEW_ROUTER_REVIEW_V2_E2E=1 vitest run scripts/review-action-v2-production-e2e/review-action-v2-production.e2e.test.ts",
+    "review-v2:admin": "node scripts/run-with-env.mjs node --conditions=production apps/api/dist/review-action-v2-operator-cli.js",
     "db:restore:smoke": "node scripts/run-with-env.mjs node scripts/check-backup-restore-smoke.mjs",
     "spike:outbox-maintenance:e2e": "tsx spikes/github-oidc/src/outbox-maintenance-e2e.ts",
     "spike:repo-health:e2e": "tsx spikes/github-oidc/src/repo-health-workflow-e2e.ts",

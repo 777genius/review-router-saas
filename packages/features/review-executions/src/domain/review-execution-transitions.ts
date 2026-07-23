@@ -508,6 +508,8 @@ export function decideLeaseAcquire(
     attemptOrdinal,
     acquireRequestIdHash: input.acquireRequestIdHash,
     acquireRequestHash: input.acquireRequestHash,
+    lastRenewRequestIdHash: null,
+    lastRenewRequestHash: null,
     ownerIdHash: input.ownerIdHash,
     leaseCapabilityId: input.leaseCapabilityId,
     capabilitySigningKeyId: input.capabilitySigningKeyId,
@@ -547,6 +549,7 @@ export enum LeaseTransitionDecisionStatus {
   StaleTerm = "stale_term",
   Expired = "expired",
   InvalidDeadline = "invalid_deadline",
+  IdempotencyConflict = "idempotency_conflict",
 }
 
 export type LeaseTransitionDecision = {
@@ -561,6 +564,8 @@ export function decideLeaseRenewal(input: {
   readonly ownerIdHash: string;
   readonly leaseCapabilityId: string;
   readonly fencingToken: bigint;
+  readonly renewRequestIdHash: string;
+  readonly renewRequestHash: string;
   readonly now: Date;
   readonly expiresAt: Date;
   readonly resultReportUntil: Date;
@@ -569,10 +574,20 @@ export function decideLeaseRenewal(input: {
   assertDate(input.now, "now");
   assertDate(input.expiresAt, "lease_expires_at");
   assertDate(input.resultReportUntil, "result_report_until");
+  assertSha256(input.renewRequestIdHash, "renew_request_id_hash");
+  assertSha256(input.renewRequestHash, "renew_request_hash");
   assertReviewExecutionLimits(input.limits);
   assertLeaseExecutionRelation(input.lease, input.execution);
   if (!leaseTermMatches(input.lease, input)) {
     return unchangedLease(LeaseTransitionDecisionStatus.StaleTerm, input);
+  }
+  if (input.lease.lastRenewRequestIdHash === input.renewRequestIdHash) {
+    return input.lease.lastRenewRequestHash === input.renewRequestHash
+      ? unchangedLease(LeaseTransitionDecisionStatus.Restored, input)
+      : unchangedLease(
+          LeaseTransitionDecisionStatus.IdempotencyConflict,
+          input,
+        );
   }
   if (
     input.lease.state !== ReviewInvocationLeaseState.Active ||
@@ -585,7 +600,11 @@ export function decideLeaseRenewal(input: {
     input.lease.resultReportUntil.getTime() ===
       input.resultReportUntil.getTime()
   ) {
-    return unchangedLease(LeaseTransitionDecisionStatus.Restored, input);
+    return {
+      status: LeaseTransitionDecisionStatus.Restored,
+      lease: withRenewRequestIdentity(input.lease, input),
+      execution: input.execution,
+    };
   }
   if (!validLeaseDeadlines(input, input.limits)) {
     return unchangedLease(LeaseTransitionDecisionStatus.InvalidDeadline, input);
@@ -594,6 +613,7 @@ export function decideLeaseRenewal(input: {
     status: LeaseTransitionDecisionStatus.Applied,
     lease: {
       ...input.lease,
+      ...renewRequestIdentity(input),
       renewedAt: new Date(input.now),
       expiresAt: new Date(input.expiresAt),
       resultReportUntil: new Date(input.resultReportUntil),
@@ -648,7 +668,7 @@ export type ObservationAttachmentDecision =
       readonly status: ObservationAttachmentDecisionStatus.Attached;
       readonly execution: ReviewExecution;
       readonly observationRef: ReviewExecutionObservationRef;
-      readonly lease: ReviewInvocationLease | null;
+      readonly leases: readonly ReviewInvocationLease[];
     }
   | {
       readonly status: ObservationAttachmentDecisionStatus.Restored;
@@ -744,7 +764,7 @@ export function decideFreshObservationAttachment(input: {
     input.execution,
     input.slot,
     ref,
-    { ...lease, state: ReviewInvocationLeaseState.Released },
+    [{ ...lease, state: ReviewInvocationLeaseState.Released }],
     input.facts.now,
   );
 }
@@ -799,7 +819,7 @@ export function decideReusableObservationAttachment(input: {
     input.execution,
     input.slot,
     ref,
-    null,
+    [],
     input.facts.now,
   );
 }
@@ -812,6 +832,8 @@ export function decideObservationAdoption(input: {
   readonly existingRefByIdentity: ReviewExecutionObservationRef | null;
   readonly existingAdoptionLease: ReviewInvocationLease | null;
   readonly sourceLease: ReviewInvocationLease | null;
+  readonly expectedStreamVersion: bigint;
+  readonly expectedExecutionVersion: bigint;
   readonly sourceLeaseId: string;
   readonly sourceFencingToken: bigint;
   readonly adoptionLeaseId: string;
@@ -846,6 +868,8 @@ export function decideObservationAdoption(input: {
   const source = input.sourceLease;
   if (
     !isCurrentRunning(input.stream, input.execution) ||
+    input.stream.version !== input.expectedStreamVersion ||
+    input.execution.version !== input.expectedExecutionVersion ||
     source === null ||
     source.leaseId !== input.sourceLeaseId ||
     source.fencingToken !== input.sourceFencingToken ||
@@ -854,7 +878,8 @@ export function decideObservationAdoption(input: {
     source.workSlotId !== input.slot.workSlotId ||
     source.providerInvocationKey !== input.facts.providerInvocationKey ||
     source.purpose !== ReviewInvocationLeasePurpose.ProviderExecution ||
-    input.slot.activeLeaseId !== null ||
+    (input.slot.activeLeaseId !== null &&
+      input.slot.activeLeaseId !== source.leaseId) ||
     input.slot.acceptedObservationRefId !== null
   ) {
     return { status: ObservationAttachmentDecisionStatus.Ineligible };
@@ -881,6 +906,8 @@ export function decideObservationAdoption(input: {
     attemptOrdinal: Math.max(0, input.slot.nextAttemptOrdinal - 1),
     acquireRequestIdHash: input.adoptionAcquireRequestIdHash,
     acquireRequestHash: input.adoptionAcquireRequestHash,
+    lastRenewRequestIdHash: null,
+    lastRenewRequestHash: null,
     ownerIdHash: input.ownerIdHash,
     leaseCapabilityId: input.leaseCapabilityId,
     capabilitySigningKeyId: input.capabilitySigningKeyId,
@@ -906,9 +933,42 @@ export function decideObservationAdoption(input: {
     input.execution,
     input.slot,
     ref,
-    adoptionLease,
+    [
+      ...(source.state === ReviewInvocationLeaseState.Active
+        ? [
+            {
+              ...source,
+              state:
+                source.expiresAt <= input.facts.now
+                  ? ReviewInvocationLeaseState.Expired
+                  : ReviewInvocationLeaseState.Released,
+            },
+          ]
+        : []),
+      adoptionLease,
+    ],
     input.facts.now,
   );
+}
+
+function withRenewRequestIdentity(
+  lease: ReviewInvocationLease,
+  input: {
+    readonly renewRequestIdHash: string;
+    readonly renewRequestHash: string;
+  },
+): ReviewInvocationLease {
+  return { ...lease, ...renewRequestIdentity(input) };
+}
+
+function renewRequestIdentity(input: {
+  readonly renewRequestIdHash: string;
+  readonly renewRequestHash: string;
+}) {
+  return {
+    lastRenewRequestIdHash: input.renewRequestIdHash,
+    lastRenewRequestHash: input.renewRequestHash,
+  } as const;
 }
 
 export enum ExecutionFinalizationDecisionStatus {
@@ -1291,13 +1351,13 @@ function attachedObservationDecision(
   execution: ReviewExecution,
   slot: ReviewWorkSlot,
   ref: ReviewExecutionObservationRef,
-  lease: ReviewInvocationLease | null,
+  leases: readonly ReviewInvocationLease[],
   now: Date,
 ): ObservationAttachmentDecision {
   return {
     status: ObservationAttachmentDecisionStatus.Attached,
     observationRef: ref,
-    lease,
+    leases,
     execution: replaceExecutionSlot(
       execution,
       {

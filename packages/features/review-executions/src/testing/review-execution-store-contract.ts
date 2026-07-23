@@ -157,6 +157,8 @@ export function runReviewExecutionStoreContract(
         ownerIdHash: lease.ownerIdHash,
         leaseCapabilityId: lease.leaseCapabilityId,
         fencingToken: lease.fencingToken,
+        renewRequestIdHash: hash(80),
+        renewRequestHash: hash(81),
         now: renewedAt,
         expiresAt: renewedExpiresAt,
         resultReportUntil: renewedResultReportUntil,
@@ -275,20 +277,16 @@ export function runReviewExecutionStoreContract(
         payloadHash,
         createdAt: new Date(),
       });
-      const released = await harness.executions.releaseLease({
-        leaseId: sourceLease.leaseId,
-        ownerIdHash: sourceLease.ownerIdHash,
-        leaseCapabilityId: sourceLease.leaseCapabilityId,
-        fencingToken: sourceLease.fencingToken,
-        now: new Date(),
-      });
-      expect(released.status).toBe(
-        ReviewInvocationLeaseTransitionStatus.Applied,
+      const adoptionTarget = await harness.executions.findExecution(
+        sourceLease.executionId,
       );
+      if (!adoptionTarget) throw new Error("adoption target missing");
 
       const adopted = await harness.executions.adoptObservation({
         scope: harness.scope,
         executionId: sourceLease.executionId,
+        expectedStreamVersion: adoptionTarget.stream.version,
+        expectedExecutionVersion: adoptionTarget.execution.version,
         workSlotId: sourceLease.workSlotId,
         sourceLeaseId: sourceLease.leaseId,
         sourceFencingToken: sourceLease.fencingToken,
@@ -326,6 +324,9 @@ export function runReviewExecutionStoreContract(
         attemptId: null,
         attemptOrdinal: 1,
       });
+      await expect(
+        harness.executions.findLease(sourceLease.leaseId),
+      ).resolves.toMatchObject({ state: ReviewInvocationLeaseState.Released });
     });
 
     it("persists exact artifact bytes and restores only the same artifact hash", async () => {

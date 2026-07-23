@@ -190,6 +190,8 @@ describe("ReviewMutationAuthority", () => {
       ["2026-01-01T00:00:59.999Z", {}],
       ["2026-01-01T00:01:00.000Z", { noTrackedLegacyActivity: false }],
       ["2026-01-01T00:01:00.000Z", { workflowInventoryCompatible: false }],
+      ["2026-01-01T00:01:00.000Z", { registeredReleaseSelected: false }],
+      ["2026-01-01T00:01:00.000Z", { completionWorkerConfigured: false }],
       ["2026-01-01T00:01:00.000Z", { safetyDecisionEnabled: false }],
     ]) {
       expect(() =>
@@ -321,6 +323,8 @@ function activationProof(
       facts: {
         noTrackedLegacyActivity: true,
         workflowInventoryCompatible: true,
+        registeredReleaseSelected: true,
+        completionWorkerConfigured: true,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,

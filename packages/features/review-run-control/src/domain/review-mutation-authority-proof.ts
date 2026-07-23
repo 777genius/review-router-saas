@@ -30,6 +30,7 @@ export enum ReviewMutationAuthorityProofBlocker {
   UnknownEffectsUnreconciled = "unknown_effects_unreconciled",
   RepositoryUnbound = "repository_unbound",
   RegisteredReleaseMissing = "registered_release_missing",
+  CompletionWorkerUnavailable = "completion_worker_unavailable",
 }
 
 declare const reviewMutationAuthorityProofDigestBrand: unique symbol;
@@ -52,6 +53,8 @@ export type ReviewMutationDirectV2InitializationProofFacts = {
 export type ReviewMutationActivationProofFacts = {
   readonly noTrackedLegacyActivity: boolean;
   readonly workflowInventoryCompatible: boolean;
+  readonly registeredReleaseSelected: boolean;
+  readonly completionWorkerConfigured: boolean;
   readonly managedWorkflowInventoryHash: string;
   readonly safetyDecisionEnabled: boolean;
   readonly activationSafetyDecisionHash: string;
@@ -222,6 +225,16 @@ export function reviewMutationAuthorityProofBlockers(
           ReviewMutationAuthorityProofBlocker.WorkflowInventoryIncompatible,
         );
       }
+      if (!proof.facts.registeredReleaseSelected) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.RegisteredReleaseMissing,
+        );
+      }
+      if (!proof.facts.completionWorkerConfigured) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.CompletionWorkerUnavailable,
+        );
+      }
       if (!proof.facts.safetyDecisionEnabled) {
         blockers.push(
           ReviewMutationAuthorityProofBlocker.MutationSafetyDisabled,
@@ -355,6 +368,14 @@ function validateUnsealedProof(proof: UnsealedReviewMutationAuthorityProof) {
       assertBoolean(
         proof.facts.workflowInventoryCompatible,
         "workflow_inventory_compatible",
+      );
+      assertBoolean(
+        proof.facts.registeredReleaseSelected,
+        "registered_release_selected",
+      );
+      assertBoolean(
+        proof.facts.completionWorkerConfigured,
+        "completion_worker_configured",
       );
       assertSha256(
         proof.facts.managedWorkflowInventoryHash,

@@ -397,7 +397,7 @@ describe("Review Action v2 run-control composition", () => {
         claims: {
           ...oidcClaims("floating-ref-jti"),
           job_workflow_ref:
-            "777genius/review-router/.github/workflows/reviewrouter-reusable.yml@main",
+            "777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@main",
         },
         repository: new TestActionRepositories().repository!,
         scmRepositoryIdentityId: "scm-identity-1",
@@ -407,6 +407,43 @@ describe("Review Action v2 run-control composition", () => {
       issues: ["producer_release_workflow_not_immutable"],
     });
   });
+
+  it.each([
+    "attacker/review-router/.github/workflows/reviewrouter-execution-reusable.yml",
+    "777genius/review-router/.github/workflows/reviewrouter-reusable.yml",
+    "777genius/review-router/.github/workflows/other.yml",
+  ])(
+    "rejects an immutable producer from the wrong workflow identity: %s",
+    async (workflow) => {
+      const admissionFacts = createServerOwnedReviewActionV2AdmissionFacts({
+        revisionResolver: {
+          resolve: async () => {
+            throw new Error("revision_must_not_resolve");
+          },
+        },
+        releaseAttestations: {
+          attest: async () => {
+            throw new Error("attestation_must_not_run");
+          },
+        },
+        providerVoteLanes: facts.providerVoteLanes,
+      });
+
+      await expect(
+        admissionFacts.resolve({
+          claims: {
+            ...oidcClaims(`wrong-workflow-${workflow}`),
+            job_workflow_ref: `${workflow}@${actionSha}`,
+          },
+          repository: new TestActionRepositories().repository!,
+          scmRepositoryIdentityId: "scm-identity-1",
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 403,
+        issues: ["producer_release_workflow_not_immutable"],
+      });
+    },
+  );
 
   it("authorizes once and restores the exact OIDC/protocol replay", async () => {
     const handlers = createReviewActionV2RunControlHandlers(dependencies);
@@ -590,7 +627,7 @@ function oidcClaims(jti: string): GitHubActionsOidcClaims {
     workflow_ref:
       "777genius/example/.github/workflows/reviewrouter.yml@refs/pull/42/merge",
     workflow_sha: headSha,
-    job_workflow_ref: `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${actionSha}`,
+    job_workflow_ref: `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${actionSha}`,
     job_workflow_sha: actionSha,
     actor: "777genius",
     jti,

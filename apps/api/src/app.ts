@@ -84,8 +84,10 @@ import { PrismaReviewSnapshotRepository } from "@reviewrouter/features-review-sn
 import { PrismaReviewExecutionCheckpointRepository } from "@reviewrouter/features-review-execution-checkpoints";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
+import { createPrismaReviewRunControlRepositories } from "@reviewrouter/features-review-run-control/composition";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
+import { ReviewRunControlLegacyMutationAdmission } from "./review-action-v1-mutation-admission.js";
 import {
   CompositePullRequestWebhookHandler,
   CompositePushWebhookHandler,
@@ -252,6 +254,8 @@ export async function createApiApp(
           const ledgerSecret =
             process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
             options.actionSessionSecret;
+          const reviewRunControlRepositories =
+            createPrismaReviewRunControlRepositories(prisma);
           return {
             repositories: new PrismaActionControlPlaneRepository(prisma),
             ...(conflictReviewFallbackEnabled
@@ -288,6 +292,13 @@ export async function createApiApp(
               clock,
             ),
             replayNonces: new PrismaActionOidcReplayNonceStore(prisma),
+            legacyMutationAdmission:
+              new ReviewRunControlLegacyMutationAdmission({
+                repositoryIdentities:
+                  reviewRunControlRepositories.repositoryIdentities,
+                mutationAuthorities:
+                  reviewRunControlRepositories.mutationAuthorities,
+              }),
             codexRotatingOAuth,
             codexRotatingReviewSnapshotAccess: codexRotatingOAuth,
             reviewSnapshots: new PrismaReviewSnapshotRepository(prisma),

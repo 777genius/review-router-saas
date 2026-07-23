@@ -164,6 +164,8 @@ export type ReviewInvocationLease = ReviewExecutionScope & {
   readonly attemptOrdinal: number;
   readonly acquireRequestIdHash: string;
   readonly acquireRequestHash: string;
+  readonly lastRenewRequestIdHash: string | null;
+  readonly lastRenewRequestHash: string | null;
   readonly ownerIdHash: string;
   readonly leaseCapabilityId: string;
   readonly capabilitySigningKeyId: string;

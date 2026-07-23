@@ -303,10 +303,20 @@ export class PrismaReviewExecutionStore
                   where: { executionId: stream.activeExecutionId },
                 })
               : null;
+          if (
+            stream.activeExecutionId !== null &&
+            stream.activeExecutionId !== execution.executionId &&
+            priorActiveRecord === null
+          ) {
+            throw new Error("review_execution_active_pointer_corrupted");
+          }
           const priorActive =
             priorActiveRecord === null
               ? null
               : await loadExecution(transaction, priorActiveRecord);
+          if (priorActive !== null && !sameScope(priorActive, command.scope)) {
+            throw new Error("review_execution_active_scope_corrupted");
+          }
           const priorActiveLeases =
             priorActive === null
               ? []
@@ -555,6 +565,8 @@ export class PrismaReviewExecutionStore
     return this.transitionLease(command, (input) =>
       decideLeaseRenewal({
         ...input,
+        renewRequestIdHash: command.renewRequestIdHash,
+        renewRequestHash: command.renewRequestHash,
         expiresAt: databaseRelativeDate(
           input.now,
           command.now,
@@ -632,6 +644,8 @@ export class PrismaReviewExecutionStore
         existingRefByIdentity: target.existingRefByIdentity,
         existingAdoptionLease,
         sourceLease,
+        expectedStreamVersion: command.expectedStreamVersion,
+        expectedExecutionVersion: command.expectedExecutionVersion,
         sourceLeaseId: command.sourceLeaseId,
         sourceFencingToken: command.sourceFencingToken,
         adoptionLeaseId: command.adoptionLeaseId,
@@ -921,6 +935,14 @@ export class PrismaReviewExecutionStore
           ) {
             return {
               status: ReviewInvocationLeaseTransitionStatus.InvalidDeadline,
+            };
+          }
+          if (
+            decision.status ===
+            LeaseTransitionDecisionStatus.IdempotencyConflict
+          ) {
+            return {
+              status: ReviewInvocationLeaseTransitionStatus.IdempotencyConflict,
             };
           }
           await persistLeaseTransition(
@@ -1321,17 +1343,17 @@ async function persistObservationDecision(
         target.execution,
         decision.execution,
       );
-      if (decision.lease !== null) {
+      for (const lease of decision.leases) {
         const existing = await transaction.reviewInvocationLeaseV2.findUnique({
-          where: { leaseId: decision.lease.leaseId },
+          where: { leaseId: lease.leaseId },
         });
         if (existing === null) {
-          await assertLeaseIdentityNotTombstoned(transaction, decision.lease);
+          await assertLeaseIdentityNotTombstoned(transaction, lease);
           await transaction.reviewInvocationLeaseV2.create({
-            data: leaseCreateData(decision.lease),
+            data: leaseCreateData(lease),
           });
         } else {
-          await persistSingleLeaseState(transaction, decision.lease);
+          await persistSingleLeaseState(transaction, lease);
         }
       }
       return {
@@ -1430,6 +1452,8 @@ async function persistLeaseTransition(
       renewedAt: nextLease.renewedAt,
       expiresAt: nextLease.expiresAt,
       resultReportUntil: nextLease.resultReportUntil,
+      lastRenewRequestIdHash: nextLease.lastRenewRequestIdHash,
+      lastRenewRequestHash: nextLease.lastRenewRequestHash,
     },
   });
   if (updated.count !== 1) throw new ConcurrentExecutionMutationError();
@@ -1592,6 +1616,8 @@ function leaseCreateData(lease: ReviewInvocationLease) {
     attemptOrdinal: lease.attemptOrdinal,
     acquireRequestIdHash: lease.acquireRequestIdHash,
     acquireRequestHash: lease.acquireRequestHash,
+    lastRenewRequestIdHash: lease.lastRenewRequestIdHash,
+    lastRenewRequestHash: lease.lastRenewRequestHash,
     ownerIdHash: lease.ownerIdHash,
     leaseCapabilityId: lease.leaseCapabilityId,
     capabilitySigningKeyId: lease.capabilitySigningKeyId,

@@ -96,6 +96,32 @@ describe("authenticated ReviewMutationAuthority operator adapter", () => {
       operation: ReviewMutationAuthorityCommandKind.Activate,
     });
   });
+
+  it("authenticates explicit v1 initialization before delegating", async () => {
+    const initializeV1 = vi
+      .fn<OperatorUseCases["initializeV1"]>()
+      .mockResolvedValue({ status: "applied" } as never);
+    const service = new AuthenticatedReviewMutationAuthorityOperatorService({
+      authentication: {
+        authenticate: vi.fn().mockResolvedValue({
+          operatorId: "operator-1",
+          permissions: [
+            ReviewMutationOperatorPermission.ControlMutationAuthority,
+          ],
+        }),
+      },
+      useCases: useCases({ initializeV1 }),
+    });
+
+    await service.initializeV1({
+      credential: "operator-secret",
+      scmRepositoryIdentityId: "scm-1",
+    });
+
+    expect(initializeV1).toHaveBeenCalledWith({
+      scmRepositoryIdentityId: "scm-1",
+    });
+  });
 });
 
 type OperatorUseCases = ReviewMutationAuthorityOperatorUseCases;
@@ -103,6 +129,8 @@ type OperatorUseCases = ReviewMutationAuthorityOperatorUseCases;
 function useCases(overrides: Partial<OperatorUseCases> = {}): OperatorUseCases {
   return {
     preflight: overrides.preflight ?? vi.fn<OperatorUseCases["preflight"]>(),
+    initializeV1:
+      overrides.initializeV1 ?? vi.fn<OperatorUseCases["initializeV1"]>(),
     initializeDirectV2:
       overrides.initializeDirectV2 ??
       vi.fn<OperatorUseCases["initializeDirectV2"]>(),
