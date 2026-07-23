@@ -694,9 +694,10 @@ exit 17
     });
 
     expect(workflow).toContain(
-      `uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${actionSha}`,
+      `uses: 777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${actionSha}`,
     );
-    expect(workflow).toContain("review_action_v2_mode: t0");
+    expect(workflow).not.toContain("review_action_v2_mode:");
+    expect(workflow).not.toContain("review_drafts:");
     expect(workflow).toContain(
       'provider_instance_id: "codex-rotating:1163183284"',
     );
@@ -711,7 +712,7 @@ exit 17
       errors: [],
     });
 
-    const floatingRef = `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@main`;
+    const floatingRef = `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main`;
     expect(() =>
       renderCodexRotatingAdvisoryWorkflow({
         actionRef: "777genius/review-router@main",
@@ -724,7 +725,7 @@ exit 17
     expect(
       scanCodexRotatingAdvisoryWorkflow(
         workflow.replace(
-          `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${actionSha}`,
+          `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${actionSha}`,
           floatingRef,
         ),
       ).valid,
