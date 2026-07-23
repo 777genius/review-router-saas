@@ -58,6 +58,7 @@ type ReviewRouterActionRefEnv = {
 type ReviewRouterApiUrlEnv = {
   readonly REVIEW_ROUTER_API_URL?: string | undefined;
   readonly REVIEW_ROUTER_PUBLIC_API_URL?: string | undefined;
+  readonly [key: string]: string | undefined;
 };
 
 export function loadRuntimeEnv(
