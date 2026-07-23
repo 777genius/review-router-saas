@@ -581,7 +581,7 @@ class ProductionCurrentReviewRevisionAdapter implements CurrentReviewRevisionPor
       githubInstallationId: repository.githubInstallationId,
       owner: repositoryName.owner,
       repo: repositoryName.repo,
-      sourceRunId: source.sourceRunId,
+      sourceRunId: null,
       pullRequestNumberHint: scope.pullRequestNumber,
     });
     if (resolved.status !== CanonicalReviewRevisionResolutionStatus.Resolved) {
