@@ -43,6 +43,53 @@ const allSafetyCapabilities = Object.freeze(
   Object.values(ReviewSafetyCapability),
 );
 
+export type ReviewV2CohortRolloutModes = Readonly<{
+  global: ReviewSafetyRolloutMode;
+  repository: ReviewSafetyRolloutMode;
+}>;
+
+export function reviewV2CohortRolloutModes(
+  capability: ReviewSafetyCapability,
+  operation: "stage-t0" | "disable-cross-revision-reuse" = "stage-t0",
+): ReviewV2CohortRolloutModes | null {
+  switch (capability) {
+    case ReviewSafetyCapability.RunAuthorizationV2:
+    case ReviewSafetyCapability.EvidenceWritesV2:
+    case ReviewSafetyCapability.EvidenceReuseV2:
+    case ReviewSafetyCapability.PublicationOperationsV2:
+    case ReviewSafetyCapability.MutationEpochV2:
+      return operation === "stage-t0"
+        ? {
+            global: ReviewSafetyRolloutMode.Allowlisted,
+            repository: ReviewSafetyRolloutMode.Enabled,
+          }
+        : null;
+    case ReviewSafetyCapability.PromptOnlyReuse:
+    case ReviewSafetyCapability.ContextGatewayReuse:
+      return operation === "disable-cross-revision-reuse"
+        ? {
+            global: ReviewSafetyRolloutMode.Disabled,
+            repository: ReviewSafetyRolloutMode.Disabled,
+          }
+        : null;
+    default: {
+      const exhaustiveCapability: never = capability;
+      return exhaustiveCapability;
+    }
+  }
+}
+
+export function reviewV2CohortEmergencyInitialization(
+  existing: { readonly stopped: boolean } | null,
+) {
+  if (existing) return null;
+  return {
+    expectedVersion: 0,
+    stopped: false,
+    reason: "review-v2-cohort-staged",
+  } as const;
+}
+
 type ParsedArguments = Readonly<{
   positionals: readonly string[];
   options: Readonly<Record<string, string | true>>;
@@ -91,8 +138,19 @@ async function main() {
     await authenticateOperator(runtime.digest, process.env);
     requireConfirmation(parsed, repository);
 
-    if (command === "cohort stage") {
-      printJson(await stageRepositoryCohort(runtime, target));
+    if (
+      command === "cohort stage" ||
+      command === "cohort disable-cross-revision-reuse"
+    ) {
+      printJson(
+        await updateRepositoryCohortPolicies(
+          runtime,
+          target,
+          command === "cohort stage"
+            ? "stage-t0"
+            : "disable-cross-revision-reuse",
+        ),
+      );
       return;
     }
 
@@ -222,9 +280,10 @@ function operationForProofedCommand(command: string) {
   }
 }
 
-async function stageRepositoryCohort(
+async function updateRepositoryCohortPolicies(
   runtime: ReturnType<typeof composeReviewActionV2ProductionRunControl>,
   target: Awaited<ReturnType<typeof resolveRepositoryTarget>>,
+  operation: "stage-t0" | "disable-cross-revision-reuse",
 ) {
   const updatedBy = "review-v2-operator";
   const globalScope = { scope: ReviewSafetyPolicyScope.Global } as const;
@@ -236,6 +295,8 @@ async function stageRepositoryCohort(
   } as const;
   const results = [];
   for (const capability of allSafetyCapabilities) {
+    const rolloutModes = reviewV2CohortRolloutModes(capability, operation);
+    if (!rolloutModes) continue;
     const global =
       await runtime.repositories.safetyControls.findReviewSafetyPolicy({
         scope: globalScope,
@@ -246,7 +307,7 @@ async function stageRepositoryCohort(
         expectedVersion: global?.version ?? 0,
         scope: globalScope,
         capability,
-        rolloutMode: ReviewSafetyRolloutMode.Allowlisted,
+        rolloutMode: rolloutModes.global,
         updatedBy,
       }),
     );
@@ -260,27 +321,29 @@ async function stageRepositoryCohort(
         expectedVersion: repository?.version ?? 0,
         scope: repositoryScope,
         capability,
-        rolloutMode: ReviewSafetyRolloutMode.Enabled,
+        rolloutMode: rolloutModes.repository,
         updatedBy,
       }),
     );
   }
-  for (const scope of [globalScope, repositoryScope]) {
-    const existing =
-      await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
-        scope,
+  if (operation === "stage-t0") {
+    for (const scope of [globalScope, repositoryScope]) {
+      const existing =
+        await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
+          scope,
+        );
+      const initialization = reviewV2CohortEmergencyInitialization(existing);
+      if (!initialization) continue;
+      results.push(
+        await runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
+          ...initialization,
+          scope,
+          updatedBy,
+        }),
       );
-    results.push(
-      await runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
-        expectedVersion: existing?.version ?? 0,
-        scope,
-        stopped: false,
-        reason: "review-v2-cohort-staged",
-        updatedBy,
-      }),
-    );
+    }
   }
-  return { repository: target.repository.fullName, results };
+  return { repository: target.repository.fullName, operation, results };
 }
 
 async function registerRelease(
@@ -664,6 +727,9 @@ function printUsage() {
   process.stdout.write(`  release register --bundle FILE --confirm release\n`);
   process.stdout.write(
     `  cohort stage --repo OWNER/REPO --confirm OWNER/REPO\n`,
+  );
+  process.stdout.write(
+    `  cohort disable-cross-revision-reuse --repo OWNER/REPO --confirm OWNER/REPO\n`,
   );
   process.stdout.write(
     `  mutation initialize-v1 --repo OWNER/REPO --confirm OWNER/REPO\n`,
