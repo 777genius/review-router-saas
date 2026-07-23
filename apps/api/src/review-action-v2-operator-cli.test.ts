@@ -93,10 +93,18 @@ describe("review action v2 operator CLI", () => {
       ReviewSafetyCapability.ContextGatewayReuse,
     ] as const;
     for (const capability of deferredCapabilities) {
-      expect(reviewV2CohortRolloutModes(capability)).toEqual({
+      expect(reviewV2CohortRolloutModes(capability)).toBeNull();
+      expect(
+        reviewV2CohortRolloutModes(capability, "disable-cross-revision-reuse"),
+      ).toEqual({
         global: ReviewSafetyRolloutMode.Disabled,
         repository: ReviewSafetyRolloutMode.Disabled,
       });
+    }
+    for (const capability of t0Capabilities) {
+      expect(
+        reviewV2CohortRolloutModes(capability, "disable-cross-revision-reuse"),
+      ).toBeNull();
     }
 
     expect([...t0Capabilities, ...deferredCapabilities].sort()).toEqual(

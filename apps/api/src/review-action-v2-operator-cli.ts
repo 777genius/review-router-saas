@@ -50,23 +50,28 @@ export type ReviewV2CohortRolloutModes = Readonly<{
 
 export function reviewV2CohortRolloutModes(
   capability: ReviewSafetyCapability,
-): ReviewV2CohortRolloutModes {
+  operation: "stage-t0" | "disable-cross-revision-reuse" = "stage-t0",
+): ReviewV2CohortRolloutModes | null {
   switch (capability) {
     case ReviewSafetyCapability.RunAuthorizationV2:
     case ReviewSafetyCapability.EvidenceWritesV2:
     case ReviewSafetyCapability.EvidenceReuseV2:
     case ReviewSafetyCapability.PublicationOperationsV2:
     case ReviewSafetyCapability.MutationEpochV2:
-      return {
-        global: ReviewSafetyRolloutMode.Allowlisted,
-        repository: ReviewSafetyRolloutMode.Enabled,
-      };
+      return operation === "stage-t0"
+        ? {
+            global: ReviewSafetyRolloutMode.Allowlisted,
+            repository: ReviewSafetyRolloutMode.Enabled,
+          }
+        : null;
     case ReviewSafetyCapability.PromptOnlyReuse:
     case ReviewSafetyCapability.ContextGatewayReuse:
-      return {
-        global: ReviewSafetyRolloutMode.Disabled,
-        repository: ReviewSafetyRolloutMode.Disabled,
-      };
+      return operation === "disable-cross-revision-reuse"
+        ? {
+            global: ReviewSafetyRolloutMode.Disabled,
+            repository: ReviewSafetyRolloutMode.Disabled,
+          }
+        : null;
     default: {
       const exhaustiveCapability: never = capability;
       return exhaustiveCapability;
@@ -122,8 +127,19 @@ async function main() {
     await authenticateOperator(runtime.digest, process.env);
     requireConfirmation(parsed, repository);
 
-    if (command === "cohort stage") {
-      printJson(await stageRepositoryCohort(runtime, target));
+    if (
+      command === "cohort stage" ||
+      command === "cohort disable-cross-revision-reuse"
+    ) {
+      printJson(
+        await updateRepositoryCohortPolicies(
+          runtime,
+          target,
+          command === "cohort stage"
+            ? "stage-t0"
+            : "disable-cross-revision-reuse",
+        ),
+      );
       return;
     }
 
@@ -253,9 +269,10 @@ function operationForProofedCommand(command: string) {
   }
 }
 
-async function stageRepositoryCohort(
+async function updateRepositoryCohortPolicies(
   runtime: ReturnType<typeof composeReviewActionV2ProductionRunControl>,
   target: Awaited<ReturnType<typeof resolveRepositoryTarget>>,
+  operation: "stage-t0" | "disable-cross-revision-reuse",
 ) {
   const updatedBy = "review-v2-operator";
   const globalScope = { scope: ReviewSafetyPolicyScope.Global } as const;
@@ -267,7 +284,8 @@ async function stageRepositoryCohort(
   } as const;
   const results = [];
   for (const capability of allSafetyCapabilities) {
-    const rolloutModes = reviewV2CohortRolloutModes(capability);
+    const rolloutModes = reviewV2CohortRolloutModes(capability, operation);
+    if (!rolloutModes) continue;
     const global =
       await runtime.repositories.safetyControls.findReviewSafetyPolicy({
         scope: globalScope,
@@ -297,22 +315,24 @@ async function stageRepositoryCohort(
       }),
     );
   }
-  for (const scope of [globalScope, repositoryScope]) {
-    const existing =
-      await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
-        scope,
+  if (operation === "stage-t0") {
+    for (const scope of [globalScope, repositoryScope]) {
+      const existing =
+        await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
+          scope,
+        );
+      results.push(
+        await runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
+          expectedVersion: existing?.version ?? 0,
+          scope,
+          stopped: false,
+          reason: "review-v2-cohort-staged",
+          updatedBy,
+        }),
       );
-    results.push(
-      await runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
-        expectedVersion: existing?.version ?? 0,
-        scope,
-        stopped: false,
-        reason: "review-v2-cohort-staged",
-        updatedBy,
-      }),
-    );
+    }
   }
-  return { repository: target.repository.fullName, results };
+  return { repository: target.repository.fullName, operation, results };
 }
 
 async function registerRelease(
@@ -696,6 +716,9 @@ function printUsage() {
   process.stdout.write(`  release register --bundle FILE --confirm release\n`);
   process.stdout.write(
     `  cohort stage --repo OWNER/REPO --confirm OWNER/REPO\n`,
+  );
+  process.stdout.write(
+    `  cohort disable-cross-revision-reuse --repo OWNER/REPO --confirm OWNER/REPO\n`,
   );
   process.stdout.write(
     `  mutation initialize-v1 --repo OWNER/REPO --confirm OWNER/REPO\n`,
