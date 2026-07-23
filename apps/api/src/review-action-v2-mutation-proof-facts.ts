@@ -10,7 +10,7 @@ import {
   type ScmRepositoryIdentityQueryPort,
 } from "@reviewrouter/features-review-run-control";
 
-const factsVersion = "review-mutation-authority-production-facts-v1";
+const factsVersion = "review-mutation-authority-production-facts-v2";
 
 export interface ManagedReviewWorkflowInventoryInspectionPort {
   inspectReviewV2ManagedWorkflowInventory(input: {

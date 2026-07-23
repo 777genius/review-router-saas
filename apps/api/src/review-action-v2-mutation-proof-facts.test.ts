@@ -19,6 +19,9 @@ describe("ProductionReviewMutationAuthorityProofFacts", () => {
       laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
     });
 
+    expect(facts.factsVersion).toBe(
+      "review-mutation-authority-production-facts-v2",
+    );
     expect(facts.facts).toEqual({
       noTrackedLegacyActivity: true,
       workflowInventoryCompatible: true,
