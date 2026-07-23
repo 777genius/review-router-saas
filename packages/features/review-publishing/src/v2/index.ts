@@ -12,4 +12,5 @@ export * from "./application/use-cases/renew-review-publication-claim";
 export * from "./application/use-cases/complete-review-publication-operation";
 export * from "./application/use-cases/record-review-external-effect";
 export * from "./application/use-cases/request-review-publication";
+export * from "./application/use-cases/resolve-current-publication-lifecycle";
 export * from "./application/use-cases/terminalize-unknown-review-publication";

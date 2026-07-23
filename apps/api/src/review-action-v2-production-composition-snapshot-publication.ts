@@ -13,7 +13,6 @@ import {
 import { PrismaReviewExecutionStore } from "@reviewrouter/features-review-executions/composition";
 import {
   CurrentMutationAuthorityStatus,
-  CurrentPublicationLifecycleStatus,
   CurrentPublicationPermitStatus,
   CurrentReviewRevisionStatus,
   CurrentReviewSafetyDecisionStatus,
@@ -25,10 +24,14 @@ import {
   ReviewPublicationPlanningError,
   ReviewPublicationPlanningErrorCode,
   ReviewPublicationProjectionCoverage,
+  ReviewPublicationLifecycleExpectationStatus,
   ReviewPublicationRunControlStatus,
+  ResolveCurrentPublicationLifecycle,
   renderCanonicalReviewPublication,
   planReviewPublicationOperations,
   publishedReviewProjectionPublicationEnvelopeVersion,
+  reviewPublicationLifecycleExpectationFromProjection,
+  type LiveReviewPublicationLifecyclePort,
   type PublishedReviewProjectionPublicationEnvelope,
   type ReviewPublicationAttemptView,
   type ReviewPublicationAttemptQueryPort,
@@ -107,6 +110,7 @@ export function composeReviewActionV2SnapshotPublicationRoutes(input: {
   readonly executions: PrismaReviewExecutionStore;
   readonly capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
   readonly digest: ReviewActionV2DigestPort;
+  readonly liveLifecycle: LiveReviewPublicationLifecyclePort;
   readonly now: () => Date;
 }): Readonly<{
   snapshot: RegisterReviewSnapshotReadV2RoutesDependencies;
@@ -123,6 +127,7 @@ export function composeReviewActionV2SnapshotPublicationRoutes(input: {
       authorizationQueries: input.authorizationQueries,
       authorities: input.authorities,
       safety: input.safety,
+      liveLifecycle: input.liveLifecycle,
     }),
     attempts: publications,
     idempotency: publications,
@@ -460,7 +465,47 @@ function productionPublicationDecisions(input: {
   readonly authorizationQueries: ReviewRunAuthorizationQueryPort;
   readonly authorities: ReviewMutationAuthorityQueryPort;
   readonly safety: ReviewSafetyDecisionResolverPort;
+  readonly liveLifecycle: LiveReviewPublicationLifecyclePort;
 }): ReviewPublicationDecisionPorts {
+  const lifecycle = new ResolveCurrentPublicationLifecycle({
+    expectations: {
+      async resolve(scope) {
+        try {
+          const stream = await input.executions.findStream(scope);
+          const snapshot = stream?.activeExecutionId
+            ? await input.executions.findExecution(stream.activeExecutionId)
+            : null;
+          const artifact = snapshot?.artifact;
+          if (!artifact) {
+            return {
+              status: ReviewPublicationLifecycleExpectationStatus.Missing,
+            };
+          }
+          const authorization =
+            await input.authorizationQueries.findReviewRunAuthorizationById(
+              artifact.publicationPermit.authorizationId,
+            );
+          if (!authorization) {
+            return {
+              status: ReviewPublicationLifecycleExpectationStatus.Missing,
+            };
+          }
+          return reviewPublicationLifecycleExpectationFromProjection({
+            reviewedHeadSha: artifact.reviewedHeadSha,
+            lifecycleStateHash: artifact.lifecycleStateHash,
+            commandLedgerWatermark: artifact.commandLedgerWatermark,
+            projectionEnvelopeJson: artifact.projectionEnvelopeJson,
+            authorizationCreatedAt: authorization.createdAt,
+          });
+        } catch {
+          return {
+            status: ReviewPublicationLifecycleExpectationStatus.Unavailable,
+          };
+        }
+      },
+    },
+    live: input.liveLifecycle,
+  });
   return {
     permits: {
       async resolve(identity) {
@@ -600,32 +645,7 @@ function productionPublicationDecisions(input: {
       },
     },
     lifecycle: {
-      async resolve(scope) {
-        try {
-          const stream = await input.executions.findStream(scope);
-          const snapshot = stream?.activeExecutionId
-            ? await input.executions.findExecution(stream.activeExecutionId)
-            : null;
-          if (!snapshot?.artifact) {
-            return {
-              status: CurrentPublicationLifecycleStatus.Missing,
-              lifecycleStateHash: null,
-              commandLedgerWatermark: null,
-            };
-          }
-          return {
-            status: CurrentPublicationLifecycleStatus.Current,
-            lifecycleStateHash: snapshot.artifact.lifecycleStateHash,
-            commandLedgerWatermark: snapshot.artifact.commandLedgerWatermark,
-          };
-        } catch {
-          return {
-            status: CurrentPublicationLifecycleStatus.Unavailable,
-            lifecycleStateHash: null,
-            commandLedgerWatermark: null,
-          };
-        }
-      },
+      resolve: (scope) => lifecycle.resolve(scope),
     },
     safety: {
       async resolve(request) {

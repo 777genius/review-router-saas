@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import dotenv from "dotenv";
 
 if (existsSync(".env.local")) {
@@ -57,12 +58,16 @@ requireCommand("pnpm");
 
 const suffix = `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 const smokeDbName = `review_router_migration_smoke_${suffix}`;
+const rollbackDbName = `review_router_dispatch_rollback_${suffix}`;
 const adminUrl = new URL(baseUrl);
 adminUrl.pathname = "/postgres";
 adminUrl.search = "";
 const smokeUrl = new URL(baseUrl);
 smokeUrl.pathname = `/${smokeDbName}`;
 smokeUrl.search = "";
+const rollbackUrl = new URL(baseUrl);
+rollbackUrl.pathname = `/${rollbackDbName}`;
+rollbackUrl.search = "";
 
 const psql = (
   sql,
@@ -74,7 +79,10 @@ const psql = (
     stdio,
   });
 
+const prismaRoot = resolve("packages/platform/db/prisma");
+const dispatchMigrationName = "000034_review_request_dispatch_reconciliation";
 let created = false;
+let rollbackCreated = false;
 try {
   console.log(`Creating migration smoke database from ${sourceDbName}...`);
   psql(`CREATE DATABASE ${quoteIdentifier(smokeDbName)}`);
@@ -151,8 +159,112 @@ try {
     fail("Migrated schema invariants failed");
   }
 
+  console.log("Verifying dispatch migration preflight rollback...");
+  psql(`CREATE DATABASE ${quoteIdentifier(rollbackDbName)}`);
+  rollbackCreated = true;
+  for (const entry of readdirSync(join(prismaRoot, "migrations")).sort()) {
+    if (!/^\d{6}_/.test(entry) || entry >= dispatchMigrationName) continue;
+    run("psql", [
+      rollbackUrl.toString(),
+      "-q",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-f",
+      join(prismaRoot, "migrations", entry, "migration.sql"),
+    ]);
+  }
+  const hash = "a".repeat(64);
+  const sha = "b".repeat(40);
+  psql(
+    `
+      SET session_replication_role = replica;
+      INSERT INTO "ReviewRequestedIntent" (
+        "requestId", "workspaceId", "repositoryConnectionId",
+        "scmRepositoryIdentityId", "pullRequestNumber", "baseSha",
+        "mergeBaseSha", "headSha", "reviewRevisionHash", "triggerKind",
+        "deliveryIdentityHash", "canonicalRequestHash", "state", "notBefore",
+        "claimId", "claimOwnerIdHash", "claimFencingToken", "claimedAt",
+        "claimUntil", "createdAt", "updatedAt", "retainUntil"
+      ) VALUES (
+        'dispatch-rollback-fixture', 'workspace', 'repository', 'identity', 42,
+        '${sha}', '${sha}', '${sha}', '${hash}', 'manual_command', '${hash}',
+        '${hash}', 'dispatching', now(), 'claim', '${hash}', 1, now(),
+        now() + interval '5 minutes', now(), now(), now() + interval '1 day'
+      );
+      SET session_replication_role = origin;
+    `,
+    rollbackUrl.toString(),
+  );
+  const migrationAttempt = spawnSync(
+    "psql",
+    [
+      rollbackUrl.toString(),
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-f",
+      join(prismaRoot, "migrations", dispatchMigrationName, "migration.sql"),
+    ],
+    { encoding: "utf8" },
+  );
+  if (migrationAttempt.status === 0) {
+    fail("Dispatch migration unexpectedly accepted a dispatching intent");
+  }
+  const migrationError = `${migrationAttempt.stdout ?? ""}\n${migrationAttempt.stderr ?? ""}`;
+  if (
+    !migrationError.includes("review_requested_dispatching_migration_preflight")
+  ) {
+    fail("Dispatch migration failed for an unexpected reason");
+  }
+  const rollbackInvariantSql = `
+    SELECT
+      (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder)
+       FROM pg_enum JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+       WHERE typname = 'ReviewRequestedIntentStateV2') AS states,
+      (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
+        'ReviewRequestedIntent_state_notBefore_requestId_idx',
+        'ReviewRequestedIntent_workspaceId_repositoryConnectionId_sc_idx',
+        'ReviewRequestedIntent_one_pending_per_scope',
+        'ReviewRequestedIntent_one_pending_scope'
+      )) AS old_indexes,
+      (SELECT count(*) FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'ReviewRequestedIntent'
+       AND column_name IN ('submissionStartedAt', 'nextResolutionAt', 'resolutionDeadlineAt', 'terminalReason')) AS new_columns,
+      (SELECT count(*) FROM pg_type WHERE typname IN (
+        'ReviewRequestedIntentStateV2_old',
+        'ReviewRequestedIntentTerminalReasonV2'
+      )) AS leaked_types,
+      (SELECT count(*) FROM "ReviewRequestedIntent"
+       WHERE "requestId" = 'dispatch-rollback-fixture' AND "state" = 'dispatching') AS fixture;
+  `;
+  const rollbackResult = psql(
+    rollbackInvariantSql,
+    rollbackUrl.toString(),
+    "pipe",
+    ["-At"],
+  );
+  if (
+    rollbackResult.stdout.trim() !==
+    "pending_dispatch,dispatching,awaiting_authorization,dispatched,superseded|4|0|0|1"
+  ) {
+    console.error(rollbackResult.stdout.trim());
+    fail("Dispatch migration preflight did not roll back atomically");
+  }
+
   console.log("Migration smoke test passed.");
 } finally {
+  if (rollbackCreated) {
+    spawnSync(
+      "psql",
+      [
+        adminUrl.toString(),
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        `DROP DATABASE IF EXISTS ${quoteIdentifier(rollbackDbName)} WITH (FORCE)`,
+      ],
+      { stdio: "inherit" },
+    );
+  }
   if (created) {
     console.log("Dropping migration smoke database...");
     const forcedDrop = spawnSync(

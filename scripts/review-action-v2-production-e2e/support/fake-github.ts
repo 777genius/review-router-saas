@@ -107,6 +107,9 @@ export class FakeGitHubTransport {
     if (method === "GET" && url.pathname === "/app") {
       return json(200, { id: 1, slug: this.options.appSlug });
     }
+    if (method === "POST" && url.pathname === "/graphql") {
+      return this.graphql(await requestJson(request));
+    }
 
     const repositoryPrefix = `/repos/${this.options.owner}/${this.options.repo}`;
     if (
@@ -196,6 +199,57 @@ export class FakeGitHubTransport {
       message: `fake_transport_unhandled:${method}:${url.pathname}`,
     });
   };
+
+  private graphql(body: Readonly<Record<string, unknown>>): Response {
+    const query = requiredString(body.query);
+    const variables = record(body.variables);
+    if (query.includes("ReviewRouterPublicationCommandLedger")) {
+      const offset = graphqlOffset(variables.commentsAfter);
+      const nodes = this.comments
+        .slice(offset, offset + 100)
+        .map((comment) => ({
+          body: comment.body,
+          viewerDidAuthor:
+            comment.user.login === `${this.options.appSlug}[bot]`,
+        }));
+      const nextOffset = offset + nodes.length;
+      const hasNextPage = nextOffset < this.comments.length;
+      return json(200, {
+        data: {
+          repository: {
+            pullRequest: {
+              headRefOid: this.revision.headSha,
+              comments: {
+                pageInfo: {
+                  hasNextPage,
+                  endCursor: hasNextPage ? `offset:${nextOffset}` : null,
+                },
+                nodes,
+              },
+            },
+          },
+        },
+      });
+    }
+    if (query.includes("ReviewRouterPublicationLifecycle")) {
+      return json(200, {
+        data: {
+          repository: {
+            pullRequest: {
+              headRefOid: this.revision.headSha,
+              reviewThreads: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [],
+              },
+            },
+          },
+        },
+      });
+    }
+    return json(200, {
+      errors: [{ message: "fake_transport_unhandled_graphql_operation" }],
+    });
+  }
 }
 
 function json(status: number, value: unknown): Response {
@@ -217,6 +271,19 @@ function positivePage(value: string | null): number {
   if (value === null) return 1;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function graphqlOffset(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (typeof value !== "string") {
+    throw new Error("fake_transport_graphql_cursor_invalid");
+  }
+  const match = /^offset:(\d+)$/u.exec(value);
+  const parsed = match?.[1] ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error("fake_transport_graphql_cursor_invalid");
+  }
+  return parsed;
 }
 
 function record(value: unknown): Record<string, unknown> {

@@ -613,6 +613,77 @@ export interface CurrentPublicationLifecyclePort {
   ): Promise<CurrentPublicationLifecycleDecision>;
 }
 
+export type ReviewPublicationLifecycleTargetIdentity = {
+  readonly targetId: string;
+  readonly threadId: string;
+  readonly mutationEligible: boolean;
+};
+
+export enum ReviewPublicationLifecycleExpectationStatus {
+  Available = "available",
+  Missing = "missing",
+  Unavailable = "unavailable",
+}
+
+export type ReviewPublicationLifecycleExpectationDecision =
+  | {
+      readonly status: ReviewPublicationLifecycleExpectationStatus.Available;
+      readonly reviewedHeadSha: string;
+      readonly lifecycleStateHash: string;
+      readonly commandLedgerWatermark: bigint;
+      readonly observedNotAfter: Date;
+      readonly targets: readonly ReviewPublicationLifecycleTargetIdentity[];
+      readonly createdTargetFingerprints: readonly string[];
+    }
+  | {
+      readonly status:
+        | ReviewPublicationLifecycleExpectationStatus.Missing
+        | ReviewPublicationLifecycleExpectationStatus.Unavailable;
+    };
+
+export interface ReviewPublicationLifecycleExpectationPort {
+  resolve(
+    scope: ReviewPublicationScope,
+  ): Promise<ReviewPublicationLifecycleExpectationDecision>;
+}
+
+export type LiveReviewPublicationLifecycleTargetIdentity = Omit<
+  ReviewPublicationLifecycleTargetIdentity,
+  "mutationEligible"
+> & {
+  readonly markerFingerprint: string;
+  readonly isResolved: boolean;
+  readonly parentOwnedByIntegration: boolean;
+  readonly hasRelevantInteractionAfterParent: boolean;
+  readonly parentCreatedAt: Date;
+  readonly lastRelevantChangeAt: Date;
+};
+
+export enum LiveReviewPublicationLifecycleStatus {
+  Available = "available",
+  Missing = "missing",
+  Unavailable = "unavailable",
+}
+
+export type LiveReviewPublicationLifecycleDecision =
+  | {
+      readonly status: LiveReviewPublicationLifecycleStatus.Available;
+      readonly reviewedHeadSha: string;
+      readonly commandLedgerWatermark: bigint;
+      readonly targets: readonly LiveReviewPublicationLifecycleTargetIdentity[];
+    }
+  | {
+      readonly status:
+        | LiveReviewPublicationLifecycleStatus.Missing
+        | LiveReviewPublicationLifecycleStatus.Unavailable;
+    };
+
+export interface LiveReviewPublicationLifecyclePort {
+  resolve(
+    scope: ReviewPublicationScope,
+  ): Promise<LiveReviewPublicationLifecycleDecision>;
+}
+
 export enum CurrentReviewSafetyDecisionStatus {
   Allowed = "allowed",
   Disabled = "disabled",

@@ -12,7 +12,7 @@ Implementation in progress as of 2026-07-23:
   immutable reusable workflows, authenticated operator commands, v1 admission
   drain, durable webhook/manual request ingress, exact-head workflow dispatch,
   provider-lane serialization, and production-shaped E2E are implemented locally.
-  The release candidate passes the full Action/SaaS suites, all 34 migrations on a
+  The release candidate passes the full Action/SaaS suites, all 35 migrations on a
   fresh PostgreSQL database, the real Prisma concurrency contract, and the
   production-shaped fault-recovery E2E. Cross-repository release registration,
   deployment, and allowlisted verification remain release gates, so production
@@ -2253,11 +2253,12 @@ authorization is bound to the claimed intent before execution admission.
 The smallest context-owned intent aggregate contains `requestId`, complete
 scope/revision, trusted trigger kind and delivery identity, optional bound source
 run/attempt and authorization, state
-`pending_dispatch/dispatching/awaiting_authorization/dispatched/superseded`,
-version, `notBefore`, claim fencing, and retention. Trigger delivery identity plus
-canonical request hash is the idempotency key. A partial unique index permits at
-most one pending intent per PR stream; the atomic replacement command supersedes
-only an older pending head in that stream. It does not use
+`pending_dispatch/dispatching/reconciling_dispatch/awaiting_authorization/dispatched/terminal/superseded`,
+version, `notBefore`, claim fencing, bounded reconciliation timestamps, a typed
+terminal reason, and retention. Trigger delivery identity plus canonical request
+hash is the idempotency key. A partial unique index permits at most one pending
+intent per PR stream; the atomic replacement command supersedes only an older
+pending head in that stream. It does not use
 `unique(scope, reviewRevisionHash)`: a trusted manual command or lifecycle change
 may intentionally request another review of the same SHA.
 
@@ -2278,11 +2279,25 @@ The implemented T0 path makes the signed webhook fact event the first durable
 side effect after payload validation. Repository/workspace projections are
 resolved by the worker, where missing projections are retryable rather than a
 webhook-time loss. A dead-lettered idempotency identity is never reported as a
-successful restore. Dispatch uses GitHub's `return_run_details` response, records
-the returned run/attempt under a fenced claim, and passes the intended head SHA as
-an explicit workflow input. The reusable workflow validates and checks out that
+successful restore. Before the only dispatch POST, the worker durably enters
+`reconciling_dispatch`. Dispatch uses GitHub API version `2026-03-10`, whose
+workflow-dispatch response always includes run details, and
+records the returned run/attempt under a fenced claim, and passes the intended
+head SHA as an explicit workflow input. A timeout, transport failure, or ambiguous
+5xx response never causes another POST for the same intent: recovery searches the
+bounded workflow-run window until it finds the exact deterministic run or reaches
+the persisted resolution deadline. Only a definite no-effect response may create
+a new bounded dispatch attempt. `awaiting_authorization` has an independent
+persisted deadline so runner queue delay is tolerated without creating an
+unbounded PR-lane blocker. The reusable workflow validates and checks out that
 exact SHA; OIDC admission independently resolves the current PR revision and must
 match the persisted intent before provider work starts.
+
+Migration `000034_review_request_dispatch_reconciliation` is one explicit
+transaction with an exclusive intent-table lock. Its release gate applies all
+migrations to a fresh disposable database and separately seeds a legacy
+`dispatching` row before applying `000034`; the expected preflight failure must
+leave the prior enum, indexes, columns, types, and data unchanged.
 
 T0 ingress activation is fail-closed unless the worker, exact workflow dispatch,
 and fenced outbox takeover are already ready. The required activation order is

@@ -52,6 +52,10 @@ import {
   createReviewExecutionsUseCases,
 } from "@reviewrouter/features-review-executions/composition";
 import {
+  GitHubReviewPublicationLifecycleAdapter,
+  OctokitGitHubInstallationGraphqlClientFactory,
+} from "@reviewrouter/features-review-publishing/v2/composition";
+import {
   CanonicalReviewRevisionResolutionStatus,
   ProducerReleaseState,
   ReviewProviderKind,
@@ -239,6 +243,12 @@ export function composeReviewActionV2ProductionRoutes(input: {
   if (!input.prisma) {
     throw new Error("review_action_v2_prisma_unavailable");
   }
+  const prisma = input.prisma;
+  const githubAppId = requiredEnv(input.env, "GITHUB_APP_ID");
+  const githubAppPrivateKey = readGitHubAppPrivateKey(input.env);
+  if (!githubAppPrivateKey) {
+    throw new Error("review_action_v2_github_app_private_key_missing");
+  }
   assertReviewIntentRolloutConfiguration(input.env);
 
   const {
@@ -371,6 +381,39 @@ export function composeReviewActionV2ProductionRoutes(input: {
     executions: executionStore,
     capabilities,
     digest,
+    liveLifecycle: new GitHubReviewPublicationLifecycleAdapter(
+      {
+        async resolve(scope) {
+          const repository = await prisma.repositoryConnection.findFirst({
+            where: {
+              id: scope.repositoryConnectionId,
+              workspaceId: scope.workspaceId,
+              scmRepositoryIdentityId: scope.scmRepositoryIdentityId,
+              provider: "github",
+              selected: true,
+              archived: false,
+            },
+            include: { installation: true },
+          });
+          if (
+            !repository?.installation ||
+            repository.installation.status !== "active"
+          ) {
+            return null;
+          }
+          return {
+            githubInstallationId:
+              repository.installation.githubInstallationId.toString(),
+            owner: repository.owner,
+            repo: repository.name,
+          };
+        },
+      },
+      new OctokitGitHubInstallationGraphqlClientFactory({
+        appId: githubAppId,
+        privateKey: githubAppPrivateKey,
+      }),
+    ),
     now: () => clock.now(),
   });
 

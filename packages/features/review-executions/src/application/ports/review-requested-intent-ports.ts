@@ -5,6 +5,8 @@ import type {
 import type {
   ReviewRequestedIntent,
   ReviewRequestedIntentCandidate,
+  ReviewRequestedIntentState,
+  ReviewRequestedIntentTerminalReason,
 } from "../../domain/review-requested-intent";
 
 export enum ReviewRequestedRegisterStatus {
@@ -35,6 +37,17 @@ export enum ReviewRequestedDispatchRunStatus {
   TerminalStaleRevision = "terminal_stale_revision",
 }
 
+export enum ReviewRequestedDispatchSubmissionStatus {
+  Accepted = "accepted",
+  DefinitelyNoEffect = "definitely_no_effect",
+}
+
+export enum ReviewRequestedDispatchLookupStatus {
+  Found = "found",
+  Absent = "absent",
+  Inconclusive = "inconclusive",
+}
+
 export type RegisterReviewRequestedIntentCommand = {
   readonly candidate: ReviewRequestedIntentCandidate;
 };
@@ -54,10 +67,18 @@ export type ReviewRequestedClaimTerm = {
   readonly fencingToken: bigint;
 };
 
+export type BeginReviewRequestedSubmissionCommand = ReviewRequestedClaimTerm & {
+  readonly now: Date;
+  readonly nextResolutionAt: Date;
+  readonly resolutionDeadlineAt: Date;
+};
+
 export type RecordReviewRequestedDispatchCommand = ReviewRequestedClaimTerm & {
   readonly sourceRunId: string;
   readonly sourceRunAttempt: string;
   readonly now: Date;
+  readonly nextResolutionAt: Date;
+  readonly resolutionDeadlineAt: Date;
 };
 
 export type LinkReviewRequestedAdmissionCommand = {
@@ -76,10 +97,22 @@ export type CancelReviewRequestedPreAdmissionCommand = ReviewExecutionScope & {
 
 export type RecoverReviewRequestedDispatchCommand = {
   readonly requestId: string;
-  readonly sourceRunId: string;
-  readonly sourceRunAttempt: string;
+  readonly expectedVersion: bigint;
+  readonly sourceRunId: string | null;
+  readonly sourceRunAttempt: string | null;
   readonly now: Date;
+  readonly terminalReason: ReviewRequestedIntentTerminalReason | null;
   readonly successorCandidate: ReviewRequestedIntentCandidate | null;
+};
+
+export type DeferReviewRequestedResolutionCommand = {
+  readonly requestId: string;
+  readonly expectedVersion: bigint;
+  readonly expectedState:
+    | ReviewRequestedIntentState.ReconcilingDispatch
+    | ReviewRequestedIntentState.AwaitingAuthorization;
+  readonly now: Date;
+  readonly nextResolutionAt: Date;
 };
 
 export type ReviewRequestedSourceRunIdentity = ReviewExecutionScope & {
@@ -107,9 +140,8 @@ export interface ReviewRequestedIntentQueryPort {
     readonly now: Date;
     readonly limit: number;
   }): Promise<readonly ReviewRequestedIntent[]>;
-  listAwaitingAuthorization(input: {
+  listDueForResolution(input: {
     readonly now: Date;
-    readonly minimumAgeMs: number;
     readonly limit: number;
   }): Promise<readonly ReviewRequestedIntent[]>;
 }
@@ -121,6 +153,10 @@ export interface ReviewRequestedIntentCommandPort {
   }>;
   claimIntent(command: ClaimReviewRequestedIntentCommand): Promise<{
     readonly status: ReviewRequestedClaimStatus;
+    readonly intent?: ReviewRequestedIntent | undefined;
+  }>;
+  beginSubmission(command: BeginReviewRequestedSubmissionCommand): Promise<{
+    readonly status: ReviewRequestedTransitionStatus;
     readonly intent?: ReviewRequestedIntent | undefined;
   }>;
   recordDispatch(command: RecordReviewRequestedDispatchCommand): Promise<{
@@ -138,18 +174,54 @@ export interface ReviewRequestedIntentCommandPort {
     readonly status: ReviewRequestedTransitionStatus;
     readonly intent?: ReviewRequestedIntent | undefined;
   }>;
+  deferResolution(command: DeferReviewRequestedResolutionCommand): Promise<{
+    readonly status: ReviewRequestedTransitionStatus;
+    readonly intent?: ReviewRequestedIntent | undefined;
+  }>;
 }
 
 export interface ReviewRequestedIntentPrunerPort {
   pruneRetainedIntents(input: { readonly limit: number }): Promise<number>;
 }
 
+export type ReviewRequestedDispatchSubmissionResult =
+  | {
+      readonly status: ReviewRequestedDispatchSubmissionStatus.Accepted;
+      readonly sourceRunId: string;
+      readonly sourceRunAttempt: string;
+    }
+  | {
+      readonly status: ReviewRequestedDispatchSubmissionStatus.DefinitelyNoEffect;
+    };
+
+export interface ReviewRequestedPreparedDispatchPort {
+  /** The only potentially effect-bearing call on a fully prepared dispatch. */
+  submit(): Promise<ReviewRequestedDispatchSubmissionResult>;
+}
+
 export interface ReviewRequestedDispatchGatewayPort {
-  dispatch(input: { readonly intent: ReviewRequestedIntent }): Promise<{
-    readonly sourceRunId: string;
-    readonly sourceRunAttempt: string;
-  }>;
-  inspect(input: { readonly intent: ReviewRequestedIntent }): Promise<{
+  /** Resolve repository, credentials, and transport before durable submission. */
+  prepare(input: {
+    readonly intent: ReviewRequestedIntent;
+  }): Promise<ReviewRequestedPreparedDispatchPort>;
+  findByRequestIdentity(input: {
+    readonly intent: ReviewRequestedIntent;
+  }): Promise<
+    | {
+        readonly status: ReviewRequestedDispatchLookupStatus.Found;
+        readonly sourceRunId: string;
+        readonly sourceRunAttempt: string;
+      }
+    | {
+        readonly status:
+          | ReviewRequestedDispatchLookupStatus.Absent
+          | ReviewRequestedDispatchLookupStatus.Inconclusive;
+      }
+  >;
+  inspectKnownRun(input: { readonly intent: ReviewRequestedIntent }): Promise<{
     readonly status: ReviewRequestedDispatchRunStatus;
   }>;
+  cancelKnownRun(input: {
+    readonly intent: ReviewRequestedIntent;
+  }): Promise<void>;
 }

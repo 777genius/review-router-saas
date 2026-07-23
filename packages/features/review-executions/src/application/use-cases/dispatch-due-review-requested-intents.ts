@@ -1,10 +1,19 @@
 import {
   ReviewRequestedClaimStatus,
+  ReviewRequestedDispatchSubmissionStatus,
   ReviewRequestedTransitionStatus,
   type ReviewRequestedDispatchGatewayPort,
   type ReviewRequestedIntentCommandPort,
   type ReviewRequestedIntentQueryPort,
 } from "../ports/review-requested-intent-ports";
+import { ReviewRequestedIntentTerminalReason } from "../../domain/review-requested-intent";
+import {
+  buildReviewRequestedRetryCandidate,
+  defaultReviewRequestedDispatchPolicy,
+  validateReviewRequestedDispatchPolicy,
+  type ReviewRequestedDispatchPolicy,
+  type ReviewRequestedRetryDependencies,
+} from "./review-requested-dispatch-policy";
 
 export type DispatchDueReviewRequestedIntentsResult = Readonly<{
   scanned: number;
@@ -15,17 +24,22 @@ export type DispatchDueReviewRequestedIntentsResult = Readonly<{
 }>;
 
 export class DispatchDueReviewRequestedIntents {
+  private readonly policy: ReviewRequestedDispatchPolicy;
+
   constructor(
     private readonly queries: ReviewRequestedIntentQueryPort,
     private readonly commands: ReviewRequestedIntentCommandPort,
     private readonly gateway: ReviewRequestedDispatchGatewayPort,
     private readonly clock: { now(): Date },
-    private readonly ids: { nextClaimId(): string },
-    private readonly claimDurationMs = 60_000,
+    private readonly ids: {
+      nextClaimId(): string;
+      nextRequestId(): string;
+    },
+    private readonly digest: ReviewRequestedRetryDependencies["digest"],
+    policy: ReviewRequestedDispatchPolicy = defaultReviewRequestedDispatchPolicy,
   ) {
-    if (!Number.isSafeInteger(claimDurationMs) || claimDurationMs <= 0) {
-      throw new Error("review_requested_claim_duration_invalid");
-    }
+    validateReviewRequestedDispatchPolicy(policy);
+    this.policy = policy;
   }
 
   async execute(input: {
@@ -56,7 +70,9 @@ export class DispatchDueReviewRequestedIntents {
         claimId: this.ids.nextClaimId(),
         ownerIdHash: input.ownerIdHash,
         now: observedAt,
-        claimUntil: new Date(observedAt.getTime() + this.claimDurationMs),
+        claimUntil: new Date(
+          observedAt.getTime() + this.policy.claimDurationMs,
+        ),
       });
       if (
         claim.status !== ReviewRequestedClaimStatus.Claimed &&
@@ -71,16 +87,93 @@ export class DispatchDueReviewRequestedIntents {
       claimed += 1;
       claimedScopes.add(scope);
 
+      let prepared;
       try {
-        const source = await this.gateway.dispatch({ intent: claim.intent });
+        prepared = await this.gateway.prepare({ intent: claim.intent });
+      } catch {
+        // No effect-bearing call has happened. The expiring claim can be
+        // retried safely after repository/credential preparation recovers.
+        failed += 1;
+        continue;
+      }
+
+      const submissionAt = this.clock.now();
+      const begun = await this.commands.beginSubmission({
+        requestId: claim.intent.requestId,
+        claimId: claim.intent.claim.claimId,
+        ownerIdHash: claim.intent.claim.ownerIdHash,
+        fencingToken: claim.intent.claim.fencingToken,
+        now: submissionAt,
+        nextResolutionAt: new Date(
+          submissionAt.getTime() + this.policy.dispatchResolutionDelayMs,
+        ),
+        resolutionDeadlineAt: new Date(
+          submissionAt.getTime() + this.policy.dispatchResolutionTimeoutMs,
+        ),
+      });
+      if (
+        begun.status !== ReviewRequestedTransitionStatus.Applied ||
+        !begun.intent?.claim
+      ) {
+        // A restored begin means the one allowed POST may already have happened.
+        // Only the reconciliation path is allowed to make progress from there.
+        failed += 1;
+        continue;
+      }
+
+      try {
+        const submission = await prepared.submit();
+        if (
+          submission.status ===
+          ReviewRequestedDispatchSubmissionStatus.DefinitelyNoEffect
+        ) {
+          const now = this.clock.now();
+          const successor = await buildReviewRequestedRetryCandidate({
+            intent: begun.intent,
+            now,
+            identitySeed: `definitely-no-effect\0${begun.intent.dispatchAttempt}`,
+            dependencies: {
+              ids: this.ids,
+              digest: this.digest,
+            },
+            policy: this.policy,
+          });
+          const recovered = await this.commands.recoverDispatch({
+            requestId: begun.intent.requestId,
+            expectedVersion: begun.intent.version,
+            sourceRunId: null,
+            sourceRunAttempt: null,
+            now,
+            terminalReason:
+              successor === null
+                ? ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted
+                : ReviewRequestedIntentTerminalReason.DispatchFailedNoEffect,
+            successorCandidate: successor,
+          });
+          if (
+            recovered.status !== ReviewRequestedTransitionStatus.Applied &&
+            recovered.status !== ReviewRequestedTransitionStatus.Restored
+          ) {
+            failed += 1;
+          }
+          continue;
+        }
+
+        const recordedAt = this.clock.now();
         const recorded = await this.commands.recordDispatch({
-          requestId: claim.intent.requestId,
-          claimId: claim.intent.claim.claimId,
-          ownerIdHash: claim.intent.claim.ownerIdHash,
-          fencingToken: claim.intent.claim.fencingToken,
-          sourceRunId: source.sourceRunId,
-          sourceRunAttempt: source.sourceRunAttempt,
-          now: this.clock.now(),
+          requestId: begun.intent.requestId,
+          claimId: begun.intent.claim.claimId,
+          ownerIdHash: begun.intent.claim.ownerIdHash,
+          fencingToken: begun.intent.claim.fencingToken,
+          sourceRunId: submission.sourceRunId,
+          sourceRunAttempt: submission.sourceRunAttempt,
+          now: recordedAt,
+          nextResolutionAt: new Date(
+            recordedAt.getTime() + this.policy.authorizationResolutionDelayMs,
+          ),
+          resolutionDeadlineAt: new Date(
+            recordedAt.getTime() + this.policy.authorizationResolutionTimeoutMs,
+          ),
         });
         if (
           recorded.status === ReviewRequestedTransitionStatus.Applied ||
@@ -91,8 +184,8 @@ export class DispatchDueReviewRequestedIntents {
           failed += 1;
         }
       } catch {
-        // The fenced claim is deliberately left for expiry/takeover. The gateway
-        // must reconcile by requestId before creating another external run.
+        // Unknown POST outcome remains ReconcilingDispatch. Recovery performs
+        // lookup only and never submits this request identity again.
         failed += 1;
       }
     }

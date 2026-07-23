@@ -21,8 +21,11 @@ import {
   ReviewObservationAttachmentStatus,
   ReviewRequestedClaimStatus,
   ReviewRequestedClaimDecisionStatus,
+  ReviewRequestedDispatchLookupStatus,
   ReviewRequestedDispatchRunStatus,
+  ReviewRequestedDispatchSubmissionStatus,
   ReviewRequestedIntentState,
+  ReviewRequestedIntentTerminalReason,
   ReviewRequestedRegisterStatus,
   ReviewRequestedTransitionStatus,
   ReviewRequestedTriggerKind,
@@ -47,6 +50,7 @@ import {
   type ReviewExecutionAuthorizationFactsPort,
   type ReviewExecutionLimits,
   type ReviewExecutionScope,
+  type ReviewRequestedIntent,
   type ReviewRevision,
   type Sha256DigestPort,
 } from "../index";
@@ -196,29 +200,65 @@ describe("review execution domain", () => {
     });
   });
 
-  it("reclaims an expired dispatch claim without losing the durable request", async () => {
+  it("reconciles a timeout-after-success without issuing a second POST", async () => {
     const intents = new InMemoryReviewRequestedIntentStore();
     await intents.registerIntent({
       candidate: intentCandidate("request-dispatch", "31", scope, revision),
     });
     let now = baseTime;
-    let dispatchCalls = 0;
+    let submitCalls = 0;
+    let lookupCalls = 0;
+    const gateway = {
+      async prepare() {
+        return {
+          async submit() {
+            submitCalls += 1;
+            throw new Error("timeout_after_success");
+          },
+        };
+      },
+      async findByRequestIdentity() {
+        lookupCalls += 1;
+        if (lookupCalls < 3) {
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Absent as const,
+          };
+        }
+        return {
+          status: ReviewRequestedDispatchLookupStatus.Found as const,
+          sourceRunId: "12345",
+          sourceRunAttempt: "1",
+        };
+      },
+      async inspectKnownRun() {
+        return { status: ReviewRequestedDispatchRunStatus.Pending };
+      },
+      async cancelKnownRun() {},
+    };
+    const policy = {
+      claimDurationMs: 1_000,
+      dispatchResolutionDelayMs: 1_000,
+      dispatchResolutionTimeoutMs: 5_000,
+      authorizationResolutionDelayMs: 1_000,
+      authorizationResolutionTimeoutMs: 5_000,
+      retryDelayMs: 1_000,
+      retentionMs: 86_400_000,
+      maxDispatchAttempts: 3,
+    };
     const dispatcher = new DispatchDueReviewRequestedIntents(
       intents,
       intents,
-      {
-        async dispatch() {
-          dispatchCalls += 1;
-          if (dispatchCalls === 1) throw new Error("provider_unavailable");
-          return { sourceRunId: "12345", sourceRunAttempt: "1" };
-        },
-        async inspect() {
-          return { status: ReviewRequestedDispatchRunStatus.Pending };
-        },
-      },
+      gateway,
       { now: () => now },
-      { nextClaimId: () => `claim-${dispatchCalls + 1}` },
-      1_000,
+      {
+        nextClaimId: () => `claim-${submitCalls + 1}`,
+        nextRequestId: () => "request-retry",
+      },
+      {
+        digestUtf8: async (value) =>
+          createHash("sha256").update(value).digest("hex"),
+      },
+      policy,
     );
 
     const failed = await dispatcher.execute({
@@ -227,17 +267,377 @@ describe("review execution domain", () => {
     });
     expect(failed).toMatchObject({ claimed: 1, dispatched: 0, failed: 1 });
 
-    now = new Date(baseTime.getTime() + 1_001);
-    const recovered = await dispatcher.execute({
+    expect(submitCalls).toBe(1);
+    const notRedispatched = await dispatcher.execute({
       ownerIdHash: hash("d"),
       limit: 10,
     });
-    expect(recovered).toMatchObject({ claimed: 1, dispatched: 1, failed: 0 });
+    expect(notRedispatched.scanned).toBe(0);
+    expect(submitCalls).toBe(1);
+
+    now = new Date(baseTime.getTime() + 1_001);
+    const recovery = new RecoverReviewRequestedDispatches(
+      intents,
+      intents,
+      gateway,
+      { now: () => now },
+      {
+        ids: { nextRequestId: () => "request-retry" },
+        digest: {
+          digestUtf8: async (value) =>
+            createHash("sha256").update(value).digest("hex"),
+        },
+      },
+      policy,
+    );
+    expect(await recovery.execute({ limit: 10 })).toMatchObject({
+      pending: 1,
+      recovered: 0,
+      failed: 0,
+    });
+    now = new Date(baseTime.getTime() + 2_002);
+    expect(await recovery.execute({ limit: 10 })).toMatchObject({
+      pending: 1,
+      recovered: 0,
+      failed: 0,
+    });
+    now = new Date(baseTime.getTime() + 3_003);
+    expect(await recovery.execute({ limit: 10 })).toMatchObject({
+      recovered: 1,
+      failed: 0,
+    });
+    expect(lookupCalls).toBe(3);
+    expect(submitCalls).toBe(1);
     expect(await intents.findByRequestId("request-dispatch")).toMatchObject({
       state: ReviewRequestedIntentState.AwaitingAuthorization,
       sourceRunId: "12345",
       sourceRunAttempt: "1",
     });
+  });
+
+  it("retries failed transport preparation before entering unknown outcome", async () => {
+    const intents = new InMemoryReviewRequestedIntentStore();
+    await intents.registerIntent({
+      candidate: intentCandidate("request-prepare", "311", scope, revision),
+    });
+    let now = baseTime;
+    let prepareCalls = 0;
+    let submitCalls = 0;
+    const dispatcher = new DispatchDueReviewRequestedIntents(
+      intents,
+      intents,
+      {
+        async prepare() {
+          prepareCalls += 1;
+          if (prepareCalls === 1) throw new Error("installation_unavailable");
+          return {
+            async submit() {
+              submitCalls += 1;
+              return {
+                status:
+                  ReviewRequestedDispatchSubmissionStatus.Accepted as const,
+                sourceRunId: "12346",
+                sourceRunAttempt: "1",
+              };
+            },
+          };
+        },
+        async findByRequestIdentity() {
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Absent as const,
+          };
+        },
+        async inspectKnownRun() {
+          return { status: ReviewRequestedDispatchRunStatus.Pending };
+        },
+        async cancelKnownRun() {},
+      },
+      { now: () => now },
+      {
+        nextClaimId: () => `claim-prepare-${prepareCalls + 1}`,
+        nextRequestId: () => "not-used",
+      },
+      {
+        digestUtf8: async (value) =>
+          createHash("sha256").update(value).digest("hex"),
+      },
+      testDispatchPolicy(),
+    );
+
+    expect(
+      await dispatcher.execute({ ownerIdHash: hash("a"), limit: 10 }),
+    ).toMatchObject({ failed: 1, dispatched: 0 });
+    expect(submitCalls).toBe(0);
+    expect(await intents.findByRequestId("request-prepare")).toMatchObject({
+      state: ReviewRequestedIntentState.Dispatching,
+      submissionStartedAt: null,
+    });
+
+    now = plus(testDispatchPolicy().claimDurationMs + 1);
+    expect(
+      await dispatcher.execute({ ownerIdHash: hash("a"), limit: 10 }),
+    ).toMatchObject({ failed: 0, dispatched: 1 });
+    expect(prepareCalls).toBe(2);
+    expect(submitCalls).toBe(1);
+  });
+
+  it("terminalizes crash-before-POST uncertainty without ever submitting", async () => {
+    const intents = new InMemoryReviewRequestedIntentStore();
+    await intents.registerIntent({
+      candidate: intentCandidate("request-crash", "32", scope, revision),
+    });
+    const claimed = await intents.claimIntent(
+      claimIntent("request-crash", "claim-crash", "owner-crash"),
+    );
+    const policy = testDispatchPolicy();
+    const begun = await intents.beginSubmission({
+      requestId: "request-crash",
+      claimId: claimed.intent!.claim!.claimId,
+      ownerIdHash: claimed.intent!.claim!.ownerIdHash,
+      fencingToken: claimed.intent!.claim!.fencingToken,
+      now: baseTime,
+      nextResolutionAt: plus(policy.dispatchResolutionDelayMs),
+      resolutionDeadlineAt: plus(policy.dispatchResolutionTimeoutMs),
+    });
+    expect(begun.status).toBe(ReviewRequestedTransitionStatus.Applied);
+    let submitCalls = 0;
+    const recovery = new RecoverReviewRequestedDispatches(
+      intents,
+      intents,
+      {
+        async prepare() {
+          return {
+            async submit() {
+              submitCalls += 1;
+              throw new Error("must_not_submit");
+            },
+          };
+        },
+        async findByRequestIdentity() {
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Absent as const,
+          };
+        },
+        async inspectKnownRun() {
+          return { status: ReviewRequestedDispatchRunStatus.Pending };
+        },
+        async cancelKnownRun() {},
+      },
+      { now: () => plus(policy.dispatchResolutionTimeoutMs + 1) },
+      {
+        ids: { nextRequestId: () => "must-not-retry" },
+        digest: {
+          digestUtf8: async () => {
+            throw new Error("must_not_hash");
+          },
+        },
+      },
+      policy,
+    );
+
+    expect(await recovery.execute({ limit: 10 })).toMatchObject({
+      recovered: 1,
+      failed: 0,
+    });
+    expect(submitCalls).toBe(0);
+    expect(await intents.findByRequestId("request-crash")).toMatchObject({
+      state: ReviewRequestedIntentState.Terminal,
+      terminalReason:
+        ReviewRequestedIntentTerminalReason.DispatchOutcomeUnknown,
+    });
+  });
+
+  it("retries only proven no-effect submissions within the attempt budget", async () => {
+    const intents = new InMemoryReviewRequestedIntentStore();
+    await intents.registerIntent({
+      candidate: intentCandidate("request-no-effect", "33", scope, revision),
+    });
+    let now = baseTime;
+    let submitCalls = 0;
+    let retryIds = 0;
+    const policy = {
+      ...testDispatchPolicy(),
+      retryDelayMs: 1_000,
+      maxDispatchAttempts: 2,
+    };
+    const dispatcher = new DispatchDueReviewRequestedIntents(
+      intents,
+      intents,
+      {
+        async prepare() {
+          return {
+            async submit() {
+              submitCalls += 1;
+              return {
+                status:
+                  ReviewRequestedDispatchSubmissionStatus.DefinitelyNoEffect as const,
+              };
+            },
+          };
+        },
+        async findByRequestIdentity() {
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Absent as const,
+          };
+        },
+        async inspectKnownRun() {
+          return { status: ReviewRequestedDispatchRunStatus.Pending };
+        },
+        async cancelKnownRun() {},
+      },
+      { now: () => now },
+      {
+        nextClaimId: () => `claim-${submitCalls + 1}`,
+        nextRequestId: () => `request-retry-${++retryIds}`,
+      },
+      {
+        digestUtf8: async (value) =>
+          createHash("sha256").update(value).digest("hex"),
+      },
+      policy,
+    );
+
+    await dispatcher.execute({ ownerIdHash: hash("e"), limit: 10 });
+    expect(await intents.findPendingByScope(scope)).toMatchObject({
+      requestId: "request-retry-1",
+      dispatchAttempt: 2,
+    });
+    now = plus(1_001);
+    await dispatcher.execute({ ownerIdHash: hash("e"), limit: 10 });
+    expect(await intents.findByRequestId("request-retry-1")).toMatchObject({
+      state: ReviewRequestedIntentState.Terminal,
+      terminalReason:
+        ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted,
+    });
+    expect(await intents.findPendingByScope(scope)).toBeNull();
+    expect(
+      await dispatcher.execute({ ownerIdHash: hash("e"), limit: 10 }),
+    ).toMatchObject({ scanned: 0 });
+    expect(submitCalls).toBe(2);
+  });
+
+  it("bounds authorization waiting, cancels the exact run, and rejects late admission", async () => {
+    const intents = new InMemoryReviewRequestedIntentStore();
+    await intents.registerIntent({
+      candidate: intentCandidate("request-auth-timeout", "34", scope, revision),
+    });
+    const claimed = await intents.claimIntent(
+      claimIntent(
+        "request-auth-timeout",
+        "claim-auth-timeout",
+        "owner-auth-timeout",
+      ),
+    );
+    await beginClaimedSubmission(intents, claimed.intent!, plus(500));
+    await intents.recordDispatch({
+      requestId: "request-auth-timeout",
+      claimId: claimed.intent!.claim!.claimId,
+      ownerIdHash: claimed.intent!.claim!.ownerIdHash,
+      fencingToken: claimed.intent!.claim!.fencingToken,
+      sourceRunId: "98765",
+      sourceRunAttempt: "1",
+      now: plus(1_000),
+      ...resolutionWindow(plus(1_000)),
+    });
+    let now = plus(2_001);
+    let cancellations = 0;
+    const recovery = new RecoverReviewRequestedDispatches(
+      intents,
+      intents,
+      {
+        async prepare() {
+          return {
+            async submit() {
+              throw new Error("not_used");
+            },
+          };
+        },
+        async findByRequestIdentity() {
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Absent as const,
+          };
+        },
+        async inspectKnownRun() {
+          return { status: ReviewRequestedDispatchRunStatus.Pending };
+        },
+        async cancelKnownRun({ intent }) {
+          expect(intent.sourceRunId).toBe("98765");
+          cancellations += 1;
+        },
+      },
+      { now: () => now },
+      {
+        ids: { nextRequestId: () => "must-not-retry" },
+        digest: {
+          digestUtf8: async () => {
+            throw new Error("must_not_hash");
+          },
+        },
+      },
+      testDispatchPolicy(),
+    );
+    const beforeDeferral = await intents.findByRequestId(
+      "request-auth-timeout",
+    );
+    expect(await recovery.execute({ limit: 10 })).toMatchObject({
+      pending: 1,
+      recovered: 0,
+    });
+    await expect(
+      intents.deferResolution({
+        requestId: "request-auth-timeout",
+        expectedVersion: beforeDeferral!.version,
+        expectedState: ReviewRequestedIntentState.AwaitingAuthorization,
+        now,
+        nextResolutionAt: plus(4_000),
+      }),
+    ).resolves.toMatchObject({
+      status: ReviewRequestedTransitionStatus.Conflict,
+    });
+
+    now = plus(61_001);
+    await intents.registerIntent({
+      candidate: {
+        ...intentCandidate("request-after-timeout", "35", scope, revision, now),
+        createdAt: now,
+      },
+    });
+    await expect(
+      intents.claimIntent({
+        requestId: "request-after-timeout",
+        claimId: "claim-after-timeout",
+        ownerIdHash: "owner-after-timeout",
+        now,
+        claimUntil: plus(91_001),
+      }),
+    ).resolves.toMatchObject({
+      status: ReviewRequestedClaimStatus.Claimed,
+    });
+    await expect(
+      intents.linkAdmission({
+        requestId: "request-auth-timeout",
+        sourceRunId: "98765",
+        sourceRunAttempt: "1",
+        authorizationId: "authorization-late",
+        executionId: "execution-late",
+        revision,
+        now,
+      }),
+    ).resolves.toMatchObject({
+      status: ReviewRequestedTransitionStatus.Conflict,
+    });
+    expect(await recovery.execute({ limit: 10 })).toMatchObject({
+      recovered: 1,
+      failed: 0,
+    });
+    expect(cancellations).toBe(1);
+    expect(await intents.findByRequestId("request-auth-timeout")).toMatchObject(
+      {
+        state: ReviewRequestedIntentState.Terminal,
+        terminalReason:
+          ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded,
+      },
+    );
   });
 
   it("makes preparation replay and expired claim takeover explicit domain outcomes", () => {
@@ -330,6 +730,7 @@ describe("start and admission saga", () => {
     const claim = await intents.claimIntent(
       claimIntent("request-start", "claim-start", "owner-start"),
     );
+    await beginClaimedSubmission(intents, claim.intent!, plus(1));
     await intents.recordDispatch({
       requestId: "request-start",
       claimId: "claim-start",
@@ -337,7 +738,8 @@ describe("start and admission saga", () => {
       fencingToken: claim.intent!.claim!.fencingToken,
       sourceRunId: "run-1",
       sourceRunAttempt: "1",
-      now: plus(1),
+      now: plus(2),
+      ...resolutionWindow(plus(2)),
     });
     const facts = authorizationFactsFixture(revision);
     const useCase = startUseCaseWithPorts(executions, {
@@ -1305,6 +1707,7 @@ describe("durable ReviewRequested ingress", () => {
     const claim = await store.claimIntent(
       claimIntent("request-old", "claim-old", "owner-old"),
     );
+    await beginClaimedSubmission(store, claim.intent!, plus(1));
     await store.recordDispatch({
       requestId: "request-old",
       claimId: "claim-old",
@@ -1312,7 +1715,8 @@ describe("durable ReviewRequested ingress", () => {
       fencingToken: claim.intent!.claim!.fencingToken,
       sourceRunId: "8001",
       sourceRunAttempt: "1",
-      now: plus(1),
+      now: plus(2),
+      ...resolutionWindow(plus(2)),
     });
 
     await store.registerIntent({
@@ -1348,6 +1752,7 @@ describe("durable ReviewRequested ingress", () => {
     });
     expect(takeover.status).toBe(ReviewRequestedClaimStatus.Claimed);
     expect(takeover.intent?.claim?.fencingToken).toBe(502n);
+    await beginClaimedSubmission(store, takeover.intent!, plus(32_000));
 
     const staleAck = await store.recordDispatch({
       requestId: "request-1",
@@ -1357,6 +1762,7 @@ describe("durable ReviewRequested ingress", () => {
       sourceRunId: "run-old",
       sourceRunAttempt: "1",
       now: plus(32_000),
+      ...resolutionWindow(plus(32_000)),
     });
     expect(staleAck.status).toBe(ReviewRequestedTransitionStatus.StaleClaim);
     const applied = await store.recordDispatch({
@@ -1367,6 +1773,7 @@ describe("durable ReviewRequested ingress", () => {
       sourceRunId: "run-new",
       sourceRunAttempt: "1",
       now: plus(33_000),
+      ...resolutionWindow(plus(33_000)),
     });
     expect(applied.status).toBe(ReviewRequestedTransitionStatus.Applied);
     expect(applied.intent?.state).toBe(
@@ -1382,6 +1789,7 @@ describe("durable ReviewRequested ingress", () => {
     const claimed = await store.claimIntent(
       claimIntent("request-1", "claim-1", "owner-1"),
     );
+    await beginClaimedSubmission(store, claimed.intent!, plus(500));
     await store.recordDispatch({
       requestId: "request-1",
       claimId: "claim-1",
@@ -1390,6 +1798,7 @@ describe("durable ReviewRequested ingress", () => {
       sourceRunId: "run-1",
       sourceRunAttempt: "1",
       now: plus(1_000),
+      ...resolutionWindow(plus(1_000)),
     });
     const command = {
       requestId: "request-1",
@@ -1419,6 +1828,7 @@ describe("durable ReviewRequested ingress", () => {
     const claimed = await store.claimIntent(
       claimIntent("request-old", "claim-old", "owner-old"),
     );
+    await beginClaimedSubmission(store, claimed.intent!, plus(500));
     await store.recordDispatch({
       requestId: "request-old",
       claimId: "claim-old",
@@ -1427,29 +1837,45 @@ describe("durable ReviewRequested ingress", () => {
       sourceRunId: "9001",
       sourceRunAttempt: "1",
       now: plus(1_000),
+      ...resolutionWindow(plus(1_000)),
     });
     const recovery = new RecoverReviewRequestedDispatches(
       store,
       store,
       {
-        async dispatch() {
-          throw new Error("not_used");
+        async prepare() {
+          return {
+            async submit() {
+              return {
+                status:
+                  ReviewRequestedDispatchSubmissionStatus.Accepted as const,
+                sourceRunId: "not-used",
+                sourceRunAttempt: "1",
+              };
+            },
+          };
         },
-        async inspect() {
+        async findByRequestIdentity() {
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Absent as const,
+          };
+        },
+        async inspectKnownRun() {
           return {
             status: ReviewRequestedDispatchRunStatus.TerminalCurrentRevision,
           };
         },
+        async cancelKnownRun() {},
       },
       { now: () => plus(10_000) },
-      { nextRequestId: () => "request-retry" },
       {
-        digestUtf8: async (value) =>
-          createHash("sha256").update(value).digest("hex"),
+        ids: { nextRequestId: () => "request-retry" },
+        digest: {
+          digestUtf8: async (value) =>
+            createHash("sha256").update(value).digest("hex"),
+        },
       },
-      5_000,
-      2_000,
-      86_400_000,
+      testDispatchPolicy(),
     );
 
     expect(await recovery.execute({ limit: 10 })).toEqual({
@@ -1478,6 +1904,7 @@ describe("durable ReviewRequested ingress", () => {
     const claimed = await store.claimIntent(
       claimIntent("request-stale", "claim-stale", "owner-stale"),
     );
+    await beginClaimedSubmission(store, claimed.intent!, plus(500));
     await store.recordDispatch({
       requestId: "request-stale",
       claimId: "claim-stale",
@@ -1486,30 +1913,46 @@ describe("durable ReviewRequested ingress", () => {
       sourceRunId: "9002",
       sourceRunAttempt: "1",
       now: plus(1_000),
+      ...resolutionWindow(plus(1_000)),
     });
     const recovery = new RecoverReviewRequestedDispatches(
       store,
       store,
       {
-        async dispatch() {
-          throw new Error("not_used");
+        async prepare() {
+          return {
+            async submit() {
+              return {
+                status:
+                  ReviewRequestedDispatchSubmissionStatus.Accepted as const,
+                sourceRunId: "not-used",
+                sourceRunAttempt: "1",
+              };
+            },
+          };
         },
-        async inspect() {
+        async findByRequestIdentity() {
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Absent as const,
+          };
+        },
+        async inspectKnownRun() {
           return {
             status: ReviewRequestedDispatchRunStatus.TerminalStaleRevision,
           };
         },
+        async cancelKnownRun() {},
       },
       { now: () => plus(10_000) },
-      { nextRequestId: () => "must-not-be-used" },
       {
-        digestUtf8: async () => {
-          throw new Error("must_not_hash_retry");
+        ids: { nextRequestId: () => "must-not-be-used" },
+        digest: {
+          digestUtf8: async () => {
+            throw new Error("must_not_hash_retry");
+          },
         },
       },
-      5_000,
-      2_000,
-      86_400_000,
+      testDispatchPolicy(),
     );
 
     expect(await recovery.execute({ limit: 10 })).toMatchObject({
@@ -1774,6 +2217,43 @@ function claimIntent(requestId: string, claimId: string, ownerIdHash: string) {
     ownerIdHash,
     now: baseTime,
     claimUntil: plus(30_000),
+  };
+}
+
+async function beginClaimedSubmission(
+  store: InMemoryReviewRequestedIntentStore,
+  intent: ReviewRequestedIntent,
+  now: Date,
+) {
+  const claim = intent.claim;
+  if (claim === null) throw new Error("test_claim_missing");
+  return store.beginSubmission({
+    requestId: intent.requestId,
+    claimId: claim.claimId,
+    ownerIdHash: claim.ownerIdHash,
+    fencingToken: claim.fencingToken,
+    now,
+    ...resolutionWindow(now),
+  });
+}
+
+function resolutionWindow(now: Date) {
+  return {
+    nextResolutionAt: new Date(now.getTime() + 1_000),
+    resolutionDeadlineAt: new Date(now.getTime() + 60_000),
+  };
+}
+
+function testDispatchPolicy() {
+  return {
+    claimDurationMs: 30_000,
+    dispatchResolutionDelayMs: 1_000,
+    dispatchResolutionTimeoutMs: 60_000,
+    authorizationResolutionDelayMs: 1_000,
+    authorizationResolutionTimeoutMs: 60_000,
+    retryDelayMs: 2_000,
+    retentionMs: 86_400_000,
+    maxDispatchAttempts: 3,
   };
 }
 
