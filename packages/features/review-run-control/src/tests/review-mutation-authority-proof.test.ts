@@ -331,6 +331,7 @@ describe("ReviewMutationAuthority proof contract", () => {
         workflowInventoryCompatible: false,
         registeredReleaseSelected: false,
         completionWorkerConfigured: false,
+        dispatchCapabilityAvailable: false,
         safetyDecisionEnabled: false,
       },
     };
@@ -345,6 +346,7 @@ describe("ReviewMutationAuthority proof contract", () => {
         ReviewMutationAuthorityProofBlocker.WorkflowInventoryIncompatible,
         ReviewMutationAuthorityProofBlocker.RegisteredReleaseMissing,
         ReviewMutationAuthorityProofBlocker.CompletionWorkerUnavailable,
+        ReviewMutationAuthorityProofBlocker.DispatchCapabilityUnavailable,
         ReviewMutationAuthorityProofBlocker.MutationSafetyDisabled,
       ],
     });
@@ -379,6 +381,7 @@ class MutableProofFacts implements ReviewMutationAuthorityProofFactsQueryPorts {
       facts: {
         freshV2OnlyProvisioningProven: true,
         noLegacyCapabilityEverIssued: true,
+        dispatchCapabilityAvailable: true,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,
@@ -397,6 +400,7 @@ class MutableProofFacts implements ReviewMutationAuthorityProofFactsQueryPorts {
         workflowInventoryCompatible: true,
         registeredReleaseSelected: true,
         completionWorkerConfigured: true,
+        dispatchCapabilityAvailable: true,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,
@@ -409,6 +413,7 @@ class MutableProofFacts implements ReviewMutationAuthorityProofFactsQueryPorts {
         unknownEffectsReconciled: true,
         repositoryBound: true,
         registeredReleaseSelected: true,
+        dispatchCapabilityAvailable: true,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashA,
       },

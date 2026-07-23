@@ -818,6 +818,7 @@ describe("Codex rotating GitHub Action runtime", () => {
 
   it("runs scheduled refresh without pull request checkout or comments", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "reviewrouter-refresh-test-"));
+    const codexHomeLog = join(tempDir, "codex-home.log");
     const fakeCodex = join(
       tempDir,
       "action-dist",
@@ -839,6 +840,7 @@ describe("Codex rotating GitHub Action runtime", () => {
         "const { readFileSync, writeFileSync } = require('node:fs');",
         "const { join } = require('node:path');",
         "const authPath = join(process.env.CODEX_HOME, 'auth.json');",
+        `writeFileSync(${JSON.stringify(codexHomeLog)}, process.env.CODEX_HOME);`,
         "readFileSync(authPath, 'utf8');",
         "writeFileSync(authPath, JSON.stringify({",
         "  auth_mode: 'chatgpt',",
@@ -930,6 +932,9 @@ describe("Codex rotating GitHub Action runtime", () => {
       });
 
       expect(fullReviewRuntimeRunner).not.toHaveBeenCalled();
+      expect(readFileSync(codexHomeLog, "utf8")).toContain(
+        join(await realpath(tempDir), ".reviewrouter-codex-home", "run-"),
+      );
       expect(invokedUrls.some((url) => url.endsWith("/writeback"))).toBe(true);
       expect(invokedUrls.some((url) => url.endsWith("/checkout-token"))).toBe(
         false,
@@ -2551,6 +2556,7 @@ describe("Codex rotating GitHub Action runtime", () => {
           GITHUB_EVENT_PATH: eventPath,
           GITHUB_REPOSITORY: "777genius/agent-teams-ai",
           GITHUB_ACTION_PATH: tempDir,
+          GITHUB_WORKSPACE: tempDir,
           GITHUB_RUN_ID: "9001",
           GITHUB_RUN_ATTEMPT: "1",
           RUNNER_OS: "Linux",
@@ -3326,6 +3332,7 @@ async function writePullRequestEvent(path: string): Promise<void> {
 function supportedRunnerEnv(actionPath: string): NodeJS.ProcessEnv {
   return {
     GITHUB_ACTION_PATH: actionPath,
+    GITHUB_WORKSPACE: actionPath,
     RUNNER_OS: "Linux",
     RUNNER_ARCH: "X64",
     ImageOS: "ubuntu24",

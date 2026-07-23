@@ -10,7 +10,7 @@ import {
   type ScmRepositoryIdentityQueryPort,
 } from "@reviewrouter/features-review-run-control";
 
-const factsVersion = "review-mutation-authority-production-facts-v2";
+const factsVersion = "review-mutation-authority-production-facts-v3";
 
 export interface ManagedReviewWorkflowInventoryInspectionPort {
   inspectReviewV2ManagedWorkflowInventory(input: {
@@ -25,6 +25,13 @@ export interface ManagedReviewWorkflowInventoryInspectionPort {
   }>;
 }
 
+export interface ReviewV2DispatchCapabilityInspectionPort {
+  inspectReviewV2DispatchCapability(input: {
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+  }): Promise<{ readonly available: boolean }>;
+}
+
 export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutationAuthorityProofFactsQueryPorts {
   constructor(
     private readonly dependencies: {
@@ -34,6 +41,7 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
       readonly actionRepositories: ActionControlPlaneRepositoryPort;
       readonly safety: ReviewSafetyDecisionResolverPort;
       readonly workflowInventory: ManagedReviewWorkflowInventoryInspectionPort;
+      readonly dispatchCapability: ReviewV2DispatchCapabilityInspectionPort;
       readonly completionWorkerConfigured: boolean;
       readonly now: () => Date;
     },
@@ -44,21 +52,26 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
     readonly laneKind: ReviewMutationLaneKind;
   }) {
     const target = await this.resolveTarget(input.scmRepositoryIdentityId);
-    const [authority, inventory, safety] = await Promise.all([
-      this.dependencies.authorities.findReviewMutationAuthority(input),
-      this.dependencies.workflowInventory.inspectReviewV2ManagedWorkflowInventory(
-        {
+    const [authority, inventory, dispatchCapability, safety] =
+      await Promise.all([
+        this.dependencies.authorities.findReviewMutationAuthority(input),
+        this.dependencies.workflowInventory.inspectReviewV2ManagedWorkflowInventory(
+          {
+            githubInstallationId: target.repository.githubInstallationId,
+            githubRepositoryId: target.repository.githubRepositoryId,
+            repositoryFullName: target.repository.fullName,
+            owner: target.repository.owner,
+          },
+        ),
+        this.dependencies.dispatchCapability.inspectReviewV2DispatchCapability({
           githubInstallationId: target.repository.githubInstallationId,
           githubRepositoryId: target.repository.githubRepositoryId,
-          repositoryFullName: target.repository.fullName,
-          owner: target.repository.owner,
-        },
-      ),
-      this.dependencies.safety.resolveReviewSafetyPolicy({
-        decisionKind: ReviewSafetyDecisionKind.MutationEpochActivation,
-        target: target.safetyTarget,
-      }),
-    ]);
+        }),
+        this.dependencies.safety.resolveReviewSafetyPolicy({
+          decisionKind: ReviewSafetyDecisionKind.MutationEpochActivation,
+          target: target.safetyTarget,
+        }),
+      ]);
     const now = this.dependencies.now();
     const registeredReleaseSelected = inventory.actionCommitSha
       ? (await this.dependencies.prisma.producerRelease.count({
@@ -83,6 +96,7 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
         registeredReleaseSelected,
         completionWorkerConfigured:
           this.dependencies.completionWorkerConfigured,
+        dispatchCapabilityAvailable: dispatchCapability.available,
         managedWorkflowInventoryHash: inventory.inventoryHash,
         safetyDecisionEnabled: safety.effectAllowed,
         activationSafetyDecisionHash: safety.safetyDecisionHash,
@@ -107,7 +121,7 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
     readonly scmRepositoryIdentityId: string;
   }) {
     const target = await this.resolveTarget(input.scmRepositoryIdentityId);
-    const [inventory, safety] = await Promise.all([
+    const [inventory, dispatchCapability, safety] = await Promise.all([
       this.dependencies.workflowInventory.inspectReviewV2ManagedWorkflowInventory(
         {
           githubInstallationId: target.repository.githubInstallationId,
@@ -116,6 +130,10 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
           owner: target.repository.owner,
         },
       ),
+      this.dependencies.dispatchCapability.inspectReviewV2DispatchCapability({
+        githubInstallationId: target.repository.githubInstallationId,
+        githubRepositoryId: target.repository.githubRepositoryId,
+      }),
       this.dependencies.safety.resolveReviewSafetyPolicy({
         decisionKind: ReviewSafetyDecisionKind.MutationEpochActivation,
         target: target.safetyTarget,
@@ -126,6 +144,7 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
       facts: {
         freshV2OnlyProvisioningProven: false,
         noLegacyCapabilityEverIssued: false,
+        dispatchCapabilityAvailable: dispatchCapability.available,
         managedWorkflowInventoryHash: inventory.inventoryHash,
         safetyDecisionEnabled: safety.effectAllowed,
         activationSafetyDecisionHash: safety.safetyDecisionHash,
@@ -137,28 +156,37 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
     readonly scmRepositoryIdentityId: string;
   }) {
     const target = await this.resolveTarget(input.scmRepositoryIdentityId);
-    const [unsafeOutcomeCount, registeredReleaseCount, safety] =
-      await Promise.all([
-        this.dependencies.prisma.reviewPublicationAttemptV2.count({
-          where: {
-            scmRepositoryIdentityId: input.scmRepositoryIdentityId,
-            terminalOutcome: { in: ["stale_visible", "terminal_unknown"] },
-          },
-        }),
-        this.dependencies.prisma.producerRelease.count({
-          where: { state: "registered" },
-        }),
-        this.dependencies.safety.resolveReviewSafetyPolicy({
-          decisionKind: ReviewSafetyDecisionKind.MutationEpochActivation,
-          target: target.safetyTarget,
-        }),
-      ]);
+    const [
+      unsafeOutcomeCount,
+      registeredReleaseCount,
+      dispatchCapability,
+      safety,
+    ] = await Promise.all([
+      this.dependencies.prisma.reviewPublicationAttemptV2.count({
+        where: {
+          scmRepositoryIdentityId: input.scmRepositoryIdentityId,
+          terminalOutcome: { in: ["stale_visible", "terminal_unknown"] },
+        },
+      }),
+      this.dependencies.prisma.producerRelease.count({
+        where: { state: "registered" },
+      }),
+      this.dependencies.dispatchCapability.inspectReviewV2DispatchCapability({
+        githubInstallationId: target.repository.githubInstallationId,
+        githubRepositoryId: target.repository.githubRepositoryId,
+      }),
+      this.dependencies.safety.resolveReviewSafetyPolicy({
+        decisionKind: ReviewSafetyDecisionKind.MutationEpochActivation,
+        target: target.safetyTarget,
+      }),
+    ]);
     return {
       factsVersion,
       facts: {
         unknownEffectsReconciled: unsafeOutcomeCount === 0,
         repositoryBound: true,
         registeredReleaseSelected: registeredReleaseCount > 0,
+        dispatchCapabilityAvailable: dispatchCapability.available,
         safetyDecisionEnabled: safety.effectAllowed,
         activationSafetyDecisionHash: safety.safetyDecisionHash,
       },

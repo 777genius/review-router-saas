@@ -49,6 +49,16 @@ describe("ReviewMutationAuthority", () => {
         code: ReviewRunControlErrorCode.ProofRequired,
       }),
     );
+    expect(() =>
+      initializeDirectV2ReviewMutationAuthority({
+        scmRepositoryIdentityId: "scm-1",
+        proof: directV2Proof({ dispatchCapabilityAvailable: false }),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: ReviewRunControlErrorCode.ProofRequired,
+      }),
+    );
     expect(
       initializeDirectV2ReviewMutationAuthority({
         scmRepositoryIdentityId: "scm-1",
@@ -102,6 +112,18 @@ describe("ReviewMutationAuthority", () => {
       expectedVersion: 3,
       pausedAt: new Date("2026-01-01T00:02:00.000Z"),
     });
+    expect(() =>
+      resumeReviewMutationEpoch(paused.authority, {
+        expectedVersion: 4,
+        proof: resumeProof(4, "2026-01-01T00:03:00.000Z", {
+          dispatchCapabilityAvailable: false,
+        }),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: ReviewRunControlErrorCode.ProofRequired,
+      }),
+    );
     const resumed = resumeReviewMutationEpoch(paused.authority, {
       expectedVersion: 4,
       proof: resumeProof(4, "2026-01-01T00:03:00.000Z"),
@@ -192,6 +214,7 @@ describe("ReviewMutationAuthority", () => {
       ["2026-01-01T00:01:00.000Z", { workflowInventoryCompatible: false }],
       ["2026-01-01T00:01:00.000Z", { registeredReleaseSelected: false }],
       ["2026-01-01T00:01:00.000Z", { completionWorkerConfigured: false }],
+      ["2026-01-01T00:01:00.000Z", { dispatchCapabilityAvailable: false }],
       ["2026-01-01T00:01:00.000Z", { safetyDecisionEnabled: false }],
     ]) {
       expect(() =>
@@ -295,6 +318,7 @@ function directV2Proof(
       facts: {
         freshV2OnlyProvisioningProven: true,
         noLegacyCapabilityEverIssued: true,
+        dispatchCapabilityAvailable: true,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,
@@ -325,6 +349,7 @@ function activationProof(
         workflowInventoryCompatible: true,
         registeredReleaseSelected: true,
         completionWorkerConfigured: true,
+        dispatchCapabilityAvailable: true,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,
@@ -354,6 +379,7 @@ function resumeProof(
         unknownEffectsReconciled: true,
         repositoryBound: true,
         registeredReleaseSelected: true,
+        dispatchCapabilityAvailable: true,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashA,
         ...overrides,

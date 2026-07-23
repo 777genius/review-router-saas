@@ -153,6 +153,7 @@ export class TestReviewMutationAuthorityProofFacts implements ReviewMutationAuth
       facts: {
         freshV2OnlyProvisioningProven: true,
         noLegacyCapabilityEverIssued: true,
+        dispatchCapabilityAvailable: true,
         managedWorkflowInventoryHash: "a".repeat(64),
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: "b".repeat(64),
@@ -171,6 +172,7 @@ export class TestReviewMutationAuthorityProofFacts implements ReviewMutationAuth
         workflowInventoryCompatible: true,
         registeredReleaseSelected: true,
         completionWorkerConfigured: true,
+        dispatchCapabilityAvailable: true,
         managedWorkflowInventoryHash: "a".repeat(64),
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: "b".repeat(64),
@@ -183,6 +185,7 @@ export class TestReviewMutationAuthorityProofFacts implements ReviewMutationAuth
         unknownEffectsReconciled: true,
         repositoryBound: true,
         registeredReleaseSelected: true,
+        dispatchCapabilityAvailable: true,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: "b".repeat(64),
       },

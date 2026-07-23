@@ -3972,8 +3972,11 @@ Exit criteria:
    repository authority is not yet `v2_active`.
 9. Enter `v1_draining`, deny every new legacy write-authority path, wait through the
    measured drain window, and verify zero live v1 capabilities, compatible worker
-   release, SCM credentials, fenced outbox, revision facts, recovery scanners, and
-   protocol/schema signatures.
+   release, SCM credentials, a repository-scoped GitHub `actions: write` token,
+   fenced outbox, revision facts, recovery scanners, and protocol/schema
+   signatures. The token-mint proof must fail closed when the App registration or
+   installation still grants only `actions: read`; `workflows: write` is not a
+   substitute for dispatch authority.
 10. Activate the new mutation epoch as the final cutover command. Because all v2
     decisions and infrastructure were verified first, v2 authorization is
     immediately available after commit; there is no intentional interval where v1

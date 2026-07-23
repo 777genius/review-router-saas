@@ -21775,7 +21775,7 @@ async function runCodexRotatingGitHubAction(runtime = {}) {
     const workspace = await makeTempDirectory("reviewrouter-workspace-");
     try {
       const tempHome = await makeTempDirectory("reviewrouter-home-");
-      const tempCodexHome = await makeTempDirectory("reviewrouter-codex-");
+      const tempCodexHome = await makeGitHubWorkspaceCodexHomeDirectory(env);
       try {
         await refreshAndWritebackCodexAuthJson({
           authJson,
@@ -22032,8 +22032,8 @@ async function runCodexRefreshOnlyGitHubAction(input) {
       }
     });
     const tempHome = await makeTempDirectory("reviewrouter-refresh-home-");
-    const tempCodexHome = await makeTempDirectory(
-      "reviewrouter-refresh-codex-"
+    const tempCodexHome = await makeGitHubWorkspaceCodexHomeDirectory(
+      input.env
     );
     try {
       await refreshAndWritebackCodexAuthJson({
@@ -22125,7 +22125,7 @@ async function runForkAgenticSandboxGitHubAction(input) {
     }
   });
   const tempHome = await makeTempDirectory("reviewrouter-home-");
-  const tempCodexHome = await makeForkSandboxCodexHomeDirectory(input.env);
+  const tempCodexHome = await makeGitHubWorkspaceCodexHomeDirectory(input.env);
   try {
     const refreshed = await refreshAndWritebackCodexAuthJson({
       authJson,
@@ -23333,13 +23333,17 @@ async function refreshCodexAuthJson(input) {
       writebackCommittedByRuntime: false
     };
   }
+  const subscriptionRuntimeSourceEnv = {
+    ...input.env,
+    SUBSCRIPTION_RUNTIME_TMPDIR: input.tempCodexHome
+  };
   const sessionDriver = new CodexCliSessionDriver({
     codexBinaryPath: input.codexBinaryPath,
-    sourceEnv: input.env
+    sourceEnv: subscriptionRuntimeSourceEnv
   });
   const agentDriver = new CodexJsonAgentDriver({
     codexBinaryPath: input.codexBinaryPath,
-    sourceEnv: input.env
+    sourceEnv: subscriptionRuntimeSourceEnv
   });
   const redactor = new DefaultRedactor();
   const sessionStore = new ReviewRouterCodexActionSessionStore({
@@ -23803,7 +23807,7 @@ async function assertForkSandboxWorkspace(workspace) {
   }
   await assertGitConfigDoesNotPersistCredentials({ workspace });
 }
-async function makeForkSandboxCodexHomeDirectory(env) {
+async function makeGitHubWorkspaceCodexHomeDirectory(env) {
   const githubWorkspace = env.GITHUB_WORKSPACE;
   if (!githubWorkspace) {
     throw new Error("missing_github_workspace");
@@ -23813,17 +23817,17 @@ async function makeForkSandboxCodexHomeDirectory(env) {
   await (0, import_promises6.mkdir)(codexHomeRoot, { recursive: true, mode: 448 });
   const codexHomeRootStats = await (0, import_promises6.lstat)(codexHomeRoot);
   if (!codexHomeRootStats.isDirectory() || codexHomeRootStats.isSymbolicLink()) {
-    throw new Error("fork_sandbox_codex_home_root_invalid");
+    throw new Error("github_workspace_codex_home_root_invalid");
   }
   const resolvedCodexHomeRoot = await (0, import_promises6.realpath)(codexHomeRoot);
   if (resolvedCodexHomeRoot !== codexHomeRoot && !resolvedCodexHomeRoot.startsWith(`${resolvedWorkspaceRoot}/`)) {
-    throw new Error("fork_sandbox_codex_home_root_escape");
+    throw new Error("github_workspace_codex_home_root_escape");
   }
   const codexHome = await (0, import_promises6.mkdtemp)((0, import_node_path7.join)(resolvedCodexHomeRoot, "run-"));
   await (0, import_promises6.chmod)(codexHome, 448);
   const resolvedCodexHome = await (0, import_promises6.realpath)(codexHome);
   if (!resolvedCodexHome.startsWith(`${resolvedCodexHomeRoot}/`)) {
-    throw new Error("fork_sandbox_codex_home_escape");
+    throw new Error("github_workspace_codex_home_escape");
   }
   return resolvedCodexHome;
 }

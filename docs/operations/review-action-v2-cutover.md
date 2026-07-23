@@ -11,6 +11,10 @@ is one-way: after `v2_active`, failure recovery uses `pause`, not a return to v1
 - Authorization and capability key rings are configured.
 - Producer release attestations, provider vote lanes, and projection policy are
   configured without secrets in logs.
+- The production GitHub App registration grants repository `Actions: Read and
+write`, and the target installation has approved that permission update.
+  `Workflows: Read and write` is a different permission and does not authorize
+  workflow dispatch.
 - `REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256` is configured. Supply the
   plaintext credential only to the one operator shell process; do not store it in
   the shared Render environment group.
@@ -81,8 +85,12 @@ a shorter override. Do not bypass or backdate the drain.
 
 After `drainNotBefore`, activation collects and immediately revalidates a
 60-second proof covering legacy admission closure, complete executable-workflow
-authority inventory, exact registered Action SHA, worker configuration, and
-safety policy:
+authority inventory, exact registered Action SHA, worker configuration,
+repository-scoped GitHub `actions: write` token minting, and safety policy.
+Missing or unapproved dispatch permission returns
+`dispatch_capability_unavailable` and leaves the authority in `v1_draining`.
+Transient GitHub failures abort preflight instead of being misreported as a
+permission denial:
 
 ```bash
 pnpm review-v2:admin mutation activate \

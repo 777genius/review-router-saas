@@ -20,13 +20,14 @@ describe("ProductionReviewMutationAuthorityProofFacts", () => {
     });
 
     expect(facts.factsVersion).toBe(
-      "review-mutation-authority-production-facts-v2",
+      "review-mutation-authority-production-facts-v3",
     );
     expect(facts.facts).toEqual({
       noTrackedLegacyActivity: true,
       workflowInventoryCompatible: true,
       registeredReleaseSelected: true,
       completionWorkerConfigured: true,
+      dispatchCapabilityAvailable: true,
       managedWorkflowInventoryHash: "a".repeat(64),
       safetyDecisionEnabled: true,
       activationSafetyDecisionHash: "b".repeat(64),
@@ -43,10 +44,24 @@ describe("ProductionReviewMutationAuthorityProofFacts", () => {
 
     expect(facts.facts.noTrackedLegacyActivity).toBe(false);
   });
+
+  it("reports a missing dispatch permission as an activation fact", async () => {
+    const facts = await createFacts({
+      dispatchCapabilityAvailable: false,
+    }).inspectActivationFacts({
+      scmRepositoryIdentityId: "identity-1",
+      laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
+    });
+
+    expect(facts.facts.dispatchCapabilityAvailable).toBe(false);
+  });
 });
 
 function createFacts(
-  input: { readonly drainNotBefore?: Date } = {},
+  input: {
+    readonly drainNotBefore?: Date;
+    readonly dispatchCapabilityAvailable?: boolean;
+  } = {},
 ): ProductionReviewMutationAuthorityProofFacts {
   const identity: ScmRepositoryIdentity = {
     scmRepositoryIdentityId: "identity-1",
@@ -119,6 +134,11 @@ function createFacts(
         compatible: true,
         inventoryHash: "a".repeat(64),
         actionCommitSha: "c".repeat(40),
+      }),
+    },
+    dispatchCapability: {
+      inspectReviewV2DispatchCapability: async () => ({
+        available: input.dispatchCapabilityAvailable ?? true,
       }),
     },
     completionWorkerConfigured: true,

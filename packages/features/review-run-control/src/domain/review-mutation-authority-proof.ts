@@ -31,6 +31,7 @@ export enum ReviewMutationAuthorityProofBlocker {
   RepositoryUnbound = "repository_unbound",
   RegisteredReleaseMissing = "registered_release_missing",
   CompletionWorkerUnavailable = "completion_worker_unavailable",
+  DispatchCapabilityUnavailable = "dispatch_capability_unavailable",
 }
 
 declare const reviewMutationAuthorityProofDigestBrand: unique symbol;
@@ -45,6 +46,7 @@ export type ReviewMutationAbortProofFacts = {
 export type ReviewMutationDirectV2InitializationProofFacts = {
   readonly freshV2OnlyProvisioningProven: boolean;
   readonly noLegacyCapabilityEverIssued: boolean;
+  readonly dispatchCapabilityAvailable: boolean;
   readonly managedWorkflowInventoryHash: string;
   readonly safetyDecisionEnabled: boolean;
   readonly activationSafetyDecisionHash: string;
@@ -55,6 +57,7 @@ export type ReviewMutationActivationProofFacts = {
   readonly workflowInventoryCompatible: boolean;
   readonly registeredReleaseSelected: boolean;
   readonly completionWorkerConfigured: boolean;
+  readonly dispatchCapabilityAvailable: boolean;
   readonly managedWorkflowInventoryHash: string;
   readonly safetyDecisionEnabled: boolean;
   readonly activationSafetyDecisionHash: string;
@@ -64,6 +67,7 @@ export type ReviewMutationResumeProofFacts = {
   readonly unknownEffectsReconciled: boolean;
   readonly repositoryBound: boolean;
   readonly registeredReleaseSelected: boolean;
+  readonly dispatchCapabilityAvailable: boolean;
   readonly safetyDecisionEnabled: boolean;
   readonly activationSafetyDecisionHash: string;
 };
@@ -205,6 +209,11 @@ export function reviewMutationAuthorityProofBlockers(
           ReviewMutationAuthorityProofBlocker.LegacyCapabilityPreviouslyIssued,
         );
       }
+      if (!proof.facts.dispatchCapabilityAvailable) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.DispatchCapabilityUnavailable,
+        );
+      }
       if (!proof.facts.safetyDecisionEnabled) {
         blockers.push(
           ReviewMutationAuthorityProofBlocker.MutationSafetyDisabled,
@@ -235,6 +244,11 @@ export function reviewMutationAuthorityProofBlockers(
           ReviewMutationAuthorityProofBlocker.CompletionWorkerUnavailable,
         );
       }
+      if (!proof.facts.dispatchCapabilityAvailable) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.DispatchCapabilityUnavailable,
+        );
+      }
       if (!proof.facts.safetyDecisionEnabled) {
         blockers.push(
           ReviewMutationAuthorityProofBlocker.MutationSafetyDisabled,
@@ -253,6 +267,11 @@ export function reviewMutationAuthorityProofBlockers(
       if (!proof.facts.registeredReleaseSelected) {
         blockers.push(
           ReviewMutationAuthorityProofBlocker.RegisteredReleaseMissing,
+        );
+      }
+      if (!proof.facts.dispatchCapabilityAvailable) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.DispatchCapabilityUnavailable,
         );
       }
       if (!proof.facts.safetyDecisionEnabled) {
@@ -341,6 +360,10 @@ function validateUnsealedProof(proof: UnsealedReviewMutationAuthorityProof) {
         proof.facts.noLegacyCapabilityEverIssued,
         "no_legacy_capability_ever_issued",
       );
+      assertBoolean(
+        proof.facts.dispatchCapabilityAvailable,
+        "dispatch_capability_available",
+      );
       assertSha256(
         proof.facts.managedWorkflowInventoryHash,
         "managed_workflow_inventory_hash",
@@ -377,6 +400,10 @@ function validateUnsealedProof(proof: UnsealedReviewMutationAuthorityProof) {
         proof.facts.completionWorkerConfigured,
         "completion_worker_configured",
       );
+      assertBoolean(
+        proof.facts.dispatchCapabilityAvailable,
+        "dispatch_capability_available",
+      );
       assertSha256(
         proof.facts.managedWorkflowInventoryHash,
         "managed_workflow_inventory_hash",
@@ -399,6 +426,10 @@ function validateUnsealedProof(proof: UnsealedReviewMutationAuthorityProof) {
       assertBoolean(
         proof.facts.registeredReleaseSelected,
         "registered_release_selected",
+      );
+      assertBoolean(
+        proof.facts.dispatchCapabilityAvailable,
+        "dispatch_capability_available",
       );
       assertBoolean(
         proof.facts.safetyDecisionEnabled,
