@@ -6,6 +6,7 @@ export * from "./application/ports/review-execution-ports";
 export * from "./application/ports/review-requested-intent-ports";
 export * from "./application/ports/review-request-ingress-ports";
 export * from "./application/use-cases/start-review-execution";
+export * from "./application/use-cases/check-current-review-execution-revision";
 export * from "./application/use-cases/review-execution-application-services";
 export * from "./application/use-cases/review-requested-intent-service";
 export * from "./application/use-cases/dispatch-due-review-requested-intents";

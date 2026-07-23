@@ -2,8 +2,13 @@ import { App } from "@octokit/app";
 import type {
   ReviewRequestedDispatchGatewayPort,
   ReviewRequestedIntent,
+  ReviewRequestedPreparedDispatchPort,
 } from "@reviewrouter/features-review-executions";
-import { ReviewRequestedDispatchRunStatus } from "@reviewrouter/features-review-executions";
+import {
+  ReviewRequestedDispatchLookupStatus,
+  ReviewRequestedDispatchRunStatus,
+  ReviewRequestedDispatchSubmissionStatus,
+} from "@reviewrouter/features-review-executions";
 import type { createPrismaClient } from "@reviewrouter/platform-db";
 
 type PrismaClient = ReturnType<typeof createPrismaClient>;
@@ -33,38 +38,59 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
       } satisfies InstallationClientPort);
   }
 
-  async dispatch(input: { readonly intent: ReviewRequestedIntent }) {
+  async prepare(input: {
+    readonly intent: ReviewRequestedIntent;
+  }): Promise<ReviewRequestedPreparedDispatchPort> {
     const target = await this.resolveTarget(input.intent);
     const octokit = await this.installations.forInstallation(
       installationId(target.githubInstallationId),
     );
-    const existing = await this.findExistingRun(
-      octokit,
-      target,
-      input.intent.requestId,
-    );
-    if (existing) return existing;
-
-    const response = await octokit.request(
-      "POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches",
-      {
-        owner: target.owner,
-        repo: target.repo,
-        workflow_id: this.workflowPath,
-        ref: target.defaultBranch,
-        inputs: {
-          review_request_id: input.intent.requestId,
-          pr_number: String(input.intent.pullRequestNumber),
-          review_head_sha: input.intent.revision.headSha,
-        },
-        return_run_details: true,
-        headers: { "X-GitHub-Api-Version": "2026-03-10" },
+    return Object.freeze({
+      submit: async () => {
+        try {
+          const response = await octokit.request(
+            "POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches",
+            {
+              owner: target.owner,
+              repo: target.repo,
+              workflow_id: this.workflowPath,
+              ref: target.defaultBranch,
+              inputs: {
+                review_request_id: input.intent.requestId,
+                pr_number: String(input.intent.pullRequestNumber),
+                review_head_sha: input.intent.revision.headSha,
+              },
+              headers: { "X-GitHub-Api-Version": "2026-03-10" },
+            },
+          );
+          return {
+            status: ReviewRequestedDispatchSubmissionStatus.Accepted as const,
+            ...parseDispatchResponse(response.data),
+          };
+        } catch (error) {
+          if (requestStatus(error) === 422) {
+            return {
+              status:
+                ReviewRequestedDispatchSubmissionStatus.DefinitelyNoEffect as const,
+            };
+          }
+          throw error;
+        }
       },
-    );
-    return parseDispatchResponse(response.data);
+    });
   }
 
-  async inspect(input: { readonly intent: ReviewRequestedIntent }) {
+  async findByRequestIdentity(input: {
+    readonly intent: ReviewRequestedIntent;
+  }): ReturnType<ReviewRequestedDispatchGatewayPort["findByRequestIdentity"]> {
+    const target = await this.resolveTarget(input.intent);
+    const octokit = await this.installations.forInstallation(
+      installationId(target.githubInstallationId),
+    );
+    return this.findExistingRun(octokit, target, input.intent);
+  }
+
+  async inspectKnownRun(input: { readonly intent: ReviewRequestedIntent }) {
     const target = await this.resolveTarget(input.intent);
     const octokit = await this.installations.forInstallation(
       installationId(target.githubInstallationId),
@@ -103,14 +129,46 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
     return parseRevisionInspection(pullRequest.data, input.intent);
   }
 
+  async cancelKnownRun(input: {
+    readonly intent: ReviewRequestedIntent;
+  }): Promise<void> {
+    const target = await this.resolveTarget(input.intent);
+    const octokit = await this.installations.forInstallation(
+      installationId(target.githubInstallationId),
+    );
+    await octokit.request(
+      "POST /repos/{owner}/{repo}/actions/runs/{run_id}/cancel",
+      {
+        owner: target.owner,
+        repo: target.repo,
+        run_id: requiredRunIdentity(
+          input.intent.sourceRunId,
+          "review_requested_cancellation_run_missing",
+        ),
+        headers: { "X-GitHub-Api-Version": "2026-03-10" },
+      },
+    );
+  }
+
   private async findExistingRun(
     octokit: OctokitRequester,
     target: DispatchTarget,
-    requestId: string,
-  ): Promise<{
-    readonly sourceRunId: string;
-    readonly sourceRunAttempt: string;
-  } | null> {
+    intent: ReviewRequestedIntent,
+  ): ReturnType<ReviewRequestedDispatchGatewayPort["findByRequestIdentity"]> {
+    const submissionStartedAt = intent.submissionStartedAt;
+    if (submissionStartedAt === null) {
+      throw new Error("review_requested_submission_time_missing");
+    }
+    // GitHub run timestamps have whole-second precision. Widen only to the
+    // start of that second; the request-specific display title remains the
+    // correlation identity.
+    const searchLowerBound = new Date(
+      Math.floor(submissionStartedAt.getTime() / 1_000) * 1_000,
+    );
+    const matches = new Map<
+      string,
+      { readonly sourceRunId: string; readonly sourceRunAttempt: string }
+    >();
     for (let page = 1; page <= 5; page += 1) {
       const response = await octokit.request(
         "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs",
@@ -119,15 +177,35 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
           repo: target.repo,
           workflow_id: this.workflowPath,
           event: "workflow_dispatch",
+          created: `>=${searchLowerBound.toISOString()}`,
           per_page: 100,
           page,
           headers: { "X-GitHub-Api-Version": "2026-03-10" },
         },
       );
-      const parsed = parseWorkflowRunsPage(response.data, requestId);
-      if (parsed.match || !parsed.hasNextPage) return parsed.match;
+      const parsed = parseWorkflowRunsPage(
+        response.data,
+        intent.requestId,
+        searchLowerBound,
+      );
+      for (const match of parsed.matches) {
+        matches.set(`${match.sourceRunId}:${match.sourceRunAttempt}`, match);
+      }
+      if (!parsed.hasNextPage) {
+        if (matches.size === 0) {
+          return { status: ReviewRequestedDispatchLookupStatus.Absent };
+        }
+        if (matches.size === 1) {
+          const [match] = matches.values();
+          return {
+            status: ReviewRequestedDispatchLookupStatus.Found,
+            ...match!,
+          };
+        }
+        return { status: ReviewRequestedDispatchLookupStatus.Inconclusive };
+      }
     }
-    throw new Error("review_requested_dispatch_reconciliation_window_exceeded");
+    return { status: ReviewRequestedDispatchLookupStatus.Inconclusive };
   }
 
   private async resolveTarget(
@@ -202,39 +280,45 @@ function parseDispatchResponse(data: unknown): {
 function parseWorkflowRunsPage(
   data: unknown,
   requestId: string,
+  submissionStartedAt: Date,
 ): Readonly<{
-  match: {
+  matches: readonly {
     readonly sourceRunId: string;
     readonly sourceRunAttempt: string;
-  } | null;
+  }[];
   hasNextPage: boolean;
 }> {
   if (!isRecord(data) || !Array.isArray(data.workflow_runs)) {
     throw new Error("review_requested_workflow_runs_invalid");
   }
   const expectedTitle = `ReviewRouter review ${requestId}`;
+  const matches: Array<{
+    readonly sourceRunId: string;
+    readonly sourceRunAttempt: string;
+  }> = [];
   for (const value of data.workflow_runs) {
     if (!isRecord(value) || value.display_title !== expectedTitle) continue;
     const id = value.id;
     const attempt = value.run_attempt;
+    const createdAt = value.created_at;
     if (
       (typeof id !== "number" && typeof id !== "string") ||
       !/^[1-9][0-9]*$/.test(String(id)) ||
       typeof attempt !== "number" ||
       !Number.isSafeInteger(attempt) ||
-      attempt <= 0
+      attempt <= 0 ||
+      typeof createdAt !== "string" ||
+      !Number.isFinite(Date.parse(createdAt))
     ) {
       throw new Error("review_requested_workflow_run_identity_invalid");
     }
-    return {
-      match: {
-        sourceRunId: String(id),
-        sourceRunAttempt: String(attempt),
-      },
-      hasNextPage: false,
-    };
+    if (Date.parse(createdAt) < submissionStartedAt.getTime()) continue;
+    matches.push({
+      sourceRunId: String(id),
+      sourceRunAttempt: String(attempt),
+    });
   }
-  return { match: null, hasNextPage: data.workflow_runs.length === 100 };
+  return { matches, hasNextPage: data.workflow_runs.length === 100 };
 }
 
 function parseInspectionResponse(
@@ -303,4 +387,9 @@ function requiredRunIdentity(value: string | null, error: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requestStatus(error: unknown): number | null {
+  if (!isRecord(error) || typeof error.status !== "number") return null;
+  return error.status;
 }

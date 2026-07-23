@@ -21,6 +21,7 @@ import {
 } from "@reviewrouter/features-review-evidence";
 import type { ReturnTypeOfReviewEvidenceComposition } from "./review-action-v2-execution-evidence-types.js";
 import {
+  CurrentReviewExecutionRevisionStatus,
   ReviewExecutionFinalizeStatus,
   ReviewExecutionLifecycleTransitionStatus,
   ReviewExecutionProviderKind,
@@ -418,6 +419,11 @@ async function acquireLease(
     authorization,
     d.executionQueries,
   );
+  const executionScope = toExecutionScope(authorization);
+  await requireCurrentExecutionRevision(
+    { scope: executionScope, executionId: request.executionId },
+    d,
+  );
   const purpose = enumValue(
     ReviewInvocationLeasePurpose,
     request.purpose,
@@ -460,7 +466,7 @@ async function acquireLease(
   const now = d.now();
   const identity = await d.capabilities.prepareIdentity();
   const result = await d.executions.invocationLeases.acquire({
-    scope: toExecutionScope(authorization),
+    scope: executionScope,
     executionId: request.executionId,
     workSlotId: request.workSlotId,
     purpose,
@@ -502,6 +508,21 @@ async function acquireLease(
       statusCode: 200 as const,
       result: { status: mapLeaseAcquire(result.status) },
     };
+  try {
+    await requireCurrentExecutionRevision(
+      { scope: executionScope, executionId: request.executionId },
+      d,
+    );
+  } catch (error) {
+    await d.executions.invocationLeases.release({
+      leaseId: result.lease.leaseId,
+      ownerIdHash: result.lease.ownerIdHash,
+      leaseCapabilityId: result.lease.leaseCapabilityId,
+      fencingToken: result.lease.fencingToken,
+      now: d.now(),
+    });
+    throw error;
+  }
   const leaseCapability = await d.capabilities.issueLease(
     result.lease,
     scopeHash,
@@ -550,6 +571,11 @@ async function renewLease(
       ReviewActionV2ProtocolErrorCode.Forbidden,
       "lease_authorization_mismatch",
     );
+  const executionScope = scopeFromSnapshot(snapshot);
+  await requireCurrentExecutionRevision(
+    { scope: executionScope, executionId: snapshot.execution.executionId },
+    d,
+  );
   const limits = await executionLimitsForProfile(
     snapshot.execution.protocolLimitsProfileId,
     d,
@@ -577,6 +603,26 @@ async function renewLease(
       ReviewActionV2ProtocolErrorCode.IdempotencyConflict,
       "lease_renewal_replay_conflict",
     );
+  }
+  if (result.lease) {
+    try {
+      await requireCurrentExecutionRevision(
+        {
+          scope: executionScope,
+          executionId: snapshot.execution.executionId,
+        },
+        d,
+      );
+    } catch (error) {
+      await d.executions.invocationLeases.release({
+        leaseId: result.lease.leaseId,
+        ownerIdHash: result.lease.ownerIdHash,
+        leaseCapabilityId: result.lease.leaseCapabilityId,
+        fencingToken: result.lease.fencingToken,
+        now: d.now(),
+      });
+      throw error;
+    }
   }
   const leaseCapability = result.lease
     ? await d.capabilities.issueLease(
@@ -1024,6 +1070,11 @@ async function finalizeExecution(
     authorization,
     d.executionQueries,
   );
+  const executionScope = toExecutionScope(authorization);
+  await requireCurrentExecutionRevision(
+    { scope: executionScope, executionId: request.executionId },
+    d,
+  );
   const projection = parseCanonicalJson(
     request.projectionEnvelopeCanonicalJson,
     "projection_envelope_invalid",
@@ -1057,7 +1108,7 @@ async function finalizeExecution(
     "artifact_hash_mismatch",
   );
   const result = await d.executions.finalizeReviewExecution.execute({
-    scope: toExecutionScope(authorization),
+    scope: executionScope,
     executionId: request.executionId,
     expectedStreamVersion: decimal(request.expectedStreamVersion),
     expectedExecutionVersion: decimal(request.expectedExecutionVersion),
@@ -1079,6 +1130,12 @@ async function finalizeExecution(
     now,
     retainUntil: facts.retainUntil,
   });
+  if (result.artifact) {
+    await requireCurrentExecutionRevision(
+      { scope: executionScope, executionId: request.executionId },
+      d,
+    );
+  }
   if (
     result.artifact &&
     result.artifact.publicationPermit.publicationNotAfter <= now
@@ -2218,6 +2275,44 @@ function toExecutionScope(
     scmRepositoryIdentityId: a.scmRepositoryIdentityId,
     pullRequestNumber: a.pullRequestNumber,
   };
+}
+function scopeFromSnapshot(
+  snapshot: ReviewExecutionSnapshot,
+): ReviewExecutionScope {
+  return {
+    workspaceId: snapshot.stream.workspaceId,
+    repositoryConnectionId: snapshot.stream.repositoryConnectionId,
+    scmRepositoryIdentityId: snapshot.stream.scmRepositoryIdentityId,
+    pullRequestNumber: snapshot.stream.pullRequestNumber,
+  };
+}
+async function requireCurrentExecutionRevision(
+  input: { readonly scope: ReviewExecutionScope; readonly executionId: string },
+  d: ReviewActionV2ExecutionHandlerDependencies,
+): Promise<void> {
+  const status = await d.executions.currentRevision.execute(input);
+  switch (status) {
+    case CurrentReviewExecutionRevisionStatus.Current:
+      return;
+    case CurrentReviewExecutionRevisionStatus.Missing:
+      throw failure(
+        404,
+        ReviewActionV2ProtocolErrorCode.NotFound,
+        "execution_revision_missing",
+      );
+    case CurrentReviewExecutionRevisionStatus.Stale:
+      throw failure(
+        412,
+        ReviewActionV2ProtocolErrorCode.StalePrecondition,
+        "execution_revision_stale",
+      );
+    case CurrentReviewExecutionRevisionStatus.Unavailable:
+      throw failure(
+        503,
+        ReviewActionV2ProtocolErrorCode.ServiceUnavailable,
+        "execution_revision_unavailable",
+      );
+  }
 }
 function toExecutionRevision(a: ReviewRunAuthorization) {
   return {

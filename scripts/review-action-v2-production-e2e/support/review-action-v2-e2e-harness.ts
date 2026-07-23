@@ -659,7 +659,7 @@ export class ReviewActionV2E2EHarness {
   ) {
     const allowPartial = options.allowPartial ?? false;
     const lifecycleStateHash = sha256(`${flow.executionId}-lifecycle`);
-    const commandLedgerWatermark = "1";
+    const commandLedgerWatermark = "0";
     const projection = {
       commandLedgerWatermark,
       coverage: { state: allowPartial ? "partial" : "complete" },

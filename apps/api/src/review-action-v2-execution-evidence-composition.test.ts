@@ -23,10 +23,12 @@ import {
   type ReviewObservation,
 } from "@reviewrouter/features-review-evidence";
 import {
+  CurrentReviewExecutionRevisionStatus,
   ReviewCoverageState,
   ReviewExecutionProviderKind,
   ReviewExecutionFinalizeStatus,
   ReviewExecutionState,
+  ReviewInvocationLeaseAcquireStatus,
   ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
   ReviewInvocationLeaseTransitionStatus,
@@ -59,7 +61,9 @@ import {
   type ReviewExecutionObservationAttachRequest,
   type ReviewExecutionObservationAdoptRequest,
   type ReviewEvidenceCommitRequest,
+  type ReviewExecutionFinalizeRequest,
   type ReviewExecutionStartRequest,
+  type ReviewInvocationLeaseAcquireRequest,
 } from "@reviewrouter/protocol-review-action-v2";
 import { ReviewActionV2ExecutionEvidenceCapabilityAdapter } from "./review-action-v2-execution-evidence-capabilities.js";
 import {
@@ -333,6 +337,76 @@ describe("Review Action v2 execution/evidence composition", () => {
     });
   });
 
+  it("releases an acquired lease when the revision changes before capability issuance", async () => {
+    const capabilities = capabilityAdapter();
+    const issueLease = vi.spyOn(capabilities, "issueLease");
+    const acquiredLease = lease();
+    const acquire = vi.fn(async () => ({
+      status: ReviewInvocationLeaseAcquireStatus.Acquired,
+      lease: acquiredLease,
+    }));
+    const release = vi.fn(async () => ({
+      status: ReviewInvocationLeaseTransitionStatus.Applied,
+      lease: {
+        ...acquiredLease,
+        state: ReviewInvocationLeaseState.Released,
+      },
+    }));
+    const currentRevision = vi
+      .fn()
+      .mockResolvedValueOnce(CurrentReviewExecutionRevisionStatus.Current)
+      .mockResolvedValueOnce(CurrentReviewExecutionRevisionStatus.Stale);
+    const prepared = manifest();
+    const identity = await buildProviderInvocationIdentity(digest, {
+      manifest: prepared,
+      providerVoteIdentityHash: hash("c"),
+    });
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvocationLeaseAcquire,
+      {
+        ...envelope("acquire-revision-race"),
+        authorizationToken: "authorization-token",
+        idempotencyKey: "acquire-revision-race",
+        requestBodyHash: hash("0"),
+        executionId: snapshot.execution.executionId,
+        workSlotId: "slot-1",
+        purpose: ReviewInvocationLeasePurpose.ProviderExecution,
+        manifestCanonicalJson:
+          serializeProviderInvocationManifestCanonicalWireJson(prepared),
+        manifestKey: identity.manifestKey,
+        providerVoteIdentityHash: hash("c"),
+        providerInvocationKey: identity.providerInvocationKey,
+        acquireRequestId: "acquire-revision-race",
+        ownerIdHash: acquiredLease.ownerIdHash,
+      } satisfies ReviewInvocationLeaseAcquireRequest,
+    );
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(
+        executionDependencies({
+          capabilities,
+          acquire,
+          release,
+          currentRevision,
+          leaseSafety: vi.fn(async () => ({
+            allowed: true,
+            decisionHash: hash("6"),
+          })),
+        }),
+      ).acquireLease.execute(request),
+    ).rejects.toMatchObject({
+      statusCode: 412,
+      issues: ["execution_revision_stale"],
+    });
+    expect(release).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseId: acquiredLease.leaseId,
+        fencingToken: acquiredLease.fencingToken,
+      }),
+    );
+    expect(issueLease).not.toHaveBeenCalled();
+  });
+
   it("surfaces a stale fencing term without applying a renewal", async () => {
     const capabilities = capabilityAdapter();
     const leaseCapability = await capabilities.issueLease(
@@ -368,6 +442,71 @@ describe("Review Action v2 execution/evidence composition", () => {
         renewRequestHash: request.requestBodyHash,
       }),
     );
+  });
+
+  it("releases a renewed lease when the revision changes before capability issuance", async () => {
+    const capabilities = capabilityAdapter();
+    const originalLease = lease();
+    const renewedLease = lease({
+      renewedAt: new Date(now),
+      expiresAt: new Date(now.getTime() + 60_000),
+    });
+    const leaseCapability = await capabilities.issueLease(
+      originalLease,
+      manifest().scopeHash,
+    );
+    const issueLease = vi.spyOn(capabilities, "issueLease");
+    issueLease.mockClear();
+    const renew = vi.fn(async () => ({
+      status: ReviewInvocationLeaseTransitionStatus.Applied,
+      lease: renewedLease,
+    }));
+    const release = vi.fn(async () => ({
+      status: ReviewInvocationLeaseTransitionStatus.Applied,
+      lease: {
+        ...renewedLease,
+        state: ReviewInvocationLeaseState.Released,
+      },
+    }));
+    const currentRevision = vi
+      .fn()
+      .mockResolvedValueOnce(CurrentReviewExecutionRevisionStatus.Current)
+      .mockResolvedValueOnce(CurrentReviewExecutionRevisionStatus.Stale);
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvocationLeaseRenew,
+      {
+        ...envelope("renew-revision-race"),
+        leaseCapability,
+        idempotencyKey: "renew-revision-race",
+        requestBodyHash: hash("0"),
+        leaseId: originalLease.leaseId,
+        ownerIdHash: originalLease.ownerIdHash,
+        fencingToken: originalLease.fencingToken.toString(10),
+        renewRequestId: "renew-revision-race",
+      },
+    );
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(
+        executionDependencies({
+          capabilities,
+          currentLease: originalLease,
+          currentRevision,
+          renew,
+          release,
+        }),
+      ).renewLease.execute(request),
+    ).rejects.toMatchObject({
+      statusCode: 412,
+      issues: ["execution_revision_stale"],
+    });
+    expect(release).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseId: renewedLease.leaseId,
+        fencingToken: renewedLease.fencingToken,
+      }),
+    );
+    expect(issueLease).not.toHaveBeenCalled();
   });
 
   it("rejects a renewal replay identity reused with a different body", async () => {
@@ -673,6 +812,35 @@ describe("Review Action v2 execution/evidence composition", () => {
       issues: ["publication_permit_expired"],
     });
     expect(finalize).toHaveBeenCalledTimes(1);
+    expect(issuePublicationPermit).not.toHaveBeenCalled();
+  });
+
+  it("does not issue a publication permit when the revision becomes unavailable after finalization", async () => {
+    const fixture = await finalizationFixture(new Date(now.getTime() + 60_000));
+    const capabilities = capabilityAdapter();
+    const issuePublicationPermit = vi.spyOn(
+      capabilities,
+      "issuePublicationPermit",
+    );
+    const currentRevision = vi
+      .fn()
+      .mockResolvedValueOnce(CurrentReviewExecutionRevisionStatus.Current)
+      .mockResolvedValueOnce(CurrentReviewExecutionRevisionStatus.Unavailable);
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(
+        executionDependencies({
+          capabilities,
+          finalize: fixture.finalize,
+          finalizationFacts: fixture.finalizationFacts,
+          currentRevision,
+        }),
+      ).finalize.execute(fixture.request),
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      issues: ["execution_revision_unavailable"],
+    });
+    expect(fixture.finalize).toHaveBeenCalledTimes(1);
     expect(issuePublicationPermit).not.toHaveBeenCalled();
   });
 
@@ -1024,6 +1192,7 @@ function executionDependencies(
     attachFresh?: ReturnType<typeof vi.fn>;
     adoptAccepted?: ReturnType<typeof vi.fn>;
     release?: ReturnType<typeof vi.fn>;
+    acquire?: ReviewActionV2ExecutionHandlerDependencies["executions"]["invocationLeases"]["acquire"];
     renew?: ReturnType<typeof vi.fn>;
     currentLease?: ReviewInvocationLease;
     observation?: ReviewObservation;
@@ -1032,6 +1201,7 @@ function executionDependencies(
     leaseSafety?: ReviewActionV2ExecutionHandlerDependencies["leaseSafety"]["resolve"];
     finalize?: ReviewActionV2ExecutionHandlerDependencies["executions"]["finalizeReviewExecution"]["execute"];
     finalizationFacts?: ReviewActionV2ExecutionHandlerDependencies["finalizationFacts"]["resolve"];
+    currentRevision?: ReviewActionV2ExecutionHandlerDependencies["executions"]["currentRevision"]["execute"];
     now?: () => Date;
   } = {},
 ): ReviewActionV2ExecutionHandlerDependencies {
@@ -1052,7 +1222,7 @@ function executionDependencies(
     executions: {
       startReviewExecution: { execute: vi.fn() },
       invocationLeases: {
-        acquire: vi.fn(),
+        acquire: overrides.acquire ?? vi.fn(),
         renew: overrides.renew ?? vi.fn(),
         release: overrides.release ?? vi.fn(),
       },
@@ -1067,6 +1237,11 @@ function executionDependencies(
         failAbandonedPrepared: vi.fn(),
       },
       requestedIntents: {} as never,
+      currentRevision: {
+        execute:
+          overrides.currentRevision ??
+          vi.fn(async () => CurrentReviewExecutionRevisionStatus.Current),
+      },
     } as unknown as ReviewActionV2ExecutionHandlerDependencies["executions"],
     evidence: {
       lookupReviewEvidence: {
@@ -1354,6 +1529,87 @@ async function withBodyHash<O extends ReviewActionV2OperationId>(
     canonicalizeReviewActionV2Request(operation, request),
   );
   return { ...request, requestBodyHash };
+}
+
+async function finalizationFixture(publicationNotAfter: Date) {
+  const projectionEnvelopeCanonicalJson = "{}";
+  const projectionHash = await digest.digestUtf8(
+    projectionEnvelopeCanonicalJson,
+  );
+  const artifactHash = hash("a");
+  const lifecycleStateHash = hash("b");
+  const artifact: FinalizedReviewProjectionArtifact = {
+    artifactId: "artifact-race",
+    executionId: snapshot.execution.executionId,
+    generation: snapshot.execution.generation,
+    reviewedHeadSha: snapshot.execution.revision.headSha,
+    reviewRevisionHash: snapshot.execution.revision.reviewRevisionHash,
+    coverageState: ReviewCoverageState.Completed,
+    projectionEnvelopeVersion: 1,
+    projectionEnvelopeJson: projectionEnvelopeCanonicalJson,
+    projectionHash,
+    byteCount: 2,
+    findingCount: 0,
+    lifecycleStateHash,
+    commandLedgerWatermark: 0n,
+    projectionPolicyVersion: "projection-policy-1",
+    publicationPermit: {
+      workspaceId: authorization.workspaceId,
+      repositoryConnectionId: authorization.repositoryConnectionId,
+      scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+      pullRequestNumber: authorization.pullRequestNumber,
+      executionId: snapshot.execution.executionId,
+      generation: snapshot.execution.generation,
+      authorizationId: authorization.authorizationId,
+      producerReleaseId: authorization.producerReleaseId,
+      reviewedHeadSha: snapshot.execution.revision.headSha,
+      reviewRevisionHash: snapshot.execution.revision.reviewRevisionHash,
+      projectionHash,
+      lifecycleStateHash,
+      commandLedgerWatermark: 0n,
+      permitEpoch: authorization.mutationEpoch,
+      publicationSafetyDecisionHash: hash("c"),
+      publicationNotAfter,
+    },
+    createdAt: now,
+    retainUntil: new Date(now.getTime() + 3_600_000),
+  };
+  const finalize = vi.fn(async () => ({
+    status: ReviewExecutionFinalizeStatus.Finalized,
+    artifact,
+    snapshot: { ...snapshot, artifact },
+  }));
+  const finalizationFacts = vi.fn(async () => ({
+    expectedArtifactHash: artifactHash,
+    byteCount: artifact.byteCount,
+    findingCount: artifact.findingCount,
+    projectionPolicyVersion: artifact.projectionPolicyVersion,
+    publicationSafetyDecisionHash:
+      artifact.publicationPermit.publicationSafetyDecisionHash,
+    publicationNotAfter,
+    retainUntil: artifact.retainUntil,
+  }));
+  const request = await withBodyHash(
+    ReviewActionV2OperationId.ReviewExecutionFinalize,
+    {
+      ...envelope("finalize-revision-race"),
+      authorizationToken: "authorization-token",
+      idempotencyKey: "finalize-revision-race",
+      requestBodyHash: hash("0"),
+      executionId: snapshot.execution.executionId,
+      expectedStreamVersion: snapshot.stream.version.toString(10),
+      expectedExecutionVersion: snapshot.execution.version.toString(10),
+      artifactId: artifact.artifactId,
+      artifactHash,
+      projectionEnvelopeVersion: artifact.projectionEnvelopeVersion,
+      projectionEnvelopeCanonicalJson,
+      projectionHash,
+      lifecycleStateHash,
+      commandLedgerWatermark: artifact.commandLedgerWatermark.toString(10),
+      allowPartial: false,
+    } satisfies ReviewExecutionFinalizeRequest,
+  );
+  return { artifact, finalize, finalizationFacts, request } as const;
 }
 
 function envelope(requestId: string) {

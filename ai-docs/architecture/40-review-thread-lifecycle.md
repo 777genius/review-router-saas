@@ -1470,6 +1470,59 @@ thread disappeared or cannot be fetched:
   Do not claim success.
 ```
 
+## Server Publication Freshness
+
+A finalized v2 projection is immutable, but its stored lifecycle hash is not proof
+that GitHub still has the same lifecycle state. Before issuing or consuming a
+publication permit, the server reloads the complete paginated thread/comment
+inventory and compares it with the projection's lifecycle target facts.
+Resolved threads remain in this inventory so a confirmed mutation by the current
+projection does not invalidate later operations in the same publication attempt.
+
+The authorization creation timestamp is the conservative freshness boundary:
+
+```text
+expected target disappeared, lost its trusted marker, or moved to another thread:
+  stale; do not publish
+
+expected target has a relevant create/edit after the boundary:
+  stale; do not publish
+
+an old parent thread gains a target after the boundary:
+  stale; this can represent a reopened or changed lifecycle target
+
+mutation-eligible target is now resolved without a later reply/edit:
+  allowed; this is the projection's intended end state
+
+non-mutation target is now resolved:
+  stale; the projection did not authorize that transition
+
+a newly created parent thread and target appear after the boundary:
+  allowed only when the parent was authored by the current GitHub App, its
+  finding fingerprint belongs to this projection, and it has no reply/edit
+
+event timestamp is in the same second as the authorization boundary:
+  treat as potentially newer and fail closed because GitHub timestamps have
+  whole-second precision
+
+head/revision, lifecycle pagination, or inventory lookup is unavailable:
+  fail closed; do not publish
+```
+
+Human override freshness is checked independently from thread timestamps. The
+Action derives `commandLedgerWatermark` from the latest accepted command comment
+ID in the HMAC-validated signed ledger. The server completely paginates PR issue
+comments, accepts only the current GitHub App's ledger marker, derives the same
+watermark without interpreting policy, and requires stable equal reads before and
+after the thread inventory. Missing, malformed, duplicated, changed, or unequal
+ledger facts fail closed. Legacy ledger entries without `commandCommentId` use
+their signed `parentCommentId` as the compatibility watermark.
+
+This check is performed alongside the live review-revision fence. Stored
+projection data supplies the expected facts; GitHub remains authoritative for
+the current facts. Action partial-coverage projections may carry lifecycle target
+facts for comparison, but they remain mutation-ineligible.
+
 ## Mutation Order
 
 Recommended order:
@@ -3211,8 +3264,9 @@ Every restored or reused run reloads normalized live thread inventory, human
 commands, dismissals and replies. Historical observations are evidence only;
 lineage, severity, placement, consensus, resolution and gate state are recomputed
 for the current revision. Snapshot lineage hints cannot override live SCM state.
-Publication compares lifecycle and command watermarks before each mutation group;
-stale output is compensated or visibly marked, never silently adopted.
+Publication compares lifecycle and signed-ledger command watermarks before each
+mutation group; stale output is compensated or visibly marked, never silently
+adopted.
 📌 The final design is:
 
 ```text

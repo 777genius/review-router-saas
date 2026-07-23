@@ -27,6 +27,7 @@ import {
 } from "../domain/review-execution";
 import {
   ReviewRequestedIntentState,
+  ReviewRequestedIntentTerminalReason,
   ReviewRequestedTriggerKind,
 } from "../domain/review-requested-intent";
 
@@ -388,6 +389,21 @@ export function runReviewExecutionStoreContract(
       });
       expect(claimed.status).toBe(ReviewRequestedClaimStatus.Claimed);
       const claim = claimed.intent!.claim!;
+      const submissionAt = new Date();
+      await expect(
+        harness.requestedIntents.beginSubmission({
+          requestId: candidate.requestId,
+          claimId: claim.claimId,
+          ownerIdHash: claim.ownerIdHash,
+          fencingToken: claim.fencingToken,
+          now: submissionAt,
+          nextResolutionAt: new Date(submissionAt.getTime() + 1_000),
+          resolutionDeadlineAt: new Date(submissionAt.getTime() + 60_000),
+        }),
+      ).resolves.toMatchObject({
+        status: ReviewRequestedTransitionStatus.Applied,
+      });
+      const dispatchAt = new Date(submissionAt.getTime() + 1);
       await expect(
         harness.requestedIntents.recordDispatch({
           requestId: candidate.requestId,
@@ -396,7 +412,9 @@ export function runReviewExecutionStoreContract(
           fencingToken: claim.fencingToken + 1n,
           sourceRunId: "run-intent-link",
           sourceRunAttempt: "1",
-          now: new Date(),
+          now: dispatchAt,
+          nextResolutionAt: new Date(dispatchAt.getTime() + 1_000),
+          resolutionDeadlineAt: new Date(dispatchAt.getTime() + 60_000),
         }),
       ).resolves.toEqual({
         status: ReviewRequestedTransitionStatus.StaleClaim,
@@ -408,7 +426,9 @@ export function runReviewExecutionStoreContract(
         fencingToken: claim.fencingToken,
         sourceRunId: "run-intent-link",
         sourceRunAttempt: "1",
-        now: new Date(),
+        now: dispatchAt,
+        nextResolutionAt: new Date(dispatchAt.getTime() + 1_000),
+        resolutionDeadlineAt: new Date(dispatchAt.getTime() + 60_000),
       });
       expect(dispatched.status).toBe(ReviewRequestedTransitionStatus.Applied);
       const linked = await harness.requestedIntents.linkAdmission({
@@ -422,6 +442,130 @@ export function runReviewExecutionStoreContract(
       });
       expect(linked.status).toBe(ReviewRequestedTransitionStatus.Applied);
       expect(linked.intent?.state).toBe(ReviewRequestedIntentState.Dispatched);
+    });
+
+    it("uses the persisted deadline and CAS to reject late admission", async () => {
+      const candidate = intentCandidate(harness, "intent-deadline-race");
+      await harness.requestedIntents.registerIntent({ candidate });
+      const claimAt = new Date();
+      const claimed = await harness.requestedIntents.claimIntent({
+        requestId: candidate.requestId,
+        claimId: "claim-intent-deadline-race",
+        ownerIdHash: "owner-intent-deadline-race",
+        now: claimAt,
+        claimUntil: new Date(claimAt.getTime() + 60_000),
+      });
+      const claim = claimed.intent!.claim!;
+      const submissionAt = new Date();
+      await harness.requestedIntents.beginSubmission({
+        requestId: candidate.requestId,
+        claimId: claim.claimId,
+        ownerIdHash: claim.ownerIdHash,
+        fencingToken: claim.fencingToken,
+        now: submissionAt,
+        nextResolutionAt: new Date(submissionAt.getTime() + 10),
+        resolutionDeadlineAt: new Date(submissionAt.getTime() + 1_000),
+      });
+      const dispatchAt = new Date();
+      const dispatched = await harness.requestedIntents.recordDispatch({
+        requestId: candidate.requestId,
+        claimId: claim.claimId,
+        ownerIdHash: claim.ownerIdHash,
+        fencingToken: claim.fencingToken,
+        sourceRunId: "run-intent-deadline-race",
+        sourceRunAttempt: "1",
+        now: dispatchAt,
+        nextResolutionAt: new Date(dispatchAt.getTime() + 10),
+        resolutionDeadlineAt: new Date(dispatchAt.getTime() + 50),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const observedAt = new Date();
+      const [lateLink, terminalized] = await Promise.all([
+        harness.requestedIntents.linkAdmission({
+          requestId: candidate.requestId,
+          sourceRunId: "run-intent-deadline-race",
+          sourceRunAttempt: "1",
+          authorizationId: harness.authorizationId,
+          executionId: "execution-intent-deadline-race",
+          revision,
+          now: observedAt,
+        }),
+        harness.requestedIntents.recoverDispatch({
+          requestId: candidate.requestId,
+          expectedVersion: dispatched.intent!.version,
+          sourceRunId: "run-intent-deadline-race",
+          sourceRunAttempt: "1",
+          now: observedAt,
+          terminalReason:
+            ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded,
+          successorCandidate: null,
+        }),
+      ]);
+      expect(lateLink.status).toBe(ReviewRequestedTransitionStatus.Conflict);
+      expect(terminalized.status).toBe(ReviewRequestedTransitionStatus.Applied);
+      expect(
+        await harness.requestedIntents.findByRequestId(candidate.requestId),
+      ).toMatchObject({
+        state: ReviewRequestedIntentState.Terminal,
+        terminalReason:
+          ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded,
+      });
+    });
+
+    it("does not revive expired reconciliation after a competing intent owns the lane", async () => {
+      const oldCandidate = intentCandidate(harness, "expired-owner");
+      await harness.requestedIntents.registerIntent({
+        candidate: oldCandidate,
+      });
+      const claimAt = new Date();
+      const claimed = await harness.requestedIntents.claimIntent({
+        requestId: oldCandidate.requestId,
+        claimId: "claim-expired-owner",
+        ownerIdHash: "owner-expired-owner",
+        now: claimAt,
+        claimUntil: new Date(claimAt.getTime() + 60_000),
+      });
+      const claim = claimed.intent!.claim!;
+      const submissionAt = new Date();
+      await harness.requestedIntents.beginSubmission({
+        requestId: oldCandidate.requestId,
+        claimId: claim.claimId,
+        ownerIdHash: claim.ownerIdHash,
+        fencingToken: claim.fencingToken,
+        now: submissionAt,
+        nextResolutionAt: new Date(submissionAt.getTime() + 10),
+        resolutionDeadlineAt: new Date(submissionAt.getTime() + 50),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+      const successor = intentCandidate(harness, "new-lane-owner");
+      await expect(
+        harness.requestedIntents.registerIntent({ candidate: successor }),
+      ).resolves.toMatchObject({
+        status: ReviewRequestedRegisterStatus.Registered,
+      });
+      const recordedAt = new Date();
+      await expect(
+        harness.requestedIntents.recordDispatch({
+          requestId: oldCandidate.requestId,
+          claimId: claim.claimId,
+          ownerIdHash: claim.ownerIdHash,
+          fencingToken: claim.fencingToken,
+          sourceRunId: "run-expired-owner",
+          sourceRunAttempt: "1",
+          now: recordedAt,
+          nextResolutionAt: new Date(recordedAt.getTime() + 1_000),
+          resolutionDeadlineAt: new Date(recordedAt.getTime() + 60_000),
+        }),
+      ).resolves.toEqual({ status: ReviewRequestedTransitionStatus.Conflict });
+      await expect(
+        harness.requestedIntents.findByRequestId(oldCandidate.requestId),
+      ).resolves.toMatchObject({
+        state: ReviewRequestedIntentState.ReconcilingDispatch,
+      });
+      await expect(
+        harness.requestedIntents.findPendingByScope(harness.scope),
+      ).resolves.toMatchObject({ requestId: successor.requestId });
     });
 
     it("serializes pending-intent supersession per PR scope", async () => {

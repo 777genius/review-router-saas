@@ -35,6 +35,7 @@
     "reviewrouter-gitlab-review": "./bin/reviewrouter-gitlab-review.mjs"
   },
   "dependencies": {
+    "@octokit/app": "^16.1.2",
     "@prisma/client": "7.8.0",
     "@reviewrouter/shared": "workspace:*"
   },

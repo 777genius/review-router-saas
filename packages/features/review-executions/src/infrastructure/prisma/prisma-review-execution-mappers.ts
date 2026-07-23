@@ -7,6 +7,7 @@ import {
   ReviewObservationAttachmentKindV2 as PrismaAttachmentKind,
   ReviewProviderKindV2 as PrismaProviderKind,
   ReviewRequestedIntentStateV2 as PrismaIntentState,
+  ReviewRequestedIntentTerminalReasonV2 as PrismaIntentTerminalReason,
   ReviewRequestedTriggerKindV2 as PrismaTriggerKind,
   ReviewTaskKindV2 as PrismaTaskKind,
   ReviewWorkSlotStateV2 as PrismaWorkSlotState,
@@ -37,6 +38,7 @@ import {
 } from "../../domain/review-execution";
 import {
   ReviewRequestedIntentState,
+  ReviewRequestedIntentTerminalReason,
   ReviewRequestedTriggerKind,
   type ReviewRequestedIntent,
 } from "../../domain/review-requested-intent";
@@ -76,10 +78,26 @@ export function intentToDomain(record: IntentRecord): ReviewRequestedIntent {
           claimUntil: new Date(required(record.claimUntil, "claim_until")),
         }
       : null,
+    submissionStartedAt:
+      record.submissionStartedAt === null
+        ? null
+        : new Date(record.submissionStartedAt),
+    nextResolutionAt:
+      record.nextResolutionAt === null
+        ? null
+        : new Date(record.nextResolutionAt),
+    resolutionDeadlineAt:
+      record.resolutionDeadlineAt === null
+        ? null
+        : new Date(record.resolutionDeadlineAt),
     sourceRunId: record.sourceRunId,
     sourceRunAttempt: record.sourceRunAttempt,
     authorizationId: record.authorizationId,
     executionId: record.executionId,
+    terminalReason:
+      record.terminalReason === null
+        ? null
+        : intentTerminalReasonFromPrisma(record.terminalReason),
     supersededByRequestId: record.supersededByRequestId,
     createdAt: new Date(record.createdAt),
     updatedAt: new Date(record.updatedAt),
@@ -388,10 +406,14 @@ export function intentStateToPrisma(
       return PrismaIntentState.pending_dispatch;
     case ReviewRequestedIntentState.Dispatching:
       return PrismaIntentState.dispatching;
+    case ReviewRequestedIntentState.ReconcilingDispatch:
+      return PrismaIntentState.reconciling_dispatch;
     case ReviewRequestedIntentState.AwaitingAuthorization:
       return PrismaIntentState.awaiting_authorization;
     case ReviewRequestedIntentState.Dispatched:
       return PrismaIntentState.dispatched;
+    case ReviewRequestedIntentState.Terminal:
+      return PrismaIntentState.terminal;
     case ReviewRequestedIntentState.Superseded:
       return PrismaIntentState.superseded;
   }
@@ -563,12 +585,46 @@ function intentStateFromPrisma(
       return ReviewRequestedIntentState.PendingDispatch;
     case PrismaIntentState.dispatching:
       return ReviewRequestedIntentState.Dispatching;
+    case PrismaIntentState.reconciling_dispatch:
+      return ReviewRequestedIntentState.ReconcilingDispatch;
     case PrismaIntentState.awaiting_authorization:
       return ReviewRequestedIntentState.AwaitingAuthorization;
     case PrismaIntentState.dispatched:
       return ReviewRequestedIntentState.Dispatched;
+    case PrismaIntentState.terminal:
+      return ReviewRequestedIntentState.Terminal;
     case PrismaIntentState.superseded:
       return ReviewRequestedIntentState.Superseded;
+  }
+}
+
+export function intentTerminalReasonToPrisma(
+  value: ReviewRequestedIntentTerminalReason,
+): PrismaIntentTerminalReason {
+  switch (value) {
+    case ReviewRequestedIntentTerminalReason.DispatchFailedNoEffect:
+      return PrismaIntentTerminalReason.dispatch_failed_no_effect;
+    case ReviewRequestedIntentTerminalReason.DispatchOutcomeUnknown:
+      return PrismaIntentTerminalReason.dispatch_outcome_unknown;
+    case ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded:
+      return PrismaIntentTerminalReason.authorization_deadline_exceeded;
+    case ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted:
+      return PrismaIntentTerminalReason.dispatch_attempts_exhausted;
+  }
+}
+
+function intentTerminalReasonFromPrisma(
+  value: PrismaIntentTerminalReason,
+): ReviewRequestedIntentTerminalReason {
+  switch (value) {
+    case PrismaIntentTerminalReason.dispatch_failed_no_effect:
+      return ReviewRequestedIntentTerminalReason.DispatchFailedNoEffect;
+    case PrismaIntentTerminalReason.dispatch_outcome_unknown:
+      return ReviewRequestedIntentTerminalReason.DispatchOutcomeUnknown;
+    case PrismaIntentTerminalReason.authorization_deadline_exceeded:
+      return ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded;
+    case PrismaIntentTerminalReason.dispatch_attempts_exhausted:
+      return ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted;
   }
 }
 

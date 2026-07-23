@@ -3,8 +3,10 @@ import {
   ReviewRequestedClaimStatus,
   ReviewRequestedRegisterStatus,
   ReviewRequestedTransitionStatus,
+  type BeginReviewRequestedSubmissionCommand,
   type ClaimReviewRequestedIntentCommand,
   type CancelReviewRequestedPreAdmissionCommand,
+  type DeferReviewRequestedResolutionCommand,
   type LinkReviewRequestedAdmissionCommand,
   type RecordReviewRequestedDispatchCommand,
   type RecoverReviewRequestedDispatchCommand,
@@ -21,11 +23,13 @@ import {
   ReviewRequestedTransitionDecisionStatus,
   ReviewRequestedIntentState,
   assessReviewRequestedClaim,
+  beginReviewRequestedSubmission,
   claimReviewRequestedIntent,
   decideReviewRequestedAdmissionLink,
   decideReviewRequestedDispatch,
   decideReviewRequestedDispatchRecovery,
   decideReviewRequestedRegistration,
+  deferReviewRequestedResolution,
   type ReviewRequestedIntent,
 } from "../../domain/review-requested-intent";
 import type { ReviewExecutionScope } from "../../domain/review-execution";
@@ -35,6 +39,7 @@ import {
 } from "./prisma-review-execution-utils";
 import {
   intentStateToPrisma,
+  intentTerminalReasonToPrisma,
   intentToDomain,
   triggerKindToPrisma,
 } from "./prisma-review-execution-mappers";
@@ -143,24 +148,25 @@ export class PrismaReviewRequestedIntentStore
     return Object.freeze(records.map(intentToDomain));
   }
 
-  async listAwaitingAuthorization(input: {
+  async listDueForResolution(input: {
     readonly now: Date;
-    readonly minimumAgeMs: number;
     readonly limit: number;
   }): Promise<readonly ReviewRequestedIntent[]> {
-    assertAwaitingQuery(input.minimumAgeMs, input.limit);
+    assertLimit(input.limit);
     void input.now;
     const records = await this.prisma.$queryRaw<
       Awaited<ReturnType<PrismaClient["reviewRequestedIntent"]["findMany"]>>
     >(Prisma.sql`
       SELECT intent.*
       FROM "ReviewRequestedIntent" AS intent
-      WHERE intent."state" = 'awaiting_authorization'::"ReviewRequestedIntentStateV2"
-        AND intent."updatedAt" <= (
-          (statement_timestamp() AT TIME ZONE 'UTC')
-          - (${input.minimumAgeMs} * INTERVAL '1 millisecond')
+      WHERE intent."state" IN (
+          'reconciling_dispatch'::"ReviewRequestedIntentStateV2",
+          'awaiting_authorization'::"ReviewRequestedIntentStateV2"
         )
-      ORDER BY intent."updatedAt", intent."requestId"
+        AND intent."nextResolutionAt" <= (
+          statement_timestamp() AT TIME ZONE 'UTC'
+        )
+      ORDER BY intent."nextResolutionAt", intent."requestId"
       LIMIT ${input.limit}
     `);
     return Object.freeze(records.map(intentToDomain));
@@ -199,6 +205,9 @@ export class PrismaReviewRequestedIntentStore
                 state: {
                   in: [
                     intentStateToPrisma(ReviewRequestedIntentState.Dispatching),
+                    intentStateToPrisma(
+                      ReviewRequestedIntentState.ReconcilingDispatch,
+                    ),
                     intentStateToPrisma(
                       ReviewRequestedIntentState.AwaitingAuthorization,
                     ),
@@ -302,9 +311,17 @@ export class PrismaReviewRequestedIntentStore
               requestId: { not: intent.requestId },
               OR: [
                 {
-                  state: intentStateToPrisma(
-                    ReviewRequestedIntentState.AwaitingAuthorization,
-                  ),
+                  state: {
+                    in: [
+                      intentStateToPrisma(
+                        ReviewRequestedIntentState.ReconcilingDispatch,
+                      ),
+                      intentStateToPrisma(
+                        ReviewRequestedIntentState.AwaitingAuthorization,
+                      ),
+                    ],
+                  },
+                  resolutionDeadlineAt: { gt: now },
                 },
                 {
                   state: intentStateToPrisma(
@@ -367,18 +384,128 @@ export class PrismaReviewRequestedIntentStore
   }
 
   async recordDispatch(command: RecordReviewRequestedDispatchCommand) {
+    const observed = await this.prisma.reviewRequestedIntent.findUnique({
+      where: { requestId: command.requestId },
+    });
+    if (observed === null) {
+      return { status: ReviewRequestedTransitionStatus.Missing };
+    }
+    try {
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          await lockScope(transaction, intentToDomain(observed));
+          await lockIntent(transaction, command.requestId);
+          const record = await transaction.reviewRequestedIntent.findUnique({
+            where: { requestId: command.requestId },
+          });
+          if (record === null) {
+            return { status: ReviewRequestedTransitionStatus.Missing };
+          }
+          const intent = intentToDomain(record);
+          const now = await databaseNow(transaction);
+          const competitor = await transaction.reviewRequestedIntent.findFirst({
+            where: {
+              ...scopeWhere(intent),
+              requestId: { not: intent.requestId },
+              state: {
+                in: [
+                  intentStateToPrisma(
+                    ReviewRequestedIntentState.PendingDispatch,
+                  ),
+                  intentStateToPrisma(ReviewRequestedIntentState.Dispatching),
+                  intentStateToPrisma(
+                    ReviewRequestedIntentState.ReconcilingDispatch,
+                  ),
+                  intentStateToPrisma(
+                    ReviewRequestedIntentState.AwaitingAuthorization,
+                  ),
+                ],
+              },
+            },
+            select: { requestId: true },
+          });
+          const decision = decideReviewRequestedDispatch({
+            intent,
+            competingPreAdmission: competitor !== null,
+            claimId: command.claimId,
+            ownerIdHash: command.ownerIdHash,
+            fencingToken: command.fencingToken,
+            sourceRunId: command.sourceRunId,
+            sourceRunAttempt: command.sourceRunAttempt,
+            now,
+            nextResolutionAt: databaseRelativeDate(
+              now,
+              command.now,
+              command.nextResolutionAt,
+              "authorization_resolution_deadline",
+            ),
+            resolutionDeadlineAt: databaseRelativeDate(
+              now,
+              command.now,
+              command.resolutionDeadlineAt,
+              "authorization_terminal_deadline",
+            ),
+          });
+          if (
+            decision.status === ReviewRequestedTransitionDecisionStatus.Restored
+          ) {
+            return {
+              status: ReviewRequestedTransitionStatus.Restored,
+              intent: decision.intent,
+            };
+          }
+          if (
+            decision.status ===
+            ReviewRequestedTransitionDecisionStatus.StaleClaim
+          ) {
+            return { status: ReviewRequestedTransitionStatus.StaleClaim };
+          }
+          if (
+            decision.status === ReviewRequestedTransitionDecisionStatus.Conflict
+          ) {
+            return { status: ReviewRequestedTransitionStatus.Conflict };
+          }
+          await updateIntent(transaction, intent, decision.intent);
+          return {
+            status: ReviewRequestedTransitionStatus.Applied,
+            intent: decision.intent,
+          };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      if (isConcurrencyError(error)) {
+        return { status: ReviewRequestedTransitionStatus.StaleClaim };
+      }
+      throw error;
+    }
+  }
+
+  async beginSubmission(command: BeginReviewRequestedSubmissionCommand) {
     return this.transitionIntent(
       command.requestId,
-      async (transaction, intent) =>
-        decideReviewRequestedDispatch({
+      async (transaction, intent) => {
+        const now = await databaseNow(transaction);
+        return beginReviewRequestedSubmission({
           intent,
           claimId: command.claimId,
           ownerIdHash: command.ownerIdHash,
           fencingToken: command.fencingToken,
-          sourceRunId: command.sourceRunId,
-          sourceRunAttempt: command.sourceRunAttempt,
-          now: await databaseNow(transaction),
-        }),
+          now,
+          nextResolutionAt: databaseRelativeDate(
+            now,
+            command.now,
+            command.nextResolutionAt,
+            "dispatch_resolution_deadline",
+          ),
+          resolutionDeadlineAt: databaseRelativeDate(
+            now,
+            command.now,
+            command.resolutionDeadlineAt,
+            "dispatch_terminal_deadline",
+          ),
+        });
+      },
     );
   }
 
@@ -398,6 +525,27 @@ export class PrismaReviewRequestedIntentStore
     );
   }
 
+  async deferResolution(command: DeferReviewRequestedResolutionCommand) {
+    return this.transitionIntent(
+      command.requestId,
+      async (transaction, intent) => {
+        const now = await databaseNow(transaction);
+        return deferReviewRequestedResolution({
+          intent,
+          expectedVersion: command.expectedVersion,
+          expectedState: command.expectedState,
+          now,
+          nextResolutionAt: databaseRelativeDate(
+            now,
+            command.now,
+            command.nextResolutionAt,
+            "next_resolution_deadline",
+          ),
+        });
+      },
+    );
+  }
+
   async cancelPreAdmission(
     command: CancelReviewRequestedPreAdmissionCommand,
   ): Promise<{ readonly cancelled: number }> {
@@ -411,6 +559,9 @@ export class PrismaReviewRequestedIntentStore
               in: [
                 intentStateToPrisma(ReviewRequestedIntentState.PendingDispatch),
                 intentStateToPrisma(ReviewRequestedIntentState.Dispatching),
+                intentStateToPrisma(
+                  ReviewRequestedIntentState.ReconcilingDispatch,
+                ),
                 intentStateToPrisma(
                   ReviewRequestedIntentState.AwaitingAuthorization,
                 ),
@@ -466,6 +617,7 @@ export class PrismaReviewRequestedIntentStore
           const now = await databaseNow(transaction);
           const decision = decideReviewRequestedDispatchRecovery({
             intent,
+            expectedVersion: command.expectedVersion,
             replacementPending:
               replacementRecord === null
                 ? null
@@ -473,6 +625,7 @@ export class PrismaReviewRequestedIntentStore
             successorCandidate: command.successorCandidate,
             sourceRunId: command.sourceRunId,
             sourceRunAttempt: command.sourceRunAttempt,
+            terminalReason: command.terminalReason,
             now,
           });
           if (
@@ -480,6 +633,15 @@ export class PrismaReviewRequestedIntentStore
             ReviewRequestedDispatchRecoveryDecisionStatus.Conflict
           ) {
             return { status: ReviewRequestedTransitionStatus.Conflict };
+          }
+          if (
+            decision.status ===
+            ReviewRequestedDispatchRecoveryDecisionStatus.Restored
+          ) {
+            return {
+              status: ReviewRequestedTransitionStatus.Restored,
+              intent: decision.intent,
+            };
           }
           if (decision.createSuccessor) {
             if (
@@ -534,7 +696,7 @@ export class PrismaReviewRequestedIntentStore
           SELECT intent."requestId"
           FROM "ReviewRequestedIntent" AS intent
           WHERE intent."retainUntil" < (clock_timestamp() AT TIME ZONE 'UTC')
-            AND intent.state IN ('dispatched', 'superseded')
+            AND intent.state IN ('dispatched', 'terminal', 'superseded')
             AND NOT EXISTS (
               SELECT 1
               FROM "ReviewRequestedIntent" AS dependent
@@ -653,10 +815,17 @@ function intentCreateData(intent: ReviewRequestedIntent) {
     claimFencingToken: intent.claim?.fencingToken ?? null,
     claimedAt: intent.claim?.claimedAt ?? null,
     claimUntil: intent.claim?.claimUntil ?? null,
+    submissionStartedAt: intent.submissionStartedAt,
+    nextResolutionAt: intent.nextResolutionAt,
+    resolutionDeadlineAt: intent.resolutionDeadlineAt,
     sourceRunId: intent.sourceRunId,
     sourceRunAttempt: intent.sourceRunAttempt,
     authorizationId: intent.authorizationId,
     executionId: intent.executionId,
+    terminalReason:
+      intent.terminalReason === null
+        ? null
+        : intentTerminalReasonToPrisma(intent.terminalReason),
     supersededByRequestId: intent.supersededByRequestId,
     createdAt: intent.createdAt,
     updatedAt: intent.updatedAt,
@@ -674,10 +843,17 @@ function mutableIntentData(intent: ReviewRequestedIntent) {
     claimFencingToken: intent.claim?.fencingToken ?? null,
     claimedAt: intent.claim?.claimedAt ?? null,
     claimUntil: intent.claim?.claimUntil ?? null,
+    submissionStartedAt: intent.submissionStartedAt,
+    nextResolutionAt: intent.nextResolutionAt,
+    resolutionDeadlineAt: intent.resolutionDeadlineAt,
     sourceRunId: intent.sourceRunId,
     sourceRunAttempt: intent.sourceRunAttempt,
     authorizationId: intent.authorizationId,
     executionId: intent.executionId,
+    terminalReason:
+      intent.terminalReason === null
+        ? null
+        : intentTerminalReasonToPrisma(intent.terminalReason),
     supersededByRequestId: intent.supersededByRequestId,
     updatedAt: intent.updatedAt,
   };
@@ -754,17 +930,6 @@ function assertLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 1_000) {
     throw new Error("review_requested_invalid_limit");
   }
-}
-
-function assertAwaitingQuery(minimumAgeMs: number, limit: number): void {
-  if (
-    !Number.isSafeInteger(minimumAgeMs) ||
-    minimumAgeMs <= 0 ||
-    minimumAgeMs > 86_400_000
-  ) {
-    throw new Error("review_requested_awaiting_age_invalid");
-  }
-  assertLimit(limit);
 }
 
 function isConcurrencyError(error: unknown): boolean {

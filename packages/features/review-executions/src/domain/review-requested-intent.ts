@@ -20,9 +20,18 @@ export enum ReviewRequestedTriggerKind {
 export enum ReviewRequestedIntentState {
   PendingDispatch = "pending_dispatch",
   Dispatching = "dispatching",
+  ReconcilingDispatch = "reconciling_dispatch",
   AwaitingAuthorization = "awaiting_authorization",
   Dispatched = "dispatched",
+  Terminal = "terminal",
   Superseded = "superseded",
+}
+
+export enum ReviewRequestedIntentTerminalReason {
+  DispatchFailedNoEffect = "dispatch_failed_no_effect",
+  DispatchOutcomeUnknown = "dispatch_outcome_unknown",
+  AuthorizationDeadlineExceeded = "authorization_deadline_exceeded",
+  DispatchAttemptsExhausted = "dispatch_attempts_exhausted",
 }
 
 export type ReviewRequestedClaim = {
@@ -44,10 +53,14 @@ export type ReviewRequestedIntent = ReviewExecutionScope & {
   readonly state: ReviewRequestedIntentState;
   readonly notBefore: Date;
   readonly claim: ReviewRequestedClaim | null;
+  readonly submissionStartedAt: Date | null;
+  readonly nextResolutionAt: Date | null;
+  readonly resolutionDeadlineAt: Date | null;
   readonly sourceRunId: string | null;
   readonly sourceRunAttempt: string | null;
   readonly authorizationId: string | null;
   readonly executionId: string | null;
+  readonly terminalReason: ReviewRequestedIntentTerminalReason | null;
   readonly supersededByRequestId: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -116,6 +129,8 @@ export enum ReviewRequestedTransitionDecisionStatus {
 export enum ReviewRequestedDispatchRecoveryDecisionStatus {
   Replaced = "replaced",
   Superseded = "superseded",
+  Terminalized = "terminalized",
+  Restored = "restored",
   Conflict = "conflict",
 }
 
@@ -123,7 +138,9 @@ export type ReviewRequestedDispatchRecoveryDecision =
   | {
       readonly status:
         | ReviewRequestedDispatchRecoveryDecisionStatus.Replaced
-        | ReviewRequestedDispatchRecoveryDecisionStatus.Superseded;
+        | ReviewRequestedDispatchRecoveryDecisionStatus.Superseded
+        | ReviewRequestedDispatchRecoveryDecisionStatus.Terminalized
+        | ReviewRequestedDispatchRecoveryDecisionStatus.Restored;
       readonly intent: ReviewRequestedIntent;
       readonly successor: ReviewRequestedIntent | null;
       readonly createSuccessor: boolean;
@@ -159,10 +176,14 @@ export function createReviewRequestedIntent(
     version: 1n,
     state: ReviewRequestedIntentState.PendingDispatch,
     claim: null,
+    submissionStartedAt: null,
+    nextResolutionAt: null,
+    resolutionDeadlineAt: null,
     sourceRunId: null,
     sourceRunAttempt: null,
     authorizationId: null,
     executionId: null,
+    terminalReason: null,
     supersededByRequestId: null,
     createdAt: new Date(candidate.createdAt),
     updatedAt: new Date(candidate.createdAt),
@@ -271,6 +292,7 @@ export function decideReviewRequestedRegistration(input: {
     preAdmission !== null &&
     (preAdmission.state === ReviewRequestedIntentState.PendingDispatch ||
       ((preAdmission.state === ReviewRequestedIntentState.Dispatching ||
+        preAdmission.state === ReviewRequestedIntentState.ReconcilingDispatch ||
         preAdmission.state ===
           ReviewRequestedIntentState.AwaitingAuthorization) &&
         !reviewRevisionsEqual(
@@ -378,16 +400,24 @@ export function claimReviewRequestedIntent(input: {
 
 export function decideReviewRequestedDispatch(input: {
   readonly intent: ReviewRequestedIntent;
+  readonly competingPreAdmission: boolean;
   readonly claimId: string;
   readonly ownerIdHash: string;
   readonly fencingToken: bigint;
   readonly sourceRunId: string;
   readonly sourceRunAttempt: string;
   readonly now: Date;
+  readonly nextResolutionAt: Date;
+  readonly resolutionDeadlineAt: Date;
 }): ReviewRequestedTransitionDecision {
   assertIdentifier(input.sourceRunId, "source_run_id");
   assertIdentifier(input.sourceRunAttempt, "source_run_attempt");
   assertDate(input.now, "dispatch_recorded_at");
+  assertResolutionWindow(
+    input.now,
+    input.nextResolutionAt,
+    input.resolutionDeadlineAt,
+  );
   if (
     input.intent.state === ReviewRequestedIntentState.AwaitingAuthorization &&
     input.intent.sourceRunId === input.sourceRunId &&
@@ -398,12 +428,20 @@ export function decideReviewRequestedDispatch(input: {
       intent: input.intent,
     };
   }
+  if (
+    input.intent.state === ReviewRequestedIntentState.ReconcilingDispatch &&
+    input.intent.resolutionDeadlineAt !== null &&
+    input.intent.resolutionDeadlineAt <= input.now &&
+    input.competingPreAdmission
+  ) {
+    return { status: ReviewRequestedTransitionDecisionStatus.Conflict };
+  }
   const claim = input.intent.claim;
   if (
-    input.intent.state !== ReviewRequestedIntentState.Dispatching ||
+    input.intent.state !== ReviewRequestedIntentState.ReconcilingDispatch ||
     claim === null ||
     !reviewRequestedClaimMatches(input.intent, input) ||
-    claim.claimUntil <= input.now
+    input.intent.submissionStartedAt === null
   ) {
     return { status: ReviewRequestedTransitionDecisionStatus.StaleClaim };
   }
@@ -416,6 +454,8 @@ export function decideReviewRequestedDispatch(input: {
       claim: null,
       sourceRunId: input.sourceRunId,
       sourceRunAttempt: input.sourceRunAttempt,
+      nextResolutionAt: new Date(input.nextResolutionAt),
+      resolutionDeadlineAt: new Date(input.resolutionDeadlineAt),
       updatedAt: new Date(input.now),
     },
   };
@@ -452,7 +492,9 @@ export function decideReviewRequestedAdmissionLink(input: {
     input.intent.state !== ReviewRequestedIntentState.AwaitingAuthorization ||
     input.intent.sourceRunId !== input.sourceRunId ||
     input.intent.sourceRunAttempt !== input.sourceRunAttempt ||
-    !reviewRevisionsEqual(input.intent.revision, input.revision)
+    !reviewRevisionsEqual(input.intent.revision, input.revision) ||
+    input.intent.resolutionDeadlineAt === null ||
+    input.intent.resolutionDeadlineAt <= input.now
   ) {
     return { status: ReviewRequestedTransitionDecisionStatus.Conflict };
   }
@@ -464,6 +506,7 @@ export function decideReviewRequestedAdmissionLink(input: {
       state: ReviewRequestedIntentState.Dispatched,
       authorizationId: input.authorizationId,
       executionId: input.executionId,
+      nextResolutionAt: null,
       updatedAt: new Date(input.now),
     },
   };
@@ -471,27 +514,74 @@ export function decideReviewRequestedAdmissionLink(input: {
 
 export function decideReviewRequestedDispatchRecovery(input: {
   readonly intent: ReviewRequestedIntent;
+  readonly expectedVersion: bigint;
   readonly replacementPending: ReviewRequestedIntent | null;
   readonly successorCandidate: ReviewRequestedIntentCandidate | null;
-  readonly sourceRunId: string;
-  readonly sourceRunAttempt: string;
+  readonly sourceRunId: string | null;
+  readonly sourceRunAttempt: string | null;
+  readonly terminalReason: ReviewRequestedIntentTerminalReason | null;
   readonly now: Date;
 }): ReviewRequestedDispatchRecoveryDecision {
-  assertIdentifier(input.sourceRunId, "source_run_id");
-  assertIdentifier(input.sourceRunAttempt, "source_run_attempt");
+  if (input.sourceRunId !== null) {
+    assertIdentifier(input.sourceRunId, "source_run_id");
+  }
+  if (input.sourceRunAttempt !== null) {
+    assertIdentifier(input.sourceRunAttempt, "source_run_attempt");
+  }
   assertDate(input.now, "dispatch_recovered_at");
   if (input.successorCandidate !== null) {
     assertReviewRequestedIntentCandidate(input.successorCandidate);
   }
+  if (input.intent.state === ReviewRequestedIntentState.Terminal) {
+    return input.successorCandidate === null &&
+      input.terminalReason === input.intent.terminalReason &&
+      input.sourceRunId === input.intent.sourceRunId &&
+      input.sourceRunAttempt === input.intent.sourceRunAttempt
+      ? {
+          status: ReviewRequestedDispatchRecoveryDecisionStatus.Restored,
+          intent: input.intent,
+          successor: null,
+          createSuccessor: false,
+        }
+      : { status: ReviewRequestedDispatchRecoveryDecisionStatus.Conflict };
+  }
+  if (input.intent.version !== input.expectedVersion) {
+    return {
+      status: ReviewRequestedDispatchRecoveryDecisionStatus.Conflict,
+    };
+  }
+  const reconciling =
+    input.intent.state === ReviewRequestedIntentState.ReconcilingDispatch &&
+    input.intent.sourceRunId === null &&
+    input.intent.sourceRunAttempt === null &&
+    input.sourceRunId === null &&
+    input.sourceRunAttempt === null;
+  const awaiting =
+    input.intent.state === ReviewRequestedIntentState.AwaitingAuthorization &&
+    input.sourceRunId !== null &&
+    input.sourceRunAttempt !== null &&
+    input.intent.sourceRunId === input.sourceRunId &&
+    input.intent.sourceRunAttempt === input.sourceRunAttempt;
   if (
-    input.intent.state !== ReviewRequestedIntentState.AwaitingAuthorization ||
-    input.intent.sourceRunId !== input.sourceRunId ||
-    input.intent.sourceRunAttempt !== input.sourceRunAttempt ||
+    (!reconciling && !awaiting) ||
     input.intent.authorizationId !== null ||
     input.intent.executionId !== null
   ) {
     return {
       status: ReviewRequestedDispatchRecoveryDecisionStatus.Conflict,
+    };
+  }
+  if (input.successorCandidate === null && input.terminalReason !== null) {
+    return {
+      status: ReviewRequestedDispatchRecoveryDecisionStatus.Terminalized,
+      intent: terminalizeReviewRequestedIntent({
+        intent: input.intent,
+        expectedVersion: input.expectedVersion,
+        terminalReason: input.terminalReason,
+        now: input.now,
+      }),
+      successor: null,
+      createSuccessor: false,
     };
   }
   if (input.replacementPending !== null) {
@@ -544,6 +634,138 @@ export function decideReviewRequestedDispatchRecovery(input: {
   };
 }
 
+export function beginReviewRequestedSubmission(input: {
+  readonly intent: ReviewRequestedIntent;
+  readonly claimId: string;
+  readonly ownerIdHash: string;
+  readonly fencingToken: bigint;
+  readonly now: Date;
+  readonly nextResolutionAt: Date;
+  readonly resolutionDeadlineAt: Date;
+}): ReviewRequestedTransitionDecision {
+  assertDate(input.now, "submission_started_at");
+  assertResolutionWindow(
+    input.now,
+    input.nextResolutionAt,
+    input.resolutionDeadlineAt,
+  );
+  if (
+    input.intent.state === ReviewRequestedIntentState.ReconcilingDispatch &&
+    reviewRequestedClaimMatches(input.intent, input)
+  ) {
+    return {
+      status: ReviewRequestedTransitionDecisionStatus.Restored,
+      intent: input.intent,
+    };
+  }
+  const claim = input.intent.claim;
+  if (
+    input.intent.state !== ReviewRequestedIntentState.Dispatching ||
+    claim === null ||
+    !reviewRequestedClaimMatches(input.intent, input) ||
+    claim.claimUntil <= input.now
+  ) {
+    return { status: ReviewRequestedTransitionDecisionStatus.StaleClaim };
+  }
+  return {
+    status: ReviewRequestedTransitionDecisionStatus.Applied,
+    intent: {
+      ...input.intent,
+      version: input.intent.version + 1n,
+      state: ReviewRequestedIntentState.ReconcilingDispatch,
+      submissionStartedAt: new Date(input.now),
+      nextResolutionAt: new Date(input.nextResolutionAt),
+      resolutionDeadlineAt: new Date(input.resolutionDeadlineAt),
+      updatedAt: new Date(input.now),
+    },
+  };
+}
+
+export function deferReviewRequestedResolution(input: {
+  readonly intent: ReviewRequestedIntent;
+  readonly expectedVersion: bigint;
+  readonly expectedState:
+    | ReviewRequestedIntentState.ReconcilingDispatch
+    | ReviewRequestedIntentState.AwaitingAuthorization;
+  readonly now: Date;
+  readonly nextResolutionAt: Date;
+}): ReviewRequestedTransitionDecision {
+  assertDate(input.now, "resolution_deferred_at");
+  assertDate(input.nextResolutionAt, "next_resolution_at");
+  if (
+    input.intent.version !== input.expectedVersion ||
+    input.intent.state !== input.expectedState ||
+    input.intent.resolutionDeadlineAt === null
+  ) {
+    return { status: ReviewRequestedTransitionDecisionStatus.Conflict };
+  }
+  if (
+    input.now >= input.intent.resolutionDeadlineAt ||
+    input.nextResolutionAt <= input.now ||
+    input.nextResolutionAt > input.intent.resolutionDeadlineAt
+  ) {
+    return { status: ReviewRequestedTransitionDecisionStatus.Conflict };
+  }
+  return {
+    status: ReviewRequestedTransitionDecisionStatus.Applied,
+    intent: {
+      ...input.intent,
+      version: input.intent.version + 1n,
+      nextResolutionAt: new Date(input.nextResolutionAt),
+      updatedAt: new Date(input.now),
+    },
+  };
+}
+
+function terminalizeReviewRequestedIntent(input: {
+  readonly intent: ReviewRequestedIntent;
+  readonly expectedVersion: bigint;
+  readonly terminalReason: ReviewRequestedIntentTerminalReason;
+  readonly now: Date;
+}): ReviewRequestedIntent {
+  assertDate(input.now, "terminalized_at");
+  if (input.intent.version !== input.expectedVersion) {
+    throw new Error("review_requested_terminal_version_conflict");
+  }
+  const validReason =
+    (input.intent.state === ReviewRequestedIntentState.ReconcilingDispatch &&
+      (input.terminalReason ===
+        ReviewRequestedIntentTerminalReason.DispatchFailedNoEffect ||
+        input.terminalReason ===
+          ReviewRequestedIntentTerminalReason.DispatchOutcomeUnknown ||
+        input.terminalReason ===
+          ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted)) ||
+    (input.intent.state === ReviewRequestedIntentState.AwaitingAuthorization &&
+      (input.terminalReason ===
+        ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded ||
+        input.terminalReason ===
+          ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted));
+  if (!validReason) {
+    throw new Error("review_requested_terminal_reason_invalid");
+  }
+  const deadlineBound =
+    input.terminalReason ===
+      ReviewRequestedIntentTerminalReason.DispatchOutcomeUnknown ||
+    input.terminalReason ===
+      ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded;
+  if (
+    deadlineBound &&
+    (input.intent.resolutionDeadlineAt === null ||
+      input.now < input.intent.resolutionDeadlineAt)
+  ) {
+    throw new Error("review_requested_terminal_deadline_not_reached");
+  }
+  return {
+    ...input.intent,
+    version: input.intent.version + 1n,
+    state: ReviewRequestedIntentState.Terminal,
+    claim: null,
+    nextResolutionAt: null,
+    terminalReason: input.terminalReason,
+    updatedAt: new Date(input.now),
+  };
+}
+
 export function cancelReviewRequestedPreAdmissionIntent(
   intent: ReviewRequestedIntent,
   now: Date,
@@ -551,6 +773,7 @@ export function cancelReviewRequestedPreAdmissionIntent(
   if (
     intent.state !== ReviewRequestedIntentState.PendingDispatch &&
     intent.state !== ReviewRequestedIntentState.Dispatching &&
+    intent.state !== ReviewRequestedIntentState.ReconcilingDispatch &&
     intent.state !== ReviewRequestedIntentState.AwaitingAuthorization
   ) {
     throw new Error("review_requested_intent_not_pre_admission");
@@ -571,9 +794,24 @@ function supersedeReviewRequestedIntent(
     ...intent,
     version: intent.version + 1n,
     state: ReviewRequestedIntentState.Superseded,
+    claim: null,
+    nextResolutionAt: null,
+    terminalReason: null,
     supersededByRequestId,
     updatedAt: new Date(now),
   };
+}
+
+function assertResolutionWindow(
+  now: Date,
+  nextResolutionAt: Date,
+  resolutionDeadlineAt: Date,
+): void {
+  assertDate(nextResolutionAt, "next_resolution_at");
+  assertDate(resolutionDeadlineAt, "resolution_deadline_at");
+  if (nextResolutionAt <= now || resolutionDeadlineAt < nextResolutionAt) {
+    throw new Error("review_requested_resolution_window_invalid");
+  }
 }
 
 function reviewRequestedClaimMatches(

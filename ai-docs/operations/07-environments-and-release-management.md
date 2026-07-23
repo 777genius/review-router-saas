@@ -386,6 +386,12 @@ Use this order. Do not combine the steps into one blind configuration update:
 1. Apply migration `000033_review_request_dispatch_lanes` while all new writers
    remain disabled. Its preflight must find no duplicate/expired active provider
    lane and no duplicate pending/source-run intent identity.
+   Then apply `000034_review_request_dispatch_reconciliation`. Its preflight must
+   find zero intents in legacy `dispatching`; if any exist, stop and reconcile
+   them with the old runtime before retrying the migration. The migration smoke
+   gate seeds one legacy `dispatching` intent in a disposable PostgreSQL database,
+   requires this preflight failure, and verifies that enum, columns, types,
+   indexes, and the fixture row are unchanged after transaction rollback.
 2. Deploy the API, worker, and exact public Action commit with intent ingress and
    admission requirement disabled.
 3. Install the generated T0 workflow pinned to that full Action SHA. Verify it has
@@ -405,6 +411,20 @@ Use this order. Do not combine the steps into one blind configuration update:
    startup unless steps 5 and 6 are already true.
 8. After persisted intents dispatch and bind to OIDC runs correctly, enable
    `REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED=1` for the cohort.
+
+Dispatch recovery is deliberately asymmetric:
+
+- Persist `reconciling_dispatch` before the single GitHub workflow dispatch POST.
+- A returned run ID binds the intent directly; a lost/unknown response is resolved
+  only by bounded workflow-run lookup and never by repeating that POST.
+- Retry with a new request identity only after a definite no-effect result and
+  within `REVIEW_ROUTER_REVIEW_V2_INTENT_MAX_DISPATCH_ATTEMPTS`.
+- Terminalize an unresolved dispatch or missing OIDC authorization at its
+  persisted deadline, then release the PR lane. Best-effort cancellation targets
+  only the exact known workflow run.
+- Keep the dispatch resolution window shorter than the authorization window. The
+  production defaults are 5 minutes and 30 minutes respectively, allowing normal
+  hosted-runner queue delay without treating it as an unknown POST outcome.
 
 Rollback before step 8 disables ingress first and drains persisted intents through
 the still-enabled worker. After intent-required admission or v2 mutation authority
@@ -427,6 +447,9 @@ REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED
 REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY
 REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED
 REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED
+REVIEW_ROUTER_REVIEW_V2_INTENT_DISPATCH_RESOLUTION_TIMEOUT_MS
+REVIEW_ROUTER_REVIEW_V2_INTENT_AUTHORIZATION_TIMEOUT_MS
+REVIEW_ROUTER_REVIEW_V2_INTENT_MAX_DISPATCH_ATTEMPTS
 ```
 
 Flags must fail closed for security-sensitive features.

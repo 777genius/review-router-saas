@@ -775,9 +775,9 @@ model ReviewEvidenceObservation {
 }
 
 model ReviewRequestedIntent {
-  requestId               String                       @id
-  dispatchAttempt         Int                          @default(1)
-  version                 BigInt                       @default(1)
+  requestId               String                                 @id
+  dispatchAttempt         Int                                    @default(1)
+  version                 BigInt                                 @default(1)
   workspaceId             String
   repositoryConnectionId  String
   scmRepositoryIdentityId String
@@ -787,25 +787,30 @@ model ReviewRequestedIntent {
   headSha                 String
   reviewRevisionHash      String
   triggerKind             ReviewRequestedTriggerKindV2
-  deliveryIdentityHash    String                       @unique
+  deliveryIdentityHash    String                                 @unique
   canonicalRequestHash    String
-  state                   ReviewRequestedIntentStateV2 @default(pending_dispatch)
+  state                   ReviewRequestedIntentStateV2           @default(pending_dispatch)
   notBefore               DateTime
-  claimId                 String?                      @unique
+  claimId                 String?                                @unique
   claimOwnerIdHash        String?
-  claimFencingToken       BigInt?                      @unique
+  claimFencingToken       BigInt?                                @unique
   claimedAt               DateTime?
   claimUntil              DateTime?
+  submissionStartedAt     DateTime?
+  nextResolutionAt        DateTime?
+  resolutionDeadlineAt    DateTime?
   sourceRunId             String?
   sourceRunAttempt        String?
   authorizationId         String?
   executionId             String?
+  terminalReason          ReviewRequestedIntentTerminalReasonV2?
   supersededByRequestId   String?
   createdAt               DateTime
   updatedAt               DateTime
   retainUntil             DateTime
 
   @@index([state, notBefore, requestId])
+  @@index([state, nextResolutionAt, requestId])
   @@index([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, state])
   @@index([claimUntil, requestId])
 }
@@ -1683,9 +1688,18 @@ enum ReviewRequestedTriggerKindV2 {
 enum ReviewRequestedIntentStateV2 {
   pending_dispatch
   dispatching
+  reconciling_dispatch
   awaiting_authorization
   dispatched
+  terminal
   superseded
+}
+
+enum ReviewRequestedIntentTerminalReasonV2 {
+  dispatch_failed_no_effect
+  dispatch_outcome_unknown
+  authorization_deadline_exceeded
+  dispatch_attempts_exhausted
 }
 
 enum ReviewExecutionStateV2 {

@@ -443,6 +443,15 @@ if (databaseUrl) {
         claimUntil: new Date(now.getTime() + 30_000),
       });
       const claim = claimed.intent!.claim!;
+      await intentStore.beginSubmission({
+        requestId,
+        claimId: claim.claimId,
+        ownerIdHash: claim.ownerIdHash,
+        fencingToken: claim.fencingToken,
+        now,
+        nextResolutionAt: new Date(now.getTime() + 1_000),
+        resolutionDeadlineAt: new Date(now.getTime() + 60_000),
+      });
       await intentStore.recordDispatch({
         requestId,
         claimId: claim.claimId,
@@ -451,6 +460,8 @@ if (databaseUrl) {
         sourceRunId: `run-${requestId}`,
         sourceRunAttempt: "1",
         now,
+        nextResolutionAt: new Date(now.getTime() + 1_000),
+        resolutionDeadlineAt: new Date(now.getTime() + 60_000),
       });
       await intentStore.linkAdmission({
         requestId,

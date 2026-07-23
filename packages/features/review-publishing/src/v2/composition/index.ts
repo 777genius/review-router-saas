@@ -27,6 +27,14 @@ import {
 } from "../application/ports/review-publication-ports";
 
 export { PrismaReviewPublicationRepository } from "../infrastructure/prisma/prisma-review-publication-repository";
+export {
+  GitHubReviewPublicationLifecycleAdapter,
+  OctokitGitHubInstallationGraphqlClientFactory,
+  type GitHubGraphqlClient,
+  type GitHubInstallationGraphqlClientFactoryPort,
+  type GitHubReviewLifecycleRepository,
+  type GitHubReviewLifecycleRepositoryQueryPort,
+} from "../infrastructure/github/github-review-publication-lifecycle";
 
 export type ReviewPublicationV2CommandPorts = {
   readonly requests: RequestReviewPublicationCommandPort;

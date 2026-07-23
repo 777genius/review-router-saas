@@ -29,18 +29,26 @@ import {
   ReviewPublicationCapability,
   ReviewPublicationEffectStrategy,
   ReviewPublicationOperationPlanningService,
+  ReviewPublicationLifecycleExpectationStatus,
   ReviewPublicationRunControlStatus,
   ReviewPublicationTerminalOutcome,
+  ResolveCurrentPublicationLifecycle,
   effectiveReviewPublicationOutcome,
+  reviewPublicationLifecycleExpectationFromProjection,
+  type LiveReviewPublicationLifecyclePort,
   type ReviewPublicationAttemptQueryPort,
   type ReviewPublicationAdjudicationEvidencePort,
   type ReviewPublicationDecisionPorts,
   type ReviewPublicationPermitIdentity,
   type ReviewPublicationReleaseLimitsQueryPort,
+  type ReviewPublicationScope,
 } from "@reviewrouter/features-review-publishing/v2";
 import {
+  GitHubReviewPublicationLifecycleAdapter,
+  OctokitGitHubInstallationGraphqlClientFactory,
   PrismaReviewPublicationRepository,
   createReviewPublicationV2Application,
+  type GitHubReviewLifecycleRepositoryQueryPort,
 } from "@reviewrouter/features-review-publishing/v2/composition";
 import {
   ProducerReleaseState,
@@ -162,12 +170,22 @@ export function createProductionReviewV2WorkerRuntime(input: {
     policyQueries: safetyControls,
     emergencyQueries: safetyControls,
   });
+  const githubRepositories = new PrismaReviewV2GitHubRepositoryQuery(
+    input.prisma,
+  );
   const decisions = createProductionPublicationDecisions({
     executions,
     releases,
     authorizations,
     authorities,
     safetyResolver,
+    liveLifecycle: new GitHubReviewPublicationLifecycleAdapter(
+      githubRepositories,
+      new OctokitGitHubInstallationGraphqlClientFactory({
+        appId: input.githubAppId,
+        privateKey: input.githubPrivateKey,
+      }),
+    ),
   });
   const publicationApplication = createReviewPublicationV2Application({
     clock: input.clock,
@@ -260,7 +278,7 @@ export function createProductionReviewV2WorkerRuntime(input: {
       appId: input.githubAppId,
       privateKey: input.githubPrivateKey,
     },
-    new PrismaReviewV2GitHubRepositoryQuery(input.prisma),
+    githubRepositories,
     projections,
   );
   const operationCapabilityIssuer =
@@ -345,45 +363,67 @@ export function createProductionReviewV2WorkerRuntime(input: {
     input.env.REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PATH?.trim() ||
       ".github/workflows/reviewrouter-codex.yml",
   );
+  const intentClaimDurationMs = positiveInteger(
+    input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_CLAIM_MS,
+    60_000,
+    "review_v2_intent_claim_ms_invalid",
+  );
+  const intentDispatchResolutionTimeoutMs = positiveInteger(
+    input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_DISPATCH_RESOLUTION_TIMEOUT_MS,
+    300_000,
+    "review_v2_intent_dispatch_resolution_timeout_ms_invalid",
+  );
+  const intentAuthorizationResolutionTimeoutMs = positiveInteger(
+    input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_AUTHORIZATION_TIMEOUT_MS,
+    1_800_000,
+    "review_v2_intent_authorization_timeout_ms_invalid",
+  );
+  const intentRetryMs = positiveInteger(
+    input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETRY_MS,
+    30_000,
+    "review_v2_intent_retry_ms_invalid",
+  );
+  const intentRetentionMs = positiveInteger(
+    input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETENTION_MS,
+    2_592_000_000,
+    "review_v2_intent_retention_ms_invalid",
+  );
+  const intentMaxDispatchAttempts = positiveInteger(
+    input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_MAX_DISPATCH_ATTEMPTS,
+    3,
+    "review_v2_intent_max_dispatch_attempts_invalid",
+  );
+  const intentIds = {
+    nextClaimId: () => `review-request-dispatch-${randomUUID()}`,
+    nextRequestId: () => `review-request-${randomUUID()}`,
+  };
+  const intentDigest = { digestUtf8: async (value: string) => sha256(value) };
+  const intentDispatchPolicy = {
+    claimDurationMs: intentClaimDurationMs,
+    dispatchResolutionDelayMs: intentRetryMs,
+    dispatchResolutionTimeoutMs: intentDispatchResolutionTimeoutMs,
+    authorizationResolutionDelayMs: intentRetryMs,
+    authorizationResolutionTimeoutMs: intentAuthorizationResolutionTimeoutMs,
+    retryDelayMs: intentRetryMs,
+    retentionMs: intentRetentionMs,
+    maxDispatchAttempts: intentMaxDispatchAttempts,
+  };
   const intentDispatcher = new DispatchDueReviewRequestedIntents(
     requestedIntents,
     requestedIntents,
     intentGateway,
     input.clock,
-    { nextClaimId: () => `review-request-dispatch-${randomUUID()}` },
-    positiveInteger(
-      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_CLAIM_MS,
-      60_000,
-      "review_v2_intent_claim_ms_invalid",
-    ),
+    intentIds,
+    intentDigest,
+    intentDispatchPolicy,
   );
   const intentRecovery = new RecoverReviewRequestedDispatches(
     requestedIntents,
     requestedIntents,
     intentGateway,
     input.clock,
-    { nextRequestId: () => `review-request-${randomUUID()}` },
-    { digestUtf8: async (value) => sha256(value) },
-    positiveInteger(
-      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_AUTHORIZATION_TIMEOUT_MS,
-      300_000,
-      "review_v2_intent_authorization_timeout_ms_invalid",
-    ),
-    positiveInteger(
-      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETRY_MS,
-      30_000,
-      "review_v2_intent_retry_ms_invalid",
-    ),
-    positiveInteger(
-      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_RETENTION_MS,
-      2_592_000_000,
-      "review_v2_intent_retention_ms_invalid",
-    ),
-    positiveInteger(
-      input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_MAX_DISPATCH_ATTEMPTS,
-      3,
-      "review_v2_intent_max_dispatch_attempts_invalid",
-    ),
+    { ids: intentIds, digest: intentDigest },
+    intentDispatchPolicy,
   );
   const publicationExecutor = new ExecuteReviewV2PublicationOperation(
     {
@@ -503,7 +543,47 @@ function createProductionPublicationDecisions(input: {
   readonly authorizations: PrismaReviewRunAuthorizationRepository;
   readonly authorities: PrismaReviewMutationAuthorityRepository;
   readonly safetyResolver: ResolveReviewSafetyPolicy;
+  readonly liveLifecycle: LiveReviewPublicationLifecyclePort;
 }): ReviewPublicationDecisionPorts {
+  const lifecycle = new ResolveCurrentPublicationLifecycle({
+    expectations: {
+      async resolve(scope) {
+        try {
+          const stream = await input.executions.findStream(scope);
+          const snapshot = stream?.activeExecutionId
+            ? await input.executions.findExecution(stream.activeExecutionId)
+            : null;
+          const artifact = snapshot?.artifact;
+          if (!artifact) {
+            return {
+              status: ReviewPublicationLifecycleExpectationStatus.Missing,
+            };
+          }
+          const authorization =
+            await input.authorizations.findReviewRunAuthorizationById(
+              artifact.publicationPermit.authorizationId,
+            );
+          if (!authorization) {
+            return {
+              status: ReviewPublicationLifecycleExpectationStatus.Missing,
+            };
+          }
+          return reviewPublicationLifecycleExpectationFromProjection({
+            reviewedHeadSha: artifact.reviewedHeadSha,
+            lifecycleStateHash: artifact.lifecycleStateHash,
+            commandLedgerWatermark: artifact.commandLedgerWatermark,
+            projectionEnvelopeJson: artifact.projectionEnvelopeJson,
+            authorizationCreatedAt: authorization.createdAt,
+          });
+        } catch {
+          return {
+            status: ReviewPublicationLifecycleExpectationStatus.Unavailable,
+          };
+        }
+      },
+    },
+    live: input.liveLifecycle,
+  });
   return {
     permits: {
       async resolve(identity) {
@@ -650,39 +730,7 @@ function createProductionPublicationDecisions(input: {
       },
     },
     lifecycle: {
-      async resolve(scope) {
-        try {
-          const stream = await input.executions.findStream(scope);
-          if (!stream?.activeExecutionId) {
-            return {
-              status: CurrentPublicationLifecycleStatus.Missing,
-              lifecycleStateHash: null,
-              commandLedgerWatermark: null,
-            };
-          }
-          const snapshot = await input.executions.findExecution(
-            stream.activeExecutionId,
-          );
-          if (!snapshot?.artifact) {
-            return {
-              status: CurrentPublicationLifecycleStatus.Missing,
-              lifecycleStateHash: null,
-              commandLedgerWatermark: null,
-            };
-          }
-          return {
-            status: CurrentPublicationLifecycleStatus.Current,
-            lifecycleStateHash: snapshot.artifact.lifecycleStateHash,
-            commandLedgerWatermark: snapshot.artifact.commandLedgerWatermark,
-          };
-        } catch {
-          return {
-            status: CurrentPublicationLifecycleStatus.Unavailable,
-            lifecycleStateHash: null,
-            commandLedgerWatermark: null,
-          };
-        }
-      },
+      resolve: (scope) => lifecycle.resolve(scope),
     },
     safety: {
       async resolve(request) {
@@ -951,10 +999,14 @@ class PrismaReviewSnapshotEligibility implements ReviewSnapshotCommitEligibility
   }
 }
 
-class PrismaReviewV2GitHubRepositoryQuery implements ReviewV2GitHubRepositoryQueryPort {
+class PrismaReviewV2GitHubRepositoryQuery
+  implements
+    ReviewV2GitHubRepositoryQueryPort,
+    GitHubReviewLifecycleRepositoryQueryPort
+{
   constructor(private readonly prisma: PrismaClient) {}
 
-  async resolve(permit: ReviewPublicationPermitIdentity) {
+  async resolve(permit: ReviewPublicationScope) {
     const repository = await this.prisma.repositoryConnection.findFirst({
       where: {
         id: permit.repositoryConnectionId,
