@@ -17,6 +17,7 @@ import {
   readGitHubAppPrivateKey,
   requireGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
+  resolveReviewRouterPublicApiUrl,
   resolveReviewRouterTrustedActionRefs,
 } from "./index";
 
@@ -42,6 +43,18 @@ describe("platform config", () => {
         REVIEW_ROUTER_ACTION_VERSION: "v1.0.4",
       }),
     ).toBe("777genius/review-router@feature/test");
+  });
+
+  it("resolves the public API endpoint used by managed workflows", () => {
+    expect(
+      resolveReviewRouterPublicApiUrl({
+        REVIEW_ROUTER_API_URL: "https://internal.example.test/",
+        REVIEW_ROUTER_PUBLIC_API_URL: "https://api.example.test/",
+      }),
+    ).toBe("https://api.example.test");
+    expect(resolveReviewRouterPublicApiUrl({})).toBe(
+      "https://api.reviewrouter.site",
+    );
   });
 
   it("builds a unique full-SHA trusted action ref rollout window", () => {

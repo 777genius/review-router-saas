@@ -77,6 +77,7 @@ import {
   isCodexRotatingOAuthAllowedForRepository,
   readGitHubAppPrivateKey,
   resolveReviewRouterActionRef,
+  resolveReviewRouterPublicApiUrl,
   resolveReviewRouterTrustedActionRefs,
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
@@ -247,6 +248,7 @@ export async function createApiApp(
               ? new OctokitCodexRotatingGitHubSecretGateway({
                   appId: process.env.GITHUB_APP_ID,
                   privateKey: githubAppPrivateKey,
+                  expectedApiUrl: resolveReviewRouterPublicApiUrl(),
                 })
               : undefined;
           const codexRotatingOAuth = new PrismaCodexRotatingOAuthRepository(

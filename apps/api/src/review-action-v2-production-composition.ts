@@ -78,7 +78,10 @@ import {
   composeReviewRunControl,
   createPrismaReviewRunControlRepositories,
 } from "@reviewrouter/features-review-run-control/composition";
-import { readGitHubAppPrivateKey } from "@reviewrouter/platform-config";
+import {
+  readGitHubAppPrivateKey,
+  resolveReviewRouterPublicApiUrl,
+} from "@reviewrouter/platform-config";
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import {
   ConfiguredCapabilityKeyRing,
@@ -173,6 +176,7 @@ export function composeReviewActionV2ProductionRunControl(input: {
   const workflowInventory = new OctokitCodexRotatingGitHubSecretGateway({
     appId: githubAppId,
     privateKey: githubAppPrivateKey,
+    expectedApiUrl: resolveReviewRouterPublicApiUrl(input.env),
   });
   const dispatchCapability = new OctokitReviewV2DispatchCapabilityInspector({
     appId: githubAppId,

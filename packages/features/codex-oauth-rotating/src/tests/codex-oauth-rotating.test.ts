@@ -29,6 +29,7 @@ import {
   InMemoryCodexRotatingLeaseStore,
   parseCodexRotatingEncryptedWritebackRequest,
   pruneCodexRotatingChildEnv,
+  readCodexRotatingWorkflowSourceMetadata,
   renderCodexRotatingAdvisoryWorkflow,
   renderCodexRotatingInstallerCommand,
   scanCodexRotatingAdvisoryWorkflow,
@@ -708,6 +709,52 @@ exit 17
     expect(workflow).not.toContain("runs-on:");
     expect(workflow).not.toContain("steps:");
     expect(scanCodexRotatingAdvisoryWorkflow(workflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(readCodexRotatingWorkflowSourceMetadata(workflow)).toMatchObject({
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+    });
+
+    const siblingWriter = `${workflow}
+
+  unsafe-writer:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - run: echo unsafe
+`;
+    expect(scanCodexRotatingAdvisoryWorkflow(siblingWriter).errors).toContain(
+      "t0_job_inventory_invalid",
+    );
+
+    const unexpectedInput = workflow.replace(
+      "      runtime_config_mode: oidc",
+      "      runtime_config_mode: oidc\n      unexpected_input: unsafe",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(unexpectedInput).errors).toContain(
+      "t0_review_with_invalid",
+    );
+
+    const changedProvider = workflow.replace(
+      'provider_instance_id: "codex-rotating:1163183284"',
+      'provider_instance_id: "codex-rotating:999"',
+    );
+    expect(
+      readCodexRotatingWorkflowSourceMetadata(changedProvider)
+        .providerInstanceId,
+    ).toBe("codex-rotating:999");
+
+    const scheduledWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    expect(scanCodexRotatingAdvisoryWorkflow(scheduledWorkflow)).toEqual({
       valid: true,
       errors: [],
     });

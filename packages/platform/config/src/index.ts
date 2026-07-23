@@ -55,6 +55,12 @@ type ReviewRouterActionRefEnv = {
   readonly [key: string]: string | undefined;
 };
 
+type ReviewRouterApiUrlEnv = {
+  readonly REVIEW_ROUTER_API_URL?: string | undefined;
+  readonly REVIEW_ROUTER_PUBLIC_API_URL?: string | undefined;
+  readonly [key: string]: string | undefined;
+};
+
 export function loadRuntimeEnv(
   input: NodeJS.ProcessEnv = process.env,
 ): RuntimeEnv {
@@ -73,6 +79,16 @@ export function resolveReviewRouterActionRef(
     input.REVIEW_ROUTER_ACTION_VERSION?.trim() ||
     DEFAULT_REVIEW_ROUTER_ACTION_VERSION;
   return `${REVIEW_ROUTER_ACTION_REPOSITORY}@${version}`;
+}
+
+export function resolveReviewRouterPublicApiUrl(
+  input: ReviewRouterApiUrlEnv = process.env,
+): string {
+  return (
+    input.REVIEW_ROUTER_PUBLIC_API_URL?.trim() ||
+    input.REVIEW_ROUTER_API_URL?.trim() ||
+    "https://api.reviewrouter.site"
+  ).replace(/\/+$/, "");
 }
 
 export function resolveReviewRouterTrustedActionRefs(
