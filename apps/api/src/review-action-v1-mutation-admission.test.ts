@@ -13,6 +13,8 @@ import {
 import { ReviewRunControlLegacyMutationAdmission } from "./review-action-v1-mutation-admission";
 
 describe("ReviewRunControlLegacyMutationAdmission", () => {
+  const workflowSha = "a".repeat(40);
+
   it.each([
     ReviewMutationMode.V1Draining,
     ReviewMutationMode.V2Active,
@@ -58,6 +60,10 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
     ] as const,
     [
       "pull_request_review_comment",
+      ".github/workflows/reviewrouter-interaction.yml",
+    ] as const,
+    [
+      "workflow_dispatch",
       ".github/workflows/reviewrouter-interaction.yml",
     ] as const,
   ])(
@@ -110,22 +116,82 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
       `legacy_review_mutation_blocked:${ReviewMutationMode.Paused}`,
     );
   });
+
+  it.each([
+    {
+      name: "stale workflow commit",
+      inputSha: "b".repeat(40),
+      inventory: {
+        compatible: true,
+        defaultBranchHeadSha: workflowSha,
+      },
+    },
+    {
+      name: "incompatible managed inventory",
+      inputSha: workflowSha,
+      inventory: {
+        compatible: false,
+        defaultBranchHeadSha: workflowSha,
+      },
+    },
+    {
+      name: "missing inventory verifier",
+      inputSha: workflowSha,
+      inventory: null,
+    },
+    {
+      name: "missing workflow commit claim",
+      inputSha: null,
+      inventory: {
+        compatible: true,
+        defaultBranchHeadSha: workflowSha,
+      },
+    },
+  ])("blocks $name", async ({ inputSha, inventory }) => {
+    await expect(
+      createAdmission(
+        ReviewMutationMode.V2Active,
+        inventory,
+      ).assertLegacyReviewMutationAllowed(
+        sessionExchangeInput(
+          "issue_comment",
+          ".github/workflows/reviewrouter-interaction.yml",
+          inputSha,
+        ),
+      ),
+    ).rejects.toThrow(
+      `legacy_review_mutation_blocked:${ReviewMutationMode.V2Active}`,
+    );
+  });
 });
 
 function sessionExchangeInput(
   eventName: GitHubActionsOidcClaims["event_name"],
   workflowPath: string,
+  workflowSha: string | null = "a".repeat(40),
 ) {
   return {
     operation: LegacyReviewMutationOperation.SessionExchange,
     githubRepositoryId: "123",
+    githubInstallationId: "456",
     repositoryFullName: "777genius/example",
+    repositoryOwner: "777genius",
     eventName,
     workflowPath,
+    workflowSha,
   } as const;
 }
 
-function createAdmission(mode: ReviewMutationMode | null) {
+function createAdmission(
+  mode: ReviewMutationMode | null,
+  inventory: {
+    readonly compatible: boolean;
+    readonly defaultBranchHeadSha: string;
+  } | null = {
+    compatible: true,
+    defaultBranchHeadSha: "a".repeat(40),
+  },
+) {
   const identity: ScmRepositoryIdentity = {
     scmRepositoryIdentityId: "identity-1",
     provider: ScmProvider.GitHub,
@@ -164,5 +230,12 @@ function createAdmission(mode: ReviewMutationMode | null) {
     mutationAuthorities: {
       findReviewMutationAuthority: async () => authority,
     },
+    ...(inventory
+      ? {
+          workflowInventory: {
+            inspectReviewV2ManagedWorkflowInventory: async () => inventory,
+          },
+        }
+      : {}),
   });
 }

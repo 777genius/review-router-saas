@@ -3543,6 +3543,16 @@ commit/template and its immutable `uses:` target before selecting a registered
 `PublicReusable` release. A caller-controlled or floating `runtime_ref` is
 v2-ineligible.
 
+Legacy Action session exchange is not trusted from workflow path and event name
+alone once repository authority is `v1_draining` or `v2_active`. The API must
+freshly verify the canonical managed workflow inventory and require the signed
+`workflow_sha` to equal the inspected default-branch head before issuing the
+generic session. Missing inventory verification, incompatible workflow bytes,
+stale workflow commits, unmanaged event/path pairs, and `paused` authority all
+fail closed. The interaction workflow is compared with the canonical provisioning
+output so added jobs, steps, permissions, or runtime bindings cannot inherit the
+session capability.
+
 V2 rollout therefore includes workflow migration, not only server flags:
 
 1. Generated hosted workflows pin the wrapper/runtime target to a full commit SHA.

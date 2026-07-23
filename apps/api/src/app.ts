@@ -308,6 +308,11 @@ export async function createApiApp(
                   reviewRunControlRepositories.repositoryIdentities,
                 mutationAuthorities:
                   reviewRunControlRepositories.mutationAuthorities,
+                ...(codexRotatingGitHubSecretGateway
+                  ? {
+                      workflowInventory: codexRotatingGitHubSecretGateway,
+                    }
+                  : {}),
               }),
             codexRotatingOAuth,
             codexRotatingReviewSnapshotAccess: codexRotatingOAuth,

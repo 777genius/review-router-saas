@@ -11,9 +11,12 @@ export type LegacyReviewMutationAdmissionInput =
   | {
       readonly operation: LegacyReviewMutationOperation.SessionExchange;
       readonly githubRepositoryId: string;
+      readonly githubInstallationId: string;
       readonly repositoryFullName: string;
+      readonly repositoryOwner: string;
       readonly eventName: GitHubActionsOidcClaims["event_name"];
       readonly workflowPath: string;
+      readonly workflowSha: string | null;
     }
   | {
       readonly operation: Exclude<

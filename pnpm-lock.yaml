@@ -204,6 +204,9 @@ importers:
       '@reviewrouter/features-system-health':
         specifier: workspace:*
         version: link:../../packages/features/system-health
+      '@reviewrouter/features-workflow-provisioning':
+        specifier: workspace:*
+        version: link:../../packages/features/workflow-provisioning
       '@reviewrouter/platform-config':
         specifier: workspace:*
         version: link:../../packages/platform/config

@@ -72,9 +72,12 @@ export async function exchangeGitHubOidcToken(
     {
       operation: LegacyReviewMutationOperation.SessionExchange,
       githubRepositoryId: repository.githubRepositoryId,
+      githubInstallationId: repository.githubInstallationId,
       repositoryFullName: repository.fullName,
+      repositoryOwner: repository.owner,
       eventName: claims.event_name,
       workflowPath,
+      workflowSha: claims.workflow_sha?.toLowerCase() ?? null,
     },
   );
   const issuedAt = dependencies.clock.now();

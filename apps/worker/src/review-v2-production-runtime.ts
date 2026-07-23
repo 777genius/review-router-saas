@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { PrismaActionControlPlaneRepository } from "@reviewrouter/features-action-control-plane";
+import {
+  PrismaActionControlPlaneRepository,
+  managedCodexWorkflowPath,
+} from "@reviewrouter/features-action-control-plane";
 import {
   ReviewCoverageState,
   DispatchDueReviewRequestedIntents,
@@ -361,7 +364,7 @@ export function createProductionReviewV2WorkerRuntime(input: {
     input.prisma,
     { appId: input.githubAppId, privateKey: input.githubPrivateKey },
     input.env.REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PATH?.trim() ||
-      ".github/workflows/reviewrouter-codex.yml",
+      managedCodexWorkflowPath,
   );
   const intentClaimDurationMs = positiveInteger(
     input.env.REVIEW_ROUTER_REVIEW_V2_INTENT_CLAIM_MS,

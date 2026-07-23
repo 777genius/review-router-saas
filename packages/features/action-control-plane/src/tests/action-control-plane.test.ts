@@ -661,8 +661,11 @@ describe("action control plane", () => {
             assertLegacyReviewMutationAllowed: async (input) => {
               expect(input).toMatchObject({
                 operation: LegacyReviewMutationOperation.SessionExchange,
+                githubInstallationId: "129500385",
+                repositoryOwner: "777genius",
                 eventName: "pull_request",
                 workflowPath: ".github/workflows/reviewrouter.yml",
+                workflowSha: null,
               });
               throw new Error("legacy_review_mutation_blocked:v1_draining");
             },
