@@ -1135,6 +1135,7 @@ function statusCodeForActionError(message: string): number {
     message.includes("repository_not_selected") ||
     message.includes("installation_not_active") ||
     message.includes("workflow_ref_not_allowed") ||
+    message.startsWith("legacy_review_mutation_blocked:") ||
     message.includes("codex_rotating_not_enabled") ||
     message.includes("codex_legacy_auth_requires_reconnect") ||
     message.includes("codex_provider_requires_rotating_workflow") ||
@@ -1145,6 +1146,9 @@ function statusCodeForActionError(message: string): number {
   }
   if (message.startsWith("rate_limit_exceeded:")) {
     return 429;
+  }
+  if (message.startsWith("managed_workflow_source_temporarily_unavailable")) {
+    return 503;
   }
   if (message.startsWith("action_version_blocked:")) {
     return 426;
@@ -1204,8 +1208,14 @@ function safeActionErrorCode(message: string): string {
   if (message.includes("entitlement_denied")) {
     return "action_control_plane_entitlement_denied";
   }
+  if (message.startsWith("legacy_review_mutation_blocked:")) {
+    return "legacy_review_mutation_blocked";
+  }
   if (message.includes("codex_rotating_oauth_unavailable")) {
     return "codex_rotating_oauth_unavailable";
+  }
+  if (message.includes("managed_workflow_source_temporarily_unavailable")) {
+    return "workflow_source_temporarily_unavailable";
   }
   if (message.includes("review_execution_checkpoint_unavailable")) {
     return "review_execution_checkpoint_unavailable";
@@ -1273,10 +1283,14 @@ function safeActionErrorMessage(code: string): string {
   switch (code) {
     case "action_control_plane_disabled":
       return "ReviewRouter action control plane is temporarily disabled.";
+    case "legacy_review_mutation_blocked":
+      return "Legacy review mutation is blocked for this repository.";
     case "comment_token_unavailable":
       return "ReviewRouter App comment identity is temporarily unavailable.";
     case "codex_rotating_oauth_unavailable":
       return "Codex OAuth rotating writeback is temporarily unavailable.";
+    case "workflow_source_temporarily_unavailable":
+      return "Managed workflow verification is temporarily unavailable. Retry with a fresh OIDC token.";
     case "review_execution_checkpoint_unavailable":
       return "Review execution checkpoints are temporarily unavailable.";
     case "codex_rotating_lease_not_active":
@@ -1347,6 +1361,7 @@ function isRetryableActionError(code: string): boolean {
     code === "action_control_plane_disabled" ||
     code === "comment_token_unavailable" ||
     code === "codex_rotating_oauth_unavailable" ||
+    code === "workflow_source_temporarily_unavailable" ||
     code === "review_execution_checkpoint_unavailable" ||
     code === "codex_rotating_lease_conflict" ||
     code === "conflict_review_runtime_disabled"

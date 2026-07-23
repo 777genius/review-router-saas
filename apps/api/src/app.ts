@@ -249,6 +249,7 @@ export async function createApiApp(
                   appId: process.env.GITHUB_APP_ID,
                   privateKey: githubAppPrivateKey,
                   expectedApiUrl: resolveReviewRouterPublicApiUrl(),
+                  trustedActionRefs: resolveReviewRouterTrustedActionRefs(),
                 })
               : undefined;
           const codexRotatingOAuth = new PrismaCodexRotatingOAuthRepository(
@@ -308,6 +309,11 @@ export async function createApiApp(
                   reviewRunControlRepositories.repositoryIdentities,
                 mutationAuthorities:
                   reviewRunControlRepositories.mutationAuthorities,
+                ...(codexRotatingGitHubSecretGateway
+                  ? {
+                      workflowSourceVerifier: codexRotatingGitHubSecretGateway,
+                    }
+                  : {}),
               }),
             codexRotatingOAuth,
             codexRotatingReviewSnapshotAccess: codexRotatingOAuth,

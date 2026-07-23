@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  areWorkflowDocumentsSemanticallyEqual,
+  CodexRotatingReviewActionV2Mode,
+  workflowDocumentSemanticSha256,
+} from "@reviewrouter/features-codex-oauth-rotating";
+import {
   analyzeConflictReviewWorkflowCapability,
   analyzeWorkflowProviderCompatibility,
   defaultCodexRotatingWorkflowPath,
@@ -16,6 +21,7 @@ import {
   renderReviewRouterWorkflow,
   renderReviewRouterWorkflowFiles,
   renderCodexRotatingAdvisoryWorkflow,
+  renderCanonicalCodexRotatingInteractionWorkflowV1,
   renderCodexRotatingInteractionWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "../domain/workflow-template";
@@ -100,17 +106,13 @@ describe("renderReviewRouterWorkflow", () => {
       codexRotatingProviderInstanceId: "codex-rotating:123456",
     });
 
-    expect(files).toHaveLength(4);
+    expect(files).toHaveLength(3);
     const codexWorkflow = files[0];
-    const interactionWorkflow = files[3];
+    const interactionWorkflow = files[2];
     expect(codexWorkflow?.path).toBe(defaultCodexRotatingWorkflowPath);
     expect(codexWorkflow?.operation).not.toBe("delete");
     expect(files[1]).toMatchObject({
       path: ".github/workflows/reviewrouter.yml",
-      operation: "delete",
-    });
-    expect(files[2]).toMatchObject({
-      path: ".github/workflows/reviewrouter-interaction.yml",
       operation: "delete",
     });
     expect(interactionWorkflow?.path).toBe(defaultInteractionWorkflowPath);
@@ -171,6 +173,25 @@ describe("renderReviewRouterWorkflow", () => {
     expect(interactionWorkflowContent).not.toContain("OPENAI_API_KEY");
   });
 
+  it("keeps the managed interaction workflow installed in T0 mode", () => {
+    const files = renderReviewRouterWorkflowFiles({
+      actionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      apiUrl: "https://api.reviewrouter.site",
+      runtimeConfigMode: "oidc",
+      codexRotatingProviderInstanceId: "codex-rotating:123456",
+      codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+
+    const interactionWorkflow = files.find(
+      (file) => file.path === defaultInteractionWorkflowPath,
+    );
+    expect(interactionWorkflow).toMatchObject({
+      path: defaultInteractionWorkflowPath,
+    });
+    expect(interactionWorkflow?.operation).not.toBe("delete");
+  });
+
   it("renders optional hybrid provider secret inputs only when configured for rotating Codex workflow", () => {
     const files = renderReviewRouterWorkflowFiles({
       actionRef:
@@ -223,7 +244,6 @@ describe("renderReviewRouterWorkflow", () => {
     expect(files.map((file) => file.path)).toEqual([
       defaultCodexRotatingWorkflowPath,
       defaultWorkflowPath,
-      defaultInteractionWorkflowPath,
       defaultInteractionWorkflowPath,
     ]);
     const codexWorkflow = workflowFileContent(files[0]);
@@ -292,6 +312,22 @@ describe("renderReviewRouterWorkflow", () => {
     expect(workflow).not.toContain("auth-json:");
     expect(workflow).not.toContain("secrets.CODEX_AUTH_JSON");
     expect(workflow).not.toContain("OPENAI_API_KEY");
+    expect(
+      workflowDocumentSemanticSha256(
+        renderCanonicalCodexRotatingInteractionWorkflowV1({
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          apiUrl: "https://reviewrouter.site",
+          runtimeConfigMode: "oidc",
+        }),
+      ),
+    ).toBe("7eeca74a1223227b5820dce022f6f770b18009b90534c9770849b150b55b4518");
+    expect(
+      areWorkflowDocumentsSemanticallyEqual(
+        workflow,
+        workflow.replace("  workflow_dispatch:", "  workflow_dispatch: .nan"),
+      ),
+    ).toBe(false);
   });
 
   it("exports readiness markers for the dedicated rotating Codex workflow", () => {

@@ -3159,6 +3159,41 @@ describe("API app", () => {
     });
   });
 
+  it("returns a retryable error when managed workflow source verification is temporarily unavailable", async () => {
+    const app = await createApiApp({
+      actionControlPlaneDependencies: {
+        repositories: new InMemoryActionRepositories(),
+        oidcVerifier: new StaticActionOidcVerifier(),
+        sessions: new JoseActionSessionTokenService(
+          "0123456789abcdef0123456789abcdef",
+        ),
+        legacyMutationAdmission: {
+          assertLegacyReviewMutationAllowed: async () => {
+            throw new Error("managed_workflow_source_temporarily_unavailable");
+          },
+        },
+        clock: fixedClock,
+        oidcAudience: defaultActionOidcAudience,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/session/exchange",
+      payload: { oidcToken: "opaque-github-oidc-token" },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: {
+        code: "workflow_source_temporarily_unavailable",
+        message:
+          "Managed workflow verification is temporarily unavailable. Retry with a fresh OIDC token.",
+        retryable: true,
+      },
+    });
+  });
+
   it("keeps legacy action endpoints available for current action compatibility", async () => {
     const repositories = new InMemoryActionRepositories();
     repositories.runtimeConfig = openRouterRuntimeReviewConfiguration();

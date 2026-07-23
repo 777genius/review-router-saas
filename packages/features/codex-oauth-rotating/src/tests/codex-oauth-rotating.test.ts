@@ -36,6 +36,10 @@ import {
   validateCodexAuthJsonBytes,
   validateCodexRotatingPrelease,
 } from "../domain/codex-oauth-rotating";
+import {
+  readCanonicalCodexRotatingT0WorkflowSourceMetadata,
+  workflowDocumentSemanticSha256,
+} from "../domain/workflow-source-attestation";
 
 const validAuthJson = JSON.stringify({
   auth_mode: "chatgpt",
@@ -716,6 +720,17 @@ exit 17
       apiUrl: "https://api.reviewrouter.site",
       providerInstanceId: "codex-rotating:1163183284",
     });
+    expect(workflowDocumentSemanticSha256(workflow)).toBe(
+      "83ae0ba1aac0eaa24bbe44599b0e01b09866308fb326eaaa123e86e8fe8c96b8",
+    );
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        workflow.replace("  codex-review:", '  "codex-review":'),
+      ),
+    ).toMatchObject({
+      actionRef: `777genius/review-router@${actionSha}`,
+      workflowSchemaVersion: 1,
+    });
 
     const siblingWriter = `${workflow}
 
@@ -730,6 +745,29 @@ exit 17
     expect(scanCodexRotatingAdvisoryWorkflow(siblingWriter).errors).toContain(
       "t0_job_inventory_invalid",
     );
+
+    const quotedSiblingWriter = `${workflow}
+
+  "unsafe-writer":
+    "runs-on": ubuntu-latest
+    "steps":
+      - "run": echo unsafe
+`;
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(quotedSiblingWriter),
+    ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
+
+    const explicitSiblingWriter = `${workflow}
+
+  ? unsafe-writer
+  :
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo unsafe
+`;
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(explicitSiblingWriter),
+    ).toThrow();
 
     const unexpectedInput = workflow.replace(
       "      runtime_config_mode: oidc",
@@ -758,6 +796,18 @@ exit 17
       valid: true,
       errors: [],
     });
+
+    const futureSchemaWorkflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:1163183284",
+      workflowSchemaVersion: 2,
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(futureSchemaWorkflow),
+    ).toThrow();
 
     const floatingRef = `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main`;
     expect(() =>

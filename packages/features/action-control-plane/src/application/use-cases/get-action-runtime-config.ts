@@ -6,6 +6,8 @@ import {
 import type { Clock } from "@reviewrouter/shared";
 import {
   buildActionConflictReviewRuntimeConfig,
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
   validateActionSessionAgainstRepository,
   type ActionSessionClaims,
   type ActionRuntimeConfigResponse,
@@ -21,8 +23,8 @@ import type { ActionLedgerKeyPort } from "../ports/action-ledger-key-port.js";
 import type { ActionSessionTokenServicePort } from "../ports/action-session-token-service-port.js";
 
 const codexRotatingRuntimeWorkflowPaths = new Set([
-  ".github/workflows/reviewrouter-codex.yml",
-  ".github/workflows/reviewrouter-interaction.yml",
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
 ]);
 
 export type GetActionRuntimeConfigDependencies = {

@@ -1,4 +1,5 @@
 import { App } from "@octokit/app";
+import { managedCodexWorkflowPath } from "@reviewrouter/features-action-control-plane";
 import type {
   ReviewRequestedDispatchGatewayPort,
   ReviewRequestedIntent,
@@ -26,7 +27,7 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
   constructor(
     private readonly prisma: PrismaClient,
     credentials: { readonly appId: string; readonly privateKey: string },
-    private readonly workflowPath = ".github/workflows/reviewrouter-codex.yml",
+    private readonly workflowPath = managedCodexWorkflowPath,
     installations?: InstallationClientPort,
   ) {
     const app = installations ? null : new App(credentials);

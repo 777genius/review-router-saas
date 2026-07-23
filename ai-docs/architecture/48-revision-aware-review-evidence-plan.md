@@ -3543,6 +3543,34 @@ commit/template and its immutable `uses:` target before selecting a registered
 `PublicReusable` release. A caller-controlled or floating `runtime_ref` is
 v2-ineligible.
 
+Legacy Action session exchange is not trusted from workflow path and event name
+alone once repository authority is `v1_draining` or `v2_active`. The API must
+read the managed workflow source at the OIDC-signed `workflow_sha` and compare
+its parsed YAML semantics with the versioned canonical provisioning contract
+before issuing the generic session. Parsing is strict, rejects duplicate keys,
+custom/invalid YAML and aliases, and compares the complete mapping so quoted or
+explicit mapping-key syntax cannot hide executable jobs or steps. Formatting,
+comments, and mapping order are not authority.
+This deliberately does not compare with the moving default-branch head: queued
+runs and reruns remain valid after a newer commit lands, while their exact
+executed revision stays attestable. Missing source verification, non-canonical
+workflow bytes, unregistered immutable Action refs, unmanaged event/path pairs,
+and `paused` authority all fail closed. Interaction admission also verifies the
+canonical Codex T0 workflow from the same repository tree, then derives and
+compares the interaction workflow from that trusted binding.
+
+Canonical contracts are append-only per `workflow_schema_version`. Existing
+schema renderers and their semantic contract fingerprints are immutable; a
+semantic template change requires a new schema version while the prior reader
+remains available for queued runs and reruns.
+
+OIDC replay-nonce consumption, entitlement checks, and exchange rate limiting
+precede the external GitHub source read. Replaying one signed token therefore
+cannot repeatedly spend GitHub API quota. A transient source-read failure does
+not issue a session. OIDC-bearing Action clients disable body-level transport
+retries and may retry only from an application helper that obtains and masks a
+fresh GitHub OIDC token for every attempt.
+
 V2 rollout therefore includes workflow migration, not only server flags:
 
 1. Generated hosted workflows pin the wrapper/runtime target to a full commit SHA.

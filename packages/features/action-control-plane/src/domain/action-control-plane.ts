@@ -10,7 +10,18 @@ import {
   safeConflictReviewDispatchId,
   safeGitHubBranchName,
 } from "@reviewrouter/shared";
+import {
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
+  managedReviewRouterWorkflowPaths,
+} from "@reviewrouter/protocol-review-workflow";
 import { z } from "zod";
+
+export {
+  legacyReviewRouterWorkflowPath,
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
+} from "@reviewrouter/protocol-review-workflow";
 
 export const defaultActionOidcAudience = "reviewrouter";
 export const actionConflictReviewDispatchEventType =
@@ -23,11 +34,25 @@ export const actionConflictReviewPostingSessionAudience =
 export const actionSessionTtlSeconds = 15 * 60;
 export const actionConflictReviewPostingSessionTtlSeconds = 5 * 60;
 export const actionOidcReplayNonceFallbackTtlSeconds = actionSessionTtlSeconds;
-export const allowedWorkflowPaths = [
-  ".github/workflows/reviewrouter.yml",
-  ".github/workflows/reviewrouter-codex.yml",
-  ".github/workflows/reviewrouter-interaction.yml",
-] as const;
+export const allowedWorkflowPaths = managedReviewRouterWorkflowPaths;
+
+export function isManagedV2SessionBootstrapSource(input: {
+  readonly eventName: GitHubActionsOidcClaims["event_name"];
+  readonly workflowPath: string;
+}): boolean {
+  if (
+    input.workflowPath === managedCodexWorkflowPath &&
+    input.eventName === "workflow_dispatch"
+  ) {
+    return true;
+  }
+  return (
+    input.workflowPath === managedInteractionWorkflowPath &&
+    (input.eventName === "issue_comment" ||
+      input.eventName === "pull_request_review_comment" ||
+      input.eventName === "workflow_dispatch")
+  );
+}
 export const trustedReviewRouterReusableWorkflowRefPattern =
   /^777genius\/review-router\/\.github\/workflows\/(?:reviewrouter(?:-interaction)?-reusable\.ya?ml@(refs\/tags\/v1(?:\.[0-9]+\.[0-9]+)?|refs\/heads\/main|[a-fA-F0-9]{40})|reviewrouter-execution-reusable\.ya?ml@[a-fA-F0-9]{40})$/i;
 

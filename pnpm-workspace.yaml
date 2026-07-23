@@ -3,6 +3,7 @@ packages:
   - packages/ui
   - packages/shared
   - packages/protocol-review-action-v2
+  - packages/protocol-review-workflow
   - packages/platform/*
   - packages/features/*
 

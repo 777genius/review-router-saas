@@ -2,18 +2,22 @@ import { App } from "@octokit/app";
 import { request as githubRequest } from "@octokit/request";
 import { createHash } from "node:crypto";
 import {
+  areWorkflowDocumentsSemanticallyEqual,
+  readCanonicalCodexRotatingT0WorkflowSourceMetadata,
   readCodexRotatingWorkflowSourceMetadata,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
+import { renderCanonicalCodexRotatingInteractionWorkflowV1 } from "@reviewrouter/features-workflow-provisioning";
 import { REVIEW_ROUTER_ACTION_REPOSITORY } from "@reviewrouter/platform-config";
-import type {
-  CodexRotatingGitHubSecretTokenIssuerPort,
-  CodexRotatingGitHubSecretWriterPort,
-  CodexRotatingGitHubCheckoutTokenIssuerPort,
-  CodexRotatingWorkflowSourceVerifierPort,
-  CodexRotatingSecretWriteTarget,
+import {
+  managedCodexWorkflowPath,
+  managedInteractionWorkflowPath,
+  type CodexRotatingGitHubSecretTokenIssuerPort,
+  type CodexRotatingGitHubSecretWriterPort,
+  type CodexRotatingGitHubCheckoutTokenIssuerPort,
+  type CodexRotatingWorkflowSourceVerifierPort,
+  type CodexRotatingSecretWriteTarget,
 } from "@reviewrouter/features-action-control-plane";
-
 type InstallationTokenResponse = {
   readonly type?: unknown;
   readonly tokenType?: unknown;
@@ -115,11 +119,13 @@ export class OctokitCodexRotatingGitHubSecretGateway
 {
   private readonly app: App;
   private readonly expectedApiUrl: string;
+  private readonly trustedActionRefs: ReadonlySet<string>;
 
   constructor(options: {
     readonly appId: string;
     readonly privateKey: string;
     readonly expectedApiUrl?: string;
+    readonly trustedActionRefs?: readonly string[];
   }) {
     this.app = new App({
       appId: options.appId,
@@ -127,6 +133,9 @@ export class OctokitCodexRotatingGitHubSecretGateway
     });
     this.expectedApiUrl = normalizeWorkflowApiUrl(
       options.expectedApiUrl ?? "https://api.reviewrouter.site",
+    );
+    this.trustedActionRefs = new Set(
+      (options.trustedActionRefs ?? []).map((ref) => ref.toLowerCase()),
     );
   }
 
@@ -285,6 +294,90 @@ export class OctokitCodexRotatingGitHubSecretGateway
     };
   }
 
+  async verifyManagedV2SessionBootstrapSource(input: {
+    readonly githubInstallationId: string;
+    readonly githubRepositoryId: string;
+    readonly repositoryFullName: string;
+    readonly owner: string;
+    readonly workflowPath: string;
+    readonly workflowSha: string;
+  }): Promise<{ readonly compatible: boolean }> {
+    if (
+      input.workflowPath !== managedCodexWorkflowPath &&
+      input.workflowPath !== managedInteractionWorkflowPath
+    ) {
+      return { compatible: false };
+    }
+    let codexWorkflow: string | null;
+    let claimedWorkflow: string | null;
+    try {
+      const token = await this.mintRepositoryToken({
+        githubInstallationId: input.githubInstallationId,
+        githubRepositoryId: input.githubRepositoryId,
+        permissions: { contents: "read" },
+      });
+      const repo = repoNameFromFullName(input.repositoryFullName);
+      [codexWorkflow, claimedWorkflow] = await Promise.all([
+        this.readWorkflowAtRef({
+          token: token.token,
+          owner: input.owner,
+          repo,
+          path: managedCodexWorkflowPath,
+          ref: input.workflowSha,
+          missingAllowed: true,
+        }),
+        input.workflowPath === managedCodexWorkflowPath
+          ? Promise.resolve(null)
+          : this.readWorkflowAtRef({
+              token: token.token,
+              owner: input.owner,
+              repo,
+              path: input.workflowPath,
+              ref: input.workflowSha,
+              missingAllowed: true,
+            }),
+      ]);
+    } catch {
+      throw new Error("managed_workflow_source_temporarily_unavailable");
+    }
+    if (!codexWorkflow) {
+      return { compatible: false };
+    }
+
+    let metadata;
+    try {
+      metadata =
+        readCanonicalCodexRotatingT0WorkflowSourceMetadata(codexWorkflow);
+    } catch {
+      return { compatible: false };
+    }
+    if (
+      normalizeWorkflowApiUrl(metadata.apiUrl) !== this.expectedApiUrl ||
+      metadata.providerInstanceId !==
+        `codex-rotating:${input.githubRepositoryId}` ||
+      !this.trustedActionRefs.has(metadata.actionRef.toLowerCase())
+    ) {
+      return { compatible: false };
+    }
+    if (input.workflowPath === managedCodexWorkflowPath) {
+      return { compatible: true };
+    }
+    const expectedInteractionWorkflow =
+      renderCanonicalCodexRotatingInteractionWorkflowV1({
+        actionRef: metadata.actionRef,
+        apiUrl: this.expectedApiUrl,
+        runtimeConfigMode: "oidc",
+      });
+    return {
+      compatible:
+        claimedWorkflow !== null &&
+        areWorkflowDocumentsSemanticallyEqual(
+          claimedWorkflow,
+          expectedInteractionWorkflow,
+        ),
+    };
+  }
+
   async inspectReviewV2ManagedWorkflowInventory(input: {
     readonly githubInstallationId: string;
     readonly githubRepositoryId: string;
@@ -294,6 +387,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
     readonly compatible: boolean;
     readonly inventoryHash: string;
     readonly actionCommitSha: string | null;
+    readonly defaultBranchHeadSha: string;
   }> {
     const token = await this.mintRepositoryToken({
       githubInstallationId: input.githubInstallationId,
@@ -301,7 +395,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
       permissions: { contents: "read", pull_requests: "read" },
     });
     const repo = repoNameFromFullName(input.repositoryFullName);
-    const reviewPath = ".github/workflows/reviewrouter-codex.yml";
+    const reviewPath = managedCodexWorkflowPath;
     const legacyPaths = [".github/workflows/reviewrouter.yml"];
     const coverage = await this.resolveReviewInventoryCoverage({
       token: token.token,
@@ -343,10 +437,21 @@ export class OctokitCodexRotatingGitHubSecretGateway
               valid: !reference.isDefault,
               errors: reference.isDefault ? ["review_workflow_missing"] : [],
             };
-        const metadata =
-          scan.valid && reviewWorkflow
-            ? readCodexRotatingWorkflowSourceMetadata(reviewWorkflow)
-            : null;
+        let metadata = null;
+        if (scan.valid && reviewWorkflow) {
+          try {
+            metadata =
+              readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+                reviewWorkflow,
+              );
+          } catch {
+            // Managed T0 inventory only trusts the exact generator output.
+          }
+        }
+        const scanErrors =
+          reviewWorkflow && !metadata
+            ? [...scan.errors, "t0_workflow_source_not_canonical"]
+            : [...scan.errors];
         const immutableT0 =
           reviewWorkflow === null
             ? !reference.isDefault
@@ -375,7 +480,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
             metadata?.actionRef.match(/@([a-f0-9]{40})$/)?.[1] ?? null,
           providerInstanceId: metadata?.providerInstanceId ?? null,
           workflowSchemaVersion: metadata?.workflowSchemaVersion ?? null,
-          scanErrors: [...scan.errors].sort(),
+          scanErrors: [...new Set(scanErrors)].sort(),
           immutableT0,
           legacyPresence,
         };
@@ -397,7 +502,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
         `codex-rotating:${input.githubRepositoryId}` &&
       defaultInventory.workflowSchemaVersion !== null,
     );
-    const interactionPath = ".github/workflows/reviewrouter-interaction.yml";
+    const interactionPath = managedInteractionWorkflowPath;
     const interactionWorkflow = await this.readWorkflowAtRef({
       token: token.token,
       owner: input.owner,
@@ -408,7 +513,8 @@ export class OctokitCodexRotatingGitHubSecretGateway
     });
     const interaction = inspectReviewV2InteractionWorkflow(
       interactionWorkflow,
-      reviewActionCommitSha,
+      defaultInventory.actionRef,
+      this.expectedApiUrl,
     );
     const revalidatedCoverage = await this.resolveReviewInventoryCoverage({
       token: token.token,
@@ -456,6 +562,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
         .update(JSON.stringify(inventory), "utf8")
         .digest("hex"),
       actionCommitSha: reviewActionCommitSha,
+      defaultBranchHeadSha: defaultInventory.headSha,
     };
   }
 
@@ -1027,11 +1134,14 @@ function decodeBranchHead(data: unknown, expectedBranch: string): string {
 
 function inspectReviewV2InteractionWorkflow(
   workflow: string | null,
-  expectedActionCommitSha: string | null,
+  expectedActionRef: string | null,
+  expectedApiUrl: string,
 ) {
+  const expectedActionCommitSha =
+    expectedActionRef?.match(/@([a-f0-9]{40})$/i)?.[1]?.toLowerCase() ?? null;
   if (workflow === null) {
     return {
-      path: ".github/workflows/reviewrouter-interaction.yml",
+      path: managedInteractionWorkflowPath,
       present: false,
       compatible: true,
       actionCommitSha: null,
@@ -1039,55 +1149,24 @@ function inspectReviewV2InteractionWorkflow(
     };
   }
 
-  const errors: string[] = [];
-  const runtimeRefs = [
-    ...workflow.matchAll(
-      /^\s*(RR_RUNTIME_REF|REVIEWROUTER_ACTION_VERSION):\s*["']?([a-f0-9]{40})["']?\s*$/gim,
-    ),
-  ];
-  const runtimeCommitShas = [
-    ...new Set(runtimeRefs.map((match) => match[2]!.toLowerCase())),
-  ];
-  const runtimeEnvNames = new Set(runtimeRefs.map((match) => match[1]!));
-  const checkoutRefs = [
-    ...workflow.matchAll(
-      /^\s*ref:\s*\$\{\{\s*env\.(RR_RUNTIME_REF|REVIEWROUTER_ACTION_VERSION)\s*\}\}\s*$/gm,
-    ),
-  ];
-  const actionCommitSha =
-    runtimeCommitShas.length === 1 ? runtimeCommitShas[0]! : null;
-  if (actionCommitSha === null) {
-    errors.push("interaction_runtime_ref_invalid");
-  } else if (actionCommitSha !== expectedActionCommitSha) {
-    errors.push("interaction_runtime_ref_mismatch");
-  }
-  if (
-    checkoutRefs.length !== 1 ||
-    !runtimeEnvNames.has(checkoutRefs[0]![1]!) ||
-    !/^\s*repository:\s*["']?777genius\/review-router["']?\s*$/m.test(workflow)
-  ) {
-    errors.push("interaction_runtime_checkout_invalid");
-  }
-  if (
-    !/^\s*REVIEWROUTER_RUNTIME_CONFIG_MODE:\s*["']oidc["']\s*$/m.test(workflow)
-  ) {
-    errors.push("interaction_runtime_config_not_oidc");
-  }
-  if (
-    !/^\s*REVIEW_ROUTER_REVIEW_WORKFLOW_FILE:\s*["']reviewrouter-codex\.yml["']\s*$/m.test(
-      workflow,
-    )
-  ) {
-    errors.push("interaction_review_workflow_binding_invalid");
-  }
-  if (!/^\s*id-token:\s*write\s*$/m.test(workflow)) {
-    errors.push("interaction_oidc_permission_missing");
-  }
+  const expectedWorkflow =
+    expectedActionRef && expectedActionCommitSha
+      ? renderCanonicalCodexRotatingInteractionWorkflowV1({
+          actionRef: expectedActionRef,
+          apiUrl: expectedApiUrl,
+          runtimeConfigMode: "oidc",
+        })
+      : null;
+  const errors =
+    expectedWorkflow &&
+    areWorkflowDocumentsSemanticallyEqual(workflow, expectedWorkflow)
+      ? []
+      : ["interaction_workflow_source_mismatch"];
   return {
-    path: ".github/workflows/reviewrouter-interaction.yml",
+    path: managedInteractionWorkflowPath,
     present: true,
     compatible: errors.length === 0,
-    actionCommitSha,
+    actionCommitSha: expectedActionCommitSha,
     errors: errors.sort(),
   };
 }

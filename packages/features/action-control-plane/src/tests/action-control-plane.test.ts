@@ -28,6 +28,7 @@ import type { ActionConflictReviewPostingGatewayPort } from "../application/port
 import type { ActionConflictReviewRuntimeGatePort } from "../application/ports/action-conflict-review-runtime-gate-port.js";
 import type { ActionRateLimitPolicyPort } from "../application/ports/action-rate-limit-policy-port.js";
 import type { ActionSessionTokenServicePort } from "../application/ports/action-session-token-service-port.js";
+import { LegacyReviewMutationOperation } from "../application/ports/legacy-review-mutation-admission-port.js";
 import type {
   GitHubAppCommentTokenIssuerPort,
   IssueGitHubAppCommentTokenInput,
@@ -644,7 +645,7 @@ describe("action control plane", () => {
     });
   });
 
-  it("does not consume the OIDC nonce or sign a new v1 session after legacy admission closes", async () => {
+  it("consumes the OIDC nonce before external legacy admission and never signs a blocked session", async () => {
     const sessions = new StaticSessionTokenService();
     const replayNonces = new InMemoryActionOidcReplayNonceStore();
 
@@ -652,12 +653,22 @@ describe("action control plane", () => {
       exchangeGitHubOidcToken(
         { oidcToken: "oidc", audience: defaultActionOidcAudience },
         {
-          oidcVerifier: new StaticOidcVerifier(githubOidcClaims()),
+          oidcVerifier: new StaticOidcVerifier(
+            githubOidcClaims({ jti: "blocked-session-jti" }),
+          ),
           repositories: new InMemoryActionControlPlaneRepository(),
           sessions,
           replayNonces,
           legacyMutationAdmission: {
-            assertLegacyReviewMutationAllowed: async () => {
+            assertLegacyReviewMutationAllowed: async (input) => {
+              expect(input).toMatchObject({
+                operation: LegacyReviewMutationOperation.SessionExchange,
+                githubInstallationId: "129500385",
+                repositoryOwner: "777genius",
+                eventName: "pull_request",
+                workflowPath: ".github/workflows/reviewrouter.yml",
+                workflowSha: null,
+              });
               throw new Error("legacy_review_mutation_blocked:v1_draining");
             },
           },
@@ -666,7 +677,38 @@ describe("action control plane", () => {
       ),
     ).rejects.toThrow("legacy_review_mutation_blocked:v1_draining");
     expect(sessions.signedClaims).toBeNull();
-    expect(replayNonces.consumed.size).toBe(0);
+    expect(replayNonces.consumed.size).toBe(1);
+  });
+
+  it("rejects a replay before invoking external workflow-source admission", async () => {
+    const replayNonces = new InMemoryActionOidcReplayNonceStore();
+    let admissionCalls = 0;
+    const dependencies = {
+      oidcVerifier: new StaticOidcVerifier(
+        githubOidcClaims({ jti: "replayed-session-jti" }),
+      ),
+      repositories: new InMemoryActionControlPlaneRepository(),
+      sessions: new StaticSessionTokenService(),
+      replayNonces,
+      legacyMutationAdmission: {
+        assertLegacyReviewMutationAllowed: async () => {
+          admissionCalls += 1;
+        },
+      },
+      clock,
+    };
+
+    await exchangeGitHubOidcToken(
+      { oidcToken: "oidc", audience: defaultActionOidcAudience },
+      dependencies,
+    );
+    await expect(
+      exchangeGitHubOidcToken(
+        { oidcToken: "oidc", audience: defaultActionOidcAudience },
+        dependencies,
+      ),
+    ).rejects.toThrow("oidc_replay_detected");
+    expect(admissionCalls).toBe(1);
   });
 
   it("accepts explicit workflow claims when GitHub echoes workflow_ref in job_workflow_ref", async () => {
