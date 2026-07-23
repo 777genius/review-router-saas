@@ -390,9 +390,12 @@ Use this order. Do not combine the steps into one blind configuration update:
    admission requirement disabled.
 3. Install the generated T0 workflow pinned to that full Action SHA. Verify it has
    `workflow_dispatch`, `review_request_id`, `pr_number`, `review_head_sha`, the
-   deterministic run name, and exact-head checkout.
+   deterministic run name, and exact-head checkout. The interaction workflow may
+   remain only when it uses OIDC and is pinned to the same immutable runtime SHA;
+   a stale interaction runtime or a legacy review workflow blocks activation.
 4. Register the immutable producer release/attestation and verify provider vote
-   lane, signing key, GitHub App Actions permission, and workflow dispatch path.
+   lane, signing key, GitHub App `actions: write` permission, installation
+   approval, and workflow dispatch path.
 5. Enable `REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED=1`, then
    `REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED=1`, and prove the worker handles
    both external and internal ingress event versions.

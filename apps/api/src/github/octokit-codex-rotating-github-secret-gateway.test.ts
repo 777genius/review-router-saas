@@ -274,6 +274,79 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     });
   });
 
+  it("accepts an interaction workflow pinned to the same immutable T0 runtime", async () => {
+    const actionSha = "a".repeat(40);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_contents_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { contents: "read" },
+    });
+    mocks.request
+      .mockResolvedValueOnce(fileContent(workflow))
+      .mockRejectedValueOnce({ status: 404 })
+      .mockResolvedValueOnce(
+        fileContent(renderT0InteractionWorkflow(actionSha)),
+      );
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.inspectReviewV2ManagedWorkflowInventory({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+      }),
+    ).resolves.toMatchObject({
+      compatible: true,
+      actionCommitSha: actionSha,
+    });
+  });
+
+  it("rejects an interaction workflow pinned to a different runtime", async () => {
+    const actionSha = "a".repeat(40);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_contents_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { contents: "read" },
+    });
+    mocks.request
+      .mockResolvedValueOnce(fileContent(workflow))
+      .mockRejectedValueOnce({ status: 404 })
+      .mockResolvedValueOnce(
+        fileContent(renderT0InteractionWorkflow("b".repeat(40))),
+      );
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.inspectReviewV2ManagedWorkflowInventory({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+      }),
+    ).resolves.toMatchObject({ compatible: false, actionCommitSha: actionSha });
+  });
+
   it("resolves a pull_request_target scope from the signed workflow run", async () => {
     mocks.auth.mockResolvedValueOnce({
       token: "ghs_actions_read_token",
@@ -429,3 +502,34 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
     expect(mocks.auth).not.toHaveBeenCalled();
   });
 });
+
+function fileContent(workflow: string) {
+  return {
+    data: {
+      type: "file",
+      encoding: "base64",
+      content: Buffer.from(workflow, "utf8").toString("base64"),
+    },
+  };
+}
+
+function renderT0InteractionWorkflow(actionSha: string) {
+  return `name: ReviewRouter Interaction
+
+permissions:
+  actions: write
+  id-token: write
+
+jobs:
+  interaction:
+    env:
+      RR_RUNTIME_REF: "${actionSha}"
+      REVIEWROUTER_RUNTIME_CONFIG_MODE: "oidc"
+      REVIEW_ROUTER_REVIEW_WORKFLOW_FILE: "reviewrouter-codex.yml"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: 777genius/review-router
+          ref: \${{ env.RR_RUNTIME_REF }}
+`;
+}

@@ -52,7 +52,7 @@ const manifest = {
   description:
     "ReviewRouter connects GitHub pull request review setup while reviews run in customer GitHub Actions.",
   default_permissions: {
-    actions: "read",
+    actions: "write",
     checks: "write",
     contents: "write",
     issues: "write",

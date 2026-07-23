@@ -26,7 +26,7 @@ const checkOrgRulesetPermission =
   ).trim() === "1";
 
 const requiredPermissions = {
-  actions: "read",
+  actions: "write",
   checks: "write",
   contents: "write",
   workflows: "write",

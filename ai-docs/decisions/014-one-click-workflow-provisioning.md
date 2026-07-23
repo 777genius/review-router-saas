@@ -31,9 +31,9 @@ the default per-repository setup PR flow.
 `workflows: write` is needed only because ReviewRouter writes `.github/workflows/reviewrouter.yml`. It is not needed for the review engine itself.
 
 `issues: write` is included for PR summary/setup/help conversations when
-App-bot identity or SaaS guidance is used. `actions: write` is not required for
-minimal v1 provisioning. Only add it later behind a specific product feature and
-updated permission copy.
+App-bot identity or SaaS guidance is used. `actions: write` dispatches the
+exact-revision T0 workflow from a durable request intent and reads the returned
+run identity. It must not be used to cancel or mutate unrelated workflows.
 
 ## Rationale
 
