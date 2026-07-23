@@ -5,6 +5,7 @@ import {
 import {
   ProviderExecutionProfile,
   ReviewFindingSeverity,
+  ReviewLifecycleRevalidationVerdict,
   ReviewObservationQualityFlag,
   ReviewObservationStatus,
   ReviewProviderKind,
@@ -24,10 +25,12 @@ import {
   type ReviewRevision,
 } from "./review-evidence-primitives";
 
-export const reviewEvidencePayloadVersion = 1;
+export const reviewEvidencePayloadVersion = 2;
 export const reviewEvidenceMaxPayloadBytes = 512 * 1024;
 export const reviewEvidenceMaxFindings = 200;
 export const reviewEvidenceMaxEvidenceItemsPerFinding = 20;
+export const reviewEvidenceMaxLifecycleRevalidations = 200;
+export const reviewEvidenceMaxLifecycleEvidenceItems = 20;
 export const reviewEvidenceMaxRetainMs = 90 * 24 * 60 * 60 * 1_000;
 
 const maxPathLength = 1_024;
@@ -50,6 +53,23 @@ export type NormalizedReviewFinding = Readonly<{
   startLine: number | null;
   endLine: number | null;
   placementConfidence: number | null;
+  suggestion: string | null;
+}>;
+
+export type NormalizedLifecycleEvidence = Readonly<{
+  path: string;
+  startLine: number | null;
+  endLine: number | null;
+  reason: string;
+}>;
+
+export type NormalizedLifecycleRevalidation = Readonly<{
+  targetId: string;
+  fingerprint: string | null;
+  verdict: ReviewLifecycleRevalidationVerdict;
+  confidence: number | null;
+  evidence: readonly NormalizedLifecycleEvidence[];
+  rationale: string | null;
 }>;
 
 export type SafeProviderUsage = Readonly<{
@@ -61,6 +81,7 @@ export type SafeProviderUsage = Readonly<{
 export type ReviewObservationPayload = Readonly<{
   payloadVersion: typeof reviewEvidencePayloadVersion;
   normalizedFindings: readonly NormalizedReviewFinding[];
+  normalizedLifecycleRevalidations: readonly NormalizedLifecycleRevalidation[];
   safeUsage: SafeProviderUsage;
 }>;
 
@@ -142,11 +163,24 @@ export function prepareReviewObservationPayload(
   if (candidate.normalizedFindings.length > reviewEvidenceMaxFindings) {
     throw new Error("review_evidence_finding_count_exceeded");
   }
+  if (
+    candidate.normalizedLifecycleRevalidations.length >
+    reviewEvidenceMaxLifecycleRevalidations
+  ) {
+    throw new Error("review_evidence_lifecycle_revalidation_count_exceeded");
+  }
   const normalizedFindings = candidate.normalizedFindings.map(normalizeFinding);
+  const normalizedLifecycleRevalidations =
+    candidate.normalizedLifecycleRevalidations.map(
+      normalizeLifecycleRevalidation,
+    );
   const safeUsage = normalizeUsage(candidate.safeUsage);
   const payload = Object.freeze({
     payloadVersion: reviewEvidencePayloadVersion,
     normalizedFindings: Object.freeze(normalizedFindings),
+    normalizedLifecycleRevalidations: Object.freeze(
+      normalizedLifecycleRevalidations,
+    ),
     safeUsage,
   });
   const canonicalBytes = new TextEncoder().encode(
@@ -269,6 +303,13 @@ export function cloneReviewObservation(
           evidence: [...finding.evidence],
         }),
       ),
+      normalizedLifecycleRevalidations:
+        observation.payload.normalizedLifecycleRevalidations.map(
+          (revalidation) => ({
+            ...revalidation,
+            evidence: revalidation.evidence.map((item) => ({ ...item })),
+          }),
+        ),
       safeUsage: { ...observation.payload.safeUsage },
     },
     qualityFlags: [...observation.qualityFlags],
@@ -342,8 +383,15 @@ function normalizeFinding(
   }
   const title = redactSensitiveText(candidate.title);
   const message = redactSensitiveText(candidate.message);
+  const suggestion =
+    candidate.suggestion === null
+      ? null
+      : redactSensitiveText(candidate.suggestion);
   assertBoundedString(title, "finding_title", maxTitleLength);
   assertBoundedString(message, "finding_message", maxMessageLength);
+  if (suggestion !== null) {
+    assertBoundedString(suggestion, "finding_suggestion", maxMessageLength);
+  }
   if (candidate.evidence.length > reviewEvidenceMaxEvidenceItemsPerFinding) {
     throw new Error("finding_evidence_count_exceeded");
   }
@@ -371,7 +419,68 @@ function normalizeFinding(
     ...candidate,
     title,
     message,
+    suggestion,
     evidence: Object.freeze(evidence),
+  });
+}
+
+function normalizeLifecycleRevalidation(
+  candidate: NormalizedLifecycleRevalidation,
+): NormalizedLifecycleRevalidation {
+  assertIdentifier(candidate.targetId, "lifecycle_target_id");
+  if (candidate.fingerprint !== null) {
+    assertBoundedString(
+      candidate.fingerprint,
+      "lifecycle_fingerprint",
+      maxModelLength,
+    );
+  }
+  if (
+    candidate.verdict === ReviewLifecycleRevalidationVerdict.Unknown ||
+    !Object.values(ReviewLifecycleRevalidationVerdict).includes(
+      candidate.verdict,
+    )
+  ) {
+    throw new Error("lifecycle_revalidation_verdict_invalid");
+  }
+  if (
+    candidate.confidence !== null &&
+    (!Number.isFinite(candidate.confidence) ||
+      candidate.confidence < 0 ||
+      candidate.confidence > 1)
+  ) {
+    throw new Error("lifecycle_revalidation_confidence_invalid");
+  }
+  if (
+    candidate.evidence.length > reviewEvidenceMaxLifecycleEvidenceItems
+  ) {
+    throw new Error("lifecycle_revalidation_evidence_count_exceeded");
+  }
+  const evidence = candidate.evidence.map((item) => {
+    assertBoundedString(item.path, "lifecycle_evidence_path", maxPathLength);
+    if (item.path.startsWith("/") || item.path.includes("..")) {
+      throw new Error("lifecycle_evidence_path_invalid");
+    }
+    normalizeLineRange(item.startLine, item.endLine);
+    const reason = redactSensitiveText(item.reason);
+    assertBoundedString(reason, "lifecycle_evidence_reason", maxEvidenceLength);
+    return Object.freeze({ ...item, reason });
+  });
+  const rationale =
+    candidate.rationale === null
+      ? null
+      : redactSensitiveText(candidate.rationale);
+  if (rationale !== null) {
+    assertBoundedString(
+      rationale,
+      "lifecycle_revalidation_rationale",
+      maxMessageLength,
+    );
+  }
+  return Object.freeze({
+    ...candidate,
+    evidence: Object.freeze(evidence),
+    rationale,
   });
 }
 
@@ -417,26 +526,41 @@ function assertSupportedProvider(providerKind: ReviewProviderKind): void {
 function payloadToCanonicalJson(
   payload: ReviewObservationPayload,
 ): CanonicalJsonValue {
-  return [
-    payload.payloadVersion,
-    payload.normalizedFindings.map((finding) => [
-      finding.category,
-      finding.normalizedFailureModeHash,
-      finding.severity,
-      finding.title,
-      finding.message,
-      finding.evidence,
-      finding.path,
-      finding.startLine,
-      finding.endLine,
-      finding.placementConfidence,
-    ]),
-    [
-      payload.safeUsage.inputTokens,
-      payload.safeUsage.outputTokens,
-      payload.safeUsage.totalTokens,
-    ],
-  ];
+  return {
+    normalizedFindings: payload.normalizedFindings.map((finding) => ({
+      category: finding.category,
+      endLine: finding.endLine,
+      evidence: finding.evidence,
+      message: finding.message,
+      normalizedFailureModeHash: finding.normalizedFailureModeHash,
+      path: finding.path,
+      placementConfidence: finding.placementConfidence,
+      severity: finding.severity,
+      startLine: finding.startLine,
+      suggestion: finding.suggestion,
+      title: finding.title,
+    })),
+    normalizedLifecycleRevalidations:
+      payload.normalizedLifecycleRevalidations.map((revalidation) => ({
+        confidence: revalidation.confidence,
+        evidence: revalidation.evidence.map((item) => ({
+          endLine: item.endLine,
+          path: item.path,
+          reason: item.reason,
+          startLine: item.startLine,
+        })),
+        fingerprint: revalidation.fingerprint,
+        rationale: revalidation.rationale,
+        targetId: revalidation.targetId,
+        verdict: revalidation.verdict,
+      })),
+    payloadVersion: payload.payloadVersion,
+    safeUsage: {
+      inputTokens: payload.safeUsage.inputTokens,
+      outputTokens: payload.safeUsage.outputTokens,
+      totalTokens: payload.safeUsage.totalTokens,
+    },
+  };
 }
 
 export function redactSensitiveText(value: string): string {

@@ -1816,6 +1816,7 @@ function reusableObservation(
     payload: {
       payloadVersion: reviewEvidencePayloadVersion,
       normalizedFindings: [],
+      normalizedLifecycleRevalidations: [],
       safeUsage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
     },
     ...overrides,
