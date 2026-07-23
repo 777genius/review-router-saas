@@ -30,6 +30,11 @@ import {
   type ReviewRunControlTestKit,
 } from "@reviewrouter/features-review-run-control/testing";
 import {
+  createReviewRequestedIntent,
+  ReviewRequestedIntentState,
+  ReviewRequestedTriggerKind,
+} from "@reviewrouter/features-review-executions";
+import {
   canonicalizeReviewActionV2Request,
   reviewActionV2GoldenFixtures,
   reviewActionV2PublishedSchemaDigest,
@@ -336,6 +341,86 @@ describe("Review Action v2 run-control composition", () => {
         repo: "example",
         sourceRunId: "1001",
         pullRequestNumberHint: 42,
+      }),
+    ]);
+  });
+
+  it("uses the bound requested intent instead of workflow run PR associations", async () => {
+    const release = await kit.store.findProducerReleaseById("release_v2");
+    if (!release) throw new Error("test_release_missing");
+    const revisionInputs: unknown[] = [];
+    const requestedIntent = {
+      ...createReviewRequestedIntent({
+        workspaceId: "workspace_1",
+        repositoryConnectionId: "repository_1",
+        scmRepositoryIdentityId: "scm-identity-1",
+        pullRequestNumber: facts.pullRequestNumber,
+        requestId: "review-request-1",
+        revision: {
+          baseSha: facts.baseSha,
+          mergeBaseSha: facts.mergeBaseSha,
+          headSha: facts.headSha,
+          reviewRevisionHash: facts.reviewRevisionHash,
+        },
+        triggerKind: ReviewRequestedTriggerKind.ManualCommand,
+        deliveryIdentityHash: hash("7"),
+        canonicalRequestHash: hash("8"),
+        notBefore: new Date("2026-07-22T12:00:00.000Z"),
+        createdAt: new Date("2026-07-22T12:00:00.000Z"),
+        retainUntil: new Date("2026-08-22T12:00:00.000Z"),
+      }),
+      state: ReviewRequestedIntentState.AwaitingAuthorization,
+      sourceRunId: "1001",
+      sourceRunAttempt: "1",
+    };
+    const admissionFacts = createServerOwnedReviewActionV2AdmissionFacts({
+      revisionResolver: {
+        resolve: async (input) => {
+          revisionInputs.push(input);
+          return {
+            status: CanonicalReviewRevisionResolutionStatus.Resolved,
+            pullRequestNumber: facts.pullRequestNumber,
+            baseSha: facts.baseSha,
+            mergeBaseSha: facts.mergeBaseSha,
+            headSha: facts.headSha,
+            reviewRevisionHash: facts.reviewRevisionHash,
+          };
+        },
+      },
+      releaseAttestations: {
+        attest: async () => ({
+          status: ProducerReleaseAttestationStatus.Attested,
+          release,
+        }),
+      },
+      providerVoteLanes: facts.providerVoteLanes,
+      requestedIntents: {
+        findByRepositorySourceRunIdentity: async (input) => {
+          expect(input).toEqual({
+            repositoryConnectionId: "repository_1",
+            sourceRunId: "1001",
+            sourceRunAttempt: "1",
+          });
+          return requestedIntent;
+        },
+      },
+      requestedIntentRequired: true,
+    });
+
+    await expect(
+      admissionFacts.resolve({
+        claims: oidcClaims("bound-intent-jti"),
+        repository: new TestActionRepositories().repository!,
+        scmRepositoryIdentityId: "scm-identity-1",
+      }),
+    ).resolves.toMatchObject({
+      pullRequestNumber: facts.pullRequestNumber,
+      reviewRevisionHash: facts.reviewRevisionHash,
+    });
+    expect(revisionInputs).toEqual([
+      expect.objectContaining({
+        sourceRunId: null,
+        pullRequestNumberHint: facts.pullRequestNumber,
       }),
     ]);
   });
