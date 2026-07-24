@@ -11,6 +11,9 @@ is one-way: after `v2_active`, failure recovery uses `pause`, not a return to v1
 - Authorization and capability key rings are configured.
 - Producer release attestations, provider vote lanes, and projection policy are
   configured without secrets in logs.
+- Context session HMAC and replay key rings are configured on the API. The
+  context gateway policy version and exact committed gateway bundle SHA-256 are
+  configured identically on the API and worker.
 - The production GitHub App registration grants repository `Actions: Read and
 write`, and the target installation has approved that permission update.
   `Workflows: Read and write` is a different permission and does not authorize
@@ -109,3 +112,36 @@ pnpm review-v2:admin mutation pause \
 
 Do not resume until publication reconciliation reports no `stale_visible` or
 `terminal_unknown` outcomes and the resume proof is ready.
+
+## Context-attested cross-revision reuse
+
+Keep context reuse separate from the T0 mutation cutover. After a registered
+Action release has produced accepted confined observations, enable replay in
+shadow mode for one repository:
+
+```bash
+pnpm review-v2:admin cohort context-reuse shadow \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Promote only after replay telemetry shows no stale publications, fencing
+violations, unconfined sessions, or material shadow disagreements:
+
+```bash
+pnpm review-v2:admin cohort context-reuse enable \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Disable attachment for one repository without changing the global enrollment
+gate:
+
+```bash
+pnpm review-v2:admin cohort context-reuse disable \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Prompt-only cross-revision reuse remains disabled. These commands control only
+dependency-attested context-gateway reuse.

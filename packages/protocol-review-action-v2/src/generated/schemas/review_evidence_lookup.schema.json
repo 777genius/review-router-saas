@@ -108,7 +108,7 @@
               "required": ["status"],
               "properties": {
                 "status": {
-                  "enum": ["hit", "shadow", "miss"]
+                  "enum": ["hit", "shadow", "miss", "replay_required"]
                 },
                 "observationId": {
                   "anyOf": [
@@ -276,6 +276,65 @@
                   ]
                 },
                 "sourceOwnerIdHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contextDependencyAttestationId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contextDependencyAttestationHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contextReplayCapability": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32768,
+                      "pattern": "^\\S+$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contextReplayPlanCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contextReplayPlanHash": {
                   "anyOf": [
                     {
                       "type": "string",

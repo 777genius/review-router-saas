@@ -163,6 +163,11 @@ export function observation(
       overrides.executionProfile ?? ProviderExecutionProfile.AgenticUnboundedV1,
     taskKindSet: overrides.taskKindSet ?? [ReviewTaskKind.FindingDiscovery],
   });
+  const contextDependencyAttestationId =
+    sourceManifest.executionProfile ===
+    ProviderExecutionProfile.ContextGatewayV1
+      ? "context-attestation-1"
+      : null;
   return createReviewObservation({
     observationId: "observation-1",
     scope: scope(),
@@ -197,6 +202,9 @@ export function observation(
     findingCount: prepared.findingCount,
     qualityFlags: [ReviewObservationQualityFlag.ProviderWarning],
     transportAttemptCount: 1,
+    contextDependencyAttestationId,
+    contextDependencyAttestationHash:
+      contextDependencyAttestationId === null ? null : hash("7"),
     trustDomain: ReviewTrustDomain.TrustedManaged,
     createdAtMs: nowMs,
     reuseExpiresAtMs: nowMs + 7 * dayMs,

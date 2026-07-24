@@ -19,6 +19,8 @@ const contractSourceProducers = [
   "@reviewrouter/features-review-publishing",
   "@reviewrouter/features-action-control-plane",
 ];
+const contextAttestationPackageDirectory =
+  "packages/features/review-context-attestation";
 
 await bootstrapContractSource();
 if (process.argv.includes("--bootstrap-only")) {
@@ -71,6 +73,35 @@ async function bootstrapContractSource() {
     });
     run("pnpm", ["--filter", packageName, "build:contract-source"]);
   }
+  await rm(
+    join(root, contextAttestationPackageDirectory, "dist/contract-source"),
+    {
+      recursive: true,
+      force: true,
+    },
+  );
+  run("pnpm", [
+    "exec",
+    "tsc",
+    "--ignoreConfig",
+    "--target",
+    "ES2022",
+    "--module",
+    "NodeNext",
+    "--moduleResolution",
+    "NodeNext",
+    "--strict",
+    "--skipLibCheck",
+    "--rootDir",
+    join(root, contextAttestationPackageDirectory, "src"),
+    "--outDir",
+    join(root, contextAttestationPackageDirectory, "dist"),
+    join(
+      root,
+      contextAttestationPackageDirectory,
+      "src/contract-source/index.ts",
+    ),
+  ]);
   run(process.execPath, ["scripts/rewrite-dist-esm-imports.mjs"]);
 }
 

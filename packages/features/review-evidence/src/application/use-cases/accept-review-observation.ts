@@ -9,11 +9,16 @@ import { reviewReuseEligibilityPolicyVersion } from "../../domain/review-reuse-e
 import {
   ReviewObservationQualityFlag,
   ReviewObservationStatus,
+  ProviderExecutionProfile,
   assertEpochMilliseconds,
   assertIdentifier,
   assertSha256,
 } from "../../domain/review-evidence-primitives";
 import type { ClockPort } from "../ports/clock-port";
+import {
+  ContextAttestationVerificationStatus,
+  type AcceptedContextAttestationVerificationPort,
+} from "../ports/context-attestation-verification-port";
 import {
   ReviewExecutionAttemptReportState,
   type ReviewExecutionAttemptFacts,
@@ -54,6 +59,7 @@ export enum AcceptReviewObservationRejectionReason {
   ResultReportWindowExpired = "result_report_window_expired",
   EvidenceWritesDisabled = "evidence_writes_disabled",
   ResultNotReusableSuccess = "result_not_reusable_success",
+  ContextAttestationNotAccepted = "context_attestation_not_accepted",
 }
 
 export type AcceptReviewObservationCommand = Readonly<{
@@ -69,6 +75,8 @@ export type AcceptReviewObservationCommand = Readonly<{
   payload: ReviewObservationPayload;
   qualityFlags: readonly ReviewObservationQualityFlag[];
   transportAttemptCount: number;
+  contextDependencyAttestationId: string | null;
+  contextDependencyAttestationHash: string | null;
 }>;
 
 export type AcceptReviewObservationResult = Readonly<{
@@ -86,6 +94,7 @@ export class AcceptReviewObservation {
       safety: CurrentEvidenceWriteSafetyDecisionPort;
       observations: ReviewObservationCommandPort;
       identities: ReviewObservationIdentityPort;
+      contextAttestations: AcceptedContextAttestationVerificationPort;
       digest: Sha256DigestPort;
       clock: ClockPort;
       reuseTtlMs: number;
@@ -164,6 +173,18 @@ export class AcceptReviewObservation {
       preparedPayload.canonicalBytes,
     );
     assertSha256(payloadHash, "payload_hash");
+    const attestationAccepted = await verifyContextAttestation(
+      this.dependencies.contextAttestations,
+      facts,
+      command,
+      payloadHash,
+      nowMs,
+    );
+    if (!attestationAccepted) {
+      return rejected(
+        AcceptReviewObservationRejectionReason.ContextAttestationNotAccepted,
+      );
+    }
     const observation = createReviewObservation({
       observationId: this.dependencies.identities.nextObservationId(),
       scope: facts.scope,
@@ -198,6 +219,9 @@ export class AcceptReviewObservation {
       findingCount: preparedPayload.findingCount,
       qualityFlags: command.qualityFlags,
       transportAttemptCount: command.transportAttemptCount,
+      contextDependencyAttestationId: command.contextDependencyAttestationId,
+      contextDependencyAttestationHash:
+        command.contextDependencyAttestationHash,
       trustDomain: facts.trustDomain,
       createdAtMs: nowMs,
       reuseExpiresAtMs: nowMs + this.dependencies.reuseTtlMs,
@@ -233,6 +257,55 @@ export class AcceptReviewObservation {
         });
     }
   }
+}
+
+async function verifyContextAttestation(
+  attestations: AcceptedContextAttestationVerificationPort,
+  facts: ReviewExecutionAttemptFacts,
+  command: AcceptReviewObservationCommand,
+  terminalOutcomeHash: string,
+  nowMs: number,
+): Promise<boolean> {
+  const hasId = command.contextDependencyAttestationId !== null;
+  const hasHash = command.contextDependencyAttestationHash !== null;
+  if (hasId !== hasHash) return false;
+  if (facts.executionProfile !== ProviderExecutionProfile.ContextGatewayV1) {
+    return !hasId;
+  }
+  if (
+    command.contextDependencyAttestationId === null ||
+    command.contextDependencyAttestationHash === null
+  ) {
+    return false;
+  }
+  assertIdentifier(
+    command.contextDependencyAttestationId,
+    "context_dependency_attestation_id",
+  );
+  assertSha256(
+    command.contextDependencyAttestationHash,
+    "context_dependency_attestation_hash",
+  );
+  const decision = await attestations.verifyAcceptedAttestation({
+    attestationId: command.contextDependencyAttestationId,
+    attestationHash: command.contextDependencyAttestationHash,
+    sourceExecutionId: facts.sourceExecutionId,
+    sourceWorkSlotId: facts.sourceWorkSlotId,
+    attemptId: facts.attemptId,
+    sourceLeaseId: facts.sourceLeaseId,
+    sourceFencingToken: facts.sourceFencingToken,
+    sourceRevision: facts.revision,
+    executionProfile: facts.executionProfile,
+    trustedCapabilityProfile: facts.trustedCapabilityProfile,
+    actualModel: command.actualModel,
+    terminalOutcomeHash,
+    nowMs,
+  });
+  return (
+    decision.status === ContextAttestationVerificationStatus.Accepted &&
+    decision.acceptedAttestationHash ===
+      command.contextDependencyAttestationHash
+  );
 }
 
 function matchesReportAuthority(

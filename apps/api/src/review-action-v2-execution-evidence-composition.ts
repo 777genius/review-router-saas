@@ -21,11 +21,11 @@ import {
 } from "@reviewrouter/features-review-evidence";
 import type { ReturnTypeOfReviewEvidenceComposition } from "./review-action-v2-execution-evidence-types.js";
 import {
+  AcquireOrJoinInvocationFlightStatus,
   CurrentReviewExecutionRevisionStatus,
   ReviewExecutionFinalizeStatus,
   ReviewExecutionLifecycleTransitionStatus,
   ReviewExecutionProviderKind,
-  ReviewInvocationLeaseAcquireStatus,
   ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
   ReviewInvocationLeaseTransitionStatus,
@@ -85,6 +85,7 @@ import type {
   ReviewActionV2ReusableAttachmentAuthority,
   VerifiedReviewActionV2LeaseCapability,
 } from "./review-action-v2-execution-evidence-capabilities.js";
+import type { ReviewActionV2ContextReplayCoordinatorPort } from "./review-action-v2-context-attestation-composition.js";
 
 export interface ReviewActionV2AuthorizationResolverPort {
   resolveReviewRunAuthorizationToken(input: {
@@ -160,12 +161,14 @@ export type ReviewActionV2ExecutionHandlerDependencies = CommonDependencies &
     observations: ReviewObservationQueryPort;
     leaseSafety: ReviewActionV2LeaseSafetyPort;
     finalizationFacts: ReviewActionV2FinalizationFactsPort;
+    contextReplay: ReviewActionV2ContextReplayCoordinatorPort;
   }>;
 
 export type ReviewActionV2EvidenceHandlerDependencies = CommonDependencies &
   Readonly<{
     evidence: ReturnTypeOfReviewEvidenceComposition;
     observations: ReviewObservationQueryPort;
+    contextReplay: ReviewActionV2ContextReplayCoordinatorPort;
   }>;
 
 export function composeReviewActionV2ExecutionRoutes(input: {
@@ -465,7 +468,7 @@ async function acquireLease(
   const limits = await executionLimits(authorization, d);
   const now = d.now();
   const identity = await d.capabilities.prepareIdentity();
-  const result = await d.executions.invocationLeases.acquire({
+  const result = await d.executions.invocationFlights.execute({
     scope: executionScope,
     executionId: request.executionId,
     workSlotId: request.workSlotId,
@@ -503,11 +506,28 @@ async function acquireLease(
     retainUntil: add(now, d.timing.retentionDurationMs),
     limits,
   });
-  if (!result.lease)
+  if (
+    result.status !== AcquireOrJoinInvocationFlightStatus.OwnerAcquired &&
+    result.status !== AcquireOrJoinInvocationFlightStatus.OwnerRestored &&
+    result.status !== AcquireOrJoinInvocationFlightStatus.TakenOver
+  ) {
     return {
       statusCode: 200 as const,
-      result: { status: mapLeaseAcquire(result.status) },
+      result: { status: mapInvocationFlightAcquire(result.status) },
     };
+  }
+  if (!result.flight) throw new Error("review_invocation_flight_owner_missing");
+  const lease = await d.executionQueries.findLease(result.flight.ownerLeaseId);
+  if (
+    !lease ||
+    lease.leaseId !== result.flight.ownerLeaseId ||
+    lease.executionId !== result.flight.executionId ||
+    lease.workSlotId !== result.flight.workSlotId ||
+    lease.fencingToken !== result.flight.fencingToken ||
+    lease.state !== ReviewInvocationLeaseState.Active
+  ) {
+    throw new Error("review_invocation_flight_owner_lease_invalid");
+  }
   try {
     await requireCurrentExecutionRevision(
       { scope: executionScope, executionId: request.executionId },
@@ -515,31 +535,29 @@ async function acquireLease(
     );
   } catch (error) {
     await d.executions.invocationLeases.release({
-      leaseId: result.lease.leaseId,
-      ownerIdHash: result.lease.ownerIdHash,
-      leaseCapabilityId: result.lease.leaseCapabilityId,
-      fencingToken: result.lease.fencingToken,
+      leaseId: lease.leaseId,
+      ownerIdHash: lease.ownerIdHash,
+      leaseCapabilityId: lease.leaseCapabilityId,
+      fencingToken: lease.fencingToken,
       now: d.now(),
     });
     throw error;
   }
-  const leaseCapability = await d.capabilities.issueLease(
-    result.lease,
-    scopeHash,
-  );
+  const leaseCapability = await d.capabilities.issueLease(lease, scopeHash);
   return {
     statusCode:
-      result.status === ReviewInvocationLeaseAcquireStatus.Acquired
+      result.status === AcquireOrJoinInvocationFlightStatus.OwnerAcquired ||
+      result.status === AcquireOrJoinInvocationFlightStatus.TakenOver
         ? (201 as const)
         : (200 as const),
     result: {
-      status: mapLeaseAcquire(result.status),
-      leaseId: result.lease.leaseId,
-      attemptId: result.lease.attemptId,
+      status: mapInvocationFlightAcquire(result.status),
+      leaseId: lease.leaseId,
+      attemptId: lease.attemptId,
       leaseCapability,
-      fencingToken: result.lease.fencingToken.toString(10),
-      expiresAt: result.lease.expiresAt.toISOString(),
-      resultReportUntil: result.lease.resultReportUntil.toISOString(),
+      fencingToken: lease.fencingToken.toString(10),
+      expiresAt: lease.expiresAt.toISOString(),
+      resultReportUntil: lease.resultReportUntil.toISOString(),
     },
   };
 }
@@ -727,38 +745,50 @@ async function attachObservation(
       "attachment_plan_mismatch",
     );
     assertAttachmentRequest(request, reusable);
-    const revalidated = await d.evidence.lookupReviewEvidence.execute({
-      scope: toEvidenceScope(
-        authorization,
-        await authorizationScopeHash(authorization, d.digest),
-      ),
-      revision: toEvidenceRevision(authorization),
-      planHash: reusable.targetPlanHash,
-      executionId: reusable.targetExecutionId,
-      manifest: reusable.manifest,
-      manifestKey: reusable.manifestKey,
-      providerInvocationKey: reusable.providerInvocationKey,
-      providerVoteIdentityHash: reusable.providerVoteIdentityHash,
-      trustDomain: reusable.trustDomain,
-    });
     if (
-      revalidated.status !== LookupReviewEvidenceStatus.Hit ||
-      !revalidated.selected?.canAttach ||
-      revalidated.selected.observation.observationId !==
-        reusable.observationId ||
-      revalidated.selected.reuseSafetyDecisionHash !==
-        reusable.reuseSafetyDecisionHash ||
-      reuseAttachmentKind(
-        revalidated.selected.eligibility,
-        revalidated.selected.tier,
-      ) !== reusable.attachmentKind ||
-      revalidated.selected.observation.sourceExecutionId === request.executionId
+      reusable.attachmentKind ===
+      ReviewObservationAttachmentKind.ContextGatewayCrossRevisionReuse
     ) {
-      throw failure(
-        412,
-        ReviewActionV2ProtocolErrorCode.StalePrecondition,
-        "attachment_policy_stale",
-      );
+      if (
+        !(await d.contextReplay.verifyAttachment({
+          authorization,
+          snapshot,
+          authority: reusable,
+        }))
+      ) {
+        throw attachmentPolicyStale();
+      }
+    } else {
+      const revalidated = await d.evidence.lookupReviewEvidence.execute({
+        scope: toEvidenceScope(
+          authorization,
+          await authorizationScopeHash(authorization, d.digest),
+        ),
+        revision: toEvidenceRevision(authorization),
+        planHash: reusable.targetPlanHash,
+        executionId: reusable.targetExecutionId,
+        manifest: reusable.manifest,
+        manifestKey: reusable.manifestKey,
+        providerInvocationKey: reusable.providerInvocationKey,
+        providerVoteIdentityHash: reusable.providerVoteIdentityHash,
+        trustDomain: reusable.trustDomain,
+      });
+      if (
+        revalidated.status !== LookupReviewEvidenceStatus.Hit ||
+        !revalidated.selected?.canAttach ||
+        revalidated.selected.observation.observationId !==
+          reusable.observationId ||
+        revalidated.selected.reuseSafetyDecisionHash !==
+          reusable.reuseSafetyDecisionHash ||
+        reuseAttachmentKind(
+          revalidated.selected.eligibility,
+          revalidated.selected.tier,
+        ) !== reusable.attachmentKind ||
+        revalidated.selected.observation.sourceExecutionId ===
+          request.executionId
+      ) {
+        throw attachmentPolicyStale();
+      }
     }
     const result = await d.executions.observationAttachments.attachReusable({
       scope: toExecutionScope(authorization),
@@ -1075,6 +1105,7 @@ async function finalizeExecution(
     { scope: executionScope, executionId: request.executionId },
     d,
   );
+  await d.contextReplay.assertCurrentPolicy({ authorization, snapshot });
   const projection = parseCanonicalJson(
     request.projectionEnvelopeCanonicalJson,
     "projection_envelope_invalid",
@@ -1243,6 +1274,35 @@ async function lookupEvidence(
     };
   }
   const observation = selected.observation;
+  if (
+    result.status === LookupReviewEvidenceStatus.Shadow &&
+    observation.sourceExecutionId !== request.executionId
+  ) {
+    const replay = await d.contextReplay.prepareReplay({
+      authorization,
+      snapshot,
+      workSlotId: request.workSlotId,
+      manifest,
+      manifestKey: request.manifestKey,
+      providerInvocationKey: request.providerInvocationKey,
+      providerVoteIdentityHash: request.providerVoteIdentityHash,
+      trustDomain,
+      observation,
+    });
+    if (replay) {
+      return {
+        statusCode: 200 as const,
+        result: {
+          status: ReviewEvidenceLookupResultStatus.ReplayRequired,
+          ...lookupObservationFields(observation),
+          reuseSafetyDecisionHash: selected.reuseSafetyDecisionHash,
+          eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+          ...replay,
+          denialReasons: result.denialReasons,
+        },
+      };
+    }
+  }
   let adoptionSourceLease: ReviewInvocationLease | null = null;
   if (observation.sourceExecutionId === request.executionId) {
     adoptionSourceLease = await d.executionQueries.findLease(
@@ -1320,14 +1380,7 @@ async function lookupEvidence(
     statusCode: 200 as const,
     result: {
       status: mapLookup(result.status),
-      observationId: observation.observationId,
-      payloadHash: observation.payloadHash,
-      payloadCanonicalJson: canonicalPayload(observation),
-      byteCount: observation.byteCount,
-      findingCount: observation.findingCount,
-      actualModel: observation.actualModel,
-      qualityFlags: observation.qualityFlags,
-      transportAttemptCount: observation.transportAttemptCount,
+      ...lookupObservationFields(observation),
       attachmentCapability,
       attachmentKind,
       reuseSafetyDecisionHash: selected.reuseSafetyDecisionHash,
@@ -1339,6 +1392,19 @@ async function lookupEvidence(
       denialReasons: result.denialReasons,
     },
   };
+}
+
+function lookupObservationFields(observation: ReviewObservation) {
+  return {
+    observationId: observation.observationId,
+    payloadHash: observation.payloadHash,
+    payloadCanonicalJson: canonicalPayload(observation),
+    byteCount: observation.byteCount,
+    findingCount: observation.findingCount,
+    actualModel: observation.actualModel,
+    qualityFlags: observation.qualityFlags,
+    transportAttemptCount: observation.transportAttemptCount,
+  } as const;
 }
 
 async function commitEvidence(
@@ -1395,6 +1461,8 @@ async function commitEvidence(
       enumValue(ReviewObservationQualityFlag, flag, "quality_flag_invalid"),
     ),
     transportAttemptCount: request.transportAttemptCount,
+    contextDependencyAttestationId: request.contextDependencyAttestationId,
+    contextDependencyAttestationHash: request.contextDependencyAttestationHash,
   });
   return {
     statusCode:
@@ -1984,17 +2052,24 @@ function mapCommit(
       return ReviewEvidenceCommitResultStatus.Conflict;
   }
 }
-function mapLeaseAcquire(status: ReviewInvocationLeaseAcquireStatus) {
+function mapInvocationFlightAcquire(
+  status: AcquireOrJoinInvocationFlightStatus,
+) {
   switch (status) {
-    case ReviewInvocationLeaseAcquireStatus.Acquired:
+    case AcquireOrJoinInvocationFlightStatus.OwnerAcquired:
+    case AcquireOrJoinInvocationFlightStatus.TakenOver:
       return ReviewInvocationLeaseResultStatus.Acquired;
-    case ReviewInvocationLeaseAcquireStatus.Restored:
+    case AcquireOrJoinInvocationFlightStatus.OwnerRestored:
       return ReviewInvocationLeaseResultStatus.Restored;
-    case ReviewInvocationLeaseAcquireStatus.Busy:
+    case AcquireOrJoinInvocationFlightStatus.Joined:
+    case AcquireOrJoinInvocationFlightStatus.Busy:
+    case AcquireOrJoinInvocationFlightStatus.CrossRevisionJoinForbidden:
       return ReviewInvocationLeaseResultStatus.Busy;
-    case ReviewInvocationLeaseAcquireStatus.Missing:
+    case AcquireOrJoinInvocationFlightStatus.Missing:
       return ReviewInvocationLeaseResultStatus.Missing;
-    default:
+    case AcquireOrJoinInvocationFlightStatus.AttemptBudgetExhausted:
+    case AcquireOrJoinInvocationFlightStatus.NotRunnable:
+    case AcquireOrJoinInvocationFlightStatus.IdempotencyConflict:
       return ReviewInvocationLeaseResultStatus.Rejected;
   }
 }
@@ -2051,6 +2126,14 @@ function assertAttachmentRequest(
     r.eligibilityPolicyVersion,
     a.eligibilityPolicyVersion,
     "attachment_policy_mismatch",
+  );
+}
+
+function attachmentPolicyStale(): ReviewActionV2RouteFailure {
+  return failure(
+    412,
+    ReviewActionV2ProtocolErrorCode.StalePrecondition,
+    "attachment_policy_stale",
   );
 }
 function assertAdoptionSourceLease(

@@ -22,6 +22,8 @@
         "schemaValidated",
         "fullyConsumed",
         "actualModel",
+        "contextDependencyAttestationId",
+        "contextDependencyAttestationHash",
         "payloadCanonicalJson",
         "payloadHash",
         "qualityFlags",
@@ -100,6 +102,30 @@
           "minLength": 1,
           "maxLength": 1024
         },
+        "contextDependencyAttestationId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextDependencyAttestationHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "payloadCanonicalJson": {
           "type": "string",
           "minLength": 2
@@ -123,7 +149,45 @@
           "type": "integer",
           "minimum": 1
         }
-      }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "contextDependencyAttestationId",
+                "contextDependencyAttestationHash"
+              ],
+              "properties": {
+                "contextDependencyAttestationId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                },
+                "contextDependencyAttestationHash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            {
+              "required": [
+                "contextDependencyAttestationId",
+                "contextDependencyAttestationHash"
+              ],
+              "properties": {
+                "contextDependencyAttestationId": {
+                  "type": "null"
+                },
+                "contextDependencyAttestationHash": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "oneOf": [

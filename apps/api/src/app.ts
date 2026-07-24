@@ -15,11 +15,13 @@ import {
   type RegisterActionControlPlaneRoutesDependencies,
 } from "@reviewrouter/features-action-control-plane";
 import {
+  registerReviewContextAttestationV2Routes,
   registerReviewEvidenceV2Routes,
   registerReviewExecutionV2Routes,
   registerReviewPublicationRequestV2Routes,
   registerReviewRunControlV2Routes,
   registerReviewSnapshotReadV2Routes,
+  type RegisterReviewContextAttestationV2RoutesDependencies,
   type RegisterReviewEvidenceV2RoutesDependencies,
   type RegisterReviewExecutionV2RoutesDependencies,
   type RegisterReviewPublicationRequestV2RoutesDependencies,
@@ -131,6 +133,7 @@ export type CreateApiAppOptions = {
   readonly reviewRunControlV2Enabled?: boolean;
   readonly reviewActionV2Env?: Readonly<Record<string, string | undefined>>;
   readonly reviewExecutionV2Dependencies?: RegisterReviewExecutionV2RoutesDependencies;
+  readonly reviewContextAttestationV2Dependencies?: RegisterReviewContextAttestationV2RoutesDependencies;
   readonly reviewEvidenceV2Dependencies?: RegisterReviewEvidenceV2RoutesDependencies;
   readonly reviewSnapshotReadV2Dependencies?: RegisterReviewSnapshotReadV2RoutesDependencies;
   readonly reviewPublicationRequestV2Dependencies?: RegisterReviewPublicationRequestV2RoutesDependencies;
@@ -412,6 +415,7 @@ export async function createApiApp(
     !options.reviewRunControlV2Dependencies &&
     !options.reviewRunControlV2HandlerDependencies &&
     !options.reviewExecutionV2Dependencies &&
+    !options.reviewContextAttestationV2Dependencies &&
     !options.reviewEvidenceV2Dependencies &&
     !options.reviewSnapshotReadV2Dependencies &&
     !options.reviewPublicationRequestV2Dependencies &&
@@ -448,6 +452,16 @@ export async function createApiApp(
     disabledReviewActionV2RuntimeDependencies;
   if (reviewExecutionV2Dependencies) {
     await registerReviewExecutionV2Routes(app, reviewExecutionV2Dependencies);
+  }
+  const reviewContextAttestationV2Dependencies =
+    options.reviewContextAttestationV2Dependencies ??
+    productionReviewActionV2Dependencies?.contextAttestation ??
+    disabledReviewActionV2RuntimeDependencies;
+  if (reviewContextAttestationV2Dependencies) {
+    await registerReviewContextAttestationV2Routes(
+      app,
+      reviewContextAttestationV2Dependencies,
+    );
   }
   const reviewEvidenceV2Dependencies =
     options.reviewEvidenceV2Dependencies ??

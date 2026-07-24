@@ -195,6 +195,9 @@ function toCreateInput(
     findingCount: observation.findingCount,
     qualityFlagsJson: observation.qualityFlags,
     transportAttemptCount: observation.transportAttemptCount,
+    contextDependencyAttestationId: observation.contextDependencyAttestationId,
+    contextDependencyAttestationHash:
+      observation.contextDependencyAttestationHash,
     createdAt: new Date(observation.createdAtMs),
     reuseExpiresAt: new Date(observation.reuseExpiresAtMs),
     retainUntil: new Date(observation.retainUntilMs),
@@ -247,6 +250,8 @@ function toDomain(record: ReviewEvidenceObservationRecord): ReviewObservation {
     findingCount: record.findingCount,
     qualityFlags: decodeQualityFlags(record.qualityFlagsJson),
     transportAttemptCount: record.transportAttemptCount,
+    contextDependencyAttestationId: record.contextDependencyAttestationId,
+    contextDependencyAttestationHash: record.contextDependencyAttestationHash,
     trustDomain: fromPrismaTrustDomain(record.trustDomain),
     createdAtMs: record.createdAt.getTime(),
     reuseExpiresAtMs: record.reuseExpiresAt.getTime(),

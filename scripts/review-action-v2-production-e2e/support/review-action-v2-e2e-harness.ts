@@ -61,6 +61,13 @@ import {
 } from "../../../packages/protocol-review-action-v2/src/index.js";
 import { exportJWK, SignJWT } from "jose";
 import {
+  reviewActionV2ContextGatewayBinaryHashEnv,
+  reviewActionV2ContextGatewayPolicyVersionEnv,
+  reviewActionV2ContextReplayActiveKeyIdEnv,
+  reviewActionV2ContextReplayKeysEnv,
+  reviewActionV2ContextSessionSecretEnv,
+} from "../../../apps/api/src/review-action-v2-context-attestation-composition.js";
+import {
   composeReviewActionV2ProductionRoutes,
   reviewActionV2CapabilityActiveKeyIdEnv,
   reviewActionV2CapabilityKeysEnv,
@@ -423,6 +430,8 @@ export class ReviewActionV2E2EHarness {
         schemaValidated: true,
         fullyConsumed: true,
         actualModel: "gpt-5-codex",
+        contextDependencyAttestationId: null,
+        contextDependencyAttestationHash: null,
         payloadCanonicalJson,
         payloadHash,
         qualityFlags: [],
@@ -642,6 +651,10 @@ export class ReviewActionV2E2EHarness {
         schemaValidated: true,
         fullyConsumed: true,
         actualModel: observation.actualModel,
+        contextDependencyAttestationId:
+          observation.contextDependencyAttestationId,
+        contextDependencyAttestationHash:
+          observation.contextDependencyAttestationHash,
         payloadCanonicalJson: canonicalJson(observation.payloadJson),
         payloadHash: observation.payloadHash,
         qualityFlags: [],
@@ -1269,6 +1282,7 @@ function productionEnv(input: {
   readonly protocolLimitsProfileId: string;
   readonly operationalSloProfileId: string;
 }): Readonly<Record<string, string>> {
+  const contextReplayKeyId = "review-v2-e2e-context-key";
   const signingKeys = JSON.stringify([
     {
       keyId: capabilityKeyId,
@@ -1305,6 +1319,18 @@ function productionEnv(input: {
     [reviewActionV2ProjectionPolicyVersionEnv]: projectionPolicyVersion,
     [reviewActionV2CapabilityActiveKeyIdEnv]: capabilityKeyId,
     [reviewActionV2CapabilityKeysEnv]: signingKeys,
+    [reviewActionV2ContextSessionSecretEnv]: Buffer.from(
+      "s".repeat(32),
+    ).toString("base64"),
+    [reviewActionV2ContextReplayActiveKeyIdEnv]: contextReplayKeyId,
+    [reviewActionV2ContextReplayKeysEnv]: JSON.stringify([
+      {
+        keyId: contextReplayKeyId,
+        secretBase64: Buffer.from("r".repeat(32)).toString("base64"),
+      },
+    ]),
+    [reviewActionV2ContextGatewayPolicyVersionEnv]: "e2e-gateway-policy-v1",
+    [reviewActionV2ContextGatewayBinaryHashEnv]: "f".repeat(64),
     [reviewV2WorkerEnabledEnv]: "1",
     REVIEW_ROUTER_REVIEW_V2_COMPLETION_CLAIM_MS: "1000",
     REVIEW_ROUTER_REVIEW_V2_PUBLICATION_CLAIM_MS: "1000",

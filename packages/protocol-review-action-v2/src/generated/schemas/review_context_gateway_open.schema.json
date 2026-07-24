@@ -1,0 +1,917 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reviewrouter.site/schemas/action/v2/review-action.json/review_context_gateway_open",
+  "title": "review_context_gateway_open request and response",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "schemaDigest",
+        "requestId",
+        "authorizationToken",
+        "leaseCapability",
+        "idempotencyKey",
+        "requestBodyHash",
+        "attemptId",
+        "sourceLeaseId",
+        "fencingToken",
+        "sourceExecutionId",
+        "sourceWorkSlotId",
+        "sourceReviewRevisionHash",
+        "checkoutTreeOid",
+        "gatewayPolicyVersion",
+        "gatewayBinaryHash",
+        "confinementEvidenceHash"
+      ],
+      "properties": {
+        "protocolVersion": {
+          "const": "2"
+        },
+        "schemaDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "authorizationToken": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "pattern": "^\\S+$"
+        },
+        "leaseCapability": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "pattern": "^\\S+$"
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "requestBodyHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "attemptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "sourceLeaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "fencingToken": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "sourceExecutionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "sourceWorkSlotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "sourceReviewRevisionHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "checkoutTreeOid": {
+          "type": "string",
+          "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+        },
+        "gatewayPolicyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+        },
+        "gatewayBinaryHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "confinementEvidenceHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "result"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "result": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status"],
+              "properties": {
+                "status": {
+                  "enum": ["opened", "idempotent", "denied", "conflict"]
+                },
+                "sessionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "eventChainSeedHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "gatewaySessionSecret": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32768,
+                      "pattern": "^\\S+$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sealCapability": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32768,
+                      "pattern": "^\\S+$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "expiresAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "invalid_request"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "invalid_authentication"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "forbidden"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "capability_disabled"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "not_found"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "idempotency_conflict"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "resource_gone"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "stale_precondition"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "limit_exceeded"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "invariant_violation"
+                },
+                "retryClass": {
+                  "const": "never"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "capacity_limited"
+                },
+                "retryClass": {
+                  "const": "same_request"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocolVersion",
+            "schemaDigest",
+            "requestId",
+            "serverTime",
+            "error"
+          ],
+          "properties": {
+            "protocolVersion": {
+              "const": "2"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "serverTime": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "error": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["errorCode", "retryClass", "details"],
+              "properties": {
+                "errorCode": {
+                  "const": "ambiguous_outcome"
+                },
+                "retryClass": {
+                  "const": "same_request"
+                },
+                "details": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["issues"],
+                  "properties": {
+                    "issues": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

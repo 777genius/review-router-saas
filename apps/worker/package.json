@@ -13,6 +13,7 @@
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-review-execution-checkpoints": "workspace:*",
+    "@reviewrouter/features-review-evidence": "workspace:*",
     "@reviewrouter/features-review-executions": "workspace:*",
     "@reviewrouter/features-review-processes": "workspace:*",
     "@reviewrouter/features-review-publishing": "workspace:*",

@@ -148,12 +148,28 @@ try {
         'ReviewPublicationExternalEffectV2_owned_object_unique'
       )) AS review_v2_partial_owner_indexes,
       (SELECT count(*) FROM "ReviewSafetyEmergencyControl" WHERE "policyScope" = 'global' AND "stopped" = true) AS review_v2_global_stop,
-      (SELECT count(*) FROM pg_constraint WHERE conname LIKE 'Review%_fkey' AND NOT convalidated) AS review_v2_pending_fk_validation;
+      (SELECT count(*) FROM pg_constraint WHERE conname LIKE 'Review%_fkey' AND NOT convalidated) AS review_v2_pending_fk_validation,
+      (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN (
+        'ReviewContextGatewaySession', 'ReviewContextDependencyAttestation',
+        'ReviewContextReplayMaterial', 'ReviewContextTargetReplayProof'
+      )) AS review_context_attestation_tables,
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ReviewEvidenceObservation' AND column_name IN (
+        'contextDependencyAttestationId', 'contextDependencyAttestationHash'
+      )) AS review_context_evidence_columns,
+      (SELECT count(*) FROM pg_constraint WHERE conname = 'ReviewEvidenceObservation_context_dependency_pair' AND convalidated) AS review_context_evidence_pair_guard,
+      (SELECT count(*) FROM pg_constraint WHERE conname IN (
+        'ReviewContextDependencyAttestation_sessionId_fkey',
+        'ReviewEvidenceObservation_contextDependencyAttestationId_fkey',
+        'ReviewContextReplayMaterial_sessionId_fkey',
+        'ReviewContextReplayMaterial_attestationId_fkey',
+        'ReviewContextTargetReplayProof_sourceAttestationId_fkey'
+      ) AND convalidated) AS review_context_attestation_fks;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
   if (
-    output !== "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43"
+    output !==
+    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5"
   ) {
     console.error(output);
     fail("Migrated schema invariants failed");

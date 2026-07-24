@@ -8,6 +8,7 @@ import {
   inspectEnvironment,
   parseArguments,
   reviewV2CohortEmergencyInitialization,
+  reviewV2CohortOperationForCommand,
   reviewV2CohortRolloutModes,
   serializeOperatorCliJson,
 } from "./review-action-v2-operator-cli";
@@ -74,7 +75,7 @@ describe("review action v2 operator CLI", () => {
     });
   });
 
-  it("stages only T0 capabilities and keeps deferred reuse disabled", () => {
+  it("stages only T0 capabilities and promotes context reuse independently", () => {
     const t0Capabilities = [
       ReviewSafetyCapability.RunAuthorizationV2,
       ReviewSafetyCapability.EvidenceWritesV2,
@@ -95,22 +96,65 @@ describe("review action v2 operator CLI", () => {
     ] as const;
     for (const capability of deferredCapabilities) {
       expect(reviewV2CohortRolloutModes(capability)).toBeNull();
-      expect(
-        reviewV2CohortRolloutModes(capability, "disable-cross-revision-reuse"),
-      ).toEqual({
-        global: ReviewSafetyRolloutMode.Disabled,
-        repository: ReviewSafetyRolloutMode.Disabled,
-      });
     }
     for (const capability of t0Capabilities) {
       expect(
-        reviewV2CohortRolloutModes(capability, "disable-cross-revision-reuse"),
+        reviewV2CohortRolloutModes(capability, "enable-context-reuse"),
       ).toBeNull();
     }
+    expect(
+      reviewV2CohortRolloutModes(
+        ReviewSafetyCapability.ContextGatewayReuse,
+        "shadow-context-reuse",
+      ),
+    ).toEqual({
+      global: ReviewSafetyRolloutMode.Allowlisted,
+      repository: ReviewSafetyRolloutMode.Shadow,
+    });
+    expect(
+      reviewV2CohortRolloutModes(
+        ReviewSafetyCapability.ContextGatewayReuse,
+        "enable-context-reuse",
+      ),
+    ).toEqual({
+      global: ReviewSafetyRolloutMode.Allowlisted,
+      repository: ReviewSafetyRolloutMode.Enabled,
+    });
+    expect(
+      reviewV2CohortRolloutModes(
+        ReviewSafetyCapability.ContextGatewayReuse,
+        "disable-context-reuse",
+      ),
+    ).toEqual({
+      global: null,
+      repository: ReviewSafetyRolloutMode.Disabled,
+    });
+    expect(
+      reviewV2CohortRolloutModes(
+        ReviewSafetyCapability.PromptOnlyReuse,
+        "enable-context-reuse",
+      ),
+    ).toBeNull();
 
     expect([...t0Capabilities, ...deferredCapabilities].sort()).toEqual(
       Object.values(ReviewSafetyCapability).sort(),
     );
+  });
+
+  it("maps only explicit context reuse rollout commands", () => {
+    expect(
+      reviewV2CohortOperationForCommand("cohort context-reuse shadow"),
+    ).toBe("shadow-context-reuse");
+    expect(
+      reviewV2CohortOperationForCommand("cohort context-reuse enable"),
+    ).toBe("enable-context-reuse");
+    expect(
+      reviewV2CohortOperationForCommand("cohort context-reuse disable"),
+    ).toBe("disable-context-reuse");
+    expect(reviewV2CohortOperationForCommand("cohort stage")).toBe("stage-t0");
+    expect(
+      reviewV2CohortOperationForCommand("cohort context-reuse enabled"),
+    ).toBeNull();
   });
 
   it("initializes missing emergency controls without clearing existing stops", () => {

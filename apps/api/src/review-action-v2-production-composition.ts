@@ -1,10 +1,12 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
+import { App } from "@octokit/app";
 import {
   JoseGitHubActionsOidcTokenVerifier,
   PrismaActionControlPlaneRepository,
 } from "@reviewrouter/features-action-control-plane";
 import type {
+  RegisterReviewContextAttestationV2RoutesDependencies,
   RegisterReviewEvidenceV2RoutesDependencies,
   RegisterReviewExecutionV2RoutesDependencies,
   RegisterReviewPublicationRequestV2RoutesDependencies,
@@ -26,6 +28,8 @@ import {
   type CurrentReviewReusePolicyPort,
   type ReviewExecutionAttemptFactsPort,
 } from "@reviewrouter/features-review-evidence";
+import { VerifyAcceptedContextAttestation } from "@reviewrouter/features-review-context-attestation";
+import { PrismaContextAttestationStore } from "@reviewrouter/features-review-context-attestation/composition";
 import {
   PrismaReviewObservationStore,
   createReviewEvidenceUseCases,
@@ -91,6 +95,14 @@ import {
 import { ReviewActionV2ProtocolErrorCode } from "@reviewrouter/protocol-review-action-v2";
 import { SystemClock } from "@reviewrouter/shared";
 import { ReviewActionV2ExecutionEvidenceCapabilityAdapter } from "./review-action-v2-execution-evidence-capabilities.js";
+import { ReviewContextAttestationEvidenceAdapter } from "./review-context-attestation-evidence-adapter.js";
+import {
+  composeReviewActionV2ContextAttestationRoutes,
+  createReviewActionV2ContextReplayCoordinator,
+  readReviewActionV2ContextCrypto,
+  reviewActionV2ContextGatewayBinaryHashEnv,
+  reviewActionV2ContextGatewayPolicyVersionEnv,
+} from "./review-action-v2-context-attestation-composition.js";
 import {
   composeReviewActionV2EvidenceRoutes,
   composeReviewActionV2ExecutionRoutes,
@@ -131,6 +143,7 @@ type ReviewActionV2RouteRuntime = Pick<
 export type ReviewActionV2ProductionRoutes = Readonly<{
   runControl: RegisterReviewRunControlV2RoutesDependencies;
   execution: RegisterReviewExecutionV2RoutesDependencies;
+  contextAttestation: RegisterReviewContextAttestationV2RoutesDependencies;
   evidence: RegisterReviewEvidenceV2RoutesDependencies;
   snapshot: RegisterReviewSnapshotReadV2RoutesDependencies;
   publication: RegisterReviewPublicationRequestV2RoutesDependencies;
@@ -245,6 +258,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
     return Object.freeze({
       runControl: input.runtime,
       execution: input.runtime,
+      contextAttestation: input.runtime,
       evidence: input.runtime,
       snapshot: input.runtime,
       publication: input.runtime,
@@ -326,6 +340,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
     currentRevision,
     executionQueries: executionStore,
     executionCommands: executionStore,
+    invocationFlightQueries: executionStore,
     requestedIntentQueries: requestedIntentStore,
     requestedIntentCommands: requestedIntentStore,
     digest,
@@ -335,9 +350,21 @@ export function composeReviewActionV2ProductionRoutes(input: {
   });
 
   const observationStore = new PrismaReviewObservationStore(input.prisma);
+  const contextAttestationStore = new PrismaContextAttestationStore(
+    input.prisma,
+  );
+  const contextAttestationVerifier = new VerifyAcceptedContextAttestation({
+    store: contextAttestationStore,
+    clock: { nowMs: () => clock.now().getTime() },
+  });
   const safety = new ProductionReviewActionV2SafetyAdapter(
     runControl.safetyResolver,
   );
+  const reusePolicy = new ProductionReviewReusePolicyAdapter({
+    safety: runControl.safetyResolver,
+    releases: repositories.producerReleases,
+    digest,
+  });
   const evidence = createReviewEvidenceUseCases({
     attempts: new ProductionReviewExecutionAttemptFactsAdapter({
       executions: executionStore,
@@ -347,15 +374,14 @@ export function composeReviewActionV2ProductionRoutes(input: {
       clock,
     }),
     writeSafety: safety,
-    reusePolicy: new ProductionReviewReusePolicyAdapter({
-      safety: runControl.safetyResolver,
-      releases: repositories.producerReleases,
-      digest,
-    }),
+    reusePolicy,
     observationCommands: observationStore,
     observationQueries: observationStore,
     pruner: observationStore,
     identities: { nextObservationId: () => `observation-${randomUUID()}` },
+    contextAttestations: new ReviewContextAttestationEvidenceAdapter(
+      contextAttestationVerifier,
+    ),
     digest,
     clock: { nowMs: () => clock.now().getTime() },
     reuseTtlMs: productionTiming.evidenceReuseTtlMs,
@@ -369,6 +395,64 @@ export function composeReviewActionV2ProductionRoutes(input: {
     "reviewrouter-review-action-v2",
     randomUUID,
   );
+  const contextCrypto = readReviewActionV2ContextCrypto(input.env);
+  const contextAttestationHandlers = {
+    authorizations: runControl.authorizations,
+    executionQueries: executionStore,
+    observations: observationStore,
+    reusePolicy,
+    store: contextAttestationStore,
+    cipher: contextCrypto.cipher,
+    capabilities,
+    digest,
+    checkoutTrees: new ProductionReviewActionV2CheckoutTreeResolver({
+      prisma,
+      githubAppId,
+      githubAppPrivateKey,
+    }),
+    producerReleases: {
+      async resolve({ producerReleaseId }: { producerReleaseId: string }) {
+        const release =
+          await repositories.producerReleases.findProducerReleaseById(
+            producerReleaseId,
+          );
+        return release?.state === ProducerReleaseState.Registered
+          ? {
+              capabilityProfile: release.capabilityProfile,
+              runtimeCommitSha: release.runtimeCommitSha,
+            }
+          : null;
+      },
+    },
+    now: () => clock.now(),
+    nextId: (kind: "gateway_session" | "attestation" | "replay_proof") =>
+      `${kind}-${randomUUID()}`,
+    sessionSecretKey: contextCrypto.sessionSecretKey,
+    config: {
+      gatewayPolicyVersion: requiredEnv(
+        input.env,
+        reviewActionV2ContextGatewayPolicyVersionEnv,
+      ),
+      gatewayBinaryHash: requiredEnv(
+        input.env,
+        reviewActionV2ContextGatewayBinaryHashEnv,
+      ),
+      sessionLifetimeMs: 20 * 60 * 1_000,
+      reuseTtlMs: productionTiming.evidenceReuseTtlMs,
+      replayProofLifetimeMs: 10 * 60 * 1_000,
+      replayCapabilityLifetimeMs: 10 * 60 * 1_000,
+      attachmentCapabilityLifetimeMs:
+        executionTiming.attachmentCapabilityDurationMs,
+    },
+  } as const;
+  const contextReplay = createReviewActionV2ContextReplayCoordinator(
+    contextAttestationHandlers,
+  );
+  const contextAttestation = composeReviewActionV2ContextAttestationRoutes({
+    enabled: true,
+    runtime: input.runtime,
+    handlers: contextAttestationHandlers,
+  });
   const common = {
     authorizations: runControl.authorizations,
     executionQueries: executionStore,
@@ -424,6 +508,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
         privateKey: githubAppPrivateKey,
       }),
     ),
+    contextPolicy: contextReplay,
     now: () => clock.now(),
   });
 
@@ -442,6 +527,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
         evidence,
         observations: observationStore,
         leaseSafety: safety,
+        contextReplay,
         finalizationFacts: new ProductionFinalizationFactsAdapter({
           projectionPolicyVersion,
           safety: runControl.safetyResolver,
@@ -450,6 +536,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
         }),
       },
     }),
+    contextAttestation,
     evidence: composeReviewActionV2EvidenceRoutes({
       enabled: true,
       runtime: input.runtime,
@@ -457,6 +544,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
         ...common,
         evidence,
         observations: observationStore,
+        contextReplay,
       },
     }),
     snapshot: snapshotPublication.snapshot,
@@ -492,6 +580,70 @@ class ProductionReviewActionV2Digest {
 
   async digest(value: Uint8Array): Promise<string> {
     return createHash("sha256").update(value).digest("hex");
+  }
+}
+
+class ProductionReviewActionV2CheckoutTreeResolver {
+  private readonly app: App;
+
+  constructor(
+    private readonly dependencies: Readonly<{
+      prisma: PrismaClient;
+      githubAppId: string;
+      githubAppPrivateKey: string;
+    }>,
+  ) {
+    this.app = new App({
+      appId: dependencies.githubAppId,
+      privateKey: dependencies.githubAppPrivateKey,
+    });
+  }
+
+  async resolveCheckoutTreeOid(
+    authorization: ReviewRunAuthorization,
+  ): Promise<string | null> {
+    const repository =
+      await this.dependencies.prisma.repositoryConnection.findFirst({
+        where: {
+          id: authorization.repositoryConnectionId,
+          workspaceId: authorization.workspaceId,
+          scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+          provider: "github",
+          selected: true,
+          archived: false,
+        },
+        include: { installation: true },
+      });
+    if (
+      !repository?.installation ||
+      repository.installation.status !== "active"
+    ) {
+      return null;
+    }
+    const octokit = await this.app.getInstallationOctokit(
+      Number(repository.installation.githubInstallationId),
+    );
+    try {
+      const response = await octokit.request(
+        "GET /repos/{owner}/{repo}/git/commits/{commit_sha}",
+        {
+          owner: repository.owner,
+          repo: repository.name,
+          commit_sha: authorization.headSha,
+        },
+      );
+      const data = response.data as {
+        readonly sha?: unknown;
+        readonly tree?: { readonly sha?: unknown };
+      };
+      return data.sha === authorization.headSha &&
+        typeof data.tree?.sha === "string" &&
+        /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(data.tree.sha)
+        ? data.tree.sha
+        : null;
+    } catch {
+      return null;
+    }
   }
 }
 

@@ -33,6 +33,7 @@ import {
   type ReviewObservationAttachmentResult,
   type SupersedeReviewExecutionCommand,
 } from "../../application/ports/review-execution-ports";
+import type { InvocationFlightQueryPort } from "../../application/ports/invocation-flight-ports";
 import {
   createEmptyReviewExecutionStream,
   reviewExecutionAbsoluteMaxWorkSlots,
@@ -76,6 +77,10 @@ import {
   type ObservationFacts,
 } from "../../domain/review-execution-transitions";
 import {
+  restoreInvocationFlight,
+  type InvocationFlight,
+} from "../../domain/invocation-flight";
+import {
   artifactFromRecord,
   attachmentKindToPrisma,
   coverageStateToPrisma,
@@ -101,7 +106,8 @@ export class PrismaReviewExecutionStore
   implements
     ReviewExecutionQueryPort,
     ReviewExecutionCommandPort,
-    ReviewExecutionPrunerPort
+    ReviewExecutionPrunerPort,
+    InvocationFlightQueryPort
 {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -155,6 +161,52 @@ export class PrismaReviewExecutionStore
       where: { attemptId },
     });
     return record === null ? null : leaseToDomain(record);
+  }
+
+  async observeActiveInvocationFlightByLane(input: {
+    readonly providerVoteIdentityHash: string;
+    readonly requestedAt: Date;
+  }): Promise<Readonly<{ flight: InvocationFlight | null; observedAt: Date }>> {
+    return this.prisma.$transaction(async (transaction) => {
+      const observedAt = await databaseNow(transaction);
+      const incumbents = await transaction.reviewInvocationLeaseV2.findMany({
+        where: {
+          providerVoteIdentityHash: input.providerVoteIdentityHash,
+          purpose: leasePurposeToPrisma(
+            ReviewInvocationLeasePurpose.ProviderExecution,
+          ),
+          state: PrismaLeaseState.active,
+        },
+        orderBy: { leaseId: "asc" },
+        take: 2,
+      });
+      if (incumbents.length > 1) {
+        throw new Error("review_provider_lane_invariant_violated");
+      }
+      const record = incumbents[0];
+      if (record === undefined) return { flight: null, observedAt };
+      const executionRecord = await transaction.reviewExecutionV2.findUnique({
+        where: { executionId: record.executionId },
+      });
+      if (executionRecord === null) {
+        throw new Error("invocation_flight_owner_execution_missing");
+      }
+      const execution = await loadExecution(transaction, executionRecord);
+      const slot = execution.workSlots.find(
+        (candidate) => candidate.workSlotId === record.workSlotId,
+      );
+      if (slot === undefined) {
+        throw new Error("invocation_flight_owner_slot_missing");
+      }
+      return {
+        flight: restoreInvocationFlight({
+          execution,
+          slot,
+          lease: leaseToDomain(record),
+        }),
+        observedAt,
+      };
+    });
   }
 
   async prepareExecution(command: PrepareReviewExecutionCommand) {

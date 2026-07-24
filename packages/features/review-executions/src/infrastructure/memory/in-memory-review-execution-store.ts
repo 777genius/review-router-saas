@@ -18,6 +18,7 @@ import type {
   ReviewObservationAttachmentResult,
   SupersedeReviewExecutionCommand,
 } from "../../application/ports/review-execution-ports";
+import type { InvocationFlightQueryPort } from "../../application/ports/invocation-flight-ports";
 import {
   ReviewExecutionAdmissionStatus,
   ReviewExecutionAdmissionVerdict,
@@ -71,6 +72,10 @@ import {
   decideReusableObservationAttachment,
   type ObservationFacts,
 } from "../../domain/review-execution-transitions";
+import {
+  restoreInvocationFlight,
+  type InvocationFlight,
+} from "../../domain/invocation-flight";
 import { MonotonicBigIntFencingTokenSource } from "./monotonic-bigint-fencing-token-source";
 
 type StreamRecord = {
@@ -83,7 +88,8 @@ export class InMemoryReviewExecutionStore
   implements
     ReviewExecutionQueryPort,
     ReviewExecutionCommandPort,
-    ReviewExecutionPrunerPort
+    ReviewExecutionPrunerPort,
+    InvocationFlightQueryPort
 {
   private readonly streams = new Map<string, StreamRecord>();
   private readonly executionScope = new Map<string, string>();
@@ -148,6 +154,42 @@ export class InMemoryReviewExecutionStore
       (candidate) => candidate.attemptId === attemptId,
     );
     return lease ? cloneLease(lease) : null;
+  }
+
+  async observeActiveInvocationFlightByLane(input: {
+    readonly providerVoteIdentityHash: string;
+    readonly requestedAt: Date;
+  }): Promise<Readonly<{ flight: InvocationFlight | null; observedAt: Date }>> {
+    await this.transactionTail;
+    const incumbents = [...this.leases.values()]
+      .filter(
+        (candidate) =>
+          candidate.providerVoteIdentityHash ===
+            input.providerVoteIdentityHash &&
+          candidate.purpose ===
+            ReviewInvocationLeasePurpose.ProviderExecution &&
+          candidate.state === ReviewInvocationLeaseState.Active,
+      )
+      .sort((left, right) => left.leaseId.localeCompare(right.leaseId));
+    if (incumbents.length > 1) {
+      throw new Error("review_provider_lane_invariant_violated");
+    }
+    const lease = incumbents[0];
+    if (lease === undefined) {
+      return { flight: null, observedAt: new Date(input.requestedAt) };
+    }
+    const record = this.recordForExecution(lease.executionId);
+    const execution = record?.executions.get(lease.executionId);
+    const slot = execution?.workSlots.find(
+      (candidate) => candidate.workSlotId === lease.workSlotId,
+    );
+    if (execution === undefined || slot === undefined) {
+      throw new Error("invocation_flight_owner_aggregate_missing");
+    }
+    return {
+      flight: restoreInvocationFlight({ execution, slot, lease }),
+      observedAt: new Date(input.requestedAt),
+    };
   }
 
   async prepareExecution(command: PrepareReviewExecutionCommand) {

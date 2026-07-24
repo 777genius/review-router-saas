@@ -87,7 +87,7 @@ describe("ReviewReuseEligibilityPolicy", () => {
     });
   });
 
-  it("allows T1 only for an exact prompt-only manifest across revisions", () => {
+  it("denies T1 because the legacy prompt-only profile does not prove confinement", () => {
     const promptManifest = manifest({
       executionProfile: ProviderExecutionProfile.PromptOnlyEnvelopeV1,
     });
@@ -106,10 +106,10 @@ describe("ReviewReuseEligibilityPolicy", () => {
     );
 
     expect(decision).toMatchObject({
-      eligibility: ReuseEligibility.PromptOnlyCrossRevision,
+      eligibility: ReuseEligibility.DeniedExecutionProfile,
       tier: ReviewReuseTier.T1PromptOnlyCrossRevision,
-      reason: ReviewReuseDenialReason.None,
-      canAttach: true,
+      reason: ReviewReuseDenialReason.PromptOnlyConfinementNotProven,
+      canAttach: false,
     });
   });
 
@@ -131,7 +131,7 @@ describe("ReviewReuseEligibilityPolicy", () => {
     });
   });
 
-  it("denies T1 when any lifecycle work or live-state input is bundled", () => {
+  it("denies the legacy prompt-only profile before considering lifecycle input", () => {
     const lifecycleManifest = manifest({
       executionProfile: ProviderExecutionProfile.PromptOnlyEnvelopeV1,
       taskKindSet: [
@@ -157,7 +157,7 @@ describe("ReviewReuseEligibilityPolicy", () => {
 
     expect(decision).toMatchObject({
       tier: ReviewReuseTier.T1PromptOnlyCrossRevision,
-      reason: ReviewReuseDenialReason.LifecycleTaskPresent,
+      reason: ReviewReuseDenialReason.PromptOnlyConfinementNotProven,
       canAttach: false,
     });
   });
@@ -249,24 +249,25 @@ describe("ReviewReuseEligibilityPolicy", () => {
     ).toBe(true);
   });
 
-  it("returns shadow candidates without attachment authority", () => {
-    const promptManifest = manifest({
-      executionProfile: ProviderExecutionProfile.PromptOnlyEnvelopeV1,
+  it("returns T2 shadow candidates without attachment authority", () => {
+    const gatewayManifest = manifest({
+      executionProfile: ProviderExecutionProfile.ContextGatewayV1,
     });
     const decision = decideReviewReuseEligibility(
       observation({
-        executionProfile: ProviderExecutionProfile.PromptOnlyEnvelopeV1,
+        executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+        qualityFlags: [],
       }),
       target({
         revision: revision({
           headSha: gitSha("d"),
           reviewRevisionHash: hash("0"),
         }),
-        manifest: promptManifest,
+        manifest: gatewayManifest,
         safetyDecision: {
           evidenceReuseMode: ReviewReuseEffectMode.Enabled,
-          promptOnlyReuseMode: ReviewReuseEffectMode.Shadow,
-          contextGatewayReuseMode: ReviewReuseEffectMode.Disabled,
+          promptOnlyReuseMode: ReviewReuseEffectMode.Disabled,
+          contextGatewayReuseMode: ReviewReuseEffectMode.Shadow,
           safetyDecisionHash: hash("f"),
         },
       }),
@@ -274,7 +275,7 @@ describe("ReviewReuseEligibilityPolicy", () => {
 
     expect(decision).toMatchObject({
       eligibility: ReuseEligibility.CandidateOnly,
-      reason: ReviewReuseDenialReason.PromptOnlyReuseShadow,
+      reason: ReviewReuseDenialReason.ContextGatewayReuseShadow,
       canAttach: false,
       reuseSafetyDecisionHash: null,
     });

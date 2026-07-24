@@ -109,6 +109,35 @@ const commonReadErrors = [
   "service_unavailable",
 ] as const;
 
+const contextGatewayOpenErrors = [
+  "invalid_request",
+  "invalid_authentication",
+  "forbidden",
+  "capability_disabled",
+  "not_found",
+  "idempotency_conflict",
+  "resource_gone",
+  "stale_precondition",
+  "limit_exceeded",
+  "invariant_violation",
+  "capacity_limited",
+  "ambiguous_outcome",
+] as const;
+
+const contextAttestationCommitErrors = [
+  "invalid_request",
+  "invalid_authentication",
+  "forbidden",
+  "capability_disabled",
+  "not_found",
+  "idempotency_conflict",
+  "resource_gone",
+  "stale_precondition",
+  "limit_exceeded",
+  "invariant_violation",
+  "ambiguous_outcome",
+] as const;
+
 export const reviewActionV2TransportContract = Object.freeze({
   contractSourceVersion: 1,
   protocolVersion: "2",
@@ -319,12 +348,36 @@ export const reviewActionV2TransportContract = Object.freeze({
             commonCommandErrors,
           ],
           [
+            "review_context_gateway_open",
+            "/api/action/v2/review-context/gateway/open",
+            10_000,
+            65_536,
+            [200, 201],
+            contextGatewayOpenErrors,
+          ],
+          [
+            "review_context_gateway_seal",
+            "/api/action/v2/review-context/gateway/seal",
+            15_000,
+            4_194_304,
+            [200, 201],
+            contextAttestationCommitErrors,
+          ],
+          [
             "review_evidence_lookup",
             "/api/action/v2/review-evidence/lookup",
             5_000,
             262_144,
             [200],
             commonReadErrors,
+          ],
+          [
+            "review_context_replay_commit",
+            "/api/action/v2/review-context/replay/commit",
+            15_000,
+            4_194_304,
+            [200, 201],
+            contextAttestationCommitErrors,
           ],
           [
             "review_evidence_commit",

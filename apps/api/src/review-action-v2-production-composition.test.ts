@@ -7,6 +7,13 @@ import {
 import { describe, expect, it } from "vitest";
 import { createApiApp } from "./app.js";
 import {
+  reviewActionV2ContextGatewayBinaryHashEnv,
+  reviewActionV2ContextGatewayPolicyVersionEnv,
+  reviewActionV2ContextReplayActiveKeyIdEnv,
+  reviewActionV2ContextReplayKeysEnv,
+  reviewActionV2ContextSessionSecretEnv,
+} from "./review-action-v2-context-attestation-composition.js";
+import {
   assertReviewIntentRolloutConfiguration,
   composeReviewActionV2ProductionRoutes,
   reviewActionV2CapabilityActiveKeyIdEnv,
@@ -31,6 +38,7 @@ describe("Review Action v2 production composition", () => {
     ).toEqual({
       runControl: runtime,
       execution: runtime,
+      contextAttestation: runtime,
       evidence: runtime,
       snapshot: runtime,
       publication: runtime,
@@ -65,6 +73,11 @@ describe("Review Action v2 production composition", () => {
     reviewActionV2ProjectionPolicyVersionEnv,
     reviewActionV2CapabilityActiveKeyIdEnv,
     reviewActionV2CapabilityKeysEnv,
+    reviewActionV2ContextSessionSecretEnv,
+    reviewActionV2ContextReplayActiveKeyIdEnv,
+    reviewActionV2ContextReplayKeysEnv,
+    reviewActionV2ContextGatewayPolicyVersionEnv,
+    reviewActionV2ContextGatewayBinaryHashEnv,
   ])("fails enabled composition when %s is absent", (name) => {
     const env = { ...productionEnv(), [name]: undefined };
     expect(() =>
@@ -91,6 +104,11 @@ describe("Review Action v2 production composition", () => {
     expect(routes.execution.acquireLease?.capabilityEnabled).toBe(true);
     expect(routes.execution.adoptObservation?.capabilityEnabled).toBe(true);
     expect(routes.execution.finalize?.capabilityEnabled).toBe(true);
+    expect(routes.contextAttestation.openGateway?.capabilityEnabled).toBe(true);
+    expect(routes.contextAttestation.sealGateway?.capabilityEnabled).toBe(true);
+    expect(routes.contextAttestation.commitReplay?.capabilityEnabled).toBe(
+      true,
+    );
     expect(routes.evidence.lookup?.capabilityEnabled).toBe(true);
     expect(routes.evidence.commit?.capabilityEnabled).toBe(true);
     expect(routes.snapshot.restore?.capabilityEnabled).toBe(true);
@@ -178,6 +196,18 @@ function productionEnv(): Record<string, string> {
     [reviewActionV2ProjectionPolicyVersionEnv]: "current-review-v1",
     [reviewActionV2CapabilityActiveKeyIdEnv]: "active-v2",
     [reviewActionV2CapabilityKeysEnv]: signingKeys,
+    [reviewActionV2ContextSessionSecretEnv]: Buffer.from(
+      "h".repeat(32),
+    ).toString("base64"),
+    [reviewActionV2ContextReplayActiveKeyIdEnv]: "context-v1",
+    [reviewActionV2ContextReplayKeysEnv]: JSON.stringify([
+      {
+        keyId: "context-v1",
+        secretBase64: Buffer.from("r".repeat(32)).toString("base64"),
+      },
+    ]),
+    [reviewActionV2ContextGatewayPolicyVersionEnv]: "gateway-policy-v1",
+    [reviewActionV2ContextGatewayBinaryHashEnv]: "9".repeat(64),
   };
 }
 

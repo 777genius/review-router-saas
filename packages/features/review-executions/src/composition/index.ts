@@ -6,10 +6,12 @@ import type {
   ReviewExecutionQueryPort,
   Sha256DigestPort,
 } from "../application/ports/review-execution-ports";
+import type { InvocationFlightQueryPort } from "../application/ports/invocation-flight-ports";
 import type {
   ReviewRequestedIntentCommandPort,
   ReviewRequestedIntentQueryPort,
 } from "../application/ports/review-requested-intent-ports";
+import { AcquireOrJoinInvocationFlight } from "../application/use-cases/acquire-or-join-invocation-flight";
 import {
   FinalizeReviewExecution,
   ReviewExecutionLifecycleService,
@@ -25,6 +27,7 @@ export type ReviewExecutionsCompositionDependencies = Readonly<{
   currentRevision: CurrentReviewRevisionPort;
   executionQueries: ReviewExecutionQueryPort;
   executionCommands: ReviewExecutionCommandPort;
+  invocationFlightQueries: InvocationFlightQueryPort;
   requestedIntentQueries: ReviewRequestedIntentQueryPort;
   requestedIntentCommands: ReviewRequestedIntentCommandPort;
   digest: Sha256DigestPort;
@@ -34,6 +37,7 @@ export type ReviewExecutionsCompositionDependencies = Readonly<{
 
 export type ReviewExecutionsComposition = Readonly<{
   startReviewExecution: StartReviewExecution;
+  invocationFlights: AcquireOrJoinInvocationFlight;
   invocationLeases: ReviewInvocationLeaseService;
   observationAttachments: ReviewObservationAttachmentService;
   finalizeReviewExecution: FinalizeReviewExecution;
@@ -58,6 +62,11 @@ export function createReviewExecutionsUseCases(
         commands: dependencies.requestedIntentCommands,
         required: dependencies.requestedIntentAdmissionRequired === true,
       },
+    ),
+    invocationFlights: new AcquireOrJoinInvocationFlight(
+      dependencies.invocationFlightQueries,
+      dependencies.executionQueries,
+      dependencies.executionCommands,
     ),
     invocationLeases: new ReviewInvocationLeaseService(
       dependencies.executionCommands,

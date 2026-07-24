@@ -50,7 +50,7 @@ export const reviewEvidenceActionContractFragment = Object.freeze({
   publishedEnums: Object.freeze([
     Object.freeze({
       typeName: "ReviewEvidenceLookupResultStatus",
-      values: Object.freeze(["hit", "shadow", "miss"]),
+      values: Object.freeze(["hit", "shadow", "miss", "replay_required"]),
     }),
     Object.freeze({
       typeName: "ReviewEvidenceCommitResultStatus",
@@ -129,6 +129,26 @@ export const reviewEvidenceActionContractFragment = Object.freeze({
           name: "sourceOwnerIdHash",
           type: "nullable_hash",
         }),
+        Object.freeze({
+          name: "contextDependencyAttestationId",
+          type: "nullable_identifier",
+        }),
+        Object.freeze({
+          name: "contextDependencyAttestationHash",
+          type: "nullable_hash",
+        }),
+        Object.freeze({
+          name: "contextReplayCapability",
+          type: "nullable_token",
+        }),
+        Object.freeze({
+          name: "contextReplayPlanCanonicalJson",
+          type: "nullable_canonical_json",
+        }),
+        Object.freeze({
+          name: "contextReplayPlanHash",
+          type: "nullable_hash",
+        }),
         Object.freeze({ name: "denialReasons", type: "identifier_array" }),
       ]),
     }),
@@ -140,6 +160,12 @@ export const reviewEvidenceActionContractFragment = Object.freeze({
       mutability: "command",
       naturalIdempotencyPreimage: Object.freeze(["attempt_id", "payload_hash"]),
       semanticRetryClass: "same_request",
+      allOrNoneRequestFieldGroups: Object.freeze([
+        Object.freeze([
+          "contextDependencyAttestationId",
+          "contextDependencyAttestationHash",
+        ]),
+      ]),
       requestFields: Object.freeze([
         Object.freeze({ name: "attemptId", type: "identifier" }),
         Object.freeze({ name: "sourceLeaseId", type: "identifier" }),
@@ -149,6 +175,14 @@ export const reviewEvidenceActionContractFragment = Object.freeze({
         Object.freeze({ name: "schemaValidated", type: "boolean" }),
         Object.freeze({ name: "fullyConsumed", type: "boolean" }),
         Object.freeze({ name: "actualModel", type: "string" }),
+        Object.freeze({
+          name: "contextDependencyAttestationId",
+          type: "nullable_identifier",
+        }),
+        Object.freeze({
+          name: "contextDependencyAttestationHash",
+          type: "nullable_hash",
+        }),
         Object.freeze({ name: "payloadCanonicalJson", type: "canonical_json" }),
         Object.freeze({ name: "payloadHash", type: "hash" }),
         Object.freeze({ name: "qualityFlags", type: "identifier_array" }),

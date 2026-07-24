@@ -16,6 +16,11 @@ import {
   reviewActionV2SchemaDigest,
   reviewRunAuthorizeNegotiationGoldenFixture,
   ReviewActionV2CallerAuthority,
+  ReviewActionV2OperationId,
+  ReviewContextGatewayOpenResultStatus,
+  ReviewContextGatewaySealResultStatus,
+  ReviewContextReplayCommitResultStatus,
+  ReviewEvidenceLookupResultStatus,
   serializeProviderInvocationManifestV1CanonicalWireJson,
 } from "../index.js";
 import {
@@ -118,7 +123,7 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toThrow("protocol_contract_operation_id_duplicate");
   });
 
-  it("publishes all sixteen strict operation schemas and fixtures", async () => {
+  it("publishes all nineteen strict operation schemas and fixtures", async () => {
     const schema = JSON.parse(
       await readFile(
         new URL("../generated/review-action-v2.schema.json", import.meta.url),
@@ -126,9 +131,9 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ) as { readonly $defs: Readonly<Record<string, unknown>> };
 
-    expect(reviewActionV2Operations).toHaveLength(16);
-    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(16);
-    expect(Object.keys(schema.$defs)).toHaveLength(32);
+    expect(reviewActionV2Operations).toHaveLength(19);
+    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(19);
+    expect(Object.keys(schema.$defs)).toHaveLength(38);
     expect(sha256(canonicalJson(schema))).toBe(
       reviewActionV2PublishedSchemaDigest,
     );
@@ -168,6 +173,11 @@ describe("generated Review Action v2 negotiation contract", () => {
       sourceLeaseId: expect.any(Object),
       sourceFencingToken: expect.any(Object),
       sourceOwnerIdHash: expect.any(Object),
+      contextDependencyAttestationId: expect.any(Object),
+      contextDependencyAttestationHash: expect.any(Object),
+      contextReplayCapability: expect.any(Object),
+      contextReplayPlanCanonicalJson: expect.any(Object),
+      contextReplayPlanHash: expect.any(Object),
     });
     expect(
       successResultProperties(schema, "review_evidence_commit"),
@@ -176,8 +186,317 @@ describe("generated Review Action v2 negotiation contract", () => {
       successResultProperties(schema, "review_invocation_lease_renew"),
     ).toHaveProperty("leaseCapability");
     expect(
+      successResultProperties(schema, "review_context_gateway_open"),
+    ).toMatchObject({
+      sessionId: expect.any(Object),
+      eventChainSeedHash: expect.any(Object),
+      gatewaySessionSecret: {
+        anyOf: [
+          expect.objectContaining({
+            type: "string",
+            maxLength: 32_768,
+            pattern: "^\\S+$",
+          }),
+          { type: "null" },
+        ],
+      },
+      sealCapability: expect.any(Object),
+      expiresAt: expect.any(Object),
+    });
+    expect(
+      successResultProperties(schema, "review_context_gateway_seal"),
+    ).toMatchObject({
+      attestationId: expect.any(Object),
+      attestationHash: expect.any(Object),
+    });
+    expect(
+      successResultProperties(schema, "review_context_replay_commit"),
+    ).toMatchObject({
+      replayProofId: expect.any(Object),
+      replayProofHash: expect.any(Object),
+      attachmentCapability: expect.any(Object),
+    });
+    expect(
       new Set(reviewActionV2Operations.map((item) => item.callerAuthority)),
     ).toEqual(new Set(Object.values(ReviewActionV2CallerAuthority)));
+  });
+
+  it("publishes the context-attestation trust chain without making the session secret semantic", async () => {
+    const sources = await loadCompiledContractSources();
+    expect(sources.semanticFragments).toHaveLength(6);
+    const fragment = sources.semanticFragments.find(
+      (candidate) => candidate.boundedContext === "review_context_attestation",
+    );
+    expect(fragment).toBeDefined();
+    expect(
+      fragment?.operations.map((operation) => operation.operationId),
+    ).toEqual([
+      ReviewActionV2OperationId.ReviewContextGatewayOpen,
+      ReviewActionV2OperationId.ReviewContextGatewaySeal,
+      ReviewActionV2OperationId.ReviewContextReplayCommit,
+    ]);
+
+    const open = reviewActionV2Operations.find(
+      (operation) =>
+        operation.operationId ===
+        ReviewActionV2OperationId.ReviewContextGatewayOpen,
+    );
+    const seal = reviewActionV2Operations.find(
+      (operation) =>
+        operation.operationId ===
+        ReviewActionV2OperationId.ReviewContextGatewaySeal,
+    );
+    const replay = reviewActionV2Operations.find(
+      (operation) =>
+        operation.operationId ===
+        ReviewActionV2OperationId.ReviewContextReplayCommit,
+    );
+
+    expect(open).toMatchObject({
+      boundedContext: "review_context_attestation",
+      path: "/api/action/v2/review-context/gateway/open",
+      callerAuthority:
+        ReviewActionV2CallerAuthority.RunAuthorizationAndLeaseCapability,
+      semanticRetryClass: "same_request",
+      bodyLimitBytes: 65_536,
+      successStatuses: [200, 201],
+      resultStatuses: Object.values(ReviewContextGatewayOpenResultStatus),
+    });
+    expect(open?.errorCodes).toContain("capacity_limited");
+    expect(seal).toMatchObject({
+      boundedContext: "review_context_attestation",
+      path: "/api/action/v2/review-context/gateway/seal",
+      callerAuthority:
+        ReviewActionV2CallerAuthority.RunAuthorizationAndLeaseCapability,
+      semanticRetryClass: "same_request",
+      bodyLimitBytes: 4_194_304,
+      successStatuses: [200, 201],
+      resultStatuses: Object.values(ReviewContextGatewaySealResultStatus),
+    });
+    expect(seal?.errorCodes).not.toContain("capacity_limited");
+    expect(replay).toMatchObject({
+      boundedContext: "review_context_attestation",
+      path: "/api/action/v2/review-context/replay/commit",
+      callerAuthority: ReviewActionV2CallerAuthority.RunAuthorization,
+      semanticRetryClass: "same_request",
+      bodyLimitBytes: 4_194_304,
+      successStatuses: [200, 201],
+      resultStatuses: Object.values(ReviewContextReplayCommitResultStatus),
+    });
+    expect(replay?.errorCodes).not.toContain("capacity_limited");
+    expect(open?.naturalIdempotencyPreimage).not.toContain(
+      "gateway_session_secret",
+    );
+
+    const fixture = reviewActionV2GoldenFixtures.review_context_gateway_open;
+    expect(fixture.request).toMatchObject({
+      attemptId: expect.any(String),
+      sourceLeaseId: expect.any(String),
+      fencingToken: expect.any(String),
+      sourceExecutionId: expect.any(String),
+      sourceWorkSlotId: expect.any(String),
+      sourceReviewRevisionHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      checkoutTreeOid: expect.stringMatching(
+        /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u,
+      ),
+      gatewayPolicyVersion: expect.any(String),
+      gatewayBinaryHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      confinementEvidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(fixture.request).not.toHaveProperty("gatewaySessionSecret");
+    expect(fixture.response.result.status).toBe(
+      ReviewContextGatewayOpenResultStatus.Opened,
+    );
+    expect(
+      reviewActionV2GoldenFixtures.review_context_gateway_seal.request,
+    ).toMatchObject({
+      sessionId: expect.any(String),
+      sealCapability: expect.any(String),
+      attemptId: expect.any(String),
+      sourceLeaseId: expect.any(String),
+      fencingToken: expect.any(String),
+      providerSucceeded: true,
+      schemaValidated: true,
+      fullyConsumed: true,
+      actualModel: expect.any(String),
+      terminalOutcomeHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      transcriptCanonicalJson: expect.any(String),
+      transcriptHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      replayMaterialCanonicalJson: expect.any(String),
+      replayMaterialHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(
+      reviewActionV2GoldenFixtures.review_context_replay_commit.request,
+    ).toMatchObject({
+      executionId: expect.any(String),
+      workSlotId: expect.any(String),
+      attestationId: expect.any(String),
+      attestationHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      targetReviewRevisionHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      targetCheckoutTreeOid: expect.stringMatching(
+        /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u,
+      ),
+      replayCapability: expect.any(String),
+      replayResultCanonicalJson: expect.any(String),
+      replayResultHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+
+    const schema = JSON.parse(
+      await readFile(
+        new URL("../generated/review-action-v2.schema.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { readonly $defs: Readonly<Record<string, unknown>> };
+    expect(
+      requestProperties(schema, "review_context_gateway_open"),
+    ).not.toHaveProperty("gatewaySessionSecret");
+    expect(
+      successResultProperties(schema, "review_context_gateway_open"),
+    ).toHaveProperty("gatewaySessionSecret");
+
+    for (const checkoutTreeOid of ["a".repeat(40), "b".repeat(64)]) {
+      expect(
+        parseReviewActionV2Request(
+          ReviewActionV2OperationId.ReviewContextGatewayOpen,
+          {
+            ...fixture.request,
+            checkoutTreeOid,
+          },
+        ),
+      ).toMatchObject({ ok: true });
+    }
+    expect(
+      parseReviewActionV2Request(
+        ReviewActionV2OperationId.ReviewContextGatewayOpen,
+        {
+          ...fixture.request,
+          checkoutTreeOid: "c".repeat(41),
+        },
+      ),
+    ).toMatchObject({
+      ok: false,
+      issues: ["field_invalid:checkoutTreeOid"],
+    });
+  });
+
+  it("publishes replay-required lookup fields as nullable target-replay material", async () => {
+    const schema = JSON.parse(
+      await readFile(
+        new URL("../generated/review-action-v2.schema.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { readonly $defs: Readonly<Record<string, unknown>> };
+    const lookup = reviewActionV2Operations.find(
+      (operation) =>
+        operation.operationId ===
+        ReviewActionV2OperationId.ReviewEvidenceLookup,
+    );
+
+    expect(lookup?.resultStatuses).toEqual(
+      Object.values(ReviewEvidenceLookupResultStatus),
+    );
+    expect(lookup?.resultStatuses).toContain(
+      ReviewEvidenceLookupResultStatus.ReplayRequired,
+    );
+    expect(
+      successResultProperties(schema, "review_evidence_lookup"),
+    ).toMatchObject({
+      contextDependencyAttestationId: {
+        anyOf: expect.arrayContaining([{ type: "null" }]),
+      },
+      contextDependencyAttestationHash: {
+        anyOf: expect.arrayContaining([{ type: "null" }]),
+      },
+      contextReplayCapability: {
+        anyOf: expect.arrayContaining([{ type: "null" }]),
+      },
+      contextReplayPlanCanonicalJson: {
+        anyOf: expect.arrayContaining([{ type: "null" }]),
+      },
+      contextReplayPlanHash: {
+        anyOf: expect.arrayContaining([{ type: "null" }]),
+      },
+    });
+  });
+
+  it("binds the evidence-commit context attestation as an all-or-none semantic pair", async () => {
+    const fixture = reviewActionV2GoldenFixtures.review_evidence_commit.request;
+    expect(fixture).toMatchObject({
+      contextDependencyAttestationId: null,
+      contextDependencyAttestationHash: null,
+    });
+
+    const withAttestation = {
+      ...fixture,
+      contextDependencyAttestationId: "attestation_fixture",
+      contextDependencyAttestationHash: "a".repeat(64),
+    };
+    expect(
+      parseReviewActionV2Request(
+        ReviewActionV2OperationId.ReviewEvidenceCommit,
+        withAttestation,
+      ),
+    ).toMatchObject({ ok: true });
+
+    for (const malformed of [
+      {
+        ...withAttestation,
+        contextDependencyAttestationId: null,
+      },
+      {
+        ...withAttestation,
+        contextDependencyAttestationHash: null,
+      },
+    ]) {
+      expect(
+        parseReviewActionV2Request(
+          ReviewActionV2OperationId.ReviewEvidenceCommit,
+          malformed,
+        ),
+      ).toMatchObject({
+        ok: false,
+        issues: [
+          "field_group_all_or_none:contextDependencyAttestationId,contextDependencyAttestationHash",
+        ],
+      });
+    }
+
+    const withoutCanonical = canonicalizeReviewActionV2Request(
+      ReviewActionV2OperationId.ReviewEvidenceCommit,
+      fixture,
+    );
+    const withCanonical = canonicalizeReviewActionV2Request(
+      ReviewActionV2OperationId.ReviewEvidenceCommit,
+      withAttestation,
+    );
+    expect(sha256(withCanonical)).not.toBe(sha256(withoutCanonical));
+    expect(JSON.parse(withCanonical)).toMatchObject({
+      contextDependencyAttestationId: "attestation_fixture",
+      contextDependencyAttestationHash: "a".repeat(64),
+    });
+
+    const schema = JSON.parse(
+      await readFile(
+        new URL("../generated/review-action-v2.schema.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      readonly $defs: Readonly<
+        Record<
+          string,
+          {
+            readonly properties?: Readonly<Record<string, unknown>>;
+            readonly allOf?: readonly unknown[];
+          }
+        >
+      >;
+    };
+    const commitSchema = schema.$defs.review_evidence_commit_request;
+    expect(commitSchema?.properties).toMatchObject({
+      contextDependencyAttestationId: expect.any(Object),
+      contextDependencyAttestationHash: expect.any(Object),
+    });
+    expect(commitSchema?.allOf).toHaveLength(1);
   });
 
   it("keeps the generated manifest canonicalizer byte-identical to Review Evidence", async () => {
@@ -415,4 +734,14 @@ function successResultProperties(
     }[];
   };
   return definition.oneOf[0]?.properties?.result?.properties ?? {};
+}
+
+function requestProperties(
+  schema: { readonly $defs: Readonly<Record<string, unknown>> },
+  operationId: string,
+): Readonly<Record<string, unknown>> {
+  const definition = schema.$defs[`${operationId}_request`] as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+  return definition.properties ?? {};
 }
