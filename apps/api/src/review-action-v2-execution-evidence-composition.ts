@@ -168,6 +168,7 @@ export type ReviewActionV2EvidenceHandlerDependencies = CommonDependencies &
   Readonly<{
     evidence: ReturnTypeOfReviewEvidenceComposition;
     observations: ReviewObservationQueryPort;
+    contextReplay: ReviewActionV2ContextReplayCoordinatorPort;
   }>;
 
 export function composeReviewActionV2ExecutionRoutes(input: {
@@ -1273,6 +1274,35 @@ async function lookupEvidence(
     };
   }
   const observation = selected.observation;
+  if (
+    result.status === LookupReviewEvidenceStatus.Shadow &&
+    observation.sourceExecutionId !== request.executionId
+  ) {
+    const replay = await d.contextReplay.prepareReplay({
+      authorization,
+      snapshot,
+      workSlotId: request.workSlotId,
+      manifest,
+      manifestKey: request.manifestKey,
+      providerInvocationKey: request.providerInvocationKey,
+      providerVoteIdentityHash: request.providerVoteIdentityHash,
+      trustDomain,
+      observation,
+    });
+    if (replay) {
+      return {
+        statusCode: 200 as const,
+        result: {
+          status: ReviewEvidenceLookupResultStatus.ReplayRequired,
+          ...lookupObservationFields(observation),
+          reuseSafetyDecisionHash: selected.reuseSafetyDecisionHash,
+          eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+          ...replay,
+          denialReasons: result.denialReasons,
+        },
+      };
+    }
+  }
   let adoptionSourceLease: ReviewInvocationLease | null = null;
   if (observation.sourceExecutionId === request.executionId) {
     adoptionSourceLease = await d.executionQueries.findLease(
@@ -1350,14 +1380,7 @@ async function lookupEvidence(
     statusCode: 200 as const,
     result: {
       status: mapLookup(result.status),
-      observationId: observation.observationId,
-      payloadHash: observation.payloadHash,
-      payloadCanonicalJson: canonicalPayload(observation),
-      byteCount: observation.byteCount,
-      findingCount: observation.findingCount,
-      actualModel: observation.actualModel,
-      qualityFlags: observation.qualityFlags,
-      transportAttemptCount: observation.transportAttemptCount,
+      ...lookupObservationFields(observation),
       attachmentCapability,
       attachmentKind,
       reuseSafetyDecisionHash: selected.reuseSafetyDecisionHash,
@@ -1369,6 +1392,19 @@ async function lookupEvidence(
       denialReasons: result.denialReasons,
     },
   };
+}
+
+function lookupObservationFields(observation: ReviewObservation) {
+  return {
+    observationId: observation.observationId,
+    payloadHash: observation.payloadHash,
+    payloadCanonicalJson: canonicalPayload(observation),
+    byteCount: observation.byteCount,
+    findingCount: observation.findingCount,
+    actualModel: observation.actualModel,
+    qualityFlags: observation.qualityFlags,
+    transportAttemptCount: observation.transportAttemptCount,
+  } as const;
 }
 
 async function commitEvidence(

@@ -303,6 +303,80 @@ describe("Review Action v2 execution/evidence composition", () => {
     });
   });
 
+  it("prepares a dependency replay for an eligible cross-revision candidate", async () => {
+    const providerManifest = manifest();
+    const manifestCanonicalJson =
+      serializeProviderInvocationManifestCanonicalWireJson(providerManifest);
+    const identity = await buildProviderInvocationIdentity(digest, {
+      manifest: providerManifest,
+      providerVoteIdentityHash: hash("c"),
+    });
+    const observation = reusableObservation({
+      manifestKey: identity.manifestKey,
+      providerInvocationKey: identity.providerInvocationKey,
+      contextDependencyAttestationId: "attestation-1",
+      contextDependencyAttestationHash: hash("a"),
+    });
+    const prepareReplay = vi.fn(async () => ({
+      contextDependencyAttestationId: "attestation-1",
+      contextDependencyAttestationHash: hash("a"),
+      contextReplayCapability: "replay-capability",
+      contextReplayPlanCanonicalJson: "{}",
+      contextReplayPlanHash: sha("{}"),
+    }));
+    const d = evidenceDependencies({
+      evidenceLookup: vi.fn(async () => ({
+        status: LookupReviewEvidenceStatus.Shadow,
+        selected: {
+          ...reuseHit(observation).selected,
+          eligibility: ReuseEligibility.CandidateOnly,
+          tier: ReviewReuseTier.T2ContextGatewayCrossRevision,
+          reason: "context_replay_required",
+          canAttach: false,
+        },
+        considered: 1,
+        denialReasons: ["context_replay_required"],
+      })),
+      contextReplay: {
+        prepareReplay,
+        verifyAttachment: vi.fn(async () => true),
+        assertCurrentPolicy: vi.fn(),
+      },
+    });
+
+    const response = await createReviewActionV2EvidenceHandlers(
+      d,
+    ).lookup.execute({
+      ...envelope("lookup-replay"),
+      authorizationToken: "authorization-token",
+      executionId: "execution-target",
+      workSlotId: "slot-1",
+      planHash: hash("9"),
+      manifestCanonicalJson,
+      manifestKey: identity.manifestKey,
+      providerInvocationKey: identity.providerInvocationKey,
+      providerVoteIdentityHash: observation.providerVoteIdentityHash,
+    });
+
+    expect(response.result).toMatchObject({
+      status: ReviewEvidenceLookupResultStatus.ReplayRequired,
+      observationId: observation.observationId,
+      contextDependencyAttestationId: "attestation-1",
+      contextReplayCapability: "replay-capability",
+      contextReplayPlanHash: sha("{}"),
+      denialReasons: ["context_replay_required"],
+    });
+    expect(prepareReplay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorization,
+        snapshot,
+        workSlotId: "slot-1",
+        manifest: providerManifest,
+        observation,
+      }),
+    );
+  });
+
   it("fails same-execution lookup closed when adoption source facts drift", async () => {
     const { manifestCanonicalJson, identity, sourceLease, observation } =
       await committedAdoptionFixture();
@@ -1420,6 +1494,7 @@ function evidenceDependencies(
     evidenceLookup?: ReturnType<typeof vi.fn>;
     acceptObservation?: ReturnType<typeof vi.fn>;
     capabilities?: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
+    contextReplay?: ReviewActionV2EvidenceHandlerDependencies["contextReplay"];
     currentLease?: ReviewInvocationLease;
     now?: () => Date;
   } = {},
@@ -1436,6 +1511,13 @@ function evidenceDependencies(
     observations: {
       findById: vi.fn(),
     } as unknown as ReviewActionV2EvidenceHandlerDependencies["observations"],
+    contextReplay:
+      overrides.contextReplay ??
+      ({
+        prepareReplay: vi.fn(),
+        verifyAttachment: vi.fn(async () => true),
+        assertCurrentPolicy: vi.fn(),
+      } satisfies ReviewActionV2EvidenceHandlerDependencies["contextReplay"]),
   };
 }
 

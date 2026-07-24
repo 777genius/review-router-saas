@@ -544,6 +544,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
         ...common,
         evidence,
         observations: observationStore,
+        contextReplay,
       },
     }),
     snapshot: snapshotPublication.snapshot,

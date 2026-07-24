@@ -112,3 +112,36 @@ pnpm review-v2:admin mutation pause \
 
 Do not resume until publication reconciliation reports no `stale_visible` or
 `terminal_unknown` outcomes and the resume proof is ready.
+
+## Context-attested cross-revision reuse
+
+Keep context reuse separate from the T0 mutation cutover. After a registered
+Action release has produced accepted confined observations, enable replay in
+shadow mode for one repository:
+
+```bash
+pnpm review-v2:admin cohort context-reuse shadow \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Promote only after replay telemetry shows no stale publications, fencing
+violations, unconfined sessions, or material shadow disagreements:
+
+```bash
+pnpm review-v2:admin cohort context-reuse enable \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Disable attachment for one repository without changing the global enrollment
+gate:
+
+```bash
+pnpm review-v2:admin cohort context-reuse disable \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Prompt-only cross-revision reuse remains disabled. These commands control only
+dependency-attested context-gateway reuse.
