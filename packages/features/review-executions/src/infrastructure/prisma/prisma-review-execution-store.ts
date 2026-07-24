@@ -679,28 +679,16 @@ export class PrismaReviewExecutionStore
   async renewLease(
     command: RenewReviewInvocationLeaseCommand,
   ): Promise<ReviewInvocationLeaseTransitionResult> {
-    return this.transitionLease(command, (input) => {
-      return decideLeaseRenewal({
+    return this.transitionLease(command, (input) =>
+      decideLeaseRenewal({
         ...input,
         renewRequestIdHash: command.renewRequestIdHash,
         renewRequestHash: command.renewRequestHash,
-        expiresAt: monotonicRenewalDeadline({
-          databaseTime: input.now,
-          requestedAt: command.now,
-          requestedDeadline: command.expiresAt,
-          currentDeadline: input.lease.expiresAt,
-          field: "lease_deadline",
-        }),
-        resultReportUntil: monotonicRenewalDeadline({
-          databaseTime: input.now,
-          requestedAt: command.now,
-          requestedDeadline: command.resultReportUntil,
-          currentDeadline: input.lease.resultReportUntil,
-          field: "result_report_deadline",
-        }),
+        expiresAt: command.expiresAt,
+        resultReportUntil: command.resultReportUntil,
         limits: command.limits,
-      });
-    });
+      }),
+    );
   }
 
   async releaseLease(
@@ -1321,27 +1309,6 @@ export class PrismaReviewExecutionStore
         }
       : { status: ReviewExecutionFinalizeStatus.Conflict };
   }
-}
-
-function monotonicRenewalDeadline(input: {
-  readonly databaseTime: Date;
-  readonly requestedAt: Date;
-  readonly requestedDeadline: Date;
-  readonly currentDeadline: Date;
-  readonly field: string;
-}): Date {
-  if (input.requestedDeadline < input.currentDeadline) {
-    return new Date(input.requestedDeadline);
-  }
-  const rebased = databaseRelativeDate(
-    input.databaseTime,
-    input.requestedAt,
-    input.requestedDeadline,
-    input.field,
-  );
-  return rebased < input.currentDeadline
-    ? new Date(input.currentDeadline)
-    : rebased;
 }
 
 type AttachmentTarget = {
