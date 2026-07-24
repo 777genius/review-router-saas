@@ -3,6 +3,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { reviewV2ContextEnvForRole } from "./review-v2-render-env.mjs";
 
 const renderApi = "https://api.render.com/v1";
 
@@ -262,6 +263,7 @@ function buildServiceEnv({
   if (role === "api") {
     Object.assign(values, readOptionalEnvVars(env, apiOnlyGitLabEnvKeys));
   }
+  Object.assign(values, reviewV2ContextEnvForRole(env, role));
   if (role !== "worker") values.PORT = "10000";
   return asEnvVars(values);
 }

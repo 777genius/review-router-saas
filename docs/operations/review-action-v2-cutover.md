@@ -11,6 +11,9 @@ is one-way: after `v2_active`, failure recovery uses `pause`, not a return to v1
 - Authorization and capability key rings are configured.
 - Producer release attestations, provider vote lanes, and projection policy are
   configured without secrets in logs.
+- Context session HMAC and replay key rings are configured on the API. The
+  context gateway policy version and exact committed gateway bundle SHA-256 are
+  configured identically on the API and worker.
 - The production GitHub App registration grants repository `Actions: Read and
 write`, and the target installation has approved that permission update.
   `Workflows: Read and write` is a different permission and does not authorize
