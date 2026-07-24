@@ -370,6 +370,36 @@ if (databaseUrl) {
       ).toBe(90_000);
     });
 
+    it("does not shorten lease windows while rebasing caller clock skew", async () => {
+      const harness = await createHarness();
+      const running = await prepareAndAdmit(harness, "renew-db-time");
+      const command = leaseCommand(harness, running.snapshot, "renew-db-time");
+      const acquired = await harness.executions.acquireLease({
+        ...command,
+        expiresAt: new Date(Date.now() + 30_000),
+        resultReportUntil: new Date(Date.now() + 90_000),
+      });
+      const lease = acquired.lease!;
+      const skewedNow = new Date(Date.now() + 5_000);
+
+      const renewed = await harness.executions.renewLease({
+        leaseId: lease.leaseId,
+        ownerIdHash: lease.ownerIdHash,
+        leaseCapabilityId: lease.leaseCapabilityId,
+        fencingToken: lease.fencingToken,
+        renewRequestIdHash: hash(13),
+        renewRequestHash: hash(14),
+        now: skewedNow,
+        expiresAt: lease.expiresAt,
+        resultReportUntil: lease.resultReportUntil,
+        limits: command.limits,
+      });
+
+      expect(renewed.status).toBe("restored");
+      expect(renewed.lease?.expiresAt).toEqual(lease.expiresAt);
+      expect(renewed.lease?.resultReportUntil).toEqual(lease.resultReportUntil);
+    });
+
     it("serializes one provider lane across concurrent pull-request scopes", async () => {
       const first = await createHarness();
       const second = await createHarness();
