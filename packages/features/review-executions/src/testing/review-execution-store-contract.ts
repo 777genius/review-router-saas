@@ -12,6 +12,7 @@ import {
   ReviewRequestedTransitionStatus,
   type ReviewExecutionCommandPort,
   type ReviewExecutionQueryPort,
+  type InvocationFlightQueryPort,
   type ReviewRequestedIntentCommandPort,
   type ReviewRequestedIntentQueryPort,
 } from "../index";
@@ -32,7 +33,9 @@ import {
 } from "../domain/review-requested-intent";
 
 export type ReviewExecutionStoreContractHarness = Readonly<{
-  executions: ReviewExecutionQueryPort & ReviewExecutionCommandPort;
+  executions: ReviewExecutionQueryPort &
+    ReviewExecutionCommandPort &
+    InvocationFlightQueryPort;
   requestedIntents: ReviewRequestedIntentQueryPort &
     ReviewRequestedIntentCommandPort;
   scope: ReviewExecutionScope;
@@ -142,6 +145,33 @@ export function runReviewExecutionStoreContract(
           )
         )?.execution.workSlots[0]?.nextAttemptOrdinal,
       ).toBe(2);
+    });
+
+    it("restores the active invocation flight from durable lease state", async () => {
+      const running = await prepareAndAdmit(harness, "flight-restore");
+      const acquired = await harness.executions.acquireLease(
+        leaseCommand(harness, running.snapshot, "flight-restore"),
+      );
+      const observed =
+        await harness.executions.observeActiveInvocationFlightByLane({
+          providerVoteIdentityHash:
+            running.snapshot.execution.workSlots[0]!.providerVoteIdentityHash,
+          requestedAt: new Date(),
+        });
+
+      expect(observed.observedAt).toBeInstanceOf(Date);
+      expect(observed.flight).toMatchObject({
+        flightId: acquired.lease!.leaseId,
+        ownerLeaseId: acquired.lease!.leaseId,
+        fencingToken: acquired.lease!.fencingToken,
+        identity: {
+          reviewRevisionHash:
+            running.snapshot.execution.revision.reviewRevisionHash,
+          providerInvocationKey: acquired.lease!.providerInvocationKey,
+          compatibilityKey: running.snapshot.execution.compatibilityKey,
+          policyIdentityHash: acquired.lease!.leaseSafetyDecisionHash,
+        },
+      });
     });
 
     it("uses exact lease fencing for renew and release", async () => {

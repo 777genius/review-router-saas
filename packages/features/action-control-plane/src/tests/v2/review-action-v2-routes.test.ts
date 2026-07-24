@@ -9,6 +9,7 @@ import {
   ReviewExecutionRestoreResultStatus,
 } from "@reviewrouter/protocol-review-action-v2";
 import {
+  registerReviewContextAttestationV2Routes,
   registerReviewEvidenceV2Routes,
   registerReviewExecutionV2Routes,
   registerReviewPublicationRequestV2Routes,
@@ -28,6 +29,7 @@ describe("Review Action v2 route registrars", () => {
     const app = Fastify();
     await registerReviewRunControlV2Routes(app, runtime);
     await registerReviewExecutionV2Routes(app, runtime);
+    await registerReviewContextAttestationV2Routes(app, runtime);
     await registerReviewEvidenceV2Routes(app, runtime);
     await registerReviewSnapshotReadV2Routes(app, runtime);
     await registerReviewPublicationRequestV2Routes(app, runtime);

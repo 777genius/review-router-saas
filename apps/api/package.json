@@ -18,6 +18,7 @@
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
     "@reviewrouter/features-review-execution-checkpoints": "workspace:*",
+    "@reviewrouter/features-review-context-attestation": "workspace:*",
     "@reviewrouter/features-review-evidence": "workspace:*",
     "@reviewrouter/features-review-executions": "workspace:*",
     "@reviewrouter/features-review-publishing": "workspace:*",
@@ -32,7 +33,7 @@
     "@reviewrouter/protocol-review-action-v2": "workspace:*",
     "@reviewrouter/shared": "workspace:*",
     "@trpc/server": "^11.17.0",
-    "fastify": "^5.8.5",
+    "fastify": "^5.10.0",
     "zod": "^4.4.2"
   },
   "scripts": {

@@ -12,7 +12,10 @@ export const reviewActionV2OperationOrder = Object.freeze([
   "review_invocation_lease_acquire",
   "review_invocation_lease_renew",
   "review_invocation_lease_release",
+  "review_context_gateway_open",
+  "review_context_gateway_seal",
   "review_evidence_lookup",
+  "review_context_replay_commit",
   "review_evidence_commit",
   "review_snapshot_restore",
   "review_publication_request",
@@ -34,6 +37,7 @@ const fieldTypes = new Set([
   "boolean",
   "canonical_json",
   "decimal",
+  "git_oid",
   "hash",
   "hash_array",
   "identifier",
@@ -63,7 +67,7 @@ export function assembleReviewActionV2Contract(input) {
   ) {
     throw new Error("protocol_assembly_transport_identity_invalid");
   }
-  if (!Array.isArray(semanticFragments) || semanticFragments.length !== 5) {
+  if (!Array.isArray(semanticFragments) || semanticFragments.length !== 6) {
     throw new Error("protocol_assembly_fragment_count_invalid");
   }
 
@@ -485,6 +489,73 @@ export const reviewActionV2Operations = ${operationDescriptorsSource} as const;
 
 export const reviewActionV2GoldenFixtures = ${JSON.stringify(artifacts.fixtures, null, 2)} as const;
 
+export const reviewContextGatewayEventDomain = "rr.context-gateway-event.v1" as const;
+export const reviewContextSearchQueryDomain = "rr.context-search-query.v1" as const;
+export const reviewContextReplayHandleDomain = "rr.context-replay-handle.v1" as const;
+export const reviewContextReplayChainSeedDomain = "rr.context-replay-chain-seed.v1" as const;
+export const reviewContextReplayEventDomain = "rr.context-replay-event.v1" as const;
+
+export function canonicalizeReviewContextConfinementEvidence(input: {
+  readonly attemptId: string;
+  readonly sourceLeaseId: string;
+  readonly sourceFencingToken: string;
+  readonly sourceExecutionId: string;
+  readonly sourceWorkSlotId: string;
+  readonly sourceReviewRevisionHash: string;
+  readonly checkoutTreeOid: string;
+  readonly providerKind: string;
+  readonly requestedModel: string;
+  readonly executionProfile: string;
+  readonly providerInvocationKey: string;
+  readonly toolPolicyHash: string;
+  readonly gatewayPolicyVersion: string;
+  readonly gatewayBinaryHash: string;
+}): string {
+  return canonicalJson({ evidenceVersion: 1, ...input });
+}
+
+export function canonicalizeReviewContextGatewayEvent(input: {
+  readonly sessionId: string;
+  readonly sequence: number;
+  readonly previousEventHash: string;
+  readonly operationKey: string;
+  readonly operation: unknown;
+  readonly result: unknown;
+}): string {
+  return canonicalJson({ domain: reviewContextGatewayEventDomain, ...input });
+}
+
+export function canonicalizeReviewContextSearchQuery(query: string): string {
+  return canonicalJson({ domain: reviewContextSearchQueryDomain, query });
+}
+
+export function canonicalizeReviewContextReplayHandle(input: {
+  readonly sessionId: string;
+  readonly sequence: number;
+  readonly query: string;
+}): string {
+  return canonicalJson({ domain: reviewContextReplayHandleDomain, ...input });
+}
+
+export function canonicalizeReviewContextReplayChainSeed(input: {
+  readonly planHash: string;
+  readonly attestationId: string;
+  readonly targetReviewRevisionHash: string;
+  readonly targetCheckoutTreeOid: string;
+}): string {
+  return canonicalJson({ domain: reviewContextReplayChainSeedDomain, ...input });
+}
+
+export function canonicalizeReviewContextReplayEvent(input: {
+  readonly sequence: number;
+  readonly previousEventHash: string;
+  readonly operationKey: string;
+  readonly operation: unknown;
+  readonly result: unknown;
+}): string {
+  return canonicalJson({ domain: reviewContextReplayEventDomain, ...input });
+}
+
 export type ReviewActionV2RequestParseResult<Operation extends ReviewActionV2OperationId> =
   | { readonly ok: true; readonly value: ReviewActionV2RequestMap[Operation] }
   | { readonly ok: false; readonly requestId?: string; readonly issues: readonly string[] };
@@ -527,6 +598,12 @@ export function parseReviewActionV2Request<Operation extends ReviewActionV2Opera
     validateProtocolOffers(input.supportedProtocols, issues);
   }
   for (const field of descriptor.requestFields) validateField(field.name, field.type, input[field.name], issues);
+  for (const group of descriptor.allOrNoneRequestFieldGroups) {
+    const nullCount = group.filter((field) => input[field] === null).length;
+    if (nullCount !== 0 && nullCount !== group.length) {
+      issues.push(\`field_group_all_or_none:\${group.join(",")}\`);
+    }
+  }
   if (issues.length > 0 || !requestId) {
     return { ok: false, ...(requestId ? { requestId } : {}), issues: [...new Set(issues)].slice(0, 8) };
   }
@@ -597,6 +674,7 @@ export function createReviewActionV2ResultResponse<Operation extends ReviewActio
 
 const reviewActionV2ErrorRegistry = ${JSON.stringify(contract.errors, null, 2)} as const;
 const digestPattern = /^[a-f0-9]{64}$/;
+const gitOidPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const decimalPattern = /^(0|[1-9][0-9]*)$/;
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const requestIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -621,6 +699,7 @@ function validateField(name: string, type: string, value: unknown, issues: strin
   let valid = false;
   if (base === "boolean") valid = typeof value === "boolean";
   else if (base === "hash") valid = typeof value === "string" && digestPattern.test(value);
+  else if (base === "git_oid") valid = typeof value === "string" && gitOidPattern.test(value);
   else if (base === "decimal") valid = typeof value === "string" && decimalPattern.test(value);
   else if (base === "identifier") valid = typeof value === "string" && identifierPattern.test(value);
   else if (base === "positive_integer") valid = Number.isSafeInteger(value) && (value as number) > 0;
@@ -699,6 +778,7 @@ function generatedOperationDescriptorsSource(operations, enums) {
     successStatuses: operation.successStatuses,
     errorCodes: operation.errorCodes,
     requestFields: operation.requestFields,
+    allOrNoneRequestFieldGroups: operation.allOrNoneRequestFieldGroups ?? [],
     resultStatuses: enums.find(
       (descriptor) => descriptor.typeName === operation.resultStatusEnum,
     ).values,
@@ -817,6 +897,42 @@ function requestSchema(contract, operation) {
         ]),
       ),
     },
+    ...allOrNoneRequestFieldGroupsSchema(operation, contract),
+  };
+}
+
+function allOrNoneRequestFieldGroupsSchema(operation, contract) {
+  const groups = operation.allOrNoneRequestFieldGroups ?? [];
+  if (groups.length === 0) return {};
+  const fieldsByName = new Map(
+    operation.requestFields.map((field) => [field.name, field]),
+  );
+  return {
+    allOf: groups.map((group) => ({
+      oneOf: [
+        {
+          required: group,
+          properties: Object.fromEntries(
+            group.map((name) => {
+              const field = fieldsByName.get(name);
+              return [
+                name,
+                fieldJsonSchema(
+                  field.type.replace(/^nullable_/u, ""),
+                  contract,
+                ),
+              ];
+            }),
+          ),
+        },
+        {
+          required: group,
+          properties: Object.fromEntries(
+            group.map((name) => [name, { type: "null" }]),
+          ),
+        },
+      ],
+    })),
   };
 }
 
@@ -968,6 +1084,11 @@ function fieldJsonSchema(type, contract) {
   if (base === "boolean") schema = { type: "boolean" };
   else if (base === "hash")
     schema = { type: "string", pattern: "^[a-f0-9]{64}$" };
+  else if (base === "git_oid")
+    schema = {
+      type: "string",
+      pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$",
+    };
   else if (base === "decimal")
     schema = { type: "string", pattern: "^(0|[1-9][0-9]*)$" };
   else if (base === "identifier")
@@ -1198,6 +1319,7 @@ function sampleValue(type, name, index) {
   if (nullable) return null;
   if (type === "boolean") return true;
   if (type === "hash") return sampleHash(index + name.length);
+  if (type === "git_oid") return sampleGitOid(index + name.length);
   if (type === "decimal") return String(index + 1);
   if (type === "positive_integer") return index + 1;
   if (type === "non_negative_integer") return index;
@@ -1211,6 +1333,10 @@ function sampleValue(type, name, index) {
 
 function sampleHash(seed) {
   return (seed % 16).toString(16).repeat(64);
+}
+
+function sampleGitOid(seed) {
+  return (seed % 16).toString(16).repeat(40);
 }
 
 function assertCanonicalizerDescriptor(descriptor) {
@@ -1358,7 +1484,44 @@ function assertSemanticOperation(operation, enumsByName) {
     `idempotency_preimage:${operation.operationId}`,
   );
   assertFields(operation.requestFields, `${operation.operationId}:request`);
+  assertAllOrNoneRequestFieldGroups(operation);
   assertFields(operation.resultFields, `${operation.operationId}:result`);
+}
+
+function assertAllOrNoneRequestFieldGroups(operation) {
+  const groups = operation.allOrNoneRequestFieldGroups ?? [];
+  if (!Array.isArray(groups)) {
+    throw new Error(
+      `protocol_assembly_all_or_none_groups_invalid:${operation.operationId}`,
+    );
+  }
+  const fieldsByName = new Map(
+    operation.requestFields.map((field) => [field.name, field]),
+  );
+  const seen = new Set();
+  for (const group of groups) {
+    if (!Array.isArray(group) || group.length < 2) {
+      throw new Error(
+        `protocol_assembly_all_or_none_group_invalid:${operation.operationId}`,
+      );
+    }
+    assertUniqueStrings(group, `all_or_none_group:${operation.operationId}`);
+    const identity = [...group].sort().join(",");
+    if (seen.has(identity)) {
+      throw new Error(
+        `protocol_assembly_all_or_none_group_duplicate:${operation.operationId}`,
+      );
+    }
+    seen.add(identity);
+    for (const fieldName of group) {
+      const field = fieldsByName.get(fieldName);
+      if (!field || !field.type.startsWith("nullable_")) {
+        throw new Error(
+          `protocol_assembly_all_or_none_field_invalid:${operation.operationId}:${fieldName}`,
+        );
+      }
+    }
+  }
 }
 
 function assertTransportBinding(binding, declaredErrorCodes) {

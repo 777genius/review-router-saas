@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ConfiguredCapabilityKeyRing,
   JoseRotatingCapabilityCodec,
@@ -138,10 +138,35 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
       publicationRepository.findByPermitIdentity(artifact.publicationPermit),
     ).resolves.toBeNull();
   });
+
+  it("rejects stale context policy before publication is enqueued", async () => {
+    const publicationRepository = new InMemoryReviewPublicationRepository();
+    const contextPolicy = {
+      assertCurrentPolicy: vi
+        .fn()
+        .mockRejectedValue(new Error("context_policy_stale")),
+    };
+    const routes = createRoutes(publicationRepository, contextPolicy);
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      artifact.publicationPermit,
+      now,
+    );
+
+    await expect(
+      routes.publication.request!.execute(
+        await publicationRequest(publicationPermit),
+      ),
+    ).rejects.toThrow("context_policy_stale");
+    expect(contextPolicy.assertCurrentPolicy).toHaveBeenCalledTimes(1);
+    await expect(
+      publicationRepository.findByPermitIdentity(artifact.publicationPermit),
+    ).resolves.toBeNull();
+  });
 });
 
 function createRoutes(
   publicationRepository = new InMemoryReviewPublicationRepository(),
+  contextPolicy = { assertCurrentPolicy: vi.fn() },
 ) {
   const publicationApplication = createReviewPublicationV2Application({
     clock: { now: () => now },
@@ -205,6 +230,7 @@ function createRoutes(
     requestPublication: publicationApplication.request,
     capabilities: capabilityAdapter(),
     digest,
+    contextPolicy,
     now: () => now,
   });
 }

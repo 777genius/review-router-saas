@@ -8,9 +8,15 @@ import {
   ReviewCoverageState,
   DispatchDueReviewRequestedIntents,
   RecoverReviewRequestedDispatches,
+  ReviewObservationAttachmentKind,
   ReviewRequestedIntentService,
   type ReviewExecutionQueryPort,
 } from "@reviewrouter/features-review-executions";
+import {
+  ProviderExecutionProfile,
+  ReviewProviderKind as EvidenceProviderKind,
+  ReviewTaskKind as EvidenceTaskKind,
+} from "@reviewrouter/features-review-evidence";
 import type { OutboxHandler } from "@reviewrouter/features-outbox";
 import {
   PrismaReviewExecutionStore,
@@ -126,6 +132,13 @@ import {
   ReviewRequestIngressApplicationService,
   createReviewRequestIngressHandler,
 } from "./review-v2-request-ingress-handler";
+import {
+  VerifyCurrentContextReusePublicationPolicy,
+  type ContextReusePublicationBinding,
+  type ContextReusePublicationBindingQueryPort,
+  type ContextReuseProducerReleaseQueryPort,
+  type ReviewV2ContextReusePublicationGuardPort,
+} from "./review-v2-context-reuse-publication-guard";
 
 type PrismaClient = ReturnType<typeof createPrismaClient>;
 
@@ -190,6 +203,22 @@ export function createProductionReviewV2WorkerRuntime(input: {
       }),
     ),
   });
+  const contextReusePublicationPolicy =
+    new VerifyCurrentContextReusePublicationPolicy({
+      bindings: new PrismaContextReusePublicationBindingQuery(
+        input.prisma,
+        executions,
+      ),
+      releases: new ProductionContextReuseProducerReleaseQuery(releases),
+      safety: safetyResolver,
+      clock: input.clock,
+      gatewayPolicyVersion:
+        input.env.REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_POLICY_VERSION?.trim() ||
+        null,
+      gatewayBinaryHash:
+        input.env.REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_BINARY_HASH?.trim() ||
+        null,
+    });
   const publicationApplication = createReviewPublicationV2Application({
     clock: input.clock,
     decisions,
@@ -297,9 +326,11 @@ export function createProductionReviewV2WorkerRuntime(input: {
       input.clock,
     ),
   );
-  const freshness = new ProductionReviewV2Freshness(decisions, [
-    githubProvider,
-  ]);
+  const freshness = new ProductionReviewV2Freshness(
+    decisions,
+    [githubProvider],
+    contextReusePublicationPolicy,
+  );
   const ownerIdHash = createReviewV2WorkerOwnerId(
     `${hostname()}:${process.pid}:${randomUUID()}`,
   );
@@ -761,10 +792,138 @@ function createProductionPublicationDecisions(input: {
   };
 }
 
+class PrismaContextReusePublicationBindingQuery implements ContextReusePublicationBindingQueryPort {
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly executions: ReviewExecutionQueryPort,
+  ) {}
+
+  async findContextReuseBindings(executionId: string) {
+    const snapshot = await this.executions.findExecution(executionId);
+    if (!snapshot) return null;
+    const refs = snapshot.observationRefs.filter(
+      (ref) =>
+        ref.attachmentKind ===
+        ReviewObservationAttachmentKind.ContextGatewayCrossRevisionReuse,
+    );
+    if (refs.length === 0) return [];
+    const observations = await this.prisma.reviewEvidenceObservation.findMany({
+      where: { observationId: { in: refs.map((ref) => ref.observationId) } },
+      include: {
+        contextDependencyAttestation: {
+          include: { session: true },
+        },
+      },
+    });
+    const byId = new Map(
+      observations.map((observation) => [
+        observation.observationId,
+        observation,
+      ]),
+    );
+    const bindings: ContextReusePublicationBinding[] = [];
+    for (const ref of refs) {
+      const observation = byId.get(ref.observationId);
+      if (!observation) return null;
+      const attestation = observation.contextDependencyAttestation;
+      const session = attestation?.session ?? null;
+      bindings.push({
+        targetExecutionId: executionId,
+        targetWorkSlotId: ref.workSlotId,
+        reusePolicyVectorHash: ref.reuseSafetyDecisionHash,
+        observation: {
+          observationId: observation.observationId,
+          workspaceId: observation.workspaceId,
+          repositoryConnectionId: observation.repositoryConnectionId,
+          scmRepositoryIdentityId: observation.scmRepositoryIdentityId,
+          pullRequestNumber: observation.pullRequestNumber,
+          providerKind: evidenceProviderKind(observation.providerKind),
+          taskKindSet: observation.taskKindSet.map(evidenceTaskKind),
+          requestedModel: observation.requestedModel,
+          actualModel: observation.actualModel,
+          providerRuntimeVersion: observation.providerRuntimeVersion,
+          producerReleaseId: observation.producerReleaseId,
+          selectedProtocolVersion: observation.selectedProtocolVersion,
+          trustedCapabilityProfile: observation.trustedCapabilityProfile,
+          executionProfile: evidenceExecutionProfile(
+            observation.executionProfile,
+          ),
+          sourceExecutionId: observation.sourceExecutionId,
+          sourceWorkSlotId: observation.sourceWorkSlotId,
+          sourceReviewRevisionHash: observation.sourceReviewRevisionHash,
+          attemptId: observation.attemptId,
+          sourceLeaseId: observation.sourceLeaseId,
+          sourceFencingToken: observation.sourceFencingToken.toString(),
+          contextAttestationId: observation.contextDependencyAttestationId,
+          contextAttestationHash: observation.contextDependencyAttestationHash,
+          reuseExpiresAtMs: observation.reuseExpiresAt.getTime(),
+        },
+        attestation: attestation
+          ? {
+              attestationId: attestation.attestationId,
+              attestationHash: attestation.attestationHash,
+              sessionId: attestation.sessionId,
+              sourceExecutionId: session!.sourceExecutionId,
+              sourceWorkSlotId: session!.sourceWorkSlotId,
+              sourceReviewRevisionHash: session!.sourceReviewRevisionHash,
+              attemptId: session!.attemptId,
+              sourceLeaseId: session!.sourceLeaseId,
+              sourceFencingToken: session!.sourceFencingToken.toString(),
+              actualModel: attestation.actualModel,
+              reuseExpiresAtMs: attestation.reuseExpiresAt.getTime(),
+            }
+          : null,
+        session: session
+          ? {
+              sessionId: session.sessionId,
+              workspaceId: session.workspaceId,
+              repositoryConnectionId: session.repositoryConnectionId,
+              scmRepositoryIdentityId: session.scmRepositoryIdentityId,
+              pullRequestNumber: session.pullRequestNumber,
+              sourceExecutionId: session.sourceExecutionId,
+              sourceWorkSlotId: session.sourceWorkSlotId,
+              sourceReviewRevisionHash: session.sourceReviewRevisionHash,
+              attemptId: session.attemptId,
+              sourceLeaseId: session.sourceLeaseId,
+              sourceFencingToken: session.sourceFencingToken.toString(),
+              requestedModel: session.requestedModel,
+              trustedCapabilityProfile: session.trustedCapabilityProfile,
+              gatewayPolicyVersion: session.gatewayPolicyVersion,
+              gatewayBinaryHash: session.gatewayBinaryHash,
+              producerReleaseId: session.producerReleaseId,
+              selectedProtocolVersion: session.selectedProtocolVersion,
+              state: session.state,
+              expiresAtMs: session.expiresAt.getTime(),
+            }
+          : null,
+      });
+    }
+    return bindings;
+  }
+}
+
+class ProductionContextReuseProducerReleaseQuery implements ContextReuseProducerReleaseQueryPort {
+  constructor(private readonly releases: PrismaProducerReleaseRepository) {}
+
+  async findContextReuseProducerRelease(producerReleaseId: string) {
+    const release =
+      await this.releases.findProducerReleaseById(producerReleaseId);
+    return release
+      ? {
+          producerReleaseId: release.producerReleaseId,
+          registered: release.state === ProducerReleaseState.Registered,
+          capabilityProfile: release.capabilityProfile,
+          runtimeCommitSha: release.runtimeCommitSha,
+        }
+      : null;
+  }
+}
+
 class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
   constructor(
     private readonly decisions: ReviewPublicationDecisionPorts,
     sources: readonly ReviewV2ScmLiveRevisionPort[],
+    private readonly contextReusePolicy: ReviewV2ContextReusePublicationGuardPort,
   ) {
     this.sources = new Map(sources.map((source) => [source.provider, source]));
   }
@@ -798,6 +957,7 @@ class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
       authority,
       lifecycle,
       safety,
+      contextReuseCurrent,
     ] = await Promise.all([
       source.readLiveRevision(permit),
       this.decisions.permits.resolve({
@@ -815,6 +975,7 @@ class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
         scope,
         capability: ReviewPublicationCapability.BeginOperation,
       }),
+      this.contextReusePolicy.isCurrent(permit),
     ]);
     if (
       liveRevision === null ||
@@ -823,6 +984,7 @@ class ProductionReviewV2Freshness implements ReviewV2PublicationFreshnessPort {
       authority.status !== CurrentMutationAuthorityStatus.Active ||
       lifecycle.status !== CurrentPublicationLifecycleStatus.Current ||
       safety.status !== CurrentReviewSafetyDecisionStatus.Allowed ||
+      !contextReuseCurrent ||
       authority.mutationEpoch === null ||
       safety.decisionHash === null ||
       lifecycle.lifecycleStateHash === null ||
@@ -1342,6 +1504,43 @@ function isExactRecord(
     actual.length === expected.length &&
     actual.every((key, index) => key === expected[index])
   );
+}
+
+function evidenceProviderKind(value: string): EvidenceProviderKind {
+  switch (value) {
+    case EvidenceProviderKind.Codex:
+      return EvidenceProviderKind.Codex;
+    case EvidenceProviderKind.ClaudeCode:
+      return EvidenceProviderKind.ClaudeCode;
+    case EvidenceProviderKind.OpenRouter:
+      return EvidenceProviderKind.OpenRouter;
+    default:
+      throw new Error("context_reuse_provider_kind_invalid");
+  }
+}
+
+function evidenceTaskKind(value: string): EvidenceTaskKind {
+  switch (value) {
+    case EvidenceTaskKind.FindingDiscovery:
+      return EvidenceTaskKind.FindingDiscovery;
+    case EvidenceTaskKind.LifecycleRevalidation:
+      return EvidenceTaskKind.LifecycleRevalidation;
+    default:
+      throw new Error("context_reuse_task_kind_invalid");
+  }
+}
+
+function evidenceExecutionProfile(value: string): ProviderExecutionProfile {
+  switch (value) {
+    case ProviderExecutionProfile.PromptOnlyEnvelopeV1:
+      return ProviderExecutionProfile.PromptOnlyEnvelopeV1;
+    case ProviderExecutionProfile.AgenticUnboundedV1:
+      return ProviderExecutionProfile.AgenticUnboundedV1;
+    case ProviderExecutionProfile.ContextGatewayV1:
+      return ProviderExecutionProfile.ContextGatewayV1;
+    default:
+      throw new Error("context_reuse_execution_profile_invalid");
+  }
 }
 
 function sha256(value: string): string {

@@ -2,6 +2,7 @@ import { AcceptReviewObservation } from "../application/use-cases/accept-review-
 import { LookupReviewEvidence } from "../application/use-cases/lookup-review-evidence";
 import { PruneReviewEvidence } from "../application/use-cases/prune-review-evidence";
 import type { ClockPort } from "../application/ports/clock-port";
+import type { AcceptedContextAttestationVerificationPort } from "../application/ports/context-attestation-verification-port";
 import type { ReviewExecutionAttemptFactsPort } from "../application/ports/review-execution-attempt-facts-port";
 import type {
   CurrentEvidenceWriteSafetyDecisionPort,
@@ -25,6 +26,7 @@ export type ReviewEvidenceCompositionDependencies = Readonly<{
   observationQueries: ReviewObservationQueryPort;
   pruner: ReviewEvidencePrunerPort;
   identities: ReviewObservationIdentityPort;
+  contextAttestations: AcceptedContextAttestationVerificationPort;
   digest: Sha256DigestPort;
   clock: ClockPort;
   reuseTtlMs: number;
@@ -44,6 +46,7 @@ export function createReviewEvidenceUseCases(
       safety: dependencies.writeSafety,
       observations: dependencies.observationCommands,
       identities: dependencies.identities,
+      contextAttestations: dependencies.contextAttestations,
       digest: dependencies.digest,
       clock: dependencies.clock,
       reuseTtlMs: dependencies.reuseTtlMs,

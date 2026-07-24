@@ -723,55 +723,158 @@ model ReviewRunAuthorizationRenewalReceipt {
 }
 
 model ReviewEvidenceObservation {
-  observationId                   String                     @id
-  workspaceId                     String
-  repositoryConnectionId          String
-  scmRepositoryIdentityId         String
-  pullRequestNumber               Int
-  manifestKey                     String
-  providerInvocationKey           String
-  providerVoteIdentityHash        String
-  manifestVersion                 Int
-  providerKind                    ReviewProviderKindV2
-  requestedModel                  String
-  actualModel                     String
-  providerRuntimeVersion          String
-  taskKindSet                     ReviewTaskKindV2[]
-  producerReleaseId               String
-  selectedProtocolVersion         String
-  trustedCapabilityProfile        String
-  executionProfile                ProviderExecutionProfileV2
-  trustDomain                     ReviewTrustDomainV2
-  authorizationScopeHash          String
-  sourceBaseSha                   String
-  sourceMergeBaseSha              String
-  sourceHeadSha                   String
-  sourceReviewRevisionHash        String
-  sourcePlanHash                  String
-  sourceExecutionId               String
-  sourceWorkSlotId                String
-  sourceAuthorizationId           String
-  evidenceWriteSafetyDecisionHash String
-  sourceRunId                     String
-  sourceRunAttempt                String
-  attemptId                       String
-  sourceLeaseId                   String
-  sourceFencingToken              BigInt
-  payloadJson                     Json
-  payloadHash                     String
-  byteCount                       Int
-  findingCount                    Int
-  qualityFlagsJson                Json
-  transportAttemptCount           Int
-  createdAt                       DateTime
-  reuseExpiresAt                  DateTime
-  retainUntil                     DateTime
+  observationId                    String                              @id
+  workspaceId                      String
+  repositoryConnectionId           String
+  scmRepositoryIdentityId          String
+  pullRequestNumber                Int
+  manifestKey                      String
+  providerInvocationKey            String
+  providerVoteIdentityHash         String
+  manifestVersion                  Int
+  providerKind                     ReviewProviderKindV2
+  requestedModel                   String
+  actualModel                      String
+  providerRuntimeVersion           String
+  taskKindSet                      ReviewTaskKindV2[]
+  producerReleaseId                String
+  selectedProtocolVersion          String
+  trustedCapabilityProfile         String
+  executionProfile                 ProviderExecutionProfileV2
+  trustDomain                      ReviewTrustDomainV2
+  authorizationScopeHash           String
+  sourceBaseSha                    String
+  sourceMergeBaseSha               String
+  sourceHeadSha                    String
+  sourceReviewRevisionHash         String
+  sourcePlanHash                   String
+  sourceExecutionId                String
+  sourceWorkSlotId                 String
+  sourceAuthorizationId            String
+  evidenceWriteSafetyDecisionHash  String
+  sourceRunId                      String
+  sourceRunAttempt                 String
+  attemptId                        String
+  sourceLeaseId                    String
+  sourceFencingToken               BigInt
+  payloadJson                      Json
+  payloadHash                      String
+  byteCount                        Int
+  findingCount                     Int
+  qualityFlagsJson                 Json
+  transportAttemptCount            Int
+  contextDependencyAttestationId   String?
+  contextDependencyAttestationHash String?
+  createdAt                        DateTime
+  reuseExpiresAt                   DateTime
+  retainUntil                      DateTime
+  contextDependencyAttestation     ReviewContextDependencyAttestation? @relation(fields: [contextDependencyAttestationId], references: [attestationId], onDelete: Restrict)
 
   @@unique([sourceExecutionId, providerVoteIdentityHash, attemptId])
   @@index([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, trustDomain, providerInvocationKey, reuseExpiresAt])
   @@index([reuseExpiresAt, observationId])
   @@index([retainUntil, observationId])
   @@index([sourceExecutionId])
+  @@index([contextDependencyAttestationId])
+}
+
+model ReviewContextGatewaySession {
+  sessionId                String                              @id
+  workspaceId              String
+  repositoryConnectionId   String
+  scmRepositoryIdentityId  String
+  pullRequestNumber        Int
+  sourceBaseSha            String
+  sourceMergeBaseSha       String
+  sourceHeadSha            String
+  sourceReviewRevisionHash String
+  checkoutTreeOid          String
+  sourceExecutionId        String
+  sourceWorkSlotId         String
+  attemptId                String                              @unique
+  sourceLeaseId            String
+  sourceFencingToken       BigInt
+  providerKind             ReviewProviderKindV2
+  requestedModel           String
+  trustedCapabilityProfile String
+  executionProfile         ProviderExecutionProfileV2
+  gatewayBinaryHash        String
+  gatewayPolicyVersion     String
+  producerReleaseId        String
+  selectedProtocolVersion  String
+  confinementProofHash     String
+  eventChainSeedHash       String
+  state                    ReviewContextGatewaySessionStateV1
+  eventCount               Int                                 @default(0)
+  openedAt                 DateTime
+  expiresAt                DateTime
+  sealedAt                 DateTime?
+  revokedAt                DateTime?
+  acceptedAttestation      ReviewContextDependencyAttestation?
+  replayMaterial           ReviewContextReplayMaterial?
+
+  @@index([workspaceId, repositoryConnectionId, pullRequestNumber, state, expiresAt])
+  @@index([sourceExecutionId, sourceWorkSlotId])
+}
+
+model ReviewContextDependencyAttestation {
+  attestationId          String                           @id
+  sessionId              String                           @unique
+  attestationHash        String                           @unique
+  manifestVersion        Int
+  authenticatedChainHash String
+  dependencyCount        Int
+  operationManifestJson  Json
+  actualModel            String
+  terminalOutcomeHash    String
+  replayMaterialHash     String
+  acceptedAt             DateTime
+  reuseExpiresAt         DateTime
+  session                ReviewContextGatewaySession      @relation(fields: [sessionId], references: [sessionId], onDelete: Restrict)
+  replayMaterial         ReviewContextReplayMaterial?
+  observations           ReviewEvidenceObservation[]
+  targetReplayProofs     ReviewContextTargetReplayProof[]
+
+  @@index([reuseExpiresAt, attestationId])
+}
+
+model ReviewContextReplayMaterial {
+  replayMaterialId    String                             @id
+  sessionId           String                             @unique
+  attestationId       String                             @unique
+  encryptionAlgorithm String
+  encryptionKeyId     String
+  nonce               Bytes
+  authTag             Bytes
+  ciphertext          Bytes
+  associatedDataHash  String
+  plaintextHash       String
+  byteCount           Int
+  expiresAt           DateTime
+  session             ReviewContextGatewaySession        @relation(fields: [sessionId], references: [sessionId], onDelete: Restrict)
+  attestation         ReviewContextDependencyAttestation @relation(fields: [attestationId], references: [attestationId], onDelete: Restrict)
+
+  @@index([expiresAt, replayMaterialId])
+}
+
+model ReviewContextTargetReplayProof {
+  replayProofId            String                             @id
+  sourceAttestationId      String
+  sourceAttestationHash    String
+  targetExecutionId        String
+  targetWorkSlotId         String
+  targetReviewRevisionHash String
+  targetCheckoutTreeOid    String
+  replayBinaryHash         String
+  replayPolicyVersion      String
+  reusePolicyVectorHash    String
+  createdAt                DateTime
+  expiresAt                DateTime
+  sourceAttestation        ReviewContextDependencyAttestation @relation(fields: [sourceAttestationId], references: [attestationId], onDelete: Restrict)
+
+  @@unique([sourceAttestationId, targetExecutionId, targetWorkSlotId, targetReviewRevisionHash, reusePolicyVectorHash])
+  @@index([targetExecutionId, targetWorkSlotId, expiresAt])
+  @@index([expiresAt, replayProofId])
 }
 
 model ReviewRequestedIntent {
@@ -897,41 +1000,41 @@ model ReviewExecutionWorkSlotV2 {
 }
 
 model ReviewInvocationLeaseV2 {
-  leaseId                 String                         @id
-  workspaceId             String
-  repositoryConnectionId  String
-  scmRepositoryIdentityId String
-  pullRequestNumber       Int
-  executionId             String
-  executionGeneration     BigInt
-  providerInvocationKey   String
-  preparedManifestCanonicalJson String?                      @db.Text
-  preparedManifestKey     String?
-  providerVoteIdentityHash String
-  workSlotId              String
-  purpose                 ReviewInvocationLeasePurposeV2
-  authorizationId         String
-  producerReleaseId       String
-  reviewRevisionHash      String
-  mutationEpoch           BigInt
-  leaseSafetyDecisionHash String
-  attemptId               String?                        @unique
-  sourceObservationId     String?
-  attemptOrdinal          Int
-  acquireRequestIdHash    String
-  acquireRequestHash      String
-  lastRenewRequestIdHash  String?
-  lastRenewRequestHash    String?
-  ownerIdHash             String
-  leaseCapabilityId       String                         @unique
-  capabilitySigningKeyId  String
-  fencingToken            BigInt                         @unique @default(autoincrement())
-  state                   ReviewInvocationLeaseStateV2   @default(active)
-  acquiredAt              DateTime
-  renewedAt               DateTime
-  expiresAt               DateTime
-  resultReportUntil       DateTime
-  retainUntil             DateTime
+  leaseId                       String                         @id
+  workspaceId                   String
+  repositoryConnectionId        String
+  scmRepositoryIdentityId       String
+  pullRequestNumber             Int
+  executionId                   String
+  executionGeneration           BigInt
+  providerInvocationKey         String
+  preparedManifestCanonicalJson String?                        @db.Text
+  preparedManifestKey           String?
+  providerVoteIdentityHash      String
+  workSlotId                    String
+  purpose                       ReviewInvocationLeasePurposeV2
+  authorizationId               String
+  producerReleaseId             String
+  reviewRevisionHash            String
+  mutationEpoch                 BigInt
+  leaseSafetyDecisionHash       String
+  attemptId                     String?                        @unique
+  sourceObservationId           String?
+  attemptOrdinal                Int
+  acquireRequestIdHash          String
+  acquireRequestHash            String
+  lastRenewRequestIdHash        String?
+  lastRenewRequestHash          String?
+  ownerIdHash                   String
+  leaseCapabilityId             String                         @unique
+  capabilitySigningKeyId        String
+  fencingToken                  BigInt                         @unique @default(autoincrement())
+  state                         ReviewInvocationLeaseStateV2   @default(active)
+  acquiredAt                    DateTime
+  renewedAt                     DateTime
+  expiresAt                     DateTime
+  resultReportUntil             DateTime
+  retainUntil                   DateTime
 
   @@unique([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, executionGeneration, providerInvocationKey, acquireRequestIdHash])
   @@index([expiresAt, leaseId])
@@ -1670,6 +1773,16 @@ enum ProviderExecutionProfileV2 {
   prompt_only_envelope_v1
   agentic_unbounded_v1
   context_gateway_v1
+}
+
+enum ReviewContextGatewaySessionStateV1 {
+  opened
+  active
+  sealed
+  accepted
+  rejected
+  revoked
+  expired
 }
 
 enum ReviewTrustDomainV2 {

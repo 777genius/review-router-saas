@@ -9,6 +9,7 @@ import {
   ReviewCoverageState,
   type ReviewExecutionQueryPort,
   type FinalizedReviewProjectionArtifact,
+  type ReviewExecutionSnapshot,
 } from "@reviewrouter/features-review-executions";
 import { PrismaReviewExecutionStore } from "@reviewrouter/features-review-executions/composition";
 import {
@@ -99,6 +100,13 @@ type FinalizedExecutionQueries = Pick<
   "findExecution"
 >;
 
+export interface ReviewPublicationContextPolicyPort {
+  assertCurrentPolicy(input: {
+    readonly authorization: ReviewRunAuthorization;
+    readonly snapshot: ReviewExecutionSnapshot;
+  }): Promise<void>;
+}
+
 export function composeReviewActionV2SnapshotPublicationRoutes(input: {
   readonly runtime: Runtime;
   readonly prisma: PrismaClient;
@@ -111,6 +119,7 @@ export function composeReviewActionV2SnapshotPublicationRoutes(input: {
   readonly capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
   readonly digest: ReviewActionV2DigestPort;
   readonly liveLifecycle: LiveReviewPublicationLifecyclePort;
+  readonly contextPolicy: ReviewPublicationContextPolicyPort;
   readonly now: () => Date;
 }): Readonly<{
   snapshot: RegisterReviewSnapshotReadV2RoutesDependencies;
@@ -128,6 +137,7 @@ export function composeReviewActionV2SnapshotPublicationRoutes(input: {
       authorities: input.authorities,
       safety: input.safety,
       liveLifecycle: input.liveLifecycle,
+      contextPolicy: input.contextPolicy,
     }),
     attempts: publications,
     idempotency: publications,
@@ -162,6 +172,7 @@ export function composeReviewActionV2SnapshotPublicationRoutes(input: {
     requestPublication: publicationApplication.request,
     capabilities: input.capabilities,
     digest: input.digest,
+    contextPolicy: input.contextPolicy,
     now: input.now,
   });
 }
@@ -178,6 +189,7 @@ export function createReviewActionV2SnapshotPublicationRoutes(input: {
   >["request"];
   readonly capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
   readonly digest: ReviewActionV2DigestPort;
+  readonly contextPolicy: ReviewPublicationContextPolicyPort;
   readonly now: () => Date;
 }): Readonly<{
   snapshot: RegisterReviewSnapshotReadV2RoutesDependencies;
@@ -209,6 +221,7 @@ export function createReviewActionV2SnapshotPublicationRoutes(input: {
             requestPublication: input.requestPublication,
             capabilities: input.capabilities,
             digest: input.digest,
+            contextPolicy: input.contextPolicy,
             now: input.now,
           }),
       },
@@ -286,6 +299,7 @@ async function requestPublication(
     >["request"];
     readonly capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
     readonly digest: ReviewActionV2DigestPort;
+    readonly contextPolicy: ReviewPublicationContextPolicyPort;
     readonly now: () => Date;
   },
 ) {
@@ -310,6 +324,10 @@ async function requestPublication(
       "artifact_missing",
     );
   }
+  await dependencies.contextPolicy.assertCurrentPolicy({
+    authorization,
+    snapshot,
+  });
   const artifact = snapshot.artifact;
   assertArtifactAuthority({ authorization, artifact, verified });
   if (request.projectionHash !== artifact.projectionHash) {
@@ -466,6 +484,7 @@ function productionPublicationDecisions(input: {
   readonly authorities: ReviewMutationAuthorityQueryPort;
   readonly safety: ReviewSafetyDecisionResolverPort;
   readonly liveLifecycle: LiveReviewPublicationLifecyclePort;
+  readonly contextPolicy: ReviewPublicationContextPolicyPort;
 }): ReviewPublicationDecisionPorts {
   const lifecycle = new ResolveCurrentPublicationLifecycle({
     expectations: {
@@ -532,6 +551,27 @@ function productionPublicationDecisions(input: {
             return {
               status: CurrentPublicationPermitStatus.Stale,
               reason: "execution_permit_not_current",
+            };
+          }
+          const authorization =
+            await input.authorizationQueries.findReviewRunAuthorizationById(
+              artifact.publicationPermit.authorizationId,
+            );
+          if (!authorization) {
+            return {
+              status: CurrentPublicationPermitStatus.Stale,
+              reason: "execution_context_policy_authorization_missing",
+            };
+          }
+          try {
+            await input.contextPolicy.assertCurrentPolicy({
+              authorization,
+              snapshot,
+            });
+          } catch {
+            return {
+              status: CurrentPublicationPermitStatus.Stale,
+              reason: "execution_context_policy_stale",
             };
           }
           return {

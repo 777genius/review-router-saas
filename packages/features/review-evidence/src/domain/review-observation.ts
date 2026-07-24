@@ -119,6 +119,8 @@ export type ReviewObservation = Readonly<{
   findingCount: number;
   qualityFlags: readonly ReviewObservationQualityFlag[];
   transportAttemptCount: number;
+  contextDependencyAttestationId: string | null;
+  contextDependencyAttestationHash: string | null;
   trustDomain: ReviewTrustDomain;
   createdAtMs: number;
   reuseExpiresAtMs: number;
@@ -249,6 +251,7 @@ export function createReviewObservation(
     throw new Error("review_observation_status_not_success");
   }
   assertSha256(candidate.payloadHash, "payload_hash");
+  validateContextDependencyAttestationReference(candidate);
   assertNonNegativeInteger(candidate.byteCount, "byte_count");
   assertNonNegativeInteger(candidate.findingCount, "finding_count");
   if (
@@ -346,6 +349,8 @@ export function sameReviewObservationAcceptance(
       left.findingCount,
       left.qualityFlags,
       left.transportAttemptCount,
+      left.contextDependencyAttestationId,
+      left.contextDependencyAttestationHash,
     ]) ===
     JSON.stringify([
       reviewObservationAttemptIdentity(right),
@@ -362,8 +367,45 @@ export function sameReviewObservationAcceptance(
       right.findingCount,
       right.qualityFlags,
       right.transportAttemptCount,
+      right.contextDependencyAttestationId,
+      right.contextDependencyAttestationHash,
     ])
   );
+}
+
+function validateContextDependencyAttestationReference(
+  candidate: ReviewObservationCandidate,
+): void {
+  const hasAttestationId = candidate.contextDependencyAttestationId !== null;
+  const hasAttestationHash =
+    candidate.contextDependencyAttestationHash !== null;
+  if (hasAttestationId !== hasAttestationHash) {
+    throw new Error("context_dependency_attestation_reference_incomplete");
+  }
+  if (candidate.contextDependencyAttestationId !== null) {
+    assertIdentifier(
+      candidate.contextDependencyAttestationId,
+      "context_dependency_attestation_id",
+    );
+  }
+  if (candidate.contextDependencyAttestationHash !== null) {
+    assertSha256(
+      candidate.contextDependencyAttestationHash,
+      "context_dependency_attestation_hash",
+    );
+  }
+  if (
+    candidate.executionProfile === ProviderExecutionProfile.ContextGatewayV1 &&
+    !hasAttestationId
+  ) {
+    throw new Error("context_dependency_attestation_required");
+  }
+  if (
+    candidate.executionProfile !== ProviderExecutionProfile.ContextGatewayV1 &&
+    hasAttestationId
+  ) {
+    throw new Error("context_dependency_attestation_profile_invalid");
+  }
 }
 
 function normalizeFinding(
@@ -451,9 +493,7 @@ function normalizeLifecycleRevalidation(
   ) {
     throw new Error("lifecycle_revalidation_confidence_invalid");
   }
-  if (
-    candidate.evidence.length > reviewEvidenceMaxLifecycleEvidenceItems
-  ) {
+  if (candidate.evidence.length > reviewEvidenceMaxLifecycleEvidenceItems) {
     throw new Error("lifecycle_revalidation_evidence_count_exceeded");
   }
   const evidence = candidate.evidence.map((item) => {

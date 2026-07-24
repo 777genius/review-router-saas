@@ -23,12 +23,12 @@ import {
   type ReviewObservation,
 } from "@reviewrouter/features-review-evidence";
 import {
+  AcquireOrJoinInvocationFlightStatus,
   CurrentReviewExecutionRevisionStatus,
   ReviewCoverageState,
   ReviewExecutionProviderKind,
   ReviewExecutionFinalizeStatus,
   ReviewExecutionState,
-  ReviewInvocationLeaseAcquireStatus,
   ReviewInvocationLeasePurpose,
   ReviewInvocationLeaseState,
   ReviewInvocationLeaseTransitionStatus,
@@ -38,6 +38,7 @@ import {
   ReviewWorkSlotState,
   type ReviewExecutionSnapshot,
   type FinalizedReviewProjectionArtifact,
+  type InvocationFlight,
   type ReviewInvocationLease,
 } from "@reviewrouter/features-review-executions";
 import {
@@ -195,6 +196,74 @@ describe("Review Action v2 execution/evidence composition", () => {
     ).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects context-gateway attachment when its replay proof is stale", async () => {
+    const capabilities = capabilityAdapter();
+    const attestationId = "attestation-1";
+    const attestationHash = hash("a");
+    const observation = reusableObservation({
+      contextDependencyAttestationId: attestationId,
+      contextDependencyAttestationHash: attestationHash,
+    });
+    const invocationManifest = manifest();
+    const verifyAttachment = vi.fn(async () => false);
+    const attachmentCapability = await capabilities.issueReusableAttachment(
+      {
+        authorizationId: authorization.authorizationId,
+        mutationEpoch: authorization.mutationEpoch,
+        scopeHash: invocationManifest.scopeHash,
+        targetExecutionId: "execution-target",
+        targetWorkSlotId: "slot-1",
+        targetReviewRevisionHash: authorization.reviewRevisionHash,
+        targetPlanHash: hash("9"),
+        observationId: observation.observationId,
+        sourceExecutionId: observation.sourceExecutionId,
+        manifest: invocationManifest,
+        manifestKey: observation.manifestKey,
+        providerInvocationKey: observation.providerInvocationKey,
+        providerVoteIdentityHash: observation.providerVoteIdentityHash,
+        payloadHash: observation.payloadHash,
+        byteCount: observation.byteCount,
+        findingCount: observation.findingCount,
+        attachmentKind:
+          ReviewObservationAttachmentKind.ContextGatewayCrossRevisionReuse,
+        reuseSafetyDecisionHash: hash("8"),
+        eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+        trustDomain: EvidenceTrustDomain.TrustedManaged,
+        contextReplayProofId: "replay-proof-1",
+        contextReplayProofHash: hash("b"),
+        contextAttestationId: attestationId,
+        contextAttestationHash: attestationHash,
+        targetCheckoutTreeOid: gitSha("c"),
+        replayBinaryHash: hash("d"),
+        replayPolicyVersion: "context-gateway-v1",
+        expiresAt: new Date(now.getTime() + 60_000),
+      },
+      now,
+    );
+    const d = executionDependencies({
+      capabilities,
+      contextReplay: {
+        prepareReplay: vi.fn(),
+        verifyAttachment,
+        assertCurrentPolicy: vi.fn(),
+      },
+    });
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(d).attachObservation.execute(
+        await attachRequest(attachmentCapability, observation),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 412,
+      issues: ["attachment_policy_stale"],
+    });
+    expect(verifyAttachment).toHaveBeenCalledTimes(1);
+    expect(d.evidence.lookupReviewEvidence.execute).not.toHaveBeenCalled();
+    expect(
+      d.executions.observationAttachments.attachReusable,
+    ).not.toHaveBeenCalled();
+  });
+
   it("never issues generic reuse authority for same-execution recovery", async () => {
     const { manifestCanonicalJson, identity, sourceLease, observation } =
       await committedAdoptionFixture();
@@ -342,8 +411,8 @@ describe("Review Action v2 execution/evidence composition", () => {
     const issueLease = vi.spyOn(capabilities, "issueLease");
     const acquiredLease = lease();
     const acquire = vi.fn(async () => ({
-      status: ReviewInvocationLeaseAcquireStatus.Acquired,
-      lease: acquiredLease,
+      status: AcquireOrJoinInvocationFlightStatus.OwnerAcquired,
+      flight: invocationFlight(acquiredLease),
     }));
     const release = vi.fn(async () => ({
       status: ReviewInvocationLeaseTransitionStatus.Applied,
@@ -404,6 +473,58 @@ describe("Review Action v2 execution/evidence composition", () => {
         fencingToken: acquiredLease.fencingToken,
       }),
     );
+    expect(issueLease).not.toHaveBeenCalled();
+  });
+
+  it("returns busy for an exact-revision join without issuing owner capability", async () => {
+    const capabilities = capabilityAdapter();
+    const issueLease = vi.spyOn(capabilities, "issueLease");
+    const incumbentLease = lease();
+    const acquire = vi.fn(async () => ({
+      status: AcquireOrJoinInvocationFlightStatus.Joined,
+      flight: invocationFlight(incumbentLease),
+    }));
+    const prepared = manifest();
+    const identity = await buildProviderInvocationIdentity(digest, {
+      manifest: prepared,
+      providerVoteIdentityHash: hash("c"),
+    });
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvocationLeaseAcquire,
+      {
+        ...envelope("join-existing-flight"),
+        authorizationToken: "authorization-token",
+        idempotencyKey: "join-existing-flight",
+        requestBodyHash: hash("0"),
+        executionId: snapshot.execution.executionId,
+        workSlotId: "slot-1",
+        purpose: ReviewInvocationLeasePurpose.ProviderExecution,
+        manifestCanonicalJson:
+          serializeProviderInvocationManifestCanonicalWireJson(prepared),
+        manifestKey: identity.manifestKey,
+        providerVoteIdentityHash: hash("c"),
+        providerInvocationKey: identity.providerInvocationKey,
+        acquireRequestId: "join-existing-flight",
+        ownerIdHash: sha("joining-owner"),
+      } satisfies ReviewInvocationLeaseAcquireRequest,
+    );
+    const d = executionDependencies({
+      capabilities,
+      acquire,
+      leaseSafety: vi.fn(async () => ({
+        allowed: true,
+        decisionHash: hash("6"),
+      })),
+    });
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(d).acquireLease.execute(request),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      result: { status: ReviewInvocationLeaseResultStatus.Busy },
+    });
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(d.executionQueries.findLease).not.toHaveBeenCalled();
     expect(issueLease).not.toHaveBeenCalled();
   });
 
@@ -844,6 +965,31 @@ describe("Review Action v2 execution/evidence composition", () => {
     expect(issuePublicationPermit).not.toHaveBeenCalled();
   });
 
+  it("fails finalization before projection work when context policy is stale", async () => {
+    const fixture = await finalizationFixture(new Date(now.getTime() + 60_000));
+    const assertCurrentPolicy = vi
+      .fn()
+      .mockRejectedValue(new Error("context_policy_stale"));
+    const d = executionDependencies({
+      finalize: fixture.finalize,
+      finalizationFacts: fixture.finalizationFacts,
+      contextReplay: {
+        prepareReplay: vi.fn(),
+        verifyAttachment: vi.fn(),
+        assertCurrentPolicy,
+      },
+    });
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(d).finalize.execute(
+        fixture.request,
+      ),
+    ).rejects.toThrow("context_policy_stale");
+    expect(assertCurrentPolicy).toHaveBeenCalledTimes(1);
+    expect(fixture.finalizationFacts).not.toHaveBeenCalled();
+    expect(fixture.finalize).not.toHaveBeenCalled();
+  });
+
   it("restores evidence after crash before attach and completes with the original fenced lease", async () => {
     const capabilities = capabilityAdapter();
     const currentLease = lease();
@@ -1192,7 +1338,7 @@ function executionDependencies(
     attachFresh?: ReturnType<typeof vi.fn>;
     adoptAccepted?: ReturnType<typeof vi.fn>;
     release?: ReturnType<typeof vi.fn>;
-    acquire?: ReviewActionV2ExecutionHandlerDependencies["executions"]["invocationLeases"]["acquire"];
+    acquire?: ReviewActionV2ExecutionHandlerDependencies["executions"]["invocationFlights"]["execute"];
     renew?: ReturnType<typeof vi.fn>;
     currentLease?: ReviewInvocationLease;
     observation?: ReviewObservation;
@@ -1202,6 +1348,7 @@ function executionDependencies(
     finalize?: ReviewActionV2ExecutionHandlerDependencies["executions"]["finalizeReviewExecution"]["execute"];
     finalizationFacts?: ReviewActionV2ExecutionHandlerDependencies["finalizationFacts"]["resolve"];
     currentRevision?: ReviewActionV2ExecutionHandlerDependencies["executions"]["currentRevision"]["execute"];
+    contextReplay?: ReviewActionV2ExecutionHandlerDependencies["contextReplay"];
     now?: () => Date;
   } = {},
 ): ReviewActionV2ExecutionHandlerDependencies {
@@ -1221,8 +1368,11 @@ function executionDependencies(
     },
     executions: {
       startReviewExecution: { execute: vi.fn() },
+      invocationFlights: {
+        execute: overrides.acquire ?? vi.fn(),
+      },
       invocationLeases: {
-        acquire: overrides.acquire ?? vi.fn(),
+        acquire: vi.fn(),
         renew: overrides.renew ?? vi.fn(),
         release: overrides.release ?? vi.fn(),
       },
@@ -1255,6 +1405,13 @@ function executionDependencies(
     finalizationFacts: {
       resolve: overrides.finalizationFacts ?? vi.fn(),
     },
+    contextReplay:
+      overrides.contextReplay ??
+      ({
+        prepareReplay: vi.fn(),
+        verifyAttachment: vi.fn(async () => true),
+        assertCurrentPolicy: vi.fn(),
+      } satisfies ReviewActionV2ExecutionHandlerDependencies["contextReplay"]),
   };
 }
 
@@ -1513,6 +1670,8 @@ async function commitRequest(
     schemaValidated: true,
     fullyConsumed: true,
     actualModel: observation.actualModel,
+    contextDependencyAttestationId: null,
+    contextDependencyAttestationHash: null,
     payloadCanonicalJson,
     payloadHash: observation.payloadHash,
     qualityFlags: observation.qualityFlags,
@@ -1747,6 +1906,31 @@ function lease(
     retainUntil: new Date(now.getTime() + 3_600_000),
     ...overrides,
   } as ReviewInvocationLease;
+}
+
+function invocationFlight(owner: ReviewInvocationLease): InvocationFlight {
+  const identity = {
+    reviewRevisionHash: owner.reviewRevisionHash,
+    providerInvocationKey: owner.providerInvocationKey,
+    preparedManifestKey: owner.preparedManifestKey!,
+    providerVoteIdentityHash: owner.providerVoteIdentityHash,
+    compatibilityKey: snapshot.execution.compatibilityKey,
+    policyIdentityHash: owner.leaseSafetyDecisionHash,
+  };
+  return {
+    flightId: owner.leaseId,
+    identity,
+    executionId: owner.executionId,
+    workSlotId: owner.workSlotId,
+    laneKey: owner.providerVoteIdentityHash,
+    shardKey: "shard-1",
+    ownerIdHash: owner.ownerIdHash,
+    ownerLeaseId: owner.leaseId,
+    fencingToken: owner.fencingToken,
+    acquiredAt: owner.acquiredAt,
+    renewedAt: owner.renewedAt,
+    expiresAt: owner.expiresAt,
+  };
 }
 
 function manifest(): ProviderInvocationManifest {

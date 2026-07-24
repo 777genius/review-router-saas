@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AcceptReviewObservation,
   AcceptReviewObservationRejectionReason,
   AcceptReviewObservationStatus,
   ActualModelCompatibilityMode,
+  ContextAttestationVerificationDenialReason,
+  ContextAttestationVerificationStatus,
+  ProviderExecutionProfile,
   ProviderResultCompletionStatus,
   ReviewExecutionAttemptReportState,
   ReviewObservationQualityFlag,
@@ -180,6 +183,34 @@ describe("AcceptReviewObservation", () => {
     expect(result.historicalOnly).toBe(true);
   });
 
+  it("binds a context attestation to the canonical observation payload hash", async () => {
+    const verifyAcceptedAttestation = vi.fn(async (query) => ({
+      status: ContextAttestationVerificationStatus.Accepted,
+      reason: ContextAttestationVerificationDenialReason.None,
+      acceptedAttestationHash: query.attestationHash,
+    }));
+    const fixture = setup({ verifyAcceptedAttestation });
+    fixture.attempts.put(
+      attemptFacts({
+        executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+      }),
+    );
+
+    const result = await fixture.useCase.execute(
+      command({
+        contextDependencyAttestationId: "attestation-1",
+        contextDependencyAttestationHash: hash("9"),
+      }),
+    );
+
+    expect(result.status).toBe(AcceptReviewObservationStatus.Accepted);
+    expect(verifyAcceptedAttestation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalOutcomeHash: result.observation?.payloadHash,
+      }),
+    );
+  });
+
   it("fails closed when evidence writes are disabled", async () => {
     const fixture = setup();
     fixture.attempts.put(attemptFacts());
@@ -214,7 +245,15 @@ describe("AcceptReviewObservation", () => {
   });
 });
 
-function setup() {
+function setup(
+  contextAttestations: ConstructorParameters<
+    typeof AcceptReviewObservation
+  >[0]["contextAttestations"] = {
+    verifyAcceptedAttestation: async () => {
+      throw new Error("unexpected_context_attestation_verification");
+    },
+  },
+) {
   const attempts = new InMemoryReviewExecutionAttemptFactsPort();
   const safety = new InMemoryReviewEvidenceSafetyPort(
     { effectAllowed: true, safetyDecisionHash: hash("f") },
@@ -246,6 +285,7 @@ function setup() {
       safety,
       observations: store,
       identities: new SequentialReviewObservationIdentityPort(),
+      contextAttestations,
       digest: new NodeSha256DigestAdapter(),
       clock,
       reuseTtlMs: 7 * dayMs,
@@ -270,6 +310,8 @@ function command(
     payload: payload(),
     qualityFlags: [ReviewObservationQualityFlag.ProviderWarning],
     transportAttemptCount: 1,
+    contextDependencyAttestationId: null,
+    contextDependencyAttestationHash: null,
     ...overrides,
   };
 }

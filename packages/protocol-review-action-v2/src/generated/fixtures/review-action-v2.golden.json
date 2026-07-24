@@ -2,19 +2,19 @@
   "review_run_authorize": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_01",
       "oidcToken": "fixture.header.payload.signature",
       "supportedProtocols": [
         {
           "protocolVersion": "2",
-          "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f"
+          "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50"
         }
       ]
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_01",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -25,7 +25,7 @@
   "review_run_renew": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_02",
       "authorizationToken": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_2",
@@ -37,7 +37,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_02",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -48,7 +48,7 @@
   "review_execution_restore": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_03",
       "authorizationToken": "fixture.header.payload.signature",
       "authorizationId": "authorizationId_fixture",
@@ -56,7 +56,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_03",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -67,7 +67,7 @@
   "review_execution_start": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_04",
       "authorizationToken": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_4",
@@ -83,7 +83,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_04",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -94,7 +94,7 @@
   "review_execution_supersede": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_05",
       "authorizationToken": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_5",
@@ -105,7 +105,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_05",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -116,7 +116,7 @@
   "review_execution_observation_attach": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_06",
       "authorizationToken": "fixture.header.payload.signature",
       "leaseCapability": "fixture.header.payload.signature",
@@ -134,7 +134,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_06",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -145,7 +145,7 @@
   "review_execution_observation_adopt": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_07",
       "authorizationToken": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_7",
@@ -172,7 +172,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_07",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -183,7 +183,7 @@
   "review_execution_finalize": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_08",
       "authorizationToken": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_8",
@@ -202,7 +202,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_08",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -213,7 +213,7 @@
   "review_invocation_lease_acquire": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_09",
       "authorizationToken": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_9",
@@ -230,7 +230,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_09",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -241,7 +241,7 @@
   "review_invocation_lease_renew": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_10",
       "leaseCapability": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_10",
@@ -253,7 +253,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_10",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -264,7 +264,7 @@
   "review_invocation_lease_release": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_11",
       "leaseCapability": "fixture.header.payload.signature",
       "idempotencyKey": "idem_fixture_11",
@@ -276,7 +276,7 @@
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_11",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
@@ -284,56 +284,150 @@
       }
     }
   },
-  "review_evidence_lookup": {
+  "review_context_gateway_open": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_12",
       "authorizationToken": "fixture.header.payload.signature",
-      "executionId": "executionId_fixture",
-      "workSlotId": "workSlotId_fixture",
-      "planHash": "3333333333333333333333333333333333333333333333333333333333333333",
-      "manifestCanonicalJson": "{\"fixture\":true}",
-      "manifestKey": "6666666666666666666666666666666666666666666666666666666666666666",
-      "providerInvocationKey": "0000000000000000000000000000000000000000000000000000000000000000",
-      "providerVoteIdentityHash": "3333333333333333333333333333333333333333333333333333333333333333"
+      "leaseCapability": "fixture.header.payload.signature",
+      "idempotencyKey": "idem_fixture_12",
+      "requestBodyHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "attemptId": "attemptId_fixture",
+      "sourceLeaseId": "sourceLeaseId_fixture",
+      "fencingToken": "12",
+      "sourceExecutionId": "sourceExecutionId_fixture",
+      "sourceWorkSlotId": "sourceWorkSlotId_fixture",
+      "sourceReviewRevisionHash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "checkoutTreeOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "gatewayPolicyVersion": "gatewayPolicyVersion_fixture",
+      "gatewayBinaryHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "confinementEvidenceHash": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
       "requestId": "rr_fixture_12",
+      "serverTime": "2026-01-01T00:00:00.000Z",
+      "result": {
+        "status": "opened"
+      }
+    }
+  },
+  "review_context_gateway_seal": {
+    "request": {
+      "protocolVersion": "2",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_13",
+      "authorizationToken": "fixture.header.payload.signature",
+      "leaseCapability": "fixture.header.payload.signature",
+      "idempotencyKey": "idem_fixture_13",
+      "requestBodyHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "sessionId": "sessionId_fixture",
+      "sealCapability": "fixture.header.payload.signature",
+      "attemptId": "attemptId_fixture",
+      "sourceLeaseId": "sourceLeaseId_fixture",
+      "fencingToken": "13",
+      "providerSucceeded": true,
+      "schemaValidated": true,
+      "fullyConsumed": true,
+      "actualModel": "actualModel_fixture",
+      "terminalOutcomeHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "transcriptCanonicalJson": "{\"fixture\":true}",
+      "transcriptHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "replayMaterialCanonicalJson": "{\"fixture\":true}",
+      "replayMaterialHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "response": {
+      "protocolVersion": "2",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_13",
+      "serverTime": "2026-01-01T00:00:00.000Z",
+      "result": {
+        "status": "accepted"
+      }
+    }
+  },
+  "review_evidence_lookup": {
+    "request": {
+      "protocolVersion": "2",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_14",
+      "authorizationToken": "fixture.header.payload.signature",
+      "executionId": "executionId_fixture",
+      "workSlotId": "workSlotId_fixture",
+      "planHash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "manifestCanonicalJson": "{\"fixture\":true}",
+      "manifestKey": "8888888888888888888888888888888888888888888888888888888888888888",
+      "providerInvocationKey": "2222222222222222222222222222222222222222222222222222222222222222",
+      "providerVoteIdentityHash": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "response": {
+      "protocolVersion": "2",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_14",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
         "status": "hit"
       }
     }
   },
+  "review_context_replay_commit": {
+    "request": {
+      "protocolVersion": "2",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_15",
+      "authorizationToken": "fixture.header.payload.signature",
+      "idempotencyKey": "idem_fixture_15",
+      "requestBodyHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "executionId": "executionId_fixture",
+      "workSlotId": "workSlotId_fixture",
+      "attestationId": "attestationId_fixture",
+      "attestationHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "targetReviewRevisionHash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "targetCheckoutTreeOid": "3333333333333333333333333333333333333333",
+      "replayCapability": "fixture.header.payload.signature",
+      "replayResultCanonicalJson": "{\"fixture\":true}",
+      "replayResultHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "response": {
+      "protocolVersion": "2",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_15",
+      "serverTime": "2026-01-01T00:00:00.000Z",
+      "result": {
+        "status": "accepted"
+      }
+    }
+  },
   "review_evidence_commit": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_13",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_16",
       "authorizationToken": "fixture.header.payload.signature",
       "leaseCapability": "fixture.header.payload.signature",
-      "idempotencyKey": "idem_fixture_13",
-      "requestBodyHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "idempotencyKey": "idem_fixture_16",
+      "requestBodyHash": "0000000000000000000000000000000000000000000000000000000000000000",
       "attemptId": "attemptId_fixture",
       "sourceLeaseId": "sourceLeaseId_fixture",
-      "ownerIdHash": "7777777777777777777777777777777777777777777777777777777777777777",
-      "fencingToken": "13",
+      "ownerIdHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fencingToken": "16",
       "completionStatus": "completionStatus_fixture",
       "schemaValidated": true,
       "fullyConsumed": true,
       "actualModel": "actualModel_fixture",
+      "contextDependencyAttestationId": null,
+      "contextDependencyAttestationHash": null,
       "payloadCanonicalJson": "{\"fixture\":true}",
-      "payloadHash": "7777777777777777777777777777777777777777777777777777777777777777",
+      "payloadHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "qualityFlags": ["qualityFlags_fixture"],
-      "transportAttemptCount": 13
+      "transportAttemptCount": 16
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_13",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_16",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
         "status": "accepted"
@@ -343,15 +437,15 @@
   "review_snapshot_restore": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_14",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_17",
       "authorizationToken": "fixture.header.payload.signature",
-      "reviewRevisionHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      "reviewRevisionHash": "2222222222222222222222222222222222222222222222222222222222222222"
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_14",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_17",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
         "status": "found"
@@ -361,19 +455,19 @@
   "review_publication_request": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_15",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_18",
       "authorizationToken": "fixture.header.payload.signature",
-      "idempotencyKey": "idem_fixture_15",
-      "requestBodyHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "idempotencyKey": "idem_fixture_18",
+      "requestBodyHash": "2222222222222222222222222222222222222222222222222222222222222222",
       "publicationPermit": "fixture.header.payload.signature",
-      "projectionHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "projectionHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "operationsCanonicalJson": "{\"fixture\":true}"
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_15",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_18",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
         "status": "accepted"
@@ -383,15 +477,15 @@
   "review_publication_status": {
     "request": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_16",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_19",
       "authorizationToken": "fixture.header.payload.signature",
       "publicationAttemptId": "publicationAttemptId_fixture"
     },
     "response": {
       "protocolVersion": "2",
-      "schemaDigest": "1dc849f6565510ca0d9ccee7c8f33d31f3502f7ec4ce697aab8f3b341c82db0f",
-      "requestId": "rr_fixture_16",
+      "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
+      "requestId": "rr_fixture_19",
       "serverTime": "2026-01-01T00:00:00.000Z",
       "result": {
         "status": "pending"

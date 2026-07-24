@@ -49,7 +49,12 @@ export enum ReviewReuseDenialReason {
   LifecycleTaskPresent = "lifecycle_task_present",
   LifecycleStateIncomplete = "lifecycle_state_incomplete",
   ExecutionProfileDenied = "execution_profile_denied",
-  ContextGatewayNotSupported = "context_gateway_not_supported",
+  PromptOnlyConfinementNotProven = "prompt_only_confinement_not_proven",
+  ContextAttestationMissing = "context_attestation_missing",
+  ContextReplayRequired = "context_replay_required",
+  ReuseDenyingQualityFlag = "reuse_denying_quality_flag",
+  ContextGatewayReuseDisabled = "context_gateway_reuse_disabled",
+  ContextGatewayReuseShadow = "context_gateway_reuse_shadow",
   UnknownCompatibility = "unknown_compatibility",
 }
 
@@ -217,78 +222,82 @@ export function decideReviewReuseEligibility(
   }
 
   if (
-    target.manifest.executionProfile !==
-    ProviderExecutionProfile.PromptOnlyEnvelopeV1
+    target.manifest.executionProfile ===
+    ProviderExecutionProfile.ContextGatewayV1
   ) {
-    const reason =
-      target.manifest.executionProfile ===
-      ProviderExecutionProfile.ContextGatewayV1
-        ? ReviewReuseDenialReason.ContextGatewayNotSupported
-        : ReviewReuseDenialReason.ExecutionProfileDenied;
+    if (
+      observation.executionProfile !== ProviderExecutionProfile.ContextGatewayV1
+    ) {
+      return denied(
+        ReuseEligibility.DeniedExecutionProfile,
+        ReviewReuseDenialReason.ExecutionProfileDenied,
+        ReviewReuseTier.T2ContextGatewayCrossRevision,
+      );
+    }
+    if (
+      observation.contextDependencyAttestationId === null ||
+      observation.contextDependencyAttestationHash === null
+    ) {
+      return denied(
+        ReuseEligibility.DeniedIncompatible,
+        ReviewReuseDenialReason.ContextAttestationMissing,
+        ReviewReuseTier.T2ContextGatewayCrossRevision,
+      );
+    }
+    if (observation.qualityFlags.length > 0) {
+      return denied(
+        ReuseEligibility.DeniedIncompatible,
+        ReviewReuseDenialReason.ReuseDenyingQualityFlag,
+        ReviewReuseTier.T2ContextGatewayCrossRevision,
+      );
+    }
+    if (
+      target.manifest.taskKindSet.includes(
+        ReviewTaskKind.LifecycleRevalidation,
+      ) ||
+      target.manifest.lifecycleTargetSetHash !== null ||
+      target.manifest.liveLifecycleStateHash !== null
+    ) {
+      return denied(
+        ReuseEligibility.DeniedExecutionProfile,
+        ReviewReuseDenialReason.LifecycleTaskPresent,
+        ReviewReuseTier.T2ContextGatewayCrossRevision,
+      );
+    }
+    if (
+      target.safetyDecision.contextGatewayReuseMode ===
+      ReviewReuseEffectMode.Disabled
+    ) {
+      return denied(
+        ReuseEligibility.DeniedIncompatible,
+        ReviewReuseDenialReason.ContextGatewayReuseDisabled,
+        ReviewReuseTier.T2ContextGatewayCrossRevision,
+      );
+    }
     return denied(
-      ReuseEligibility.DeniedExecutionProfile,
-      reason,
-      target.manifest.executionProfile ===
-        ProviderExecutionProfile.ContextGatewayV1
-        ? ReviewReuseTier.T2ContextGatewayCrossRevision
-        : ReviewReuseTier.None,
+      ReuseEligibility.CandidateOnly,
+      target.safetyDecision.contextGatewayReuseMode ===
+        ReviewReuseEffectMode.Shadow
+        ? ReviewReuseDenialReason.ContextGatewayReuseShadow
+        : ReviewReuseDenialReason.ContextReplayRequired,
+      ReviewReuseTier.T2ContextGatewayCrossRevision,
     );
   }
   if (
+    target.manifest.executionProfile !==
+      ProviderExecutionProfile.PromptOnlyEnvelopeV1 ||
     observation.executionProfile !==
-    ProviderExecutionProfile.PromptOnlyEnvelopeV1
+      ProviderExecutionProfile.PromptOnlyEnvelopeV1
   ) {
     return denied(
       ReuseEligibility.DeniedExecutionProfile,
       ReviewReuseDenialReason.ExecutionProfileDenied,
-      ReviewReuseTier.T1PromptOnlyCrossRevision,
     );
   }
-  if (
-    target.manifest.taskKindSet.includes(
-      ReviewTaskKind.LifecycleRevalidation,
-    ) ||
-    target.manifest.lifecycleTargetSetHash !== null ||
-    target.manifest.liveLifecycleStateHash !== null
-  ) {
-    return denied(
-      ReuseEligibility.DeniedExecutionProfile,
-      ReviewReuseDenialReason.LifecycleTaskPresent,
-      ReviewReuseTier.T1PromptOnlyCrossRevision,
-    );
-  }
-  if (
-    target.safetyDecision.evidenceReuseMode === ReviewReuseEffectMode.Shadow
-  ) {
-    return denied(
-      ReuseEligibility.CandidateOnly,
-      ReviewReuseDenialReason.EvidenceReuseShadow,
-      ReviewReuseTier.T1PromptOnlyCrossRevision,
-    );
-  }
-  if (
-    target.safetyDecision.promptOnlyReuseMode === ReviewReuseEffectMode.Disabled
-  ) {
-    return denied(
-      ReuseEligibility.DeniedIncompatible,
-      ReviewReuseDenialReason.PromptOnlyReuseDisabled,
-      ReviewReuseTier.T1PromptOnlyCrossRevision,
-    );
-  }
-  if (
-    target.safetyDecision.promptOnlyReuseMode === ReviewReuseEffectMode.Shadow
-  ) {
-    return denied(
-      ReuseEligibility.CandidateOnly,
-      ReviewReuseDenialReason.PromptOnlyReuseShadow,
-      ReviewReuseTier.T1PromptOnlyCrossRevision,
-    );
-  }
-  return eligible(
-    observation,
-    ReuseEligibility.PromptOnlyCrossRevision,
+  return denied(
+    ReuseEligibility.DeniedExecutionProfile,
+    ReviewReuseDenialReason.PromptOnlyConfinementNotProven,
     ReviewReuseTier.T1PromptOnlyCrossRevision,
-    target.safetyDecision.safetyDecisionHash,
   );
 }
 
