@@ -370,7 +370,7 @@ if (databaseUrl) {
       ).toBe(90_000);
     });
 
-    it("does not shorten lease windows while rebasing caller clock skew", async () => {
+    it("preserves absolute renewal deadlines across caller clock skew", async () => {
       const harness = await createHarness();
       const running = await prepareAndAdmit(harness, "renew-db-time");
       const command = leaseCommand(harness, running.snapshot, "renew-db-time");
@@ -381,6 +381,7 @@ if (databaseUrl) {
       });
       const lease = acquired.lease!;
       const skewedNow = new Date(Date.now() + 5_000);
+      const requestedExpiresAt = new Date(lease.expiresAt.getTime() + 10_000);
 
       const renewed = await harness.executions.renewLease({
         leaseId: lease.leaseId,
@@ -390,13 +391,13 @@ if (databaseUrl) {
         renewRequestIdHash: hash(13),
         renewRequestHash: hash(14),
         now: skewedNow,
-        expiresAt: lease.expiresAt,
+        expiresAt: requestedExpiresAt,
         resultReportUntil: lease.resultReportUntil,
         limits: command.limits,
       });
 
-      expect(renewed.status).toBe("restored");
-      expect(renewed.lease?.expiresAt).toEqual(lease.expiresAt);
+      expect(renewed.status).toBe("applied");
+      expect(renewed.lease?.expiresAt).toEqual(requestedExpiresAt);
       expect(renewed.lease?.resultReportUntil).toEqual(lease.resultReportUntil);
     });
 
