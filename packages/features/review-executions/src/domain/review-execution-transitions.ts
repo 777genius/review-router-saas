@@ -599,6 +599,12 @@ export function decideLeaseRenewal(input: {
     return expireLeaseDecision(input);
   }
   if (
+    input.expiresAt < input.lease.expiresAt ||
+    input.resultReportUntil < input.lease.resultReportUntil
+  ) {
+    return unchangedLease(LeaseTransitionDecisionStatus.InvalidDeadline, input);
+  }
+  if (
     input.lease.expiresAt.getTime() === input.expiresAt.getTime() &&
     input.lease.resultReportUntil.getTime() ===
       input.resultReportUntil.getTime()

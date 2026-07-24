@@ -1274,6 +1274,19 @@ describe("work slots and fenced invocation leases", () => {
       ReviewInvocationLeaseTransitionStatus.InvalidDeadline,
     );
 
+    const shortened = await store.renewLease({
+      ...term,
+      renewRequestIdHash: hash("d"),
+      renewRequestHash: hash("e"),
+      now: plus(7_000),
+      expiresAt: plus(54_000),
+      resultReportUntil: plus(110_000),
+      limits,
+    });
+    expect(shortened.status).toBe(
+      ReviewInvocationLeaseTransitionStatus.InvalidDeadline,
+    );
+
     const conflictingReplay = await store.renewLease({
       ...term,
       renewRequestIdHash: hash("8"),
