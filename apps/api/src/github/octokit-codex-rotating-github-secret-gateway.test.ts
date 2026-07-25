@@ -1045,6 +1045,63 @@ ${renderCodexRotatingInteractionWorkflow({
     );
   });
 
+  it("loads exact changed-line facts with a pull-requests read token", async () => {
+    mocks.auth.mockResolvedValueOnce({
+      token: "ghs_pull_requests_read_token",
+      expiresAt: "2026-05-25T12:15:00.000Z",
+      permissions: { pull_requests: "read" },
+    });
+    mocks.request.mockResolvedValueOnce({
+      data: {
+        number: 252,
+        additions: 299_627,
+        deletions: 47_351,
+        base: { repo: { id: 123456 } },
+        head: { sha: "a".repeat(40) },
+      },
+    });
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.resolve({
+        repository: {
+          workspaceId: "workspace_1",
+          repositoryId: "repository_1",
+          githubInstallationId: "129500385",
+          githubRepositoryId: "123456",
+          fullName: "777genius/example",
+          owner: "777genius",
+          selected: true,
+          installationStatus: "active",
+        },
+        pullRequestNumber: 252,
+      }),
+    ).resolves.toEqual({
+      pullRequestNumber: 252,
+      headSha: "a".repeat(40),
+      additions: 299_627,
+      deletions: 47_351,
+    });
+    expect(mocks.auth).toHaveBeenCalledWith({
+      type: "installation",
+      installationId: 129500385,
+      repositoryIds: [123456],
+      permissions: { pull_requests: "read" },
+    });
+    expect(mocks.request).toHaveBeenCalledWith(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner: "777genius",
+        repo: "example",
+        pull_number: 252,
+        headers: { authorization: "Bearer ghs_pull_requests_read_token" },
+      },
+    );
+  });
+
   it("rejects rotating workflow source from an unexpected action repository", async () => {
     const workflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: "evil/review-router@0123456789abcdef0123456789abcdef01234567",

@@ -2,6 +2,7 @@ import type {
   CancelReviewRequestedPreAdmissionCommand,
   ClaimReviewRequestedIntentCommand,
   LinkReviewRequestedAdmissionCommand,
+  RecordReviewRequestedAdmissionDecisionCommand,
   RecordReviewRequestedDispatchCommand,
   RegisterReviewRequestedIntentCommand,
   ReviewRequestedIntentCommandPort,
@@ -28,6 +29,12 @@ export class ReviewRequestedIntentService {
 
   linkAdmission(command: LinkReviewRequestedAdmissionCommand) {
     return this.commands.linkAdmission(command);
+  }
+
+  recordAdmissionDecision(
+    command: RecordReviewRequestedAdmissionDecisionCommand,
+  ) {
+    return this.commands.recordAdmissionDecision(command);
   }
 
   cancelPreAdmission(command: CancelReviewRequestedPreAdmissionCommand) {

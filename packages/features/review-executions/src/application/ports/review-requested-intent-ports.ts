@@ -3,6 +3,7 @@ import type {
   ReviewRevision,
 } from "../../domain/review-execution";
 import type {
+  ReviewRequestAdmissionState,
   ReviewRequestedIntent,
   ReviewRequestedIntentCandidate,
   ReviewRequestedIntentState,
@@ -91,6 +92,19 @@ export type LinkReviewRequestedAdmissionCommand = {
   readonly now: Date;
 };
 
+export type RecordReviewRequestedAdmissionDecisionCommand = {
+  readonly requestId: string;
+  readonly expectedVersion: bigint;
+  readonly changedLines: number;
+  readonly maxChangedLines: number;
+  readonly policySnapshotId: string;
+  readonly decisionHash: string;
+  readonly verdict:
+    | ReviewRequestAdmissionState.Admitted
+    | ReviewRequestAdmissionState.Rejected;
+  readonly now: Date;
+};
+
 export type CancelReviewRequestedPreAdmissionCommand = ReviewExecutionScope & {
   readonly now: Date;
 };
@@ -164,6 +178,12 @@ export interface ReviewRequestedIntentCommandPort {
     readonly intent?: ReviewRequestedIntent | undefined;
   }>;
   linkAdmission(command: LinkReviewRequestedAdmissionCommand): Promise<{
+    readonly status: ReviewRequestedTransitionStatus;
+    readonly intent?: ReviewRequestedIntent | undefined;
+  }>;
+  recordAdmissionDecision(
+    command: RecordReviewRequestedAdmissionDecisionCommand,
+  ): Promise<{
     readonly status: ReviewRequestedTransitionStatus;
     readonly intent?: ReviewRequestedIntent | undefined;
   }>;

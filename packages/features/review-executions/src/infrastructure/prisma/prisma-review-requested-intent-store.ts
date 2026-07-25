@@ -9,6 +9,7 @@ import {
   type DeferReviewRequestedResolutionCommand,
   type LinkReviewRequestedAdmissionCommand,
   type RecordReviewRequestedDispatchCommand,
+  type RecordReviewRequestedAdmissionDecisionCommand,
   type RecoverReviewRequestedDispatchCommand,
   type RegisterReviewRequestedIntentCommand,
   type ReviewRequestedIntentCommandPort,
@@ -19,6 +20,7 @@ import {
   cancelReviewRequestedPreAdmissionIntent,
   ReviewRequestedClaimDecisionStatus,
   ReviewRequestedDispatchRecoveryDecisionStatus,
+  ReviewRequestAdmissionState,
   ReviewRequestedRegistrationDecisionStatus,
   ReviewRequestedTransitionDecisionStatus,
   ReviewRequestedIntentState,
@@ -26,6 +28,7 @@ import {
   beginReviewRequestedSubmission,
   claimReviewRequestedIntent,
   decideReviewRequestedAdmissionLink,
+  decideReviewRequestedAdmission,
   decideReviewRequestedDispatch,
   decideReviewRequestedDispatchRecovery,
   decideReviewRequestedRegistration,
@@ -38,6 +41,7 @@ import {
   isTransactionConflictError,
 } from "./prisma-review-execution-utils";
 import {
+  admissionStateToPrisma,
   intentStateToPrisma,
   intentTerminalReasonToPrisma,
   intentToDomain,
@@ -45,6 +49,11 @@ import {
 } from "./prisma-review-execution-mappers";
 
 type Transaction = Prisma.TransactionClient;
+type PrismaReviewRequestedIntentStoreHooks = Readonly<{
+  beforeSupersedeCompareAndSet?: () => Promise<void>;
+}>;
+
+const registrationTransactionMaxAttempts = 3;
 
 export class PrismaReviewRequestedIntentStore
   implements
@@ -52,7 +61,10 @@ export class PrismaReviewRequestedIntentStore
     ReviewRequestedIntentCommandPort,
     ReviewRequestedIntentPrunerPort
 {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly hooks: PrismaReviewRequestedIntentStoreHooks = {},
+  ) {}
 
   async findByRequestId(
     requestId: string,
@@ -173,116 +185,132 @@ export class PrismaReviewRequestedIntentStore
   }
 
   async registerIntent(command: RegisterReviewRequestedIntentCommand) {
-    try {
-      return await this.prisma.$transaction(
-        async (transaction) => {
-          await lockScope(transaction, command.candidate);
-          const existingByDelivery =
-            await transaction.reviewRequestedIntent.findUnique({
-              where: {
-                deliveryIdentityHash: command.candidate.deliveryIdentityHash,
-              },
-            });
-          const existingByRequestId =
-            await transaction.reviewRequestedIntent.findUnique({
-              where: { requestId: command.candidate.requestId },
-            });
-          const pendingInScope =
-            await transaction.reviewRequestedIntent.findFirst({
-              where: {
-                ...scopeWhere(command.candidate),
-                state: intentStateToPrisma(
-                  ReviewRequestedIntentState.PendingDispatch,
-                ),
-              },
-              orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
-            });
-          const preAdmissionInScope =
-            pendingInScope ??
-            (await transaction.reviewRequestedIntent.findFirst({
-              where: {
-                ...scopeWhere(command.candidate),
-                state: {
-                  in: [
-                    intentStateToPrisma(ReviewRequestedIntentState.Dispatching),
-                    intentStateToPrisma(
-                      ReviewRequestedIntentState.ReconcilingDispatch,
-                    ),
-                    intentStateToPrisma(
-                      ReviewRequestedIntentState.AwaitingAuthorization,
-                    ),
-                  ],
+    let lastConcurrencyError: unknown = null;
+    for (
+      let attempt = 1;
+      attempt <= registrationTransactionMaxAttempts;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            await lockScope(transaction, command.candidate);
+            const existingByDelivery =
+              await transaction.reviewRequestedIntent.findUnique({
+                where: {
+                  deliveryIdentityHash: command.candidate.deliveryIdentityHash,
                 },
-              },
-              orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
-            }));
-          const decision = decideReviewRequestedRegistration({
-            candidate: command.candidate,
-            existingByDelivery:
-              existingByDelivery === null
-                ? null
-                : intentToDomain(existingByDelivery),
-            existingByRequestId:
-              existingByRequestId === null
-                ? null
-                : intentToDomain(existingByRequestId),
-            preAdmissionInScope:
-              preAdmissionInScope === null
-                ? null
-                : intentToDomain(preAdmissionInScope),
-          });
-          if (
-            decision.status ===
-            ReviewRequestedRegistrationDecisionStatus.Restore
-          ) {
-            return {
-              status: ReviewRequestedRegisterStatus.Restored,
-              intent: decision.intent,
-            };
-          }
-          if (
-            decision.status ===
-            ReviewRequestedRegistrationDecisionStatus.IdempotencyConflict
-          ) {
-            return {
-              status: ReviewRequestedRegisterStatus.IdempotencyConflict,
-              intent: decision.intent,
-            };
-          }
-          if (
-            decision.status ===
-            ReviewRequestedRegistrationDecisionStatus.RegisterAndSupersede
-          ) {
-            const updated = await transaction.reviewRequestedIntent.updateMany({
-              where: {
-                requestId: decision.supersededIntent.requestId,
-                version: decision.supersededIntent.version - 1n,
-              },
-              data: mutableIntentData(decision.supersededIntent),
+              });
+            const existingByRequestId =
+              await transaction.reviewRequestedIntent.findUnique({
+                where: { requestId: command.candidate.requestId },
+              });
+            const pendingInScope =
+              await transaction.reviewRequestedIntent.findFirst({
+                where: {
+                  ...scopeWhere(command.candidate),
+                  state: intentStateToPrisma(
+                    ReviewRequestedIntentState.PendingDispatch,
+                  ),
+                },
+                orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
+              });
+            const preAdmissionInScope =
+              pendingInScope ??
+              (await transaction.reviewRequestedIntent.findFirst({
+                where: {
+                  ...scopeWhere(command.candidate),
+                  state: {
+                    in: [
+                      intentStateToPrisma(
+                        ReviewRequestedIntentState.Dispatching,
+                      ),
+                      intentStateToPrisma(
+                        ReviewRequestedIntentState.ReconcilingDispatch,
+                      ),
+                      intentStateToPrisma(
+                        ReviewRequestedIntentState.AwaitingAuthorization,
+                      ),
+                    ],
+                  },
+                },
+                orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
+              }));
+            const decision = decideReviewRequestedRegistration({
+              candidate: command.candidate,
+              existingByDelivery:
+                existingByDelivery === null
+                  ? null
+                  : intentToDomain(existingByDelivery),
+              existingByRequestId:
+                existingByRequestId === null
+                  ? null
+                  : intentToDomain(existingByRequestId),
+              preAdmissionInScope:
+                preAdmissionInScope === null
+                  ? null
+                  : intentToDomain(preAdmissionInScope),
             });
-            if (updated.count !== 1) {
-              throw new ConcurrentIntentMutationError();
+            if (
+              decision.status ===
+              ReviewRequestedRegistrationDecisionStatus.Restore
+            ) {
+              return {
+                status: ReviewRequestedRegisterStatus.Restored,
+                intent: decision.intent,
+              };
             }
-          }
-          const created = await transaction.reviewRequestedIntent.create({
-            data: intentCreateData(decision.intent),
-          });
-          return {
-            status: ReviewRequestedRegisterStatus.Registered,
-            intent: intentToDomain(created),
-          };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
-      );
-    } catch (error) {
-      if (error instanceof ConcurrentIntentMutationError) {
-        return this.resolveRegistrationRace(command);
+            if (
+              decision.status ===
+              ReviewRequestedRegistrationDecisionStatus.IdempotencyConflict
+            ) {
+              return {
+                status: ReviewRequestedRegisterStatus.IdempotencyConflict,
+                intent: decision.intent,
+              };
+            }
+            if (
+              decision.status ===
+              ReviewRequestedRegistrationDecisionStatus.RegisterAndSupersede
+            ) {
+              await this.hooks.beforeSupersedeCompareAndSet?.();
+              const updated =
+                await transaction.reviewRequestedIntent.updateMany({
+                  where: {
+                    requestId: decision.supersededIntent.requestId,
+                    version: decision.supersededIntent.version - 1n,
+                  },
+                  data: mutableIntentData(decision.supersededIntent),
+                });
+              if (updated.count !== 1) {
+                throw new ConcurrentIntentMutationError();
+              }
+            }
+            const created = await transaction.reviewRequestedIntent.create({
+              data: intentCreateData(decision.intent),
+            });
+            return {
+              status: ReviewRequestedRegisterStatus.Registered,
+              intent: intentToDomain(created),
+            };
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+        );
+      } catch (error) {
+        if (
+          !(error instanceof ConcurrentIntentMutationError) &&
+          !isConcurrencyError(error)
+        ) {
+          throw error;
+        }
+        const resolved = await this.resolveRegistrationRace(command);
+        if (resolved !== null) {
+          return resolved;
+        }
+        lastConcurrencyError = error;
       }
-      if (isConcurrencyError(error)) {
-        return this.resolveRegistrationRace(command);
-      }
-      throw error;
     }
+    throw lastConcurrencyError ?? new ConcurrentIntentMutationError();
   }
 
   async claimIntent(command: ClaimReviewRequestedIntentCommand) {
@@ -525,6 +553,25 @@ export class PrismaReviewRequestedIntentStore
     );
   }
 
+  async recordAdmissionDecision(
+    command: RecordReviewRequestedAdmissionDecisionCommand,
+  ) {
+    return this.transitionIntent(
+      command.requestId,
+      async (transaction, intent) =>
+        decideReviewRequestedAdmission({
+          intent,
+          expectedVersion: command.expectedVersion,
+          changedLines: command.changedLines,
+          maxChangedLines: command.maxChangedLines,
+          policySnapshotId: command.policySnapshotId,
+          decisionHash: command.decisionHash,
+          verdict: command.verdict,
+          now: await databaseNow(transaction),
+        }),
+    );
+  }
+
   async deferResolution(command: DeferReviewRequestedResolutionCommand) {
     return this.transitionIntent(
       command.requestId,
@@ -570,15 +617,20 @@ export class PrismaReviewRequestedIntentStore
           },
           orderBy: { requestId: "asc" },
         });
-        for (const record of records) {
-          const intent = intentToDomain(record);
+        const cancellable = records
+          .map(intentToDomain)
+          .filter(
+            (intent) =>
+              intent.admission.state !== ReviewRequestAdmissionState.Admitted,
+          );
+        for (const intent of cancellable) {
           await updateIntent(
             transaction,
             intent,
             cancelReviewRequestedPreAdmissionIntent(intent, command.now),
           );
         }
-        return { cancelled: records.length };
+        return { cancelled: cancellable.length };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
@@ -788,7 +840,7 @@ export class PrismaReviewRequestedIntentStore
         intent: existing,
       };
     }
-    throw new ConcurrentIntentMutationError();
+    return null;
   }
 }
 
@@ -826,6 +878,12 @@ function intentCreateData(intent: ReviewRequestedIntent) {
       intent.terminalReason === null
         ? null
         : intentTerminalReasonToPrisma(intent.terminalReason),
+    admissionState: admissionStateToPrisma(intent.admission.state),
+    admissionChangedLines: intent.admission.changedLines,
+    admissionMaxChangedLines: intent.admission.maxChangedLines,
+    admissionPolicySnapshotId: intent.admission.policySnapshotId,
+    admissionDecisionHash: intent.admission.decisionHash,
+    admissionCheckedAt: intent.admission.checkedAt,
     supersededByRequestId: intent.supersededByRequestId,
     createdAt: intent.createdAt,
     updatedAt: intent.updatedAt,
@@ -854,6 +912,12 @@ function mutableIntentData(intent: ReviewRequestedIntent) {
       intent.terminalReason === null
         ? null
         : intentTerminalReasonToPrisma(intent.terminalReason),
+    admissionState: admissionStateToPrisma(intent.admission.state),
+    admissionChangedLines: intent.admission.changedLines,
+    admissionMaxChangedLines: intent.admission.maxChangedLines,
+    admissionPolicySnapshotId: intent.admission.policySnapshotId,
+    admissionDecisionHash: intent.admission.decisionHash,
+    admissionCheckedAt: intent.admission.checkedAt,
     supersededByRequestId: intent.supersededByRequestId,
     updatedAt: intent.updatedAt,
   };

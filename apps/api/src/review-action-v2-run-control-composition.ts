@@ -11,6 +11,7 @@ import {
   ReviewActionV2RouteFailure,
 } from "@reviewrouter/features-action-control-plane/v2";
 import {
+  ReviewRequestAdmissionState,
   ReviewRequestedIntentState,
   type ReviewRequestedIntent,
 } from "@reviewrouter/features-review-executions";
@@ -128,7 +129,9 @@ export function createServerOwnedReviewActionV2AdmissionFacts(
         dependencies.requestedIntentRequired === true &&
         (!requestedIntent ||
           requestedIntent.state !==
-            ReviewRequestedIntentState.AwaitingAuthorization)
+            ReviewRequestedIntentState.AwaitingAuthorization ||
+          requestedIntent.admission.state !==
+            ReviewRequestAdmissionState.Admitted)
       ) {
         throw routeFailure(
           403,

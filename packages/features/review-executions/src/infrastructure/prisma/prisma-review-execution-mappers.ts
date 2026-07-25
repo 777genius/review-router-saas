@@ -6,6 +6,7 @@ import {
   ReviewInvocationLeaseStateV2 as PrismaLeaseState,
   ReviewObservationAttachmentKindV2 as PrismaAttachmentKind,
   ReviewProviderKindV2 as PrismaProviderKind,
+  ReviewRequestAdmissionStateV2 as PrismaAdmissionState,
   ReviewRequestedIntentStateV2 as PrismaIntentState,
   ReviewRequestedIntentTerminalReasonV2 as PrismaIntentTerminalReason,
   ReviewRequestedTriggerKindV2 as PrismaTriggerKind,
@@ -37,6 +38,7 @@ import {
   type ReviewWorkSlot,
 } from "../../domain/review-execution";
 import {
+  ReviewRequestAdmissionState,
   ReviewRequestedIntentState,
   ReviewRequestedIntentTerminalReason,
   ReviewRequestedTriggerKind,
@@ -98,11 +100,67 @@ export function intentToDomain(record: IntentRecord): ReviewRequestedIntent {
       record.terminalReason === null
         ? null
         : intentTerminalReasonFromPrisma(record.terminalReason),
+    admission: admissionFromPrisma(record),
     supersededByRequestId: record.supersededByRequestId,
     createdAt: new Date(record.createdAt),
     updatedAt: new Date(record.updatedAt),
     retainUntil: new Date(record.retainUntil),
   };
+}
+
+function admissionFromPrisma(record: IntentRecord) {
+  if (record.admissionState === PrismaAdmissionState.not_evaluated) {
+    if (
+      record.admissionChangedLines !== null ||
+      record.admissionMaxChangedLines !== null ||
+      record.admissionPolicySnapshotId !== null ||
+      record.admissionDecisionHash !== null ||
+      record.admissionCheckedAt !== null
+    ) {
+      throw new Error("review_requested_persisted_admission_incomplete");
+    }
+    return {
+      state: ReviewRequestAdmissionState.NotEvaluated,
+      changedLines: null,
+      maxChangedLines: null,
+      policySnapshotId: null,
+      decisionHash: null,
+      checkedAt: null,
+    } as const;
+  }
+  if (
+    record.admissionChangedLines === null ||
+    record.admissionMaxChangedLines === null ||
+    record.admissionPolicySnapshotId === null ||
+    record.admissionDecisionHash === null ||
+    record.admissionCheckedAt === null
+  ) {
+    throw new Error("review_requested_persisted_admission_incomplete");
+  }
+  return {
+    state:
+      record.admissionState === PrismaAdmissionState.admitted
+        ? ReviewRequestAdmissionState.Admitted
+        : ReviewRequestAdmissionState.Rejected,
+    changedLines: record.admissionChangedLines,
+    maxChangedLines: record.admissionMaxChangedLines,
+    policySnapshotId: record.admissionPolicySnapshotId,
+    decisionHash: record.admissionDecisionHash,
+    checkedAt: new Date(record.admissionCheckedAt),
+  } as const;
+}
+
+export function admissionStateToPrisma(
+  value: ReviewRequestAdmissionState,
+): PrismaAdmissionState {
+  switch (value) {
+    case ReviewRequestAdmissionState.NotEvaluated:
+      return PrismaAdmissionState.not_evaluated;
+    case ReviewRequestAdmissionState.Admitted:
+      return PrismaAdmissionState.admitted;
+    case ReviewRequestAdmissionState.Rejected:
+      return PrismaAdmissionState.rejected;
+  }
 }
 
 export function streamToDomain(record: StreamRecord): ReviewExecutionStream {
@@ -610,6 +668,8 @@ export function intentTerminalReasonToPrisma(
       return PrismaIntentTerminalReason.authorization_deadline_exceeded;
     case ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted:
       return PrismaIntentTerminalReason.dispatch_attempts_exhausted;
+    case ReviewRequestedIntentTerminalReason.MaxChangedLinesExceeded:
+      return PrismaIntentTerminalReason.max_changed_lines_exceeded;
   }
 }
 
@@ -625,6 +685,8 @@ function intentTerminalReasonFromPrisma(
       return ReviewRequestedIntentTerminalReason.AuthorizationDeadlineExceeded;
     case PrismaIntentTerminalReason.dispatch_attempts_exhausted:
       return ReviewRequestedIntentTerminalReason.DispatchAttemptsExhausted;
+    case PrismaIntentTerminalReason.max_changed_lines_exceeded:
+      return ReviewRequestedIntentTerminalReason.MaxChangedLinesExceeded;
   }
 }
 

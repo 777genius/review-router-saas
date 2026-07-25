@@ -878,39 +878,45 @@ model ReviewContextTargetReplayProof {
 }
 
 model ReviewRequestedIntent {
-  requestId               String                                 @id
-  dispatchAttempt         Int                                    @default(1)
-  version                 BigInt                                 @default(1)
-  workspaceId             String
-  repositoryConnectionId  String
-  scmRepositoryIdentityId String
-  pullRequestNumber       Int
-  baseSha                 String
-  mergeBaseSha            String
-  headSha                 String
-  reviewRevisionHash      String
-  triggerKind             ReviewRequestedTriggerKindV2
-  deliveryIdentityHash    String                                 @unique
-  canonicalRequestHash    String
-  state                   ReviewRequestedIntentStateV2           @default(pending_dispatch)
-  notBefore               DateTime
-  claimId                 String?                                @unique
-  claimOwnerIdHash        String?
-  claimFencingToken       BigInt?                                @unique
-  claimedAt               DateTime?
-  claimUntil              DateTime?
-  submissionStartedAt     DateTime?
-  nextResolutionAt        DateTime?
-  resolutionDeadlineAt    DateTime?
-  sourceRunId             String?
-  sourceRunAttempt        String?
-  authorizationId         String?
-  executionId             String?
-  terminalReason          ReviewRequestedIntentTerminalReasonV2?
-  supersededByRequestId   String?
-  createdAt               DateTime
-  updatedAt               DateTime
-  retainUntil             DateTime
+  requestId                 String                                 @id
+  dispatchAttempt           Int                                    @default(1)
+  version                   BigInt                                 @default(1)
+  workspaceId               String
+  repositoryConnectionId    String
+  scmRepositoryIdentityId   String
+  pullRequestNumber         Int
+  baseSha                   String
+  mergeBaseSha              String
+  headSha                   String
+  reviewRevisionHash        String
+  triggerKind               ReviewRequestedTriggerKindV2
+  deliveryIdentityHash      String                                 @unique
+  canonicalRequestHash      String
+  state                     ReviewRequestedIntentStateV2           @default(pending_dispatch)
+  notBefore                 DateTime
+  claimId                   String?                                @unique
+  claimOwnerIdHash          String?
+  claimFencingToken         BigInt?                                @unique
+  claimedAt                 DateTime?
+  claimUntil                DateTime?
+  submissionStartedAt       DateTime?
+  nextResolutionAt          DateTime?
+  resolutionDeadlineAt      DateTime?
+  sourceRunId               String?
+  sourceRunAttempt          String?
+  authorizationId           String?
+  executionId               String?
+  terminalReason            ReviewRequestedIntentTerminalReasonV2?
+  admissionState            ReviewRequestAdmissionStateV2          @default(not_evaluated)
+  admissionChangedLines     Int?
+  admissionMaxChangedLines  Int?
+  admissionPolicySnapshotId String?
+  admissionDecisionHash     String?
+  admissionCheckedAt        DateTime?
+  supersededByRequestId     String?
+  createdAt                 DateTime
+  updatedAt                 DateTime
+  retainUntil               DateTime
 
   @@index([state, notBefore, requestId])
   @@index([state, nextResolutionAt, requestId])
@@ -1813,6 +1819,13 @@ enum ReviewRequestedIntentTerminalReasonV2 {
   dispatch_outcome_unknown
   authorization_deadline_exceeded
   dispatch_attempts_exhausted
+  max_changed_lines_exceeded
+}
+
+enum ReviewRequestAdmissionStateV2 {
+  not_evaluated
+  admitted
+  rejected
 }
 
 enum ReviewExecutionStateV2 {

@@ -137,7 +137,10 @@ or secret generation exits before provider work; a completed snapshot for the
 exact current head exits before graph, memory, health-check, or LLM work. Job and
 runtime timeout values come from the same setting. Raising the timeout increases
 both giant-PR coverage and head-of-line blocking, so repositories should pair it
-with `REVIEW_ROUTER_MAX_CHANGED_LINES`.
+with `REVIEW_ROUTER_MAX_CHANGED_LINES`. Hosted admission also enforces
+`REVIEW_ROUTER_HOSTED_MAX_CHANGED_LINES` against exact current pull-request
+facts before OAuth or provider work. The repository setting may lower, but
+cannot raise or disable, that server-owned ceiling.
 
 ## Incomplete GitHub input
 

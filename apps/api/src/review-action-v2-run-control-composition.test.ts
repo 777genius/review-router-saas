@@ -31,8 +31,10 @@ import {
 } from "@reviewrouter/features-review-run-control/testing";
 import {
   createReviewRequestedIntent,
+  ReviewRequestAdmissionState,
   ReviewRequestedIntentState,
   ReviewRequestedTriggerKind,
+  type ReviewRequestedIntent,
 } from "@reviewrouter/features-review-executions";
 import {
   canonicalizeReviewActionV2Request,
@@ -349,7 +351,7 @@ describe("Review Action v2 run-control composition", () => {
     const release = await kit.store.findProducerReleaseById("release_v2");
     if (!release) throw new Error("test_release_missing");
     const revisionInputs: unknown[] = [];
-    const requestedIntent = {
+    const requestedIntent: ReviewRequestedIntent = {
       ...createReviewRequestedIntent({
         workspaceId: "workspace_1",
         repositoryConnectionId: "repository_1",
@@ -372,6 +374,14 @@ describe("Review Action v2 run-control composition", () => {
       state: ReviewRequestedIntentState.AwaitingAuthorization,
       sourceRunId: "1001",
       sourceRunAttempt: "1",
+      admission: {
+        state: ReviewRequestAdmissionState.Admitted,
+        changedLines: 150,
+        maxChangedLines: 250_000,
+        policySnapshotId: "hosted-review-size-v1:test",
+        decisionHash: hash("9"),
+        checkedAt: new Date("2026-07-22T12:00:01.000Z"),
+      },
     };
     const admissionFacts = createServerOwnedReviewActionV2AdmissionFacts({
       revisionResolver: {

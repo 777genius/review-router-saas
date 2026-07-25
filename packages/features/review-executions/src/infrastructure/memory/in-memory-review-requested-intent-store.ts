@@ -7,6 +7,7 @@ import {
   type CancelReviewRequestedPreAdmissionCommand,
   type DeferReviewRequestedResolutionCommand,
   type LinkReviewRequestedAdmissionCommand,
+  type RecordReviewRequestedAdmissionDecisionCommand,
   type RecordReviewRequestedDispatchCommand,
   type RecoverReviewRequestedDispatchCommand,
   type RegisterReviewRequestedIntentCommand,
@@ -24,12 +25,14 @@ import {
   cancelReviewRequestedPreAdmissionIntent,
   ReviewRequestedClaimDecisionStatus,
   ReviewRequestedDispatchRecoveryDecisionStatus,
+  ReviewRequestAdmissionState,
   ReviewRequestedRegistrationDecisionStatus,
   ReviewRequestedTransitionDecisionStatus,
   ReviewRequestedIntentState,
   assessReviewRequestedClaim,
   beginReviewRequestedSubmission,
   claimReviewRequestedIntent,
+  decideReviewRequestedAdmission,
   decideReviewRequestedAdmissionLink,
   decideReviewRequestedDispatch,
   decideReviewRequestedDispatchRecovery,
@@ -334,6 +337,16 @@ export class InMemoryReviewRequestedIntentStore
       if (!intent) {
         return { status: ReviewRequestedTransitionStatus.Missing };
       }
+      const sourceRunIdentityOwned = [...this.intents.values()].some(
+        (candidate) =>
+          candidate.requestId !== intent.requestId &&
+          candidate.repositoryConnectionId === intent.repositoryConnectionId &&
+          candidate.sourceRunId === command.sourceRunId &&
+          candidate.sourceRunAttempt === command.sourceRunAttempt,
+      );
+      if (sourceRunIdentityOwned) {
+        return { status: ReviewRequestedTransitionStatus.StaleClaim };
+      }
       const competingPreAdmission = [...this.intents.values()].some(
         (candidate) =>
           candidate.requestId !== intent.requestId &&
@@ -407,6 +420,37 @@ export class InMemoryReviewRequestedIntentStore
     });
   }
 
+  async recordAdmissionDecision(
+    command: RecordReviewRequestedAdmissionDecisionCommand,
+  ) {
+    return this.atomic(() => {
+      const intent = this.intents.get(command.requestId);
+      if (!intent) {
+        return { status: ReviewRequestedTransitionStatus.Missing };
+      }
+      const decision = decideReviewRequestedAdmission({
+        intent,
+        ...command,
+      });
+      if (
+        decision.status === ReviewRequestedTransitionDecisionStatus.Restored
+      ) {
+        return {
+          status: ReviewRequestedTransitionStatus.Restored,
+          intent: cloneIntent(decision.intent),
+        };
+      }
+      if (decision.status !== ReviewRequestedTransitionDecisionStatus.Applied) {
+        return { status: ReviewRequestedTransitionStatus.Conflict };
+      }
+      this.intents.set(intent.requestId, decision.intent);
+      return {
+        status: ReviewRequestedTransitionStatus.Applied,
+        intent: cloneIntent(decision.intent),
+      };
+    });
+  }
+
   async cancelPreAdmission(
     command: CancelReviewRequestedPreAdmissionCommand,
   ): Promise<{ readonly cancelled: number }> {
@@ -418,7 +462,9 @@ export class InMemoryReviewRequestedIntentStore
           (intent.state === ReviewRequestedIntentState.PendingDispatch ||
             intent.state === ReviewRequestedIntentState.Dispatching ||
             intent.state === ReviewRequestedIntentState.ReconcilingDispatch ||
-            intent.state === ReviewRequestedIntentState.AwaitingAuthorization),
+            (intent.state ===
+              ReviewRequestedIntentState.AwaitingAuthorization &&
+              intent.admission.state !== ReviewRequestAdmissionState.Admitted)),
       );
       for (const intent of cancellable) {
         this.intents.set(
@@ -592,6 +638,13 @@ function cloneIntent(intent: ReviewRequestedIntent): ReviewRequestedIntent {
   return {
     ...intent,
     revision: { ...intent.revision },
+    admission:
+      intent.admission.checkedAt === null
+        ? { ...intent.admission }
+        : {
+            ...intent.admission,
+            checkedAt: new Date(intent.admission.checkedAt),
+          },
     notBefore: new Date(intent.notBefore),
     submissionStartedAt:
       intent.submissionStartedAt === null

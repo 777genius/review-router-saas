@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ReviewRequestAdmissionState,
   ReviewRequestedDispatchLookupStatus,
   ReviewRequestedDispatchRunStatus,
   ReviewRequestedDispatchSubmissionStatus,
@@ -284,6 +285,14 @@ function intentFixture(): ReviewRequestedIntent {
     authorizationId: null,
     executionId: null,
     terminalReason: null,
+    admission: {
+      state: ReviewRequestAdmissionState.NotEvaluated,
+      changedLines: null,
+      maxChangedLines: null,
+      policySnapshotId: null,
+      decisionHash: null,
+      checkedAt: null,
+    },
     supersededByRequestId: null,
     createdAt: now,
     updatedAt: now,
