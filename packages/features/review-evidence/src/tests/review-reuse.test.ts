@@ -281,6 +281,40 @@ describe("ReviewReuseEligibilityPolicy", () => {
     });
   });
 
+  it("denies cross-revision reuse when a fresh gateway result has no attestation", () => {
+    const gatewayManifest = manifest({
+      executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+    });
+    const decision = decideReviewReuseEligibility(
+      observation({
+        executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+        qualityFlags: [],
+        contextDependencyAttestationId: null,
+        contextDependencyAttestationHash: null,
+      }),
+      target({
+        revision: revision({
+          headSha: gitSha("d"),
+          reviewRevisionHash: hash("0"),
+        }),
+        manifest: gatewayManifest,
+        safetyDecision: {
+          evidenceReuseMode: ReviewReuseEffectMode.Enabled,
+          promptOnlyReuseMode: ReviewReuseEffectMode.Disabled,
+          contextGatewayReuseMode: ReviewReuseEffectMode.Enabled,
+          safetyDecisionHash: hash("f"),
+        },
+      }),
+    );
+
+    expect(decision).toMatchObject({
+      eligibility: ReuseEligibility.DeniedIncompatible,
+      tier: ReviewReuseTier.T2ContextGatewayCrossRevision,
+      reason: ReviewReuseDenialReason.ContextAttestationMissing,
+      canAttach: false,
+    });
+  });
+
   it("requires same-execution restore/adoption instead of cross-execution lookup", () => {
     const decision = decideReviewReuseEligibility(
       observation(),

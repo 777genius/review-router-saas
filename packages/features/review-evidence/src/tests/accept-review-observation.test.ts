@@ -211,6 +211,48 @@ describe("AcceptReviewObservation", () => {
     );
   });
 
+  it("accepts a fresh context-gateway observation without reusable attestation", async () => {
+    const verifyAcceptedAttestation = vi.fn();
+    const fixture = setup({ verifyAcceptedAttestation });
+    fixture.attempts.put(
+      attemptFacts({
+        executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+      }),
+    );
+
+    const result = await fixture.useCase.execute(command());
+
+    expect(result.status).toBe(AcceptReviewObservationStatus.Accepted);
+    expect(result.observation).toMatchObject({
+      executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+      contextDependencyAttestationId: null,
+      contextDependencyAttestationHash: null,
+    });
+    expect(verifyAcceptedAttestation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an incomplete context attestation reference", async () => {
+    const fixture = setup();
+    fixture.attempts.put(
+      attemptFacts({
+        executionProfile: ProviderExecutionProfile.ContextGatewayV1,
+      }),
+    );
+
+    await expect(
+      fixture.useCase.execute(
+        command({
+          contextDependencyAttestationId: "attestation-1",
+          contextDependencyAttestationHash: null,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: AcceptReviewObservationStatus.Rejected,
+      reason:
+        AcceptReviewObservationRejectionReason.ContextAttestationNotAccepted,
+    });
+  });
+
   it("fails closed when evidence writes are disabled", async () => {
     const fixture = setup();
     fixture.attempts.put(attemptFacts());

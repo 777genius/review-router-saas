@@ -395,12 +395,6 @@ function validateContextDependencyAttestationReference(
     );
   }
   if (
-    candidate.executionProfile === ProviderExecutionProfile.ContextGatewayV1 &&
-    !hasAttestationId
-  ) {
-    throw new Error("context_dependency_attestation_required");
-  }
-  if (
     candidate.executionProfile !== ProviderExecutionProfile.ContextGatewayV1 &&
     hasAttestationId
   ) {

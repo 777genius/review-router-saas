@@ -266,29 +266,20 @@ async function verifyContextAttestation(
   terminalOutcomeHash: string,
   nowMs: number,
 ): Promise<boolean> {
-  const hasId = command.contextDependencyAttestationId !== null;
-  const hasHash = command.contextDependencyAttestationHash !== null;
+  const attestationId = command.contextDependencyAttestationId;
+  const attestationHash = command.contextDependencyAttestationHash;
+  const hasId = attestationId !== null;
+  const hasHash = attestationHash !== null;
   if (hasId !== hasHash) return false;
   if (facts.executionProfile !== ProviderExecutionProfile.ContextGatewayV1) {
     return !hasId;
   }
-  if (
-    command.contextDependencyAttestationId === null ||
-    command.contextDependencyAttestationHash === null
-  ) {
-    return false;
-  }
-  assertIdentifier(
-    command.contextDependencyAttestationId,
-    "context_dependency_attestation_id",
-  );
-  assertSha256(
-    command.contextDependencyAttestationHash,
-    "context_dependency_attestation_hash",
-  );
+  if (attestationId === null || attestationHash === null) return true;
+  assertIdentifier(attestationId, "context_dependency_attestation_id");
+  assertSha256(attestationHash, "context_dependency_attestation_hash");
   const decision = await attestations.verifyAcceptedAttestation({
-    attestationId: command.contextDependencyAttestationId,
-    attestationHash: command.contextDependencyAttestationHash,
+    attestationId,
+    attestationHash,
     sourceExecutionId: facts.sourceExecutionId,
     sourceWorkSlotId: facts.sourceWorkSlotId,
     attemptId: facts.attemptId,
@@ -303,8 +294,7 @@ async function verifyContextAttestation(
   });
   return (
     decision.status === ContextAttestationVerificationStatus.Accepted &&
-    decision.acceptedAttestationHash ===
-      command.contextDependencyAttestationHash
+    decision.acceptedAttestationHash === attestationHash
   );
 }
 
