@@ -85,6 +85,7 @@ import {
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
 import { PrismaReviewSnapshotRepository } from "@reviewrouter/features-review-snapshots";
 import { PrismaReviewExecutionCheckpointRepository } from "@reviewrouter/features-review-execution-checkpoints";
+import { PrismaReviewRequestedIntentStore } from "@reviewrouter/features-review-executions/composition";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
 import { createPrismaReviewRunControlRepositories } from "@reviewrouter/features-review-run-control/composition";
@@ -122,6 +123,7 @@ import {
   composeReviewActionV2ProductionRoutes,
 } from "./review-action-v2-production-composition.js";
 import { appRouter } from "./trpc.js";
+import { ProductionHostedReviewPreleaseGate } from "./hosted-review-prelease-gate.js";
 
 export type CreateApiAppOptions = {
   readonly githubWebhookSecret?: string;
@@ -265,6 +267,9 @@ export async function createApiApp(
               ),
             },
           );
+          const requestedIntentStore = new PrismaReviewRequestedIntentStore(
+            prisma,
+          );
           const ledgerSecret =
             process.env.REVIEW_ROUTER_LEDGER_HMAC_KEY ??
             options.actionSessionSecret;
@@ -345,6 +350,17 @@ export async function createApiApp(
                   codexRotatingCheckoutTokens: codexRotatingGitHubSecretGateway,
                   codexRotatingWorkflowSourceVerifier:
                     codexRotatingGitHubSecretGateway,
+                  hostedReviewPreleaseGate:
+                    new ProductionHostedReviewPreleaseGate({
+                      requestedIntentQueries: requestedIntentStore,
+                      requestedIntentCommands: requestedIntentStore,
+                      pullRequests: codexRotatingGitHubSecretGateway,
+                      maxChangedLines: readPositiveInteger(
+                        process.env.REVIEW_ROUTER_HOSTED_MAX_CHANGED_LINES,
+                        250_000,
+                        "hosted_review_max_changed_lines_invalid",
+                      ),
+                    }),
                 }
               : {}),
             compatibility: new StaticActionRuntimeCompatibilityPolicy({

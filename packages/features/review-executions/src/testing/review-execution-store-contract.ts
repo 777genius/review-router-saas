@@ -27,6 +27,7 @@ import {
   type ReviewRevision,
 } from "../domain/review-execution";
 import {
+  ReviewRequestAdmissionState,
   ReviewRequestedIntentState,
   ReviewRequestedIntentTerminalReason,
   ReviewRequestedTriggerKind,
@@ -461,6 +462,17 @@ export function runReviewExecutionStoreContract(
         resolutionDeadlineAt: new Date(dispatchAt.getTime() + 60_000),
       });
       expect(dispatched.status).toBe(ReviewRequestedTransitionStatus.Applied);
+      const admitted = await harness.requestedIntents.recordAdmissionDecision({
+        requestId: candidate.requestId,
+        expectedVersion: dispatched.intent!.version,
+        changedLines: 250_000,
+        maxChangedLines: 250_000,
+        policySnapshotId: "hosted-review-size-v1:contract",
+        decisionHash: hash(15),
+        verdict: ReviewRequestAdmissionState.Admitted,
+        now: new Date(),
+      });
+      expect(admitted.status).toBe(ReviewRequestedTransitionStatus.Applied);
       const linked = await harness.requestedIntents.linkAdmission({
         requestId: candidate.requestId,
         sourceRunId: "run-intent-link",

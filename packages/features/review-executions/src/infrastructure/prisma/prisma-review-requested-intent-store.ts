@@ -9,6 +9,7 @@ import {
   type DeferReviewRequestedResolutionCommand,
   type LinkReviewRequestedAdmissionCommand,
   type RecordReviewRequestedDispatchCommand,
+  type RecordReviewRequestedAdmissionDecisionCommand,
   type RecoverReviewRequestedDispatchCommand,
   type RegisterReviewRequestedIntentCommand,
   type ReviewRequestedIntentCommandPort,
@@ -26,6 +27,7 @@ import {
   beginReviewRequestedSubmission,
   claimReviewRequestedIntent,
   decideReviewRequestedAdmissionLink,
+  decideReviewRequestedAdmission,
   decideReviewRequestedDispatch,
   decideReviewRequestedDispatchRecovery,
   decideReviewRequestedRegistration,
@@ -38,6 +40,7 @@ import {
   isTransactionConflictError,
 } from "./prisma-review-execution-utils";
 import {
+  admissionStateToPrisma,
   intentStateToPrisma,
   intentTerminalReasonToPrisma,
   intentToDomain,
@@ -525,6 +528,25 @@ export class PrismaReviewRequestedIntentStore
     );
   }
 
+  async recordAdmissionDecision(
+    command: RecordReviewRequestedAdmissionDecisionCommand,
+  ) {
+    return this.transitionIntent(
+      command.requestId,
+      async (transaction, intent) =>
+        decideReviewRequestedAdmission({
+          intent,
+          expectedVersion: command.expectedVersion,
+          changedLines: command.changedLines,
+          maxChangedLines: command.maxChangedLines,
+          policySnapshotId: command.policySnapshotId,
+          decisionHash: command.decisionHash,
+          verdict: command.verdict,
+          now: await databaseNow(transaction),
+        }),
+    );
+  }
+
   async deferResolution(command: DeferReviewRequestedResolutionCommand) {
     return this.transitionIntent(
       command.requestId,
@@ -826,6 +848,12 @@ function intentCreateData(intent: ReviewRequestedIntent) {
       intent.terminalReason === null
         ? null
         : intentTerminalReasonToPrisma(intent.terminalReason),
+    admissionState: admissionStateToPrisma(intent.admission.state),
+    admissionChangedLines: intent.admission.changedLines,
+    admissionMaxChangedLines: intent.admission.maxChangedLines,
+    admissionPolicySnapshotId: intent.admission.policySnapshotId,
+    admissionDecisionHash: intent.admission.decisionHash,
+    admissionCheckedAt: intent.admission.checkedAt,
     supersededByRequestId: intent.supersededByRequestId,
     createdAt: intent.createdAt,
     updatedAt: intent.updatedAt,
@@ -854,6 +882,12 @@ function mutableIntentData(intent: ReviewRequestedIntent) {
       intent.terminalReason === null
         ? null
         : intentTerminalReasonToPrisma(intent.terminalReason),
+    admissionState: admissionStateToPrisma(intent.admission.state),
+    admissionChangedLines: intent.admission.changedLines,
+    admissionMaxChangedLines: intent.admission.maxChangedLines,
+    admissionPolicySnapshotId: intent.admission.policySnapshotId,
+    admissionDecisionHash: intent.admission.decisionHash,
+    admissionCheckedAt: intent.admission.checkedAt,
     supersededByRequestId: intent.supersededByRequestId,
     updatedAt: intent.updatedAt,
   };

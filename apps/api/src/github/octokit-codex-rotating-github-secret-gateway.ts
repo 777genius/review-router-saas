@@ -12,12 +12,14 @@ import { REVIEW_ROUTER_ACTION_REPOSITORY } from "@reviewrouter/platform-config";
 import {
   managedCodexWorkflowPath,
   managedInteractionWorkflowPath,
+  type ActionRepositoryContext,
   type CodexRotatingGitHubSecretTokenIssuerPort,
   type CodexRotatingGitHubSecretWriterPort,
   type CodexRotatingGitHubCheckoutTokenIssuerPort,
   type CodexRotatingWorkflowSourceVerifierPort,
   type CodexRotatingSecretWriteTarget,
 } from "@reviewrouter/features-action-control-plane";
+import type { HostedReviewPullRequestFactsPort } from "../hosted-review-prelease-gate.js";
 type InstallationTokenResponse = {
   readonly type?: unknown;
   readonly tokenType?: unknown;
@@ -115,7 +117,8 @@ export class OctokitCodexRotatingGitHubSecretGateway
     CodexRotatingGitHubSecretTokenIssuerPort,
     CodexRotatingGitHubSecretWriterPort,
     CodexRotatingGitHubCheckoutTokenIssuerPort,
-    CodexRotatingWorkflowSourceVerifierPort
+    CodexRotatingWorkflowSourceVerifierPort,
+    HostedReviewPullRequestFactsPort
 {
   private readonly app: App;
   private readonly expectedApiUrl: string;
@@ -598,6 +601,30 @@ export class OctokitCodexRotatingGitHubSecretGateway
       eventName: input.eventName,
       githubRepositoryId: input.repository.githubRepositoryId,
       githubRunAttempt: input.githubRunAttempt,
+    });
+  }
+
+  async resolve(input: {
+    readonly repository: ActionRepositoryContext;
+    readonly pullRequestNumber: number;
+  }) {
+    const token = await this.mintRepositoryToken({
+      githubInstallationId: input.repository.githubInstallationId,
+      githubRepositoryId: input.repository.githubRepositoryId,
+      permissions: { pull_requests: "read" },
+    });
+    const response = (await githubRequest(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+      {
+        owner: input.repository.owner,
+        repo: repoNameFromFullName(input.repository.fullName),
+        pull_number: input.pullRequestNumber,
+        headers: { authorization: `Bearer ${token.token}` },
+      },
+    )) as PullRequestResponse;
+    return decodePullRequestReviewFacts(response.data, {
+      githubRepositoryId: input.repository.githubRepositoryId,
+      pullRequestNumber: input.pullRequestNumber,
     });
   }
 
@@ -1209,6 +1236,43 @@ function decodeWorkflowRunPullRequest(
     throw new Error("codex_rotating_workflow_run_pull_request_invalid");
   }
   return pullRequestNumber as number;
+}
+
+function decodePullRequestReviewFacts(
+  data: unknown,
+  expected: {
+    readonly githubRepositoryId: string;
+    readonly pullRequestNumber: number;
+  },
+) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("codex_rotating_pull_request_facts_invalid_response");
+  }
+  const pullRequest = data as {
+    readonly number?: unknown;
+    readonly additions?: unknown;
+    readonly deletions?: unknown;
+    readonly base?: { readonly repo?: { readonly id?: unknown } | null };
+    readonly head?: { readonly sha?: unknown };
+  };
+  const headSha = normalizeCommitSha(pullRequest.head?.sha);
+  if (
+    pullRequest.number !== expected.pullRequestNumber ||
+    String(pullRequest.base?.repo?.id ?? "") !== expected.githubRepositoryId ||
+    headSha === null ||
+    !Number.isSafeInteger(pullRequest.additions) ||
+    (pullRequest.additions as number) < 0 ||
+    !Number.isSafeInteger(pullRequest.deletions) ||
+    (pullRequest.deletions as number) < 0
+  ) {
+    throw new Error("codex_rotating_pull_request_facts_identity_mismatch");
+  }
+  return {
+    pullRequestNumber: expected.pullRequestNumber,
+    headSha,
+    additions: pullRequest.additions as number,
+    deletions: pullRequest.deletions as number,
+  };
 }
 
 function parsePositiveSafeInteger(value: string, errorCode: string): number {

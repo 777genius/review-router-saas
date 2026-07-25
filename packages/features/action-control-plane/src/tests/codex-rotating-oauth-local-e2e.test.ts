@@ -135,14 +135,16 @@ describe("Codex rotating OAuth local E2E", () => {
       clock: { now: vi.fn(() => firstRunAt) },
     };
 
-    const firstPrelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "first-oidc-jwt",
-        audience: "reviewrouter",
-        providerInstanceId,
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const firstPrelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "first-oidc-jwt",
+          audience: "reviewrouter",
+          providerInstanceId,
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
     expect(firstPrelease.currentGeneration).toBe(1);
     expect(firstPrelease.currentGenerationHash).toBeUndefined();
@@ -240,14 +242,16 @@ describe("Codex rotating OAuth local E2E", () => {
     });
 
     dependencies.clock.now.mockReturnValue(secondRunAt);
-    const secondPrelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "second-oidc-jwt",
-        audience: "reviewrouter",
-        providerInstanceId,
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const secondPrelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "second-oidc-jwt",
+          audience: "reviewrouter",
+          providerInstanceId,
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
     expect(secondPrelease.currentGeneration).toBe(2);
     expect(secondPrelease.currentGenerationHash).toBe(
@@ -755,14 +759,16 @@ describe("Codex rotating OAuth local E2E", () => {
       clock: { now: vi.fn(() => firstRunAt) },
     };
 
-    const firstPrelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "first-oidc-jwt",
-        audience: "reviewrouter",
-        providerInstanceId,
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const firstPrelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "first-oidc-jwt",
+          audience: "reviewrouter",
+          providerInstanceId,
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
     const firstLease = await finalizeCodexRotatingOAuthLease(
       {
@@ -797,14 +803,16 @@ describe("Codex rotating OAuth local E2E", () => {
     );
 
     dependencies.clock.now.mockReturnValue(secondRunAt);
-    const stalePrelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "stale-oidc-jwt",
-        audience: "reviewrouter",
-        providerInstanceId,
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const stalePrelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "stale-oidc-jwt",
+          audience: "reviewrouter",
+          providerInstanceId,
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
     await expect(
       finalizeCodexRotatingOAuthLease(
@@ -882,6 +890,15 @@ function githubOidcClaims(input: {
     exp: Math.floor(input.now.getTime() / 1000) + 120,
     jti: input.jti,
   } as const;
+}
+
+function requireLease(
+  response: Awaited<ReturnType<typeof preleaseCodexRotatingOAuth>>,
+) {
+  if ("status" in response) {
+    throw new Error("expected_codex_rotating_prelease_lease");
+  }
+  return response;
 }
 
 function buildTokenFakes() {

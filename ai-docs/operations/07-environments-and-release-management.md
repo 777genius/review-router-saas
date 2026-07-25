@@ -438,6 +438,7 @@ Critical flags:
 REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE
 REVIEW_ROUTER_ALLOWED_ACTION_REFS
 REVIEW_ROUTER_BLOCKED_ACTION_VERSIONS
+REVIEW_ROUTER_HOSTED_MAX_CHANGED_LINES
 REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING
 REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS
@@ -458,6 +459,13 @@ Flags must fail closed for security-sensitive features.
 blocklist for known-bad installed Action versions, for example
 `v1.0.0,main-bad-sha`. It should be used as an emergency stopgap and followed
 by a fixed release or workflow update PR.
+
+`REVIEW_ROUTER_HOSTED_MAX_CHANGED_LINES` is the positive-integer,
+server-authoritative ceiling for an admitted review. It defaults to `250000`.
+The API verifies exact pull-request facts and persists the admission decision
+before issuing an OIDC nonce or provider lease. A repository-level
+`REVIEW_ROUTER_MAX_CHANGED_LINES` may be stricter, but it cannot raise or
+disable this hosted ceiling.
 
 `REVIEW_ROUTER_ALLOWED_ACTION_REFS` is a comma-separated full-SHA allowlist used
 only for trusted rollout overlap during pinned Codex OAuth rotating releases.

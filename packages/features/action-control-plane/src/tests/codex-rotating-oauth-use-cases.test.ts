@@ -132,14 +132,16 @@ describe("Codex rotating OAuth action control plane", () => {
       clock: { now: () => now },
     };
 
-    const prelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "jwt",
-        audience: "reviewrouter",
-        providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const prelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
     expect(prelease).toMatchObject({
       protocolVersion: 1,
@@ -403,14 +405,16 @@ describe("Codex rotating OAuth action control plane", () => {
       clock: { now: () => now },
     };
 
-    const prelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "jwt",
-        audience: "reviewrouter",
-        providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const prelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
 
     await expect(
@@ -493,6 +497,79 @@ describe("Codex rotating OAuth action control plane", () => {
     ).not.toHaveBeenCalled();
   });
 
+  it("returns a policy skip before consuming the OIDC nonce or OAuth lease", async () => {
+    const replayNonces = {
+      tryConsumeNonce: vi.fn().mockResolvedValue(true),
+    };
+    const hostedReviewPreleaseGate = {
+      evaluate: vi.fn().mockResolvedValue({
+        status: "skipped" as const,
+        reason: "max_changed_lines_exceeded" as const,
+        changedLines: 346_978,
+        maxChangedLines: 250_000,
+        decisionHash: "a".repeat(64),
+      }),
+    };
+    const dependencies = buildRotatingDependencies({
+      replayNonces,
+      hostedReviewPreleaseGate,
+    });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).resolves.toEqual({
+      protocolVersion: 1,
+      status: "skipped",
+      reason: "max_changed_lines_exceeded",
+      changedLines: 346_978,
+      maxChangedLines: 250_000,
+      decisionHash: "a".repeat(64),
+    });
+    expect(hostedReviewPreleaseGate.evaluate).toHaveBeenCalledWith({
+      repository,
+      sourceRunId: "9001",
+      sourceRunAttempt: "1",
+      now,
+    });
+    expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unbound pull-request run before consuming capacity", async () => {
+    const replayNonces = {
+      tryConsumeNonce: vi.fn().mockResolvedValue(true),
+    };
+    const hostedReviewPreleaseGate = {
+      evaluate: vi.fn().mockResolvedValue({
+        status: "not_applicable" as const,
+      }),
+    };
+    const dependencies = buildRotatingDependencies({
+      replayNonces,
+      hostedReviewPreleaseGate,
+    });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("review_request_intent_required");
+    expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
   it("finalizes hybrid runtime env for rotating Codex reviews", async () => {
     const dependencies = buildRotatingDependencies({
       repositories: {
@@ -548,14 +625,16 @@ describe("Codex rotating OAuth action control plane", () => {
       },
     });
 
-    const prelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "jwt",
-        audience: "reviewrouter",
-        providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const prelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
     const finalized = await finalizeCodexRotatingOAuthLease(
       {
@@ -640,14 +719,16 @@ describe("Codex rotating OAuth action control plane", () => {
     const dependencies = buildRotatingDependencies({
       clock: { now: () => currentNow },
     });
-    const prelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "jwt",
-        audience: "reviewrouter",
-        providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const prelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
 
     currentNow = new Date(now.getTime() + 20 * 60 * 1000);
@@ -697,14 +778,16 @@ describe("Codex rotating OAuth action control plane", () => {
       },
     });
 
-    const prelease = await preleaseCodexRotatingOAuth(
-      {
-        oidcToken: "jwt",
-        audience: "reviewrouter",
-        providerInstanceId: "codex-rotating:123456",
-        workflowSchemaVersion: 1,
-      },
-      dependencies,
+    const prelease = requireLease(
+      await preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
     );
     const finalized = await finalizeCodexRotatingOAuthLease(
       {
@@ -858,14 +941,16 @@ function buildRotatingDependencies(
 }
 
 async function completeRotatingWriteback(dependencies: RotatingDependencies) {
-  const prelease = await preleaseCodexRotatingOAuth(
-    {
-      oidcToken: "jwt",
-      audience: "reviewrouter",
-      providerInstanceId: "codex-rotating:123456",
-      workflowSchemaVersion: 1,
-    },
-    dependencies,
+  const prelease = requireLease(
+    await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "jwt",
+        audience: "reviewrouter",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    ),
   );
   const finalized = await finalizeCodexRotatingOAuthLease(
     {
@@ -902,4 +987,13 @@ async function completeRotatingWriteback(dependencies: RotatingDependencies) {
     dependencies,
   );
   return { prelease, finalized };
+}
+
+function requireLease(
+  response: Awaited<ReturnType<typeof preleaseCodexRotatingOAuth>>,
+) {
+  if ("status" in response) {
+    throw new Error("expected_codex_rotating_prelease_lease");
+  }
+  return response;
 }

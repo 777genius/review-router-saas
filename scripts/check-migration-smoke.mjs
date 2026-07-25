@@ -163,13 +163,29 @@ try {
         'ReviewContextReplayMaterial_sessionId_fkey',
         'ReviewContextReplayMaterial_attestationId_fkey',
         'ReviewContextTargetReplayProof_sourceAttestationId_fkey'
-      ) AND convalidated) AS review_context_attestation_fks;
+      ) AND convalidated) AS review_context_attestation_fks,
+      (SELECT count(*) FROM information_schema.columns
+       WHERE table_schema = 'public'
+       AND table_name = 'ReviewRequestedIntent'
+       AND column_name IN (
+         'admissionState', 'admissionChangedLines', 'admissionMaxChangedLines',
+         'admissionPolicySnapshotId', 'admissionDecisionHash', 'admissionCheckedAt'
+       )) AS review_request_admission_columns,
+      (SELECT count(*) FROM pg_enum JOIN pg_type ON pg_type.oid = pg_enum.enumtypid
+       WHERE pg_type.typname = 'ReviewRequestAdmissionStateV2'
+       AND pg_enum.enumlabel IN ('not_evaluated', 'admitted', 'rejected'))
+       AS review_request_admission_states,
+      (SELECT count(*) FROM pg_constraint
+       WHERE conname IN (
+         'ReviewRequestedIntent_admission_shape_check',
+         'ReviewRequestedIntent_admission_verdict_check'
+       ) AND convalidated) AS review_request_admission_guards;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
   if (
     output !==
-    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5"
+    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2"
   ) {
     console.error(output);
     fail("Migrated schema invariants failed");

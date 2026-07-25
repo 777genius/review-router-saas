@@ -19,6 +19,7 @@ import {
   ReviewInvocationLeaseTransitionStatus,
   ReviewObservationAttachmentKind,
   ReviewObservationAttachmentStatus,
+  ReviewRequestAdmissionState,
   ReviewRequestedClaimStatus,
   ReviewRequestedClaimDecisionStatus,
   ReviewRequestedDispatchLookupStatus,
@@ -731,7 +732,7 @@ describe("start and admission saga", () => {
       claimIntent("request-start", "claim-start", "owner-start"),
     );
     await beginClaimedSubmission(intents, claim.intent!, plus(1));
-    await intents.recordDispatch({
+    const dispatched = await intents.recordDispatch({
       requestId: "request-start",
       claimId: "claim-start",
       ownerIdHash: "owner-start",
@@ -740,6 +741,16 @@ describe("start and admission saga", () => {
       sourceRunAttempt: "1",
       now: plus(2),
       ...resolutionWindow(plus(2)),
+    });
+    await intents.recordAdmissionDecision({
+      requestId: "request-start",
+      expectedVersion: dispatched.intent!.version,
+      changedLines: 100,
+      maxChangedLines: 250_000,
+      policySnapshotId: "hosted-review-size-v1:test",
+      decisionHash: hash("72"),
+      verdict: ReviewRequestAdmissionState.Admitted,
+      now: plus(3),
     });
     const facts = authorizationFactsFixture(revision);
     const useCase = startUseCaseWithPorts(executions, {
@@ -1803,7 +1814,7 @@ describe("durable ReviewRequested ingress", () => {
       claimIntent("request-1", "claim-1", "owner-1"),
     );
     await beginClaimedSubmission(store, claimed.intent!, plus(500));
-    await store.recordDispatch({
+    const dispatched = await store.recordDispatch({
       requestId: "request-1",
       claimId: "claim-1",
       ownerIdHash: "owner-1",
@@ -1812,6 +1823,16 @@ describe("durable ReviewRequested ingress", () => {
       sourceRunAttempt: "1",
       now: plus(1_000),
       ...resolutionWindow(plus(1_000)),
+    });
+    await store.recordAdmissionDecision({
+      requestId: "request-1",
+      expectedVersion: dispatched.intent!.version,
+      changedLines: 100,
+      maxChangedLines: 250_000,
+      policySnapshotId: "hosted-review-size-v1:test",
+      decisionHash: hash("71"),
+      verdict: ReviewRequestAdmissionState.Admitted,
+      now: plus(1_500),
     });
     const command = {
       requestId: "request-1",

@@ -7,6 +7,7 @@ import {
   type CancelReviewRequestedPreAdmissionCommand,
   type DeferReviewRequestedResolutionCommand,
   type LinkReviewRequestedAdmissionCommand,
+  type RecordReviewRequestedAdmissionDecisionCommand,
   type RecordReviewRequestedDispatchCommand,
   type RecoverReviewRequestedDispatchCommand,
   type RegisterReviewRequestedIntentCommand,
@@ -30,6 +31,7 @@ import {
   assessReviewRequestedClaim,
   beginReviewRequestedSubmission,
   claimReviewRequestedIntent,
+  decideReviewRequestedAdmission,
   decideReviewRequestedAdmissionLink,
   decideReviewRequestedDispatch,
   decideReviewRequestedDispatchRecovery,
@@ -407,6 +409,37 @@ export class InMemoryReviewRequestedIntentStore
     });
   }
 
+  async recordAdmissionDecision(
+    command: RecordReviewRequestedAdmissionDecisionCommand,
+  ) {
+    return this.atomic(() => {
+      const intent = this.intents.get(command.requestId);
+      if (!intent) {
+        return { status: ReviewRequestedTransitionStatus.Missing };
+      }
+      const decision = decideReviewRequestedAdmission({
+        intent,
+        ...command,
+      });
+      if (
+        decision.status === ReviewRequestedTransitionDecisionStatus.Restored
+      ) {
+        return {
+          status: ReviewRequestedTransitionStatus.Restored,
+          intent: cloneIntent(decision.intent),
+        };
+      }
+      if (decision.status !== ReviewRequestedTransitionDecisionStatus.Applied) {
+        return { status: ReviewRequestedTransitionStatus.Conflict };
+      }
+      this.intents.set(intent.requestId, decision.intent);
+      return {
+        status: ReviewRequestedTransitionStatus.Applied,
+        intent: cloneIntent(decision.intent),
+      };
+    });
+  }
+
   async cancelPreAdmission(
     command: CancelReviewRequestedPreAdmissionCommand,
   ): Promise<{ readonly cancelled: number }> {
@@ -592,6 +625,13 @@ function cloneIntent(intent: ReviewRequestedIntent): ReviewRequestedIntent {
   return {
     ...intent,
     revision: { ...intent.revision },
+    admission:
+      intent.admission.checkedAt === null
+        ? { ...intent.admission }
+        : {
+            ...intent.admission,
+            checkedAt: new Date(intent.admission.checkedAt),
+          },
     notBefore: new Date(intent.notBefore),
     submissionStartedAt:
       intent.submissionStartedAt === null

@@ -6,7 +6,10 @@ import {
 } from "@reviewrouter/platform-db";
 import { PrismaReviewExecutionStore } from "../infrastructure/prisma/prisma-review-execution-store";
 import { PrismaReviewRequestedIntentStore } from "../infrastructure/prisma/prisma-review-requested-intent-store";
-import { ReviewRequestedTriggerKind } from "../domain/review-requested-intent";
+import {
+  ReviewRequestAdmissionState,
+  ReviewRequestedTriggerKind,
+} from "../domain/review-requested-intent";
 import {
   leaseCommand,
   prepareAndAdmit,
@@ -483,7 +486,7 @@ if (databaseUrl) {
         nextResolutionAt: new Date(now.getTime() + 1_000),
         resolutionDeadlineAt: new Date(now.getTime() + 60_000),
       });
-      await intentStore.recordDispatch({
+      const dispatched = await intentStore.recordDispatch({
         requestId,
         claimId: claim.claimId,
         ownerIdHash: claim.ownerIdHash,
@@ -493,6 +496,16 @@ if (databaseUrl) {
         now,
         nextResolutionAt: new Date(now.getTime() + 1_000),
         resolutionDeadlineAt: new Date(now.getTime() + 60_000),
+      });
+      await intentStore.recordAdmissionDecision({
+        requestId,
+        expectedVersion: dispatched.intent!.version,
+        changedLines: 100,
+        maxChangedLines: 250_000,
+        policySnapshotId: "hosted-review-size-v1:test",
+        decisionHash: "7".repeat(64),
+        verdict: ReviewRequestAdmissionState.Admitted,
+        now,
       });
       await intentStore.linkAdmission({
         requestId,

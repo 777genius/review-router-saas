@@ -32,7 +32,34 @@ export enum ReviewRequestedIntentTerminalReason {
   DispatchOutcomeUnknown = "dispatch_outcome_unknown",
   AuthorizationDeadlineExceeded = "authorization_deadline_exceeded",
   DispatchAttemptsExhausted = "dispatch_attempts_exhausted",
+  MaxChangedLinesExceeded = "max_changed_lines_exceeded",
 }
+
+export enum ReviewRequestAdmissionState {
+  NotEvaluated = "not_evaluated",
+  Admitted = "admitted",
+  Rejected = "rejected",
+}
+
+export type ReviewRequestAdmission =
+  | {
+      readonly state: ReviewRequestAdmissionState.NotEvaluated;
+      readonly changedLines: null;
+      readonly maxChangedLines: null;
+      readonly policySnapshotId: null;
+      readonly decisionHash: null;
+      readonly checkedAt: null;
+    }
+  | {
+      readonly state:
+        | ReviewRequestAdmissionState.Admitted
+        | ReviewRequestAdmissionState.Rejected;
+      readonly changedLines: number;
+      readonly maxChangedLines: number;
+      readonly policySnapshotId: string;
+      readonly decisionHash: string;
+      readonly checkedAt: Date;
+    };
 
 export type ReviewRequestedClaim = {
   readonly claimId: string;
@@ -61,6 +88,7 @@ export type ReviewRequestedIntent = ReviewExecutionScope & {
   readonly authorizationId: string | null;
   readonly executionId: string | null;
   readonly terminalReason: ReviewRequestedIntentTerminalReason | null;
+  readonly admission: ReviewRequestAdmission;
   readonly supersededByRequestId: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -184,11 +212,110 @@ export function createReviewRequestedIntent(
     authorizationId: null,
     executionId: null,
     terminalReason: null,
+    admission: {
+      state: ReviewRequestAdmissionState.NotEvaluated,
+      changedLines: null,
+      maxChangedLines: null,
+      policySnapshotId: null,
+      decisionHash: null,
+      checkedAt: null,
+    },
     supersededByRequestId: null,
     createdAt: new Date(candidate.createdAt),
     updatedAt: new Date(candidate.createdAt),
     notBefore: new Date(candidate.notBefore),
     retainUntil: new Date(candidate.retainUntil),
+  };
+}
+
+export function decideReviewRequestedAdmission(input: {
+  readonly intent: ReviewRequestedIntent;
+  readonly expectedVersion: bigint;
+  readonly changedLines: number;
+  readonly maxChangedLines: number;
+  readonly policySnapshotId: string;
+  readonly decisionHash: string;
+  readonly verdict:
+    | ReviewRequestAdmissionState.Admitted
+    | ReviewRequestAdmissionState.Rejected;
+  readonly now: Date;
+}): ReviewRequestedTransitionDecision {
+  assertDate(input.now, "review_request_admission_checked_at");
+  assertIdentifier(
+    input.policySnapshotId,
+    "review_request_admission_policy_snapshot_id",
+  );
+  assertSha256(input.decisionHash, "review_request_admission_decision_hash");
+  assertNonNegativeSafeInteger(
+    input.changedLines,
+    "review_request_admission_changed_lines",
+  );
+  if (
+    !Number.isSafeInteger(input.maxChangedLines) ||
+    input.maxChangedLines < 1
+  ) {
+    throw new Error("review_request_admission_max_changed_lines_invalid");
+  }
+  const expectedVerdict =
+    input.changedLines > input.maxChangedLines
+      ? ReviewRequestAdmissionState.Rejected
+      : ReviewRequestAdmissionState.Admitted;
+  if (input.verdict !== expectedVerdict) {
+    throw new Error("review_request_admission_verdict_invalid");
+  }
+  const existing = input.intent.admission;
+  if (existing.state !== ReviewRequestAdmissionState.NotEvaluated) {
+    return existing.state === input.verdict &&
+      existing.changedLines === input.changedLines &&
+      existing.maxChangedLines === input.maxChangedLines &&
+      existing.policySnapshotId === input.policySnapshotId &&
+      existing.decisionHash === input.decisionHash
+      ? {
+          status: ReviewRequestedTransitionDecisionStatus.Restored,
+          intent: input.intent,
+        }
+      : { status: ReviewRequestedTransitionDecisionStatus.Conflict };
+  }
+  if (
+    input.intent.version !== input.expectedVersion ||
+    input.intent.state !== ReviewRequestedIntentState.AwaitingAuthorization ||
+    input.intent.authorizationId !== null ||
+    input.intent.executionId !== null
+  ) {
+    return { status: ReviewRequestedTransitionDecisionStatus.Conflict };
+  }
+  const admission = {
+    state: input.verdict,
+    changedLines: input.changedLines,
+    maxChangedLines: input.maxChangedLines,
+    policySnapshotId: input.policySnapshotId,
+    decisionHash: input.decisionHash,
+    checkedAt: new Date(input.now),
+  } as const;
+  if (input.verdict === ReviewRequestAdmissionState.Admitted) {
+    return {
+      status: ReviewRequestedTransitionDecisionStatus.Applied,
+      intent: {
+        ...input.intent,
+        version: input.intent.version + 1n,
+        admission,
+        updatedAt: new Date(input.now),
+      },
+    };
+  }
+  return {
+    status: ReviewRequestedTransitionDecisionStatus.Applied,
+    intent: {
+      ...input.intent,
+      version: input.intent.version + 1n,
+      state: ReviewRequestedIntentState.Terminal,
+      claim: null,
+      nextResolutionAt: null,
+      terminalReason:
+        ReviewRequestedIntentTerminalReason.MaxChangedLinesExceeded,
+      admission,
+      updatedAt: new Date(input.now),
+    },
   };
 }
 
@@ -492,6 +619,7 @@ export function decideReviewRequestedAdmissionLink(input: {
     input.intent.state !== ReviewRequestedIntentState.AwaitingAuthorization ||
     input.intent.sourceRunId !== input.sourceRunId ||
     input.intent.sourceRunAttempt !== input.sourceRunAttempt ||
+    input.intent.admission.state !== ReviewRequestAdmissionState.Admitted ||
     !reviewRevisionsEqual(input.intent.revision, input.revision) ||
     input.intent.resolutionDeadlineAt === null ||
     input.intent.resolutionDeadlineAt <= input.now
@@ -764,6 +892,12 @@ function terminalizeReviewRequestedIntent(input: {
     terminalReason: input.terminalReason,
     updatedAt: new Date(input.now),
   };
+}
+
+function assertNonNegativeSafeInteger(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${field}_invalid`);
+  }
 }
 
 export function cancelReviewRequestedPreAdmissionIntent(

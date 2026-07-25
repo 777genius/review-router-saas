@@ -12,6 +12,7 @@ import type {
 } from "../ports/codex-rotating-oauth-repository-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../ports/github-actions-oidc-token-verifier-port.js";
 import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
+import type { HostedReviewPreleaseGatePort } from "../ports/hosted-review-prelease-gate-port.js";
 
 export type PreleaseCodexRotatingOAuthDependencies = {
   readonly oidcVerifier: GitHubActionsOidcTokenVerifierPort;
@@ -24,18 +25,18 @@ export type PreleaseCodexRotatingOAuthDependencies = {
     }): Promise<void> | void;
   };
   readonly replayNonces: ActionOidcReplayNonceStorePort;
+  readonly hostedReviewPreleaseGate?: HostedReviewPreleaseGatePort;
   readonly clock: Clock;
 };
 
-export async function preleaseCodexRotatingOAuth(
-  input: {
-    readonly oidcToken: string;
-    readonly audience: string;
-    readonly providerInstanceId: string;
-    readonly workflowSchemaVersion: number;
-  },
-  dependencies: PreleaseCodexRotatingOAuthDependencies,
-): Promise<{
+type CodexRotatingPreleaseInput = {
+  readonly oidcToken: string;
+  readonly audience: string;
+  readonly providerInstanceId: string;
+  readonly workflowSchemaVersion: number;
+};
+
+export type CodexRotatingPreleaseLeaseResponse = {
   readonly protocolVersion: 1;
   readonly leaseId: string;
   readonly providerInstanceId: string;
@@ -44,7 +45,23 @@ export async function preleaseCodexRotatingOAuth(
   readonly currentGeneration: number;
   readonly currentGenerationHash?: string | undefined;
   readonly expiresAt: string;
-}> {
+};
+
+export type CodexRotatingPreleaseSkipResponse = {
+  readonly protocolVersion: 1;
+  readonly status: "skipped";
+  readonly reason: "max_changed_lines_exceeded";
+  readonly changedLines: number;
+  readonly maxChangedLines: number;
+  readonly decisionHash: string;
+};
+
+export async function preleaseCodexRotatingOAuth(
+  input: CodexRotatingPreleaseInput,
+  dependencies: PreleaseCodexRotatingOAuthDependencies,
+): Promise<
+  CodexRotatingPreleaseLeaseResponse | CodexRotatingPreleaseSkipResponse
+> {
   const claims = codexRotatingOidcClaimsSchema.parse(
     await dependencies.oidcVerifier.verify({
       token: input.oidcToken,
@@ -102,6 +119,23 @@ export async function preleaseCodexRotatingOAuth(
     repository,
     workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
   });
+  if (dependencies.hostedReviewPreleaseGate) {
+    const admission = await dependencies.hostedReviewPreleaseGate.evaluate({
+      repository,
+      sourceRunId: claims.run_id,
+      sourceRunAttempt: claims.run_attempt,
+      now: dependencies.clock.now(),
+    });
+    if (admission.status === "skipped") {
+      return { protocolVersion: 1, ...admission };
+    }
+    if (
+      admission.status === "not_applicable" &&
+      pullRequestNumber !== undefined
+    ) {
+      throw new Error("review_request_intent_required");
+    }
+  }
   await consumeCodexRotatingOidcReplayNonce({
     claims,
     now: dependencies.clock.now(),

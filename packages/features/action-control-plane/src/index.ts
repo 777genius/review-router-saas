@@ -17,6 +17,7 @@ export * from "./application/ports/github-app-comment-token-issuer-port.js";
 export * from "./application/ports/github-actions-oidc-token-verifier-port.js";
 export * from "./application/ports/github-review-thread-lifecycle-resolver-port.js";
 export * from "./application/ports/codex-rotating-oauth-repository-port.js";
+export * from "./application/ports/hosted-review-prelease-gate-port.js";
 export * from "./application/ports/codex-rotating-review-execution-checkpoint-access-port.js";
 export * from "./application/ports/codex-rotating-review-snapshot-access-port.js";
 export * from "./application/use-cases/exchange-github-oidc-token.js";
