@@ -1,9 +1,10 @@
-export const reviewV2MigrationVersion = "review-v2-000029-000032-v4";
+export const reviewV2MigrationVersion = "review-v2-000029-000037-v5";
 export const reviewV2MigrationDirectories = Object.freeze([
   "000029_revision_aware_review_v2_expand",
   "000030_review_run_control_persistence",
   "000031_review_invocation_prepared_manifest",
   "000032_review_publication_worker_safety",
+  "000037_finalized_projection_artifact_identity",
 ]);
 export const reviewV2RepositoryBackfillStep = "02_repository_identity_backfill";
 export const reviewV2RepositoryBackfillDefaultPageSize = 500;
@@ -355,9 +356,9 @@ export const reviewV2ForeignKeys = Object.freeze([
   fk(
     "ReviewCompletionProcess",
     "ReviewCompletionProcess_finalizedArtifactId_fkey",
-    ["finalizedArtifactId"],
+    ["executionId", "finalizedArtifactId"],
     "FinalizedReviewProjectionArtifactV2",
-    ["artifactId"],
+    ["executionId", "artifactId"],
   ),
   fk(
     "ReviewCompletionProcess",

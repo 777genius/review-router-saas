@@ -1086,8 +1086,8 @@ model ReviewExecutionObservationRefV2 {
 }
 
 model FinalizedReviewProjectionArtifactV2 {
-  artifactId                      String                @id
-  executionId                     String                @unique
+  artifactId                      String
+  executionId                     String                @id
   artifactHash                    String
   generation                      BigInt
   reviewedHeadSha                 String
@@ -1110,6 +1110,8 @@ model FinalizedReviewProjectionArtifactV2 {
   createdAt                       DateTime
   retainUntil                     DateTime
 
+  @@unique([executionId, artifactId])
+  @@index([artifactId])
   @@index([retainUntil, artifactId])
   @@index([createdAt, executionId])
 }

@@ -314,7 +314,7 @@ describeWithDatabase("review completion process Prisma adapters", () => {
     });
     const artifact =
       await prisma.finalizedReviewProjectionArtifactV2.findUniqueOrThrow({
-        where: { artifactId: input.finalizedArtifactId },
+        where: { executionId: input.executionId },
       });
     seededPublicationAttemptIds.add(publicationAttemptId);
     await prisma.reviewPublicationAttemptV2.create({

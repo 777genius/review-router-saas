@@ -13,7 +13,7 @@ const migrationFiles = reviewV2MigrationDirectories.map(
 );
 
 describe("Review v2 migration contract", () => {
-  it("allowlists every Review v2 NOT VALID foreign key with its exact definition", () => {
+  it("allowlists every effective Review v2 NOT VALID foreign key with its exact definition", () => {
     const migrationSql = migrationFiles
       .map((path) => readFileSync(join(process.cwd(), path), "utf8"))
       .join("\n")
@@ -36,8 +36,9 @@ describe("Review v2 migration contract", () => {
       "000030_review_run_control_persistence",
       "000031_review_invocation_prepared_manifest",
       "000032_review_publication_worker_safety",
+      "000037_finalized_projection_artifact_identity",
     ]);
-    expect(reviewV2MigrationVersion).toBe("review-v2-000029-000032-v4");
+    expect(reviewV2MigrationVersion).toBe("review-v2-000029-000037-v5");
     expect(
       readFileSync(join(process.cwd(), migrationFiles[2]!), "utf8"),
     ).toContain('ADD COLUMN "preparedManifestCanonicalJson" TEXT');
@@ -50,7 +51,19 @@ describe("Review v2 migration contract", () => {
 function parseNotValidForeignKeys(sql: string) {
   const statementPattern =
     /ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)" FOREIGN KEY \(([^)]+)\) REFERENCES "([^"]+)"\(([^)]+)\) ON DELETE (RESTRICT|CASCADE|NO ACTION) ON UPDATE (RESTRICT|CASCADE|NO ACTION)( DEFERRABLE INITIALLY DEFERRED)? NOT VALID;/gu;
-  return [...sql.matchAll(statementPattern)].map((match) => ({
+  const effectiveDefinitions = new Map<string, ReturnType<typeof definition>>();
+  for (const match of sql.matchAll(statementPattern)) {
+    const current = definition(match);
+    effectiveDefinitions.set(
+      `${current.tableName}\u001f${current.constraintName}`,
+      current,
+    );
+  }
+  return [...effectiveDefinitions.values()];
+}
+
+function definition(match: RegExpMatchArray) {
+  return {
     tableName: match[1],
     constraintName: match[2],
     sourceColumns: parseColumns(match[3] ?? ""),
@@ -60,7 +73,7 @@ function parseNotValidForeignKeys(sql: string) {
     onUpdateCode: actionCode(match[7]),
     deferrable: match[8] !== undefined,
     initiallyDeferred: match[8] !== undefined,
-  }));
+  };
 }
 
 function parseColumns(value: string): string[] {

@@ -12,6 +12,12 @@ import {
   ReviewRequestedTriggerKind,
 } from "../domain/review-requested-intent";
 import {
+  ReviewExecutionAdmissionStatus,
+  ReviewExecutionAdmissionVerdict,
+  ReviewExecutionFinalizeStatus,
+  ReviewExecutionPrepareStatus,
+} from "../application/ports/review-execution-ports";
+import {
   ReviewRequestedClaimStatus,
   ReviewRequestedRegisterStatus,
   ReviewRequestedTransitionStatus,
@@ -91,6 +97,102 @@ if (databaseUrl) {
           select: { lastAllocatedGeneration: true },
         }),
       ).resolves.toEqual({ lastAllocatedGeneration: 1n });
+    });
+
+    it("finalizes the same content-addressed artifact for two executions and restores retries", async () => {
+      const harness = await createHarness();
+      const suffix = randomUUID();
+      const first = await prepareAndAdmit(
+        harness,
+        `shared-artifact-first-${suffix}`,
+      );
+      const artifactId = `artifact-shared-${suffix}`;
+      const artifactHash = hash(11);
+      const projectionEnvelopeJson = '{"findings":[]}';
+      const commandFor = (snapshot: typeof first.snapshot) =>
+        ({
+          scope: harness.scope,
+          executionId: snapshot.execution.executionId,
+          expectedStreamVersion: snapshot.stream.version,
+          expectedExecutionVersion: snapshot.execution.version,
+          artifactId,
+          artifactHash,
+          projectionEnvelopeVersion: 1,
+          projectionEnvelopeJson,
+          projectionHash: hash(12),
+          byteCount: new TextEncoder().encode(projectionEnvelopeJson)
+            .byteLength,
+          findingCount: 0,
+          lifecycleStateHash: hash(13),
+          commandLedgerWatermark: 7n,
+          projectionPolicyVersion: "projection-v1",
+          publicationSafetyDecisionHash: hash(14),
+          publicationNotAfter: new Date(Date.now() + 300_000),
+          permitEpoch: 1n,
+          allowPartial: true,
+          limits: {
+            profileId: limitsProfileId,
+            maxWorkSlots: 16,
+            maxAttemptBudget: 4,
+            maxProjectionBytes: 1_000_000,
+            maxFindingCount: 1_000,
+            maxLeaseDurationMs: 120_000,
+            maxResultReportDurationMs: 180_000,
+          },
+          now: new Date(),
+          retainUntil: new Date(Date.now() + 86_400_000),
+        }) as const;
+
+      const firstCommand = commandFor(first.snapshot);
+      const firstFinalized =
+        await harness.executions.finalizeExecution(firstCommand);
+      expect(firstFinalized.status).toBe(
+        ReviewExecutionFinalizeStatus.Finalized,
+      );
+      await expect(
+        harness.executions.finalizeExecution(firstCommand),
+      ).resolves.toMatchObject({
+        status: ReviewExecutionFinalizeStatus.Restored,
+        artifact: { artifactId, executionId: firstCommand.executionId },
+      });
+
+      const secondPrepared = await harness.executions.prepareExecution(
+        prepareCommand(
+          harness,
+          `shared-artifact-second-${suffix}`,
+          [workSlot(`slot-shared-artifact-second-${suffix}`, 5)],
+          firstFinalized.snapshot!.stream.version,
+        ),
+      );
+      expect(secondPrepared.status).toBe(ReviewExecutionPrepareStatus.Prepared);
+      const secondRevision = secondPrepared.snapshot!.execution.revision;
+      const secondAdmitted = await harness.executions.confirmAdmission({
+        scope: harness.scope,
+        expectedStreamVersion: secondPrepared.snapshot!.stream.version,
+        executionId: secondPrepared.snapshot!.execution.executionId,
+        authorizationId: harness.authorizationId,
+        mutationEpoch: 1n,
+        requestedRevision: secondRevision,
+        observedRevision: secondRevision,
+        verdict: ReviewExecutionAdmissionVerdict.Current,
+        checkedAt: new Date(),
+      });
+      expect(secondAdmitted.status).toBe(
+        ReviewExecutionAdmissionStatus.Admitted,
+      );
+
+      const secondCommand = commandFor(secondAdmitted.snapshot!);
+      await expect(
+        harness.executions.finalizeExecution(secondCommand),
+      ).resolves.toMatchObject({
+        status: ReviewExecutionFinalizeStatus.Finalized,
+        artifact: { artifactId, executionId: secondCommand.executionId },
+      });
+      await expect(
+        prisma.finalizedReviewProjectionArtifactV2.count({
+          where: { artifactId },
+        }),
+      ).resolves.toBe(2);
     });
 
     it("serializes concurrent requested intents into one pending successor", async () => {
