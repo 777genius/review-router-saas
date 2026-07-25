@@ -116,6 +116,56 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     });
   });
 
+  it("compares publication expiry using JWT NumericDate precision", async () => {
+    const fractionalArtifact = {
+      ...artifact,
+      publicationPermit: {
+        ...artifact.publicationPermit,
+        publicationNotAfter: new Date("2026-07-23T12:10:00.123Z"),
+      },
+    };
+    const publicationRepository = new InMemoryReviewPublicationRepository();
+    const routes = createRoutes(
+      publicationRepository,
+      { assertCurrentPolicy: vi.fn() },
+      fractionalArtifact,
+    );
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      fractionalArtifact.publicationPermit,
+      now,
+    );
+
+    await expect(
+      routes.publication.request!.execute(
+        await publicationRequest(publicationPermit),
+      ),
+    ).resolves.toMatchObject({
+      statusCode: 201,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Accepted,
+      },
+    });
+  });
+
+  it("rejects publication expiry drift across JWT NumericDate seconds", async () => {
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      {
+        ...artifact.publicationPermit,
+        publicationNotAfter: new Date("2026-07-23T12:10:01.000Z"),
+      },
+      now,
+    );
+
+    await expect(
+      createRoutes().publication.request!.execute(
+        await publicationRequest(publicationPermit),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      issues: ["publication_permit_authority_mismatch"],
+    });
+  });
+
   it("rejects canonical publication payload drift before enqueue", async () => {
     const publicationRepository = new InMemoryReviewPublicationRepository();
     const routes = createRoutes(publicationRepository);
@@ -167,11 +217,12 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
 function createRoutes(
   publicationRepository = new InMemoryReviewPublicationRepository(),
   contextPolicy = { assertCurrentPolicy: vi.fn() },
+  finalizedArtifact: FinalizedReviewProjectionArtifact = artifact,
 ) {
   const publicationApplication = createReviewPublicationV2Application({
     clock: { now: () => now },
     decisions: allowingReviewPublicationDecisionPorts(
-      artifact.publicationPermit,
+      finalizedArtifact.publicationPermit,
     ),
     attempts: publicationRepository,
     idempotency: publicationRepository,
@@ -210,7 +261,9 @@ function createRoutes(
     },
     executions: {
       async findExecution() {
-        return { artifact } as unknown as ReviewExecutionSnapshot;
+        return {
+          artifact: finalizedArtifact,
+        } as unknown as ReviewExecutionSnapshot;
       },
     },
     releases: {

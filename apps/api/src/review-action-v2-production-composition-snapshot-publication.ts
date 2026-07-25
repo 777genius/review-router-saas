@@ -926,8 +926,10 @@ function assertArtifactAuthority(input: {
     permit.permitEpoch !== input.verified.permitEpoch ||
     permit.publicationSafetyDecisionHash !==
       input.verified.publicationSafetyDecisionHash ||
-    permit.publicationNotAfter.getTime() !==
-      input.verified.publicationNotAfter.getTime()
+    !sameJwtNumericDate(
+      permit.publicationNotAfter,
+      input.verified.publicationNotAfter,
+    )
   ) {
     throw routeFailure(
       403,
@@ -935,6 +937,12 @@ function assertArtifactAuthority(input: {
       "publication_permit_authority_mismatch",
     );
   }
+}
+
+function sameJwtNumericDate(left: Date, right: Date): boolean {
+  return (
+    Math.floor(left.getTime() / 1_000) === Math.floor(right.getTime() / 1_000)
+  );
 }
 
 async function requireAuthorization(
