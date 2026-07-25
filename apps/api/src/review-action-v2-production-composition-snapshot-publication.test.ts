@@ -147,6 +147,41 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     });
   });
 
+  it("restores an exact publication request before rechecking mutable policy", async () => {
+    const publicationRepository = new InMemoryReviewPublicationRepository();
+    const publicationRequestSpy = vi.spyOn(publicationRepository, "request");
+    const contextPolicy = { assertCurrentPolicy: vi.fn() };
+    const routes = createRoutes(publicationRepository, contextPolicy);
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      artifact.publicationPermit,
+      now,
+    );
+    const request = await publicationRequest(publicationPermit);
+
+    await expect(
+      routes.publication.request!.execute(request),
+    ).resolves.toMatchObject({
+      statusCode: 201,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Accepted,
+      },
+    });
+    contextPolicy.assertCurrentPolicy.mockRejectedValue(
+      new Error("context_policy_changed_after_publication"),
+    );
+
+    await expect(
+      routes.publication.request!.execute(request),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Restored,
+      },
+    });
+    expect(contextPolicy.assertCurrentPolicy).toHaveBeenCalledTimes(1);
+    expect(publicationRequestSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects publication expiry drift across JWT NumericDate seconds", async () => {
     const publicationPermit = await capabilityAdapter().issuePublicationPermit(
       {

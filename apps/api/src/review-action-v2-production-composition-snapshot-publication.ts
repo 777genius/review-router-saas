@@ -324,10 +324,6 @@ async function requestPublication(
       "artifact_missing",
     );
   }
-  await dependencies.contextPolicy.assertCurrentPolicy({
-    authorization,
-    snapshot,
-  });
   const artifact = snapshot.artifact;
   assertArtifactAuthority({ authorization, artifact, verified });
   if (request.projectionHash !== artifact.projectionHash) {
@@ -384,6 +380,38 @@ async function requestPublication(
     );
   }
   const command = deterministicPublicationCommand(artifact, operations);
+  const existing = await dependencies.publications.findById(
+    command.publicationAttemptId,
+  );
+  if (existing) {
+    if (existing.attempt.requestHash !== command.requestHash) {
+      return {
+        statusCode: 200,
+        result: {
+          status: ReviewPublicationRequestResultStatus.Conflict,
+          publicationAttemptId: null,
+          publicationState: null,
+          pollAfterMs: null,
+        },
+      } as const;
+    }
+    return {
+      statusCode: 200,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Restored,
+        publicationAttemptId: existing.attempt.publicationAttemptId,
+        publicationState: existing.attempt.state,
+        pollAfterMs:
+          existing.attempt.state === ReviewPublicationAttemptState.Terminal
+            ? 0
+            : 1_000,
+      },
+    } as const;
+  }
+  await dependencies.contextPolicy.assertCurrentPolicy({
+    authorization,
+    snapshot,
+  });
   let result;
   try {
     result = await dependencies.requestPublication(command);
