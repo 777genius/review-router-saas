@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { reviewActionV2ProjectionPolicyVersion } from "../apps/api/src/review-action-v2-projection-policy.js";
 import { describe, expect, it } from "vitest";
 import {
   reviewV2ContextApiEnvKeys,
@@ -31,5 +32,8 @@ describe("Review v2 Render context environment", () => {
     for (const key of reviewV2ContextApiEnvKeys) {
       expect(blueprint).toContain(`- key: ${key}`);
     }
+    expect(blueprint).toContain(
+      `- key: REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION\n        value: "${reviewActionV2ProjectionPolicyVersion}"`,
+    );
   });
 });

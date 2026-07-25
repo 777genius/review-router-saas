@@ -21,6 +21,7 @@ import {
   reviewActionV2ProjectionPolicyVersionEnv,
   reviewActionV2ProviderVoteLanesEnv,
 } from "./review-action-v2-production-composition.js";
+import { reviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
 
 const runtime = {
   readServerTime: async () => new Date("2026-07-23T00:00:00.000Z"),
@@ -117,6 +118,20 @@ describe("Review Action v2 production composition", () => {
     expect(routes.runControl.readServerTime).toBe(runtime.readServerTime);
   });
 
+  it("rejects a projection policy version that the producer cannot emit", () => {
+    expect(() =>
+      composeReviewActionV2ProductionRoutes({
+        enabled: true,
+        env: {
+          ...productionEnv(),
+          [reviewActionV2ProjectionPolicyVersionEnv]: "1",
+        },
+        runtime,
+        prisma: inertPrisma(),
+      }),
+    ).toThrow("review_action_v2_projection_policy_version_unsupported");
+  });
+
   it("rejects malformed capability rotation config without exposing it", () => {
     const env = {
       ...productionEnv(),
@@ -193,7 +208,8 @@ function productionEnv(): Record<string, string> {
         providerVoteIdentityHash: "d".repeat(64),
       },
     ]),
-    [reviewActionV2ProjectionPolicyVersionEnv]: "current-review-v1",
+    [reviewActionV2ProjectionPolicyVersionEnv]:
+      reviewActionV2ProjectionPolicyVersion,
     [reviewActionV2CapabilityActiveKeyIdEnv]: "active-v2",
     [reviewActionV2CapabilityKeysEnv]: signingKeys,
     [reviewActionV2ContextSessionSecretEnv]: Buffer.from(

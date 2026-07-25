@@ -95,6 +95,7 @@ import {
 import { ReviewActionV2ProtocolErrorCode } from "@reviewrouter/protocol-review-action-v2";
 import { SystemClock } from "@reviewrouter/shared";
 import { ReviewActionV2ExecutionEvidenceCapabilityAdapter } from "./review-action-v2-execution-evidence-capabilities.js";
+import { reviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
 import { ReviewContextAttestationEvidenceAdapter } from "./review-context-attestation-evidence-adapter.js";
 import {
   composeReviewActionV2ContextAttestationRoutes,
@@ -163,10 +164,16 @@ export function composeReviewActionV2ProductionRunControl(input: {
     input.oidcAudience ??
     requiredEnv(input.env, "REVIEW_ROUTER_ACTION_OIDC_AUDIENCE");
   const providerVoteLanes = readProviderVoteLanes(input.env);
-  const projectionPolicyVersion = requiredEnv(
+  const configuredProjectionPolicyVersion = requiredEnv(
     input.env,
     reviewActionV2ProjectionPolicyVersionEnv,
   );
+  if (
+    configuredProjectionPolicyVersion !== reviewActionV2ProjectionPolicyVersion
+  ) {
+    throw new Error("review_action_v2_projection_policy_version_unsupported");
+  }
+  const projectionPolicyVersion = reviewActionV2ProjectionPolicyVersion;
   const clock = new SystemClock();
   const digest = new ProductionReviewActionV2Digest();
   const repositories = createPrismaReviewRunControlRepositories(input.prisma);
