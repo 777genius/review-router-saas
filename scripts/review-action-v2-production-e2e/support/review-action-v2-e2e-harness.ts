@@ -74,6 +74,7 @@ import {
   reviewActionV2ProjectionPolicyVersionEnv,
   reviewActionV2ProviderVoteLanesEnv,
 } from "../../../apps/api/src/review-action-v2-production-composition.js";
+import { reviewActionV2ProjectionPolicyVersion } from "../../../apps/api/src/review-action-v2-projection-policy.js";
 import { createProductionReviewV2WorkerRuntime } from "../../../apps/worker/src/review-v2-production-runtime.js";
 import {
   createReviewV2WorkerFeature,
@@ -95,7 +96,6 @@ const baseSha = "c".repeat(40);
 const mergeBaseSha = "d".repeat(40);
 const headSha = "e".repeat(40);
 const providerVoteIdentityHash = sha256("provider-vote");
-const projectionPolicyVersion = "review-projection-v1";
 const capabilityKeyId = "review-v2-e2e-key";
 
 export type ReviewActionV2E2EFlow = Readonly<{
@@ -681,7 +681,7 @@ export class ReviewActionV2E2EHarness {
       lifecycleStateHash,
       mergeGate: { conclusion: allowPartial ? "neutral" : "success" },
       occurrences: [],
-      projectionPolicyVersion,
+      projectionPolicyVersion: reviewActionV2ProjectionPolicyVersion,
       publishing: {
         check: {
           conclusion: "success",
@@ -1316,7 +1316,8 @@ function productionEnv(input: {
     [reviewActionV2ProviderVoteLanesEnv]: JSON.stringify([
       { providerKind: "codex", providerVoteIdentityHash },
     ]),
-    [reviewActionV2ProjectionPolicyVersionEnv]: projectionPolicyVersion,
+    [reviewActionV2ProjectionPolicyVersionEnv]:
+      reviewActionV2ProjectionPolicyVersion,
     [reviewActionV2CapabilityActiveKeyIdEnv]: capabilityKeyId,
     [reviewActionV2CapabilityKeysEnv]: signingKeys,
     [reviewActionV2ContextSessionSecretEnv]: Buffer.from(
