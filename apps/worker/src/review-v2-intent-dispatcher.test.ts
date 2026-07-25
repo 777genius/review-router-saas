@@ -79,7 +79,7 @@ describe("GitHubActionsReviewRequestedDispatchGateway", () => {
       }
       expect(route.startsWith("POST")).toBe(true);
       expect(parameters).toMatchObject({
-        ref: "dev",
+        ref: "main",
         inputs: {
           review_request_id: "request-1",
           pr_number: "42",
@@ -98,6 +98,32 @@ describe("GitHubActionsReviewRequestedDispatchGateway", () => {
       sourceRunAttempt: "1",
     });
     expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the stable repository control ref for a stacked pull request", async () => {
+    const request = vi.fn(async (route: string, parameters?: object) => {
+      if (route.startsWith("GET")) {
+        return {
+          data: {
+            ...pullRequestFixture(),
+            base: {
+              ...pullRequestFixture().base,
+              ref: "feature/stacked-base",
+            },
+          },
+        };
+      }
+      expect(parameters).toMatchObject({ ref: "main" });
+      return { data: { workflow_run_id: 703 } };
+    });
+    const prepared = await gatewayWith(request).prepare({
+      intent: intentFixture(),
+    });
+
+    await expect(prepared.submit()).resolves.toMatchObject({
+      status: ReviewRequestedDispatchSubmissionStatus.Accepted,
+      sourceRunId: "703",
+    });
   });
 
   it("fails closed before dispatch when the pull request revision changed", async () => {
