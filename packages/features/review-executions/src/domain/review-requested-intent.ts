@@ -41,6 +41,8 @@ export enum ReviewRequestAdmissionState {
   Rejected = "rejected",
 }
 
+export const reviewRequestedAdmissionHandoffMinimumMs = 30_000;
+
 export type ReviewRequestAdmission =
   | {
       readonly state: ReviewRequestAdmissionState.NotEvaluated;
@@ -265,11 +267,25 @@ export function decideReviewRequestedAdmission(input: {
   }
   const existing = input.intent.admission;
   if (existing.state !== ReviewRequestAdmissionState.NotEvaluated) {
-    return existing.state === input.verdict &&
+    const exactDecision =
+      existing.state === input.verdict &&
       existing.changedLines === input.changedLines &&
       existing.maxChangedLines === input.maxChangedLines &&
       existing.policySnapshotId === input.policySnapshotId &&
-      existing.decisionHash === input.decisionHash
+      existing.decisionHash === input.decisionHash;
+    const decisionUsable =
+      (existing.state === ReviewRequestAdmissionState.Rejected &&
+        input.intent.state === ReviewRequestedIntentState.Terminal &&
+        input.intent.terminalReason ===
+          ReviewRequestedIntentTerminalReason.MaxChangedLinesExceeded) ||
+      (input.intent.state ===
+        ReviewRequestedIntentState.AwaitingAuthorization &&
+        input.intent.authorizationId === null &&
+        input.intent.executionId === null &&
+        input.intent.resolutionDeadlineAt !== null &&
+        input.intent.resolutionDeadlineAt.getTime() - input.now.getTime() >=
+          reviewRequestedAdmissionHandoffMinimumMs);
+    return exactDecision && decisionUsable
       ? {
           status: ReviewRequestedTransitionDecisionStatus.Restored,
           intent: input.intent,
@@ -281,6 +297,14 @@ export function decideReviewRequestedAdmission(input: {
     input.intent.state !== ReviewRequestedIntentState.AwaitingAuthorization ||
     input.intent.authorizationId !== null ||
     input.intent.executionId !== null
+  ) {
+    return { status: ReviewRequestedTransitionDecisionStatus.Conflict };
+  }
+  if (
+    input.verdict === ReviewRequestAdmissionState.Admitted &&
+    (input.intent.resolutionDeadlineAt === null ||
+      input.intent.resolutionDeadlineAt.getTime() - input.now.getTime() <
+        reviewRequestedAdmissionHandoffMinimumMs)
   ) {
     return { status: ReviewRequestedTransitionDecisionStatus.Conflict };
   }
@@ -417,6 +441,7 @@ export function decideReviewRequestedRegistration(input: {
   }
   const supersedable =
     preAdmission !== null &&
+    preAdmission.admission.state !== ReviewRequestAdmissionState.Admitted &&
     (preAdmission.state === ReviewRequestedIntentState.PendingDispatch ||
       ((preAdmission.state === ReviewRequestedIntentState.Dispatching ||
         preAdmission.state === ReviewRequestedIntentState.ReconcilingDispatch ||
@@ -911,6 +936,9 @@ export function cancelReviewRequestedPreAdmissionIntent(
     intent.state !== ReviewRequestedIntentState.AwaitingAuthorization
   ) {
     throw new Error("review_requested_intent_not_pre_admission");
+  }
+  if (intent.admission.state === ReviewRequestAdmissionState.Admitted) {
+    throw new Error("review_requested_intent_already_admitted");
   }
   return supersedeReviewRequestedIntent(intent, null, now);
 }

@@ -35,6 +35,8 @@ const intent = {
   }),
   version: 4n,
   state: ReviewRequestedIntentState.AwaitingAuthorization,
+  nextResolutionAt: new Date("2026-07-25T08:00:05.000Z"),
+  resolutionDeadlineAt: new Date("2026-07-25T08:05:00.000Z"),
   sourceRunId: "30150048512",
   sourceRunAttempt: "1",
 };
@@ -97,6 +99,49 @@ describe("ProductionHostedReviewPreleaseGate", () => {
       status: "admitted",
     });
     expect(kit.findIntent).toHaveBeenCalledTimes(2);
+    expect(kit.recordAdmissionDecision).toHaveBeenCalledTimes(2);
+  });
+
+  it("revalidates an admitted durable decision through the command CAS", async () => {
+    const admitted = decideReviewRequestedAdmission({
+      intent,
+      expectedVersion: intent.version,
+      changedLines: 150,
+      maxChangedLines: 250_000,
+      policySnapshotId: "hosted-review-size-v1:persisted",
+      decisionHash: "8".repeat(64),
+      verdict: ReviewRequestAdmissionState.Admitted,
+      now,
+    });
+    if (admitted.status !== ReviewRequestedTransitionDecisionStatus.Applied) {
+      throw new Error("test_admission_not_applied");
+    }
+    const kit = buildGate({
+      additions: 100,
+      deletions: 50,
+      initialIntent: admitted.intent,
+    });
+
+    await expect(kit.gate.evaluate(input())).resolves.toEqual({
+      status: "admitted",
+      decisionHash: "8".repeat(64),
+    });
+    expect(kit.recordAdmissionDecision).toHaveBeenCalledOnce();
+    expect(kit.resolvePullRequest).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the handoff budget expires during identity polling", async () => {
+    const kit = buildGate({
+      additions: 100,
+      deletions: 50,
+      missingIntentAttempts: 2,
+      clockNow: new Date("2026-07-25T08:04:31.000Z"),
+    });
+
+    await expect(kit.gate.evaluate(input())).rejects.toThrow(
+      "review_request_admission_transition_conflict",
+    );
+    expect(kit.findIntent).toHaveBeenCalledTimes(4);
   });
 
   it("fails closed when GitHub reports a different head", async () => {
@@ -115,18 +160,34 @@ describe("ProductionHostedReviewPreleaseGate", () => {
   it("does not apply review policy to refresh runs without a durable intent", async () => {
     const kit = buildGate({ additions: 10, deletions: 5, noIntent: true });
 
-    await expect(kit.gate.evaluate(input())).resolves.toEqual({
+    await expect(kit.gate.evaluate(input(false))).resolves.toEqual({
       status: "not_applicable",
     });
     expect(kit.resolvePullRequest).not.toHaveBeenCalled();
+    expect(kit.sleep).not.toHaveBeenCalled();
+  });
+
+  it("waits for a required workflow run identity to be durably bound", async () => {
+    const kit = buildGate({
+      additions: 100,
+      deletions: 50,
+      missingIntentAttempts: 2,
+    });
+
+    await expect(kit.gate.evaluate(input())).resolves.toMatchObject({
+      status: "admitted",
+    });
+    expect(kit.findIntent).toHaveBeenCalledTimes(3);
+    expect(kit.sleep).toHaveBeenCalledTimes(2);
   });
 });
 
-function input() {
+function input(intentRequired = true) {
   return {
     repository,
     sourceRunId: "30150048512",
     sourceRunAttempt: "1",
+    intentRequired,
     now,
   };
 }
@@ -137,27 +198,43 @@ function buildGate(options: {
   readonly resolvedHeadSha?: string;
   readonly transitionStatus?: ReviewRequestedTransitionStatus;
   readonly noIntent?: boolean;
+  readonly missingIntentAttempts?: number;
+  readonly initialIntent?: ReviewRequestedIntent;
+  readonly clockNow?: Date;
 }) {
   let persisted: ReviewRequestedIntent | null = options.noIntent
     ? null
-    : intent;
-  const findIntent = vi.fn(async () => persisted);
+    : (options.initialIntent ?? intent);
+  let lookupAttempts = 0;
+  let forcedTransitionConsumed = false;
+  const findIntent = vi.fn(async () => {
+    lookupAttempts += 1;
+    return lookupAttempts <= (options.missingIntentAttempts ?? 0)
+      ? null
+      : persisted;
+  });
+  const sleep = vi.fn(async () => undefined);
   const recordAdmissionDecision = vi.fn(async (command) => {
+    if (persisted === null) {
+      return { status: ReviewRequestedTransitionStatus.Missing };
+    }
     const decision = decideReviewRequestedAdmission({
-      intent,
+      intent: persisted,
       ...command,
     });
     if (
       decision.status !== ReviewRequestedTransitionDecisionStatus.Applied &&
       decision.status !== ReviewRequestedTransitionDecisionStatus.Restored
     ) {
-      throw new Error("unexpected_test_decision");
+      return { status: ReviewRequestedTransitionStatus.Conflict };
     }
     persisted = decision.intent;
     if (
       options.transitionStatus &&
-      options.transitionStatus !== ReviewRequestedTransitionStatus.Applied
+      options.transitionStatus !== ReviewRequestedTransitionStatus.Applied &&
+      !forcedTransitionConsumed
     ) {
+      forcedTransitionConsumed = true;
       return { status: options.transitionStatus };
     }
     return {
@@ -181,9 +258,12 @@ function buildGate(options: {
         recordAdmissionDecision,
       } as never,
       pullRequests: { resolve: resolvePullRequest },
+      clock: { now: () => options.clockNow ?? now },
       maxChangedLines: 250_000,
+      sleep,
     }),
     recordAdmissionDecision,
     resolvePullRequest,
+    sleep,
   };
 }

@@ -25,6 +25,7 @@ import {
   cancelReviewRequestedPreAdmissionIntent,
   ReviewRequestedClaimDecisionStatus,
   ReviewRequestedDispatchRecoveryDecisionStatus,
+  ReviewRequestAdmissionState,
   ReviewRequestedRegistrationDecisionStatus,
   ReviewRequestedTransitionDecisionStatus,
   ReviewRequestedIntentState,
@@ -336,6 +337,16 @@ export class InMemoryReviewRequestedIntentStore
       if (!intent) {
         return { status: ReviewRequestedTransitionStatus.Missing };
       }
+      const sourceRunIdentityOwned = [...this.intents.values()].some(
+        (candidate) =>
+          candidate.requestId !== intent.requestId &&
+          candidate.repositoryConnectionId === intent.repositoryConnectionId &&
+          candidate.sourceRunId === command.sourceRunId &&
+          candidate.sourceRunAttempt === command.sourceRunAttempt,
+      );
+      if (sourceRunIdentityOwned) {
+        return { status: ReviewRequestedTransitionStatus.StaleClaim };
+      }
       const competingPreAdmission = [...this.intents.values()].some(
         (candidate) =>
           candidate.requestId !== intent.requestId &&
@@ -451,7 +462,9 @@ export class InMemoryReviewRequestedIntentStore
           (intent.state === ReviewRequestedIntentState.PendingDispatch ||
             intent.state === ReviewRequestedIntentState.Dispatching ||
             intent.state === ReviewRequestedIntentState.ReconcilingDispatch ||
-            intent.state === ReviewRequestedIntentState.AwaitingAuthorization),
+            (intent.state ===
+              ReviewRequestedIntentState.AwaitingAuthorization &&
+              intent.admission.state !== ReviewRequestAdmissionState.Admitted)),
       );
       for (const intent of cancellable) {
         this.intents.set(

@@ -59,6 +59,12 @@ make an invocation ineligible for cross-revision reuse.
 16. Raw credentials, auth payloads, cookies, environment values, raw search
     queries, repository contents, and unrestricted command output are not
     persisted in the control plane.
+17. A durably admitted request reserves its revision handoff until run-control
+    linkage or its persisted deadline. Newer revisions queue as successors;
+    registration and pre-admission cancellation cannot discard admitted work.
+18. A T0 review dispatch is distinguished from direct OAuth maintenance by the
+    GitHub-signed immutable reusable-workflow identity. Missing or mismatched
+    review identity fails closed before nonce or provider lease acquisition.
 
 ## Bounded contexts
 
@@ -346,6 +352,8 @@ fresh policy evaluation succeeds.
   result bytes, search results, replay work, evidence size, and queue wait.
 - Never retry authentication, quota, billing, invalid configuration, or
   deterministic policy failures in a tight loop.
+- Apply the server-owned changed-line cap before nonce, credential lease, or
+  provider work, with a bounded durable-intent binding wait.
 - Treat quota/authentication failures as bounded terminal outcomes for the
   current Action run. Quota parking belongs to Provider Capacity.
 - Report partial coverage explicitly when time or slot budgets are exhausted.

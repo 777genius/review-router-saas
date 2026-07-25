@@ -473,6 +473,12 @@ export function runReviewExecutionStoreContract(
         now: new Date(),
       });
       expect(admitted.status).toBe(ReviewRequestedTransitionStatus.Applied);
+      await expect(
+        harness.requestedIntents.cancelPreAdmission({
+          ...harness.scope,
+          now: new Date(),
+        }),
+      ).resolves.toEqual({ cancelled: 0 });
       const linked = await harness.requestedIntents.linkAdmission({
         requestId: candidate.requestId,
         sourceRunId: "run-intent-link",
@@ -484,6 +490,68 @@ export function runReviewExecutionStoreContract(
       });
       expect(linked.status).toBe(ReviewRequestedTransitionStatus.Applied);
       expect(linked.intent?.state).toBe(ReviewRequestedIntentState.Dispatched);
+    });
+
+    it("assigns one source-run identity to at most one requested intent", async () => {
+      const first = {
+        ...intentCandidate(harness, "source-run-first"),
+        deliveryIdentityHash: hash(11),
+        canonicalRequestHash: hash(12),
+      };
+      const second = {
+        ...intentCandidate(harness, "source-run-second"),
+        requestId: "request-source-run-second" as const,
+        pullRequestNumber: harness.scope.pullRequestNumber + 1,
+        deliveryIdentityHash: hash(13),
+        canonicalRequestHash: hash(14),
+      };
+      const dispatch = async (candidate: typeof first, identity: string) => {
+        await harness.requestedIntents.registerIntent({ candidate });
+        const claimed = await harness.requestedIntents.claimIntent({
+          requestId: candidate.requestId,
+          claimId: `claim-${identity}`,
+          ownerIdHash: `owner-${identity}`,
+          now: new Date(),
+          claimUntil: new Date(Date.now() + 60_000),
+        });
+        const claim = claimed.intent!.claim!;
+        const submissionAt = new Date();
+        await harness.requestedIntents.beginSubmission({
+          requestId: candidate.requestId,
+          claimId: claim.claimId,
+          ownerIdHash: claim.ownerIdHash,
+          fencingToken: claim.fencingToken,
+          now: submissionAt,
+          nextResolutionAt: new Date(submissionAt.getTime() + 1_000),
+          resolutionDeadlineAt: new Date(submissionAt.getTime() + 60_000),
+        });
+        const dispatchAt = new Date();
+        return harness.requestedIntents.recordDispatch({
+          requestId: candidate.requestId,
+          claimId: claim.claimId,
+          ownerIdHash: claim.ownerIdHash,
+          fencingToken: claim.fencingToken,
+          sourceRunId: "shared-source-run",
+          sourceRunAttempt: "1",
+          now: dispatchAt,
+          nextResolutionAt: new Date(dispatchAt.getTime() + 1_000),
+          resolutionDeadlineAt: new Date(dispatchAt.getTime() + 60_000),
+        });
+      };
+
+      await expect(dispatch(first, "source-run-first")).resolves.toMatchObject({
+        status: ReviewRequestedTransitionStatus.Applied,
+      });
+      await expect(dispatch(second, "source-run-second")).resolves.toEqual({
+        status: ReviewRequestedTransitionStatus.StaleClaim,
+      });
+      await expect(
+        harness.requestedIntents.findByRepositorySourceRunIdentity({
+          repositoryConnectionId: harness.scope.repositoryConnectionId,
+          sourceRunId: "shared-source-run",
+          sourceRunAttempt: "1",
+        }),
+      ).resolves.toMatchObject({ requestId: first.requestId });
     });
 
     it("uses the persisted deadline and CAS to reject late admission", async () => {
@@ -522,6 +590,20 @@ export function runReviewExecutionStoreContract(
       });
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
       const observedAt = new Date();
+      await expect(
+        harness.requestedIntents.recordAdmissionDecision({
+          requestId: candidate.requestId,
+          expectedVersion: dispatched.intent!.version,
+          changedLines: 100,
+          maxChangedLines: 250_000,
+          policySnapshotId: "hosted-review-size-v1:late-contract",
+          decisionHash: hash(15),
+          verdict: ReviewRequestAdmissionState.Admitted,
+          now: observedAt,
+        }),
+      ).resolves.toEqual({
+        status: ReviewRequestedTransitionStatus.Conflict,
+      });
       const [lateLink, terminalized] = await Promise.all([
         harness.requestedIntents.linkAdmission({
           requestId: candidate.requestId,

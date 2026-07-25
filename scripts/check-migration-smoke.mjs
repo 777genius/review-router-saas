@@ -179,13 +179,18 @@ try {
        WHERE conname IN (
          'ReviewRequestedIntent_admission_shape_check',
          'ReviewRequestedIntent_admission_verdict_check'
-       ) AND convalidated) AS review_request_admission_guards;
+       ) AND convalidated) AS review_request_admission_guards,
+      (SELECT count(*) FROM pg_indexes
+       WHERE schemaname = 'public'
+       AND indexname =
+         'ReviewRequestedIntent_source_run_identity_key')
+       AS review_request_source_run_identity_guard;
   `;
   const result = psql(invariantSql, smokeUrl.toString(), "pipe", ["-At"]);
   const output = result.stdout.trim();
   if (
     output !==
-    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2"
+    "1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|1|4|1|1|1|1|1|27|6|4|5|1|43|4|2|1|5|6|3|2|1"
   ) {
     console.error(output);
     fail("Migrated schema invariants failed");

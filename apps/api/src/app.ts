@@ -355,6 +355,7 @@ export async function createApiApp(
                       requestedIntentQueries: requestedIntentStore,
                       requestedIntentCommands: requestedIntentStore,
                       pullRequests: codexRotatingGitHubSecretGateway,
+                      clock,
                       maxChangedLines: readPositiveInteger(
                         process.env.REVIEW_ROUTER_HOSTED_MAX_CHANGED_LINES,
                         250_000,

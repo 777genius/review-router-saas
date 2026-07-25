@@ -8,8 +8,14 @@ import { PrismaReviewExecutionStore } from "../infrastructure/prisma/prisma-revi
 import { PrismaReviewRequestedIntentStore } from "../infrastructure/prisma/prisma-review-requested-intent-store";
 import {
   ReviewRequestAdmissionState,
+  ReviewRequestedIntentState,
   ReviewRequestedTriggerKind,
 } from "../domain/review-requested-intent";
+import {
+  ReviewRequestedClaimStatus,
+  ReviewRequestedRegisterStatus,
+  ReviewRequestedTransitionStatus,
+} from "../application/ports/review-requested-intent-ports";
 import {
   leaseCommand,
   prepareAndAdmit,
@@ -133,6 +139,196 @@ if (databaseUrl) {
         records.find((record) => record.state === "pending_dispatch")
           ?.requestId,
       );
+    });
+
+    it("retries registration when admission wins the supersede compare-and-set", async () => {
+      const harness = await createHarness();
+      const intentStore =
+        harness.requestedIntents as PrismaReviewRequestedIntentStore;
+      const now = new Date();
+      const oldRequestId = `request-admission-race-old-${randomUUID()}`;
+      const oldCandidate = {
+        ...harness.scope,
+        requestId: oldRequestId,
+        revision: {
+          baseSha: "a".repeat(40),
+          mergeBaseSha: "b".repeat(40),
+          headSha: "c".repeat(40),
+          reviewRevisionHash: hashFromText(randomUUID()),
+        },
+        triggerKind: ReviewRequestedTriggerKind.PullRequestSynchronized,
+        deliveryIdentityHash: hashFromText(randomUUID()),
+        canonicalRequestHash: hashFromText(randomUUID()),
+        notBefore: now,
+        createdAt: now,
+        retainUntil: new Date(now.getTime() + 86_400_000),
+      } as const;
+      await intentStore.registerIntent({ candidate: oldCandidate });
+      const claimed = await intentStore.claimIntent({
+        requestId: oldRequestId,
+        claimId: `claim-${oldRequestId}`,
+        ownerIdHash: `owner-${oldRequestId}`,
+        now,
+        claimUntil: new Date(now.getTime() + 30_000),
+      });
+      expect(claimed.status).toBe(ReviewRequestedClaimStatus.Claimed);
+      const claim = claimed.intent!.claim!;
+      await expect(
+        intentStore.beginSubmission({
+          requestId: oldRequestId,
+          claimId: claim.claimId,
+          ownerIdHash: claim.ownerIdHash,
+          fencingToken: claim.fencingToken,
+          now,
+          nextResolutionAt: new Date(now.getTime() + 1_000),
+          resolutionDeadlineAt: new Date(now.getTime() + 120_000),
+        }),
+      ).resolves.toMatchObject({
+        status: ReviewRequestedTransitionStatus.Applied,
+      });
+      const dispatched = await intentStore.recordDispatch({
+        requestId: oldRequestId,
+        claimId: claim.claimId,
+        ownerIdHash: claim.ownerIdHash,
+        fencingToken: claim.fencingToken,
+        sourceRunId: `run-${oldRequestId}`,
+        sourceRunAttempt: "1",
+        now,
+        nextResolutionAt: new Date(now.getTime() + 1_000),
+        resolutionDeadlineAt: new Date(now.getTime() + 120_000),
+      });
+      expect(dispatched.status).toBe(ReviewRequestedTransitionStatus.Applied);
+
+      let registrationReachedCompareAndSet!: () => void;
+      const registrationAtCompareAndSet = new Promise<void>((resolve) => {
+        registrationReachedCompareAndSet = resolve;
+      });
+      let allowRegistrationToContinue!: () => void;
+      const registrationMayContinue = new Promise<void>((resolve) => {
+        allowRegistrationToContinue = resolve;
+      });
+      let hookInvocations = 0;
+      const racingStore = new PrismaReviewRequestedIntentStore(prisma, {
+        beforeSupersedeCompareAndSet: async () => {
+          hookInvocations += 1;
+          if (hookInvocations === 1) {
+            registrationReachedCompareAndSet();
+            await registrationMayContinue;
+          }
+        },
+      });
+      const newRequestId = `request-admission-race-new-${randomUUID()}`;
+      const newCandidate = {
+        ...oldCandidate,
+        requestId: newRequestId,
+        revision: {
+          ...oldCandidate.revision,
+          headSha: "d".repeat(40),
+          reviewRevisionHash: hashFromText(randomUUID()),
+        },
+        deliveryIdentityHash: hashFromText(randomUUID()),
+        canonicalRequestHash: hashFromText(randomUUID()),
+      } as const;
+      const registration = racingStore.registerIntent({
+        candidate: newCandidate,
+      });
+      const registrationProgress = await waitForRegistrationCompareAndSet(
+        registrationAtCompareAndSet,
+        registration,
+      );
+      expect(registrationProgress).toEqual({ status: "compare_and_set" });
+      const admission = await intentStore.recordAdmissionDecision({
+        requestId: oldRequestId,
+        expectedVersion: dispatched.intent!.version,
+        changedLines: 100,
+        maxChangedLines: 250_000,
+        policySnapshotId: "hosted-review-size-v1:admission-race",
+        decisionHash: hashFromText(`admission-${oldRequestId}`),
+        verdict: ReviewRequestAdmissionState.Admitted,
+        now,
+      });
+      expect(admission.status).toBe(ReviewRequestedTransitionStatus.Applied);
+      allowRegistrationToContinue();
+
+      await expect(registration).resolves.toMatchObject({
+        status: ReviewRequestedRegisterStatus.Registered,
+        intent: {
+          requestId: newRequestId,
+          state: ReviewRequestedIntentState.PendingDispatch,
+        },
+      });
+      await expect(
+        intentStore.findByRequestId(oldRequestId),
+      ).resolves.toMatchObject({
+        state: ReviewRequestedIntentState.AwaitingAuthorization,
+        admission: { state: ReviewRequestAdmissionState.Admitted },
+        supersededByRequestId: null,
+      });
+      expect(hookInvocations).toBe(1);
+    });
+
+    it("bounds registration retries under repeated supersede conflicts", async () => {
+      const harness = await createHarness();
+      const intentStore =
+        harness.requestedIntents as PrismaReviewRequestedIntentStore;
+      const now = new Date();
+      const oldRequestId = `request-retry-bound-old-${randomUUID()}`;
+      const oldCandidate = {
+        ...harness.scope,
+        requestId: oldRequestId,
+        revision: {
+          baseSha: "a".repeat(40),
+          mergeBaseSha: "b".repeat(40),
+          headSha: "c".repeat(40),
+          reviewRevisionHash: hashFromText(randomUUID()),
+        },
+        triggerKind: ReviewRequestedTriggerKind.PullRequestSynchronized,
+        deliveryIdentityHash: hashFromText(randomUUID()),
+        canonicalRequestHash: hashFromText(randomUUID()),
+        notBefore: now,
+        createdAt: now,
+        retainUntil: new Date(now.getTime() + 86_400_000),
+      } as const;
+      await intentStore.registerIntent({ candidate: oldCandidate });
+
+      let hookInvocations = 0;
+      const racingStore = new PrismaReviewRequestedIntentStore(prisma, {
+        beforeSupersedeCompareAndSet: async () => {
+          hookInvocations += 1;
+          await prisma.reviewRequestedIntent.update({
+            where: { requestId: oldRequestId },
+            data: { version: { increment: 1n } },
+          });
+        },
+      });
+      const newRequestId = `request-retry-bound-new-${randomUUID()}`;
+      await expect(
+        racingStore.registerIntent({
+          candidate: {
+            ...oldCandidate,
+            requestId: newRequestId,
+            revision: {
+              ...oldCandidate.revision,
+              headSha: "d".repeat(40),
+              reviewRevisionHash: hashFromText(randomUUID()),
+            },
+            createdAt: new Date(now.getTime() + 1),
+            notBefore: new Date(now.getTime() + 1),
+            deliveryIdentityHash: hashFromText(randomUUID()),
+            canonicalRequestHash: hashFromText(randomUUID()),
+          },
+        }),
+      ).rejects.toThrow();
+      expect(hookInvocations).toBe(3);
+      await expect(
+        intentStore.findByRequestId(newRequestId),
+      ).resolves.toBeNull();
+      await expect(
+        intentStore.findByRequestId(oldRequestId),
+      ).resolves.toMatchObject({
+        state: ReviewRequestedIntentState.PendingDispatch,
+        supersededByRequestId: null,
+      });
     });
 
     it("fails closed instead of truncating an oversized aggregate", async () => {
@@ -825,4 +1021,31 @@ function hash(index: number): string {
 
 function hashFromText(value: string): string {
   return Buffer.from(value).toString("hex").slice(0, 64).padEnd(64, "0");
+}
+
+async function waitForRegistrationCompareAndSet(
+  signal: Promise<void>,
+  registration: ReturnType<PrismaReviewRequestedIntentStore["registerIntent"]>,
+) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      signal.then(() => ({ status: "compare_and_set" as const })),
+      registration.then((result) => ({
+        status: "completed" as const,
+        result,
+      })),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new Error("registration did not reach supersede compare-and-set"),
+            ),
+          5_000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }

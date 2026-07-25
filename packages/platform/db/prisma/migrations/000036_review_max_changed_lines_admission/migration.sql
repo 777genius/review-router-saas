@@ -1,3 +1,5 @@
+BEGIN;
+
 ALTER TYPE "ReviewRequestedIntentTerminalReasonV2"
   ADD VALUE IF NOT EXISTS 'max_changed_lines_exceeded';
 
@@ -50,3 +52,5 @@ ALTER TABLE "ReviewRequestedIntent"
       )
       OR "admissionState" = 'not_evaluated'
     );
+
+COMMIT;

@@ -537,6 +537,7 @@ describe("Codex rotating OAuth action control plane", () => {
       repository,
       sourceRunId: "9001",
       sourceRunAttempt: "1",
+      intentRequired: true,
       now,
     });
     expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
@@ -567,6 +568,130 @@ describe("Codex rotating OAuth action control plane", () => {
         dependencies,
       ),
     ).rejects.toThrow("review_request_intent_required");
+    expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
+  it("requires a bound intent for managed T0 workflow dispatch", async () => {
+    const replayNonces = {
+      tryConsumeNonce: vi.fn().mockResolvedValue(true),
+    };
+    const hostedReviewPreleaseGate = {
+      evaluate: vi.fn().mockResolvedValue({
+        status: "not_applicable" as const,
+      }),
+    };
+    const dependencies = buildRotatingDependencies({
+      oidcVerifier: {
+        verify: vi.fn().mockResolvedValue({
+          ...claims,
+          event_name: "workflow_dispatch" as const,
+          ref: "refs/heads/dev",
+          job_workflow_ref: `777genius/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${workflowSha}`,
+          job_workflow_sha: workflowSha,
+        }),
+      },
+      replayNonces,
+      hostedReviewPreleaseGate,
+    });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("review_request_intent_required");
+    expect(hostedReviewPreleaseGate.evaluate).toHaveBeenCalledWith({
+      repository,
+      sourceRunId: "9001",
+      sourceRunAttempt: "1",
+      intentRequired: true,
+      now,
+    });
+    expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+  });
+
+  it("allows direct managed workflow dispatch to refresh OAuth without an intent", async () => {
+    const replayNonces = {
+      tryConsumeNonce: vi.fn().mockResolvedValue(true),
+    };
+    const hostedReviewPreleaseGate = {
+      evaluate: vi.fn().mockResolvedValue({
+        status: "not_applicable" as const,
+      }),
+    };
+    const dependencies = buildRotatingDependencies({
+      oidcVerifier: {
+        verify: vi.fn().mockResolvedValue({
+          ...claims,
+          event_name: "workflow_dispatch" as const,
+          ref: "refs/heads/dev",
+        }),
+      },
+      replayNonces,
+      hostedReviewPreleaseGate,
+    });
+
+    const result = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "jwt",
+        audience: "reviewrouter",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 1,
+      },
+      dependencies,
+    );
+
+    expect("status" in result).toBe(false);
+    expect(hostedReviewPreleaseGate.evaluate).toHaveBeenCalledWith({
+      repository,
+      sourceRunId: "9001",
+      sourceRunAttempt: "1",
+      intentRequired: false,
+      now,
+    });
+    expect(replayNonces.tryConsumeNonce).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an untrusted reusable workflow identity before consuming capacity", async () => {
+    const replayNonces = {
+      tryConsumeNonce: vi.fn().mockResolvedValue(true),
+    };
+    const hostedReviewPreleaseGate = {
+      evaluate: vi.fn().mockResolvedValue({
+        status: "not_applicable" as const,
+      }),
+    };
+    const dependencies = buildRotatingDependencies({
+      oidcVerifier: {
+        verify: vi.fn().mockResolvedValue({
+          ...claims,
+          event_name: "workflow_dispatch" as const,
+          ref: "refs/heads/dev",
+          job_workflow_ref: `evil/review-router/.github/workflows/reviewrouter-execution-reusable.yml@${workflowSha}`,
+          job_workflow_sha: workflowSha,
+        }),
+      },
+      replayNonces,
+      hostedReviewPreleaseGate,
+    });
+
+    await expect(
+      preleaseCodexRotatingOAuth(
+        {
+          oidcToken: "jwt",
+          audience: "reviewrouter",
+          providerInstanceId: "codex-rotating:123456",
+          workflowSchemaVersion: 1,
+        },
+        dependencies,
+      ),
+    ).rejects.toThrow("codex_rotating_review_job_attestation_invalid");
+    expect(hostedReviewPreleaseGate.evaluate).not.toHaveBeenCalled();
     expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
   });
 

@@ -28,6 +28,7 @@ import {
   ReviewRequestedIntentState,
   ReviewRequestedIntentTerminalReason,
   ReviewRequestedRegisterStatus,
+  ReviewRequestedTransitionDecisionStatus,
   ReviewRequestedTransitionStatus,
   ReviewRequestedTriggerKind,
   ReviewTaskKind,
@@ -35,11 +36,13 @@ import {
   StartReviewExecution,
   StartReviewExecutionStatus,
   createEmptyReviewExecutionStream,
+  createReviewRequestedIntent,
   assessReviewRequestedClaim,
   claimReviewRequestedIntent,
   decideExecutionPreparation,
   decideExecutionPreparationReplay,
   ExecutionPreparationReplayDecisionStatus,
+  decideReviewRequestedAdmission,
   decideReviewRequestedRegistration,
   ReviewRequestedRegistrationDecisionStatus,
   prepareWorkSlots,
@@ -199,6 +202,56 @@ describe("review execution domain", () => {
       requestId: newer.requestId,
       state: ReviewRequestedIntentState.PendingDispatch,
     });
+  });
+
+  it("queues a new revision without superseding an admitted review", () => {
+    const awaiting = {
+      ...createReviewRequestedIntent(
+        intentCandidate("request-admitted", "91", scope, revision),
+      ),
+      version: 4n,
+      state: ReviewRequestedIntentState.AwaitingAuthorization,
+      nextResolutionAt: new Date(baseTime.getTime() + 1_000),
+      resolutionDeadlineAt: new Date(baseTime.getTime() + 60_000),
+      sourceRunId: "source-run-admitted",
+      sourceRunAttempt: "1",
+    };
+    const admitted = decideReviewRequestedAdmission({
+      intent: awaiting,
+      expectedVersion: awaiting.version,
+      changedLines: 100,
+      maxChangedLines: 250_000,
+      policySnapshotId: "hosted-review-size-v1:test",
+      decisionHash: "9".repeat(64),
+      verdict: ReviewRequestAdmissionState.Admitted,
+      now: baseTime,
+    });
+    if (admitted.status !== ReviewRequestedTransitionDecisionStatus.Applied) {
+      throw new Error("expected_admitted_intent");
+    }
+
+    const next = decideReviewRequestedRegistration({
+      candidate: intentCandidate(
+        "request-after-admission",
+        "92",
+        scope,
+        nextRevision,
+      ),
+      existingByDelivery: null,
+      existingByRequestId: null,
+      preAdmissionInScope: admitted.intent,
+    });
+
+    expect(next.status).toBe(
+      ReviewRequestedRegistrationDecisionStatus.Register,
+    );
+    if (next.status !== ReviewRequestedRegistrationDecisionStatus.Register) {
+      throw new Error("expected_queued_revision");
+    }
+    expect(next.supersededIntent).toBeNull();
+    expect(admitted.intent.state).toBe(
+      ReviewRequestedIntentState.AwaitingAuthorization,
+    );
   });
 
   it("reconciles a timeout-after-success without issuing a second POST", async () => {

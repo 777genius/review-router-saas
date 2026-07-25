@@ -105,11 +105,24 @@ describe("review requested admission", () => {
       verdict: ReviewRequestAdmissionState.Admitted,
       now,
     });
+    const expired = decideReviewRequestedAdmission({
+      intent: first.intent,
+      expectedVersion: 4n,
+      changedLines: 100,
+      maxChangedLines: 250_000,
+      policySnapshotId: "hosted-review-size-v1:test",
+      decisionHash: "3".repeat(64),
+      verdict: ReviewRequestAdmissionState.Admitted,
+      now: new Date(now.getTime() + 60_001),
+    });
 
     expect(restored.status).toBe(
       ReviewRequestedTransitionDecisionStatus.Restored,
     );
     expect(conflicting.status).toBe(
+      ReviewRequestedTransitionDecisionStatus.Conflict,
+    );
+    expect(expired.status).toBe(
       ReviewRequestedTransitionDecisionStatus.Conflict,
     );
   });
@@ -129,6 +142,46 @@ describe("review requested admission", () => {
         now,
       }),
     ).toThrow("review_request_admission_verdict_invalid");
+  });
+
+  it("does not admit after the persisted authorization deadline", () => {
+    const intent = awaitingIntent();
+
+    expect(
+      decideReviewRequestedAdmission({
+        intent: {
+          ...intent,
+          resolutionDeadlineAt: new Date(now.getTime() - 1),
+        },
+        expectedVersion: intent.version,
+        changedLines: 100,
+        maxChangedLines: 250_000,
+        policySnapshotId: "hosted-review-size-v1:test",
+        decisionHash: "6".repeat(64),
+        verdict: ReviewRequestAdmissionState.Admitted,
+        now,
+      }).status,
+    ).toBe(ReviewRequestedTransitionDecisionStatus.Conflict);
+  });
+
+  it("requires a minimum durable handoff window before admission", () => {
+    const intent = awaitingIntent();
+
+    expect(
+      decideReviewRequestedAdmission({
+        intent: {
+          ...intent,
+          resolutionDeadlineAt: new Date(now.getTime() + 29_999),
+        },
+        expectedVersion: intent.version,
+        changedLines: 100,
+        maxChangedLines: 250_000,
+        policySnapshotId: "hosted-review-size-v1:test",
+        decisionHash: "7".repeat(64),
+        verdict: ReviewRequestAdmissionState.Admitted,
+        now,
+      }).status,
+    ).toBe(ReviewRequestedTransitionDecisionStatus.Conflict);
   });
 });
 
@@ -155,6 +208,8 @@ function awaitingIntent(): ReviewRequestedIntent {
     }),
     version: 4n,
     state: ReviewRequestedIntentState.AwaitingAuthorization,
+    nextResolutionAt: new Date(now.getTime() + 1_000),
+    resolutionDeadlineAt: new Date(now.getTime() + 60_000),
     sourceRunId: "30150048512",
     sourceRunAttempt: "1",
   };

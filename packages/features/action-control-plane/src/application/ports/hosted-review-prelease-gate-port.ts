@@ -16,6 +16,7 @@ export interface HostedReviewPreleaseGatePort {
     readonly repository: ActionRepositoryContext;
     readonly sourceRunId: string;
     readonly sourceRunAttempt: string;
+    readonly intentRequired: boolean;
     readonly now: Date;
   }): Promise<HostedReviewPreleaseGateDecision>;
 }

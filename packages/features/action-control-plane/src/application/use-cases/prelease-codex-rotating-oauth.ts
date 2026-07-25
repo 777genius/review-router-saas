@@ -11,7 +11,11 @@ import type {
   CodexRotatingWorkflowSourceVerifierPort,
 } from "../ports/codex-rotating-oauth-repository-port.js";
 import type { GitHubActionsOidcTokenVerifierPort } from "../ports/github-actions-oidc-token-verifier-port.js";
-import type { ActionRepositoryContext } from "../../domain/action-control-plane.js";
+import {
+  isManagedV2SessionBootstrapSource,
+  managedCodexWorkflowPath,
+  type ActionRepositoryContext,
+} from "../../domain/action-control-plane.js";
 import type { HostedReviewPreleaseGatePort } from "../ports/hosted-review-prelease-gate-port.js";
 
 export type PreleaseCodexRotatingOAuthDependencies = {
@@ -119,20 +123,24 @@ export async function preleaseCodexRotatingOAuth(
     repository,
     workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
   });
+  const intentRequired = reviewIntentRequired({
+    claims,
+    actionRef: verifiedWorkflow.binding.actionRef,
+    workflowPath: verifiedWorkflow.binding.workflowPath,
+    pullRequestNumber,
+  });
   if (dependencies.hostedReviewPreleaseGate) {
     const admission = await dependencies.hostedReviewPreleaseGate.evaluate({
       repository,
       sourceRunId: claims.run_id,
       sourceRunAttempt: claims.run_attempt,
+      intentRequired,
       now: dependencies.clock.now(),
     });
     if (admission.status === "skipped") {
       return { protocolVersion: 1, ...admission };
     }
-    if (
-      admission.status === "not_applicable" &&
-      pullRequestNumber !== undefined
-    ) {
+    if (admission.status === "not_applicable" && intentRequired) {
       throw new Error("review_request_intent_required");
     }
   }
@@ -164,6 +172,50 @@ export async function preleaseCodexRotatingOAuth(
       : {}),
     expiresAt: lease.expiresAt.toISOString(),
   };
+}
+
+function reviewIntentRequired(input: {
+  readonly claims: CodexRotatingOidcClaims;
+  readonly actionRef: string;
+  readonly workflowPath: string;
+  readonly pullRequestNumber: number | undefined;
+}): boolean {
+  if (input.pullRequestNumber !== undefined) return true;
+  if (
+    input.claims.event_name !== "workflow_dispatch" ||
+    input.workflowPath !== managedCodexWorkflowPath
+  ) {
+    return isManagedV2SessionBootstrapSource({
+      eventName: input.claims.event_name,
+      workflowPath: input.workflowPath,
+    });
+  }
+
+  const jobWorkflowRef = input.claims.job_workflow_ref;
+  const jobWorkflowSha = input.claims.job_workflow_sha?.toLowerCase();
+  if (!jobWorkflowRef && !jobWorkflowSha) return false;
+  if (
+    jobWorkflowRef?.toLowerCase() === input.claims.workflow_ref.toLowerCase() &&
+    jobWorkflowSha === input.claims.workflow_sha?.toLowerCase()
+  ) {
+    return false;
+  }
+
+  const release = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)@([a-f0-9]{40})$/i.exec(
+    input.actionRef,
+  );
+  const expectedSha = release?.[2]?.toLowerCase();
+  const expectedJobWorkflowRef = release
+    ? `${release[1]}/.github/workflows/reviewrouter-execution-reusable.yml@${expectedSha}`
+    : null;
+  if (
+    expectedJobWorkflowRef === null ||
+    jobWorkflowRef?.toLowerCase() !== expectedJobWorkflowRef.toLowerCase() ||
+    jobWorkflowSha !== expectedSha
+  ) {
+    throw new Error("codex_rotating_review_job_attestation_invalid");
+  }
+  return true;
 }
 
 async function resolvePullRequestNumber(input: {

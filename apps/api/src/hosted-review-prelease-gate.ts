@@ -12,6 +12,7 @@ import {
   type ReviewRequestedIntentCommandPort,
   type ReviewRequestedIntentQueryPort,
 } from "@reviewrouter/features-review-executions";
+import type { Clock } from "@reviewrouter/shared";
 
 export interface HostedReviewPullRequestFactsPort {
   resolve(input: {
@@ -26,6 +27,8 @@ export interface HostedReviewPullRequestFactsPort {
 }
 
 export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseGatePort {
+  private static readonly intentBindingPollAttempts = 21;
+  private static readonly intentBindingPollIntervalMs = 250;
   private readonly maxChangedLines: number;
   private readonly policySnapshotId: string;
 
@@ -34,7 +37,9 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
       readonly requestedIntentQueries: ReviewRequestedIntentQueryPort;
       readonly requestedIntentCommands: ReviewRequestedIntentCommandPort;
       readonly pullRequests: HostedReviewPullRequestFactsPort;
+      readonly clock: Clock;
       readonly maxChangedLines: number;
+      readonly sleep?: (delayMs: number) => Promise<void>;
     },
   ) {
     if (
@@ -55,9 +60,9 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
   async evaluate(
     input: Parameters<HostedReviewPreleaseGatePort["evaluate"]>[0],
   ) {
-    const intent = await this.findIntent(input);
+    const intent = await this.findIntentWithBoundedWait(input);
     if (!intent) return { status: "not_applicable" as const };
-    const restored = restoreDecision(intent);
+    const restored = await this.restorePersistedDecision(input, intent);
     if (restored) return restored;
     if (intent.state !== ReviewRequestedIntentState.AwaitingAuthorization) {
       throw new Error("review_request_intent_not_awaiting_authorization");
@@ -104,14 +109,20 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
         policySnapshotId: this.policySnapshotId,
         decisionHash,
         verdict,
-        now: input.now,
+        now: this.dependencies.clock.now(),
       });
     const decidedIntent =
       transition.status === ReviewRequestedTransitionStatus.Applied ||
       transition.status === ReviewRequestedTransitionStatus.Restored
         ? transition.intent
         : await this.findIntent(input);
-    const decision = decidedIntent ? restoreDecision(decidedIntent) : null;
+    const decision =
+      decidedIntent === undefined || decidedIntent === null
+        ? null
+        : transition.status === ReviewRequestedTransitionStatus.Applied ||
+            transition.status === ReviewRequestedTransitionStatus.Restored
+          ? decisionFromValidatedIntent(decidedIntent)
+          : await this.restorePersistedDecision(input, decidedIntent);
     if (!decision || decision.decisionHash !== decisionHash) {
       throw new Error("review_request_admission_transition_conflict");
     }
@@ -131,9 +142,65 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
       },
     );
   }
+
+  private async findIntentWithBoundedWait(
+    input: Parameters<HostedReviewPreleaseGatePort["evaluate"]>[0],
+  ) {
+    const attempts = input.intentRequired
+      ? ProductionHostedReviewPreleaseGate.intentBindingPollAttempts
+      : 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const intent = await this.findIntent(input);
+      if (intent || attempt === attempts) return intent;
+      await (
+        this.dependencies.sleep ??
+        ((delayMs: number) =>
+          new Promise<void>((resolve) => setTimeout(resolve, delayMs)))
+      )(ProductionHostedReviewPreleaseGate.intentBindingPollIntervalMs);
+    }
+    return null;
+  }
+
+  private async restorePersistedDecision(
+    input: Parameters<HostedReviewPreleaseGatePort["evaluate"]>[0],
+    intent: ReviewRequestedIntent,
+  ) {
+    if (intent.admission.state === ReviewRequestAdmissionState.NotEvaluated) {
+      return null;
+    }
+    if (intent.admission.state === ReviewRequestAdmissionState.Rejected) {
+      return decisionFromValidatedIntent(intent);
+    }
+    const transition =
+      await this.dependencies.requestedIntentCommands.recordAdmissionDecision({
+        requestId: intent.requestId,
+        expectedVersion: intent.version,
+        changedLines: intent.admission.changedLines,
+        maxChangedLines: intent.admission.maxChangedLines,
+        policySnapshotId: intent.admission.policySnapshotId,
+        decisionHash: intent.admission.decisionHash,
+        verdict: ReviewRequestAdmissionState.Admitted,
+        now: this.dependencies.clock.now(),
+      });
+    if (
+      (transition.status !== ReviewRequestedTransitionStatus.Applied &&
+        transition.status !== ReviewRequestedTransitionStatus.Restored) ||
+      transition.intent === undefined
+    ) {
+      throw new Error("review_request_admission_transition_conflict");
+    }
+    const decision = decisionFromValidatedIntent(transition.intent);
+    if (
+      decision === null ||
+      decision.decisionHash !== intent.admission.decisionHash
+    ) {
+      throw new Error("review_request_admission_transition_conflict");
+    }
+    return decision;
+  }
 }
 
-function restoreDecision(intent: ReviewRequestedIntent) {
+function decisionFromValidatedIntent(intent: ReviewRequestedIntent) {
   const admission = intent.admission;
   if (admission.state === ReviewRequestAdmissionState.NotEvaluated) return null;
   if (admission.state === ReviewRequestAdmissionState.Admitted) {
