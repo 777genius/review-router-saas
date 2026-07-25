@@ -65,6 +65,10 @@ make an invocation ineligible for cross-revision reuse.
 18. A T0 review dispatch is distinguished from direct OAuth maintenance by the
     GitHub-signed immutable reusable-workflow identity. Missing or mismatched
     review identity fails closed before nonce or provider lease acquisition.
+19. A GitHub review dispatch resolves its workflow from the current pull
+    request base branch only after verifying the live base SHA, head SHA, open
+    state, and same-repository trust domain against the durable intent. The
+    repository default branch cannot substitute for the reviewed base branch.
 
 ## Bounded contexts
 
