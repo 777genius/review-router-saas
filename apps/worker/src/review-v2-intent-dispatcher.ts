@@ -221,6 +221,7 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
         scmRepositoryIdentityId: true,
         owner: true,
         name: true,
+        defaultBranch: true,
         provider: true,
         selected: true,
         archived: true,
@@ -234,6 +235,8 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
       repository.workspaceId !== intent.workspaceId ||
       repository.scmRepositoryIdentityId !== intent.scmRepositoryIdentityId ||
       repository.provider !== "github" ||
+      repository.defaultBranch.length === 0 ||
+      repository.defaultBranch.trim() !== repository.defaultBranch ||
       !repository.selected ||
       repository.archived ||
       repository.installation?.status !== "active"
@@ -243,6 +246,7 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
     return {
       owner: repository.owner,
       repo: repository.name,
+      defaultBranch: repository.defaultBranch,
       githubInstallationId:
         repository.installation.githubInstallationId.toString(),
     };
@@ -252,6 +256,7 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
 type DispatchTarget = Readonly<{
   owner: string;
   repo: string;
+  defaultBranch: string;
   githubInstallationId: string;
 }>;
 
@@ -299,7 +304,7 @@ async function resolveDispatchRef(
   ) {
     throw new Error("review_requested_dispatch_base_ref_invalid");
   }
-  return baseRef;
+  return target.defaultBranch;
 }
 
 function repositoryFullName(value: unknown): string | null {
