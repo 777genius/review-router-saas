@@ -819,9 +819,10 @@ function publicationProjection(value: unknown) {
   );
   const summary = exactRecord(
     root.summary,
-    ["marker", "body", "allClear"],
+    ["marker", "body", "allClear", "occurrenceCounts"],
     "publication_summary_shape_invalid",
   );
+  assertOccurrenceCounts(summary.occurrenceCounts);
   const check = exactRecord(
     root.check,
     ["marker", "name", "title", "summary", "conclusion"],
@@ -853,7 +854,7 @@ function publicationProjection(value: unknown) {
     inlineReviewChunks: root.inlineReviewChunks.map((value, index) => {
       const chunk = exactRecord(
         value,
-        ["chunkIndex", "marker", "comments"],
+        ["chunkIndex", "marker", "bodyHash", "comments"],
         "publication_chunk_shape_invalid",
       );
       if (chunk.chunkIndex !== index || !Array.isArray(chunk.comments)) {
@@ -866,8 +867,11 @@ function publicationProjection(value: unknown) {
       return {
         chunkIndex: index,
         marker: boundedString(chunk.marker, 4_096),
+        bodyHash: sha256String(chunk.bodyHash),
         comments: chunk.comments.map((value) => {
-          const comment = recordWithOptionalStartLine(value);
+          const comment = publicationComment(value);
+          boundedString(comment.lineageId, 512);
+          optionalPositiveInteger(comment.endLine);
           return {
             marker: boundedString(comment.marker, 4_096),
             path: boundedString(comment.path, 4_096),
@@ -879,11 +883,14 @@ function publicationProjection(value: unknown) {
       };
     }),
     lifecycle: root.lifecycle.map((value) => {
-      const entry = exactRecord(
+      const entry = exactRecordWithOptional(
         value,
-        ["targetId", "threadId", "verdict", "mutationEligible"],
+        ["targetId", "threadId", "verdict", "reasonCodes", "mutationEligible"],
+        ["lineageId"],
         "publication_lifecycle_shape_invalid",
       );
+      optionalBoundedString(entry.lineageId, 512);
+      boundedStringArray(entry.reasonCodes, 256, 512);
       return {
         targetId: boundedString(entry.targetId, 512),
         threadId: boundedString(entry.threadId, 512),
@@ -1220,26 +1227,41 @@ function exactRecord(
   return value;
 }
 
-function recordWithOptionalStartLine(value: unknown) {
+function exactRecordWithOptional(
+  value: unknown,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[],
+  issue: string,
+) {
   if (!isRecord(value)) {
     throw routeFailure(
       422,
       ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      "publication_comment_shape_invalid",
+      issue,
     );
   }
-  const keys = Object.keys(value).sort().join(",");
+  const allowed = new Set([...requiredKeys, ...optionalKeys]);
+  const actual = Object.keys(value);
   if (
-    keys !== "body,line,marker,path" &&
-    keys !== "body,line,marker,path,startLine"
+    requiredKeys.some((key) => !(key in value)) ||
+    actual.some((key) => !allowed.has(key))
   ) {
     throw routeFailure(
       422,
       ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      "publication_comment_shape_invalid",
+      issue,
     );
   }
   return value;
+}
+
+function publicationComment(value: unknown) {
+  return exactRecordWithOptional(
+    value,
+    ["lineageId", "marker", "path", "line", "body"],
+    ["startLine", "endLine"],
+    "publication_comment_shape_invalid",
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1285,6 +1307,61 @@ function positiveInteger(value: unknown) {
 
 function optionalPositiveInteger(value: unknown) {
   return value === undefined ? null : positiveInteger(value);
+}
+
+function optionalBoundedString(value: unknown, maxBytes: number) {
+  return value === undefined ? null : boundedString(value, maxBytes);
+}
+
+function boundedStringArray(
+  value: unknown,
+  maxEntries: number,
+  maxEntryBytes: number,
+) {
+  if (!Array.isArray(value) || value.length > maxEntries) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "publication_string_array_invalid",
+    );
+  }
+  value.forEach((entry) => boundedString(entry, maxEntryBytes));
+}
+
+function assertOccurrenceCounts(value: unknown) {
+  const counts = exactRecord(
+    value,
+    [
+      "new",
+      "reconfirmed",
+      "changed",
+      "carried_unverified",
+      "resolved",
+      "uncertain",
+      "suppressed_by_human",
+    ],
+    "publication_occurrence_counts_invalid",
+  );
+  Object.values(counts).forEach((count) => {
+    if (!Number.isSafeInteger(count) || (count as number) < 0) {
+      throw routeFailure(
+        422,
+        ReviewActionV2ProtocolErrorCode.InvariantViolation,
+        "publication_occurrence_counts_invalid",
+      );
+    }
+  });
+}
+
+function sha256String(value: unknown) {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "publication_hash_invalid",
+    );
+  }
+  return value;
 }
 
 function conclusion(value: unknown): "success" | "failure" | "neutral" {
