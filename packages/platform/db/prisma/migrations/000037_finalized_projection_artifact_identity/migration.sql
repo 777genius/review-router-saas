@@ -1,5 +1,7 @@
 -- Preserve the content-addressed artifact ID while making each execution's
 -- finalized artifact row the persistence identity.
+BEGIN;
+
 CREATE UNIQUE INDEX "FinalizedReviewProjectionArtifactV2_executionId_artifactId_key"
 ON "FinalizedReviewProjectionArtifactV2"("executionId", "artifactId");
 
@@ -23,3 +25,5 @@ ADD CONSTRAINT "ReviewCompletionProcess_finalizedArtifactId_fkey"
 FOREIGN KEY ("executionId", "finalizedArtifactId")
 REFERENCES "FinalizedReviewProjectionArtifactV2"("executionId", "artifactId")
 ON DELETE RESTRICT ON UPDATE CASCADE NOT VALID;
+
+COMMIT;

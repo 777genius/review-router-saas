@@ -1,3 +1,5 @@
+BEGIN;
+
 ALTER TABLE "ProducerRelease"
 ADD COLUMN "contextGatewayPolicyVersion" TEXT,
 ADD COLUMN "contextGatewayEntrypointDigest" TEXT;
@@ -28,3 +30,5 @@ ON "ProducerRelease"(
   "protocolLimitsProfileId",
   "operationalSloProfileId"
 ) NULLS NOT DISTINCT;
+
+COMMIT;
