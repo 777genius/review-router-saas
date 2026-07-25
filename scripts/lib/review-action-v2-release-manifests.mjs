@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { posix as posixPath } from "node:path";
 
 export const CONTRACT_EXPORT_VERSION = 1;
-export const RELEASE_MANIFEST_VERSION = 1;
+export const RELEASE_MANIFEST_VERSION = 2;
 export const PROTOCOL_GENERATION_MANIFEST_FILE = "manifest.json";
 export const HANDOFF_MANIFEST_FILE = "handoff-manifest.json";
 export const PUBLIC_GENERATED_DIRECTORY =
   "src/control-plane/generated/review-action-v2";
 export const PUBLIC_RUNTIME_BUNDLE = "dist/index.js";
+export const PUBLIC_CONTEXT_GATEWAY_BUNDLE = "dist/context-gateway.js";
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
@@ -192,6 +193,14 @@ export function buildReleaseManifest(input) {
     input.runtimeEntrypointPath,
     "runtimeEntrypointPath",
   );
+  const contextGatewayEntrypointPath = assertSafeRelativePath(
+    input.contextGatewayEntrypointPath,
+    "contextGatewayEntrypointPath",
+  );
+  const contextGatewayPolicyVersion = assertIdentifier(
+    input.contextGatewayPolicyVersion,
+    "contextGatewayPolicyVersion",
+  );
   return Object.freeze({
     releaseManifestVersion: RELEASE_MANIFEST_VERSION,
     distributionKind: "PublicReusable",
@@ -214,6 +223,12 @@ export function buildReleaseManifest(input) {
       input.runtimeEntrypointDigest,
       "runtimeEntrypointDigest",
     ),
+    contextGatewayPolicyVersion,
+    contextGatewayEntrypointPath,
+    contextGatewayEntrypointDigest: assertSha256Digest(
+      input.contextGatewayEntrypointDigest,
+      "contextGatewayEntrypointDigest",
+    ),
   });
 }
 
@@ -225,6 +240,9 @@ export function parseReleaseManifest(raw) {
     [
       "actionCommitSha",
       "canonicalizerDigest",
+      "contextGatewayEntrypointDigest",
+      "contextGatewayEntrypointPath",
+      "contextGatewayPolicyVersion",
       "contractExportVersion",
       "distributionKind",
       "expectedPublicActionBaseCommit",
@@ -299,7 +317,29 @@ export function parseReleaseManifest(raw) {
       value.runtimeEntrypointDigest,
       `${label}.runtimeEntrypointDigest`,
     ),
+    contextGatewayPolicyVersion: assertIdentifier(
+      value.contextGatewayPolicyVersion,
+      `${label}.contextGatewayPolicyVersion`,
+    ),
+    contextGatewayEntrypointPath: assertSafeRelativePath(
+      value.contextGatewayEntrypointPath,
+      `${label}.contextGatewayEntrypointPath`,
+    ),
+    contextGatewayEntrypointDigest: assertSha256Digest(
+      value.contextGatewayEntrypointDigest,
+      `${label}.contextGatewayEntrypointDigest`,
+    ),
   });
+}
+
+export function assertIdentifier(value, field) {
+  if (
+    typeof value !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(value)
+  ) {
+    throw new Error(`${field} must be a valid identifier`);
+  }
+  return value;
 }
 
 export function assertSafeRelativePath(value, field) {

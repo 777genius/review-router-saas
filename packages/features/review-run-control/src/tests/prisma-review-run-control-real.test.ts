@@ -577,6 +577,8 @@ describeWithDatabase("review-run-control Prisma adapters", () => {
           runtimeCommitSha: "b".repeat(40),
           wrapperEntrypointDigest: null,
           runtimeEntrypointDigest,
+          contextGatewayPolicyVersion: null,
+          contextGatewayEntrypointDigest: null,
           schemaDigest,
           capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
           protocolLimitsProfileId: limitsId,

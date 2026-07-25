@@ -175,6 +175,16 @@ export function reviewRunControlRepositoryContract(
             ? releaseRight.value
             : null;
       if (!owner) throw new Error("contract_release_owner_missing");
+      await expect(
+        harness.releases.registerProducerRelease({
+          ...release,
+          producerReleaseId: next("release-gateway"),
+          contextGatewayPolicyVersion: "review-context-gateway.v1",
+          contextGatewayEntrypointDigest: digest("gateway", "entrypoint"),
+        }),
+      ).resolves.toMatchObject({
+        status: ImmutableRegistryWriteStatus.Created,
+      });
       const revoked = await harness.releases.revokeProducerRelease({
         producerReleaseId: owner.producerReleaseId,
         revokedAt: new Date(owner.registeredAt.getTime() + 1_000),
@@ -673,6 +683,8 @@ function producerRelease(
     runtimeCommitSha: "2".repeat(40),
     wrapperEntrypointDigest: null,
     runtimeEntrypointDigest: digest(id, "runtime-entrypoint"),
+    contextGatewayPolicyVersion: null,
+    contextGatewayEntrypointDigest: null,
     schemaDigest: digest(id, "schema"),
     capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
     protocolLimitsProfileId: limits.protocolLimitsProfileId,

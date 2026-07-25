@@ -14,7 +14,11 @@ import {
 } from "../application/ports/review-scm-revision-ports";
 import { ProducerReleaseAttestationStatus } from "../application/ports/producer-release-attestation-ports";
 import { CanonicalGitHubReviewRevisionResolver } from "../infrastructure/github/canonical-github-review-revision-resolver";
-import { ConfiguredProducerReleaseAttestationRegistry } from "../infrastructure/configured-producer-release-attestation";
+import {
+  ConfiguredProducerReleaseAttestationRegistry,
+  readConfiguredProducerReleaseAttestations,
+  reviewRunProducerReleaseAttestationsEnv,
+} from "../infrastructure/configured-producer-release-attestation";
 import {
   createReviewRunAuthorizationKeyRingFromEnv,
   reviewRunAuthorizationActiveKeyIdEnv,
@@ -24,6 +28,7 @@ import {
   ProducerDistributionKind,
   ReviewCapabilityProfile,
 } from "../domain/review-run-control-types";
+import { createProducerRelease } from "../domain/producer-release";
 import { createReviewRunControlTestKit } from "../testing/review-run-control-test-kit";
 import {
   hashA,
@@ -163,6 +168,44 @@ describe("production run-authorization prerequisites", () => {
     ).resolves.toEqual({ status: ProducerReleaseAttestationStatus.Revoked });
   });
 
+  it("requires the context-gateway policy and digest as one release artifact", () => {
+    expect(() =>
+      createProducerRelease(
+        {
+          ...releaseCandidate,
+          contextGatewayPolicyVersion: "review-context-gateway.v1",
+        },
+        new Date("2026-07-22T12:00:00.000Z"),
+      ),
+    ).toThrow("context_gateway_release_artifact_incomplete");
+    expect(() =>
+      createProducerRelease(
+        {
+          ...releaseCandidate,
+          contextGatewayEntrypointDigest: hashA,
+        },
+        new Date("2026-07-22T12:00:00.000Z"),
+      ),
+    ).toThrow("context_gateway_release_artifact_incomplete");
+  });
+
+  it("parses a legacy attestation as a release without reusable gateway evidence", () => {
+    const legacy = { ...attestation() } as Record<string, unknown>;
+    delete legacy.contextGatewayPolicyVersion;
+    delete legacy.contextGatewayEntrypointDigest;
+
+    expect(
+      readConfiguredProducerReleaseAttestations({
+        [reviewRunProducerReleaseAttestationsEnv]: JSON.stringify([legacy]),
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        contextGatewayPolicyVersion: null,
+        contextGatewayEntrypointDigest: null,
+      }),
+    ]);
+  });
+
   it("keeps a bounded old verification key through active-key rotation", async () => {
     const oldEnv = signingEnv("key-v1", [signingKey("key-v1", "a", null)]);
     const oldRing = createReviewRunAuthorizationKeyRingFromEnv(oldEnv);
@@ -216,6 +259,8 @@ function attestation() {
     runtimeCommitSha: shaB,
     wrapperEntrypointDigest: null,
     runtimeEntrypointDigest: hashA,
+    contextGatewayPolicyVersion: null,
+    contextGatewayEntrypointDigest: null,
     schemaDigest: hashB,
     canonicalizerDigest: hashC,
     capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,

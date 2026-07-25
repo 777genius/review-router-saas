@@ -572,21 +572,23 @@ model ReviewOperationalSloProfileV2 {
 }
 
 model ProducerRelease {
-  producerReleaseId       String                     @id
-  distributionKind        ProducerDistributionKindV2
-  actionCommitSha         String
-  runtimeCommitSha        String
-  wrapperEntrypointDigest String?
-  runtimeEntrypointDigest String
-  schemaDigest            String
-  capabilityProfile       String
-  protocolLimitsProfileId String
-  operationalSloProfileId String
-  state                   ProducerReleaseStateV2     @default(registered)
-  registeredAt            DateTime
-  revokedAt               DateTime?
+  producerReleaseId              String                     @id
+  distributionKind               ProducerDistributionKindV2
+  actionCommitSha                String
+  runtimeCommitSha               String
+  wrapperEntrypointDigest        String?
+  runtimeEntrypointDigest        String
+  contextGatewayPolicyVersion    String?
+  contextGatewayEntrypointDigest String?
+  schemaDigest                   String
+  capabilityProfile              String
+  protocolLimitsProfileId        String
+  operationalSloProfileId        String
+  state                          ProducerReleaseStateV2     @default(registered)
+  registeredAt                   DateTime
+  revokedAt                      DateTime?
 
-  @@unique([distributionKind, actionCommitSha, runtimeCommitSha, wrapperEntrypointDigest, runtimeEntrypointDigest, schemaDigest, capabilityProfile, protocolLimitsProfileId, operationalSloProfileId])
+  @@unique([distributionKind, actionCommitSha, runtimeCommitSha, wrapperEntrypointDigest, runtimeEntrypointDigest, contextGatewayPolicyVersion, contextGatewayEntrypointDigest, schemaDigest, capabilityProfile, protocolLimitsProfileId, operationalSloProfileId])
   @@index([state, registeredAt])
 }
 
@@ -1086,8 +1088,8 @@ model ReviewExecutionObservationRefV2 {
 }
 
 model FinalizedReviewProjectionArtifactV2 {
-  artifactId                      String                @id
-  executionId                     String                @unique
+  artifactId                      String
+  executionId                     String                @id
   artifactHash                    String
   generation                      BigInt
   reviewedHeadSha                 String
@@ -1110,6 +1112,8 @@ model FinalizedReviewProjectionArtifactV2 {
   createdAt                       DateTime
   retainUntil                     DateTime
 
+  @@unique([executionId, artifactId])
+  @@index([artifactId])
   @@index([retainUntil, artifactId])
   @@index([createdAt, executionId])
 }

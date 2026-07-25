@@ -145,16 +145,12 @@ envVarGroups:
       - key: REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION
         value: "review-projection-policy.v2-t0"
       # Cross-revision context reuse is fail-closed. Session and replay keys are
-      # API-only; gateway policy and binary hash must also match the worker.
+      # API-only; gateway identity is bound to each immutable producer release.
       - key: REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64
         sync: false
       - key: REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID
         sync: false
       - key: REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON
-        sync: false
-      - key: REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_POLICY_VERSION
-        sync: false
-      - key: REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_BINARY_HASH
         sync: false
       - key: REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256
         sync: false

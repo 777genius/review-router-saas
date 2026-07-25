@@ -413,6 +413,12 @@ function qualityPenalty(
         return total + 2;
       case ReviewObservationQualityFlag.ProviderWarning:
         return total + 1;
+      case ReviewObservationQualityFlag.ContextInspectionIncomplete:
+        return total + 100;
+      case ReviewObservationQualityFlag.ContextAttestationUnavailable:
+        return total + 50;
+      case ReviewObservationQualityFlag.CrossRevisionReuseDisabled:
+        return total + 1;
       case ReviewObservationQualityFlag.Unknown:
         return total + 1_000;
     }

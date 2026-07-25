@@ -49,6 +49,11 @@ describe("review Action v2 release manifests", () => {
       runtimeEntrypointDigest: sha256Digest(
         Buffer.from(fixture("runtime-bundle.js")),
       ),
+      contextGatewayPolicyVersion: "review-context-gateway.v1",
+      contextGatewayEntrypointPath: "dist/context-gateway.js",
+      contextGatewayEntrypointDigest: sha256Digest(
+        Buffer.from(fixture("context-gateway-bundle.js")),
+      ),
     });
     const expectedRelease = fixture("expected-release.json");
     expect(canonicalJson(release)).toBe(expectedRelease);
@@ -99,6 +104,9 @@ describe("review Action v2 release manifests", () => {
         actionCommitSha: handoff.expectedPublicActionBaseCommit,
         runtimeEntrypointPath: "dist/index.js",
         runtimeEntrypointDigest: "e".repeat(64),
+        contextGatewayPolicyVersion: "review-context-gateway.v1",
+        contextGatewayEntrypointPath: "dist/context-gateway.js",
+        contextGatewayEntrypointDigest: "f".repeat(64),
       }),
     ).toThrow("committed handoff and rebuilt runtime bundle");
   });

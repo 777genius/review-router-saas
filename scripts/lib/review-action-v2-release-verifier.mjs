@@ -2,6 +2,7 @@ import { posix as posixPath } from "node:path";
 import {
   HANDOFF_MANIFEST_FILE,
   parseHandoffManifest,
+  PUBLIC_CONTEXT_GATEWAY_BUNDLE,
   PUBLIC_GENERATED_DIRECTORY,
   PUBLIC_RUNTIME_BUNDLE,
   sha256Digest,
@@ -16,6 +17,8 @@ export function verifyPublicActionReleaseCommit(input) {
   const targetDirectory = input.targetDirectory ?? PUBLIC_GENERATED_DIRECTORY;
   const runtimeEntrypointPath =
     input.runtimeEntrypointPath ?? PUBLIC_RUNTIME_BUNDLE;
+  const contextGatewayEntrypointPath =
+    input.contextGatewayEntrypointPath ?? PUBLIC_CONTEXT_GATEWAY_BUNDLE;
   const entries = listCommitDirectory(
     input.actionRepo,
     input.actionCommitSha,
@@ -77,11 +80,18 @@ export function verifyPublicActionReleaseCommit(input) {
     input.actionCommitSha,
     runtimeEntrypointPath,
   );
+  const contextGatewayBytes = readCommitFile(
+    input.actionRepo,
+    input.actionCommitSha,
+    contextGatewayEntrypointPath,
+  );
   return Object.freeze({
     handoff,
     handoffBytes,
     handoffDigest: sha256Digest(handoffBytes),
     runtimeEntrypointPath,
     runtimeEntrypointDigest: sha256Digest(runtimeBytes),
+    contextGatewayEntrypointPath,
+    contextGatewayEntrypointDigest: sha256Digest(contextGatewayBytes),
   });
 }

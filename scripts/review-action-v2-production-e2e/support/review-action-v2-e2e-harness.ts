@@ -61,8 +61,6 @@ import {
 } from "../../../packages/protocol-review-action-v2/src/index.js";
 import { exportJWK, SignJWT } from "jose";
 import {
-  reviewActionV2ContextGatewayBinaryHashEnv,
-  reviewActionV2ContextGatewayPolicyVersionEnv,
   reviewActionV2ContextReplayActiveKeyIdEnv,
   reviewActionV2ContextReplayKeysEnv,
   reviewActionV2ContextSessionSecretEnv,
@@ -1166,6 +1164,8 @@ async function seedProductionControlPlane(
       runtimeCommitSha,
       wrapperEntrypointDigest: null,
       runtimeEntrypointDigest: sha256("runtime-entrypoint"),
+      contextGatewayPolicyVersion: "e2e-gateway-policy-v1",
+      contextGatewayEntrypointDigest: "f".repeat(64),
       schemaDigest: reviewActionV2PublishedSchemaDigest,
       capabilityProfile: "exact_revision_v2",
       protocolLimitsProfileId: ids.protocolLimitsProfileId,
@@ -1306,6 +1306,8 @@ function productionEnv(input: {
         runtimeCommitSha,
         wrapperEntrypointDigest: null,
         runtimeEntrypointDigest: sha256("runtime-entrypoint"),
+        contextGatewayPolicyVersion: "e2e-gateway-policy-v1",
+        contextGatewayEntrypointDigest: "f".repeat(64),
         schemaDigest: reviewActionV2PublishedSchemaDigest,
         canonicalizerDigest: reviewActionV2CanonicalizerDigest,
         capabilityProfile: "exact_revision_v2",
@@ -1330,8 +1332,6 @@ function productionEnv(input: {
         secretBase64: Buffer.from("r".repeat(32)).toString("base64"),
       },
     ]),
-    [reviewActionV2ContextGatewayPolicyVersionEnv]: "e2e-gateway-policy-v1",
-    [reviewActionV2ContextGatewayBinaryHashEnv]: "f".repeat(64),
     [reviewV2WorkerEnabledEnv]: "1",
     REVIEW_ROUTER_REVIEW_V2_COMPLETION_CLAIM_MS: "1000",
     REVIEW_ROUTER_REVIEW_V2_PUBLICATION_CLAIM_MS: "1000",

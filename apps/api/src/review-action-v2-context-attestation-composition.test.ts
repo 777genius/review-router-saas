@@ -295,9 +295,44 @@ describe("Review Action v2 context attestation composition", () => {
       ReviewContextGatewaySealResultStatus.Accepted,
     );
   });
+
+  it.each([
+    {
+      name: "legacy release without gateway evidence",
+      release: {
+        contextGatewayPolicyVersion: null,
+        contextGatewayEntrypointDigest: null,
+      },
+      issue: "context_release_authority_mismatch",
+    },
+    {
+      name: "release bound to another gateway bundle",
+      release: {
+        contextGatewayEntrypointDigest: sha("other-gateway-binary"),
+      },
+      issue: "context_gateway_binary_mismatch",
+    },
+  ])("fails closed for $name", async ({ release, issue }) => {
+    const fixture = await createFixture({ release });
+
+    await expect(
+      fixture.routes.openGateway!.execute(fixture.openRequest),
+    ).rejects.toMatchObject({
+      statusCode: expect.any(Number),
+      issues: [issue],
+    });
+  });
 });
 
-async function createFixture(options: { now?: () => Date } = {}) {
+async function createFixture(
+  options: {
+    now?: () => Date;
+    release?: {
+      readonly contextGatewayPolicyVersion?: string | null;
+      readonly contextGatewayEntrypointDigest?: string | null;
+    };
+  } = {},
+) {
   const scopeHash = sha(
     canonicalJson({
       workspaceId: "workspace-1",
@@ -396,6 +431,14 @@ async function createFixture(options: { now?: () => Date } = {}) {
         return {
           capabilityProfile,
           runtimeCommitSha: gitOid("f"),
+          contextGatewayPolicyVersion:
+            options.release?.contextGatewayPolicyVersion === undefined
+              ? gatewayPolicyVersion
+              : options.release.contextGatewayPolicyVersion,
+          contextGatewayEntrypointDigest:
+            options.release?.contextGatewayEntrypointDigest === undefined
+              ? gatewayBinaryHash
+              : options.release.contextGatewayEntrypointDigest,
         };
       },
     },
@@ -406,8 +449,6 @@ async function createFixture(options: { now?: () => Date } = {}) {
     })(),
     sessionSecretKey: Buffer.from("abcdef0123456789abcdef0123456789"),
     config: {
-      gatewayPolicyVersion,
-      gatewayBinaryHash,
       sessionLifetimeMs: 60_000,
       reuseTtlMs: 3_600_000,
       replayProofLifetimeMs: 60_000,

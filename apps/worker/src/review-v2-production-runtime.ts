@@ -212,12 +212,6 @@ export function createProductionReviewV2WorkerRuntime(input: {
       releases: new ProductionContextReuseProducerReleaseQuery(releases),
       safety: safetyResolver,
       clock: input.clock,
-      gatewayPolicyVersion:
-        input.env.REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_POLICY_VERSION?.trim() ||
-        null,
-      gatewayBinaryHash:
-        input.env.REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_BINARY_HASH?.trim() ||
-        null,
     });
   const publicationApplication = createReviewPublicationV2Application({
     clock: input.clock,
@@ -914,6 +908,9 @@ class ProductionContextReuseProducerReleaseQuery implements ContextReuseProducer
           registered: release.state === ProducerReleaseState.Registered,
           capabilityProfile: release.capabilityProfile,
           runtimeCommitSha: release.runtimeCommitSha,
+          contextGatewayPolicyVersion: release.contextGatewayPolicyVersion,
+          contextGatewayEntrypointDigest:
+            release.contextGatewayEntrypointDigest,
         }
       : null;
   }

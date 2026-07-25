@@ -79,6 +79,7 @@ export function checkReleaseManifest(input) {
     actionRepo: input.actionRepo,
     actionCommitSha: manifest.actionCommitSha,
     runtimeEntrypointPath: manifest.runtimeEntrypointPath,
+    contextGatewayEntrypointPath: manifest.contextGatewayEntrypointPath,
   });
   if (
     canonicalJson(verifiedAction.handoff) !== canonicalJson(expectedHandoff)
@@ -93,6 +94,10 @@ export function checkReleaseManifest(input) {
     actionCommitSha: manifest.actionCommitSha,
     runtimeEntrypointPath: verifiedAction.runtimeEntrypointPath,
     runtimeEntrypointDigest: verifiedAction.runtimeEntrypointDigest,
+    contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
+    contextGatewayEntrypointPath: verifiedAction.contextGatewayEntrypointPath,
+    contextGatewayEntrypointDigest:
+      verifiedAction.contextGatewayEntrypointDigest,
   });
   if (canonicalJson(expectedRelease) !== manifestBytes) {
     throw new Error(
@@ -104,6 +109,8 @@ export function checkReleaseManifest(input) {
     actionCommitSha: manifest.actionCommitSha,
     schemaDigest: manifest.schemaDigest,
     runtimeEntrypointDigest: manifest.runtimeEntrypointDigest,
+    contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
+    contextGatewayEntrypointDigest: manifest.contextGatewayEntrypointDigest,
   });
 }
 

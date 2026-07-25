@@ -41,6 +41,9 @@ export enum ReviewObservationQualityFlag {
   ModelFallback = "model_fallback",
   LowConfidence = "low_confidence",
   ProviderWarning = "provider_warning",
+  ContextInspectionIncomplete = "context_inspection_incomplete",
+  ContextAttestationUnavailable = "context_attestation_unavailable",
+  CrossRevisionReuseDisabled = "cross_revision_reuse_disabled",
   Unknown = "unknown",
 }
 
