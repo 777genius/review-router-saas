@@ -67,11 +67,16 @@ describe("AesGcmContextReplayMaterialCipher", () => {
         associatedDataCanonicalJson: '{"sessionId":"session-2"}',
       }),
     ).rejects.toThrow("context_replay_associated_data_mismatch");
+    const tamperedCiphertext = Buffer.from(
+      material.ciphertextBase64Url,
+      "base64url",
+    );
+    tamperedCiphertext[0] = tamperedCiphertext[0]! ^ 1;
     await expect(
       cipher.decrypt({
         material: {
           ...material,
-          ciphertextBase64Url: `${material.ciphertextBase64Url.slice(0, -1)}A`,
+          ciphertextBase64Url: tamperedCiphertext.toString("base64url"),
         },
         associatedDataCanonicalJson: '{"sessionId":"session-1"}',
       }),
