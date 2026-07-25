@@ -403,7 +403,7 @@ async function requestPublication(
         publicationState: existing.attempt.state,
         pollAfterMs:
           existing.attempt.state === ReviewPublicationAttemptState.Terminal
-            ? 0
+            ? null
             : 1_000,
       },
     } as const;
@@ -445,7 +445,7 @@ async function requestPublication(
           publicationState: result.attempt.state,
           pollAfterMs:
             result.attempt.state === ReviewPublicationAttemptState.Terminal
-              ? 0
+              ? null
               : 1_000,
         },
       } as const;
@@ -498,7 +498,7 @@ async function readPublicationStatus(
           : null,
       pollAfterMs:
         view.attempt.state === ReviewPublicationAttemptState.Terminal
-          ? 0
+          ? null
           : 1_000,
     },
   } as const;

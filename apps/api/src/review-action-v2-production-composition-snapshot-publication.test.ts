@@ -14,6 +14,7 @@ import {
   ReviewPublicationAdjudicationEvidenceStatus,
   ReviewPublicationCapability,
   ReviewPublicationAttemptState,
+  ReviewPublicationTerminalOutcome,
 } from "@reviewrouter/features-review-publishing/v2";
 import { createReviewPublicationV2Application } from "@reviewrouter/features-review-publishing/v2/composition";
 import {
@@ -253,6 +254,53 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     });
     expect(contextPolicy.assertCurrentPolicy).toHaveBeenCalledTimes(1);
     expect(publicationRequestSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null poll delay for terminal publication responses", async () => {
+    const publicationRepository = new InMemoryReviewPublicationRepository();
+    const routes = createRoutes(publicationRepository);
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      artifact.publicationPermit,
+      now,
+    );
+    const request = await publicationRequest(publicationPermit);
+    const accepted = await routes.publication.request!.execute(request);
+    const publicationAttemptId = accepted.result.publicationAttemptId!;
+    const stored = await publicationRepository.findById(publicationAttemptId);
+    expect(stored).not.toBeNull();
+
+    vi.spyOn(publicationRepository, "findById").mockResolvedValue({
+      ...stored!,
+      attempt: {
+        ...stored!.attempt,
+        state: ReviewPublicationAttemptState.Terminal,
+        terminalOutcome: ReviewPublicationTerminalOutcome.Succeeded,
+      },
+    });
+
+    await expect(
+      routes.publication.request!.execute(request),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Restored,
+        pollAfterMs: null,
+      },
+    });
+    await expect(
+      routes.publication.status!.execute({
+        ...envelope("publication-status-terminal"),
+        authorizationToken: "authorization-token",
+        publicationAttemptId,
+      }),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      result: {
+        status: ReviewPublicationStatusResultStatus.Terminal,
+        terminalOutcome: ReviewPublicationTerminalOutcome.Succeeded,
+        pollAfterMs: null,
+      },
+    });
   });
 
   it("rejects publication expiry drift across JWT NumericDate seconds", async () => {
