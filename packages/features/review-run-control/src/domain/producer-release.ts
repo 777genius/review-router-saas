@@ -60,6 +60,8 @@ export type ProducerRelease = {
   readonly runtimeCommitSha: string;
   readonly wrapperEntrypointDigest: string | null;
   readonly runtimeEntrypointDigest: string;
+  readonly contextGatewayPolicyVersion: string | null;
+  readonly contextGatewayEntrypointDigest: string | null;
   readonly schemaDigest: string;
   readonly capabilityProfile: ReviewCapabilityProfile;
   readonly protocolLimitsProfileId: string;
@@ -71,8 +73,15 @@ export type ProducerRelease = {
 
 export type ProducerReleaseCandidate = Omit<
   ProducerRelease,
-  "state" | "registeredAt" | "revokedAt"
->;
+  | "state"
+  | "registeredAt"
+  | "revokedAt"
+  | "contextGatewayPolicyVersion"
+  | "contextGatewayEntrypointDigest"
+> & {
+  readonly contextGatewayPolicyVersion?: string | null;
+  readonly contextGatewayEntrypointDigest?: string | null;
+};
 
 export function createReviewProtocolLimitsProfile(input: {
   readonly protocolLimitsProfileId: string;
@@ -193,6 +202,29 @@ export function createProducerRelease(
       "wrapper_entrypoint_digest",
     );
   }
+  const contextGatewayPolicyVersion =
+    candidate.contextGatewayPolicyVersion ?? null;
+  const contextGatewayEntrypointDigest =
+    candidate.contextGatewayEntrypointDigest ?? null;
+  if (
+    (contextGatewayPolicyVersion === null) !==
+    (contextGatewayEntrypointDigest === null)
+  ) {
+    invalid("context_gateway_release_artifact_incomplete");
+  }
+  if (
+    contextGatewayPolicyVersion !== null &&
+    contextGatewayEntrypointDigest !== null
+  ) {
+    assertIdentifier(
+      contextGatewayPolicyVersion,
+      "context_gateway_policy_version",
+    );
+    assertSha256(
+      contextGatewayEntrypointDigest,
+      "context_gateway_entrypoint_digest",
+    );
+  }
   if (
     candidate.distributionKind === ProducerDistributionKind.HostedComposite &&
     candidate.wrapperEntrypointDigest === null
@@ -201,6 +233,8 @@ export function createProducerRelease(
   }
   return {
     ...candidate,
+    contextGatewayPolicyVersion,
+    contextGatewayEntrypointDigest,
     state: ProducerReleaseState.Registered,
     registeredAt: cloneDate(registeredAt),
     revokedAt: null,
@@ -235,6 +269,9 @@ export function producerReleaseImmutableKey(
     runtimeCommitSha: release.runtimeCommitSha,
     wrapperEntrypointDigest: release.wrapperEntrypointDigest,
     runtimeEntrypointDigest: release.runtimeEntrypointDigest,
+    contextGatewayPolicyVersion: release.contextGatewayPolicyVersion ?? null,
+    contextGatewayEntrypointDigest:
+      release.contextGatewayEntrypointDigest ?? null,
     schemaDigest: release.schemaDigest,
     capabilityProfile: release.capabilityProfile,
     protocolLimitsProfileId: release.protocolLimitsProfileId,

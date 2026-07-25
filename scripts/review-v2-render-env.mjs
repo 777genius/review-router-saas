@@ -2,14 +2,9 @@ export const reviewV2ContextApiEnvKeys = Object.freeze([
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64",
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID",
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
-  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_POLICY_VERSION",
-  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_BINARY_HASH",
 ]);
 
-export const reviewV2ContextWorkerEnvKeys = Object.freeze([
-  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_POLICY_VERSION",
-  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_BINARY_HASH",
-]);
+export const reviewV2ContextWorkerEnvKeys = Object.freeze([]);
 
 export function reviewV2ContextEnvForRole(env, role) {
   const keys =

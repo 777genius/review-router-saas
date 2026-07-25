@@ -618,6 +618,8 @@ const producerRelease = {
   runtimeCommitSha: "e".repeat(40),
   wrapperEntrypointDigest: null,
   runtimeEntrypointDigest: hash("7"),
+  contextGatewayPolicyVersion: null,
+  contextGatewayEntrypointDigest: null,
   schemaDigest: reviewActionV2PublishedSchemaDigest,
   capabilityProfile: ReviewCapabilityProfile.ExactRevisionV2,
   protocolLimitsProfileId: authorization.protocolLimitsProfileId,

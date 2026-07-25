@@ -94,6 +94,8 @@ export interface ContextReuseProducerReleaseQueryPort {
     registered: boolean;
     capabilityProfile: string;
     runtimeCommitSha: string;
+    contextGatewayPolicyVersion: string | null;
+    contextGatewayEntrypointDigest: string | null;
   }> | null>;
 }
 
@@ -108,8 +110,6 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
       releases: ContextReuseProducerReleaseQueryPort;
       safety: ReviewSafetyDecisionResolverPort;
       clock: Readonly<{ now(): Date }>;
-      gatewayPolicyVersion: string | null;
-      gatewayBinaryHash: string | null;
     }>,
   ) {}
 
@@ -176,9 +176,7 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
       session.trustedCapabilityProfile !==
         observation.trustedCapabilityProfile ||
       session.producerReleaseId !== observation.producerReleaseId ||
-      session.selectedProtocolVersion !== observation.selectedProtocolVersion ||
-      session.gatewayPolicyVersion !== this.dependencies.gatewayPolicyVersion ||
-      session.gatewayBinaryHash !== this.dependencies.gatewayBinaryHash
+      session.selectedProtocolVersion !== observation.selectedProtocolVersion
     ) {
       return false;
     }
@@ -191,7 +189,11 @@ export class VerifyCurrentContextReusePublicationPolicy implements ReviewV2Conte
       release.producerReleaseId !== permit.producerReleaseId ||
       release.capabilityProfile !== observation.trustedCapabilityProfile ||
       release.capabilityProfile !== session.trustedCapabilityProfile ||
-      release.runtimeCommitSha !== observation.providerRuntimeVersion
+      release.runtimeCommitSha !== observation.providerRuntimeVersion ||
+      release.contextGatewayPolicyVersion === null ||
+      release.contextGatewayEntrypointDigest === null ||
+      session.gatewayPolicyVersion !== release.contextGatewayPolicyVersion ||
+      session.gatewayBinaryHash !== release.contextGatewayEntrypointDigest
     ) {
       return false;
     }

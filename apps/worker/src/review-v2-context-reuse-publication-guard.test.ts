@@ -28,6 +28,8 @@ const release = {
   registered: true,
   capabilityProfile: "context-gateway-v1",
   runtimeCommitSha: hash("r"),
+  contextGatewayPolicyVersion: gatewayPolicyVersion,
+  contextGatewayEntrypointDigest: gatewayBinaryHash,
 } as const;
 
 describe("context reuse publication policy", () => {
@@ -54,12 +56,28 @@ describe("context reuse publication policy", () => {
       createGuard(binding, safety.resolver).isCurrent(permit()),
     ).resolves.toBe(false);
   });
+
+  it("fails closed for a legacy release without a bound gateway artifact", async () => {
+    const safety = allowingSafety();
+    const binding = createBinding(reusePolicyVectorHash(safety.hashes));
+
+    await expect(
+      createGuard(binding, safety.resolver, {
+        contextGatewayPolicyVersion: null,
+        contextGatewayEntrypointDigest: null,
+      }).isCurrent(permit()),
+    ).resolves.toBe(false);
+  });
 });
 
 function createGuard(
   binding: ContextReusePublicationBinding,
   safety: ReviewSafetyDecisionResolverPort,
-  override: { readonly gatewayBinaryHash?: string } = {},
+  override: {
+    readonly gatewayBinaryHash?: string;
+    readonly contextGatewayPolicyVersion?: string | null;
+    readonly contextGatewayEntrypointDigest?: string | null;
+  } = {},
 ) {
   return new VerifyCurrentContextReusePublicationPolicy({
     bindings: {
@@ -69,13 +87,22 @@ function createGuard(
     },
     releases: {
       async findContextReuseProducerRelease() {
-        return release;
+        return {
+          ...release,
+          contextGatewayPolicyVersion:
+            override.contextGatewayPolicyVersion === undefined
+              ? release.contextGatewayPolicyVersion
+              : override.contextGatewayPolicyVersion,
+          contextGatewayEntrypointDigest:
+            override.contextGatewayEntrypointDigest === undefined
+              ? (override.gatewayBinaryHash ??
+                release.contextGatewayEntrypointDigest)
+              : override.contextGatewayEntrypointDigest,
+        };
       },
     },
     safety,
     clock: { now: () => new Date(now) },
-    gatewayPolicyVersion,
-    gatewayBinaryHash: override.gatewayBinaryHash ?? gatewayBinaryHash,
   });
 }
 

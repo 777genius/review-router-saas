@@ -11,6 +11,8 @@ export type TrustedProducerReleaseAttestation = {
   readonly runtimeCommitSha: string;
   readonly wrapperEntrypointDigest: string | null;
   readonly runtimeEntrypointDigest: string;
+  readonly contextGatewayPolicyVersion: string | null;
+  readonly contextGatewayEntrypointDigest: string | null;
   readonly schemaDigest: string;
   readonly canonicalizerDigest: string;
   readonly capabilityProfile: ReviewCapabilityProfile;

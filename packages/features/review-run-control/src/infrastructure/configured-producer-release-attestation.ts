@@ -93,7 +93,7 @@ function parseAttestation(value: unknown): TrustedProducerReleaseAttestation {
   if (!isRecord(value)) {
     throw new Error("producer_release_attestation_invalid");
   }
-  const expectedKeys = [
+  const legacyKeys = [
     "producerReleaseId",
     "distributionKind",
     "actionCommitSha",
@@ -106,8 +106,15 @@ function parseAttestation(value: unknown): TrustedProducerReleaseAttestation {
     "protocolLimitsProfileId",
     "operationalSloProfileId",
   ].sort();
+  const expectedKeys = [
+    ...legacyKeys,
+    "contextGatewayPolicyVersion",
+    "contextGatewayEntrypointDigest",
+  ].sort();
+  const actualKeys = Object.keys(value).sort();
   if (
-    canonicalJson(Object.keys(value).sort()) !== canonicalJson(expectedKeys)
+    canonicalJson(actualKeys) !== canonicalJson(expectedKeys) &&
+    canonicalJson(actualKeys) !== canonicalJson(legacyKeys)
   ) {
     throw new Error("producer_release_attestation_shape_invalid");
   }
@@ -121,6 +128,16 @@ function parseAttestation(value: unknown): TrustedProducerReleaseAttestation {
         ? null
         : requiredString(value.wrapperEntrypointDigest),
     runtimeEntrypointDigest: requiredString(value.runtimeEntrypointDigest),
+    contextGatewayPolicyVersion:
+      value.contextGatewayPolicyVersion === undefined ||
+      value.contextGatewayPolicyVersion === null
+        ? null
+        : requiredString(value.contextGatewayPolicyVersion),
+    contextGatewayEntrypointDigest:
+      value.contextGatewayEntrypointDigest === undefined ||
+      value.contextGatewayEntrypointDigest === null
+        ? null
+        : requiredString(value.contextGatewayEntrypointDigest),
     schemaDigest: requiredString(value.schemaDigest),
     canonicalizerDigest: requiredString(value.canonicalizerDigest),
     capabilityProfile: parseCapabilityProfile(value.capabilityProfile),
@@ -137,6 +154,25 @@ function assertAttestation(value: TrustedProducerReleaseAttestation): void {
     assertSha256(value.wrapperEntrypointDigest, "wrapper_entrypoint_digest");
   }
   assertSha256(value.runtimeEntrypointDigest, "runtime_entrypoint_digest");
+  if (
+    (value.contextGatewayPolicyVersion === null) !==
+    (value.contextGatewayEntrypointDigest === null)
+  ) {
+    throw new Error("producer_release_context_gateway_artifact_incomplete");
+  }
+  if (
+    value.contextGatewayPolicyVersion !== null &&
+    value.contextGatewayEntrypointDigest !== null
+  ) {
+    assertIdentifier(
+      value.contextGatewayPolicyVersion,
+      "context_gateway_policy_version",
+    );
+    assertSha256(
+      value.contextGatewayEntrypointDigest,
+      "context_gateway_entrypoint_digest",
+    );
+  }
   assertSha256(value.schemaDigest, "schema_digest");
   assertSha256(value.canonicalizerDigest, "canonicalizer_digest");
   assertIdentifier(value.protocolLimitsProfileId, "protocol_limits_profile_id");
@@ -152,6 +188,8 @@ function configuredReleaseKey(
     runtimeCommitSha: configured.runtimeCommitSha,
     wrapperEntrypointDigest: configured.wrapperEntrypointDigest,
     runtimeEntrypointDigest: configured.runtimeEntrypointDigest,
+    contextGatewayPolicyVersion: configured.contextGatewayPolicyVersion,
+    contextGatewayEntrypointDigest: configured.contextGatewayEntrypointDigest,
     schemaDigest: configured.schemaDigest,
     capabilityProfile: configured.capabilityProfile,
     protocolLimitsProfileId: configured.protocolLimitsProfileId,

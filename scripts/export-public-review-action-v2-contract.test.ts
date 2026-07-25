@@ -60,10 +60,15 @@ describe("public Review Action v2 contract handoff", () => {
     ]);
 
     write(join(fixture.actionRepo, "dist/index.js"), "fresh bundle\n");
+    write(
+      join(fixture.actionRepo, "dist/context-gateway.js"),
+      "fresh context gateway\n",
+    );
     git(fixture.actionRepo, [
       "add",
       PUBLIC_GENERATED_DIRECTORY,
       "dist/index.js",
+      "dist/context-gateway.js",
     ]);
     git(fixture.actionRepo, ["commit", "-m", "feat: add v2 contract"]);
     const actionCommit = head(fixture.actionRepo);
@@ -73,6 +78,8 @@ describe("public Review Action v2 contract handoff", () => {
       targetBranch,
       expectedHead: actionCommit,
       runtimeEntrypointPath: "dist/index.js",
+      contextGatewayEntrypointPath: "dist/context-gateway.js",
+      contextGatewayPolicyVersion: "review-context-gateway.v1",
       output: releasePath,
     });
     expect(release.manifest.actionCommitSha).toBe(actionCommit);
@@ -95,6 +102,8 @@ describe("public Review Action v2 contract handoff", () => {
         targetBranch,
         expectedHead: actionCommit,
         runtimeEntrypointPath: "dist/index.js",
+        contextGatewayEntrypointPath: "dist/context-gateway.js",
+        contextGatewayPolicyVersion: "review-context-gateway.v1",
         output: releasePath,
       }).bytes,
     ).toBe(release.bytes);
@@ -105,6 +114,8 @@ describe("public Review Action v2 contract handoff", () => {
         targetBranch,
         expectedHead: actionCommit,
         runtimeEntrypointPath: "dist/index.js",
+        contextGatewayEntrypointPath: "dist/context-gateway.js",
+        contextGatewayPolicyVersion: "review-context-gateway.v1",
         output: releasePath,
       }),
     ).toThrow("refusing to overwrite a different release manifest");
@@ -193,6 +204,8 @@ describe("public Review Action v2 contract handoff", () => {
         targetBranch,
         expectedHead: fixture.actionBase,
         runtimeEntrypointPath: "dist/index.js",
+        contextGatewayEntrypointPath: "dist/context-gateway.js",
+        contextGatewayPolicyVersion: "review-context-gateway.v1",
         output: "",
       }),
     ).toThrow("repository must be clean");

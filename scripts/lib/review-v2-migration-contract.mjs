@@ -1,10 +1,11 @@
-export const reviewV2MigrationVersion = "review-v2-000029-000037-v5";
+export const reviewV2MigrationVersion = "review-v2-000029-000038-v6";
 export const reviewV2MigrationDirectories = Object.freeze([
   "000029_revision_aware_review_v2_expand",
   "000030_review_run_control_persistence",
   "000031_review_invocation_prepared_manifest",
   "000032_review_publication_worker_safety",
   "000037_finalized_projection_artifact_identity",
+  "000038_producer_release_context_gateway_artifact",
 ]);
 export const reviewV2RepositoryBackfillStep = "02_repository_identity_backfill";
 export const reviewV2RepositoryBackfillDefaultPageSize = 500;

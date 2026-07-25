@@ -37,14 +37,26 @@ describe("Review v2 migration contract", () => {
       "000031_review_invocation_prepared_manifest",
       "000032_review_publication_worker_safety",
       "000037_finalized_projection_artifact_identity",
+      "000038_producer_release_context_gateway_artifact",
     ]);
-    expect(reviewV2MigrationVersion).toBe("review-v2-000029-000037-v5");
+    expect(reviewV2MigrationVersion).toBe("review-v2-000029-000038-v6");
     expect(
       readFileSync(join(process.cwd(), migrationFiles[2]!), "utf8"),
     ).toContain('ADD COLUMN "preparedManifestCanonicalJson" TEXT');
     expect(
+      readFileSync(join(process.cwd(), migrationFiles[5]!), "utf8"),
+    ).toContain('ADD COLUMN "contextGatewayPolicyVersion" TEXT');
+    expect(
       readFileSync(join(process.cwd(), migrationFiles[3]!), "utf8"),
     ).toContain('ADD COLUMN "observedObjectHash" TEXT');
+    const migrateScript = readFileSync(
+      join(process.cwd(), "scripts/review-v2-migrate.mjs"),
+      "utf8",
+    );
+    expect(migrateScript).toContain("releaseArtifactSchemaGuardSql()");
+    expect(migrateScript).toContain(
+      "review_v2_release_immutable_index_invalid",
+    );
   });
 });
 

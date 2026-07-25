@@ -277,6 +277,8 @@ function producerReleaseTupleWhere(release: ProducerRelease) {
     runtimeCommitSha: release.runtimeCommitSha,
     wrapperEntrypointDigest: release.wrapperEntrypointDigest,
     runtimeEntrypointDigest: release.runtimeEntrypointDigest,
+    contextGatewayPolicyVersion: release.contextGatewayPolicyVersion,
+    contextGatewayEntrypointDigest: release.contextGatewayEntrypointDigest,
     schemaDigest: release.schemaDigest,
     capabilityProfile: release.capabilityProfile,
     protocolLimitsProfileId: release.protocolLimitsProfileId,

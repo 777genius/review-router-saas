@@ -101,8 +101,6 @@ import {
   composeReviewActionV2ContextAttestationRoutes,
   createReviewActionV2ContextReplayCoordinator,
   readReviewActionV2ContextCrypto,
-  reviewActionV2ContextGatewayBinaryHashEnv,
-  reviewActionV2ContextGatewayPolicyVersionEnv,
 } from "./review-action-v2-context-attestation-composition.js";
 import {
   composeReviewActionV2EvidenceRoutes,
@@ -427,6 +425,9 @@ export function composeReviewActionV2ProductionRoutes(input: {
           ? {
               capabilityProfile: release.capabilityProfile,
               runtimeCommitSha: release.runtimeCommitSha,
+              contextGatewayPolicyVersion: release.contextGatewayPolicyVersion,
+              contextGatewayEntrypointDigest:
+                release.contextGatewayEntrypointDigest,
             }
           : null;
       },
@@ -436,14 +437,6 @@ export function composeReviewActionV2ProductionRoutes(input: {
       `${kind}-${randomUUID()}`,
     sessionSecretKey: contextCrypto.sessionSecretKey,
     config: {
-      gatewayPolicyVersion: requiredEnv(
-        input.env,
-        reviewActionV2ContextGatewayPolicyVersionEnv,
-      ),
-      gatewayBinaryHash: requiredEnv(
-        input.env,
-        reviewActionV2ContextGatewayBinaryHashEnv,
-      ),
       sessionLifetimeMs: 20 * 60 * 1_000,
       reuseTtlMs: productionTiming.evidenceReuseTtlMs,
       replayProofLifetimeMs: 10 * 60 * 1_000,

@@ -1,6 +1,9 @@
 {
   "actionCommitSha": "cccccccccccccccccccccccccccccccccccccccc",
   "canonicalizerDigest": "0e1ac8595ddf6941975a796aaa7dcb0d879f0df5e128c1b944163a2f00c77c48",
+  "contextGatewayEntrypointDigest": "5c5ff71b2575309c532f64d6cefc3bac932e9a606a081f5767d1dccf2920bc4e",
+  "contextGatewayEntrypointPath": "dist/context-gateway.js",
+  "contextGatewayPolicyVersion": "review-context-gateway.v1",
   "contractExportVersion": 1,
   "distributionKind": "PublicReusable",
   "expectedPublicActionBaseCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -13,7 +16,7 @@
   "goldenFixtureDigest": "c7ffb736b9f46f1aa5597f27e5d1436e2d3f3931cf8dd55b52071040dbf3c6b1",
   "handoffManifestDigest": "4c8a1b1d1c0551505bcdda1a5e966e629e5e786e036e3314d1296215c393f52a",
   "protocolVersion": "2",
-  "releaseManifestVersion": 1,
+  "releaseManifestVersion": 2,
   "runtimeCommitSha": "cccccccccccccccccccccccccccccccccccccccc",
   "runtimeEntrypointDigest": "27ae3679a42ed36bd193ab749e696752edd04201dca87e25f301c91b0e2bc56d",
   "runtimeEntrypointPath": "dist/index.js",

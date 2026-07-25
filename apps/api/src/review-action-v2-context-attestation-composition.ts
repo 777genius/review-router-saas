@@ -94,14 +94,7 @@ export const reviewActionV2ContextReplayActiveKeyIdEnv =
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID";
 export const reviewActionV2ContextReplayKeysEnv =
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON";
-export const reviewActionV2ContextGatewayPolicyVersionEnv =
-  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_POLICY_VERSION";
-export const reviewActionV2ContextGatewayBinaryHashEnv =
-  "REVIEW_ROUTER_REVIEW_V2_CONTEXT_GATEWAY_BINARY_HASH";
-
 export type ReviewActionV2ContextAttestationConfig = Readonly<{
-  gatewayPolicyVersion: string;
-  gatewayBinaryHash: string;
   sessionLifetimeMs: number;
   reuseTtlMs: number;
   replayProofLifetimeMs: number;
@@ -130,6 +123,8 @@ export interface ReviewActionV2ProducerReleaseProfilePort {
   resolve(input: { readonly producerReleaseId: string }): Promise<Readonly<{
     capabilityProfile: string;
     runtimeCommitSha: string;
+    contextGatewayPolicyVersion: string | null;
+    contextGatewayEntrypointDigest: string | null;
   }> | null>;
 }
 
@@ -1170,8 +1165,9 @@ async function resolveCurrentCandidate(
   if (
     !release ||
     release.capabilityProfile !== input.session.trustedCapabilityProfile ||
-    input.session.gatewayPolicyVersion !== d.config.gatewayPolicyVersion ||
-    input.session.gatewayBinaryHash !== d.config.gatewayBinaryHash
+    input.session.gatewayPolicyVersion !==
+      release.contextGatewayPolicyVersion ||
+    input.session.gatewayBinaryHash !== release.contextGatewayEntrypointDigest
   ) {
     return null;
   }
@@ -1254,7 +1250,10 @@ async function resolveOpeningFacts(input: {
   if (
     !release ||
     manifest.producerReleaseId !== authorization.producerReleaseId ||
-    manifest.selectedProtocolVersion !== authorization.selectedProtocolVersion
+    manifest.selectedProtocolVersion !==
+      authorization.selectedProtocolVersion ||
+    release.contextGatewayPolicyVersion === null ||
+    release.contextGatewayEntrypointDigest === null
   ) {
     throw failure(
       403,
@@ -1264,12 +1263,12 @@ async function resolveOpeningFacts(input: {
   }
   requireEqual(
     request.gatewayPolicyVersion,
-    d.config.gatewayPolicyVersion,
+    release.contextGatewayPolicyVersion,
     "context_gateway_policy_mismatch",
   );
   requireEqual(
     request.gatewayBinaryHash,
-    d.config.gatewayBinaryHash,
+    release.contextGatewayEntrypointDigest,
     "context_gateway_binary_mismatch",
   );
   const confinementProofHash = await d.digest.digestUtf8(
@@ -1988,10 +1987,6 @@ function validateConfig(
 ): void {
   if (
     d.sessionSecretKey.byteLength !== 32 ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(
-      d.config.gatewayPolicyVersion,
-    ) ||
-    !/^[a-f0-9]{64}$/.test(d.config.gatewayBinaryHash) ||
     [
       d.config.sessionLifetimeMs,
       d.config.reuseTtlMs,

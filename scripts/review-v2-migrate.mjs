@@ -143,6 +143,7 @@ runStep(
     ${foreignKeyDefinitionGuardSql()}
     ${preparedManifestSchemaGuardSql()}
     ${publicationWorkerSafetySchemaGuardSql()}
+    ${releaseArtifactSchemaGuardSql()}
   `,
 );
 
@@ -852,6 +853,80 @@ function publicationWorkerSafetySchemaGuardSql() {
       END IF;
     END
     $worker_safety_guard$;
+  `;
+}
+
+function releaseArtifactSchemaGuardSql() {
+  return `
+    DO $review_v2_release_artifact_guard$
+    DECLARE
+      artifact_constraint_validated BOOLEAN;
+      immutable_index_columns TEXT[];
+      immutable_index_nulls_not_distinct BOOLEAN;
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'ProducerRelease'
+          AND column_name IN (
+            'contextGatewayPolicyVersion',
+            'contextGatewayEntrypointDigest'
+          )
+      ) <> 2 THEN
+        RAISE EXCEPTION 'review_v2_release_gateway_columns_missing';
+      END IF;
+
+      SELECT constraint_row.convalidated
+      INTO artifact_constraint_validated
+      FROM pg_constraint constraint_row
+      JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+      JOIN pg_namespace schema_row ON schema_row.oid = table_row.relnamespace
+      WHERE schema_row.nspname = 'public'
+        AND table_row.relname = 'ProducerRelease'
+        AND constraint_row.conname = 'ProducerRelease_contextGatewayArtifact_complete'
+        AND constraint_row.contype = 'c';
+      IF artifact_constraint_validated IS DISTINCT FROM TRUE THEN
+        RAISE EXCEPTION 'review_v2_release_gateway_pair_constraint_invalid';
+      END IF;
+
+      SELECT
+        array_agg(attribute.attname ORDER BY key_column.position),
+        index_row.indnullsnotdistinct
+      INTO immutable_index_columns, immutable_index_nulls_not_distinct
+      FROM pg_index index_row
+      JOIN pg_class table_row ON table_row.oid = index_row.indrelid
+      JOIN pg_namespace schema_row ON schema_row.oid = table_row.relnamespace
+      JOIN pg_class index_class ON index_class.oid = index_row.indexrelid
+      JOIN unnest(index_row.indkey) WITH ORDINALITY
+        key_column(attnum, position) ON TRUE
+      JOIN pg_attribute attribute
+        ON attribute.attrelid = table_row.oid
+       AND attribute.attnum = key_column.attnum
+      WHERE schema_row.nspname = 'public'
+        AND table_row.relname = 'ProducerRelease'
+        AND index_class.relname =
+          'ProducerRelease_distributionKind_actionCommitSha_runtimeCom_key'
+        AND index_row.indisunique
+      GROUP BY index_row.indnullsnotdistinct;
+      IF immutable_index_columns IS DISTINCT FROM ARRAY[
+           'distributionKind',
+           'actionCommitSha',
+           'runtimeCommitSha',
+           'wrapperEntrypointDigest',
+           'runtimeEntrypointDigest',
+           'contextGatewayPolicyVersion',
+           'contextGatewayEntrypointDigest',
+           'schemaDigest',
+           'capabilityProfile',
+           'protocolLimitsProfileId',
+           'operationalSloProfileId'
+         ]::TEXT[]
+         OR immutable_index_nulls_not_distinct IS DISTINCT FROM TRUE THEN
+        RAISE EXCEPTION 'review_v2_release_immutable_index_invalid';
+      END IF;
+    END
+    $review_v2_release_artifact_guard$;
   `;
 }
 

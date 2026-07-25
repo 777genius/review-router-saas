@@ -7,6 +7,7 @@ import {
   assertSafeRelativePath,
   buildReleaseManifest,
   canonicalJson,
+  PUBLIC_CONTEXT_GATEWAY_BUNDLE,
   PUBLIC_RUNTIME_BUNDLE,
 } from "./lib/review-action-v2-release-manifests.mjs";
 import {
@@ -23,6 +24,8 @@ export function parseArgs(argv, cwd = process.cwd()) {
     targetBranch: "",
     expectedHead: "",
     runtimeEntrypointPath: PUBLIC_RUNTIME_BUNDLE,
+    contextGatewayEntrypointPath: PUBLIC_CONTEXT_GATEWAY_BUNDLE,
+    contextGatewayPolicyVersion: "",
     output: "",
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -40,6 +43,10 @@ export function parseArgs(argv, cwd = process.cwd()) {
     else if (option === "--expected-head") values.expectedHead = next();
     else if (option === "--runtime-entrypoint")
       values.runtimeEntrypointPath = next();
+    else if (option === "--context-gateway-entrypoint")
+      values.contextGatewayEntrypointPath = next();
+    else if (option === "--context-gateway-policy-version")
+      values.contextGatewayPolicyVersion = next();
     else if (option === "--output") values.output = path.resolve(next());
     else if (option === "--help" || option === "-h") {
       return { help: true };
@@ -56,6 +63,13 @@ export function parseArgs(argv, cwd = process.cwd()) {
     values.runtimeEntrypointPath,
     "--runtime-entrypoint",
   );
+  values.contextGatewayEntrypointPath = assertSafeRelativePath(
+    values.contextGatewayEntrypointPath,
+    "--context-gateway-entrypoint",
+  );
+  if (!values.contextGatewayPolicyVersion) {
+    throw new Error("missing required --context-gateway-policy-version");
+  }
   return Object.freeze(values);
 }
 
@@ -86,6 +100,7 @@ export function generateReleaseManifest(input) {
     actionRepo: input.actionRepo,
     actionCommitSha,
     runtimeEntrypointPath: input.runtimeEntrypointPath,
+    contextGatewayEntrypointPath: input.contextGatewayEntrypointPath,
   });
   const manifest = buildReleaseManifest({
     handoffManifest: verified.handoff,
@@ -93,6 +108,9 @@ export function generateReleaseManifest(input) {
     actionCommitSha,
     runtimeEntrypointPath: verified.runtimeEntrypointPath,
     runtimeEntrypointDigest: verified.runtimeEntrypointDigest,
+    contextGatewayPolicyVersion: input.contextGatewayPolicyVersion,
+    contextGatewayEntrypointPath: verified.contextGatewayEntrypointPath,
+    contextGatewayEntrypointDigest: verified.contextGatewayEntrypointDigest,
   });
   const bytes = canonicalJson(manifest);
   if (input.output) writeImmutable(input.output, bytes);
@@ -123,6 +141,10 @@ function usage() {
 
 Options:
   --runtime-entrypoint <path>  Committed runtime bundle. Default: ${PUBLIC_RUNTIME_BUNDLE}
+  --context-gateway-entrypoint <path>
+                               Committed context gateway bundle. Default: ${PUBLIC_CONTEXT_GATEWAY_BUNDLE}
+  --context-gateway-policy-version <id>
+                               Required policy identity embedded by the gateway bundle.
   --output <path>              Write-once manifest path outside the Action repository.
   --help                       Show this help.
 

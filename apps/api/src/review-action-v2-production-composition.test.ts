@@ -7,8 +7,6 @@ import {
 import { describe, expect, it } from "vitest";
 import { createApiApp } from "./app.js";
 import {
-  reviewActionV2ContextGatewayBinaryHashEnv,
-  reviewActionV2ContextGatewayPolicyVersionEnv,
   reviewActionV2ContextReplayActiveKeyIdEnv,
   reviewActionV2ContextReplayKeysEnv,
   reviewActionV2ContextSessionSecretEnv,
@@ -77,8 +75,6 @@ describe("Review Action v2 production composition", () => {
     reviewActionV2ContextSessionSecretEnv,
     reviewActionV2ContextReplayActiveKeyIdEnv,
     reviewActionV2ContextReplayKeysEnv,
-    reviewActionV2ContextGatewayPolicyVersionEnv,
-    reviewActionV2ContextGatewayBinaryHashEnv,
   ])("fails enabled composition when %s is absent", (name) => {
     const env = { ...productionEnv(), [name]: undefined };
     expect(() =>
@@ -195,6 +191,8 @@ function productionEnv(): Record<string, string> {
         runtimeCommitSha: "b".repeat(40),
         wrapperEntrypointDigest: null,
         runtimeEntrypointDigest: "c".repeat(64),
+        contextGatewayPolicyVersion: "review-context-gateway.v1",
+        contextGatewayEntrypointDigest: "9".repeat(64),
         schemaDigest: reviewActionV2PublishedSchemaDigest,
         canonicalizerDigest: reviewActionV2CanonicalizerDigest,
         capabilityProfile: "exact_revision_v2",
@@ -222,8 +220,6 @@ function productionEnv(): Record<string, string> {
         secretBase64: Buffer.from("r".repeat(32)).toString("base64"),
       },
     ]),
-    [reviewActionV2ContextGatewayPolicyVersionEnv]: "gateway-policy-v1",
-    [reviewActionV2ContextGatewayBinaryHashEnv]: "9".repeat(64),
   };
 }
 
