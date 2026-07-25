@@ -116,6 +116,79 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     });
   });
 
+  it("accepts canonical producer metadata outside publication rendering", async () => {
+    const publishingWithMetadata = {
+      ...publishing,
+      inlineReviewChunks: [
+        {
+          chunkIndex: 0,
+          marker: "<!-- inline-chunk-marker -->",
+          bodyHash: hash("b"),
+          comments: [
+            {
+              lineageId: "lineage-1",
+              marker: "<!-- inline-comment-marker -->",
+              path: "src/example.ts",
+              startLine: 4,
+              line: 5,
+              endLine: 5,
+              body: "Finding body",
+            },
+          ],
+        },
+      ],
+      lifecycle: [
+        {
+          targetId: "target-1",
+          threadId: "thread-1",
+          lineageId: "lineage-1",
+          verdict: "resolved",
+          reasonCodes: ["provider_reconfirmed"],
+          mutationEligible: true,
+        },
+      ],
+    };
+    const projectionHash = hash("c");
+    const envelopeWithMetadata = canonicalJson({
+      ...JSON.parse(projectionEnvelopeJson),
+      publishing: publishingWithMetadata,
+    });
+    const artifactWithMetadata: FinalizedReviewProjectionArtifact = {
+      ...artifact,
+      projectionEnvelopeJson: envelopeWithMetadata,
+      projectionHash,
+      byteCount: Buffer.byteLength(envelopeWithMetadata, "utf8"),
+      publicationPermit: {
+        ...artifact.publicationPermit,
+        projectionHash,
+      },
+    };
+    const routes = createRoutes(
+      new InMemoryReviewPublicationRepository(),
+      { assertCurrentPolicy: vi.fn() },
+      artifactWithMetadata,
+    );
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      artifactWithMetadata.publicationPermit,
+      now,
+    );
+
+    await expect(
+      routes.publication.request!.execute(
+        await publicationRequest(
+          publicationPermit,
+          canonicalJson(publishingWithMetadata),
+          projectionHash,
+        ),
+      ),
+    ).resolves.toMatchObject({
+      statusCode: 201,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Accepted,
+      },
+    });
+  });
+
   it("compares publication expiry using JWT NumericDate precision", async () => {
     const fractionalArtifact = {
       ...artifact,
@@ -326,6 +399,7 @@ function createRoutes(
 async function publicationRequest(
   publicationPermit: string,
   operationsCanonicalJson = canonicalJson(publishing),
+  projectionHash = artifact.projectionHash,
 ): Promise<ReviewPublicationRequest> {
   const request: ReviewPublicationRequest = {
     ...envelope("publication-1"),
@@ -333,7 +407,7 @@ async function publicationRequest(
     idempotencyKey: "publication-idempotency-1",
     requestBodyHash: hash("0"),
     publicationPermit,
-    projectionHash: artifact.projectionHash,
+    projectionHash,
     operationsCanonicalJson,
   };
   return {
@@ -411,6 +485,15 @@ const publishing = {
     allClear: true,
     body: "No findings",
     marker: "<!-- summary-marker -->",
+    occurrenceCounts: {
+      new: 0,
+      reconfirmed: 0,
+      changed: 0,
+      carried_unverified: 0,
+      resolved: 0,
+      uncertain: 0,
+      suppressed_by_human: 0,
+    },
   },
 };
 
