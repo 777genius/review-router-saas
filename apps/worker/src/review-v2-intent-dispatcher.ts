@@ -46,6 +46,7 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
     const octokit = await this.installations.forInstallation(
       installationId(target.githubInstallationId),
     );
+    const dispatchRef = await resolveDispatchRef(octokit, target, input.intent);
     return Object.freeze({
       submit: async () => {
         try {
@@ -55,7 +56,7 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
               owner: target.owner,
               repo: target.repo,
               workflow_id: this.workflowPath,
-              ref: target.defaultBranch,
+              ref: dispatchRef,
               inputs: {
                 review_request_id: input.intent.requestId,
                 pr_number: String(input.intent.pullRequestNumber),
@@ -220,7 +221,6 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
         scmRepositoryIdentityId: true,
         owner: true,
         name: true,
-        defaultBranch: true,
         provider: true,
         selected: true,
         archived: true,
@@ -243,7 +243,6 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
     return {
       owner: repository.owner,
       repo: repository.name,
-      defaultBranch: repository.defaultBranch,
       githubInstallationId:
         repository.installation.githubInstallationId.toString(),
     };
@@ -253,13 +252,66 @@ export class GitHubActionsReviewRequestedDispatchGateway implements ReviewReques
 type DispatchTarget = Readonly<{
   owner: string;
   repo: string;
-  defaultBranch: string;
   githubInstallationId: string;
 }>;
 
 type InstallationClientPort = {
   forInstallation(installationId: number): Promise<OctokitRequester>;
 };
+
+async function resolveDispatchRef(
+  octokit: OctokitRequester,
+  target: DispatchTarget,
+  intent: ReviewRequestedIntent,
+): Promise<string> {
+  const response = await octokit.request(
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+    {
+      owner: target.owner,
+      repo: target.repo,
+      pull_number: intent.pullRequestNumber,
+      headers: { "X-GitHub-Api-Version": "2026-03-10" },
+    },
+  );
+  if (!isRecord(response.data)) {
+    throw new Error("review_requested_dispatch_pull_request_invalid");
+  }
+  const pullRequest = response.data;
+  const head = pullRequest.head;
+  const base = pullRequest.base;
+  const expectedRepository = `${target.owner}/${target.repo}`.toLowerCase();
+  if (
+    pullRequest.state !== "open" ||
+    !isRecord(head) ||
+    !isRecord(base) ||
+    head.sha !== intent.revision.headSha ||
+    base.sha !== intent.revision.baseSha ||
+    repositoryFullName(head.repo) !== expectedRepository ||
+    repositoryFullName(base.repo) !== expectedRepository
+  ) {
+    throw new Error("review_requested_dispatch_revision_changed");
+  }
+  const baseRef = base.ref;
+  if (
+    typeof baseRef !== "string" ||
+    baseRef.length === 0 ||
+    baseRef.trim() !== baseRef
+  ) {
+    throw new Error("review_requested_dispatch_base_ref_invalid");
+  }
+  return baseRef;
+}
+
+function repositoryFullName(value: unknown): string | null {
+  if (
+    !isRecord(value) ||
+    typeof value.full_name !== "string" ||
+    value.full_name.length === 0
+  ) {
+    return null;
+  }
+  return value.full_name.toLowerCase();
+}
 
 function parseDispatchResponse(data: unknown): {
   readonly sourceRunId: string;

@@ -74,9 +74,12 @@ describe("GitHubActionsReviewRequestedDispatchGateway", () => {
 
   it("requests exact run details and sends the durable request identity", async () => {
     const request = vi.fn(async (route: string, parameters?: object) => {
+      if (route.startsWith("GET")) {
+        return { data: pullRequestFixture() };
+      }
       expect(route.startsWith("POST")).toBe(true);
       expect(parameters).toMatchObject({
-        ref: "main",
+        ref: "dev",
         inputs: {
           review_request_id: "request-1",
           pr_number: "42",
@@ -94,6 +97,24 @@ describe("GitHubActionsReviewRequestedDispatchGateway", () => {
       sourceRunId: "702",
       sourceRunAttempt: "1",
     });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed before dispatch when the pull request revision changed", async () => {
+    const request = vi.fn(async () => ({
+      data: {
+        ...pullRequestFixture(),
+        head: {
+          ...pullRequestFixture().head,
+          sha: "9".repeat(40),
+        },
+      },
+    }));
+    const gateway = gatewayWith(request);
+
+    await expect(gateway.prepare({ intent: intentFixture() })).rejects.toThrow(
+      "review_requested_dispatch_revision_changed",
+    );
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -136,7 +157,10 @@ describe("GitHubActionsReviewRequestedDispatchGateway", () => {
   });
 
   it("classifies a validation rejection as definitely no external effect", async () => {
-    const request = vi.fn(async () => {
+    const request = vi.fn(async (route: string) => {
+      if (route.startsWith("GET")) {
+        return { data: pullRequestFixture() };
+      }
       throw Object.assign(new Error("unprocessable"), { status: 422 });
     });
     const gateway = gatewayWith(request);
@@ -145,7 +169,7 @@ describe("GitHubActionsReviewRequestedDispatchGateway", () => {
     await expect(prepared.submit()).resolves.toEqual({
       status: ReviewRequestedDispatchSubmissionStatus.DefinitelyNoEffect,
     });
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it("returns inconclusive when the bounded workflow inventory is exhausted", async () => {
@@ -297,5 +321,20 @@ function intentFixture(): ReviewRequestedIntent {
     createdAt: now,
     updatedAt: now,
     retainUntil: new Date("2026-08-23T00:00:00.000Z"),
+  };
+}
+
+function pullRequestFixture() {
+  return {
+    state: "open",
+    head: {
+      sha: "c".repeat(40),
+      repo: { full_name: "777genius/agent-teams-ai" },
+    },
+    base: {
+      ref: "dev",
+      sha: "a".repeat(40),
+      repo: { full_name: "777genius/agent-teams-ai" },
+    },
   };
 }
