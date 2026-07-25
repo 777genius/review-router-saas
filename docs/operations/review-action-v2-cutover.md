@@ -13,7 +13,8 @@ is one-way: after `v2_active`, failure recovery uses `pause`, not a return to v1
   configured without secrets in logs.
 - Context session HMAC and replay key rings are configured on the API. The
   context gateway policy version and exact committed gateway bundle SHA-256 are
-  configured identically on the API and worker.
+  bound to the immutable producer release. They are not shared API/worker
+  environment variables.
 - The production GitHub App registration grants repository `Actions: Read and
 write`, and the target installation has approved that permission update.
   `Workflows: Read and write` is a different permission and does not authorize
@@ -30,10 +31,29 @@ pnpm review-v2:admin env-preflight
 
 ## Release bundle
 
+Generate and validate release manifest v2 from the exact committed Action
+revision. The verifier hashes both committed entrypoints; a missing or modified
+context gateway bundle fails the release:
+
+```bash
+pnpm protocol:release-manifest -- \
+  --action-repo /path/to/review-router \
+  --target-branch RELEASE_BRANCH \
+  --expected-head ACTION_COMMIT_SHA \
+  --context-gateway-policy-version review-context-gateway.v1 \
+  --output /secure/path/review-action-v2-release-manifest.json
+
+pnpm protocol:release-manifest:check -- \
+  --manifest /secure/path/review-action-v2-release-manifest.json \
+  --action-repo /path/to/review-router
+```
+
 `release register` accepts one JSON object containing
 `protocolLimitsProfileId`, `limits`, `operationalSloProfileId`, `thresholds`,
 `ownerRefs`, `runbookRefs`, and `candidate`. The candidate comes from the
-validated public release manifest and must use the same profile IDs.
+validated public release manifest, including its context gateway policy and
+entrypoint digest, and must use the same profile IDs. Legacy releases without
+both gateway fields remain readable but cannot open or reuse context evidence.
 
 ```bash
 pnpm review-v2:admin release register \
