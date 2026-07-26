@@ -1,8 +1,8 @@
 {
   "contractSourceVersion": 1,
   "protocolVersion": "2",
-  "schemaDigest": "3ba8f62072aa9c7d5e295235cb4441466f9ccebf4ec35d5e5578a2e79cd2fc50",
-  "goldenFixtureDigest": "2651b3404e7656aa5a189f6dd1011726b1aa94808b904427983789c6867f4de3",
+  "schemaDigest": "47f75e597fcdfb3e4bb81cb1dc0ca542fcaf2afaa2583cd298c5baa08c292672",
+  "goldenFixtureDigest": "350be1cfd3931cb85df896ed6f04b565ce436ff11d4ad0eca9ff074d6fc6c8ee",
   "canonicalizerDigest": "bddff10721f69d688eadf21c54d689ae657d53c498e8eb4478ff3d566def74a1",
   "canonicalizerGoldenFixtureDigest": "9f638db73ec3696da7f3aa842ed10b7cf7c466986dfbd45b1a602e3b08d75c57",
   "negotiationBridge": {
