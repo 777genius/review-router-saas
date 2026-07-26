@@ -92,6 +92,16 @@ export function registerReviewActionV2Operation<
         );
       } catch (error) {
         const failure = toSafeReviewActionV2RouteFailure(error, operationId);
+        request.log.warn(
+          {
+            operationId,
+            protocolErrorCode: failure.errorCode,
+            protocolIssues: failure.issues,
+            requestId,
+            statusCode: failure.statusCode,
+          },
+          "Review Action v2 request rejected",
+        );
         return reply.code(failure.statusCode).send(
           createReviewActionV2ErrorResponse({
             operationId,

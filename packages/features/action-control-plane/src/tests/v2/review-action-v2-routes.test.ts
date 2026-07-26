@@ -180,6 +180,59 @@ describe("Review Action v2 route registrars", () => {
     await app.close();
   });
 
+  it("logs only safe protocol diagnostics for rejected v2 requests", async () => {
+    const logLines: string[] = [];
+    const app = Fastify({
+      logger: {
+        level: "warn",
+        stream: {
+          write(line: string) {
+            logLines.push(line);
+          },
+        },
+      },
+    });
+    await registerReviewContextAttestationV2Routes(app, {
+      ...runtime,
+      openGateway: {
+        capabilityEnabled: true,
+        execute: async () => {
+          throw new ReviewActionV2RouteFailure(
+            412,
+            ReviewActionV2ProtocolErrorCode.StalePrecondition,
+            ["context_checkout_tree_mismatch"],
+          );
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-context/gateway/open",
+      payload: reviewActionV2GoldenFixtures.review_context_gateway_open.request,
+    });
+
+    expect(response.statusCode).toBe(412);
+    expect(
+      logLines.some((line) => {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        return (
+          entry.msg === "Review Action v2 request rejected" &&
+          entry.operationId ===
+            ReviewActionV2OperationId.ReviewContextGatewayOpen &&
+          entry.protocolErrorCode ===
+            ReviewActionV2ProtocolErrorCode.StalePrecondition &&
+          JSON.stringify(entry.protocolIssues) ===
+            JSON.stringify(["context_checkout_tree_mismatch"]) &&
+          entry.statusCode === 412
+        );
+      }),
+    ).toBe(true);
+    expect(logLines.join("\n")).not.toContain("leaseCapability");
+    expect(logLines.join("\n")).not.toContain("authorizationToken");
+    await app.close();
+  });
+
   it("maps stale adoption and publication preconditions to HTTP 412", async () => {
     const app = Fastify();
     const stale = (issue: string) => ({
