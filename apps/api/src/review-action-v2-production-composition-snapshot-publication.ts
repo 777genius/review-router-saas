@@ -30,6 +30,7 @@ import {
   ResolveCurrentPublicationLifecycle,
   renderCanonicalReviewPublication,
   resolveReviewPublicationRenderPolicyVersion,
+  resolveReviewPublicationOperationIdentityVersion,
   planReviewPublicationOperations,
   publishedReviewProjectionPublicationEnvelopeVersion,
   reviewPublicationLifecycleExpectationFromProjection,
@@ -361,29 +362,19 @@ async function requestPublication(
     protocolLimitsProfileId: limits.protocolLimitsProfileId,
     limitsDigest: limits.limitsDigest,
   });
-  let operations;
-  try {
-    operations = planReviewPublicationOperations({
-      envelope,
-      limits: publicationLimits(
-        artifact.publicationPermit.producerReleaseId,
-        limits,
-      ),
-    });
-  } catch (error) {
-    throw mapPlanningFailure(error);
-  }
-  if (operations.length === 0) {
-    throw routeFailure(
-      422,
-      ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      "publication_operations_empty",
-    );
-  }
-  const command = deterministicPublicationCommand(artifact, operations);
-  const existing = await dependencies.publications.findById(
-    command.publicationAttemptId,
-  );
+  const publicationAttemptId = deterministicPublicationAttemptId(artifact);
+  const existing =
+    await dependencies.publications.findById(publicationAttemptId);
+  const command = resolvePublicationCommand({
+    artifact,
+    envelope,
+    limits: publicationLimits(
+      artifact.publicationPermit.producerReleaseId,
+      limits,
+    ),
+    publicationAttemptId,
+    existing,
+  });
   if (existing) {
     if (existing.attempt.requestHash !== command.requestHash) {
       return {
@@ -908,15 +899,10 @@ function publicationProjection(value: unknown) {
 }
 
 function deterministicPublicationCommand(
+  publicationAttemptId: string,
   artifact: FinalizedReviewProjectionArtifact,
   operations: ReturnType<typeof planReviewPublicationOperations>,
 ) {
-  const publicationAttemptId = deterministicId(
-    "publication",
-    [artifact.executionId, artifact.artifactId, artifact.projectionHash].join(
-      "\0",
-    ),
-  );
   const requestIdHash = sha256(
     `rr.publication-request.v2\0${publicationAttemptId}`,
   );
@@ -941,6 +927,58 @@ function deterministicPublicationCommand(
     createdAt,
     retainUntil,
   };
+}
+
+function deterministicPublicationAttemptId(
+  artifact: FinalizedReviewProjectionArtifact,
+): string {
+  return deterministicId(
+    "publication",
+    [artifact.executionId, artifact.artifactId, artifact.projectionHash].join(
+      "\0",
+    ),
+  );
+}
+
+function resolvePublicationCommand(input: {
+  readonly artifact: FinalizedReviewProjectionArtifact;
+  readonly envelope: PublishedReviewProjectionPublicationEnvelope;
+  readonly limits: ReviewPublicationPlanningLimits;
+  readonly publicationAttemptId: string;
+  readonly existing: ReviewPublicationAttemptView | null;
+}) {
+  let operations;
+  try {
+    operations = planReviewPublicationOperations({
+      identity: {
+        publicationAttemptId: input.publicationAttemptId,
+        version: resolveReviewPublicationOperationIdentityVersion({
+          publicationAttemptId: input.publicationAttemptId,
+          projectionHash: input.artifact.projectionHash,
+          existingOperationIds:
+            input.existing?.attempt.operations.map(
+              (operation) => operation.publicationOperationId,
+            ) ?? null,
+        }),
+      },
+      envelope: input.envelope,
+      limits: input.limits,
+    });
+  } catch (error) {
+    throw mapPlanningFailure(error);
+  }
+  if (operations.length === 0) {
+    throw routeFailure(
+      422,
+      ReviewActionV2ProtocolErrorCode.InvariantViolation,
+      "publication_operations_empty",
+    );
+  }
+  return deterministicPublicationCommand(
+    input.publicationAttemptId,
+    input.artifact,
+    operations,
+  );
 }
 
 function assertArtifactAuthority(input: {

@@ -61,6 +61,13 @@ must not relabel an older producer as the current policy. Remove a legacy policy
 only after every registered producer using it has been retired and its in-flight
 authorizations have drained.
 
+Publication operation identity is scoped to its publication attempt. This lets
+two executions publish the same projection without colliding in the operation
+ledger. Existing projection-scoped operation IDs remain restorable through the
+explicit `LegacyProjectionV1` compatibility path; new attempts must use
+`AttemptScopedV2`. Remove the legacy path only after all pre-cutover publication
+attempts have reached a terminal state and passed retention.
+
 ```bash
 pnpm review-v2:admin release register \
   --bundle /secure/path/review-v2-release-bundle.json \

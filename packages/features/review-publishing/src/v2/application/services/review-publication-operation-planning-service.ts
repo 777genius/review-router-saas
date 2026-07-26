@@ -4,6 +4,7 @@ import {
   assertPublishedReviewProjectionPublicationEnvelopeIdentity,
   planReviewPublicationOperations,
   type PublishedReviewProjectionPublicationEnvelope,
+  type ReviewPublicationOperationIdentity,
 } from "../../domain/review-publication-operation-planning";
 import type { ReviewPublicationOperationPlan } from "../../domain/review-publication-attempt";
 import type {
@@ -16,9 +17,11 @@ export class ReviewPublicationOperationPlanningService implements ReviewPublicat
     private readonly releaseLimits: ReviewPublicationReleaseLimitsQueryPort,
   ) {}
 
-  async plan(
-    envelope: PublishedReviewProjectionPublicationEnvelope,
-  ): Promise<readonly ReviewPublicationOperationPlan[]> {
+  async plan(input: {
+    readonly identity: ReviewPublicationOperationIdentity;
+    readonly envelope: PublishedReviewProjectionPublicationEnvelope;
+  }): Promise<readonly ReviewPublicationOperationPlan[]> {
+    const { identity, envelope } = input;
     assertPublishedReviewProjectionPublicationEnvelopeIdentity(envelope);
     const limits = await this.releaseLimits.findReleaseBoundLimits({
       producerReleaseId: envelope.producerReleaseId,
@@ -30,6 +33,6 @@ export class ReviewPublicationOperationPlanningService implements ReviewPublicat
         ReviewPublicationPlanningErrorCode.ReleaseLimitsUnavailable,
       );
     }
-    return planReviewPublicationOperations({ envelope, limits });
+    return planReviewPublicationOperations({ identity, envelope, limits });
   }
 }

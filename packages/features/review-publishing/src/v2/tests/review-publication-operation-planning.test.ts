@@ -5,12 +5,14 @@ import {
   ReviewPublicationKind,
   ReviewPublicationLifecycleSemantic,
   ReviewPublicationOperationPlanningService,
+  ReviewPublicationOperationIdentityVersion,
   ReviewPublicationOperationRole,
   ReviewPublicationPlanningError,
   ReviewPublicationPlanningErrorCode,
   ReviewPublicationProjectionCoverage,
   ReviewPublicationSummarySemantic,
   publishedReviewProjectionPublicationEnvelopeVersion,
+  resolveReviewPublicationOperationIdentityVersion,
   type CanonicalReviewPublicationBodyFacts,
   type PublishedReviewProjectionPublicationEnvelope,
   type ReviewPublicationPlanningLimits,
@@ -23,11 +25,11 @@ const reconcileUntil = new Date("2026-07-22T16:00:00.000Z");
 
 describe("review publication operation planning", () => {
   it("plans the required summary as a mutable singleton", async () => {
-    const operations = await planner().plan(envelope());
+    const operations = await plan(envelope());
 
     expect(operations).toEqual([
       expect.objectContaining({
-        publicationOperationId: `review-publication:${hash("1")}:summary:0`,
+        publicationOperationId: `review-publication:publication-1:${hash("1")}:summary:0`,
         publicationKind: ReviewPublicationKind.Summary,
         chunkIndex: 0,
         effectStrategy: ReviewPublicationEffectStrategy.MutableSingleton,
@@ -43,13 +45,13 @@ describe("review publication operation planning", () => {
 
   it("accepts Git SHA-1 and SHA-256 object IDs but rejects digest-shaped impostors", async () => {
     await expect(
-      planner().plan(envelope({ targetCommitId: "2".repeat(40) })),
+      plan(envelope({ targetCommitId: "2".repeat(40) })),
     ).resolves.toHaveLength(1);
     await expect(
-      planner().plan(envelope({ targetCommitId: "2".repeat(64) })),
+      plan(envelope({ targetCommitId: "2".repeat(64) })),
     ).resolves.toHaveLength(1);
     await expect(
-      planner().plan(envelope({ targetCommitId: "2".repeat(63) })),
+      plan(envelope({ targetCommitId: "2".repeat(63) })),
     ).rejects.toEqual(
       planningError(ReviewPublicationPlanningErrorCode.EnvelopeInvalid),
     );
@@ -85,7 +87,7 @@ describe("review publication operation planning", () => {
       ],
     });
 
-    const operations = await planner().plan(input);
+    const operations = await plan(input);
     expect(
       operations.map((operation) => [
         operation.publicationKind,
@@ -153,7 +155,7 @@ describe("review publication operation planning", () => {
         ...body("a", "b", 10),
       },
     });
-    await expect(planner().plan(partial)).resolves.toHaveLength(1);
+    await expect(plan(partial)).resolves.toHaveLength(1);
 
     const forbidden = [
       envelope({
@@ -202,7 +204,7 @@ describe("review publication operation planning", () => {
     ];
 
     for (const candidate of forbidden) {
-      await expect(planner().plan(candidate)).rejects.toEqual(
+      await expect(plan(candidate)).rejects.toEqual(
         planningError(
           ReviewPublicationPlanningErrorCode.PartialCoverageViolation,
         ),
@@ -227,9 +229,7 @@ describe("review publication operation planning", () => {
       envelope({ managedCheck: body("c", "d", 10) }),
     ],
   ])("fails closed on release-bound %s", async (code, profile, input) => {
-    await expect(planner(profile).plan(input)).rejects.toEqual(
-      planningError(code),
-    );
+    await expect(plan(input, profile)).rejects.toEqual(planningError(code));
   });
 
   it("rejects duplicate server-owned markers across publication kinds", async () => {
@@ -237,7 +237,7 @@ describe("review publication operation planning", () => {
       managedCheck: body("a", "d", 10),
     });
 
-    await expect(planner().plan(input)).rejects.toEqual(
+    await expect(plan(input)).rejects.toEqual(
       planningError(ReviewPublicationPlanningErrorCode.DuplicateMarker),
     );
   });
@@ -253,7 +253,7 @@ describe("review publication operation planning", () => {
       ],
     });
 
-    await expect(planner().plan(input)).rejects.toEqual(
+    await expect(plan(input)).rejects.toEqual(
       planningError(ReviewPublicationPlanningErrorCode.ChunkOrderInvalid),
     );
   });
@@ -266,7 +266,7 @@ describe("review publication operation planning", () => {
       },
     });
 
-    await expect(planner().plan(input)).rejects.toEqual(
+    await expect(plan(input)).rejects.toEqual(
       planningError(
         ReviewPublicationPlanningErrorCode.SummarySemanticUnsupported,
       ),
@@ -277,7 +277,7 @@ describe("review publication operation planning", () => {
     await expect(
       new ReviewPublicationOperationPlanningService(
         new InMemoryReviewPublicationReleaseLimitsQuery(),
-      ).plan(envelope()),
+      ).plan(planningInput(envelope())),
     ).rejects.toEqual(
       planningError(
         ReviewPublicationPlanningErrorCode.ReleaseLimitsUnavailable,
@@ -290,7 +290,9 @@ describe("review publication operation planning", () => {
       },
     };
     await expect(
-      new ReviewPublicationOperationPlanningService(resolver).plan(envelope()),
+      new ReviewPublicationOperationPlanningService(resolver).plan(
+        planningInput(envelope()),
+      ),
     ).rejects.toEqual(
       planningError(ReviewPublicationPlanningErrorCode.ReleaseLimitsMismatch),
     );
@@ -310,16 +312,96 @@ describe("review publication operation planning", () => {
     });
     const service = planner();
 
-    const first = await service.plan(input);
+    const first = await service.plan(planningInput(input));
     first[0]?.reconcileUntil.setUTCFullYear(2030);
-    const second = await service.plan(input);
-    const third = await service.plan(structuredClone(input));
+    const second = await service.plan(planningInput(input));
+    const third = await service.plan(planningInput(structuredClone(input)));
 
     expect(second).toEqual(third);
     expect(second[0]?.reconcileUntil).toEqual(reconcileUntil);
     expect(input.publicationNotAfter).toEqual(publicationNotAfter);
   });
+
+  it("scopes operation identities to the publication attempt", async () => {
+    const projection = envelope();
+    const first = await plan(projection, limits(), "publication-1");
+    const second = await plan(projection, limits(), "publication-2");
+
+    expect(first[0]?.publicationOperationId).not.toBe(
+      second[0]?.publicationOperationId,
+    );
+    expect(second[0]?.publicationOperationId).toBe(
+      `review-publication:publication-2:${hash("1")}:summary:0`,
+    );
+  });
+
+  it("keeps the legacy projection identity available for exact restoration", async () => {
+    const operations = await planner().plan({
+      identity: {
+        publicationAttemptId: "publication-legacy",
+        version: ReviewPublicationOperationIdentityVersion.LegacyProjectionV1,
+      },
+      envelope: envelope(),
+    });
+
+    expect(operations[0]?.publicationOperationId).toBe(
+      `review-publication:${hash("1")}:summary:0`,
+    );
+  });
+
+  it("resolves existing identity versions and rejects mixed operation identities", () => {
+    const publicationAttemptId = "publication-1";
+    const projectionHash = hash("1");
+    expect(
+      resolveReviewPublicationOperationIdentityVersion({
+        publicationAttemptId,
+        projectionHash,
+        existingOperationIds: [
+          `review-publication:${projectionHash}:summary:0`,
+        ],
+      }),
+    ).toBe(ReviewPublicationOperationIdentityVersion.LegacyProjectionV1);
+    expect(
+      resolveReviewPublicationOperationIdentityVersion({
+        publicationAttemptId,
+        projectionHash,
+        existingOperationIds: [
+          `review-publication:${publicationAttemptId}:${projectionHash}:summary:0`,
+        ],
+      }),
+    ).toBe(ReviewPublicationOperationIdentityVersion.AttemptScopedV2);
+    expect(() =>
+      resolveReviewPublicationOperationIdentityVersion({
+        publicationAttemptId,
+        projectionHash,
+        existingOperationIds: ["review-publication:unknown:summary:0"],
+      }),
+    ).toThrow(ReviewPublicationPlanningErrorCode.OperationIdentityInvalid);
+  });
 });
+
+function planningInput(
+  publicationEnvelope: PublishedReviewProjectionPublicationEnvelope,
+  publicationAttemptId = "publication-1",
+) {
+  return {
+    identity: {
+      publicationAttemptId,
+      version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+    },
+    envelope: publicationEnvelope,
+  } as const;
+}
+
+function plan(
+  publicationEnvelope: PublishedReviewProjectionPublicationEnvelope,
+  profile: ReviewPublicationPlanningLimits = limits(),
+  publicationAttemptId = "publication-1",
+) {
+  return planner(profile).plan(
+    planningInput(publicationEnvelope, publicationAttemptId),
+  );
+}
 
 function planner(
   profile: ReviewPublicationPlanningLimits = limits(),

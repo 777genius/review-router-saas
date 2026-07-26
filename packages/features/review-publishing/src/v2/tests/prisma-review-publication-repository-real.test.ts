@@ -76,6 +76,34 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
     });
   });
 
+  it("persists rerun attempts that share a projection with attempt-scoped operation identities", async () => {
+    const first = requestCommand(fixture, `same-projection-a-${randomUUID()}`);
+    const secondBase = requestCommand(
+      fixture,
+      `same-projection-b-${randomUUID()}`,
+    );
+    const second = {
+      ...secondBase,
+      permit: {
+        ...secondBase.permit,
+        executionId: fixture.rerunExecutionId,
+        generation: 2n,
+        projectionHash: first.permit.projectionHash,
+      },
+      operations: secondBase.operations.map((operation) => ({
+        ...operation,
+        publicationOperationId: `${secondBase.publicationAttemptId}:${operation.publicationKind}:${operation.chunkIndex}`,
+      })),
+    };
+
+    await expect(repository.request(first)).resolves.toMatchObject({
+      status: RequestReviewPublicationStatus.Applied,
+    });
+    await expect(repository.request(second)).resolves.toMatchObject({
+      status: RequestReviewPublicationStatus.Applied,
+    });
+  });
+
   it("serializes competing claims, enforces the active-owner index, and fences takeover", async () => {
     const command = requestCommand(fixture, "claim-race");
     await repository.request(command);
@@ -486,6 +514,7 @@ async function seedFixture(prisma: PrismaClient) {
   const producerReleaseId = `producer-${id}`;
   const authorizationId = `authorization-${id}`;
   const executionId = `execution-${id}`;
+  const rerunExecutionId = `execution-rerun-${id}`;
   const now = new Date();
   await prisma.workspace.create({
     data: {
@@ -643,6 +672,37 @@ async function seedFixture(prisma: PrismaClient) {
       retainUntil: new Date(Date.now() + 86_400_000),
     },
   });
+  await prisma.reviewExecutionV2.create({
+    data: {
+      executionId: rerunExecutionId,
+      workspaceId,
+      repositoryConnectionId,
+      scmRepositoryIdentityId,
+      pullRequestNumber: 240,
+      generation: 2n,
+      baseSha: digest("base"),
+      mergeBaseSha: digest("merge-base"),
+      headSha: digest("head"),
+      reviewRevisionHash: digest("revision"),
+      compatibilityKey: digest(`compatibility-rerun-${id}`),
+      planHash: digest(`plan-rerun-${id}`),
+      startIdentityHash: digest(`start-rerun-${id}`),
+      canonicalStartHash: digest(`canonical-start-rerun-${id}`),
+      state: "completed",
+      authorizationId,
+      producerReleaseId,
+      mutationEpoch: 3n,
+      admissionSafetyDecisionHash: digest(`admission-rerun-${id}`),
+      protocolLimitsProfileId,
+      sourceRunId: `run-${id}`,
+      sourceRunAttempt: "2",
+      createdAt: now,
+      updatedAt: now,
+      admissionDeadlineAt: new Date(Date.now() + 60_000),
+      executionDeadlineAt: new Date(Date.now() + 120_000),
+      retainUntil: new Date(Date.now() + 86_400_000),
+    },
+  });
   return {
     workspaceId,
     repositoryConnectionId,
@@ -652,6 +712,7 @@ async function seedFixture(prisma: PrismaClient) {
     producerReleaseId,
     authorizationId,
     executionId,
+    rerunExecutionId,
   };
 }
 
@@ -660,7 +721,9 @@ async function cleanupFixture(
   fixture: Awaited<ReturnType<typeof seedFixture>>,
 ): Promise<void> {
   const attempts = await prisma.reviewPublicationAttemptV2.findMany({
-    where: { executionId: fixture.executionId },
+    where: {
+      executionId: { in: [fixture.executionId, fixture.rerunExecutionId] },
+    },
     select: { publicationAttemptId: true },
   });
   const attemptIds = attempts.map(
@@ -693,8 +756,10 @@ async function cleanupFixture(
   await prisma.reviewPublicationAttemptV2.deleteMany({
     where: { publicationAttemptId: { in: attemptIds } },
   });
-  await prisma.reviewExecutionV2.delete({
-    where: { executionId: fixture.executionId },
+  await prisma.reviewExecutionV2.deleteMany({
+    where: {
+      executionId: { in: [fixture.executionId, fixture.rerunExecutionId] },
+    },
   });
   await prisma.reviewRunAuthorization.delete({
     where: { authorizationId: fixture.authorizationId },

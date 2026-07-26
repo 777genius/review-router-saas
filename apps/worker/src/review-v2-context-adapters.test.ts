@@ -114,7 +114,10 @@ describe("review v2 worker context adapters", () => {
     const snapshot = executionSnapshot();
     const attempts = new FakePublicationAttempts();
     const requests = new FakePublicationRequests(attempts);
-    const factory = publicationRequestFactory();
+    const factory = publicationRequestFactory(
+      completionProjectionMapper(),
+      attempts,
+    );
     const adapter = new ReviewCompletionPublicationContextAdapter(
       { findExecution: async () => snapshot },
       attempts,
@@ -144,6 +147,38 @@ describe("review v2 worker context adapters", () => {
       state: ReviewCompletionPublicationState.Pending,
       effectiveOutcome: null,
     });
+  });
+
+  it("restores legacy projection-scoped operation identities", async () => {
+    const snapshot = executionSnapshot();
+    const scoped = await publicationRequestFactory().build(snapshot);
+    if (!scoped) throw new Error("test_publication_command_missing");
+    const scopedPrefix = `review-publication:${scoped.publicationAttemptId}:`;
+    const legacyOperations = scoped.operations.map((operation) => ({
+      ...operation,
+      publicationOperationId: operation.publicationOperationId.replace(
+        scopedPrefix,
+        "review-publication:",
+      ),
+      dependsOnOperationId:
+        operation.dependsOnOperationId?.replace(
+          scopedPrefix,
+          "review-publication:",
+        ) ?? null,
+    }));
+    const attempts = new FakePublicationAttempts();
+    attempts.store(
+      publicationView({
+        ...scoped,
+        operations: legacyOperations,
+      }),
+    );
+
+    await expect(
+      publicationRequestFactory(completionProjectionMapper(), attempts).build(
+        snapshot,
+      ),
+    ).resolves.toMatchObject({ operations: legacyOperations });
   });
 
   it("plans only the conservative coverage summary for a partial artifact", async () => {
@@ -543,12 +578,16 @@ function publicationView(
 
 function publicationRequestFactory(
   mapper: ReviewCompletionProjectionMapperPort = completionProjectionMapper(),
+  attempts: Pick<ReviewPublicationAttemptQueryPort, "findById"> = {
+    findById: async () => null,
+  },
 ): DeterministicReviewPublicationRequestFactory {
   return new DeterministicReviewPublicationRequestFactory(
     mapper,
     new ReviewPublicationOperationPlanningService(
       new InMemoryReviewPublicationReleaseLimitsQuery([publicationLimits()]),
     ),
+    attempts,
   );
 }
 

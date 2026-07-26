@@ -6,6 +6,7 @@ import {
 } from "@reviewrouter/features-review-executions";
 import {
   ReviewPublicationOperationPlanningService,
+  ReviewPublicationOperationIdentityVersion,
   ReviewPublicationOperationState,
 } from "@reviewrouter/features-review-publishing/v2";
 import {
@@ -40,7 +41,13 @@ describe("canonical review v2 projection adapter", () => {
         };
       },
     });
-    const plans = await planner.plan(envelope!);
+    const plans = await planner.plan({
+      identity: {
+        publicationAttemptId: "publication-1",
+        version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+      },
+      envelope: envelope!,
+    });
     expect(plans).toHaveLength(5);
 
     const payloads = await Promise.all(
