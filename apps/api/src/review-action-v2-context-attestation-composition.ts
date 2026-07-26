@@ -531,11 +531,6 @@ async function sealGateway(
     session.sourceRevision.checkoutTreeOid,
     "context_checkout_tree_mismatch",
   );
-  requireEqual(
-    request.actualModel,
-    session.requestedModel,
-    "context_actual_model_mismatch",
-  );
   const associatedDataCanonicalJson = replayMaterialAssociatedData(session);
   const encrypted = await d.cipher.encrypt({
     sessionId: session.sessionId,

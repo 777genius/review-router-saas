@@ -296,6 +296,47 @@ describe("Review Action v2 context attestation composition", () => {
     );
   });
 
+  it("seals context when Codex reports a resolved actual model alias", async () => {
+    const fixture = await createFixture();
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+    const sessionId = required(opened.result.sessionId);
+    const transcript = sourceTranscript({
+      sessionId,
+      sessionSecret: Buffer.from(
+        required(opened.result.gatewaySessionSecret),
+        "base64url",
+      ),
+      eventChainSeedHash: required(opened.result.eventChainSeedHash),
+    });
+    const replayMaterialCanonicalJson = stableJson({
+      materialVersion: 1,
+      sourceDependencies: [
+        {
+          operationKey: transcript.dependencies[0]!.operationKey,
+          replayQuery: null,
+          sequence: 1,
+        },
+      ],
+    });
+
+    const sealed = await fixture.routes.sealGateway!.execute(
+      await sealRequest({
+        fixture,
+        sessionId,
+        sealCapability: required(opened.result.sealCapability),
+        transcriptCanonicalJson: canonicalContextDependencyManifest(transcript),
+        replayMaterialCanonicalJson,
+        actualModel: `${requestedModel}:resolved`,
+      }),
+    );
+
+    expect(sealed.result.status).toBe(
+      ReviewContextGatewaySealResultStatus.Accepted,
+    );
+  });
+
   it.each([
     {
       name: "legacy release without gateway evidence",
@@ -651,6 +692,7 @@ async function sealRequest(input: {
   sealCapability: string;
   transcriptCanonicalJson: string;
   replayMaterialCanonicalJson: string;
+  actualModel?: string;
 }) {
   return withBodyHash(ReviewActionV2OperationId.ReviewContextGatewaySeal, {
     ...envelope("gateway-seal"),
@@ -666,7 +708,7 @@ async function sealRequest(input: {
     providerSucceeded: true,
     schemaValidated: true,
     fullyConsumed: true,
-    actualModel: requestedModel,
+    actualModel: input.actualModel ?? requestedModel,
     terminalOutcomeHash: sha("terminal-outcome"),
     transcriptCanonicalJson: input.transcriptCanonicalJson,
     transcriptHash: sha(input.transcriptCanonicalJson),
