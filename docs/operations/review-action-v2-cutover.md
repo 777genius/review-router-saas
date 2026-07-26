@@ -54,6 +54,13 @@ validated public release manifest, including its context gateway policy and
 entrypoint digest, and must use the same profile IDs. Legacy releases without
 both gateway fields remain readable but cannot open or reuse context evidence.
 
+Projection policy compatibility is versioned independently from the current
+deployment default. Finalization accepts only policy versions supported by the
+publishing domain and persists the exact version from the producer envelope; it
+must not relabel an older producer as the current policy. Remove a legacy policy
+only after every registered producer using it has been retired and its in-flight
+authorizations have drained.
+
 ```bash
 pnpm review-v2:admin release register \
   --bundle /secure/path/review-v2-release-bundle.json \
