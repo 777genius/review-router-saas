@@ -94,7 +94,7 @@ export function checkReleaseManifest(input) {
     actionCommitSha: manifest.actionCommitSha,
     runtimeEntrypointPath: verifiedAction.runtimeEntrypointPath,
     runtimeEntrypointDigest: verifiedAction.runtimeEntrypointDigest,
-    contextGatewayPolicyVersion: manifest.contextGatewayPolicyVersion,
+    contextGatewayPolicyVersion: verifiedAction.contextGatewayPolicyVersion,
     contextGatewayEntrypointPath: verifiedAction.contextGatewayEntrypointPath,
     contextGatewayEntrypointDigest:
       verifiedAction.contextGatewayEntrypointDigest,

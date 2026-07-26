@@ -29,6 +29,7 @@ import {
   ReviewPublicationRunControlStatus,
   ResolveCurrentPublicationLifecycle,
   renderCanonicalReviewPublication,
+  resolveReviewPublicationRenderPolicyVersion,
   planReviewPublicationOperations,
   publishedReviewProjectionPublicationEnvelopeVersion,
   reviewPublicationLifecycleExpectationFromProjection,
@@ -768,6 +769,9 @@ function publishedEnvelope(input: {
   const rendered = renderCanonicalReviewPublication(
     {
       coverage,
+      renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+        input.artifact.projectionPolicyVersion,
+      ),
       targetCommitId: input.artifact.reviewedHeadSha,
       source: publishing,
     },
@@ -785,7 +789,9 @@ function publishedEnvelope(input: {
     coverage,
     targetCommitId: input.artifact.reviewedHeadSha,
     reviewRevisionHash: input.artifact.reviewRevisionHash,
-    renderPolicyVersion: 1,
+    renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+      input.artifact.projectionPolicyVersion,
+    ),
     publicationNotAfter: new Date(
       input.artifact.publicationPermit.publicationNotAfter,
     ),

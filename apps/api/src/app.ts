@@ -418,6 +418,13 @@ export async function createApiApp(
     ? {
         readServerTime: () => readDatabaseServerTime(prisma),
         createRequestId: randomUUID,
+        recordProtocolRejection: (diagnostic: {
+          readonly operationId: string;
+          readonly protocolErrorCode: string;
+          readonly protocolIssues: readonly string[];
+          readonly requestId: string;
+          readonly statusCode: number;
+        }) => logger.warn("Review Action v2 request rejected", diagnostic),
       }
     : undefined;
   if (

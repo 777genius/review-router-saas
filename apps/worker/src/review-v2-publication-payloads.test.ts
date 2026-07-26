@@ -150,7 +150,7 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
     findingCount: 1,
     lifecycleStateHash: hash("4"),
     commandLedgerWatermark: 2n,
-    projectionPolicyVersion: "projection-v1",
+    projectionPolicyVersion: "review-projection-policy.v3-t0",
     publicationPermit: {
       workspaceId: "workspace-1",
       repositoryConnectionId: "repository-1",

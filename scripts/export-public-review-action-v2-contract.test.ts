@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,11 +16,17 @@ import {
   exportPublicContract,
   parseArgs as parseExportArgs,
 } from "./export-public-review-action-v2-contract.mjs";
-import { generateReleaseManifest } from "./generate-public-review-action-v2-release-manifest.mjs";
 import {
+  generateReleaseManifest,
+  parseArgs as parseReleaseArgs,
+} from "./generate-public-review-action-v2-release-manifest.mjs";
+import {
+  canonicalJson,
   HANDOFF_MANIFEST_FILE,
   parseHandoffManifest,
+  PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA,
   PUBLIC_GENERATED_DIRECTORY,
+  sha256Digest,
 } from "./lib/review-action-v2-release-manifests.mjs";
 
 const temporaryDirectories: string[] = [];
@@ -64,11 +71,13 @@ describe("public Review Action v2 contract handoff", () => {
       join(fixture.actionRepo, "dist/context-gateway.js"),
       "fresh context gateway\n",
     );
+    writeContextGatewayReleaseMetadata(fixture.actionRepo);
     git(fixture.actionRepo, [
       "add",
       PUBLIC_GENERATED_DIRECTORY,
       "dist/index.js",
       "dist/context-gateway.js",
+      PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA,
     ]);
     git(fixture.actionRepo, ["commit", "-m", "feat: add v2 contract"]);
     const actionCommit = head(fixture.actionRepo);
@@ -79,7 +88,6 @@ describe("public Review Action v2 contract handoff", () => {
       expectedHead: actionCommit,
       runtimeEntrypointPath: "dist/index.js",
       contextGatewayEntrypointPath: "dist/context-gateway.js",
-      contextGatewayPolicyVersion: "review-context-gateway.v1",
       output: releasePath,
     });
     expect(release.manifest.actionCommitSha).toBe(actionCommit);
@@ -96,6 +104,24 @@ describe("public Review Action v2 contract handoff", () => {
       actionCommitSha: actionCommit,
     });
 
+    const tamperedReleasePath = join(
+      fixture.root,
+      "tampered-release-manifest.json",
+    );
+    const tamperedRelease = JSON.parse(release.bytes);
+    tamperedRelease.contextGatewayPolicyVersion = "operator-supplied-wrong-v9";
+    writeFileSync(tamperedReleasePath, canonicalJson(tamperedRelease));
+    expect(() =>
+      checkReleaseManifest({
+        manifest: tamperedReleasePath,
+        saasRepo: fixture.saasRepo,
+        actionRepo: fixture.actionRepo,
+        sourceDirectory,
+      }),
+    ).toThrow(
+      "release manifest does not match committed source, handoff, or runtime bundle",
+    );
+
     expect(
       generateReleaseManifest({
         actionRepo: fixture.actionRepo,
@@ -103,7 +129,6 @@ describe("public Review Action v2 contract handoff", () => {
         expectedHead: actionCommit,
         runtimeEntrypointPath: "dist/index.js",
         contextGatewayEntrypointPath: "dist/context-gateway.js",
-        contextGatewayPolicyVersion: "review-context-gateway.v1",
         output: releasePath,
       }).bytes,
     ).toBe(release.bytes);
@@ -115,7 +140,6 @@ describe("public Review Action v2 contract handoff", () => {
         expectedHead: actionCommit,
         runtimeEntrypointPath: "dist/index.js",
         contextGatewayEntrypointPath: "dist/context-gateway.js",
-        contextGatewayPolicyVersion: "review-context-gateway.v1",
         output: releasePath,
       }),
     ).toThrow("refusing to overwrite a different release manifest");
@@ -143,6 +167,18 @@ describe("public Review Action v2 contract handoff", () => {
         fixture.actionBase.slice(0, 12),
       ]),
     ).toThrow("40-character");
+    expect(() =>
+      parseReleaseArgs([
+        "--action-repo",
+        fixture.actionRepo,
+        "--target-branch",
+        targetBranch,
+        "--expected-head",
+        fixture.actionBase,
+        "--context-gateway-policy-version",
+        "operator-supplied-wrong-v9",
+      ]),
+    ).toThrow("unknown option: --context-gateway-policy-version");
     await expect(
       exportFixture(fixture, { expectedHead: "f".repeat(40) }),
     ).rejects.toThrow("does not match --expected-head");
@@ -205,10 +241,40 @@ describe("public Review Action v2 contract handoff", () => {
         expectedHead: fixture.actionBase,
         runtimeEntrypointPath: "dist/index.js",
         contextGatewayEntrypointPath: "dist/context-gateway.js",
-        contextGatewayPolicyVersion: "review-context-gateway.v1",
         output: "",
       }),
     ).toThrow("repository must be clean");
+  });
+
+  it("refuses a symlinked runtime entrypoint", async () => {
+    const fixture = createRepositories();
+    await exportFixture(fixture, { write: true });
+    write(
+      join(fixture.actionRepo, "dist/context-gateway.js"),
+      "fresh context gateway\n",
+    );
+    writeContextGatewayReleaseMetadata(fixture.actionRepo);
+    rmSync(join(fixture.actionRepo, "dist/index.js"));
+    symlinkSync(
+      "context-gateway.js",
+      join(fixture.actionRepo, "dist/index.js"),
+    );
+    git(fixture.actionRepo, ["add", "dist", PUBLIC_GENERATED_DIRECTORY]);
+    git(fixture.actionRepo, ["commit", "-m", "test: add symlinked runtime"]);
+    const actionCommit = head(fixture.actionRepo);
+
+    expect(() =>
+      generateReleaseManifest({
+        actionRepo: fixture.actionRepo,
+        targetBranch,
+        expectedHead: actionCommit,
+        runtimeEntrypointPath: "dist/index.js",
+        contextGatewayEntrypointPath: "dist/context-gateway.js",
+        output: "",
+      }),
+    ).toThrow(
+      "committed release artifact must be a regular file: dist/index.js",
+    );
   });
 });
 
@@ -247,6 +313,22 @@ function createRepositories(): Repositories {
     saasHead: head(saasRepo),
     actionBase: head(actionRepo),
   };
+}
+
+function writeContextGatewayReleaseMetadata(actionRepo: string): void {
+  const entrypointPath = "dist/context-gateway.js";
+  write(
+    join(actionRepo, PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA),
+    canonicalJson({
+      artifactKind: "reviewrouter-context-gateway",
+      contextGatewayEntrypointDigest: sha256Digest(
+        readFileSync(join(actionRepo, entrypointPath)),
+      ),
+      contextGatewayEntrypointPath: entrypointPath,
+      contextGatewayPolicyVersion: "context-gateway-v3",
+      metadataVersion: 1,
+    }),
+  );
 }
 
 function initializeRepository(repository: string, branch: string): void {

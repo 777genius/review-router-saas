@@ -1,8 +1,10 @@
 import { posix as posixPath } from "node:path";
 import {
   HANDOFF_MANIFEST_FILE,
+  parseContextGatewayReleaseMetadata,
   parseHandoffManifest,
   PUBLIC_CONTEXT_GATEWAY_BUNDLE,
+  PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA,
   PUBLIC_GENERATED_DIRECTORY,
   PUBLIC_RUNTIME_BUNDLE,
   sha256Digest,
@@ -19,6 +21,9 @@ export function verifyPublicActionReleaseCommit(input) {
     input.runtimeEntrypointPath ?? PUBLIC_RUNTIME_BUNDLE;
   const contextGatewayEntrypointPath =
     input.contextGatewayEntrypointPath ?? PUBLIC_CONTEXT_GATEWAY_BUNDLE;
+  const contextGatewayReleaseMetadataPath =
+    input.contextGatewayReleaseMetadataPath ??
+    PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA;
   const entries = listCommitDirectory(
     input.actionRepo,
     input.actionCommitSha,
@@ -85,6 +90,30 @@ export function verifyPublicActionReleaseCommit(input) {
     input.actionCommitSha,
     contextGatewayEntrypointPath,
   );
+  assertRegularReleaseArtifacts({
+    actionRepo: input.actionRepo,
+    actionCommitSha: input.actionCommitSha,
+    runtimeEntrypointPath,
+    contextGatewayEntrypointPath,
+    contextGatewayReleaseMetadataPath,
+  });
+  const contextGatewayReleaseMetadata = parseContextGatewayReleaseMetadata(
+    readCommitFile(
+      input.actionRepo,
+      input.actionCommitSha,
+      contextGatewayReleaseMetadataPath,
+    ).toString("utf8"),
+  );
+  if (
+    contextGatewayReleaseMetadata.contextGatewayEntrypointPath !==
+      contextGatewayEntrypointPath ||
+    contextGatewayReleaseMetadata.contextGatewayEntrypointDigest !==
+      sha256Digest(contextGatewayBytes)
+  ) {
+    throw new Error(
+      "context gateway release metadata does not match the committed bundle",
+    );
+  }
   return Object.freeze({
     handoff,
     handoffBytes,
@@ -92,6 +121,57 @@ export function verifyPublicActionReleaseCommit(input) {
     runtimeEntrypointPath,
     runtimeEntrypointDigest: sha256Digest(runtimeBytes),
     contextGatewayEntrypointPath,
-    contextGatewayEntrypointDigest: sha256Digest(contextGatewayBytes),
+    contextGatewayEntrypointDigest:
+      contextGatewayReleaseMetadata.contextGatewayEntrypointDigest,
+    contextGatewayPolicyVersion:
+      contextGatewayReleaseMetadata.contextGatewayPolicyVersion,
+    contextGatewayReleaseMetadataPath,
   });
+}
+
+function assertRegularReleaseArtifacts(input) {
+  const paths = [
+    {
+      path: input.runtimeEntrypointPath,
+      allowedModes: new Set(["100644", "100755"]),
+    },
+    {
+      path: input.contextGatewayEntrypointPath,
+      allowedModes: new Set(["100644", "100755"]),
+    },
+    {
+      path: input.contextGatewayReleaseMetadataPath,
+      allowedModes: new Set(["100644"]),
+    },
+  ];
+  const directories = [
+    ...new Set(paths.map((entry) => posixPath.dirname(entry.path))),
+  ];
+  if (directories.includes(".")) {
+    throw new Error(
+      "committed release artifacts must be stored below a directory",
+    );
+  }
+  const entries = directories.flatMap((directory) =>
+    listCommitDirectory(input.actionRepo, input.actionCommitSha, directory).map(
+      (entry) => ({
+        ...entry,
+        fullPath: posixPath.join(directory, entry.path),
+      }),
+    ),
+  );
+  for (const expected of paths) {
+    const entry = entries.find(
+      (candidate) => candidate.fullPath === expected.path,
+    );
+    if (
+      !entry ||
+      entry.type !== "blob" ||
+      !expected.allowedModes.has(entry.mode)
+    ) {
+      throw new Error(
+        `committed release artifact must be a regular file: ${expected.path}`,
+      );
+    }
+  }
 }

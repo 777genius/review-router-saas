@@ -227,7 +227,10 @@ describeWithDatabase.sequential(
       expect(process.state).toBe("blocked_partial");
       expect(fixture.fakeGitHub.comments).toHaveLength(1);
       expect(fixture.fakeGitHub.comments[0]?.body).toContain(
-        "Review incomplete: required coverage did not finish.",
+        "## Review incomplete ⚠️",
+      );
+      expect(fixture.fakeGitHub.comments[0]?.body).toContain(
+        "No approval was issued",
       );
       expect(fixture.fakeGitHub.checkRuns).toHaveLength(0);
       await expect(

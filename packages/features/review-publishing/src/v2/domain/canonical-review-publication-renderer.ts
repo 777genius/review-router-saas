@@ -6,8 +6,25 @@ import {
   type CanonicalReviewPublicationBodyFacts,
 } from "./review-publication-operation-planning";
 
-export const partialReviewPublicationSummary =
+export const legacyReviewProjectionPolicyVersion =
+  "review-projection-policy.v2-t0";
+export const currentReviewProjectionPolicyVersion =
+  "review-projection-policy.v3-t0";
+
+export enum CanonicalReviewPublicationRenderPolicyVersion {
+  LegacyV1 = 1,
+  ClearPartialV2 = 2,
+}
+
+export const legacyPartialReviewPublicationSummary =
   "Review incomplete: required coverage did not finish. This result is not an all-clear and must not be used as approval evidence.";
+export const partialReviewPublicationSummary = [
+  "## Review incomplete ⚠️",
+  "",
+  "ReviewRouter could not finish all required review tasks for this revision. No approval was issued, and partial findings were withheld to avoid a misleading result.",
+  "",
+  "<sub>Eligible completed evidence is preserved for a safe retry. This status is not an all-clear.</sub>",
+].join("\n");
 
 export type ReviewPublicationRenderingSource = {
   readonly summary: {
@@ -84,6 +101,21 @@ export type CanonicalReviewPublicationRenderingPrimitives = {
   readonly utf8ByteLength: (value: string) => number;
 };
 
+export function resolveReviewPublicationRenderPolicyVersion(
+  projectionPolicyVersion: string,
+): CanonicalReviewPublicationRenderPolicyVersion {
+  switch (projectionPolicyVersion) {
+    case legacyReviewProjectionPolicyVersion:
+      return CanonicalReviewPublicationRenderPolicyVersion.LegacyV1;
+    case currentReviewProjectionPolicyVersion:
+      return CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2;
+    default:
+      throw new Error(
+        `review_publication_projection_policy_unsupported:${projectionPolicyVersion}`,
+      );
+  }
+}
+
 /**
  * Publishing-owned rendering policy. Planning and execution must consume this
  * same result so a persisted operation identity cannot drift from its payload.
@@ -91,6 +123,7 @@ export type CanonicalReviewPublicationRenderingPrimitives = {
 export function renderCanonicalReviewPublication(
   input: {
     readonly coverage: ReviewPublicationProjectionCoverage;
+    readonly renderPolicyVersion: CanonicalReviewPublicationRenderPolicyVersion;
     readonly targetCommitId: string;
     readonly source: ReviewPublicationRenderingSource;
   },
@@ -101,7 +134,9 @@ export function renderCanonicalReviewPublication(
   const summary = payload(
     input.source.summary.marker,
     withMarker(
-      partial ? partialReviewPublicationSummary : input.source.summary.body,
+      partial
+        ? partialSummary(input.renderPolicyVersion)
+        : input.source.summary.body,
       input.source.summary.marker,
     ),
     primitives,
@@ -205,6 +240,17 @@ export function renderCanonicalReviewPublication(
     inlineReviews,
     lifecycle,
   };
+}
+
+function partialSummary(
+  version: CanonicalReviewPublicationRenderPolicyVersion,
+): string {
+  switch (version) {
+    case CanonicalReviewPublicationRenderPolicyVersion.LegacyV1:
+      return legacyPartialReviewPublicationSummary;
+    case CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2:
+      return partialReviewPublicationSummary;
+  }
 }
 
 function payload(

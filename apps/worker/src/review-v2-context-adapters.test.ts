@@ -657,7 +657,7 @@ function executionSnapshot(
     findingCount: 0,
     lifecycleStateHash: hash("a"),
     commandLedgerWatermark: 2n,
-    projectionPolicyVersion: "projection-v2",
+    projectionPolicyVersion: "review-projection-policy.v3-t0",
     publicationPermit: {
       ...scope,
       executionId: "execution-1",

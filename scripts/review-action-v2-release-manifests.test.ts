@@ -6,6 +6,7 @@ import {
   buildHandoffManifest,
   buildReleaseManifest,
   canonicalJson,
+  parseContextGatewayReleaseMetadata,
   parseCanonicalJson,
   parseHandoffManifest,
   parseProtocolGenerationManifest,
@@ -49,7 +50,7 @@ describe("review Action v2 release manifests", () => {
       runtimeEntrypointDigest: sha256Digest(
         Buffer.from(fixture("runtime-bundle.js")),
       ),
-      contextGatewayPolicyVersion: "review-context-gateway.v1",
+      contextGatewayPolicyVersion: "context-gateway-v3",
       contextGatewayEntrypointPath: "dist/context-gateway.js",
       contextGatewayEntrypointDigest: sha256Digest(
         Buffer.from(fixture("context-gateway-bundle.js")),
@@ -69,6 +70,30 @@ describe("review Action v2 release manifests", () => {
     expect(() => parseHandoffManifest(canonicalJson(handoff))).toThrow(
       "fields must be exactly",
     );
+  });
+
+  it("strictly validates bounded context gateway release metadata", () => {
+    const metadata = canonicalJson({
+      artifactKind: "reviewrouter-context-gateway",
+      contextGatewayEntrypointDigest: "d".repeat(64),
+      contextGatewayEntrypointPath: "dist/context-gateway.js",
+      contextGatewayPolicyVersion: "context-gateway-v3",
+      metadataVersion: 1,
+    });
+    expect(parseContextGatewayReleaseMetadata(metadata)).toMatchObject({
+      contextGatewayPolicyVersion: "context-gateway-v3",
+    });
+    expect(() =>
+      parseContextGatewayReleaseMetadata(`${metadata}${" ".repeat(4_096)}`),
+    ).toThrow("oversized");
+    expect(() =>
+      parseContextGatewayReleaseMetadata(
+        canonicalJson({
+          ...JSON.parse(metadata),
+          contextGatewayEntrypointPath: "../context-gateway.js",
+        }),
+      ),
+    ).toThrow("normalized relative POSIX path");
   });
 
   it("requires lowercase full commit SHAs and safe generated paths", () => {
@@ -104,7 +129,7 @@ describe("review Action v2 release manifests", () => {
         actionCommitSha: handoff.expectedPublicActionBaseCommit,
         runtimeEntrypointPath: "dist/index.js",
         runtimeEntrypointDigest: "e".repeat(64),
-        contextGatewayPolicyVersion: "review-context-gateway.v1",
+        contextGatewayPolicyVersion: "context-gateway-v3",
         contextGatewayEntrypointPath: "dist/context-gateway.js",
         contextGatewayEntrypointDigest: "f".repeat(64),
       }),
