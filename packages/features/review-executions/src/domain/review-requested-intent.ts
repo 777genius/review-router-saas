@@ -91,6 +91,7 @@ export type ReviewRequestedIntent = ReviewExecutionScope & {
   readonly executionId: string | null;
   readonly terminalReason: ReviewRequestedIntentTerminalReason | null;
   readonly admission: ReviewRequestAdmission;
+  readonly rerunPredecessorRequestId: string | null;
   readonly supersededByRequestId: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -222,6 +223,7 @@ export function createReviewRequestedIntent(
       decisionHash: null,
       checkedAt: null,
     },
+    rerunPredecessorRequestId: null,
     supersededByRequestId: null,
     createdAt: new Date(candidate.createdAt),
     updatedAt: new Date(candidate.createdAt),

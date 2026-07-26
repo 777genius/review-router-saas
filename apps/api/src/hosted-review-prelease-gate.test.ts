@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createReviewRequestedIntent,
+  decideReviewRequestedRerunRegistration,
   decideReviewRequestedAdmission,
   ReviewRequestAdmissionState,
   ReviewRequestedIntentState,
+  ReviewRequestedRerunEnsureStatus,
+  ReviewRequestedRerunRegistrationDecisionStatus,
   ReviewRequestedTransitionDecisionStatus,
   ReviewRequestedTransitionStatus,
   ReviewRequestedTriggerKind,
@@ -180,15 +183,67 @@ describe("ProductionHostedReviewPreleaseGate", () => {
     expect(kit.findIntent).toHaveBeenCalledTimes(3);
     expect(kit.sleep).toHaveBeenCalledTimes(2);
   });
+
+  it("creates and admits a fresh durable intent for a GitHub rerun attempt", async () => {
+    const prior = dispatchedIntent();
+    const kit = buildGate({
+      additions: 100,
+      deletions: 50,
+      initialIntent: prior,
+    });
+
+    await expect(kit.gate.evaluate(input(true, "2"))).resolves.toMatchObject({
+      status: "admitted",
+      decisionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(kit.findIntent).toHaveBeenCalledOnce();
+    expect(kit.listIntents).toHaveBeenCalled();
+    expect(kit.ensureRerunIntent).toHaveBeenCalledOnce();
+    expect(kit.resolvePullRequest).toHaveBeenCalledOnce();
+  });
+
+  it("fails a rerun closed when the current pull request head moved", async () => {
+    const kit = buildGate({
+      additions: 100,
+      deletions: 50,
+      initialIntent: dispatchedIntent(),
+      resolvedHeadSha: "9".repeat(40),
+    });
+
+    await expect(kit.gate.evaluate(input(true, "2"))).rejects.toThrow(
+      "review_request_revision_moved",
+    );
+    expect(kit.ensureRerunIntent).not.toHaveBeenCalled();
+    expect(kit.recordAdmissionDecision).not.toHaveBeenCalled();
+  });
 });
 
-function input(intentRequired = true) {
+function input(intentRequired = true, sourceRunAttempt = "1") {
   return {
     repository,
     sourceRunId: "30150048512",
-    sourceRunAttempt: "1",
+    sourceRunAttempt,
     intentRequired,
     now,
+  };
+}
+
+function dispatchedIntent(): ReviewRequestedIntent {
+  return {
+    ...intent,
+    version: 6n,
+    state: ReviewRequestedIntentState.Dispatched,
+    nextResolutionAt: null,
+    authorizationId: "authorization_1",
+    executionId: "execution_1",
+    admission: {
+      state: ReviewRequestAdmissionState.Admitted,
+      changedLines: 150,
+      maxChangedLines: 250_000,
+      policySnapshotId: "hosted-review-size-v1:prior",
+      decisionHash: "8".repeat(64),
+      checkedAt: now,
+    },
   };
 }
 
@@ -202,24 +257,67 @@ function buildGate(options: {
   readonly initialIntent?: ReviewRequestedIntent;
   readonly clockNow?: Date;
 }) {
-  let persisted: ReviewRequestedIntent | null = options.noIntent
-    ? null
-    : (options.initialIntent ?? intent);
+  const persisted = new Map<string, ReviewRequestedIntent>();
+  if (!options.noIntent) {
+    const initial = options.initialIntent ?? intent;
+    persisted.set(initial.requestId, initial);
+  }
   let lookupAttempts = 0;
   let forcedTransitionConsumed = false;
-  const findIntent = vi.fn(async () => {
+  const findIntent = vi.fn(async (query) => {
     lookupAttempts += 1;
-    return lookupAttempts <= (options.missingIntentAttempts ?? 0)
-      ? null
-      : persisted;
+    if (lookupAttempts <= (options.missingIntentAttempts ?? 0)) return null;
+    return (
+      [...persisted.values()].find(
+        (candidate) =>
+          candidate.repositoryConnectionId === query.repositoryConnectionId &&
+          candidate.sourceRunId === query.sourceRunId &&
+          candidate.sourceRunAttempt === query.sourceRunAttempt,
+      ) ?? null
+    );
+  });
+  const listIntents = vi.fn(async (query) =>
+    [...persisted.values()].filter(
+      (candidate) =>
+        candidate.repositoryConnectionId === query.repositoryConnectionId &&
+        candidate.sourceRunId === query.sourceRunId,
+    ),
+  );
+  const ensureRerunIntent = vi.fn(async (command) => {
+    const decision = decideReviewRequestedRerunRegistration({
+      candidate: command.candidate,
+      intentsForSourceRun: await listIntents({
+        repositoryConnectionId: command.candidate.repositoryConnectionId,
+        sourceRunId: command.candidate.sourceRunId,
+      }),
+    });
+    if (
+      decision.status === ReviewRequestedRerunRegistrationDecisionStatus.Create
+    ) {
+      persisted.set(decision.intent.requestId, decision.intent);
+      return {
+        status: ReviewRequestedRerunEnsureStatus.Created,
+        intent: decision.intent,
+      };
+    }
+    if (
+      decision.status === ReviewRequestedRerunRegistrationDecisionStatus.Restore
+    ) {
+      return {
+        status: ReviewRequestedRerunEnsureStatus.Restored,
+        intent: decision.intent,
+      };
+    }
+    return { status: decision.status };
   });
   const sleep = vi.fn(async () => undefined);
   const recordAdmissionDecision = vi.fn(async (command) => {
-    if (persisted === null) {
+    const current = persisted.get(command.requestId);
+    if (!current) {
       return { status: ReviewRequestedTransitionStatus.Missing };
     }
     const decision = decideReviewRequestedAdmission({
-      intent: persisted,
+      intent: current,
       ...command,
     });
     if (
@@ -228,7 +326,7 @@ function buildGate(options: {
     ) {
       return { status: ReviewRequestedTransitionStatus.Conflict };
     }
-    persisted = decision.intent;
+    persisted.set(decision.intent.requestId, decision.intent);
     if (
       options.transitionStatus &&
       options.transitionStatus !== ReviewRequestedTransitionStatus.Applied &&
@@ -250,12 +348,16 @@ function buildGate(options: {
   });
   return {
     findIntent,
+    listIntents,
+    ensureRerunIntent,
     gate: new ProductionHostedReviewPreleaseGate({
       requestedIntentQueries: {
         findByRepositorySourceRunIdentity: findIntent,
+        listByRepositorySourceRunId: listIntents,
       } as never,
       requestedIntentCommands: {
         recordAdmissionDecision,
+        ensureRerunIntent,
       } as never,
       pullRequests: { resolve: resolvePullRequest },
       clock: { now: () => options.clockNow ?? now },

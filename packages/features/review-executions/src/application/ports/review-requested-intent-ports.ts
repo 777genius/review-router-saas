@@ -9,11 +9,19 @@ import type {
   ReviewRequestedIntentState,
   ReviewRequestedIntentTerminalReason,
 } from "../../domain/review-requested-intent";
+import type { ReviewRequestedRerunIntentCandidate } from "../../domain/review-requested-rerun";
 
 export enum ReviewRequestedRegisterStatus {
   Registered = "registered",
   Restored = "restored",
   IdempotencyConflict = "idempotency_conflict",
+}
+
+export enum ReviewRequestedRerunEnsureStatus {
+  Created = "created",
+  Restored = "restored",
+  MissingPredecessor = "missing_predecessor",
+  Conflict = "conflict",
 }
 
 export enum ReviewRequestedClaimStatus {
@@ -51,6 +59,10 @@ export enum ReviewRequestedDispatchLookupStatus {
 
 export type RegisterReviewRequestedIntentCommand = {
   readonly candidate: ReviewRequestedIntentCandidate;
+};
+
+export type EnsureReviewRequestedRerunIntentCommand = {
+  readonly candidate: ReviewRequestedRerunIntentCandidate;
 };
 
 export type ClaimReviewRequestedIntentCommand = {
@@ -150,6 +162,10 @@ export interface ReviewRequestedIntentQueryPort {
     readonly sourceRunId: string;
     readonly sourceRunAttempt: string;
   }): Promise<ReviewRequestedIntent | null>;
+  listByRepositorySourceRunId(input: {
+    readonly repositoryConnectionId: string;
+    readonly sourceRunId: string;
+  }): Promise<readonly ReviewRequestedIntent[]>;
   listDue(input: {
     readonly now: Date;
     readonly limit: number;
@@ -164,6 +180,10 @@ export interface ReviewRequestedIntentCommandPort {
   registerIntent(command: RegisterReviewRequestedIntentCommand): Promise<{
     readonly status: ReviewRequestedRegisterStatus;
     readonly intent: ReviewRequestedIntent;
+  }>;
+  ensureRerunIntent(command: EnsureReviewRequestedRerunIntentCommand): Promise<{
+    readonly status: ReviewRequestedRerunEnsureStatus;
+    readonly intent?: ReviewRequestedIntent | undefined;
   }>;
   claimIntent(command: ClaimReviewRequestedIntentCommand): Promise<{
     readonly status: ReviewRequestedClaimStatus;
