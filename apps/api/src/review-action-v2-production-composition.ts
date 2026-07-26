@@ -95,7 +95,10 @@ import {
 import { ReviewActionV2ProtocolErrorCode } from "@reviewrouter/protocol-review-action-v2";
 import { SystemClock } from "@reviewrouter/shared";
 import { ReviewActionV2ExecutionEvidenceCapabilityAdapter } from "./review-action-v2-execution-evidence-capabilities.js";
-import { reviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
+import {
+  resolveReviewActionV2ProjectionPolicyVersion,
+  reviewActionV2ProjectionPolicyVersion,
+} from "./review-action-v2-projection-policy.js";
 import { ReviewContextAttestationEvidenceAdapter } from "./review-context-attestation-evidence-adapter.js";
 import {
   composeReviewActionV2ContextAttestationRoutes,
@@ -289,7 +292,6 @@ export function composeReviewActionV2ProductionRoutes(input: {
     runControl,
     oidcAudience,
     providerVoteLanes,
-    projectionPolicyVersion,
   } = composeReviewActionV2ProductionRunControl({
     env: input.env,
     prisma: input.prisma,
@@ -529,7 +531,6 @@ export function composeReviewActionV2ProductionRoutes(input: {
         leaseSafety: safety,
         contextReplay,
         finalizationFacts: new ProductionFinalizationFactsAdapter({
-          projectionPolicyVersion,
           safety: runControl.safetyResolver,
           releases: repositories.producerReleases,
           digest,
@@ -1006,7 +1007,6 @@ class ProductionReviewExecutionAttemptFactsAdapter implements ReviewExecutionAtt
 class ProductionFinalizationFactsAdapter implements ReviewActionV2FinalizationFactsPort {
   constructor(
     private readonly dependencies: Readonly<{
-      projectionPolicyVersion: string;
       safety: ReviewSafetyDecisionResolverPort;
       releases: ProducerReleaseQueryPort;
       digest: ProductionReviewActionV2Digest;
@@ -1049,11 +1049,14 @@ class ProductionFinalizationFactsAdapter implements ReviewActionV2FinalizationFa
       ],
       "projection_scope_shape_invalid",
     );
+    const projectionPolicyVersion =
+      resolveReviewActionV2ProjectionPolicyVersion(
+        envelope.projectionPolicyVersion,
+      );
     if (
       input.projectionEnvelopeVersion !== 1 ||
       envelope.envelopeVersion !== "review_projection.v1" ||
-      envelope.projectionPolicyVersion !==
-        this.dependencies.projectionPolicyVersion ||
+      projectionPolicyVersion === null ||
       scope.scmRepositoryIdentityId !==
         input.authorization.scmRepositoryIdentityId ||
       scope.pullRequestNumber !== input.authorization.pullRequestNumber ||
@@ -1147,7 +1150,7 @@ class ProductionFinalizationFactsAdapter implements ReviewActionV2FinalizationFa
       expectedArtifactHash,
       byteCount,
       findingCount,
-      projectionPolicyVersion: this.dependencies.projectionPolicyVersion,
+      projectionPolicyVersion,
       publicationSafetyDecisionHash: publicationSafety.safetyDecisionHash,
       publicationNotAfter,
       retainUntil: new Date(input.execution.retainUntil),
