@@ -30,8 +30,8 @@ import {
   ResolveCurrentPublicationLifecycle,
   renderCanonicalReviewPublication,
   resolveReviewPublicationRenderPolicyVersion,
-  resolveReviewPublicationOperationIdentityVersion,
-  currentReviewPublicationOperationIdentityWriteVersion,
+  resolveCurrentReviewPublicationOperationIdentity,
+  reviewPublicationAttemptId,
   planReviewPublicationOperations,
   publishedReviewProjectionPublicationEnvelopeVersion,
   reviewPublicationLifecycleExpectationFromProjection,
@@ -363,7 +363,12 @@ async function requestPublication(
     protocolLimitsProfileId: limits.protocolLimitsProfileId,
     limitsDigest: limits.limitsDigest,
   });
-  const publicationAttemptId = deterministicPublicationAttemptId(artifact);
+  const publicationAttemptId = reviewPublicationAttemptId({
+    executionId: artifact.executionId,
+    artifactId: artifact.artifactId,
+    projectionHash: artifact.projectionHash,
+    digestUtf8: sha256,
+  });
   const existing =
     await dependencies.publications.findById(publicationAttemptId);
   const command = resolvePublicationCommand({
@@ -953,17 +958,6 @@ function deterministicPublicationCommand(
   };
 }
 
-function deterministicPublicationAttemptId(
-  artifact: FinalizedReviewProjectionArtifact,
-): string {
-  return deterministicId(
-    "publication",
-    [artifact.executionId, artifact.artifactId, artifact.projectionHash].join(
-      "\0",
-    ),
-  );
-}
-
 function resolvePublicationCommand(input: {
   readonly artifact: FinalizedReviewProjectionArtifact;
   readonly envelope: PublishedReviewProjectionPublicationEnvelope;
@@ -974,19 +968,14 @@ function resolvePublicationCommand(input: {
   let operations;
   try {
     operations = planReviewPublicationOperations({
-      identity: {
+      identity: resolveCurrentReviewPublicationOperationIdentity({
         publicationAttemptId: input.publicationAttemptId,
-        version: resolveReviewPublicationOperationIdentityVersion({
-          publicationAttemptId: input.publicationAttemptId,
-          projectionHash: input.artifact.projectionHash,
-          existingOperationIds:
-            input.existing?.attempt.operations.map(
-              (operation) => operation.publicationOperationId,
-            ) ?? null,
-          newAttemptVersion:
-            currentReviewPublicationOperationIdentityWriteVersion,
-        }),
-      },
+        projectionHash: input.artifact.projectionHash,
+        existingOperationIds:
+          input.existing?.attempt.operations.map(
+            (operation) => operation.publicationOperationId,
+          ) ?? null,
+      }),
       envelope: input.envelope,
       limits: input.limits,
     });
@@ -1239,10 +1228,6 @@ function bodyFactsOf(value: {
     bodyHash: value.bodyHash,
     bodyByteCount: value.bodyByteCount,
   };
-}
-
-function deterministicId(prefix: string, preimage: string) {
-  return `${prefix}-${sha256(`rr.${prefix}.v2\0${preimage}`).slice(0, 40)}`;
 }
 
 function sha256(value: string) {

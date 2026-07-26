@@ -11,9 +11,9 @@ import {
   ReviewPublicationAttemptState,
   ReviewPublicationProjectionCoverage,
   ReviewPublicationTerminalOutcome,
-  currentReviewPublicationOperationIdentityWriteVersion,
   effectiveReviewPublicationOutcome,
-  resolveReviewPublicationOperationIdentityVersion,
+  resolveCurrentReviewPublicationOperationIdentity,
+  reviewPublicationAttemptId,
   type PublishedReviewProjectionPublicationEnvelope,
   type RequestReviewPublicationCommand,
   type RequestReviewPublicationResult,
@@ -132,27 +132,22 @@ export class DeterministicReviewPublicationRequestFactory {
     const envelope = await this.projections.publicationEnvelope(artifact);
     if (!envelope) return null;
     assertPublicationEnvelopeMatchesArtifact(envelope, artifact);
-    const publicationAttemptId = deterministicId(
-      "publication",
-      [artifact.executionId, artifact.artifactId, artifact.projectionHash].join(
-        "\0",
-      ),
-    );
+    const publicationAttemptId = reviewPublicationAttemptId({
+      executionId: artifact.executionId,
+      artifactId: artifact.artifactId,
+      projectionHash: artifact.projectionHash,
+      digestUtf8: sha256,
+    });
     const existing = await this.attempts.findById(publicationAttemptId);
     const operations = await this.operationPlanner.plan({
-      identity: {
+      identity: resolveCurrentReviewPublicationOperationIdentity({
         publicationAttemptId,
-        version: resolveReviewPublicationOperationIdentityVersion({
-          publicationAttemptId,
-          projectionHash: artifact.projectionHash,
-          existingOperationIds:
-            existing?.attempt.operations.map(
-              (operation) => operation.publicationOperationId,
-            ) ?? null,
-          newAttemptVersion:
-            currentReviewPublicationOperationIdentityWriteVersion,
-        }),
-      },
+        projectionHash: artifact.projectionHash,
+        existingOperationIds:
+          existing?.attempt.operations.map(
+            (operation) => operation.publicationOperationId,
+          ) ?? null,
+      }),
       envelope,
     });
     if (operations.length === 0) {

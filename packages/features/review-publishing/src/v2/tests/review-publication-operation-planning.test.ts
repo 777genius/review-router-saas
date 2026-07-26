@@ -12,7 +12,9 @@ import {
   ReviewPublicationProjectionCoverage,
   ReviewPublicationSummarySemantic,
   publishedReviewProjectionPublicationEnvelopeVersion,
+  resolveCurrentReviewPublicationOperationIdentity,
   resolveReviewPublicationOperationIdentityVersion,
+  reviewPublicationAttemptId,
   type CanonicalReviewPublicationBodyFacts,
   type PublishedReviewProjectionPublicationEnvelope,
   type ReviewPublicationPlanningLimits,
@@ -392,6 +394,49 @@ describe("review publication operation planning", () => {
         existingOperationIds: null,
       }),
     ).toBe(ReviewPublicationOperationIdentityVersion.LegacyProjectionV1);
+  });
+
+  it("centralizes deterministic attempt identity and reader-first operation identity policy", () => {
+    const publicationAttemptId = reviewPublicationAttemptId({
+      executionId: "execution-1",
+      artifactId: "artifact-1",
+      projectionHash: hash("1"),
+      digestUtf8: () =>
+        "ea8a37d86e787cb08a0cba2203af81fd898af8aa3140977ace75db6c801db93a",
+    });
+    expect(publicationAttemptId).toBe(
+      "publication-ea8a37d86e787cb08a0cba2203af81fd898af8aa",
+    );
+    expect(
+      resolveCurrentReviewPublicationOperationIdentity({
+        publicationAttemptId,
+        projectionHash: hash("1"),
+        existingOperationIds: null,
+      }),
+    ).toEqual({
+      publicationAttemptId,
+      version: ReviewPublicationOperationIdentityVersion.LegacyProjectionV1,
+    });
+    expect(
+      resolveCurrentReviewPublicationOperationIdentity({
+        publicationAttemptId,
+        projectionHash: hash("1"),
+        existingOperationIds: [
+          `review-publication:${publicationAttemptId}:${hash("1")}:summary:0`,
+        ],
+      }),
+    ).toEqual({
+      publicationAttemptId,
+      version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+    });
+    expect(() =>
+      reviewPublicationAttemptId({
+        executionId: "execution-1",
+        artifactId: "artifact-1",
+        projectionHash: hash("1"),
+        digestUtf8: () => "not-a-sha256",
+      }),
+    ).toThrow(ReviewPublicationPlanningErrorCode.OperationIdentityInvalid);
   });
 });
 
