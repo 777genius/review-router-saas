@@ -551,9 +551,7 @@ function restoredPublicationAttempt(
       publicationAttemptId: attempt.publicationAttemptId,
       publicationState: attempt.state,
       pollAfterMs:
-        attempt.state === ReviewPublicationAttemptState.Terminal
-          ? null
-          : 1_000,
+        attempt.state === ReviewPublicationAttemptState.Terminal ? null : 1_000,
     },
   } as const;
 }
