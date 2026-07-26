@@ -262,7 +262,7 @@ export class ExecuteReviewV2PublicationOperation {
       } catch {
         return manual("publication_marker_inventory_invalid");
       }
-      if (inventory.length > 0) {
+      if (hasCurrentOperationObject(inventory, begun.operation)) {
         return this.settleInventory({
           command,
           operation: begun.operation,
@@ -527,7 +527,7 @@ export class ExecuteReviewV2PublicationOperation {
           }),
         };
       }
-      if (inventory.length === 0) {
+      if (!hasCurrentOperationObject(inventory, input.operation)) {
         const freshness = await this.readFreshness(
           input.command.provider,
           input.view.attempt.permit,
@@ -610,7 +610,7 @@ export class ExecuteReviewV2PublicationOperation {
         lastErrorCode: errorCode,
       });
     }
-    if (inventory.length > 0) {
+    if (hasCurrentOperationObject(inventory, input.operation)) {
       return this.settleInventory({
         command: input.command,
         operation: input.operation,
@@ -643,6 +643,10 @@ export class ExecuteReviewV2PublicationOperation {
     if (objects.length === 0) {
       return retryable("publication_marker_inventory_empty");
     }
+    const currentObjects = currentOperationObjects(objects, input.operation);
+    if (currentObjects.length === 0) {
+      return retryable("publication_current_marker_not_visible");
+    }
     if (
       input.capability.targetExternalObjectId !== null &&
       objects.some(
@@ -663,9 +667,9 @@ export class ExecuteReviewV2PublicationOperation {
       input.command.publicationAttemptId,
     );
     if (!view) return manual("publication_attempt_disappeared");
-    let effect = canonicalVisibleEffect(view, input.operation, objects);
+    let effect = canonicalVisibleEffect(view, input.operation, currentObjects);
     if (!effect) {
-      const preferred = objects[0];
+      const preferred = currentObjects[0];
       if (!preferred) return retryable("publication_marker_inventory_empty");
       await this.recordOrRestoreEffect({
         operation: input.operation,
@@ -677,7 +681,7 @@ export class ExecuteReviewV2PublicationOperation {
         input.command.publicationAttemptId,
       );
       if (!view) return manual("publication_attempt_disappeared");
-      effect = canonicalVisibleEffect(view, input.operation, objects);
+      effect = canonicalVisibleEffect(view, input.operation, currentObjects);
     }
     if (!effect) {
       return this.terminalizeKnownAmbiguity({
@@ -865,10 +869,14 @@ export class ExecuteReviewV2PublicationOperation {
     readonly lastErrorCode: string;
   }): Promise<ReviewV2PublicationExecutionResult> {
     const objects = normalizeInventory(input.inventory, input.operation);
+    const currentObjects = currentOperationObjects(objects, input.operation);
     if (input.freshness.status === "changed" && input.freshness.snapshot) {
-      const canonicalObject = objects[0];
+      const canonicalObject = currentObjects[0];
       if (canonicalObject) {
-        const duplicates = objects.slice(1);
+        const duplicates = objects.filter(
+          (object) =>
+            object.externalObjectId !== canonicalObject.externalObjectId,
+        );
         const decision = await this.dependencies.compensation.decide({
           operation: input.operation,
           canonicalObject,
@@ -1512,7 +1520,7 @@ function validateGatewayObject(
   );
   if (
     object.markerHash !== operation.markerHash ||
-    object.bodyHash !== operation.bodyHash ||
+    !hashPattern.test(object.bodyHash) ||
     !hashPattern.test(object.observedObjectHash)
   ) {
     throw new Error("publication_gateway_marker_identity_mismatch");
@@ -1523,6 +1531,29 @@ function validateGatewayObject(
   ) {
     throw new Error("publication_gateway_observed_at_invalid");
   }
+}
+
+function currentOperationObjects(
+  objects: readonly ReviewPublicationGatewayObject[],
+  operation: ReviewPublicationOperation,
+): readonly ReviewPublicationGatewayObject[] {
+  return objects.filter((object) =>
+    isCurrentOperationObject(object, operation),
+  );
+}
+
+function hasCurrentOperationObject(
+  objects: readonly ReviewPublicationGatewayObject[],
+  operation: ReviewPublicationOperation,
+): boolean {
+  return objects.some((object) => isCurrentOperationObject(object, operation));
+}
+
+function isCurrentOperationObject(
+  object: ReviewPublicationGatewayObject,
+  operation: ReviewPublicationOperation,
+): boolean {
+  return object.bodyHash === operation.bodyHash;
 }
 
 function sameGatewayObject(

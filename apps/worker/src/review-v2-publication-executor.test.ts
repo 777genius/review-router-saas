@@ -118,6 +118,37 @@ describe("protocol v2 publication executor", () => {
     expect(fixture.gateway.requestedCursors).toContain("page-2");
   });
 
+  it("publishes the current mutable singleton when stale marker inventory exists", async () => {
+    const fixture = await createFixture();
+    const staleObject = {
+      ...gatewayObject("stale-summary"),
+      bodyHash: hash("9"),
+      observedObjectHash: hash("4"),
+    };
+    fixture.gateway.pages = [{ objects: [staleObject], nextCursor: null }];
+    fixture.gateway.postApplyObjects = [staleObject];
+
+    await expect(fixture.executor.execute(executionCommand())).resolves.toEqual(
+      {
+        status: ReviewV2PublicationExecutionStatus.Completed,
+        safeReason: "publication_operation_completed",
+        receiptStatus: ReviewPublicationReceiptStatus.Succeeded,
+      },
+    );
+
+    expect(fixture.gateway.applyCalls).toBe(1);
+    expect(fixture.gateway.compensationCalls).toBe(1);
+    expect(await fixture.repository.findById("publication-1")).toMatchObject({
+      effects: [{ externalObjectId: "object-1" }],
+      receipts: [
+        {
+          canonicalExternalObjectId: "object-1",
+          status: ReviewPublicationReceiptStatus.Succeeded,
+        },
+      ],
+    });
+  });
+
   it("never acquires an SCM credential when the pre-mutation facts are stale", async () => {
     const fixture = await createFixture();
     fixture.freshness.current = changedFreshness();
@@ -204,7 +235,7 @@ describe("protocol v2 publication executor", () => {
     const markerConflict = await createFixture();
     markerConflict.gateway.pages = [
       {
-        objects: [{ ...gatewayObject("foreign"), bodyHash: hash("9") }],
+        objects: [{ ...gatewayObject("foreign"), markerHash: hash("9") }],
         nextCursor: null,
       },
     ];
@@ -384,6 +415,7 @@ class FakeGateway implements ReviewV2ProviderPublicationClientPort {
     readonly nextCursor: string | null;
   }> = [{ objects: [], nextCursor: null }];
   applyError: Error | null = null;
+  postApplyObjects: readonly ReviewPublicationGatewayObject[] = [];
   applyCalls = 0;
   compensationCalls = 0;
   readonly requestedCursors: Array<string | null> = [];
@@ -398,7 +430,9 @@ class FakeGateway implements ReviewV2ProviderPublicationClientPort {
     this.applyCalls += 1;
     if (this.applyError) throw this.applyError;
     const object = gatewayObject("object-1");
-    this.pages = [{ objects: [object], nextCursor: null }];
+    this.pages = [
+      { objects: [...this.postApplyObjects, object], nextCursor: null },
+    ];
     return object;
   }
 

@@ -331,76 +331,91 @@ export class PrismaReviewRequestedIntentStore
   }
 
   async ensureRerunIntent(command: EnsureReviewRequestedRerunIntentCommand) {
-    return this.prisma.$transaction(
-      async (transaction) => {
-        await lockScope(transaction, command.candidate);
-        const now = await databaseNow(transaction);
-        const candidate = {
-          ...command.candidate,
-          createdAt: now,
-          nextResolutionAt: databaseRelativeDate(
-            now,
-            command.candidate.createdAt,
-            command.candidate.nextResolutionAt,
-            "rerun_authorization_resolution_deadline",
-          ),
-          resolutionDeadlineAt: databaseRelativeDate(
-            now,
-            command.candidate.createdAt,
-            command.candidate.resolutionDeadlineAt,
-            "rerun_authorization_terminal_deadline",
-          ),
-          retainUntil: databaseRelativeDate(
-            now,
-            command.candidate.createdAt,
-            command.candidate.retainUntil,
-            "rerun_retention_deadline",
-          ),
-        };
-        const records = await transaction.reviewRequestedIntent.findMany({
-          where: {
-            repositoryConnectionId: candidate.repositoryConnectionId,
-            sourceRunId: candidate.sourceRunId,
+    let lastConcurrencyError: unknown = null;
+    for (
+      let attempt = 0;
+      attempt < registrationTransactionMaxAttempts;
+      attempt += 1
+    ) {
+      try {
+        return await this.prisma.$transaction(
+          async (transaction) => {
+            await lockScope(transaction, command.candidate);
+            const now = await databaseNow(transaction);
+            const candidate = {
+              ...command.candidate,
+              createdAt: now,
+              nextResolutionAt: databaseRelativeDate(
+                now,
+                command.candidate.createdAt,
+                command.candidate.nextResolutionAt,
+                "rerun_authorization_resolution_deadline",
+              ),
+              resolutionDeadlineAt: databaseRelativeDate(
+                now,
+                command.candidate.createdAt,
+                command.candidate.resolutionDeadlineAt,
+                "rerun_authorization_terminal_deadline",
+              ),
+              retainUntil: databaseRelativeDate(
+                now,
+                command.candidate.createdAt,
+                command.candidate.retainUntil,
+                "rerun_retention_deadline",
+              ),
+            };
+            const records = await transaction.reviewRequestedIntent.findMany({
+              where: {
+                repositoryConnectionId: candidate.repositoryConnectionId,
+                sourceRunId: candidate.sourceRunId,
+              },
+              orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
+            });
+            const decision = decideReviewRequestedRerunRegistration({
+              candidate,
+              intentsForSourceRun: records.map(intentToDomain),
+            });
+            if (
+              decision.status ===
+              ReviewRequestedRerunRegistrationDecisionStatus.MissingPredecessor
+            ) {
+              return {
+                status: ReviewRequestedRerunEnsureStatus.MissingPredecessor,
+              };
+            }
+            if (
+              decision.status ===
+              ReviewRequestedRerunRegistrationDecisionStatus.Conflict
+            ) {
+              return { status: ReviewRequestedRerunEnsureStatus.Conflict };
+            }
+            if (
+              decision.status ===
+              ReviewRequestedRerunRegistrationDecisionStatus.Restore
+            ) {
+              return {
+                status: ReviewRequestedRerunEnsureStatus.Restored,
+                intent: decision.intent,
+              };
+            }
+            const created = await transaction.reviewRequestedIntent.create({
+              data: intentCreateData(decision.intent),
+            });
+            return {
+              status: ReviewRequestedRerunEnsureStatus.Created,
+              intent: intentToDomain(created),
+            };
           },
-          orderBy: [{ createdAt: "asc" }, { requestId: "asc" }],
-        });
-        const decision = decideReviewRequestedRerunRegistration({
-          candidate,
-          intentsForSourceRun: records.map(intentToDomain),
-        });
-        if (
-          decision.status ===
-          ReviewRequestedRerunRegistrationDecisionStatus.MissingPredecessor
-        ) {
-          return {
-            status: ReviewRequestedRerunEnsureStatus.MissingPredecessor,
-          };
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (!isConcurrencyError(error)) {
+          throw error;
         }
-        if (
-          decision.status ===
-          ReviewRequestedRerunRegistrationDecisionStatus.Conflict
-        ) {
-          return { status: ReviewRequestedRerunEnsureStatus.Conflict };
-        }
-        if (
-          decision.status ===
-          ReviewRequestedRerunRegistrationDecisionStatus.Restore
-        ) {
-          return {
-            status: ReviewRequestedRerunEnsureStatus.Restored,
-            intent: decision.intent,
-          };
-        }
-        const created = await transaction.reviewRequestedIntent.create({
-          data: intentCreateData(decision.intent),
-        });
-        return {
-          status: ReviewRequestedRerunEnsureStatus.Created,
-          intent: intentToDomain(created),
-        };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
+        lastConcurrencyError = error;
+      }
+    }
+    throw lastConcurrencyError ?? new ConcurrentIntentMutationError();
   }
 
   async claimIntent(command: ClaimReviewRequestedIntentCommand) {
