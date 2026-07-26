@@ -388,7 +388,9 @@ function decodeQualityFlags(
       !Object.hasOwn(decodableQualityFlags, entry) ||
       !decodableQualityFlags[entry as ReviewObservationQualityFlag]
     ) {
-      throw new Error(`review_observation_quality_flag_invalid:${String(entry)}`);
+      throw new Error(
+        `review_observation_quality_flag_invalid:${String(entry)}`,
+      );
     }
     return entry as ReviewObservationQualityFlag;
   });

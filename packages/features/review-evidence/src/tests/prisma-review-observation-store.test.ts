@@ -21,9 +21,7 @@ describe("Prisma review observation store", () => {
     } as unknown as PrismaClient);
     const candidate = observation({ qualityFlags });
 
-    await expect(
-      store.acceptObservation(candidate),
-    ).resolves.toMatchObject({
+    await expect(store.acceptObservation(candidate)).resolves.toMatchObject({
       status: ReviewObservationAcceptPersistenceStatus.Accepted,
       observation: { qualityFlags: candidate.qualityFlags },
     });
@@ -41,8 +39,8 @@ describe("Prisma review observation store", () => {
       reviewEvidenceObservation: { create },
     } as unknown as PrismaClient);
 
-    await expect(
-      store.acceptObservation(observation()),
-    ).rejects.toThrow("review_observation_quality_flag_invalid:toString");
+    await expect(store.acceptObservation(observation())).rejects.toThrow(
+      "review_observation_quality_flag_invalid:toString",
+    );
   });
 });

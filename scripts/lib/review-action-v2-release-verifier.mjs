@@ -97,14 +97,13 @@ export function verifyPublicActionReleaseCommit(input) {
     contextGatewayEntrypointPath,
     contextGatewayReleaseMetadataPath,
   });
-  const contextGatewayReleaseMetadata =
-    parseContextGatewayReleaseMetadata(
-      readCommitFile(
-        input.actionRepo,
-        input.actionCommitSha,
-        contextGatewayReleaseMetadataPath,
-      ).toString("utf8"),
-    );
+  const contextGatewayReleaseMetadata = parseContextGatewayReleaseMetadata(
+    readCommitFile(
+      input.actionRepo,
+      input.actionCommitSha,
+      contextGatewayReleaseMetadataPath,
+    ).toString("utf8"),
+  );
   if (
     contextGatewayReleaseMetadata.contextGatewayEntrypointPath !==
       contextGatewayEntrypointPath ||
@@ -154,14 +153,12 @@ function assertRegularReleaseArtifacts(input) {
     );
   }
   const entries = directories.flatMap((directory) =>
-    listCommitDirectory(
-      input.actionRepo,
-      input.actionCommitSha,
-      directory,
-    ).map((entry) => ({
-      ...entry,
-      fullPath: posixPath.join(directory, entry.path),
-    })),
+    listCommitDirectory(input.actionRepo, input.actionCommitSha, directory).map(
+      (entry) => ({
+        ...entry,
+        fullPath: posixPath.join(directory, entry.path),
+      }),
+    ),
   );
   for (const expected of paths) {
     const entry = entries.find(

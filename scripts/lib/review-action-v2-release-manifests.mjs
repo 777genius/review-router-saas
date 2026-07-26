@@ -35,10 +35,7 @@ export function sha256Digest(value) {
 }
 
 export function parseContextGatewayReleaseMetadata(raw) {
-  if (
-    typeof raw !== "string" ||
-    Buffer.byteLength(raw, "utf8") > 4 * 1_024
-  ) {
+  if (typeof raw !== "string" || Buffer.byteLength(raw, "utf8") > 4 * 1_024) {
     throw new Error("context gateway release metadata is oversized");
   }
   const label = "context gateway release metadata";

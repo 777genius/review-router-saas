@@ -208,8 +208,7 @@ describe("Review Action v2 route registrars", () => {
     expect(diagnostics).toEqual([
       {
         operationId: ReviewActionV2OperationId.ReviewContextGatewayOpen,
-        protocolErrorCode:
-          ReviewActionV2ProtocolErrorCode.StalePrecondition,
+        protocolErrorCode: ReviewActionV2ProtocolErrorCode.StalePrecondition,
         protocolIssues: ["context_checkout_tree_mismatch"],
         requestId:
           reviewActionV2GoldenFixtures.review_context_gateway_open.request

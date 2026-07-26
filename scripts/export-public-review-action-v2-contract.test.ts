@@ -255,7 +255,10 @@ describe("public Review Action v2 contract handoff", () => {
     );
     writeContextGatewayReleaseMetadata(fixture.actionRepo);
     rmSync(join(fixture.actionRepo, "dist/index.js"));
-    symlinkSync("context-gateway.js", join(fixture.actionRepo, "dist/index.js"));
+    symlinkSync(
+      "context-gateway.js",
+      join(fixture.actionRepo, "dist/index.js"),
+    );
     git(fixture.actionRepo, ["add", "dist", PUBLIC_GENERATED_DIRECTORY]);
     git(fixture.actionRepo, ["commit", "-m", "test: add symlinked runtime"]);
     const actionCommit = head(fixture.actionRepo);
