@@ -15,9 +15,14 @@ import {
   ReviewPublicationEffectStrategy,
   ReviewPublicationExternalEffectKind,
   ReviewPublicationKind,
+  ReviewPublicationOperationIdentityVersion,
   ReviewPublicationOperationRole,
+  ReviewPublicationProjectionCoverage,
+  ReviewPublicationSummarySemantic,
   ReviewPublicationTerminalOutcome,
   TerminalizeUnknownReviewPublicationStatus,
+  planReviewPublicationOperations,
+  publishedReviewProjectionPublicationEnvelopeVersion,
   type ReviewPublicationOperationPlan,
   type ReviewPublicationOperationCapabilityFacts,
   type ReviewPublicationPermitIdentity,
@@ -73,6 +78,99 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
       repository.request({ ...command, requestHash: digest("request-drift") }),
     ).resolves.toEqual({
       status: RequestReviewPublicationStatus.RequestConflict,
+    });
+  });
+
+  it("persists rerun attempts that share a projection with attempt-scoped operation identities", async () => {
+    const publicationNotAfter = new Date(Date.now() + 3_600_000);
+    const firstBase = requestCommand(
+      fixture,
+      `same-projection-a-${randomUUID()}`,
+      { publicationNotAfter },
+    );
+    const secondBase = requestCommand(
+      fixture,
+      `same-projection-b-${randomUUID()}`,
+      { publicationNotAfter },
+    );
+    const projectionHash = firstBase.permit.projectionHash;
+    const envelope = {
+      envelopeVersion: publishedReviewProjectionPublicationEnvelopeVersion,
+      producerReleaseId: fixture.producerReleaseId,
+      protocolLimitsProfileId: fixture.protocolLimitsProfileId,
+      limitsDigest: digest(`limits-${fixture.protocolLimitsProfileId}`),
+      projectionHash,
+      coverage: ReviewPublicationProjectionCoverage.Completed,
+      targetCommitId: firstBase.permit.reviewedHeadSha,
+      reviewRevisionHash: firstBase.permit.reviewRevisionHash,
+      renderPolicyVersion: 1,
+      publicationNotAfter,
+      summary: {
+        semantic: ReviewPublicationSummarySemantic.Findings,
+        markerHash: digest("same-projection-marker"),
+        bodyHash: digest("same-projection-body"),
+        bodyByteCount: 32,
+      },
+      managedCheck: null,
+      inlineReviews: [],
+      lifecycle: [],
+    } as const;
+    const planningLimits = {
+      producerReleaseId: fixture.producerReleaseId,
+      protocolLimitsProfileId: fixture.protocolLimitsProfileId,
+      limitsDigest: envelope.limitsDigest,
+      maxPublicationOperations: 10,
+      maxPublicationChunks: 10,
+      maxPublicationBodyBytes: 10_000,
+      maxReconciliationDurationMs: 60_000,
+    };
+    const firstOperations = planReviewPublicationOperations({
+      identity: {
+        publicationAttemptId: firstBase.publicationAttemptId,
+        version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+      },
+      envelope,
+      limits: planningLimits,
+    });
+    const first = {
+      ...firstBase,
+      operations: firstOperations,
+      requestHash: digest(
+        firstOperations
+          .map((operation) => operation.publicationOperationId)
+          .join("\0"),
+      ),
+    };
+    const secondPermit = {
+      ...secondBase.permit,
+      executionId: fixture.rerunExecutionId,
+      generation: 2n,
+      projectionHash,
+    };
+    const secondOperations = planReviewPublicationOperations({
+      identity: {
+        publicationAttemptId: secondBase.publicationAttemptId,
+        version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+      },
+      envelope,
+      limits: planningLimits,
+    });
+    const second = {
+      ...secondBase,
+      permit: secondPermit,
+      operations: secondOperations,
+      requestHash: digest(
+        secondOperations
+          .map((operation) => operation.publicationOperationId)
+          .join("\0"),
+      ),
+    };
+
+    await expect(repository.request(first)).resolves.toMatchObject({
+      status: RequestReviewPublicationStatus.Applied,
+    });
+    await expect(repository.request(second)).resolves.toMatchObject({
+      status: RequestReviewPublicationStatus.Applied,
     });
   });
 
@@ -486,6 +584,7 @@ async function seedFixture(prisma: PrismaClient) {
   const producerReleaseId = `producer-${id}`;
   const authorizationId = `authorization-${id}`;
   const executionId = `execution-${id}`;
+  const rerunExecutionId = `execution-rerun-${id}`;
   const now = new Date();
   await prisma.workspace.create({
     data: {
@@ -643,6 +742,37 @@ async function seedFixture(prisma: PrismaClient) {
       retainUntil: new Date(Date.now() + 86_400_000),
     },
   });
+  await prisma.reviewExecutionV2.create({
+    data: {
+      executionId: rerunExecutionId,
+      workspaceId,
+      repositoryConnectionId,
+      scmRepositoryIdentityId,
+      pullRequestNumber: 240,
+      generation: 2n,
+      baseSha: digest("base"),
+      mergeBaseSha: digest("merge-base"),
+      headSha: digest("head"),
+      reviewRevisionHash: digest("revision"),
+      compatibilityKey: digest(`compatibility-rerun-${id}`),
+      planHash: digest(`plan-rerun-${id}`),
+      startIdentityHash: digest(`start-rerun-${id}`),
+      canonicalStartHash: digest(`canonical-start-rerun-${id}`),
+      state: "completed",
+      authorizationId,
+      producerReleaseId,
+      mutationEpoch: 3n,
+      admissionSafetyDecisionHash: digest(`admission-rerun-${id}`),
+      protocolLimitsProfileId,
+      sourceRunId: `run-${id}`,
+      sourceRunAttempt: "2",
+      createdAt: now,
+      updatedAt: now,
+      admissionDeadlineAt: new Date(Date.now() + 60_000),
+      executionDeadlineAt: new Date(Date.now() + 120_000),
+      retainUntil: new Date(Date.now() + 86_400_000),
+    },
+  });
   return {
     workspaceId,
     repositoryConnectionId,
@@ -652,6 +782,7 @@ async function seedFixture(prisma: PrismaClient) {
     producerReleaseId,
     authorizationId,
     executionId,
+    rerunExecutionId,
   };
 }
 
@@ -660,7 +791,9 @@ async function cleanupFixture(
   fixture: Awaited<ReturnType<typeof seedFixture>>,
 ): Promise<void> {
   const attempts = await prisma.reviewPublicationAttemptV2.findMany({
-    where: { executionId: fixture.executionId },
+    where: {
+      executionId: { in: [fixture.executionId, fixture.rerunExecutionId] },
+    },
     select: { publicationAttemptId: true },
   });
   const attemptIds = attempts.map(
@@ -693,8 +826,10 @@ async function cleanupFixture(
   await prisma.reviewPublicationAttemptV2.deleteMany({
     where: { publicationAttemptId: { in: attemptIds } },
   });
-  await prisma.reviewExecutionV2.delete({
-    where: { executionId: fixture.executionId },
+  await prisma.reviewExecutionV2.deleteMany({
+    where: {
+      executionId: { in: [fixture.executionId, fixture.rerunExecutionId] },
+    },
   });
   await prisma.reviewRunAuthorization.delete({
     where: { authorizationId: fixture.authorizationId },

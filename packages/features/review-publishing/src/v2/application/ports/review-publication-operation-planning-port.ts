@@ -1,5 +1,6 @@
 import type {
   PublishedReviewProjectionPublicationEnvelope,
+  ReviewPublicationOperationIdentity,
   ReviewPublicationPlanningLimits,
 } from "../../domain/review-publication-operation-planning";
 import type { ReviewPublicationOperationPlan } from "../../domain/review-publication-attempt";
@@ -20,7 +21,8 @@ export interface ReviewPublicationReleaseLimitsQueryPort {
 }
 
 export interface ReviewPublicationOperationPlanningPort {
-  plan(
-    envelope: PublishedReviewProjectionPublicationEnvelope,
-  ): Promise<readonly ReviewPublicationOperationPlan[]>;
+  plan(input: {
+    readonly identity: ReviewPublicationOperationIdentity;
+    readonly envelope: PublishedReviewProjectionPublicationEnvelope;
+  }): Promise<readonly ReviewPublicationOperationPlan[]>;
 }

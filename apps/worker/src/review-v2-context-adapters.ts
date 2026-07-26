@@ -12,6 +12,8 @@ import {
   ReviewPublicationProjectionCoverage,
   ReviewPublicationTerminalOutcome,
   effectiveReviewPublicationOutcome,
+  resolveCurrentReviewPublicationOperationIdentity,
+  reviewPublicationAttemptId,
   type PublishedReviewProjectionPublicationEnvelope,
   type RequestReviewPublicationCommand,
   type RequestReviewPublicationResult,
@@ -117,6 +119,10 @@ export class DeterministicReviewPublicationRequestFactory {
   constructor(
     private readonly projections: ReviewCompletionProjectionMapperPort,
     private readonly operationPlanner: ReviewPublicationOperationPlanningPort,
+    private readonly attempts: Pick<
+      ReviewPublicationAttemptQueryPort,
+      "findById"
+    >,
   ) {}
 
   async build(
@@ -126,17 +132,28 @@ export class DeterministicReviewPublicationRequestFactory {
     const envelope = await this.projections.publicationEnvelope(artifact);
     if (!envelope) return null;
     assertPublicationEnvelopeMatchesArtifact(envelope, artifact);
-    const operations = await this.operationPlanner.plan(envelope);
+    const publicationAttemptId = reviewPublicationAttemptId({
+      executionId: artifact.executionId,
+      artifactId: artifact.artifactId,
+      projectionHash: artifact.projectionHash,
+      digestUtf8: sha256,
+    });
+    const existing = await this.attempts.findById(publicationAttemptId);
+    const operations = await this.operationPlanner.plan({
+      identity: resolveCurrentReviewPublicationOperationIdentity({
+        publicationAttemptId,
+        projectionHash: artifact.projectionHash,
+        existingOperationIds:
+          existing?.attempt.operations.map(
+            (operation) => operation.publicationOperationId,
+          ) ?? null,
+      }),
+      envelope,
+    });
     if (operations.length === 0) {
       throw new Error("review_completion_publication_operations_empty");
     }
 
-    const publicationAttemptId = deterministicId(
-      "publication",
-      [artifact.executionId, artifact.artifactId, artifact.projectionHash].join(
-        "\0",
-      ),
-    );
     const requestIdHash = sha256(
       `rr.publication-request.v2\0${publicationAttemptId}`,
     );
@@ -195,12 +212,23 @@ export class ReviewCompletionPublicationContextAdapter implements ReviewCompleti
     if (!snapshot) {
       throw new Error("review_completion_finalized_execution_unavailable");
     }
-    const command = await this.requestFactory.build(snapshot);
+    let command = await this.requestFactory.build(snapshot);
     if (!command) {
       throw new Error("review_completion_publication_plan_unavailable");
     }
     assertPublicationCommandMatchesArtifact(command, snapshot.artifact);
-    const result = await this.requests.request(command);
+    let result = await this.requests.request(command);
+    if (
+      result.status === RequestReviewPublicationStatus.IdentityConflict ||
+      result.status === RequestReviewPublicationStatus.RequestConflict
+    ) {
+      const recovered = await this.requestFactory.build(snapshot);
+      if (recovered && recovered.requestHash !== command.requestHash) {
+        command = recovered;
+        assertPublicationCommandMatchesArtifact(command, snapshot.artifact);
+        result = await this.requests.request(command);
+      }
+    }
     if (
       result.status !== RequestReviewPublicationStatus.Applied &&
       result.status !== RequestReviewPublicationStatus.Restored

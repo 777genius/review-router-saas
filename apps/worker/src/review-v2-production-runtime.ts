@@ -250,6 +250,7 @@ export function createProductionReviewV2WorkerRuntime(input: {
     new DeterministicReviewPublicationRequestFactory(
       projections,
       publicationPlanner,
+      attempts,
     ),
   );
   const snapshots = new PrismaReviewSnapshotV2Repository(input.prisma);

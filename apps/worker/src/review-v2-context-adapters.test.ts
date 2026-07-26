@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   ReviewCoverageState,
@@ -30,6 +31,7 @@ import {
   type ReviewPublicationPlanningLimits,
 } from "@reviewrouter/features-review-publishing/v2";
 import { InMemoryReviewPublicationReleaseLimitsQuery } from "@reviewrouter/features-review-publishing/v2/testing";
+import { canonicalJson } from "@reviewrouter/features-review-run-control";
 import {
   CommitReviewSnapshotV2Status,
   LineageHintEvictionReason,
@@ -114,7 +116,10 @@ describe("review v2 worker context adapters", () => {
     const snapshot = executionSnapshot();
     const attempts = new FakePublicationAttempts();
     const requests = new FakePublicationRequests(attempts);
-    const factory = publicationRequestFactory();
+    const factory = publicationRequestFactory(
+      completionProjectionMapper(),
+      attempts,
+    );
     const adapter = new ReviewCompletionPublicationContextAdapter(
       { findExecution: async () => snapshot },
       attempts,
@@ -144,6 +149,66 @@ describe("review v2 worker context adapters", () => {
       state: ReviewCompletionPublicationState.Pending,
       effectiveOutcome: null,
     });
+  });
+
+  it("restores legacy projection-scoped operation identities", async () => {
+    const snapshot = executionSnapshot();
+    const scoped = await publicationRequestFactory().build(snapshot);
+    if (!scoped) throw new Error("test_publication_command_missing");
+    const scopedPrefix = `review-publication:${scoped.publicationAttemptId}:`;
+    const legacyOperations = scoped.operations.map((operation) => ({
+      ...operation,
+      publicationOperationId: operation.publicationOperationId.replace(
+        scopedPrefix,
+        "review-publication:",
+      ),
+      dependsOnOperationId:
+        operation.dependsOnOperationId?.replace(
+          scopedPrefix,
+          "review-publication:",
+        ) ?? null,
+    }));
+    const attempts = new FakePublicationAttempts();
+    attempts.store(
+      publicationView({
+        ...scoped,
+        operations: legacyOperations,
+      }),
+    );
+
+    await expect(
+      publicationRequestFactory(completionProjectionMapper(), attempts).build(
+        snapshot,
+      ),
+    ).resolves.toMatchObject({ operations: legacyOperations });
+  });
+
+  it("replans against the concurrent winning identity before retrying", async () => {
+    const snapshot = executionSnapshot();
+    const attempts = new FakePublicationAttempts();
+    const requests = new ConcurrentIdentityWinnerRequests(attempts);
+    const adapter = new ReviewCompletionPublicationContextAdapter(
+      { findExecution: async () => snapshot },
+      attempts,
+      requests,
+      publicationRequestFactory(completionProjectionMapper(), attempts),
+    );
+
+    await expect(
+      adapter.request({
+        executionId: "execution-1",
+        finalizedArtifactId: "artifact-1",
+      }),
+    ).resolves.toMatchObject({
+      state: ReviewCompletionPublicationState.Pending,
+    });
+    expect(requests.commands).toHaveLength(2);
+    expect(requests.commands[0]?.requestHash).not.toBe(
+      requests.commands[1]?.requestHash,
+    );
+    expect(requests.commands[1]?.operations).toEqual(
+      attemptScopedCommand(requests.commands[0]!).operations,
+    );
   });
 
   it("plans only the conservative coverage summary for a partial artifact", async () => {
@@ -487,6 +552,62 @@ class FakePublicationRequests {
   }
 }
 
+class ConcurrentIdentityWinnerRequests {
+  readonly commands: RequestReviewPublicationCommand[] = [];
+
+  constructor(private readonly attempts: FakePublicationAttempts) {}
+
+  async request(command: RequestReviewPublicationCommand) {
+    this.commands.push(structuredClone(command));
+    if (this.commands.length === 1) {
+      this.attempts.store(publicationView(attemptScopedCommand(command)));
+      return {
+        status: RequestReviewPublicationStatus.RequestConflict,
+      } as const;
+    }
+    const existing = await this.attempts.findById(command.publicationAttemptId);
+    if (!existing) throw new Error("test_publication_winner_missing");
+    return {
+      status: RequestReviewPublicationStatus.Restored,
+      attempt: existing.attempt,
+    } as const;
+  }
+}
+
+function attemptScopedCommand(
+  command: RequestReviewPublicationCommand,
+): RequestReviewPublicationCommand {
+  const legacyPrefix = `review-publication:${command.permit.projectionHash}:`;
+  const scopedPrefix = `review-publication:${command.publicationAttemptId}:${command.permit.projectionHash}:`;
+  const operations = command.operations.map((operation) => ({
+    ...operation,
+    publicationOperationId: operation.publicationOperationId.replace(
+      legacyPrefix,
+      scopedPrefix,
+    ),
+    dependsOnOperationId:
+      operation.dependsOnOperationId?.replace(legacyPrefix, scopedPrefix) ??
+      null,
+  }));
+  const candidate = { ...command, operations };
+  return {
+    ...candidate,
+    requestHash: createHash("sha256")
+      .update(
+        canonicalJson({
+          publicationAttemptId: candidate.publicationAttemptId,
+          requestIdHash: candidate.requestIdHash,
+          permit: candidate.permit,
+          operations: candidate.operations,
+          createdAt: candidate.createdAt,
+          retainUntil: candidate.retainUntil,
+        }),
+        "utf8",
+      )
+      .digest("hex"),
+  };
+}
+
 function publicationView(
   command: RequestReviewPublicationCommand | null,
   input: {
@@ -543,12 +664,16 @@ function publicationView(
 
 function publicationRequestFactory(
   mapper: ReviewCompletionProjectionMapperPort = completionProjectionMapper(),
+  attempts: Pick<ReviewPublicationAttemptQueryPort, "findById"> = {
+    findById: async () => null,
+  },
 ): DeterministicReviewPublicationRequestFactory {
   return new DeterministicReviewPublicationRequestFactory(
     mapper,
     new ReviewPublicationOperationPlanningService(
       new InMemoryReviewPublicationReleaseLimitsQuery([publicationLimits()]),
     ),
+    attempts,
   );
 }
 

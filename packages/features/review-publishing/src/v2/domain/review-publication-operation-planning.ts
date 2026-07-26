@@ -34,6 +34,16 @@ export enum ReviewPublicationLifecycleSemantic {
   MarkStale = "mark_stale",
 }
 
+export enum ReviewPublicationOperationIdentityVersion {
+  LegacyProjectionV1 = "legacy_projection_v1",
+  AttemptScopedV2 = "attempt_scoped_v2",
+}
+
+export type ReviewPublicationOperationIdentity = {
+  readonly publicationAttemptId: string;
+  readonly version: ReviewPublicationOperationIdentityVersion;
+};
+
 export type CanonicalReviewPublicationBodyFacts = {
   readonly markerHash: string;
   readonly bodyHash: string;
@@ -119,6 +129,7 @@ export enum ReviewPublicationPlanningErrorCode {
   ChunkLimitExceeded = "publication_planning_chunk_limit_exceeded",
   BodyLimitExceeded = "publication_planning_body_limit_exceeded",
   ReconciliationWindowInvalid = "publication_planning_reconciliation_window_invalid",
+  OperationIdentityInvalid = "publication_planning_operation_identity_invalid",
 }
 
 export class ReviewPublicationPlanningError extends Error {
@@ -129,10 +140,12 @@ export class ReviewPublicationPlanningError extends Error {
 }
 
 export function planReviewPublicationOperations(input: {
+  readonly identity: ReviewPublicationOperationIdentity;
   readonly envelope: PublishedReviewProjectionPublicationEnvelope;
   readonly limits: ReviewPublicationPlanningLimits;
 }): readonly ReviewPublicationOperationPlan[] {
-  const { envelope, limits } = input;
+  const { identity, envelope, limits } = input;
+  assertOperationIdentity(identity);
   assertPublishedReviewProjectionPublicationEnvelopeIdentity(envelope);
   assertPlanningLimits(limits);
   assertReleaseBinding(envelope, limits);
@@ -169,6 +182,7 @@ export function planReviewPublicationOperations(input: {
     );
     const operation: ReviewPublicationOperationPlan = {
       publicationOperationId: operationId(
+        identity,
         envelope.projectionHash,
         input.publicationKind,
         input.chunkIndex,
@@ -274,6 +288,42 @@ export function planReviewPublicationOperations(input: {
   }
 
   return operations.map(cloneOperationPlan);
+}
+
+export function resolveReviewPublicationOperationIdentityVersion(input: {
+  readonly publicationAttemptId: string;
+  readonly projectionHash: string;
+  readonly existingOperationIds: readonly string[] | null;
+  readonly newAttemptVersion: ReviewPublicationOperationIdentityVersion;
+}): ReviewPublicationOperationIdentityVersion {
+  assertIdentifier(
+    input.publicationAttemptId,
+    "publication_attempt_id_invalid",
+  );
+  assertHash(input.projectionHash, "publication_projection_hash_invalid");
+  if (input.existingOperationIds === null) {
+    return input.newAttemptVersion;
+  }
+  if (input.existingOperationIds.length === 0) {
+    fail(ReviewPublicationPlanningErrorCode.OperationIdentityInvalid);
+  }
+  const legacyPrefix = `review-publication:${input.projectionHash}:`;
+  const attemptPrefix = `review-publication:${input.publicationAttemptId}:${input.projectionHash}:`;
+  if (
+    input.existingOperationIds.every((operationId) =>
+      operationId.startsWith(attemptPrefix),
+    )
+  ) {
+    return ReviewPublicationOperationIdentityVersion.AttemptScopedV2;
+  }
+  if (
+    input.existingOperationIds.every((operationId) =>
+      operationId.startsWith(legacyPrefix),
+    )
+  ) {
+    return ReviewPublicationOperationIdentityVersion.LegacyProjectionV1;
+  }
+  fail(ReviewPublicationPlanningErrorCode.OperationIdentityInvalid);
 }
 
 export function assertPublishedReviewProjectionPublicationEnvelopeIdentity(
@@ -472,11 +522,26 @@ function safeAddBodyBytes(current: number, next: number): number {
 }
 
 function operationId(
+  identity: ReviewPublicationOperationIdentity,
   projectionHash: string,
   kind: ReviewPublicationKind,
   chunkIndex: number,
 ): string {
-  return `review-publication:${projectionHash}:${kind}:${chunkIndex}`;
+  switch (identity.version) {
+    case ReviewPublicationOperationIdentityVersion.LegacyProjectionV1:
+      return `review-publication:${projectionHash}:${kind}:${chunkIndex}`;
+    case ReviewPublicationOperationIdentityVersion.AttemptScopedV2:
+      return `review-publication:${identity.publicationAttemptId}:${projectionHash}:${kind}:${chunkIndex}`;
+  }
+}
+
+function assertOperationIdentity(
+  identity: ReviewPublicationOperationIdentity,
+): void {
+  assertIdentifier(
+    identity.publicationAttemptId,
+    "publication_attempt_id_invalid",
+  );
 }
 
 function cloneOperationPlan(
