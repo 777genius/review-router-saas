@@ -16,6 +16,8 @@ export function createDatabaseHealth(
 export type CreatePrismaClientOptions = {
   readonly databaseUrl?: string;
   readonly poolMax?: number;
+  readonly transactionMaxWaitMs?: number;
+  readonly transactionTimeoutMs?: number;
 };
 
 export function createPrismaClient(
@@ -35,6 +37,14 @@ export function createPrismaClient(
 
   return new PrismaClient({
     adapter: new PrismaPg(adapterConfig),
+    transactionOptions: {
+      ...(typeof options.transactionMaxWaitMs === "number"
+        ? { maxWait: options.transactionMaxWaitMs }
+        : {}),
+      ...(typeof options.transactionTimeoutMs === "number"
+        ? { timeout: options.transactionTimeoutMs }
+        : {}),
+    },
   });
 }
 

@@ -131,7 +131,10 @@ async function main() {
     return;
   }
 
-  const prisma = createPrismaClient();
+  const prisma = createPrismaClient({
+    transactionMaxWaitMs: 30_000,
+    transactionTimeoutMs: 60_000,
+  });
   try {
     const runtime = composeReviewActionV2ProductionRunControl({
       env: process.env,
