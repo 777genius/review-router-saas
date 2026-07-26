@@ -101,6 +101,7 @@ export function intentToDomain(record: IntentRecord): ReviewRequestedIntent {
         ? null
         : intentTerminalReasonFromPrisma(record.terminalReason),
     admission: admissionFromPrisma(record),
+    rerunPredecessorRequestId: record.rerunPredecessorRequestId,
     supersededByRequestId: record.supersededByRequestId,
     createdAt: new Date(record.createdAt),
     updatedAt: new Date(record.updatedAt),

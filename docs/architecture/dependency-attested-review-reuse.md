@@ -69,6 +69,19 @@ make an invocation ineligible for cross-revision reuse.
     request base branch only after verifying the live base SHA, head SHA, open
     state, and same-repository trust domain against the durable intent. The
     repository default branch cannot substitute for the reviewed base branch.
+20. Every GitHub `run_attempt` has its own durable requested intent and
+    authorization. A rerun never mutates or relinks the intent, authorization,
+    or execution of an earlier attempt.
+21. A rerun intent is created only from the latest lower attempt for the same
+    repository and `run_id`, after rechecking the current pull request head and
+    server-owned admission policy. Duplicate creation restores the exact same
+    deterministic intent; conflicting or future attempt history fails closed.
+22. The rerun intent records its predecessor explicitly. Retention pruning
+    cannot remove that predecessor while the dependent rerun intent remains.
+23. A rerun creates a new revision-bound execution generation. Completed work
+    is preserved only through the normal attested evidence-reuse flow; provider
+    leases, credentials, in-flight work, and publication authority are never
+    inherited from the predecessor.
 
 ## Bounded contexts
 
@@ -91,6 +104,12 @@ supersession, and `InvocationFlight`.
 
 It does not schedule account capacity, own a queue, decide whether an
 observation is reusable, or control supersession drain behavior.
+
+The requested-intent aggregate also owns GitHub rerun lineage. The application
+use case derives deterministic rerun identity and fresh admission facts, while
+memory and Prisma adapters atomically create or restore one intent per
+`repository + run_id + run_attempt`. Provider capacity is acquired only after
+that durable handoff succeeds.
 
 ### Context Attestation
 

@@ -343,6 +343,7 @@ function intentFixture(): ReviewRequestedIntent {
       decisionHash: null,
       checkedAt: null,
     },
+    rerunPredecessorRequestId: null,
     supersededByRequestId: null,
     createdAt: now,
     updatedAt: now,

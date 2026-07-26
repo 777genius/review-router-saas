@@ -5,7 +5,10 @@ import type {
   HostedReviewPreleaseGatePort,
 } from "@reviewrouter/features-action-control-plane";
 import {
+  EnsureReviewRequestedRerunIntent,
+  parseReviewRequestedSourceRunAttempt,
   ReviewRequestAdmissionState,
+  ReviewRequestedRerunEnsureStatus,
   ReviewRequestedIntentState,
   ReviewRequestedTransitionStatus,
   type ReviewRequestedIntent,
@@ -31,6 +34,7 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
   private static readonly intentBindingPollIntervalMs = 250;
   private readonly maxChangedLines: number;
   private readonly policySnapshotId: string;
+  private readonly ensureRerunIntent: EnsureReviewRequestedRerunIntent;
 
   constructor(
     private readonly dependencies: {
@@ -55,12 +59,23 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
         policyVersion: 1,
       }),
     )}`;
+    this.ensureRerunIntent = new EnsureReviewRequestedRerunIntent(
+      dependencies.requestedIntentQueries,
+      dependencies.requestedIntentCommands,
+      {
+        async digestUtf8(value) {
+          return digest(value);
+        },
+      },
+    );
   }
 
   async evaluate(
     input: Parameters<HostedReviewPreleaseGatePort["evaluate"]>[0],
   ) {
-    const intent = await this.findIntentWithBoundedWait(input);
+    const intent =
+      (await this.findIntentWithBoundedWait(input)) ??
+      (await this.createRerunIntent(input));
     if (!intent) return { status: "not_applicable" as const };
     const restored = await this.restorePersistedDecision(input, intent);
     if (restored) return restored;
@@ -146,9 +161,11 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
   private async findIntentWithBoundedWait(
     input: Parameters<HostedReviewPreleaseGatePort["evaluate"]>[0],
   ) {
-    const attempts = input.intentRequired
-      ? ProductionHostedReviewPreleaseGate.intentBindingPollAttempts
-      : 1;
+    const attempts =
+      input.intentRequired &&
+      parseReviewRequestedSourceRunAttempt(input.sourceRunAttempt) === 1
+        ? ProductionHostedReviewPreleaseGate.intentBindingPollAttempts
+        : 1;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const intent = await this.findIntent(input);
       if (intent || attempt === attempts) return intent;
@@ -159,6 +176,54 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
       )(ProductionHostedReviewPreleaseGate.intentBindingPollIntervalMs);
     }
     return null;
+  }
+
+  private async createRerunIntent(
+    input: Parameters<HostedReviewPreleaseGatePort["evaluate"]>[0],
+  ): Promise<ReviewRequestedIntent | null> {
+    const currentAttempt = parseReviewRequestedSourceRunAttempt(
+      input.sourceRunAttempt,
+    );
+    if (!input.intentRequired || currentAttempt <= 1) return null;
+    const intents =
+      await this.dependencies.requestedIntentQueries.listByRepositorySourceRunId(
+        {
+          repositoryConnectionId: input.repository.repositoryId,
+          sourceRunId: input.sourceRunId,
+        },
+      );
+    const predecessor = latestPriorIntent(intents, currentAttempt);
+    if (!predecessor) {
+      throw new Error("review_request_rerun_predecessor_missing");
+    }
+    const facts = await this.dependencies.pullRequests.resolve({
+      repository: input.repository,
+      pullRequestNumber: predecessor.pullRequestNumber,
+    });
+    if (
+      facts.pullRequestNumber !== predecessor.pullRequestNumber ||
+      facts.headSha.toLowerCase() !== predecessor.revision.headSha
+    ) {
+      throw new Error("review_request_revision_moved");
+    }
+    const result = await this.ensureRerunIntent.execute({
+      repositoryConnectionId: input.repository.repositoryId,
+      sourceRunId: input.sourceRunId,
+      sourceRunAttempt: input.sourceRunAttempt,
+      currentRevision: predecessor.revision,
+      changedLines: sumChangedLines(facts.additions, facts.deletions),
+      maxChangedLines: this.maxChangedLines,
+      policySnapshotId: this.policySnapshotId,
+      now: this.dependencies.clock.now(),
+    });
+    if (
+      (result.status !== ReviewRequestedRerunEnsureStatus.Created &&
+        result.status !== ReviewRequestedRerunEnsureStatus.Restored) ||
+      result.intent === undefined
+    ) {
+      throw new Error(`review_request_rerun_${result.status}`);
+    }
+    return result.intent;
   }
 
   private async restorePersistedDecision(
@@ -198,6 +263,34 @@ export class ProductionHostedReviewPreleaseGate implements HostedReviewPreleaseG
     }
     return decision;
   }
+}
+
+function latestPriorIntent(
+  intents: readonly ReviewRequestedIntent[],
+  currentAttempt: number,
+): ReviewRequestedIntent | null {
+  const seen = new Set<number>();
+  let latest: {
+    readonly attempt: number;
+    readonly intent: ReviewRequestedIntent;
+  } | null = null;
+  for (const intent of intents) {
+    if (intent.sourceRunAttempt === null) {
+      throw new Error("review_requested_rerun_source_index_corrupted");
+    }
+    const attempt = parseReviewRequestedSourceRunAttempt(
+      intent.sourceRunAttempt,
+    );
+    if (seen.has(attempt)) {
+      throw new Error("review_requested_rerun_source_identity_corrupted");
+    }
+    seen.add(attempt);
+    if (attempt >= currentAttempt) continue;
+    if (latest === null || attempt > latest.attempt) {
+      latest = { attempt, intent };
+    }
+  }
+  return latest?.intent ?? null;
 }
 
 function decisionFromValidatedIntent(intent: ReviewRequestedIntent) {

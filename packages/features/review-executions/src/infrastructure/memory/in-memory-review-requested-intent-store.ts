@@ -1,11 +1,13 @@
 import {
   ReviewRequestedClaimStatus,
   ReviewRequestedRegisterStatus,
+  ReviewRequestedRerunEnsureStatus,
   ReviewRequestedTransitionStatus,
   type BeginReviewRequestedSubmissionCommand,
   type ClaimReviewRequestedIntentCommand,
   type CancelReviewRequestedPreAdmissionCommand,
   type DeferReviewRequestedResolutionCommand,
+  type EnsureReviewRequestedRerunIntentCommand,
   type LinkReviewRequestedAdmissionCommand,
   type RecordReviewRequestedAdmissionDecisionCommand,
   type RecordReviewRequestedDispatchCommand,
@@ -40,6 +42,10 @@ import {
   deferReviewRequestedResolution,
   type ReviewRequestedIntent,
 } from "../../domain/review-requested-intent";
+import {
+  decideReviewRequestedRerunRegistration,
+  ReviewRequestedRerunRegistrationDecisionStatus,
+} from "../../domain/review-requested-rerun";
 import { MonotonicBigIntFencingTokenSource } from "./monotonic-bigint-fencing-token-source";
 
 export class InMemoryReviewRequestedIntentStore
@@ -120,6 +126,25 @@ export class InMemoryReviewRequestedIntentStore
       throw new Error("review_requested_source_run_identity_corrupted");
     }
     return matched[0] ? cloneIntent(matched[0]) : null;
+  }
+
+  async listByRepositorySourceRunId(input: {
+    readonly repositoryConnectionId: string;
+    readonly sourceRunId: string;
+  }): Promise<readonly ReviewRequestedIntent[]> {
+    await this.transactionTail;
+    return [...this.intents.values()]
+      .filter(
+        (intent) =>
+          intent.repositoryConnectionId === input.repositoryConnectionId &&
+          intent.sourceRunId === input.sourceRunId,
+      )
+      .sort(
+        (left, right) =>
+          left.createdAt.getTime() - right.createdAt.getTime() ||
+          left.requestId.localeCompare(right.requestId),
+      )
+      .map(cloneIntent);
   }
 
   async listDue(input: {
@@ -244,6 +269,51 @@ export class InMemoryReviewRequestedIntentStore
       return {
         status: ReviewRequestedRegisterStatus.Registered,
         intent: cloneIntent(intent),
+      };
+    });
+  }
+
+  async ensureRerunIntent(command: EnsureReviewRequestedRerunIntentCommand) {
+    return this.atomic(() => {
+      const intentsForSourceRun = [...this.intents.values()].filter(
+        (intent) =>
+          intent.repositoryConnectionId ===
+            command.candidate.repositoryConnectionId &&
+          intent.sourceRunId === command.candidate.sourceRunId,
+      );
+      const decision = decideReviewRequestedRerunRegistration({
+        candidate: command.candidate,
+        intentsForSourceRun,
+      });
+      if (
+        decision.status ===
+        ReviewRequestedRerunRegistrationDecisionStatus.MissingPredecessor
+      ) {
+        return { status: ReviewRequestedRerunEnsureStatus.MissingPredecessor };
+      }
+      if (
+        decision.status ===
+        ReviewRequestedRerunRegistrationDecisionStatus.Conflict
+      ) {
+        return { status: ReviewRequestedRerunEnsureStatus.Conflict };
+      }
+      if (
+        decision.status ===
+        ReviewRequestedRerunRegistrationDecisionStatus.Restore
+      ) {
+        return {
+          status: ReviewRequestedRerunEnsureStatus.Restored,
+          intent: cloneIntent(decision.intent),
+        };
+      }
+      this.intents.set(decision.intent.requestId, decision.intent);
+      this.deliveryIndex.set(
+        decision.intent.deliveryIdentityHash,
+        decision.intent.requestId,
+      );
+      return {
+        status: ReviewRequestedRerunEnsureStatus.Created,
+        intent: cloneIntent(decision.intent),
       };
     });
   }
@@ -573,7 +643,10 @@ export class InMemoryReviewRequestedIntentStore
       const now = new Date();
       const referenced = new Set(
         [...this.intents.values()]
-          .map((intent) => intent.supersededByRequestId)
+          .flatMap((intent) => [
+            intent.supersededByRequestId,
+            intent.rerunPredecessorRequestId,
+          ])
           .filter((requestId): requestId is string => requestId !== null),
       );
       const removable = [...this.intents.values()]

@@ -915,6 +915,7 @@ model ReviewRequestedIntent {
   admissionPolicySnapshotId String?
   admissionDecisionHash     String?
   admissionCheckedAt        DateTime?
+  rerunPredecessorRequestId String?
   supersededByRequestId     String?
   createdAt                 DateTime
   updatedAt                 DateTime
@@ -923,6 +924,8 @@ model ReviewRequestedIntent {
   @@index([state, notBefore, requestId])
   @@index([state, nextResolutionAt, requestId])
   @@index([workspaceId, repositoryConnectionId, scmRepositoryIdentityId, pullRequestNumber, state])
+  @@index([repositoryConnectionId, sourceRunId, sourceRunAttempt])
+  @@index([rerunPredecessorRequestId])
   @@index([claimUntil, requestId])
 }
 

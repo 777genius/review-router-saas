@@ -9,6 +9,7 @@ import {
   ReviewObservationAttachmentStatus,
   ReviewRequestedClaimStatus,
   ReviewRequestedRegisterStatus,
+  ReviewRequestedRerunEnsureStatus,
   ReviewRequestedTransitionStatus,
   type ReviewExecutionCommandPort,
   type ReviewExecutionQueryPort,
@@ -552,6 +553,115 @@ export function runReviewExecutionStoreContract(
           sourceRunAttempt: "1",
         }),
       ).resolves.toMatchObject({ requestId: first.requestId });
+    });
+
+    it("atomically creates and restores one durable intent per GitHub rerun attempt", async () => {
+      const running = await prepareAndAdmit(harness, "rerun-contract");
+      const candidate = {
+        ...intentCandidate(harness, "rerun-seed-contract"),
+        deliveryIdentityHash: hash(2),
+        canonicalRequestHash: hash(3),
+      };
+      await harness.requestedIntents.registerIntent({ candidate });
+      const claimAt = new Date();
+      const claimed = await harness.requestedIntents.claimIntent({
+        requestId: candidate.requestId,
+        claimId: "claim-rerun-seed-contract",
+        ownerIdHash: "owner-rerun-seed-contract",
+        now: claimAt,
+        claimUntil: new Date(claimAt.getTime() + 60_000),
+      });
+      const claim = claimed.intent!.claim!;
+      await harness.requestedIntents.beginSubmission({
+        requestId: candidate.requestId,
+        claimId: claim.claimId,
+        ownerIdHash: claim.ownerIdHash,
+        fencingToken: claim.fencingToken,
+        now: claimAt,
+        nextResolutionAt: new Date(claimAt.getTime() + 1_000),
+        resolutionDeadlineAt: new Date(claimAt.getTime() + 60_000),
+      });
+      const dispatched = await harness.requestedIntents.recordDispatch({
+        requestId: candidate.requestId,
+        claimId: claim.claimId,
+        ownerIdHash: claim.ownerIdHash,
+        fencingToken: claim.fencingToken,
+        sourceRunId: "run-rerun-contract",
+        sourceRunAttempt: "1",
+        now: claimAt,
+        nextResolutionAt: new Date(claimAt.getTime() + 1_000),
+        resolutionDeadlineAt: new Date(claimAt.getTime() + 60_000),
+      });
+      const admitted = await harness.requestedIntents.recordAdmissionDecision({
+        requestId: candidate.requestId,
+        expectedVersion: dispatched.intent!.version,
+        changedLines: 100,
+        maxChangedLines: 1_000,
+        policySnapshotId: "hosted-review-size-v1:rerun-contract",
+        decisionHash: hash(4),
+        verdict: ReviewRequestAdmissionState.Admitted,
+        now: claimAt,
+      });
+      await harness.requestedIntents.linkAdmission({
+        requestId: candidate.requestId,
+        sourceRunId: "run-rerun-contract",
+        sourceRunAttempt: "1",
+        authorizationId: harness.authorizationId,
+        executionId: running.snapshot.execution.executionId,
+        revision,
+        now: claimAt,
+      });
+      expect(admitted.status).toBe(ReviewRequestedTransitionStatus.Applied);
+
+      const rerunCandidate = {
+        ...harness.scope,
+        predecessorRequestId: candidate.requestId,
+        requestId: "request-rerun-contract-2",
+        revision,
+        triggerKind: ReviewRequestedTriggerKind.PullRequestSynchronized,
+        deliveryIdentityHash: hash(5),
+        canonicalRequestHash: hash(6),
+        sourceRunId: "run-rerun-contract",
+        sourceRunAttempt: "2",
+        changedLines: 100,
+        maxChangedLines: 1_000,
+        policySnapshotId: "hosted-review-size-v1:rerun-contract",
+        admissionDecisionHash: hash(7),
+        verdict: ReviewRequestAdmissionState.Admitted,
+        createdAt: claimAt,
+        nextResolutionAt: new Date(claimAt.getTime() + 1_000),
+        resolutionDeadlineAt: new Date(claimAt.getTime() + 60_000),
+        retainUntil: new Date(claimAt.getTime() + 86_400_000),
+      } as const;
+      const results = await Promise.all([
+        harness.requestedIntents.ensureRerunIntent({
+          candidate: rerunCandidate,
+        }),
+        harness.requestedIntents.ensureRerunIntent({
+          candidate: rerunCandidate,
+        }),
+      ]);
+      expect(results.map((result) => result.status).sort()).toEqual([
+        ReviewRequestedRerunEnsureStatus.Created,
+        ReviewRequestedRerunEnsureStatus.Restored,
+      ]);
+      await expect(
+        harness.requestedIntents.listByRepositorySourceRunId({
+          repositoryConnectionId: harness.scope.repositoryConnectionId,
+          sourceRunId: "run-rerun-contract",
+        }),
+      ).resolves.toHaveLength(2);
+      await expect(
+        harness.requestedIntents.findByRepositorySourceRunIdentity({
+          repositoryConnectionId: harness.scope.repositoryConnectionId,
+          sourceRunId: "run-rerun-contract",
+          sourceRunAttempt: "2",
+        }),
+      ).resolves.toMatchObject({
+        requestId: rerunCandidate.requestId,
+        rerunPredecessorRequestId: candidate.requestId,
+        state: ReviewRequestedIntentState.AwaitingAuthorization,
+      });
     });
 
     it("uses the persisted deadline and CAS to reject late admission", async () => {
