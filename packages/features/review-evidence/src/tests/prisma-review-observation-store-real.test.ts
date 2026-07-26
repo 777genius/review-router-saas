@@ -5,7 +5,10 @@ import {
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import { ReviewObservationAcceptPersistenceStatus } from "../application/ports/review-observation-ports";
-import { ReviewObservationQualityFlag } from "../domain/review-evidence-primitives";
+import {
+  normalizeQualityFlags,
+  ReviewObservationQualityFlag,
+} from "../domain/review-evidence-primitives";
 import { PrismaReviewObservationStore } from "../infrastructure/prisma/prisma-review-observation-store";
 import { hash, observation } from "./fixtures";
 
@@ -146,13 +149,14 @@ describeWithDatabase("Prisma review evidence observations", () => {
       attemptId: "attempt-quality-flags",
       qualityFlags,
     });
+    const normalizedQualityFlags = normalizeQualityFlags(qualityFlags);
 
     await expect(store.acceptObservation(current)).resolves.toMatchObject({
       status: ReviewObservationAcceptPersistenceStatus.Accepted,
-      observation: { qualityFlags },
+      observation: { qualityFlags: normalizedQualityFlags },
     });
     await expect(store.findById(current.observationId)).resolves.toMatchObject({
-      qualityFlags,
+      qualityFlags: normalizedQualityFlags,
     });
   });
 
