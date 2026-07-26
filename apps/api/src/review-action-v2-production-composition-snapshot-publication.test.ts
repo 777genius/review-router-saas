@@ -389,7 +389,7 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     ).resolves.toBeNull();
   });
 
-  it("rejects stale context policy before publication is enqueued", async () => {
+  it("maps stale context policy to stale precondition before publication is enqueued", async () => {
     const publicationRepository = new InMemoryReviewPublicationRepository();
     const contextPolicy = {
       assertCurrentPolicy: vi
@@ -406,7 +406,10 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
       routes.publication.request!.execute(
         await publicationRequest(publicationPermit),
       ),
-    ).rejects.toThrow("context_policy_stale");
+    ).rejects.toMatchObject({
+      statusCode: 412,
+      issues: ["publication_context_policy_stale"],
+    });
     expect(contextPolicy.assertCurrentPolicy).toHaveBeenCalledTimes(1);
     await expect(
       publicationRepository.findByPermitIdentity(artifact.publicationPermit),

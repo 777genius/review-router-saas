@@ -406,7 +406,8 @@ async function requestPublication(
       },
     } as const;
   }
-  await dependencies.contextPolicy.assertCurrentPolicy({
+  await assertCurrentPublicationContextPolicy({
+    contextPolicy: dependencies.contextPolicy,
     authorization,
     snapshot,
   });
@@ -555,6 +556,26 @@ function restoredPublicationAttempt(
           : 1_000,
     },
   } as const;
+}
+
+async function assertCurrentPublicationContextPolicy(input: {
+  readonly contextPolicy: ReviewPublicationContextPolicyPort;
+  readonly authorization: ReviewRunAuthorization;
+  readonly snapshot: ReviewExecutionSnapshot;
+}) {
+  try {
+    await input.contextPolicy.assertCurrentPolicy({
+      authorization: input.authorization,
+      snapshot: input.snapshot,
+    });
+  } catch (error) {
+    if (error instanceof ReviewActionV2RouteFailure) throw error;
+    throw routeFailure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      "publication_context_policy_stale",
+    );
+  }
 }
 
 async function readPublicationStatus(
