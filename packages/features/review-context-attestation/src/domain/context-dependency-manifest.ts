@@ -4,7 +4,7 @@ export const contextDependencyManifestVersion = 2;
 export const contextDependencyManifestDomain =
   "reviewrouter.context-dependency-manifest.v2";
 export const contextDependencyManifestMaxEntries = 2_000;
-export const contextDependencyManifestMaxCanonicalBytes = 512 * 1024;
+export const contextDependencyManifestMaxCanonicalBytes = 2 * 1024 * 1024;
 export const contextDependencyMaxPathLength = 1_024;
 export const contextDependencyMaxGlobs = 128;
 export const contextDependencyMaxResultItems = 20_000;

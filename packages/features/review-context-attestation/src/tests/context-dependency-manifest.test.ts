@@ -7,6 +7,7 @@ import {
   ContextProviderKind,
   GatewaySessionState,
   activateGatewaySession,
+  canonicalContextDependencyManifest,
   contextDependencyManifestVersion,
   createAcceptedDependencyAttestation,
   createContextDependencyManifest,
@@ -168,6 +169,48 @@ describe("ContextDependencyManifest", () => {
         }),
       ).reason,
     ).toBe(ContextDependencyReplayDenialReason.GatewayBinaryMismatch);
+  });
+
+  it("accepts large but bounded dependency manifests for batched reviews", () => {
+    const hex = (value: number) => value.toString(16).padStart(64, "0");
+    const dependencies: ContextDependencyEntry[] = [];
+    let previousEventHash = hash("0");
+    for (let index = 1; index <= 900; index += 1) {
+      const eventHash = hex(index);
+      dependencies.push(
+        fileDependency({
+          sequence: index,
+          operationKey: hex(index + 10_000),
+          previousEventHash,
+          eventHash,
+          operation: {
+            kind: ContextDependencyKind.FileRead,
+            path: `src/generated/${index}.ts`,
+            startByte: 0,
+            maxBytes: 64_000,
+          },
+        }),
+      );
+      previousEventHash = eventHash;
+    }
+
+    const large = createContextDependencyManifest({
+      manifestVersion: contextDependencyManifestVersion,
+      gatewayPolicyVersion: "context-gateway-v2",
+      gatewayBinaryHash: hash("c"),
+      checkoutTreeOid: oid("d"),
+      authenticatedChainHash: previousEventHash,
+      complete: true,
+      dependencies,
+    });
+    const byteLength = Buffer.byteLength(
+      canonicalContextDependencyManifest(large),
+      "utf8",
+    );
+
+    expect(byteLength).toBeGreaterThan(512 * 1024);
+    expect(byteLength).toBeLessThan(2 * 1024 * 1024);
+    expect(large.dependencies).toHaveLength(900);
   });
 });
 
