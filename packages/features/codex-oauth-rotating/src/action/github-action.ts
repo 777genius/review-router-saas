@@ -63,6 +63,7 @@ import {
 } from "../domain/review-execution-budget";
 import {
   isStalePullRequestHeadError,
+  stalePullRequestHeadErrorCode,
   startPullRequestHeadSupervisor,
   type PullRequestHeadSupervisor,
 } from "./pull-request-head-supervisor";
@@ -4327,6 +4328,9 @@ function classifyPostWritebackCodexFailure(error: unknown): Error {
     return new Error("review_runtime_timeout");
   }
   const output = getProcessFailureOutput(error);
+  if (isReviewRouterTargetRevisionMismatchFailure(output)) {
+    return new Error(stalePullRequestHeadErrorCode);
+  }
   const reviewFailure = extractReviewRouterRuntimeFailure(output);
   if (reviewFailure) {
     return new AlreadyReportedRuntimeFailure(reviewFailure);
@@ -4347,6 +4351,16 @@ export function extractReviewRouterRuntimeFailure(
     /(?:ReviewRouter found [^\r\n]+|Review failed \[[^\r\n]+)(?:\r?\n|$)/,
   );
   return match?.[0]?.trim();
+}
+
+export function isReviewRouterTargetRevisionMismatchFailure(
+  output: string,
+): boolean {
+  return (
+    output.includes("review_action_v2_protocol_error") &&
+    output.includes("operation=review_execution_supersede") &&
+    output.includes("issues=target_revision_mismatch")
+  );
 }
 
 export function shouldSuppressTopLevelActionError(error: unknown): boolean {

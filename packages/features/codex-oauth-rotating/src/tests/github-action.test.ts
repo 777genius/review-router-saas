@@ -23,6 +23,7 @@ import {
   extractReviewRouterRuntimeFailure,
   FinalizedReviewCheckpointMarkerReadStatus,
   formatTopLevelActionErrorMessage,
+  isReviewRouterTargetRevisionMismatchFailure,
   postPullRequestComment,
   readActionAuthJson,
   readActionInputs,
@@ -59,6 +60,18 @@ describe("Codex rotating GitHub Action runtime", () => {
       ),
     ).toBe(
       "Review failed [required_provider_unhealthy]: A required review provider was unavailable or unhealthy.",
+    );
+  });
+
+  it("detects stale ReviewRouter T0 supersede failures separately from runtime failures", () => {
+    const output = [
+      "Review failed [control_plane_protocol_error]: ReviewRouter control-plane protocol rejected the review run.",
+      "Details: review_action_v2_protocol_error operation=review_execution_supersede http_status=403 error_code=forbidden issues=target_revision_mismatch",
+    ].join("\n");
+
+    expect(isReviewRouterTargetRevisionMismatchFailure(output)).toBe(true);
+    expect(extractReviewRouterRuntimeFailure(output)).toBe(
+      "Review failed [control_plane_protocol_error]: ReviewRouter control-plane protocol rejected the review run.",
     );
   });
 
