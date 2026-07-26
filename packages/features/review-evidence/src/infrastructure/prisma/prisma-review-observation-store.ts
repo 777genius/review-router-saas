@@ -383,16 +383,26 @@ function decodeQualityFlags(
     throw new Error("review_observation_quality_flags_invalid");
   }
   return value.map((entry) => {
-    switch (entry) {
-      case ReviewObservationQualityFlag.ModelFallback:
-      case ReviewObservationQualityFlag.LowConfidence:
-      case ReviewObservationQualityFlag.ProviderWarning:
-        return entry;
-      default:
-        throw new Error("review_observation_quality_flag_invalid");
+    if (
+      typeof entry !== "string" ||
+      !Object.hasOwn(decodableQualityFlags, entry) ||
+      !decodableQualityFlags[entry as ReviewObservationQualityFlag]
+    ) {
+      throw new Error(`review_observation_quality_flag_invalid:${String(entry)}`);
     }
+    return entry as ReviewObservationQualityFlag;
   });
 }
+
+const decodableQualityFlags = {
+  [ReviewObservationQualityFlag.ModelFallback]: true,
+  [ReviewObservationQualityFlag.LowConfidence]: true,
+  [ReviewObservationQualityFlag.ProviderWarning]: true,
+  [ReviewObservationQualityFlag.ContextInspectionIncomplete]: true,
+  [ReviewObservationQualityFlag.ContextAttestationUnavailable]: true,
+  [ReviewObservationQualityFlag.CrossRevisionReuseDisabled]: true,
+  [ReviewObservationQualityFlag.Unknown]: false,
+} as const satisfies Record<ReviewObservationQualityFlag, boolean>;
 
 function decodeFindingSeverity(
   value: Prisma.JsonValue | undefined,

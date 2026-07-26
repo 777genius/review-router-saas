@@ -8,6 +8,7 @@ import {
   ReviewPublicationSummarySemantic,
   publishedReviewProjectionPublicationEnvelopeVersion,
   renderCanonicalReviewPublication,
+  resolveReviewPublicationRenderPolicyVersion,
   type PublishedReviewProjectionPublicationEnvelope,
   type ReviewPublicationOperation,
   type ReviewPublicationPermitIdentity,
@@ -116,7 +117,9 @@ export class CanonicalReviewV2ProjectionAdapter
         : ReviewPublicationProjectionCoverage.Completed,
       targetCommitId: artifact.reviewedHeadSha,
       reviewRevisionHash: artifact.reviewRevisionHash,
-      renderPolicyVersion: 1,
+      renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+        artifact.projectionPolicyVersion,
+      ),
       publicationNotAfter: new Date(
         artifact.publicationPermit.publicationNotAfter,
       ),
@@ -273,6 +276,9 @@ function buildCatalog(
         artifact.coverageState === "partial"
           ? ReviewPublicationProjectionCoverage.Partial
           : ReviewPublicationProjectionCoverage.Completed,
+      renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+        artifact.projectionPolicyVersion,
+      ),
       targetCommitId: artifact.reviewedHeadSha,
       source: projection.publishing,
     },

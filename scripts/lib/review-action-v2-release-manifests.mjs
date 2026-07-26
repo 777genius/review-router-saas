@@ -9,6 +9,9 @@ export const PUBLIC_GENERATED_DIRECTORY =
   "src/control-plane/generated/review-action-v2";
 export const PUBLIC_RUNTIME_BUNDLE = "dist/index.js";
 export const PUBLIC_CONTEXT_GATEWAY_BUNDLE = "dist/context-gateway.js";
+export const PUBLIC_CONTEXT_GATEWAY_RELEASE_METADATA =
+  "dist/context-gateway.release.json";
+export const CONTEXT_GATEWAY_RELEASE_METADATA_VERSION = 1;
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
@@ -29,6 +32,52 @@ export function assertSha256Digest(value, field) {
 
 export function sha256Digest(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function parseContextGatewayReleaseMetadata(raw) {
+  if (
+    typeof raw !== "string" ||
+    Buffer.byteLength(raw, "utf8") > 4 * 1_024
+  ) {
+    throw new Error("context gateway release metadata is oversized");
+  }
+  const label = "context gateway release metadata";
+  const value = parseCanonicalJson(raw, label);
+  assertExactKeys(
+    value,
+    [
+      "artifactKind",
+      "contextGatewayEntrypointDigest",
+      "contextGatewayEntrypointPath",
+      "contextGatewayPolicyVersion",
+      "metadataVersion",
+    ],
+    label,
+  );
+  if (value.artifactKind !== "reviewrouter-context-gateway") {
+    throw new Error(`${label} artifactKind is invalid`);
+  }
+  if (value.metadataVersion !== CONTEXT_GATEWAY_RELEASE_METADATA_VERSION) {
+    throw new Error(
+      `${label} metadataVersion must be ${CONTEXT_GATEWAY_RELEASE_METADATA_VERSION}`,
+    );
+  }
+  return Object.freeze({
+    artifactKind: value.artifactKind,
+    contextGatewayEntrypointDigest: assertSha256Digest(
+      value.contextGatewayEntrypointDigest,
+      `${label}.contextGatewayEntrypointDigest`,
+    ),
+    contextGatewayEntrypointPath: assertSafeRelativePath(
+      value.contextGatewayEntrypointPath,
+      `${label}.contextGatewayEntrypointPath`,
+    ),
+    contextGatewayPolicyVersion: assertIdentifier(
+      value.contextGatewayPolicyVersion,
+      `${label}.contextGatewayPolicyVersion`,
+    ),
+    metadataVersion: value.metadataVersion,
+  });
 }
 
 export function canonicalJson(value) {

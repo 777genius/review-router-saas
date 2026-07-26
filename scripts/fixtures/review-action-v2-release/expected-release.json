@@ -3,7 +3,7 @@
   "canonicalizerDigest": "0e1ac8595ddf6941975a796aaa7dcb0d879f0df5e128c1b944163a2f00c77c48",
   "contextGatewayEntrypointDigest": "5c5ff71b2575309c532f64d6cefc3bac932e9a606a081f5767d1dccf2920bc4e",
   "contextGatewayEntrypointPath": "dist/context-gateway.js",
-  "contextGatewayPolicyVersion": "review-context-gateway.v1",
+  "contextGatewayPolicyVersion": "context-gateway-v3",
   "contractExportVersion": 1,
   "distributionKind": "PublicReusable",
   "expectedPublicActionBaseCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

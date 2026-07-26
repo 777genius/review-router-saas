@@ -2,9 +2,11 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  CanonicalReviewPublicationRenderPolicyVersion,
   ReviewPublicationLifecycleSemantic,
   ReviewPublicationProjectionCoverage,
   ReviewPublicationSummarySemantic,
+  legacyPartialReviewPublicationSummary,
   partialReviewPublicationSummary,
   renderCanonicalReviewPublication,
   type ReviewPublicationRenderingSource,
@@ -15,6 +17,8 @@ describe("canonical review publication renderer", () => {
     const rendered = renderCanonicalReviewPublication(
       {
         coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion:
+          CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2,
         targetCommitId: "a".repeat(40),
         source: source(),
       },
@@ -36,10 +40,29 @@ describe("canonical review publication renderer", () => {
     });
   });
 
+  it("preserves legacy canonical bytes for an existing render policy", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Partial,
+        renderPolicyVersion:
+          CanonicalReviewPublicationRenderPolicyVersion.LegacyV1,
+        targetCommitId: "a".repeat(40),
+        source: source(),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toBe(
+      `${legacyPartialReviewPublicationSummary}\n\n<!-- summary -->`,
+    );
+  });
+
   it("renders planning facts and execution payloads from the same canonical bytes", () => {
     const rendered = renderCanonicalReviewPublication(
       {
         coverage: ReviewPublicationProjectionCoverage.Completed,
+        renderPolicyVersion:
+          CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2,
         targetCommitId: "a".repeat(40),
         source: source(),
       },
@@ -76,6 +99,8 @@ describe("canonical review publication renderer", () => {
       renderCanonicalReviewPublication(
         {
           coverage: ReviewPublicationProjectionCoverage.Completed,
+          renderPolicyVersion:
+            CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2,
           targetCommitId: "a".repeat(40),
           source: {
             ...oversized,

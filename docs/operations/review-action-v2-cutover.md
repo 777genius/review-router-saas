@@ -40,7 +40,6 @@ pnpm protocol:release-manifest -- \
   --action-repo /path/to/review-router \
   --target-branch RELEASE_BRANCH \
   --expected-head ACTION_COMMIT_SHA \
-  --context-gateway-policy-version review-context-gateway.v1 \
   --output /secure/path/review-action-v2-release-manifest.json
 
 pnpm protocol:release-manifest:check -- \

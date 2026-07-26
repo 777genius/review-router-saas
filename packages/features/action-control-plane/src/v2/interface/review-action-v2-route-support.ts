@@ -14,6 +14,13 @@ import { toSafeReviewActionV2RouteFailure } from "./review-action-v2-route-failu
 export type ReviewActionV2RouteRuntimeDependencies = {
   readonly readServerTime: () => Promise<Date>;
   readonly createRequestId: () => string;
+  readonly recordProtocolRejection?: (input: {
+    readonly operationId: ReviewActionV2OperationId;
+    readonly protocolErrorCode: ReviewActionV2ProtocolErrorCode;
+    readonly protocolIssues: readonly string[];
+    readonly requestId: string;
+    readonly statusCode: number;
+  }) => void;
 };
 
 export type ReviewActionV2EnabledHandler<
@@ -92,16 +99,22 @@ export function registerReviewActionV2Operation<
         );
       } catch (error) {
         const failure = toSafeReviewActionV2RouteFailure(error, operationId);
-        request.log.warn(
-          {
-            operationId,
-            protocolErrorCode: failure.errorCode,
-            protocolIssues: failure.issues,
-            requestId,
-            statusCode: failure.statusCode,
-          },
-          "Review Action v2 request rejected",
-        );
+        const diagnostic = {
+          operationId,
+          protocolErrorCode: failure.errorCode,
+          protocolIssues: failure.issues,
+          requestId,
+          statusCode: failure.statusCode,
+        };
+        try {
+          if (dependencies.recordProtocolRejection) {
+            dependencies.recordProtocolRejection(diagnostic);
+          } else {
+            request.log.warn(diagnostic, "Review Action v2 request rejected");
+          }
+        } catch {
+          // Diagnostics must never replace the safe protocol failure response.
+        }
         return reply.code(failure.statusCode).send(
           createReviewActionV2ErrorResponse({
             operationId,

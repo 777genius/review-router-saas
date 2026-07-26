@@ -181,19 +181,11 @@ describe("Review Action v2 route registrars", () => {
   });
 
   it("logs only safe protocol diagnostics for rejected v2 requests", async () => {
-    const logLines: string[] = [];
-    const app = Fastify({
-      logger: {
-        level: "warn",
-        stream: {
-          write(line: string) {
-            logLines.push(line);
-          },
-        },
-      },
-    });
+    const diagnostics: unknown[] = [];
+    const app = Fastify({ logger: false });
     await registerReviewContextAttestationV2Routes(app, {
       ...runtime,
+      recordProtocolRejection: (diagnostic) => diagnostics.push(diagnostic),
       openGateway: {
         capabilityEnabled: true,
         execute: async () => {
@@ -213,23 +205,55 @@ describe("Review Action v2 route registrars", () => {
     });
 
     expect(response.statusCode).toBe(412);
-    expect(
-      logLines.some((line) => {
-        const entry = JSON.parse(line) as Record<string, unknown>;
-        return (
-          entry.msg === "Review Action v2 request rejected" &&
-          entry.operationId ===
-            ReviewActionV2OperationId.ReviewContextGatewayOpen &&
-          entry.protocolErrorCode ===
-            ReviewActionV2ProtocolErrorCode.StalePrecondition &&
-          JSON.stringify(entry.protocolIssues) ===
-            JSON.stringify(["context_checkout_tree_mismatch"]) &&
-          entry.statusCode === 412
-        );
-      }),
-    ).toBe(true);
-    expect(logLines.join("\n")).not.toContain("leaseCapability");
-    expect(logLines.join("\n")).not.toContain("authorizationToken");
+    expect(diagnostics).toEqual([
+      {
+        operationId: ReviewActionV2OperationId.ReviewContextGatewayOpen,
+        protocolErrorCode:
+          ReviewActionV2ProtocolErrorCode.StalePrecondition,
+        protocolIssues: ["context_checkout_tree_mismatch"],
+        requestId:
+          reviewActionV2GoldenFixtures.review_context_gateway_open.request
+            .requestId,
+        statusCode: 412,
+      },
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain("leaseCapability");
+    expect(JSON.stringify(diagnostics)).not.toContain("authorizationToken");
+    await app.close();
+  });
+
+  it("preserves the protocol response when the diagnostic sink fails", async () => {
+    const app = Fastify({ logger: false });
+    await registerReviewContextAttestationV2Routes(app, {
+      ...runtime,
+      recordProtocolRejection: () => {
+        throw new Error("diagnostic sink unavailable");
+      },
+      openGateway: {
+        capabilityEnabled: true,
+        execute: async () => {
+          throw new ReviewActionV2RouteFailure(
+            412,
+            ReviewActionV2ProtocolErrorCode.StalePrecondition,
+            ["context_checkout_tree_mismatch"],
+          );
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v2/review-context/gateway/open",
+      payload: reviewActionV2GoldenFixtures.review_context_gateway_open.request,
+    });
+
+    expect(response.statusCode).toBe(412);
+    expect(response.json()).toMatchObject({
+      error: {
+        errorCode: ReviewActionV2ProtocolErrorCode.StalePrecondition,
+        details: { issues: ["context_checkout_tree_mismatch"] },
+      },
+    });
     await app.close();
   });
 

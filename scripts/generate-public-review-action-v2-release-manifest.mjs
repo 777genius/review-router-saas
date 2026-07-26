@@ -25,7 +25,6 @@ export function parseArgs(argv, cwd = process.cwd()) {
     expectedHead: "",
     runtimeEntrypointPath: PUBLIC_RUNTIME_BUNDLE,
     contextGatewayEntrypointPath: PUBLIC_CONTEXT_GATEWAY_BUNDLE,
-    contextGatewayPolicyVersion: "",
     output: "",
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -45,8 +44,6 @@ export function parseArgs(argv, cwd = process.cwd()) {
       values.runtimeEntrypointPath = next();
     else if (option === "--context-gateway-entrypoint")
       values.contextGatewayEntrypointPath = next();
-    else if (option === "--context-gateway-policy-version")
-      values.contextGatewayPolicyVersion = next();
     else if (option === "--output") values.output = path.resolve(next());
     else if (option === "--help" || option === "-h") {
       return { help: true };
@@ -67,9 +64,6 @@ export function parseArgs(argv, cwd = process.cwd()) {
     values.contextGatewayEntrypointPath,
     "--context-gateway-entrypoint",
   );
-  if (!values.contextGatewayPolicyVersion) {
-    throw new Error("missing required --context-gateway-policy-version");
-  }
   return Object.freeze(values);
 }
 
@@ -108,7 +102,7 @@ export function generateReleaseManifest(input) {
     actionCommitSha,
     runtimeEntrypointPath: verified.runtimeEntrypointPath,
     runtimeEntrypointDigest: verified.runtimeEntrypointDigest,
-    contextGatewayPolicyVersion: input.contextGatewayPolicyVersion,
+    contextGatewayPolicyVersion: verified.contextGatewayPolicyVersion,
     contextGatewayEntrypointPath: verified.contextGatewayEntrypointPath,
     contextGatewayEntrypointDigest: verified.contextGatewayEntrypointDigest,
   });
@@ -143,8 +137,6 @@ Options:
   --runtime-entrypoint <path>  Committed runtime bundle. Default: ${PUBLIC_RUNTIME_BUNDLE}
   --context-gateway-entrypoint <path>
                                Committed context gateway bundle. Default: ${PUBLIC_CONTEXT_GATEWAY_BUNDLE}
-  --context-gateway-policy-version <id>
-                               Required policy identity embedded by the gateway bundle.
   --output <path>              Write-once manifest path outside the Action repository.
   --help                       Show this help.
 

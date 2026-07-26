@@ -5,6 +5,7 @@ import {
   type PrismaClient,
 } from "@reviewrouter/platform-db";
 import { ReviewObservationAcceptPersistenceStatus } from "../application/ports/review-observation-ports";
+import { ReviewObservationQualityFlag } from "../domain/review-evidence-primitives";
 import { PrismaReviewObservationStore } from "../infrastructure/prisma/prisma-review-observation-store";
 import { hash, observation } from "./fixtures";
 
@@ -130,6 +131,29 @@ describeWithDatabase("Prisma review evidence observations", () => {
     await expect(
       prisma.reviewEvidenceObservation.count({ where: { workspaceId } }),
     ).resolves.toBe(0);
+  });
+
+  it("round-trips every supported observation quality flag", async () => {
+    const qualityFlags = [
+      ReviewObservationQualityFlag.ModelFallback,
+      ReviewObservationQualityFlag.LowConfidence,
+      ReviewObservationQualityFlag.ProviderWarning,
+      ReviewObservationQualityFlag.ContextInspectionIncomplete,
+      ReviewObservationQualityFlag.ContextAttestationUnavailable,
+      ReviewObservationQualityFlag.CrossRevisionReuseDisabled,
+    ] as const;
+    const current = candidate("evidence-observation-quality-flags", {
+      attemptId: "attempt-quality-flags",
+      qualityFlags,
+    });
+
+    await expect(store.acceptObservation(current)).resolves.toMatchObject({
+      status: ReviewObservationAcceptPersistenceStatus.Accepted,
+      observation: { qualityFlags },
+    });
+    await expect(store.findById(current.observationId)).resolves.toMatchObject({
+      qualityFlags,
+    });
   });
 
   function candidate(

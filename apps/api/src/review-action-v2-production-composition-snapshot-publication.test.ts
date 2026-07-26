@@ -569,7 +569,7 @@ const artifact: FinalizedReviewProjectionArtifact = {
   findingCount: 0,
   lifecycleStateHash: hash("4"),
   commandLedgerWatermark: 2n,
-  projectionPolicyVersion: "projection-v1",
+  projectionPolicyVersion: "review-projection-policy.v3-t0",
   publicationPermit: {
     workspaceId: authorization.workspaceId,
     repositoryConnectionId: authorization.repositoryConnectionId,
