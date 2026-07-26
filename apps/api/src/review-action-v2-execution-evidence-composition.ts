@@ -513,7 +513,12 @@ async function acquireLease(
   ) {
     return {
       statusCode: 200 as const,
-      result: { status: mapInvocationFlightAcquire(result.status) },
+      result: {
+        status: mapInvocationFlightAcquire(result.status),
+        rejectionReason: mapInvocationFlightAcquireRejectionReason(
+          result.status,
+        ),
+      },
     };
   }
   if (!result.flight) throw new Error("review_invocation_flight_owner_missing");
@@ -2071,6 +2076,18 @@ function mapInvocationFlightAcquire(
     case AcquireOrJoinInvocationFlightStatus.NotRunnable:
     case AcquireOrJoinInvocationFlightStatus.IdempotencyConflict:
       return ReviewInvocationLeaseResultStatus.Rejected;
+  }
+}
+function mapInvocationFlightAcquireRejectionReason(
+  status: AcquireOrJoinInvocationFlightStatus,
+) {
+  switch (status) {
+    case AcquireOrJoinInvocationFlightStatus.AttemptBudgetExhausted:
+    case AcquireOrJoinInvocationFlightStatus.NotRunnable:
+    case AcquireOrJoinInvocationFlightStatus.IdempotencyConflict:
+      return status;
+    default:
+      return null;
   }
 }
 function leaseTransitionResult(

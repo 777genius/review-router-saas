@@ -332,6 +332,10 @@ export const reviewExecutionsActionContractFragment = Object.freeze({
             name: "resultReportUntil",
             type: "nullable_timestamp",
           }),
+          Object.freeze({
+            name: "rejectionReason",
+            type: "nullable_identifier",
+          }),
         ]),
       }),
       ...["renew", "release"].map((transition) =>

@@ -602,6 +602,60 @@ describe("Review Action v2 execution/evidence composition", () => {
     expect(issueLease).not.toHaveBeenCalled();
   });
 
+  it("returns a safe rejection reason when the invocation attempt budget is exhausted", async () => {
+    const capabilities = capabilityAdapter();
+    const issueLease = vi.spyOn(capabilities, "issueLease");
+    const acquire = vi.fn(async () => ({
+      status: AcquireOrJoinInvocationFlightStatus.AttemptBudgetExhausted,
+    }));
+    const prepared = manifest();
+    const identity = await buildProviderInvocationIdentity(digest, {
+      manifest: prepared,
+      providerVoteIdentityHash: hash("c"),
+    });
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvocationLeaseAcquire,
+      {
+        ...envelope("attempt-budget-exhausted"),
+        authorizationToken: "authorization-token",
+        idempotencyKey: "attempt-budget-exhausted",
+        requestBodyHash: hash("0"),
+        executionId: snapshot.execution.executionId,
+        workSlotId: "slot-1",
+        purpose: ReviewInvocationLeasePurpose.ProviderExecution,
+        manifestCanonicalJson:
+          serializeProviderInvocationManifestCanonicalWireJson(prepared),
+        manifestKey: identity.manifestKey,
+        providerVoteIdentityHash: hash("c"),
+        providerInvocationKey: identity.providerInvocationKey,
+        acquireRequestId: "attempt-budget-exhausted",
+        ownerIdHash: sha("owner"),
+      } satisfies ReviewInvocationLeaseAcquireRequest,
+    );
+    const d = executionDependencies({
+      capabilities,
+      acquire,
+      leaseSafety: vi.fn(async () => ({
+        allowed: true,
+        decisionHash: hash("6"),
+      })),
+    });
+
+    await expect(
+      createReviewActionV2ExecutionHandlers(d).acquireLease.execute(request),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      result: {
+        status: ReviewInvocationLeaseResultStatus.Rejected,
+        rejectionReason:
+          AcquireOrJoinInvocationFlightStatus.AttemptBudgetExhausted,
+      },
+    });
+    expect(acquire).toHaveBeenCalledTimes(1);
+    expect(d.executionQueries.findLease).not.toHaveBeenCalled();
+    expect(issueLease).not.toHaveBeenCalled();
+  });
+
   it("surfaces a stale fencing term without applying a renewal", async () => {
     const capabilities = capabilityAdapter();
     const leaseCapability = await capabilities.issueLease(
