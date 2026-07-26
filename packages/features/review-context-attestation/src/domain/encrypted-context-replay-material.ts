@@ -1,5 +1,5 @@
 export const contextReplayMaterialEncryptionAlgorithm = "aes-256-gcm-v1";
-export const contextReplayMaterialMaxPlaintextBytes = 512 * 1024;
+export const contextReplayMaterialMaxPlaintextBytes = 2 * 1024 * 1024;
 
 export type EncryptedContextReplayMaterial = Readonly<{
   sessionId: string;
