@@ -15,6 +15,8 @@ import {
   ReviewPublicationCapability,
   ReviewPublicationAttemptState,
   ReviewPublicationTerminalOutcome,
+  RequestReviewPublicationStatus,
+  type RequestReviewPublicationCommand,
 } from "@reviewrouter/features-review-publishing/v2";
 import { createReviewPublicationV2Application } from "@reviewrouter/features-review-publishing/v2/composition";
 import {
@@ -256,6 +258,27 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     expect(publicationRequestSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("reloads the winning operation identity after a concurrent writer conflict", async () => {
+    const publicationRepository = new ConcurrentIdentityWinnerRepository();
+    const routes = createRoutes(publicationRepository);
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      artifact.publicationPermit,
+      now,
+    );
+
+    await expect(
+      routes.publication.request!.execute(
+        await publicationRequest(publicationPermit),
+      ),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Restored,
+      },
+    });
+    expect(publicationRepository.requestCalls).toBe(2);
+  });
+
   it("returns null poll delay for terminal publication responses", async () => {
     const publicationRepository = new InMemoryReviewPublicationRepository();
     const routes = createRoutes(publicationRepository);
@@ -442,6 +465,56 @@ function createRoutes(
     contextPolicy,
     now: () => now,
   });
+}
+
+class ConcurrentIdentityWinnerRepository extends InMemoryReviewPublicationRepository {
+  requestCalls = 0;
+
+  override async request(command: RequestReviewPublicationCommand) {
+    this.requestCalls += 1;
+    if (this.requestCalls === 1) {
+      const winner = attemptScopedCommand(command);
+      const applied = await super.request(winner);
+      if (applied.status !== RequestReviewPublicationStatus.Applied) {
+        throw new Error("test_concurrent_winner_not_applied");
+      }
+    }
+    return super.request(command);
+  }
+}
+
+function attemptScopedCommand(
+  command: RequestReviewPublicationCommand,
+): RequestReviewPublicationCommand {
+  const legacyPrefix = `review-publication:${command.permit.projectionHash}:`;
+  const scopedPrefix = `review-publication:${command.publicationAttemptId}:${command.permit.projectionHash}:`;
+  const operations = command.operations.map((operation) => ({
+    ...operation,
+    publicationOperationId: operation.publicationOperationId.replace(
+      legacyPrefix,
+      scopedPrefix,
+    ),
+    dependsOnOperationId:
+      operation.dependsOnOperationId?.replace(legacyPrefix, scopedPrefix) ??
+      null,
+  }));
+  const candidate = { ...command, operations };
+  return {
+    ...candidate,
+    requestHash: createHash("sha256")
+      .update(
+        canonicalJson({
+          publicationAttemptId: candidate.publicationAttemptId,
+          requestIdHash: candidate.requestIdHash,
+          permit: candidate.permit,
+          operations: candidate.operations,
+          createdAt: candidate.createdAt,
+          retainUntil: candidate.retainUntil,
+        }),
+        "utf8",
+      )
+      .digest("hex"),
+  };
 }
 
 async function publicationRequest(

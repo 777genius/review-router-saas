@@ -356,6 +356,8 @@ describe("review publication operation planning", () => {
       resolveReviewPublicationOperationIdentityVersion({
         publicationAttemptId,
         projectionHash,
+        newAttemptVersion:
+          ReviewPublicationOperationIdentityVersion.LegacyProjectionV1,
         existingOperationIds: [
           `review-publication:${projectionHash}:summary:0`,
         ],
@@ -365,6 +367,8 @@ describe("review publication operation planning", () => {
       resolveReviewPublicationOperationIdentityVersion({
         publicationAttemptId,
         projectionHash,
+        newAttemptVersion:
+          ReviewPublicationOperationIdentityVersion.LegacyProjectionV1,
         existingOperationIds: [
           `review-publication:${publicationAttemptId}:${projectionHash}:summary:0`,
         ],
@@ -374,9 +378,20 @@ describe("review publication operation planning", () => {
       resolveReviewPublicationOperationIdentityVersion({
         publicationAttemptId,
         projectionHash,
+        newAttemptVersion:
+          ReviewPublicationOperationIdentityVersion.LegacyProjectionV1,
         existingOperationIds: ["review-publication:unknown:summary:0"],
       }),
     ).toThrow(ReviewPublicationPlanningErrorCode.OperationIdentityInvalid);
+    expect(
+      resolveReviewPublicationOperationIdentityVersion({
+        publicationAttemptId,
+        projectionHash,
+        newAttemptVersion:
+          ReviewPublicationOperationIdentityVersion.LegacyProjectionV1,
+        existingOperationIds: null,
+      }),
+    ).toBe(ReviewPublicationOperationIdentityVersion.LegacyProjectionV1);
   });
 });
 

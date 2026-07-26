@@ -31,6 +31,7 @@ import {
   renderCanonicalReviewPublication,
   resolveReviewPublicationRenderPolicyVersion,
   resolveReviewPublicationOperationIdentityVersion,
+  currentReviewPublicationOperationIdentityWriteVersion,
   planReviewPublicationOperations,
   publishedReviewProjectionPublicationEnvelopeVersion,
   reviewPublicationLifecycleExpectationFromProjection,
@@ -407,6 +408,29 @@ async function requestPublication(
   let result;
   try {
     result = await dependencies.requestPublication(command);
+    if (
+      result.status === RequestReviewPublicationStatus.IdentityConflict ||
+      result.status === RequestReviewPublicationStatus.RequestConflict
+    ) {
+      const raced = await dependencies.publications.findById(
+        command.publicationAttemptId,
+      );
+      if (raced) {
+        const recovered = resolvePublicationCommand({
+          artifact,
+          envelope,
+          limits: publicationLimits(
+            artifact.publicationPermit.producerReleaseId,
+            limits,
+          ),
+          publicationAttemptId: command.publicationAttemptId,
+          existing: raced,
+        });
+        if (recovered.requestHash !== command.requestHash) {
+          result = await dependencies.requestPublication(recovered);
+        }
+      }
+    }
   } catch (error) {
     if (error instanceof ReviewPublicationGateRejectedError) {
       throw routeFailure(
@@ -959,6 +983,8 @@ function resolvePublicationCommand(input: {
             input.existing?.attempt.operations.map(
               (operation) => operation.publicationOperationId,
             ) ?? null,
+          newAttemptVersion:
+            currentReviewPublicationOperationIdentityWriteVersion,
         }),
       },
       envelope: input.envelope,

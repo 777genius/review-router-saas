@@ -11,6 +11,7 @@ import {
   ReviewPublicationAttemptState,
   ReviewPublicationProjectionCoverage,
   ReviewPublicationTerminalOutcome,
+  currentReviewPublicationOperationIdentityWriteVersion,
   effectiveReviewPublicationOutcome,
   resolveReviewPublicationOperationIdentityVersion,
   type PublishedReviewProjectionPublicationEnvelope,
@@ -148,6 +149,8 @@ export class DeterministicReviewPublicationRequestFactory {
             existing?.attempt.operations.map(
               (operation) => operation.publicationOperationId,
             ) ?? null,
+          newAttemptVersion:
+            currentReviewPublicationOperationIdentityWriteVersion,
         }),
       },
       envelope,
@@ -214,12 +217,23 @@ export class ReviewCompletionPublicationContextAdapter implements ReviewCompleti
     if (!snapshot) {
       throw new Error("review_completion_finalized_execution_unavailable");
     }
-    const command = await this.requestFactory.build(snapshot);
+    let command = await this.requestFactory.build(snapshot);
     if (!command) {
       throw new Error("review_completion_publication_plan_unavailable");
     }
     assertPublicationCommandMatchesArtifact(command, snapshot.artifact);
-    const result = await this.requests.request(command);
+    let result = await this.requests.request(command);
+    if (
+      result.status === RequestReviewPublicationStatus.IdentityConflict ||
+      result.status === RequestReviewPublicationStatus.RequestConflict
+    ) {
+      const recovered = await this.requestFactory.build(snapshot);
+      if (recovered && recovered.requestHash !== command.requestHash) {
+        command = recovered;
+        assertPublicationCommandMatchesArtifact(command, snapshot.artifact);
+        result = await this.requests.request(command);
+      }
+    }
     if (
       result.status !== RequestReviewPublicationStatus.Applied &&
       result.status !== RequestReviewPublicationStatus.Restored

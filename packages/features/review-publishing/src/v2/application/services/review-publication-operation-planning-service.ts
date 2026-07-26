@@ -1,6 +1,7 @@
 import {
   ReviewPublicationPlanningError,
   ReviewPublicationPlanningErrorCode,
+  ReviewPublicationOperationIdentityVersion,
   assertPublishedReviewProjectionPublicationEnvelopeIdentity,
   planReviewPublicationOperations,
   type PublishedReviewProjectionPublicationEnvelope,
@@ -11,6 +12,11 @@ import type {
   ReviewPublicationOperationPlanningPort,
   ReviewPublicationReleaseLimitsQueryPort,
 } from "../ports/review-publication-operation-planning-port";
+
+// Reader-first rollout: switch this to AttemptScopedV2 only after every
+// production API and worker can restore both identity versions.
+export const currentReviewPublicationOperationIdentityWriteVersion =
+  ReviewPublicationOperationIdentityVersion.LegacyProjectionV1;
 
 export class ReviewPublicationOperationPlanningService implements ReviewPublicationOperationPlanningPort {
   constructor(

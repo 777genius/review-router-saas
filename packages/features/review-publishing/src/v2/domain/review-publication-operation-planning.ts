@@ -294,6 +294,7 @@ export function resolveReviewPublicationOperationIdentityVersion(input: {
   readonly publicationAttemptId: string;
   readonly projectionHash: string;
   readonly existingOperationIds: readonly string[] | null;
+  readonly newAttemptVersion: ReviewPublicationOperationIdentityVersion;
 }): ReviewPublicationOperationIdentityVersion {
   assertIdentifier(
     input.publicationAttemptId,
@@ -301,7 +302,7 @@ export function resolveReviewPublicationOperationIdentityVersion(input: {
   );
   assertHash(input.projectionHash, "publication_projection_hash_invalid");
   if (input.existingOperationIds === null) {
-    return ReviewPublicationOperationIdentityVersion.AttemptScopedV2;
+    return input.newAttemptVersion;
   }
   if (input.existingOperationIds.length === 0) {
     fail(ReviewPublicationPlanningErrorCode.OperationIdentityInvalid);

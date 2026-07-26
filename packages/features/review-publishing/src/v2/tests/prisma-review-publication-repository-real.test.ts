@@ -15,9 +15,14 @@ import {
   ReviewPublicationEffectStrategy,
   ReviewPublicationExternalEffectKind,
   ReviewPublicationKind,
+  ReviewPublicationOperationIdentityVersion,
   ReviewPublicationOperationRole,
+  ReviewPublicationProjectionCoverage,
+  ReviewPublicationSummarySemantic,
   ReviewPublicationTerminalOutcome,
   TerminalizeUnknownReviewPublicationStatus,
+  planReviewPublicationOperations,
+  publishedReviewProjectionPublicationEnvelopeVersion,
   type ReviewPublicationOperationPlan,
   type ReviewPublicationOperationCapabilityFacts,
   type ReviewPublicationPermitIdentity,
@@ -77,23 +82,88 @@ describeWithDatabase("PrismaReviewPublicationRepository real database", () => {
   });
 
   it("persists rerun attempts that share a projection with attempt-scoped operation identities", async () => {
-    const first = requestCommand(fixture, `same-projection-a-${randomUUID()}`);
+    const publicationNotAfter = new Date(Date.now() + 3_600_000);
+    const firstBase = requestCommand(
+      fixture,
+      `same-projection-a-${randomUUID()}`,
+      { publicationNotAfter },
+    );
     const secondBase = requestCommand(
       fixture,
       `same-projection-b-${randomUUID()}`,
+      { publicationNotAfter },
     );
+    const projectionHash = firstBase.permit.projectionHash;
+    const envelope = {
+      envelopeVersion: publishedReviewProjectionPublicationEnvelopeVersion,
+      producerReleaseId: fixture.producerReleaseId,
+      protocolLimitsProfileId: fixture.protocolLimitsProfileId,
+      limitsDigest: digest(`limits-${fixture.protocolLimitsProfileId}`),
+      projectionHash,
+      coverage: ReviewPublicationProjectionCoverage.Completed,
+      targetCommitId: firstBase.permit.reviewedHeadSha,
+      reviewRevisionHash: firstBase.permit.reviewRevisionHash,
+      renderPolicyVersion: 1,
+      publicationNotAfter,
+      summary: {
+        semantic: ReviewPublicationSummarySemantic.Findings,
+        markerHash: digest("same-projection-marker"),
+        bodyHash: digest("same-projection-body"),
+        bodyByteCount: 32,
+      },
+      managedCheck: null,
+      inlineReviews: [],
+      lifecycle: [],
+    } as const;
+    const planningLimits = {
+      producerReleaseId: fixture.producerReleaseId,
+      protocolLimitsProfileId: fixture.protocolLimitsProfileId,
+      limitsDigest: envelope.limitsDigest,
+      maxPublicationOperations: 10,
+      maxPublicationChunks: 10,
+      maxPublicationBodyBytes: 10_000,
+      maxReconciliationDurationMs: 60_000,
+    };
+    const firstOperations = planReviewPublicationOperations({
+      identity: {
+        publicationAttemptId: firstBase.publicationAttemptId,
+        version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+      },
+      envelope,
+      limits: planningLimits,
+    });
+    const first = {
+      ...firstBase,
+      operations: firstOperations,
+      requestHash: digest(
+        firstOperations
+          .map((operation) => operation.publicationOperationId)
+          .join("\0"),
+      ),
+    };
+    const secondPermit = {
+      ...secondBase.permit,
+      executionId: fixture.rerunExecutionId,
+      generation: 2n,
+      projectionHash,
+    };
+    const secondOperations = planReviewPublicationOperations({
+      identity: {
+        publicationAttemptId: secondBase.publicationAttemptId,
+        version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
+      },
+      envelope,
+      limits: planningLimits,
+    });
     const second = {
       ...secondBase,
-      permit: {
-        ...secondBase.permit,
-        executionId: fixture.rerunExecutionId,
-        generation: 2n,
-        projectionHash: first.permit.projectionHash,
-      },
-      operations: secondBase.operations.map((operation) => ({
-        ...operation,
-        publicationOperationId: `${secondBase.publicationAttemptId}:${operation.publicationKind}:${operation.chunkIndex}`,
-      })),
+      permit: secondPermit,
+      operations: secondOperations,
+      requestHash: digest(
+        secondOperations
+          .map((operation) => operation.publicationOperationId)
+          .join("\0"),
+      ),
     };
 
     await expect(repository.request(first)).resolves.toMatchObject({
