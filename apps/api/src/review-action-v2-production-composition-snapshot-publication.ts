@@ -417,24 +417,19 @@ async function requestPublication(
       result.status === RequestReviewPublicationStatus.IdentityConflict ||
       result.status === RequestReviewPublicationStatus.RequestConflict
     ) {
-      const raced = await dependencies.publications.findById(
-        command.publicationAttemptId,
-      );
-      if (raced) {
-        const recovered = resolvePublicationCommand({
-          artifact,
-          envelope,
-          limits: publicationLimits(
-            artifact.publicationPermit.producerReleaseId,
-            limits,
-          ),
-          publicationAttemptId: command.publicationAttemptId,
-          existing: raced,
-        });
-        if (recovered.requestHash !== command.requestHash) {
-          result = await dependencies.requestPublication(recovered);
-        }
-      }
+      const recovered = await recoverPublicationRequest({
+        artifact,
+        envelope,
+        limits: publicationLimits(
+          artifact.publicationPermit.producerReleaseId,
+          limits,
+        ),
+        publicationAttemptId: command.publicationAttemptId,
+        command,
+        publications: dependencies.publications,
+        requestPublication: dependencies.requestPublication,
+      });
+      if (recovered) return recovered;
     }
   } catch (error) {
     if (error instanceof ReviewPublicationGateRejectedError) {
@@ -444,6 +439,19 @@ async function requestPublication(
         error.reason,
       );
     }
+    const recovered = await recoverPublicationRequest({
+      artifact,
+      envelope,
+      limits: publicationLimits(
+        artifact.publicationPermit.producerReleaseId,
+        limits,
+      ),
+      publicationAttemptId: command.publicationAttemptId,
+      command,
+      publications: dependencies.publications,
+      requestPublication: dependencies.requestPublication,
+    });
+    if (recovered) return recovered;
     throw error;
   }
   switch (result.status) {
@@ -482,6 +490,71 @@ async function requestPublication(
         },
       } as const;
   }
+}
+
+async function recoverPublicationRequest(input: {
+  readonly artifact: FinalizedReviewProjectionArtifact;
+  readonly envelope: PublishedReviewProjectionPublicationEnvelope;
+  readonly limits: ReviewPublicationPlanningLimits;
+  readonly publicationAttemptId: string;
+  readonly command: ReturnType<typeof resolvePublicationCommand>;
+  readonly publications: ReviewPublicationAttemptQueryPort;
+  readonly requestPublication: ReturnType<
+    typeof createReviewPublicationV2Application
+  >["request"];
+}) {
+  const byId = await input.publications.findById(input.publicationAttemptId);
+  const byPermit =
+    byId?.attempt.publicationAttemptId === input.publicationAttemptId
+      ? null
+      : await input.publications.findByPermitIdentity(input.command.permit);
+  for (const existing of [byId, byPermit]) {
+    if (!existing) continue;
+    if (existing.attempt.requestHash === input.command.requestHash) {
+      return restoredPublicationRequest(existing);
+    }
+    const recovered = resolvePublicationCommand({
+      artifact: input.artifact,
+      envelope: input.envelope,
+      limits: input.limits,
+      publicationAttemptId: input.publicationAttemptId,
+      existing,
+    });
+    if (recovered.requestHash === input.command.requestHash) continue;
+    try {
+      const result = await input.requestPublication(recovered);
+      if (
+        result.status === RequestReviewPublicationStatus.Applied ||
+        result.status === RequestReviewPublicationStatus.Restored
+      ) {
+        return restoredPublicationAttempt(result.attempt);
+      }
+    } catch {
+      // A racing writer can still make the request idempotent; fall through.
+    }
+  }
+  return null;
+}
+
+function restoredPublicationRequest(view: ReviewPublicationAttemptView) {
+  return restoredPublicationAttempt(view.attempt);
+}
+
+function restoredPublicationAttempt(
+  attempt: ReviewPublicationAttemptView["attempt"],
+) {
+  return {
+    statusCode: 200,
+    result: {
+      status: ReviewPublicationRequestResultStatus.Restored,
+      publicationAttemptId: attempt.publicationAttemptId,
+      publicationState: attempt.state,
+      pollAfterMs:
+        attempt.state === ReviewPublicationAttemptState.Terminal
+          ? null
+          : 1_000,
+    },
+  } as const;
 }
 
 async function readPublicationStatus(

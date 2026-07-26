@@ -279,6 +279,27 @@ describe("Review Action v2 snapshot/publication production handlers", () => {
     expect(publicationRepository.requestCalls).toBe(2);
   });
 
+  it("restores a publication request when persistence succeeded but the response was lost", async () => {
+    const publicationRepository = new LostPublicationResponseRepository();
+    const routes = createRoutes(publicationRepository);
+    const publicationPermit = await capabilityAdapter().issuePublicationPermit(
+      artifact.publicationPermit,
+      now,
+    );
+
+    await expect(
+      routes.publication.request!.execute(
+        await publicationRequest(publicationPermit),
+      ),
+    ).resolves.toMatchObject({
+      statusCode: 200,
+      result: {
+        status: ReviewPublicationRequestResultStatus.Restored,
+      },
+    });
+    expect(publicationRepository.requestCalls).toBe(1);
+  });
+
   it("returns null poll delay for terminal publication responses", async () => {
     const publicationRepository = new InMemoryReviewPublicationRepository();
     const routes = createRoutes(publicationRepository);
@@ -478,6 +499,22 @@ class ConcurrentIdentityWinnerRepository extends InMemoryReviewPublicationReposi
       if (applied.status !== RequestReviewPublicationStatus.Applied) {
         throw new Error("test_concurrent_winner_not_applied");
       }
+    }
+    return super.request(command);
+  }
+}
+
+class LostPublicationResponseRepository extends InMemoryReviewPublicationRepository {
+  requestCalls = 0;
+
+  override async request(command: RequestReviewPublicationCommand) {
+    this.requestCalls += 1;
+    if (this.requestCalls === 1) {
+      const applied = await super.request(command);
+      if (applied.status !== RequestReviewPublicationStatus.Applied) {
+        throw new Error("test_publication_not_applied");
+      }
+      throw new Error("test_publication_response_lost");
     }
     return super.request(command);
   }
