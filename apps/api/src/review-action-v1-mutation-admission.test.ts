@@ -31,6 +31,53 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
     ).rejects.toThrow(`legacy_review_mutation_blocked:${mode}`);
   });
 
+  it.each([ReviewMutationMode.V1Draining, ReviewMutationMode.V2Active])(
+    "allows managed v2 session-derived comment tokens in %s",
+    async (mode) => {
+      for (const input of [
+        commentTokenInput(
+          "workflow_dispatch",
+          ".github/workflows/reviewrouter-codex.yml",
+        ),
+        commentTokenInput(
+          "issue_comment",
+          ".github/workflows/reviewrouter-interaction.yml",
+        ),
+      ]) {
+        await expect(
+          createAdmission(mode).assertLegacyReviewMutationAllowed(input),
+        ).resolves.toBeUndefined();
+      }
+    },
+  );
+
+  it("keeps session-derived comment tokens fail-closed while paused", async () => {
+    await expect(
+      createAdmission(
+        ReviewMutationMode.Paused,
+      ).assertLegacyReviewMutationAllowed(
+        commentTokenInput(
+          "workflow_dispatch",
+          ".github/workflows/reviewrouter-codex.yml",
+        ),
+      ),
+    ).rejects.toThrow(
+      `legacy_review_mutation_blocked:${ReviewMutationMode.Paused}`,
+    );
+  });
+
+  it("blocks unmanaged session-derived comment tokens", async () => {
+    await expect(
+      createAdmission(
+        ReviewMutationMode.V2Active,
+      ).assertLegacyReviewMutationAllowed(
+        commentTokenInput("pull_request", ".github/workflows/reviewrouter.yml"),
+      ),
+    ).rejects.toThrow(
+      `legacy_review_mutation_blocked:${ReviewMutationMode.V2Active}`,
+    );
+  });
+
   it("allows legacy mutation before an authority exists and while v1 is open", async () => {
     await expect(
       createAdmission(null).assertLegacyReviewMutationAllowed(
@@ -191,6 +238,19 @@ function sessionExchangeInput(
     eventName,
     workflowPath,
     workflowSha,
+  } as const;
+}
+
+function commentTokenInput(
+  eventName: GitHubActionsOidcClaims["event_name"],
+  workflowPath: string,
+) {
+  return {
+    operation: LegacyReviewMutationOperation.CommentToken,
+    githubRepositoryId: "123",
+    repositoryFullName: "777genius/example",
+    eventName,
+    workflowPath,
   } as const;
 }
 

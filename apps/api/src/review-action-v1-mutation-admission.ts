@@ -55,12 +55,28 @@ export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMuta
     if (!authority || authority.mode === ReviewMutationMode.V1Open) return;
     if (
       authority.mode !== ReviewMutationMode.Paused &&
-      (await this.isVerifiedManagedV2SessionBootstrap(input))
+      (this.isManagedV2SessionDerivedMutation(input) ||
+        (await this.isVerifiedManagedV2SessionBootstrap(input)))
     ) {
       return;
     }
 
     throw new Error(`legacy_review_mutation_blocked:${authority.mode}`);
+  }
+
+  private isManagedV2SessionDerivedMutation(
+    input: LegacyReviewMutationAdmissionInput,
+  ): boolean {
+    if (input.operation !== LegacyReviewMutationOperation.CommentToken) {
+      return false;
+    }
+    if (!input.eventName || !input.workflowPath) {
+      return false;
+    }
+    return isManagedV2SessionBootstrapSource({
+      eventName: input.eventName,
+      workflowPath: input.workflowPath,
+    });
   }
 
   private async isVerifiedManagedV2SessionBootstrap(

@@ -25,6 +25,8 @@ export type LegacyReviewMutationAdmissionInput =
       >;
       readonly githubRepositoryId: string;
       readonly repositoryFullName: string;
+      readonly eventName?: GitHubActionsOidcClaims["event_name"];
+      readonly workflowPath?: string;
     };
 
 export interface LegacyReviewMutationAdmissionPort {

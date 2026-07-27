@@ -51,6 +51,8 @@ export async function issueActionCommentToken(
       operation: LegacyReviewMutationOperation.CommentToken,
       githubRepositoryId: repository.githubRepositoryId,
       repositoryFullName: repository.fullName,
+      eventName: session.eventName,
+      ...(session.workflowPath ? { workflowPath: session.workflowPath } : {}),
     },
   );
 
