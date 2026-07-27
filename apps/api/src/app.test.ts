@@ -868,6 +868,7 @@ class InMemoryCommentTokenIssuer implements GitHubAppCommentTokenIssuerPort {
         contents: "read" as const,
         pullRequests: "write" as const,
         issues: "write" as const,
+        statuses: "write" as const,
       },
     };
   }
@@ -1949,6 +1950,7 @@ describe("API app", () => {
         contents: "read",
         pullRequests: "write",
         issues: "write",
+        statuses: "write",
       },
     });
     expect(commentTokens.calls).toEqual([

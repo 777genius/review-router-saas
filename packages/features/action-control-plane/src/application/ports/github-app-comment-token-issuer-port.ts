@@ -12,6 +12,7 @@ export type IssuedGitHubAppCommentToken = {
     readonly contents: "read";
     readonly pullRequests: "write";
     readonly issues: "write";
+    readonly statuses: "write";
   };
 };
 

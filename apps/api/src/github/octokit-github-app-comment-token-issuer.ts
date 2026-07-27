@@ -12,6 +12,7 @@ type InstallationTokenResponse = {
     readonly contents?: unknown;
     readonly pull_requests?: unknown;
     readonly issues?: unknown;
+    readonly statuses?: unknown;
   };
 };
 
@@ -47,6 +48,7 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
         contents: "read",
         pull_requests: "write",
         issues: "write",
+        statuses: "write",
       },
     })) as InstallationTokenResponse;
     if (typeof data.token !== "string" || data.token.length === 0) {
@@ -62,7 +64,8 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
     if (
       data.permissions?.contents !== "read" ||
       data.permissions?.pull_requests !== "write" ||
-      data.permissions?.issues !== "write"
+      data.permissions?.issues !== "write" ||
+      data.permissions?.statuses !== "write"
     ) {
       throw new Error("comment_token_permissions_mismatch");
     }
@@ -75,6 +78,7 @@ export class OctokitGitHubAppCommentTokenIssuer implements GitHubAppCommentToken
         contents: "read",
         pullRequests: "write",
         issues: "write",
+        statuses: "write",
       },
     };
   }
