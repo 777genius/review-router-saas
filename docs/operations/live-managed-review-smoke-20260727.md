@@ -12,3 +12,5 @@ Refresh after reseeding the sandbox Codex OAuth secret with account-l.
 Refresh after completing the official rotating Codex OAuth reseed flow.
 
 Refresh after reseeding with account-d for provider quota validation.
+
+Refresh after reseeding with account-b for provider quota validation.
