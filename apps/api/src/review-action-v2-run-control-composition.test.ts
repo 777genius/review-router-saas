@@ -247,7 +247,13 @@ describe("Review Action v2 run-control composition", () => {
       actionRepositories: repository,
       repositoryIdentities: kit.store,
       producerReleases: kit.store,
-      admissionFacts: { resolve: async () => facts },
+      admissionFacts: {
+        resolve: async () => {
+          const release = await kit.store.findProducerReleaseById("release_v2");
+          if (!release) throw new Error("test_release_missing");
+          return { revision: facts, producerRelease: release };
+        },
+      },
       revisionHashes,
       authorizations: kit.control.authorizations,
       digest: kit.digest,
@@ -331,12 +337,13 @@ describe("Review Action v2 run-control composition", () => {
       scmRepositoryIdentityId: "scm-identity-1",
     });
 
-    expect(resolved).toMatchObject({
+    expect(resolved.revision).toMatchObject({
       pullRequestNumber: 42,
       producerReleaseId: "release_v2",
       producerActionCommitSha: actionSha,
       trustDomain: ReviewTrustDomain.TrustedManaged,
     });
+    expect(resolved.producerRelease.producerReleaseId).toBe("release_v2");
     expect(revisionInputs).toEqual([
       expect.objectContaining({
         owner: "777genius",
@@ -417,16 +424,17 @@ describe("Review Action v2 run-control composition", () => {
       requestedIntentRequired: true,
     });
 
-    await expect(
-      admissionFacts.resolve({
-        claims: oidcClaims("bound-intent-jti"),
-        repository: new TestActionRepositories().repository!,
-        scmRepositoryIdentityId: "scm-identity-1",
-      }),
-    ).resolves.toMatchObject({
+    const resolved = await admissionFacts.resolve({
+      claims: oidcClaims("bound-intent-jti"),
+      repository: new TestActionRepositories().repository!,
+      scmRepositoryIdentityId: "scm-identity-1",
+    });
+
+    expect(resolved.revision).toMatchObject({
       pullRequestNumber: facts.pullRequestNumber,
       reviewRevisionHash: facts.reviewRevisionHash,
     });
+    expect(resolved.producerRelease.producerReleaseId).toBe("release_v2");
     expect(revisionInputs).toEqual([
       expect.objectContaining({
         sourceRunId: null,
@@ -596,7 +604,17 @@ describe("Review Action v2 run-control composition", () => {
 
   it("rejects unknown producer releases", async () => {
     facts = { ...facts, producerReleaseId: "missing_release" };
-    const handlers = createReviewActionV2RunControlHandlers(dependencies);
+    const release = await kit.store.findProducerReleaseById("release_v2");
+    if (!release) throw new Error("test_release_missing");
+    const handlers = createReviewActionV2RunControlHandlers({
+      ...dependencies,
+      admissionFacts: {
+        resolve: async () => ({
+          revision: facts,
+          producerRelease: { ...release, producerReleaseId: "missing_release" },
+        }),
+      },
+    });
 
     await expect(
       handlers.authorize!.execute(authorizeRequest()),

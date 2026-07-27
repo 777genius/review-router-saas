@@ -26,6 +26,7 @@ import {
 } from "../infrastructure/signed-capabilities/env-review-run-authorization-key-ring";
 import {
   ProducerDistributionKind,
+  ProducerReleaseState,
   ReviewCapabilityProfile,
 } from "../domain/review-run-control-types";
 import { createProducerRelease } from "../domain/producer-release";
@@ -146,6 +147,35 @@ describe("production run-authorization prerequisites", () => {
     ).resolves.toEqual({
       status: ProducerReleaseAttestationStatus.Unregistered,
     });
+  });
+
+  it("attests a configured immutable release before DB materialization", async () => {
+    const kit = createReviewRunControlTestKit();
+    const registry = new ConfiguredProducerReleaseAttestationRegistry(
+      [attestation()],
+      kit.store,
+    );
+
+    await expect(
+      registry.attest({
+        actionCommitSha: shaA,
+        expectedSchemaDigest: hashB,
+        expectedCanonicalizerDigest: hashC,
+      }),
+    ).resolves.toMatchObject({
+      status: ProducerReleaseAttestationStatus.Attested,
+      release: {
+        producerReleaseId: releaseCandidate.producerReleaseId,
+        state: ProducerReleaseState.Registered,
+      },
+    });
+    await expect(
+      registry.attest({
+        actionCommitSha: shaA,
+        expectedSchemaDigest: hashA,
+        expectedCanonicalizerDigest: hashC,
+      }),
+    ).resolves.toEqual({ status: ProducerReleaseAttestationStatus.Mismatch });
   });
 
   it("rejects a configured release after server-side revocation", async () => {

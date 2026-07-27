@@ -13,7 +13,10 @@ import {
   assertSha256,
   canonicalJson,
 } from "../domain/review-run-control-types";
-import { producerReleaseImmutableKey } from "../domain/producer-release";
+import {
+  createProducerRelease,
+  producerReleaseImmutableKey,
+} from "../domain/producer-release";
 
 export const reviewRunProducerReleaseAttestationsEnv =
   "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON";
@@ -52,18 +55,42 @@ export class ConfiguredProducerReleaseAttestationRegistry implements ProducerRel
     if (!configured) {
       return { status: ProducerReleaseAttestationStatus.Unregistered };
     }
+    if (
+      input.expectedSchemaDigest !== configured.schemaDigest ||
+      input.expectedCanonicalizerDigest !== configured.canonicalizerDigest
+    ) {
+      return { status: ProducerReleaseAttestationStatus.Mismatch };
+    }
     const release = await this.releases.findProducerReleaseById(
       configured.producerReleaseId,
     );
     if (!release) {
-      return { status: ProducerReleaseAttestationStatus.Unregistered };
+      return {
+        status: ProducerReleaseAttestationStatus.Attested,
+        release: createProducerRelease(
+          {
+            producerReleaseId: configured.producerReleaseId,
+            distributionKind: configured.distributionKind,
+            actionCommitSha: configured.actionCommitSha,
+            runtimeCommitSha: configured.runtimeCommitSha,
+            wrapperEntrypointDigest: configured.wrapperEntrypointDigest,
+            runtimeEntrypointDigest: configured.runtimeEntrypointDigest,
+            contextGatewayPolicyVersion: configured.contextGatewayPolicyVersion,
+            contextGatewayEntrypointDigest:
+              configured.contextGatewayEntrypointDigest,
+            schemaDigest: configured.schemaDigest,
+            capabilityProfile: configured.capabilityProfile,
+            protocolLimitsProfileId: configured.protocolLimitsProfileId,
+            operationalSloProfileId: configured.operationalSloProfileId,
+          },
+          new Date(0),
+        ),
+      };
     }
     if (release.state !== ProducerReleaseState.Registered) {
       return { status: ProducerReleaseAttestationStatus.Revoked };
     }
     if (
-      input.expectedSchemaDigest !== configured.schemaDigest ||
-      input.expectedCanonicalizerDigest !== configured.canonicalizerDigest ||
       producerReleaseImmutableKey(release) !== configuredReleaseKey(configured)
     ) {
       return { status: ProducerReleaseAttestationStatus.Mismatch };
