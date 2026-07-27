@@ -23,7 +23,7 @@ describe("checked-in Codex OAuth workflow", () => {
       readCanonicalCodexRotatingT0WorkflowSourceMetadata(workflow),
     ).toEqual({
       actionRef:
-        "777genius/review-router@a9df633cb0890263d27dc5e132bfc3f45fc347f6",
+        "777genius/review-router@0048e0efe355dc1a5f2a060a63672215bac43024",
       apiUrl: "https://api.reviewrouter.site",
       providerInstanceId: "codex-rotating:1228690265",
       workflowSchemaVersion: 1,
