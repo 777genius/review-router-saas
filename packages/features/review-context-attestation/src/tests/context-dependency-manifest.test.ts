@@ -81,7 +81,7 @@ describe("ContextDependencyManifest", () => {
     );
   });
 
-  it("rejects traversal, duplicate operations, truncation and broken chains", () => {
+  it("rejects traversal, inconsistent duplicate operations, truncation and broken chains", () => {
     expect(() =>
       manifest([
         fileDependency({
@@ -102,9 +102,21 @@ describe("ContextDependencyManifest", () => {
           sequence: 2,
           previousEventHash: hash("1"),
           eventHash: hash("2"),
+          result: fileResult({ contentHash: hash("e") }),
         }),
       ]),
-    ).toThrow("context_dependency_operation_duplicate");
+    ).toThrow("context_dependency_operation_result_mismatch");
+
+    expect(
+      manifest([
+        fileDependency(),
+        fileDependency({
+          sequence: 2,
+          previousEventHash: hash("1"),
+          eventHash: hash("2"),
+        }),
+      ]).dependencies,
+    ).toHaveLength(2);
 
     expect(() =>
       manifest([

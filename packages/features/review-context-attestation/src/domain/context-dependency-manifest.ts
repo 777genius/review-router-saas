@@ -180,7 +180,7 @@ export function createContextDependencyManifest(
   const dependencies = candidate.dependencies.map((entry, index) =>
     normalizeDependencyEntry(entry, index + 1),
   );
-  assertUniqueOperationKeys(dependencies);
+  assertDuplicateOperationsConsistent(dependencies);
   assertEventChain(dependencies);
 
   const manifest = Object.freeze({
@@ -577,14 +577,27 @@ function normalizeGlobs(
   return Object.freeze(normalized);
 }
 
-function assertUniqueOperationKeys(
+function assertDuplicateOperationsConsistent(
   dependencies: readonly ContextDependencyEntry[],
 ): void {
-  if (
-    new Set(dependencies.map((dependency) => dependency.operationKey)).size !==
-    dependencies.length
-  ) {
-    throw new Error("context_dependency_operation_duplicate");
+  const seen = new Map<
+    string,
+    Readonly<{ operation: string; result: string }>
+  >();
+  for (const dependency of dependencies) {
+    const operation = canonicalContextDependencyOperation(dependency.operation);
+    const result = canonicalContextDependencyResult(dependency.result);
+    const previous = seen.get(dependency.operationKey);
+    if (!previous) {
+      seen.set(dependency.operationKey, Object.freeze({ operation, result }));
+      continue;
+    }
+    if (previous.operation !== operation) {
+      throw new Error("context_dependency_operation_key_collision");
+    }
+    if (previous.result !== result) {
+      throw new Error("context_dependency_operation_result_mismatch");
+    }
   }
 }
 
