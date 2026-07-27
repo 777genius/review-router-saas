@@ -415,7 +415,7 @@ describe("review publication operation planning", () => {
       }),
     ).toEqual({
       publicationAttemptId,
-      version: ReviewPublicationOperationIdentityVersion.LegacyProjectionV1,
+      version: ReviewPublicationOperationIdentityVersion.AttemptScopedV2,
     });
     expect(
       resolveCurrentReviewPublicationOperationIdentity({

@@ -201,7 +201,7 @@ describe("protocol v2 publication executor", () => {
     });
   });
 
-  it("uses a reconciliation-only claim after owner expiry and terminalizes an unproven outcome", async () => {
+  it("terminalizes an unproven outcome after owner expiry without reopening SCM past the reconcile window", async () => {
     const fixture = await createFixture({
       reconcileUntil: at("2026-07-23T12:05:00.000Z"),
       claimDurationMs: 1_000,
@@ -226,9 +226,9 @@ describe("protocol v2 publication executor", () => {
       },
     );
     expect(fixture.gateway.applyCalls).toBe(1);
-    expect(fixture.credentials.purposes.at(-1)).toBe(
-      ReviewV2ScmCredentialPurpose.ReconcileOnly,
-    );
+    expect(fixture.credentials.purposes).toEqual([
+      ReviewV2ScmCredentialPurpose.Mutate,
+    ]);
   });
 
   it("fails closed on marker identity conflicts and pagination cursor cycles", async () => {

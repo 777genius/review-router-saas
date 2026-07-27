@@ -183,7 +183,7 @@ describe("review v2 worker context adapters", () => {
     ).resolves.toMatchObject({ operations: legacyOperations });
   });
 
-  it("replans against the concurrent winning identity before retrying", async () => {
+  it("replans against a concurrent legacy winning identity before retrying", async () => {
     const snapshot = executionSnapshot();
     const attempts = new FakePublicationAttempts();
     const requests = new ConcurrentIdentityWinnerRequests(attempts);
@@ -207,7 +207,7 @@ describe("review v2 worker context adapters", () => {
       requests.commands[1]?.requestHash,
     );
     expect(requests.commands[1]?.operations).toEqual(
-      attemptScopedCommand(requests.commands[0]!).operations,
+      legacyProjectionScopedCommand(requests.commands[0]!).operations,
     );
   });
 
@@ -560,7 +560,9 @@ class ConcurrentIdentityWinnerRequests {
   async request(command: RequestReviewPublicationCommand) {
     this.commands.push(structuredClone(command));
     if (this.commands.length === 1) {
-      this.attempts.store(publicationView(attemptScopedCommand(command)));
+      this.attempts.store(
+        publicationView(legacyProjectionScopedCommand(command)),
+      );
       return {
         status: RequestReviewPublicationStatus.RequestConflict,
       } as const;
@@ -574,19 +576,19 @@ class ConcurrentIdentityWinnerRequests {
   }
 }
 
-function attemptScopedCommand(
+function legacyProjectionScopedCommand(
   command: RequestReviewPublicationCommand,
 ): RequestReviewPublicationCommand {
-  const legacyPrefix = `review-publication:${command.permit.projectionHash}:`;
   const scopedPrefix = `review-publication:${command.publicationAttemptId}:${command.permit.projectionHash}:`;
+  const legacyPrefix = `review-publication:${command.permit.projectionHash}:`;
   const operations = command.operations.map((operation) => ({
     ...operation,
     publicationOperationId: operation.publicationOperationId.replace(
-      legacyPrefix,
       scopedPrefix,
+      legacyPrefix,
     ),
     dependsOnOperationId:
-      operation.dependsOnOperationId?.replace(legacyPrefix, scopedPrefix) ??
+      operation.dependsOnOperationId?.replace(scopedPrefix, legacyPrefix) ??
       null,
   }));
   const candidate = { ...command, operations };
