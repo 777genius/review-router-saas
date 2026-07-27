@@ -467,5 +467,24 @@ before issuing an OIDC nonce or provider lease. A repository-level
 `REVIEW_ROUTER_MAX_CHANGED_LINES` may be stricter, but it cannot raise or
 disable this hosted ceiling.
 
+Action terminal outcomes must be user-readable in the PR and in the Actions
+step summary. `skipped`, stale/superseded, partial, and provider-lane-busy
+states should explain the human reason, whether a model call was started, and
+whether the result is approval evidence. Service markers such as
+`reviewrouter:summary:*` may exist only inside hidden HTML comments or protocol
+payloads, never as visible PR text.
+
+Token telemetry is metadata-only. Action logs may include provider name,
+provider status, prompt token count, completion token count, and total token
+count. Logs, comments, checks, health reports, and support diagnostics must not
+include prompts, diffs, model responses, Codex auth JSON, refresh tokens, access
+tokens, or provider secrets.
+
+For rotating Codex OAuth, do not run `gh secret set
+REVIEWROUTER_CODEX_AUTH_JSON` directly. That bypasses the generation contract
+and can make queued workflows restore an older secret generation. Use
+`scripts/reseed-codex-rotating-auth.sh` so the reseed follows the expected
+rotating-auth write path.
+
 `REVIEW_ROUTER_ALLOWED_ACTION_REFS` is a comma-separated full-SHA allowlist used
 only for trusted rollout overlap during pinned Codex OAuth rotating releases.

@@ -6,8 +6,10 @@ import {
   ReviewPublicationLifecycleSemantic,
   ReviewPublicationProjectionCoverage,
   ReviewPublicationSummarySemantic,
+  currentReviewProjectionPolicyVersion,
   legacyPartialReviewPublicationSummary,
   partialReviewPublicationSummary,
+  resolveReviewPublicationRenderPolicyVersion,
   renderCanonicalReviewPublication,
   type ReviewPublicationRenderingSource,
 } from "../index";
@@ -93,6 +95,92 @@ describe("canonical review publication renderer", () => {
     });
   });
 
+  it("hides raw ReviewRouter markers in current GitHub-visible bodies", () => {
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Completed,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        source: source({
+          summaryMarker: "reviewrouter:summary:v2:abc123",
+          checkMarker: "reviewrouter:check:v2:abc123",
+          inlineMarker: "reviewrouter:inline:v2:abc123",
+          findingMarker: "reviewrouter:finding:v2:abc123",
+        }),
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toBe(
+      "One finding\n\n<!-- reviewrouter:summary:v2:abc123 -->",
+    );
+    expect(rendered.managedCheck?.summary).toBe(
+      "One finding\n\n<!-- reviewrouter:check:v2:abc123 -->",
+    );
+    expect(rendered.inlineReviews[0]?.create.reviewBody).toBe(
+      "<!-- reviewrouter:inline:v2:abc123 -->",
+    );
+    expect(rendered.inlineReviews[0]?.submit.reviewBody).toBe(
+      "<!-- reviewrouter:inline:v2:abc123:submitted -->",
+    );
+    expect(rendered.inlineReviews[0]?.create.comments[0]?.body).toBe(
+      "Finding\n\n<!-- reviewrouter:finding:v2:abc123 -->",
+    );
+  });
+
+  it("normalizes pre-existing raw markers in current GitHub-visible bodies", () => {
+    const rawSource = source({
+      summaryMarker: "reviewrouter:summary:v2:abc123",
+      checkMarker: "reviewrouter:check:v2:abc123",
+      inlineMarker: "reviewrouter:inline:v2:abc123",
+      findingMarker: "reviewrouter:finding:v2:abc123",
+    });
+    const rendered = renderCanonicalReviewPublication(
+      {
+        coverage: ReviewPublicationProjectionCoverage.Completed,
+        renderPolicyVersion: resolveReviewPublicationRenderPolicyVersion(
+          currentReviewProjectionPolicyVersion,
+        ),
+        targetCommitId: "a".repeat(40),
+        source: {
+          ...rawSource,
+          summary: {
+            ...rawSource.summary,
+            body: "One finding\n\nreviewrouter:summary:v2:abc123",
+          },
+          check: {
+            ...rawSource.check,
+            summary: "One finding\n\nreviewrouter:check:v2:abc123",
+          },
+          inlineReviewChunks: [
+            {
+              ...rawSource.inlineReviewChunks[0]!,
+              comments: [
+                {
+                  ...rawSource.inlineReviewChunks[0]!.comments[0]!,
+                  body: "Finding\n\nreviewrouter:finding:v2:abc123",
+                },
+              ],
+            },
+          ],
+        },
+      },
+      primitives,
+    );
+
+    expect(rendered.summary.body).toBe(
+      "One finding\n\n<!-- reviewrouter:summary:v2:abc123 -->",
+    );
+    expect(rendered.managedCheck?.summary).toBe(
+      "One finding\n\n<!-- reviewrouter:check:v2:abc123 -->",
+    );
+    expect(rendered.inlineReviews[0]?.create.comments[0]?.body).toBe(
+      "Finding\n\n<!-- reviewrouter:finding:v2:abc123 -->",
+    );
+  });
+
   it("rejects an oversized canonical payload before planning or execution", () => {
     const oversized = source();
     expect(() =>
@@ -113,15 +201,22 @@ describe("canonical review publication renderer", () => {
   });
 });
 
-function source(): ReviewPublicationRenderingSource {
+function source(
+  overrides: {
+    readonly summaryMarker?: string;
+    readonly checkMarker?: string;
+    readonly inlineMarker?: string;
+    readonly findingMarker?: string;
+  } = {},
+): ReviewPublicationRenderingSource {
   return {
     summary: {
-      marker: "<!-- summary -->",
+      marker: overrides.summaryMarker ?? "<!-- summary -->",
       body: "One finding",
       allClear: false,
     },
     check: {
-      marker: "<!-- check -->",
+      marker: overrides.checkMarker ?? "<!-- check -->",
       name: "ReviewRouter",
       title: "Review complete",
       summary: "One finding",
@@ -130,10 +225,10 @@ function source(): ReviewPublicationRenderingSource {
     inlineReviewChunks: [
       {
         chunkIndex: 0,
-        marker: "<!-- inline -->",
+        marker: overrides.inlineMarker ?? "<!-- inline -->",
         comments: [
           {
-            marker: "<!-- finding -->",
+            marker: overrides.findingMarker ?? "<!-- finding -->",
             path: "src/index.ts",
             line: 7,
             body: "Finding",

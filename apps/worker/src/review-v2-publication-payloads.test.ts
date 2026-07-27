@@ -70,6 +70,15 @@ describe("canonical review v2 projection adapter", () => {
       ReviewV2PublicationPayloadKind.PendingReviewSubmit,
       ReviewV2PublicationPayloadKind.ThreadLifecycle,
     ]);
+    expect(payloads[0]).toMatchObject({
+      body: "One finding\n\n<!-- reviewrouter:summary:v2:test -->",
+    });
+    expect(payloads[2]).toMatchObject({
+      body: "<!-- reviewrouter:inline:v2:test -->",
+    });
+    expect(payloads[3]).toMatchObject({
+      body: "<!-- reviewrouter:inline:v2:test:submitted -->",
+    });
     expect(
       payloads.every(
         (payload, index) =>
@@ -106,7 +115,7 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
     publishing: {
       check: {
         conclusion: "success",
-        marker: "<!-- check-marker -->",
+        marker: "reviewrouter:check:v2:test",
         name: "ReviewRouter",
         summary: "All checks passed",
         title: "Review complete",
@@ -118,11 +127,11 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
             {
               body: "Finding body",
               line: 7,
-              marker: "<!-- finding-marker -->",
+              marker: "reviewrouter:finding:v2:test",
               path: "src/index.ts",
             },
           ],
-          marker: "<!-- review-marker -->",
+          marker: "reviewrouter:inline:v2:test",
         },
       ],
       lifecycle: [
@@ -136,7 +145,7 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
       summary: {
         allClear: false,
         body: "One finding",
-        marker: "<!-- summary-marker -->",
+        marker: "reviewrouter:summary:v2:test",
       },
     },
     snapshot: {
@@ -157,7 +166,7 @@ function finalizedArtifact(): FinalizedReviewProjectionArtifact {
     findingCount: 1,
     lifecycleStateHash: hash("4"),
     commandLedgerWatermark: 2n,
-    projectionPolicyVersion: "review-projection-policy.v3-t0",
+    projectionPolicyVersion: "review-projection-policy.v4-t0",
     publicationPermit: {
       workspaceId: "workspace-1",
       repositoryConnectionId: "repository-1",

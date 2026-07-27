@@ -5,6 +5,8 @@ import {
   reviewV2ContextApiEnvKeys,
   reviewV2ContextEnvForRole,
   reviewV2ContextWorkerEnvKeys,
+  reviewV2ProjectionPolicyVersion,
+  reviewV2ProjectionPolicyVersionEnvKey,
 } from "./review-v2-render-env.mjs";
 
 const configuredEnv = Object.fromEntries(
@@ -13,15 +15,20 @@ const configuredEnv = Object.fromEntries(
 
 describe("Review v2 Render context environment", () => {
   it("keeps cryptographic material API-only", () => {
-    expect(reviewV2ContextEnvForRole(configuredEnv, "api")).toEqual(
-      configuredEnv,
-    );
+    expect(reviewV2ContextEnvForRole(configuredEnv, "api")).toEqual({
+      ...configuredEnv,
+      [reviewV2ProjectionPolicyVersionEnvKey]:
+        reviewActionV2ProjectionPolicyVersion,
+    });
     expect(reviewV2ContextEnvForRole(configuredEnv, "worker")).toEqual(
       Object.fromEntries(
         reviewV2ContextWorkerEnvKeys.map((key) => [key, configuredEnv[key]]),
       ),
     );
     expect(reviewV2ContextEnvForRole(configuredEnv, "web")).toEqual({});
+    expect(reviewV2ProjectionPolicyVersion).toBe(
+      reviewActionV2ProjectionPolicyVersion,
+    );
   });
 
   it("declares every required value in the Render blueprint", () => {
