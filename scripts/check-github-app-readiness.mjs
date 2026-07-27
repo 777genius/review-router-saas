@@ -2,6 +2,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { App } from "@octokit/app";
 import { loadEnvFile } from "./lib/env-file.mjs";
+import {
+  getGitHubAppPermissionProfile,
+  githubAppPermissionNames,
+  normalizeGitHubAppPermissionProfile,
+} from "./lib/github-app-permission-profiles.mjs";
 
 const envFile = process.env.REVIEW_ROUTER_GITHUB_APP_ENV_FILE || ".env.local";
 const env = loadEnvFile(envFile, process.env);
@@ -24,33 +29,19 @@ const checkOrgRulesetPermission =
   String(
     env.REVIEW_ROUTER_GITHUB_APP_CHECK_ORG_RULESET_PERMISSION ?? "",
   ).trim() === "1";
+const permissionProfileName = normalizeGitHubAppPermissionProfile(
+  env.REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE ??
+    (checkOrgRulesetPermission ? "org-ruleset" : "standard"),
+);
+const permissionProfile = getGitHubAppPermissionProfile(permissionProfileName);
 
-const requiredPermissions = {
-  actions: "write",
-  checks: "write",
-  contents: "write",
-  workflows: "write",
-  pull_requests: "write",
-  issues: "write",
-  secrets: "write",
-  organization_secrets: "read",
-  organization_plan: "read",
-  statuses: "write",
-  metadata: "read",
-};
+const requiredPermissions = permissionProfile.permissions;
 const organizationOnlyPermissions = new Set([
   "organization_secrets",
   "organization_plan",
+  "organization_administration",
 ]);
-const requiredWebhookEvents = [
-  "check_run",
-  "issue_comment",
-  "pull_request",
-  "repository",
-  "status",
-  "workflow_job",
-  "workflow_run",
-];
+const requiredWebhookEvents = permissionProfile.events;
 
 const errors = [];
 const warnings = [];
@@ -136,6 +127,7 @@ async function checkGitHubApp() {
       slug: actualSlug || appSlug,
       owner: appData.owner?.login ?? null,
       ownerType: appData.owner?.type ?? null,
+      permissionProfile: permissionProfile.name,
       permissions: pickPermissions(appData.permissions ?? {}),
       events: appData.events ?? [],
       lifecycleEvents:
@@ -297,10 +289,7 @@ function permissionSatisfies(actualAccess, requiredAccess) {
 }
 
 function pickPermissions(permissions) {
-  const permissionNames = [
-    ...Object.keys(requiredPermissions),
-    "organization_administration",
-  ];
+  const permissionNames = githubAppPermissionNames;
   return Object.fromEntries(
     permissionNames.map((permission) => [
       permission,

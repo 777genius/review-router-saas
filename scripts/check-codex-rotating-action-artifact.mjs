@@ -62,6 +62,11 @@ assertIncludes(
 );
 assertIncludes(
   actionYml,
+  "control-plane-url:\n    description:",
+  "action.yml must expose control-plane-url",
+);
+assertIncludes(
+  actionYml,
   "auth-json:\n    description:",
   "action.yml must expose auth-json",
 );
@@ -148,6 +153,16 @@ assertIncludes(
   bundle,
   "invalid_review_execution_budget:jobTimeoutMinutes",
   "action bundle must enforce the review execution budget",
+);
+assertIncludes(
+  bundle,
+  'readInput(env, "control-plane-url")',
+  "action bundle must prefer the control-plane-url input when present",
+);
+assertIncludes(
+  bundle,
+  "REVIEWROUTER_CONTROL_PLANE_URL",
+  "action bundle must propagate the selected control plane URL to child runtimes",
 );
 
 if (requireBinary) {

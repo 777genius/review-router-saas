@@ -6,6 +6,11 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join, resolve } from "node:path";
 import { platform } from "node:os";
+import {
+  getGitHubAppPermissionProfile,
+  manifestPermissionsForProfile,
+  normalizeGitHubAppPermissionProfile,
+} from "./lib/github-app-permission-profiles.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const webUrl = normalizeUrl(args["web-url"] ?? "https://reviewrouter.site");
@@ -23,8 +28,12 @@ const reviewRouterLogoUrl = "https://i.imgur.com/Yz9XIQM.png";
 const noOpen = Boolean(args["no-open"]);
 const dryRun = Boolean(args["dry-run"]);
 const permissionProfile = normalizePermissionProfile(
-  args["permission-profile"] ?? "standard",
+  args["permission-profile"] ??
+    process.env.REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE ??
+    "standard",
 );
+const permissionProfileConfig =
+  getGitHubAppPermissionProfile(permissionProfile);
 
 const manifest = {
   name: appName,
@@ -38,34 +47,11 @@ const manifest = {
   setup_url: `${webUrl}/setup`,
   setup_on_update: true,
   request_oauth_on_install: false,
-  default_events: [
-    "check_run",
-    "issue_comment",
-    "pull_request",
-    "push",
-    "repository",
-    "status",
-    "workflow_job",
-    "workflow_run",
-  ],
+  default_events: [...permissionProfileConfig.events],
   public: true,
   description:
     "ReviewRouter connects GitHub pull request review setup while reviews run in customer GitHub Actions.",
-  default_permissions: {
-    actions: "write",
-    checks: "write",
-    contents: "write",
-    issues: "write",
-    pull_requests: "write",
-    secrets: "write",
-    organization_secrets: "read",
-    organization_plan: "read",
-    statuses: "write",
-    workflows: "write",
-    ...(permissionProfile === "org-ruleset"
-      ? { organization_administration: "write" }
-      : {}),
-  },
+  default_permissions: manifestPermissionsForProfile(permissionProfileConfig),
 };
 
 if (dryRun) {
@@ -238,7 +224,10 @@ function printPlan() {
   console.log(`Callback URL: ${webUrl}/api/auth/callback/github`);
   console.log(`Setup URL: ${webUrl}/setup`);
   console.log(`Webhook URL: ${apiUrl}/webhooks/github`);
-  console.log(`Permission profile: ${permissionProfile}`);
+  console.log(`Permission profile: ${permissionProfileConfig.name}`);
+  console.log(
+    `Permission profile purpose: ${permissionProfileConfig.description}`,
+  );
   console.log(`Output dir: ${outputDir}`);
 }
 
@@ -314,13 +303,7 @@ function parseArgs(argv) {
 }
 
 function normalizePermissionProfile(value) {
-  const normalized = String(value).trim();
-  if (normalized === "standard" || normalized === "org-ruleset") {
-    return normalized;
-  }
-  throw new Error(
-    "--permission-profile must be either standard or org-ruleset",
-  );
+  return normalizeGitHubAppPermissionProfile(value);
 }
 
 function shellQuote(value) {

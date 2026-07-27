@@ -1053,10 +1053,13 @@ export function readActionInputs(env: NodeJS.ProcessEnv): ActionInputs {
   if (!Number.isInteger(workflowSchemaVersion) || workflowSchemaVersion <= 0) {
     throw new Error("invalid_workflow_schema_version");
   }
+  const apiUrl = (
+    readInput(env, "control-plane-url") || requireInput(env, "api-url")
+  ).replace(/\/+$/, "");
 
   return {
     mode,
-    apiUrl: requireInput(env, "api-url").replace(/\/+$/, ""),
+    apiUrl,
     providerInstanceId: requireInput(env, "provider-instance-id"),
     workflowSchemaVersion,
     reviewDrafts: readBooleanInput(env, "review-drafts"),
@@ -3484,6 +3487,7 @@ export function buildFullReviewRuntimeEnv(input: {
     REVIEWROUTER_BASE_SHA: input.event.baseSha,
     REVIEWROUTER_REVIEW_MARKER: `reviewrouter:codex-oauth-rotating head=${input.event.headSha}`,
     REVIEWROUTER_API_URL: input.inputs.apiUrl,
+    REVIEWROUTER_CONTROL_PLANE_URL: input.inputs.apiUrl,
     REVIEWROUTER_CONFIG_VERSION: String(input.runtimeConfigVersion),
     REVIEWROUTER_EXECUTION_DEADLINE_EPOCH_MS: String(executionDeadlineEpochMs),
     REVIEWROUTER_REVIEW_CHECKPOINT_FINALIZATION_PATH:

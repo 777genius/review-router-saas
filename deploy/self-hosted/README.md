@@ -38,6 +38,11 @@ Recommended versions in this stack:
 - Node.js 24 LTS for the app image.
 - PostgreSQL 18 for the bundled local database.
 
+The bundled PostgreSQL 18 service mounts the named volume at
+`/var/lib/postgresql`, not `/var/lib/postgresql/data`. Keep that path when
+customizing Compose; PostgreSQL 18 stores major-version-specific data
+directories under the parent path.
+
 ## 1. Prepare Env
 
 ```bash
@@ -92,35 +97,91 @@ GITHUB_WEBHOOK_SECRET
 and secret. For `GITHUB_APP_PRIVATE_KEY`, paste the PEM into the env file with
 escaped newlines (`\n`).
 
-Required repository permissions:
+Choose the narrowest GitHub App permission profile that matches how the
+self-hosted instance will operate:
 
 ```text
-Contents: write
-Workflows: write
-Pull requests: write
-Issues: write
-Secrets: write
-Organization secrets: read
+review-only    Direct customer-managed PR workflows. No server-side dispatch,
+               setup PRs, workflow edits, or secret provisioning.
+managed-review Durable ReviewRouter workflow_dispatch and exact-run
+               cancellation. Workflows and provider secrets are managed outside
+               ReviewRouter.
+provisioning   Dashboard setup PRs, workflow file updates, and GitHub Actions
+               secret provisioning.
+org-ruleset    provisioning plus organization ruleset administration.
+```
+
+Use `managed-review` for the default self-hosted privacy posture. Use
+`provisioning` only when the dashboard must create setup PRs or repository
+secrets.
+
+Create a manifest with the matching profile:
+
+```bash
+pnpm github-app:create -- --permission-profile managed-review
+```
+
+Set the same profile in `.env`:
+
+```text
+REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE=managed-review
+```
+
+`review-only` requires:
+
+```text
 Actions: read
 Checks: write
+Contents: read
+Pull requests: write
+Issues: write
 Commit statuses: write
 Metadata: read
 ```
 
-Required webhook events:
+`managed-review` adds:
 
 ```text
-Pull request
-Workflow run
-Repository
-Workflow job
+Actions: write
+```
+
+`provisioning` adds:
+
+```text
+Contents: write
+Workflows: write
+Secrets: write
+Organization secrets: read
+Organization plan: read
+```
+
+`org-ruleset` adds:
+
+```text
+Organization administration: write
+```
+
+Webhook events are also profile-based. `review-only` requires:
+
+```text
 Check run
 Issue comment
+Pull request
+Repository
 Status
-Installation
-Installation repositories
-GitHub App authorization
+Workflow run
 ```
+
+`managed-review`, `provisioning`, and `org-ruleset` also require:
+
+```text
+Workflow job
+Push
+```
+
+GitHub App installation lifecycle events are delivered by GitHub Apps by
+default; do not add `installation` or `installation_repositories` to the
+manifest manually.
 
 Enable redirect after installation updates so users return to the dashboard.
 
@@ -139,8 +200,15 @@ REVIEW_ROUTER_SELF_HOSTED_ENV_FILE=/path/to/reviewrouter.env pnpm self-hosted:ch
 ```
 
 The checker rejects local/non-HTTPS public URLs, missing GitHub App values,
-placeholder secrets, provider credentials in server env, and invalid action
-refs.
+placeholder secrets, provider credentials in server env, invalid action refs,
+and mismatched permission-profile feature flags.
+
+Validate the Compose service contract separately when changing Docker or
+service wiring:
+
+```bash
+pnpm self-hosted:compose:check
+```
 
 ## 4. Start
 

@@ -26,7 +26,9 @@
     "hosted:check": "node scripts/check-hosted-readiness.mjs",
     "hosted:check:smoke": "node scripts/check-hosted-readiness-smoke.mjs",
     "hosted:web:check": "node scripts/check-hosted-web.mjs",
-    "self-hosted:check": "node scripts/check-self-hosted-readiness.mjs",
+    "self-hosted:check": "node scripts/check-self-hosted-readiness.mjs && node scripts/check-self-hosted-compose-contract.mjs",
+    "self-hosted:check:smoke": "node scripts/check-self-hosted-readiness-smoke.mjs && node scripts/check-self-hosted-compose-contract.mjs",
+    "self-hosted:compose:check": "node scripts/check-self-hosted-compose-contract.mjs",
     "public-beta:check:smoke": "node scripts/check-public-beta-readiness-smoke.mjs",
     "beta:check": "bash scripts/check-beta-readiness.sh",
     "web:smoke": "node scripts/run-with-env.mjs node scripts/check-web-pages.mjs",
@@ -92,7 +94,6 @@
     "release:sync-major": "node scripts/sync-major-release-tag.mjs"
   },
   "dependencies": {
-    "@777genius/subscription-runtime": "git+ssh://git@github.com/777genius/ar.git#v0.1.0-main.13",
     "@base-ui/react": "^1.4.1",
     "@octokit/app": "^16.1.2",
     "@octokit/rest": "^22.0.1",
@@ -118,6 +119,9 @@
     "tailwindcss": "^4.2.4",
     "zod": "^4.4.2",
     "zustand": "^5.0.12"
+  },
+  "optionalDependencies": {
+    "@777genius/subscription-runtime": "git+ssh://git@github.com/777genius/ar.git#v0.1.0-main.13"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

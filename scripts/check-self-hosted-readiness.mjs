@@ -4,6 +4,7 @@ import { createPrivateKey } from "node:crypto";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnvFile } from "./lib/env-file.mjs";
+import { normalizeGitHubAppPermissionProfile } from "./lib/github-app-permission-profiles.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultEnvFile = "deploy/self-hosted/.env";
@@ -14,6 +15,7 @@ const envFileExists = existsSync(envFilePath);
 const env = envFileExists ? loadEnvFile(envFilePath, process.env) : process.env;
 const errors = [];
 const warnings = [];
+const githubAppPermissionProfile = readGitHubAppPermissionProfile();
 
 if (!envFileExists) {
   warnings.push(
@@ -39,9 +41,8 @@ requireSecret("GITHUB_WEBHOOK_SECRET", 16);
 requireSecret("REVIEW_ROUTER_ACTION_SESSION_SECRET", 32);
 requireSecret("REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY", 32);
 requireEqual("REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS", "1");
-requireEqual("REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING", "1");
+requireWorkflowProvisioningMode();
 requireEqual("REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH", "1");
-forbidEqual("REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING", "1");
 forbidEqual("REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE", "1");
 forbidProviderSecretsInControlPlane();
 requireGitHubAppPrivateKey();
@@ -74,6 +75,56 @@ function requireEqual(name, expected) {
   const actual = read(name);
   if (actual !== expected) {
     errors.push(`${name} must be ${expected}.`);
+  }
+}
+
+function readGitHubAppPermissionProfile() {
+  try {
+    return normalizeGitHubAppPermissionProfile(
+      read("REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE") || "standard",
+    );
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+    return "standard";
+  }
+}
+
+function requireWorkflowProvisioningMode() {
+  const workflowProvisioningEnabled =
+    read("REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING") === "1";
+  const workflowProvisioningDisabled =
+    read("REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING") === "1";
+  const provisioningProfile =
+    githubAppPermissionProfile === "provisioning" ||
+    githubAppPermissionProfile === "org-ruleset";
+
+  if (provisioningProfile) {
+    if (!workflowProvisioningEnabled) {
+      errors.push(
+        "REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING must be 1 for provisioning GitHub App permission profiles.",
+      );
+    }
+    if (workflowProvisioningDisabled) {
+      errors.push(
+        "REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING must not be 1 for provisioning GitHub App permission profiles.",
+      );
+    }
+    return;
+  }
+
+  if (workflowProvisioningEnabled && !workflowProvisioningDisabled) {
+    errors.push(
+      `REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING must not be active with the ${githubAppPermissionProfile} GitHub App permission profile. Disable workflow provisioning or use the provisioning profile.`,
+    );
+  }
+
+  if (
+    githubAppPermissionProfile === "review-only" &&
+    read("REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY") === "1"
+  ) {
+    errors.push(
+      "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY requires the managed-review or provisioning GitHub App permission profile.",
+    );
   }
 }
 
