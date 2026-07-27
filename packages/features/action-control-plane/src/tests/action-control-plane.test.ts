@@ -2166,6 +2166,7 @@ describe("action control plane", () => {
 
   it("does not mint a new v1 comment token after legacy admission closes", async () => {
     const commentTokens = new InMemoryCommentTokenIssuer();
+    const admissionInputs: unknown[] = [];
 
     await expect(
       issueActionCommentToken(
@@ -2175,7 +2176,8 @@ describe("action control plane", () => {
           sessions: new StaticSessionTokenService(),
           commentTokens,
           legacyMutationAdmission: {
-            assertLegacyReviewMutationAllowed: async () => {
+            assertLegacyReviewMutationAllowed: async (input) => {
+              admissionInputs.push(input);
               throw new Error("legacy_review_mutation_blocked:v2_active");
             },
           },
@@ -2183,6 +2185,12 @@ describe("action control plane", () => {
         },
       ),
     ).rejects.toThrow("legacy_review_mutation_blocked:v2_active");
+    expect(admissionInputs).toEqual([
+      expect.objectContaining({
+        operation: LegacyReviewMutationOperation.CommentToken,
+        eventName: "pull_request",
+      }),
+    ]);
     expect(commentTokens.calls).toEqual([]);
   });
 
