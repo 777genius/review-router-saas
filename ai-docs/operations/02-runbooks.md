@@ -190,6 +190,12 @@ Expected recovery:
 3. rerun setup from the dashboard
 4. run the local/prod smoke against the affected repo
 
+Do not repair rotating Codex by running `gh secret set
+REVIEWROUTER_CODEX_AUTH_JSON` directly. Use the generated setup command or
+`scripts/reseed-codex-rotating-auth.sh`; otherwise the repository secret can be
+newer than the confirmed generation and live review can fail as an older queued
+secret generation.
+
 ## Codex Rotating Action Ref Mismatch
 
 Use this when a GitHub Actions run fails with `action_repository_mismatch`,
