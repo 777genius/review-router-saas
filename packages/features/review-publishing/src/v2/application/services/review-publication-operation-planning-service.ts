@@ -14,10 +14,10 @@ import type {
   ReviewPublicationReleaseLimitsQueryPort,
 } from "../ports/review-publication-operation-planning-port";
 
-// Reader-first rollout: switch this to AttemptScopedV2 only after every
-// production API and worker can restore both identity versions.
+// New attempts must be attempt-scoped so repeated reviews of the same projection
+// do not collide with older in-flight or terminal publication operations.
 export const currentReviewPublicationOperationIdentityWriteVersion =
-  ReviewPublicationOperationIdentityVersion.LegacyProjectionV1;
+  ReviewPublicationOperationIdentityVersion.AttemptScopedV2;
 
 export function reviewPublicationAttemptId(input: {
   readonly executionId: string;

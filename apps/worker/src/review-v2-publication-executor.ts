@@ -457,6 +457,19 @@ export class ExecuteReviewV2PublicationOperation {
     readonly claim: ReviewPublicationClaimTerm;
     readonly capability: ReviewPublicationOperationCapabilityFacts;
   }): Promise<ReconciliationResult> {
+    if (this.dependencies.clock.now() >= input.operation.reconcileUntil) {
+      return {
+        settled: true,
+        result: await this.terminalizeOrRetry({
+          command: input.command,
+          view: input.view,
+          operation: input.operation,
+          claim: input.claim,
+          finalReason: "reconciliation_window_exhausted",
+          lastErrorCode: "publication_retry_window_exhausted",
+        }),
+      };
+    }
     const renewed = await this.renewForMutation(input.command, input.claim);
     if ("result" in renewed) {
       return { settled: true, result: renewed.result };
