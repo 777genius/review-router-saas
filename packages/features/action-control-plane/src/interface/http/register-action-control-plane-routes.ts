@@ -1150,6 +1150,16 @@ function statusCodeForActionError(message: string): number {
   if (message.startsWith("managed_workflow_source_temporarily_unavailable")) {
     return 503;
   }
+  if (
+    message.startsWith("review_request_intent_required") ||
+    message.startsWith("review_request_intent_not_awaiting_authorization") ||
+    message.startsWith("review_request_rerun_predecessor_missing")
+  ) {
+    return 409;
+  }
+  if (message.startsWith("review_request_revision_moved")) {
+    return 409;
+  }
   if (message.startsWith("action_version_blocked:")) {
     return 426;
   }
@@ -1216,6 +1226,16 @@ function safeActionErrorCode(message: string): string {
   }
   if (message.includes("managed_workflow_source_temporarily_unavailable")) {
     return "workflow_source_temporarily_unavailable";
+  }
+  if (
+    message.includes("review_request_intent_required") ||
+    message.includes("review_request_intent_not_awaiting_authorization") ||
+    message.includes("review_request_rerun_predecessor_missing")
+  ) {
+    return "review_request_not_ready";
+  }
+  if (message.includes("review_request_revision_moved")) {
+    return "review_request_revision_moved";
   }
   if (message.includes("review_execution_checkpoint_unavailable")) {
     return "review_execution_checkpoint_unavailable";
@@ -1291,6 +1311,10 @@ function safeActionErrorMessage(code: string): string {
       return "Codex OAuth rotating writeback is temporarily unavailable.";
     case "workflow_source_temporarily_unavailable":
       return "Managed workflow verification is temporarily unavailable. Retry with a fresh OIDC token.";
+    case "review_request_not_ready":
+      return "Managed review request admission is not ready for this run.";
+    case "review_request_revision_moved":
+      return "Pull request revision moved before ReviewRouter could authorize this run.";
     case "review_execution_checkpoint_unavailable":
       return "Review execution checkpoints are temporarily unavailable.";
     case "codex_rotating_lease_not_active":

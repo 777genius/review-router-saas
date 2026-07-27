@@ -58,7 +58,8 @@ when the action is run through a wrapper.
 
 ## Events
 
-Preferred same-repository PR events:
+Direct same-repository PR workflows are valid only for `review-only` mode where
+the action performs admission itself:
 
 ```yaml
 on:
@@ -69,6 +70,30 @@ on:
 
 Draft review is controlled by the generated workflow or reusable workflow
 `review_drafts` input.
+
+When `REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED=1`, the repository must
+use the canonical T0 workflow instead of direct `pull_request` execution:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      review_request_id:
+        required: false
+        type: string
+      pr_number:
+        required: false
+        type: string
+      review_head_sha:
+        required: false
+        type: string
+```
+
+The control plane ingests the PR webhook, creates the durable
+`ReviewRequestedIntent`, and dispatches this workflow with the request id, PR
+number and expected head SHA. A direct `pull_request` workflow cannot be used in
+this mode because it starts before the control plane has bound a durable review
+intent to the GitHub run identity.
 
 Do not use `pull_request_target` for runner-side provider execution unless the
 workflow never checks out untrusted PR code with secrets. GitHub documents that
