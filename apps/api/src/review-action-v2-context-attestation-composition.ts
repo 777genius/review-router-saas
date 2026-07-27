@@ -1462,11 +1462,11 @@ function parseContextManifest(value: string, issue: string) {
   let manifest: ContextDependencyManifest;
   try {
     manifest = createContextDependencyManifest(JSON.parse(value));
-  } catch {
+  } catch (error) {
     throw failure(
       422,
       ReviewActionV2ProtocolErrorCode.InvariantViolation,
-      issue,
+      compactIssues([issue, safeContextManifestIssue(error)]),
     );
   }
   if (canonicalContextDependencyManifest(manifest) !== value) {
@@ -2115,9 +2115,32 @@ function requiredString(value: string | undefined, issue: string): string {
 function failure(
   statusCode: 400 | 401 | 403 | 404 | 410 | 412 | 422,
   code: ReviewActionV2ProtocolErrorCode,
-  issue: string,
+  issue: string | readonly string[],
 ) {
-  return new ReviewActionV2RouteFailure(statusCode, code, [issue]);
+  return new ReviewActionV2RouteFailure(
+    statusCode,
+    code,
+    typeof issue === "string" ? [issue] : [...issue],
+  );
+}
+
+function compactIssues(
+  issues: readonly (string | null | undefined)[],
+): readonly string[] {
+  return issues.filter((issue): issue is string => Boolean(issue));
+}
+
+function safeContextManifestIssue(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  const message = error.message;
+  if (
+    /^(?:context_dependency|context_git|text_search|file_read|directory|git_fact|gateway|checkout_tree|authenticated_event_chain|previous_event|event)_[a-z0-9_]+$/.test(
+      message,
+    )
+  ) {
+    return message;
+  }
+  return null;
 }
 
 function hmacHex(key: Uint8Array, value: string): string {

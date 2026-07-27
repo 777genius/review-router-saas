@@ -296,6 +296,45 @@ describe("Review Action v2 context attestation composition", () => {
     );
   });
 
+  it("reports safe transcript manifest validation issues", async () => {
+    const fixture = await createFixture();
+    const opened = await fixture.routes.openGateway!.execute(
+      fixture.openRequest,
+    );
+    const sessionId = required(opened.result.sessionId);
+    const transcriptCanonicalJson = stableJson({
+      authenticatedChainHash: sha("empty-chain"),
+      checkoutTreeOid: sourceTree,
+      complete: true,
+      dependencies: [],
+      gatewayBinaryHash,
+      gatewayPolicyVersion,
+      manifestVersion: contextDependencyManifestVersion,
+    });
+    const replayMaterialCanonicalJson = stableJson({
+      materialVersion: 1,
+      sourceDependencies: [],
+    });
+
+    await expect(
+      fixture.routes.sealGateway!.execute(
+        await sealRequest({
+          fixture,
+          sessionId,
+          sealCapability: required(opened.result.sealCapability),
+          transcriptCanonicalJson,
+          replayMaterialCanonicalJson,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      issues: [
+        "context_transcript_invalid",
+        "context_dependency_manifest_entry_count_invalid",
+      ],
+    });
+  });
+
   it("seals context when Codex reports a resolved actual model alias", async () => {
     const fixture = await createFixture();
     const opened = await fixture.routes.openGateway!.execute(
