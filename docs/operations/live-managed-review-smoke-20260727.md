@@ -6,3 +6,5 @@ default branch is dispatched through the hosted control plane.
 Refresh after registering the public reusable action release in production.
 
 Refresh after activating managed review mutation epoch v2 in production.
+
+Refresh after reseeding the sandbox Codex OAuth secret with account-l.
