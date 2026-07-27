@@ -28,9 +28,10 @@ import {
   ScmProvider,
   canonicalJson,
   canonicalReviewProtocolLimits,
-  type ProducerReleaseQueryPort,
   type CanonicalReviewRevisionResolverPort,
+  type ProducerRelease,
   type ProducerReleaseAttestationPort,
+  type ProducerReleaseQueryPort,
   type ProviderVoteLane,
   type ReviewProtocolLimits,
   type ReviewRunAuthorizationUseCaseResult,
@@ -65,12 +66,17 @@ export type ReviewActionV2ResolvedRevision = {
   readonly providerVoteLanes: readonly ProviderVoteLane[];
 };
 
+export type ReviewActionV2ResolvedAdmission = {
+  readonly revision: ReviewActionV2ResolvedRevision;
+  readonly producerRelease: ProducerRelease;
+};
+
 export interface ReviewActionV2RunAdmissionFactsPort {
   resolve(input: {
     readonly claims: GitHubActionsOidcClaims;
     readonly repository: ActionRepositoryContext;
     readonly scmRepositoryIdentityId: string;
-  }): Promise<ReviewActionV2ResolvedRevision>;
+  }): Promise<ReviewActionV2ResolvedAdmission>;
 }
 
 export interface ReviewActionV2RevisionHashPort {
@@ -181,17 +187,20 @@ export function createServerOwnedReviewActionV2AdmissionFacts(
         throw producerReleaseAttestationFailure(attestation.status);
       }
       return {
-        pullRequestNumber: revision.pullRequestNumber,
-        baseSha: revision.baseSha,
-        mergeBaseSha: revision.mergeBaseSha,
-        headSha: revision.headSha,
-        reviewRevisionHash: revision.reviewRevisionHash,
-        trustDomain: ReviewTrustDomain.TrustedManaged,
-        producerReleaseId: attestation.release.producerReleaseId,
-        producerActionCommitSha,
-        providerVoteLanes: dependencies.providerVoteLanes.map((lane) => ({
-          ...lane,
-        })),
+        revision: {
+          pullRequestNumber: revision.pullRequestNumber,
+          baseSha: revision.baseSha,
+          mergeBaseSha: revision.mergeBaseSha,
+          headSha: revision.headSha,
+          reviewRevisionHash: revision.reviewRevisionHash,
+          trustDomain: ReviewTrustDomain.TrustedManaged,
+          producerReleaseId: attestation.release.producerReleaseId,
+          producerActionCommitSha,
+          providerVoteLanes: dependencies.providerVoteLanes.map((lane) => ({
+            ...lane,
+          })),
+        },
+        producerRelease: attestation.release,
       };
     },
   };
@@ -330,12 +339,19 @@ type ReviewRunAuthorizationApi = Pick<
   | "resolveReviewRunAuthorizationToken"
 >;
 
+export interface TrustedProducerReleaseMaterializerPort {
+  ensureRegistered(release: ProducerRelease): Promise<void>;
+}
+
 export type ReviewActionV2RunControlHandlerDependencies = {
   readonly oidcVerifier: GitHubActionsOidcTokenVerifierPort;
   readonly oidcAudience: string;
   readonly actionRepositories: ActionControlPlaneRepositoryPort;
   readonly repositoryIdentities: ScmRepositoryIdentityQueryPort;
   readonly producerReleases: ProducerReleaseQueryPort;
+  readonly trustedProducerReleaseMaterializer?:
+    | TrustedProducerReleaseMaterializerPort
+    | undefined;
   readonly admissionFacts: ReviewActionV2RunAdmissionFactsPort;
   readonly revisionHashes: ReviewActionV2RevisionHashPort;
   readonly authorizations: ReviewRunAuthorizationApi;
@@ -388,6 +404,9 @@ async function authorizeReviewRun(
   const resolved = await resolveVerifiedIdentity(
     request.oidcToken,
     dependencies,
+  );
+  await dependencies.trustedProducerReleaseMaterializer?.ensureRegistered(
+    resolved.producerRelease,
   );
   await assertRegisteredRelease(resolved.facts, dependencies);
   const [protocolOfferHash, oidcReplayKeyHash] = await Promise.all([
@@ -541,6 +560,7 @@ async function resolveVerifiedIdentity(
   readonly claims: GitHubActionsOidcClaims;
   readonly identity: VerifiedScmRunIdentity;
   readonly facts: ReviewActionV2ResolvedRevision;
+  readonly producerRelease: ProducerRelease;
 }> {
   const claims = await verifyOidc(oidcToken, dependencies);
   const repository =
@@ -582,11 +602,12 @@ async function resolveVerifiedIdentity(
       "repository_binding_mismatch",
     );
   }
-  const facts = await dependencies.admissionFacts.resolve({
+  const admission = await dependencies.admissionFacts.resolve({
     claims,
     repository,
     scmRepositoryIdentityId: scmIdentity.scmRepositoryIdentityId,
   });
+  const facts = admission.revision;
   if (
     !Number.isSafeInteger(facts.pullRequestNumber) ||
     facts.pullRequestNumber <= 0 ||
@@ -600,6 +621,18 @@ async function resolveVerifiedIdentity(
       412,
       ReviewActionV2ProtocolErrorCode.StalePrecondition,
       "review_revision_invalid",
+    );
+  }
+  if (
+    admission.producerRelease.producerReleaseId !== facts.producerReleaseId ||
+    admission.producerRelease.actionCommitSha !==
+      facts.producerActionCommitSha.toLowerCase() ||
+    admission.producerRelease.state !== ProducerReleaseState.Registered
+  ) {
+    throw routeFailure(
+      403,
+      ReviewActionV2ProtocolErrorCode.Forbidden,
+      "producer_release_identity_mismatch",
     );
   }
   if (facts.trustDomain !== ReviewTrustDomain.TrustedManaged) {
@@ -636,6 +669,7 @@ async function resolveVerifiedIdentity(
   return {
     claims,
     facts,
+    producerRelease: admission.producerRelease,
     identity: {
       workspaceId: repository.workspaceId,
       repositoryConnectionId: repository.repositoryId,

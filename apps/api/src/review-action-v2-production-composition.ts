@@ -61,6 +61,7 @@ import {
 } from "@reviewrouter/features-review-publishing/v2/composition";
 import {
   CanonicalReviewRevisionResolutionStatus,
+  ImmutableRegistryWriteStatus,
   ProducerReleaseState,
   ReviewProviderKind,
   ReviewRunAuthorizationState as RunAuthorizationState,
@@ -68,8 +69,13 @@ import {
   ResolveReviewSafetyPolicy,
   ReviewTaskKind,
   canonicalJson,
+  canonicalReviewOperationalSloProfile,
+  canonicalReviewProtocolLimits,
+  producerReleaseImmutableKey,
   type CanonicalReviewRevisionResolverPort,
+  type ProducerRelease,
   type ReviewProtocolLimits,
+  type ReviewOperationalSloThresholds,
   type ReviewProtocolLimitsProfileQueryPort,
   type ProducerReleaseQueryPort,
   type ReviewRunAuthorization,
@@ -116,6 +122,7 @@ import {
   composeReviewActionV2RunControlRoutes,
   createServerOwnedReviewActionV2AdmissionFacts,
   type ReviewActionV2RevisionHashPort,
+  type TrustedProducerReleaseMaterializerPort,
 } from "./review-action-v2-run-control-composition.js";
 import { composeReviewActionV2SnapshotPublicationRoutes } from "./review-action-v2-production-composition-snapshot-publication.js";
 import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-rotating-github-secret-gateway.js";
@@ -320,6 +327,12 @@ export function composeReviewActionV2ProductionRoutes(input: {
     actionRepositories,
     repositoryIdentities: repositories.repositoryIdentities,
     producerReleases: repositories.producerReleases,
+    trustedProducerReleaseMaterializer:
+      createTrustedProducerReleaseMaterializer({
+        digest,
+        producerReleases: runControl.producerReleases,
+        releaseQueries: repositories.producerReleases,
+      }),
     admissionFacts,
     revisionHashes,
     authorizations: runControl.authorizations,
@@ -581,6 +594,93 @@ class ProductionReviewActionV2Digest {
 
   async digest(value: Uint8Array): Promise<string> {
     return createHash("sha256").update(value).digest("hex");
+  }
+}
+
+type ProducerReleaseManagement = ReturnType<
+  typeof composeReviewRunControl
+>["producerReleases"];
+
+function createTrustedProducerReleaseMaterializer(input: {
+  readonly digest: ProductionReviewActionV2Digest;
+  readonly producerReleases: ProducerReleaseManagement;
+  readonly releaseQueries: ProducerReleaseQueryPort;
+}): TrustedProducerReleaseMaterializerPort {
+  return {
+    async ensureRegistered(release: ProducerRelease): Promise<void> {
+      const existing = await input.releaseQueries.findProducerReleaseById(
+        release.producerReleaseId,
+      );
+      if (
+        existing?.state === ProducerReleaseState.Registered &&
+        producerReleaseImmutableKey(existing) ===
+          producerReleaseImmutableKey(release)
+      ) {
+        return;
+      }
+      const sloProfile = {
+        thresholds: trustedProducerReleaseMaterializationThresholds,
+        ownerRefs: trustedProducerReleaseMaterializationOwnerRefs,
+        runbookRefs: trustedProducerReleaseMaterializationRunbookRefs,
+      } as const;
+      const [limitsDigest, sloDigest] = await Promise.all([
+        input.digest.digestUtf8(
+          canonicalReviewProtocolLimits(
+            trustedProducerReleaseMaterializationLimits,
+          ),
+        ),
+        input.digest.digestUtf8(
+          canonicalReviewOperationalSloProfile(sloProfile),
+        ),
+      ]);
+      assertTrustedMaterializationResult(
+        await input.producerReleases.registerProtocolLimitsProfile({
+          protocolLimitsProfileId: release.protocolLimitsProfileId,
+          limitsDigest,
+          limits: trustedProducerReleaseMaterializationLimits,
+        }),
+        "trusted_producer_release_limits_conflict",
+      );
+      assertTrustedMaterializationResult(
+        await input.producerReleases.registerOperationalSloProfile({
+          operationalSloProfileId: release.operationalSloProfileId,
+          sloDigest,
+          ...sloProfile,
+        }),
+        "trusted_producer_release_slo_conflict",
+      );
+      assertTrustedMaterializationResult(
+        await input.producerReleases.registerProducerRelease({
+          candidate: {
+            producerReleaseId: release.producerReleaseId,
+            distributionKind: release.distributionKind,
+            actionCommitSha: release.actionCommitSha,
+            runtimeCommitSha: release.runtimeCommitSha,
+            wrapperEntrypointDigest: release.wrapperEntrypointDigest,
+            runtimeEntrypointDigest: release.runtimeEntrypointDigest,
+            contextGatewayPolicyVersion: release.contextGatewayPolicyVersion,
+            contextGatewayEntrypointDigest:
+              release.contextGatewayEntrypointDigest,
+            schemaDigest: release.schemaDigest,
+            capabilityProfile: release.capabilityProfile,
+            protocolLimitsProfileId: release.protocolLimitsProfileId,
+            operationalSloProfileId: release.operationalSloProfileId,
+          },
+          expectedProtocolLimitsDigest: limitsDigest,
+          expectedOperationalSloDigest: sloDigest,
+        }),
+        "trusted_producer_release_conflict",
+      );
+    },
+  };
+}
+
+function assertTrustedMaterializationResult(
+  result: { readonly status: ImmutableRegistryWriteStatus },
+  issue: string,
+): void {
+  if (result.status === ImmutableRegistryWriteStatus.Conflict) {
+    throw new Error(issue);
   }
 }
 
@@ -1533,6 +1633,42 @@ const absoluteProtocolMaxima: ReviewProtocolLimits = Object.freeze({
   maxResultReportDurationMs: 6 * 60 * 60 * 1_000,
   maxReconciliationDurationMs: 24 * 60 * 60 * 1_000,
 });
+
+const trustedProducerReleaseMaterializationLimits: ReviewProtocolLimits =
+  Object.freeze({
+    maxWorkSlots: 200,
+    maxAttemptsPerSlot: 4,
+    maxObservationBytes: 1_000_000,
+    maxObservationFindings: 1_000,
+    maxProjectionBytes: 2_000_000,
+    maxProjectionFindings: 2_000,
+    maxPublicationOperations: 500,
+    maxPublicationChunks: 500,
+    maxPublicationBodyBytes: 2_000_000,
+    maxRequestBatchSize: 100,
+    maxLeaseDurationMs: 600_000,
+    maxResultReportDurationMs: 1_200_000,
+    maxReconciliationDurationMs: 3_600_000,
+  });
+
+const trustedProducerReleaseMaterializationThresholds: ReviewOperationalSloThresholds =
+  Object.freeze({
+    integrationEventDeliveryMs: 60_000,
+    outboxClaimAgeMs: 120_000,
+    missingCompletionProcessMs: 300_000,
+    dueCompletionProcessMs: 300_000,
+    publicationReconciliationMs: 600_000,
+    v1DrainMs: 3_600_000,
+    admissionMs: 30_000,
+    pruningBacklogAgeMs: 86_400_000,
+  });
+
+const trustedProducerReleaseMaterializationOwnerRefs = [
+  "team-reviewrouter",
+] as const;
+const trustedProducerReleaseMaterializationRunbookRefs = [
+  "docs/operations/review-action-v2-cutover.md",
+] as const;
 
 const executionTiming: ReviewActionV2ExecutionTimingPolicy = Object.freeze({
   admissionDurationMs: 30_000,
