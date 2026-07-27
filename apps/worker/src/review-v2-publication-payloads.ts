@@ -308,13 +308,13 @@ function buildCatalog(
     create: {
       kind: ReviewV2PublicationPayloadKind.PendingReviewCreate,
       ...payloadFields(chunk.create),
-      body: chunk.create.marker,
+      body: chunk.create.reviewBody,
       comments: chunk.create.comments,
     } as const,
     submit: {
       kind: ReviewV2PublicationPayloadKind.PendingReviewSubmit,
       ...payloadFields(chunk.submit),
-      body: chunk.submit.marker,
+      body: chunk.submit.reviewBody,
     } as const,
   }));
   const lifecycle = rendered.lifecycle.map((entry) => ({

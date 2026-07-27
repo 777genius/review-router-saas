@@ -8,12 +8,15 @@ import {
 
 export const legacyReviewProjectionPolicyVersion =
   "review-projection-policy.v2-t0";
-export const currentReviewProjectionPolicyVersion =
+export const clearPartialReviewProjectionPolicyVersion =
   "review-projection-policy.v3-t0";
+export const currentReviewProjectionPolicyVersion =
+  "review-projection-policy.v4-t0";
 
 export enum CanonicalReviewPublicationRenderPolicyVersion {
   LegacyV1 = 1,
   ClearPartialV2 = 2,
+  HiddenMarkersV3 = 3,
 }
 
 export const legacyPartialReviewPublicationSummary =
@@ -79,6 +82,7 @@ export type CanonicalReviewPublicationRendering = {
     readonly chunkIndex: number;
     readonly delivery: ReviewPublicationInlineReviewDelivery.PendingThenSubmit;
     readonly create: RenderedPayloadIdentity & {
+      readonly reviewBody: string;
       readonly comments: readonly {
         readonly path: string;
         readonly line: number;
@@ -86,7 +90,7 @@ export type CanonicalReviewPublicationRendering = {
         readonly body: string;
       }[];
     };
-    readonly submit: RenderedPayloadIdentity;
+    readonly submit: RenderedPayloadIdentity & { readonly reviewBody: string };
   }[];
   readonly lifecycle: readonly (RenderedPayloadIdentity & {
     readonly chunkIndex: number;
@@ -107,8 +111,10 @@ export function resolveReviewPublicationRenderPolicyVersion(
   switch (projectionPolicyVersion) {
     case legacyReviewProjectionPolicyVersion:
       return CanonicalReviewPublicationRenderPolicyVersion.LegacyV1;
-    case currentReviewProjectionPolicyVersion:
+    case clearPartialReviewProjectionPolicyVersion:
       return CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2;
+    case currentReviewProjectionPolicyVersion:
+      return CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3;
     default:
       throw new Error(
         `review_publication_projection_policy_unsupported:${projectionPolicyVersion}`,
@@ -138,6 +144,7 @@ export function renderCanonicalReviewPublication(
         ? partialSummary(input.renderPolicyVersion)
         : input.source.summary.body,
       input.source.summary.marker,
+      input.renderPolicyVersion,
     ),
     primitives,
   );
@@ -157,6 +164,7 @@ export function renderCanonicalReviewPublication(
   const checkSummary = withMarker(
     input.source.check.summary,
     input.source.check.marker,
+    input.renderPolicyVersion,
   );
   const managedCheck = payload(
     input.source.check.marker,
@@ -170,12 +178,20 @@ export function renderCanonicalReviewPublication(
   );
   const inlineReviews = input.source.inlineReviewChunks.map((chunk) => {
     const comments = chunk.comments.map((comment) => ({
-      body: withMarker(comment.body, comment.marker),
+      body: withMarker(comment.body, comment.marker, input.renderPolicyVersion),
       line: comment.line,
       path: comment.path,
       startLine: comment.startLine ?? null,
     }));
     const submitMarker = `${chunk.marker}:submitted`;
+    const createReviewBody = markerForBody(
+      chunk.marker,
+      input.renderPolicyVersion,
+    );
+    const submitReviewBody = markerForBody(
+      submitMarker,
+      input.renderPolicyVersion,
+    );
     return {
       chunkIndex: chunk.chunkIndex,
       delivery:
@@ -184,19 +200,26 @@ export function renderCanonicalReviewPublication(
         ...payload(
           chunk.marker,
           canonicalJson({
-            body: chunk.marker,
+            body: createReviewBody,
             comments,
             commitId: input.targetCommitId,
           }),
           primitives,
         ),
+        reviewBody: createReviewBody,
         comments,
       },
-      submit: payload(
-        submitMarker,
-        canonicalJson({ body: submitMarker, event: "COMMENT" }),
-        primitives,
-      ),
+      submit: {
+        ...payload(
+          submitMarker,
+          canonicalJson({
+            body: submitReviewBody,
+            event: "COMMENT",
+          }),
+          primitives,
+        ),
+        reviewBody: submitReviewBody,
+      },
     };
   });
   const lifecycle = input.source.lifecycle
@@ -249,6 +272,7 @@ function partialSummary(
     case CanonicalReviewPublicationRenderPolicyVersion.LegacyV1:
       return legacyPartialReviewPublicationSummary;
     case CanonicalReviewPublicationRenderPolicyVersion.ClearPartialV2:
+    case CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3:
       return partialReviewPublicationSummary;
   }
 }
@@ -269,8 +293,28 @@ function payload(
   };
 }
 
-function withMarker(body: string, marker: string): string {
-  return body.includes(marker) ? body : `${body}\n\n${marker}`;
+function withMarker(
+  body: string,
+  marker: string,
+  version: CanonicalReviewPublicationRenderPolicyVersion,
+): string {
+  const renderedMarker = markerForBody(marker, version);
+  if (body.includes(renderedMarker)) return body;
+  if (body.includes(marker)) return body.split(marker).join(renderedMarker);
+  return `${body}\n\n${renderedMarker}`;
+}
+
+function markerForBody(
+  marker: string,
+  version: CanonicalReviewPublicationRenderPolicyVersion,
+): string {
+  if (
+    version !== CanonicalReviewPublicationRenderPolicyVersion.HiddenMarkersV3 ||
+    marker.trim().startsWith("<!--")
+  ) {
+    return marker;
+  }
+  return `<!-- ${marker} -->`;
 }
 
 function canonicalJson(value: unknown): string {

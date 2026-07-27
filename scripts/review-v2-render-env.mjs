@@ -4,6 +4,10 @@ export const reviewV2ContextApiEnvKeys = Object.freeze([
   "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
 ]);
 
+export const reviewV2ProjectionPolicyVersionEnvKey =
+  "REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION";
+export const reviewV2ProjectionPolicyVersion = "review-projection-policy.v4-t0";
+
 export const reviewV2ContextWorkerEnvKeys = Object.freeze([]);
 
 export function reviewV2ContextEnvForRole(env, role) {
@@ -13,7 +17,7 @@ export function reviewV2ContextEnvForRole(env, role) {
       : role === "worker"
         ? reviewV2ContextWorkerEnvKeys
         : [];
-  return Object.fromEntries(
+  const selected = Object.fromEntries(
     keys.flatMap((key) => {
       const value = env[key];
       return value === undefined || String(value).trim() === ""
@@ -21,4 +25,9 @@ export function reviewV2ContextEnvForRole(env, role) {
         : [[key, String(value)]];
     }),
   );
+  if (role === "api") {
+    selected[reviewV2ProjectionPolicyVersionEnvKey] =
+      reviewV2ProjectionPolicyVersion;
+  }
+  return selected;
 }
