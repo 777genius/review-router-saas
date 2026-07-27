@@ -28,6 +28,7 @@ describe("OctokitGitHubAppCommentTokenIssuer", () => {
         contents: "read",
         pull_requests: "write",
         issues: "write",
+        statuses: "write",
       },
     });
 
@@ -50,12 +51,14 @@ describe("OctokitGitHubAppCommentTokenIssuer", () => {
         contents: "read",
         pull_requests: "write",
         issues: "write",
+        statuses: "write",
       },
     });
     expect(result.permissions).toEqual({
       contents: "read",
       pullRequests: "write",
       issues: "write",
+      statuses: "write",
     });
   });
 
@@ -66,6 +69,7 @@ describe("OctokitGitHubAppCommentTokenIssuer", () => {
       permissions: {
         pull_requests: "write",
         issues: "write",
+        statuses: "write",
       },
     });
 

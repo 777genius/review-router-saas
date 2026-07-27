@@ -1033,6 +1033,7 @@ function buildTokenFakes() {
           contents: "read",
           pullRequests: "write",
           issues: "write",
+          statuses: "write",
         },
       }),
     },

@@ -488,6 +488,7 @@ export const actionCommentTokenResponseSchema = z.object({
     contents: z.literal("read"),
     pullRequests: z.literal("write"),
     issues: z.literal("write"),
+    statuses: z.literal("write"),
   }),
 });
 

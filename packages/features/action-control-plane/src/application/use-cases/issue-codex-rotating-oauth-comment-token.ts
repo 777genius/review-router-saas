@@ -29,6 +29,7 @@ export async function issueCodexRotatingOAuthCommentToken(
     readonly contents: "read";
     readonly pullRequests: "write";
     readonly issues: "write";
+    readonly statuses: "write";
   };
 }> {
   if (input.authCleared !== true) {
