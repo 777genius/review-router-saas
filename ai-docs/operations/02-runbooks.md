@@ -196,6 +196,12 @@ REVIEWROUTER_CODEX_AUTH_JSON` directly. Use the generated setup command or
 newer than the confirmed generation and live review can fail as an older queued
 secret generation.
 
+If a live smoke fails with a provider usage-limit or capacity error, do not
+rewrite the GitHub secret manually. Reseed through the generated command using a
+known non-limited Codex session, then rerun the smoke. Quota-limited sessions
+are an account-capacity condition and should not be diagnosed as an OAuth
+generation-contract failure.
+
 ## Codex Rotating Action Ref Mismatch
 
 Use this when a GitHub Actions run fails with `action_repository_mismatch`,

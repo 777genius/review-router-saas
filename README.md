@@ -108,6 +108,12 @@ Do not update `REVIEWROUTER_CODEX_AUTH_JSON` with a direct `gh secret set`.
 Rotating Codex auth has a generation confirmation step; bypassing it can leave
 the control plane rejecting the run as an older queued secret generation.
 
+Operational evidence from the 2026-07-27 managed ReviewRouter v2 smoke matched
+this failure mode: a direct secret write produced an older-generation rejection,
+while the generated reseed flow succeeded after selecting a non-limited Codex
+session. Provider quota-limit failures are capacity state, not proof that the
+rotating auth contract is broken.
+
 Use `--reuse-current-auth` only immediately after creating a known-current
 session in that dedicated home. The default fresh login avoids reseeding stale
 local OAuth state.
