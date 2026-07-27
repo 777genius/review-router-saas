@@ -8,3 +8,5 @@ Refresh after registering the public reusable action release in production.
 Refresh after activating managed review mutation epoch v2 in production.
 
 Refresh after reseeding the sandbox Codex OAuth secret with account-l.
+
+Refresh after completing the official rotating Codex OAuth reseed flow.
