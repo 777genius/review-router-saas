@@ -701,6 +701,103 @@ describe("Codex rotating OAuth local E2E", () => {
     await app.close();
   });
 
+  it("reports missing managed review admission without masking it as an invalid action request", async () => {
+    const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
+      {
+        providerInstanceId,
+        repositoryFullName: repository.fullName,
+        githubRepositoryId: repository.githubRepositoryId,
+        actionRef,
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        workflowSchemaVersion: 1,
+      },
+    ]);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef,
+      apiUrl: "https://reviewrouter.site",
+      providerInstanceId,
+    });
+    const workflowMetadata = readCodexRotatingWorkflowSourceMetadata(workflow);
+    const replayNonces = {
+      tryConsumeNonce: vi.fn().mockResolvedValue(true),
+    };
+    const dependencies = {
+      oidcVerifier: {
+        verify: vi.fn().mockResolvedValue(
+          githubOidcClaims({
+            runId: "9005",
+            runAttempt: "2",
+            jti: "jti-review-request-not-ready",
+            now: firstRunAt,
+          }),
+        ),
+      },
+      repositories: {
+        findSelectedRepositoryByGithubId: vi.fn().mockResolvedValue(repository),
+        findRuntimeReviewConfiguration: vi.fn(),
+        recordHealthReport: vi.fn(),
+      },
+      codexRotatingOAuth,
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn().mockResolvedValue({
+          binding: {
+            providerInstanceId: workflowMetadata.providerInstanceId,
+            repositoryFullName: repository.fullName,
+            githubRepositoryId: repository.githubRepositoryId,
+            actionRef: workflowMetadata.actionRef,
+            workflowPath: ".github/workflows/reviewrouter-codex.yml",
+            workflowSchemaVersion: workflowMetadata.workflowSchemaVersion,
+          },
+          workflowSourceSha256:
+            "workflow-source-sha256-012345678901234567890123456789",
+        }),
+      },
+      replayNonces,
+      hostedReviewPreleaseGate: {
+        evaluate: vi
+          .fn()
+          .mockRejectedValue(
+            new Error("review_request_rerun_predecessor_missing"),
+          ),
+      },
+      ...buildTokenFakes(),
+      codexRotatingWritebackHmacKey: "writeback-key",
+      clock: { now: vi.fn(() => firstRunAt) },
+      sessions: {},
+      ledgerKeys: {},
+      compatibility: {},
+    };
+    const app = Fastify({ logger: false });
+    await registerActionControlPlaneRoutes(
+      app,
+      dependencies as unknown as Parameters<
+        typeof registerActionControlPlaneRoutes
+      >[1],
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/action/v1/codex-oauth/prelease",
+      payload: {
+        oidcToken: "oidc-jwt",
+        audience: "reviewrouter",
+        providerInstanceId,
+        workflowSchemaVersion: 1,
+      },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: {
+        code: "review_request_not_ready",
+        message: "Managed review request admission is not ready for this run.",
+        retryable: false,
+      },
+    });
+    expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
   it("skips stale queued secrets before refresh starts", async () => {
     const codexRotatingOAuth = new InMemoryCodexRotatingOAuthRepository([
       {
@@ -867,6 +964,7 @@ class InMemoryReviewSnapshotRepository implements ReviewSnapshotRepositoryPort {
 
 function githubOidcClaims(input: {
   readonly runId: string;
+  readonly runAttempt?: string | undefined;
   readonly jti: string;
   readonly now: Date;
 }) {
@@ -879,7 +977,7 @@ function githubOidcClaims(input: {
     event_name: "pull_request",
     ref: "refs/pull/240/merge",
     run_id: input.runId,
-    run_attempt: "1",
+    run_attempt: input.runAttempt ?? "1",
     workflow_ref:
       "777genius/agent-teams-ai/.github/workflows/reviewrouter-codex.yml@refs/heads/main",
     workflow_sha: workflowSha,

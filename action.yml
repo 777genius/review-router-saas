@@ -7,6 +7,9 @@ inputs:
   api-url:
     description: ReviewRouter API URL.
     required: false
+  control-plane-url:
+    description: ReviewRouter control plane URL. Overrides api-url when set.
+    required: false
   provider-instance-id:
     description: ReviewRouter provider instance id.
     required: false

@@ -51,6 +51,46 @@ assertPermission("statuses", "write");
 assertPermission("workflows", "write");
 assertPermissionMissing("organization_administration");
 
+const reviewOnlyResult = runManifestHelper([
+  "--dry-run",
+  "--no-open",
+  "--permission-profile",
+  "review-only",
+]);
+const reviewOnlyManifest = parseManifest(reviewOnlyResult.stdout);
+assertEqual(
+  JSON.stringify(reviewOnlyManifest.default_events ?? []),
+  JSON.stringify([
+    "check_run",
+    "issue_comment",
+    "pull_request",
+    "repository",
+    "status",
+    "workflow_run",
+  ]),
+  "review-only default_events",
+);
+assertManifestPermission(reviewOnlyManifest, "actions", "read");
+assertManifestPermission(reviewOnlyManifest, "checks", "write");
+assertManifestPermission(reviewOnlyManifest, "contents", "read");
+assertManifestPermission(reviewOnlyManifest, "issues", "write");
+assertManifestPermission(reviewOnlyManifest, "pull_requests", "write");
+assertManifestPermission(reviewOnlyManifest, "statuses", "write");
+assertManifestPermissionMissing(reviewOnlyManifest, "secrets");
+assertManifestPermissionMissing(reviewOnlyManifest, "workflows");
+
+const managedReviewResult = runManifestHelper([
+  "--dry-run",
+  "--no-open",
+  "--permission-profile",
+  "managed-review",
+]);
+const managedReviewManifest = parseManifest(managedReviewResult.stdout);
+assertManifestPermission(managedReviewManifest, "actions", "write");
+assertManifestPermission(managedReviewManifest, "contents", "read");
+assertManifestPermissionMissing(managedReviewManifest, "secrets");
+assertManifestPermissionMissing(managedReviewManifest, "workflows");
+
 const orgRulesetResult = runManifestHelper([
   "--dry-run",
   "--no-open",
@@ -95,15 +135,23 @@ function parseManifest(stdout) {
 }
 
 function assertPermission(permission, expected) {
+  assertManifestPermission(manifest, permission, expected);
+}
+
+function assertManifestPermission(targetManifest, permission, expected) {
   assertEqual(
-    manifest.default_permissions?.[permission],
+    targetManifest.default_permissions?.[permission],
     expected,
     `default_permissions.${permission}`,
   );
 }
 
 function assertPermissionMissing(permission) {
-  if (permission in (manifest.default_permissions ?? {})) {
+  assertManifestPermissionMissing(manifest, permission);
+}
+
+function assertManifestPermissionMissing(targetManifest, permission) {
+  if (permission in (targetManifest.default_permissions ?? {})) {
     throw new Error(`default_permissions.${permission} must not be present`);
   }
 }

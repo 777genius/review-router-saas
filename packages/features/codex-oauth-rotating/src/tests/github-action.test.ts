@@ -416,6 +416,10 @@ describe("Codex rotating GitHub Action runtime", () => {
     expect(childEnv.REVIEWROUTER_COMMENT_TOKEN_EXPIRES_AT).toBe(
       "2026-07-16T14:00:00.000Z",
     );
+    expect(childEnv.REVIEWROUTER_API_URL).toBe("https://api.reviewrouter.site");
+    expect(childEnv.REVIEWROUTER_CONTROL_PLANE_URL).toBe(
+      "https://api.reviewrouter.site",
+    );
     expect(childEnv.OPENAI_API_KEY).toBeUndefined();
     expect(childEnv.REVIEW_THREAD_LIFECYCLE_RESOLVE_TOKEN).toBe(
       "repo-scoped-lifecycle-token",
@@ -479,6 +483,26 @@ describe("Codex rotating GitHub Action runtime", () => {
         openRouterApiKey: "sk-or-provider-secret",
       },
     });
+  });
+
+  it("prefers the explicit control-plane URL action input over api-url", () => {
+    const inputs = readActionInputs({
+      "INPUT_CONTROL-PLANE-URL": "https://self-hosted.reviewrouter.test/",
+      "INPUT_API-URL": "https://api.reviewrouter.site/",
+      "INPUT_PROVIDER-INSTANCE-ID": "codex-rotating:123456",
+    });
+
+    expect(inputs.apiUrl).toBe("https://self-hosted.reviewrouter.test");
+  });
+
+  it("accepts underscore control plane URL inputs from workflow shims", () => {
+    const inputs = readActionInputs({
+      INPUT_CONTROL_PLANE_URL: "https://control-plane.internal/",
+      INPUT_API_URL: "https://api.reviewrouter.site/",
+      INPUT_PROVIDER_INSTANCE_ID: "codex-rotating:123456",
+    });
+
+    expect(inputs.apiUrl).toBe("https://control-plane.internal");
   });
 
   it("reads an exact boolean draft review action input", () => {

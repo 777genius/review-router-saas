@@ -20,7 +20,7 @@ services:
     ports:
       - "${REVIEW_ROUTER_POSTGRES_BIND:-127.0.0.1:5432}:5432"
     volumes:
-      - reviewrouter-postgres-data:/var/lib/postgresql/data
+      - reviewrouter-postgres-data:/var/lib/postgresql
     healthcheck:
       test:
         ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
@@ -32,7 +32,8 @@ services:
   migrate:
     <<: *reviewrouter-service
     restart: "no"
-    command: ["pnpm", "db:migrate:deploy"]
+    command:
+      ["pnpm", "--filter", "@reviewrouter/platform-db", "db:migrate:deploy"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,7 +71,7 @@ services:
 
   api:
     <<: *reviewrouter-service
-    command: ["pnpm", "api:start"]
+    command: ["node", "--conditions=production", "apps/api/dist/server.js"]
     environment:
       HOST: "0.0.0.0"
       PORT: "4000"
@@ -92,7 +93,7 @@ services:
 
   worker:
     <<: *reviewrouter-service
-    command: ["pnpm", "worker:start"]
+    command: ["node", "--conditions=production", "apps/worker/dist/worker.js"]
     depends_on:
       migrate:
         condition: service_completed_successfully

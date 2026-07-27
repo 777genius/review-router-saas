@@ -18,9 +18,10 @@ RUN apt-get update \
 
 FROM base AS build
 COPY . .
-RUN pnpm install --frozen-lockfile \
-  && pnpm db:generate \
-  && pnpm build \
+RUN pnpm --filter @reviewrouter/api... --filter @reviewrouter/worker... --filter @reviewrouter/web... install --frozen-lockfile \
+  && pnpm --filter @reviewrouter/platform-db db:generate \
+  && pnpm --filter @reviewrouter/api... --filter @reviewrouter/worker... --filter @reviewrouter/web... build \
+  && node scripts/rewrite-dist-esm-imports.mjs \
   && pnpm store prune
 
 FROM base AS runtime
