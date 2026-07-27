@@ -76,6 +76,7 @@ import {
   type ProducerRelease,
   type ReviewProtocolLimits,
   type ReviewOperationalSloThresholds,
+  type ReviewOperationalSloProfileQueryPort,
   type ReviewProtocolLimitsProfileQueryPort,
   type ProducerReleaseQueryPort,
   type ReviewRunAuthorization,
@@ -332,6 +333,8 @@ export function composeReviewActionV2ProductionRoutes(input: {
         digest,
         producerReleases: runControl.producerReleases,
         releaseQueries: repositories.producerReleases,
+        protocolLimitsQueries: repositories.producerReleases,
+        operationalSloQueries: repositories.producerReleases,
       }),
     admissionFacts,
     revisionHashes,
@@ -605,6 +608,8 @@ function createTrustedProducerReleaseMaterializer(input: {
   readonly digest: ProductionReviewActionV2Digest;
   readonly producerReleases: ProducerReleaseManagement;
   readonly releaseQueries: ProducerReleaseQueryPort;
+  readonly protocolLimitsQueries: ReviewProtocolLimitsProfileQueryPort;
+  readonly operationalSloQueries: ReviewOperationalSloProfileQueryPort;
 }): TrustedProducerReleaseMaterializerPort {
   return {
     async ensureRegistered(release: ProducerRelease): Promise<void> {
@@ -623,32 +628,46 @@ function createTrustedProducerReleaseMaterializer(input: {
         ownerRefs: trustedProducerReleaseMaterializationOwnerRefs,
         runbookRefs: trustedProducerReleaseMaterializationRunbookRefs,
       } as const;
-      const [limitsDigest, sloDigest] = await Promise.all([
-        input.digest.digestUtf8(
+      const [existingLimits, existingSlo] = await Promise.all([
+        input.protocolLimitsQueries.findProtocolLimitsProfileById(
+          release.protocolLimitsProfileId,
+        ),
+        input.operationalSloQueries.findOperationalSloProfileById(
+          release.operationalSloProfileId,
+        ),
+      ]);
+      const limitsDigest =
+        existingLimits?.limitsDigest ??
+        (await input.digest.digestUtf8(
           canonicalReviewProtocolLimits(
             trustedProducerReleaseMaterializationLimits,
           ),
-        ),
-        input.digest.digestUtf8(
+        ));
+      const sloDigest =
+        existingSlo?.sloDigest ??
+        (await input.digest.digestUtf8(
           canonicalReviewOperationalSloProfile(sloProfile),
-        ),
-      ]);
-      assertTrustedMaterializationResult(
-        await input.producerReleases.registerProtocolLimitsProfile({
-          protocolLimitsProfileId: release.protocolLimitsProfileId,
-          limitsDigest,
-          limits: trustedProducerReleaseMaterializationLimits,
-        }),
-        "trusted_producer_release_limits_conflict",
-      );
-      assertTrustedMaterializationResult(
-        await input.producerReleases.registerOperationalSloProfile({
-          operationalSloProfileId: release.operationalSloProfileId,
-          sloDigest,
-          ...sloProfile,
-        }),
-        "trusted_producer_release_slo_conflict",
-      );
+        ));
+      if (!existingLimits) {
+        assertTrustedMaterializationResult(
+          await input.producerReleases.registerProtocolLimitsProfile({
+            protocolLimitsProfileId: release.protocolLimitsProfileId,
+            limitsDigest,
+            limits: trustedProducerReleaseMaterializationLimits,
+          }),
+          "trusted_producer_release_limits_conflict",
+        );
+      }
+      if (!existingSlo) {
+        assertTrustedMaterializationResult(
+          await input.producerReleases.registerOperationalSloProfile({
+            operationalSloProfileId: release.operationalSloProfileId,
+            sloDigest,
+            ...sloProfile,
+          }),
+          "trusted_producer_release_slo_conflict",
+        );
+      }
       assertTrustedMaterializationResult(
         await input.producerReleases.registerProducerRelease({
           candidate: {
