@@ -104,6 +104,10 @@ repository permission check. It performs a fresh Codex login in the dedicated
 the repository GitHub Actions secret, and confirms the new rotating generation.
 The GitHub token and Codex OAuth file are not persisted by ReviewRouter.
 
+Do not update `REVIEWROUTER_CODEX_AUTH_JSON` with a direct `gh secret set`.
+Rotating Codex auth has a generation confirmation step; bypassing it can leave
+the control plane rejecting the run as an older queued secret generation.
+
 Use `--reuse-current-auth` only immediately after creating a known-current
 session in that dedicated home. The default fresh login avoids reseeding stale
 local OAuth state.
