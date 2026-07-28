@@ -12,7 +12,8 @@ import {
 } from "../ports/review-publication-ports";
 import type { ReviewPublicationScope } from "../../domain/review-publication-attempt";
 
-const findingMarker = /<!--\s*review-router-finding:([a-f0-9]{24,64})\s*-->/iu;
+const findingMarker =
+  /(?:<!--\s*review-router-finding:([a-f0-9]{24,64})\s*-->|reviewrouter:finding:v2:([a-f0-9]{24,64}))/iu;
 
 export class ResolveCurrentPublicationLifecycle implements CurrentPublicationLifecyclePort {
   constructor(
@@ -182,8 +183,12 @@ function lifecycleChangedAfterBoundary(
   );
   for (const target of expected) {
     const current = liveByTargetId.get(target.targetId);
+    if (!current) {
+      if (target.mutationEligible) continue;
+      return true;
+    }
     if (
-      current?.threadId !== target.threadId ||
+      current.threadId !== target.threadId ||
       couldBeAfterBoundary(current.lastRelevantChangeAt, boundary) ||
       (current.isResolved && !target.mutationEligible)
     ) {
@@ -223,7 +228,8 @@ function inlineFindingFingerprints(
         comment.marker,
         "projection_inline_marker",
       );
-      const fingerprint = findingMarker.exec(marker)?.[1]?.toLowerCase();
+      const markerMatch = findingMarker.exec(marker);
+      const fingerprint = (markerMatch?.[1] ?? markerMatch?.[2])?.toLowerCase();
       if (!fingerprint) throw new Error("projection_inline_marker_invalid");
       fingerprints.push(fingerprint);
     });
