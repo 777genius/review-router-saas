@@ -8,7 +8,8 @@ import {
 } from "../../application/ports/review-publication-ports";
 import type { ReviewPublicationScope } from "../../domain/review-publication-attempt";
 
-const findingMarker = /<!--\s*review-router-finding:([a-f0-9]{24,64})\s*-->/iu;
+const findingMarker =
+  /(?:<!--\s*review-router-finding:([a-f0-9]{24,64})\s*-->|reviewrouter:finding:v2:([a-f0-9]{24,64}))/iu;
 const commandLedgerMarker =
   /<!--\s*reviewrouter-ledger:v1\s+payload=([A-Za-z0-9_-]+)\s+signature=([a-f0-9]{64})\s*-->/iu;
 const commandLedgerMarkerPresence = /<!--\s*reviewrouter-ledger:v1\b/iu;
@@ -230,7 +231,8 @@ async function loadInventory(
       const thread = requiredThread(candidate);
       const comments = await loadAllComments(client, thread);
       const parent = comments[0];
-      const fingerprint = findingMarker.exec(parent?.body ?? "")?.[1];
+      const markerMatch = findingMarker.exec(parent?.body ?? "");
+      const fingerprint = markerMatch?.[1] ?? markerMatch?.[2];
       if (!parent || !fingerprint) continue;
       const parentCreatedAt = timestamp(
         parent.createdAt,

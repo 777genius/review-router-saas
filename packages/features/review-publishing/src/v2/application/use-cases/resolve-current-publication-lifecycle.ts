@@ -184,8 +184,7 @@ function lifecycleChangedAfterBoundary(
   for (const target of expected) {
     const current = liveByTargetId.get(target.targetId);
     if (!current) {
-      if (target.mutationEligible) continue;
-      return true;
+      continue;
     }
     if (
       current.threadId !== target.threadId ||

@@ -131,6 +131,45 @@ describe("GitHubReviewPublicationLifecycleAdapter", () => {
     });
   });
 
+  it("loads current v2 finding markers from GitHub-visible review comments", async () => {
+    const result = await adapter({
+      async graphql<T>(query: string) {
+        if (query.includes("ReviewRouterPublicationCommandLedger")) {
+          return ledgerPage(null, false) as T;
+        }
+        return inventoryPage(
+          [
+            {
+              id: "thread-1",
+              isResolved: false,
+              comments: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  comment(
+                    "parent-1",
+                    `finding\n<!-- reviewrouter:finding:v2:${fingerprint} -->`,
+                    "2026-07-23T10:00:00Z",
+                  ),
+                ],
+              },
+            },
+          ],
+          false,
+        ) as T;
+      },
+    }).resolve(scope);
+
+    expect(result).toMatchObject({
+      status: LiveReviewPublicationLifecycleStatus.Available,
+      targets: [
+        {
+          targetId: targetId("thread-1", "parent-1", fingerprint),
+          markerFingerprint: fingerprint,
+        },
+      ],
+    });
+  });
+
   it("fails closed when the app-owned command ledger changes during inventory", async () => {
     let ledgerRead = 0;
     const result = await adapter({
