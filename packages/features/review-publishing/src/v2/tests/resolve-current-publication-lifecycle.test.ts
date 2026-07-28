@@ -72,6 +72,14 @@ describe("ResolveCurrentPublicationLifecycle", () => {
     expect(result.status).toBe(CurrentPublicationLifecycleStatus.Changed);
   });
 
+  it("accepts a missing mutation-eligible target as already absent", async () => {
+    const result = await resolver({
+      live: availableLive({ targets: liveTargets().slice(1) }),
+    }).resolve(scope);
+
+    expect(result.status).toBe(CurrentPublicationLifecycleStatus.Current);
+  });
+
   it("allows new targets created by the publication after authorization", async () => {
     const result = await resolver({
       live: availableLive({
@@ -224,34 +232,42 @@ describe("ResolveCurrentPublicationLifecycle", () => {
 });
 
 describe("reviewPublicationLifecycleExpectationFromProjection", () => {
-  it("parses and sorts lifecycle target identities", () => {
-    const result = reviewPublicationLifecycleExpectationFromProjection({
-      reviewedHeadSha: headSha,
-      lifecycleStateHash: "lifecycle-hash",
-      commandLedgerWatermark: 17n,
-      authorizationCreatedAt: boundary,
-      projectionEnvelopeJson: JSON.stringify({
-        publishing: {
-          lifecycle: [targets[1], targets[0]],
-          inlineReviewChunks: [
-            {
-              comments: [
-                {
-                  marker: `<!-- review-router-finding:${currentFindingFingerprint} -->`,
-                },
-              ],
-            },
-          ],
-        },
-      }),
-    });
+  it.each([
+    {
+      name: "legacy hidden marker",
+      marker: `<!-- review-router-finding:${currentFindingFingerprint} -->`,
+    },
+    {
+      name: "current v2 marker",
+      marker: `reviewrouter:finding:v2:${currentFindingFingerprint}`,
+    },
+  ])(
+    "parses and sorts lifecycle target identities from $name",
+    ({ marker }) => {
+      const result = reviewPublicationLifecycleExpectationFromProjection({
+        reviewedHeadSha: headSha,
+        lifecycleStateHash: "lifecycle-hash",
+        commandLedgerWatermark: 17n,
+        authorizationCreatedAt: boundary,
+        projectionEnvelopeJson: JSON.stringify({
+          publishing: {
+            lifecycle: [targets[1], targets[0]],
+            inlineReviewChunks: [
+              {
+                comments: [{ marker }],
+              },
+            ],
+          },
+        }),
+      });
 
-    expect(result).toMatchObject({
-      status: ReviewPublicationLifecycleExpectationStatus.Available,
-      targets,
-      createdTargetFingerprints: [currentFindingFingerprint],
-    });
-  });
+      expect(result).toMatchObject({
+        status: ReviewPublicationLifecycleExpectationStatus.Available,
+        targets,
+        createdTargetFingerprints: [currentFindingFingerprint],
+      });
+    },
+  );
 
   it("rejects duplicate or malformed target identities", () => {
     expect(() =>
