@@ -51,8 +51,14 @@ describe("ResolveCurrentPublicationLifecycle", () => {
       live: availableLive({ reviewedHeadSha: "b".repeat(40) }),
     },
     {
-      name: "target set changed",
-      live: availableLive({ targets: liveTargets().slice(0, 1) }),
+      name: "target identity changed",
+      live: availableLive({
+        targets: liveTargets().map((target) =>
+          target.targetId === "rrt_first"
+            ? { ...target, threadId: "thread-first-replaced" }
+            : target,
+        ),
+      }),
     },
     {
       name: "command ledger changed",
@@ -72,9 +78,9 @@ describe("ResolveCurrentPublicationLifecycle", () => {
     expect(result.status).toBe(CurrentPublicationLifecycleStatus.Changed);
   });
 
-  it("accepts a missing mutation-eligible target as already absent", async () => {
+  it("accepts missing expected targets as already absent", async () => {
     const result = await resolver({
-      live: availableLive({ targets: liveTargets().slice(1) }),
+      live: availableLive({ targets: [] }),
     }).resolve(scope);
 
     expect(result.status).toBe(CurrentPublicationLifecycleStatus.Current);
