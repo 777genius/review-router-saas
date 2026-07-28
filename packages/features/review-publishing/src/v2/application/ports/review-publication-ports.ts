@@ -721,6 +721,9 @@ export enum ReviewPublicationGateRejectionReason {
   MutationEpochMismatch = "mutation_epoch_mismatch",
   RevisionNotCurrent = "revision_not_current",
   LifecycleNotCurrent = "lifecycle_not_current",
+  LifecycleStatusNotCurrent = "lifecycle_status_not_current",
+  LifecycleHashMismatch = "lifecycle_hash_mismatch",
+  LifecycleWatermarkMismatch = "lifecycle_watermark_mismatch",
   SafetyDenied = "safety_denied",
   SafetyDecisionMismatch = "safety_decision_mismatch",
 }

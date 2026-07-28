@@ -186,7 +186,7 @@ describe("review publication v2", () => {
           },
         },
       },
-      ReviewPublicationGateRejectionReason.LifecycleNotCurrent,
+      ReviewPublicationGateRejectionReason.LifecycleStatusNotCurrent,
     ],
     [
       "safety",
@@ -206,6 +206,45 @@ describe("review publication v2", () => {
     "fails closed when the %s decision is not current",
     async (_, override, reason) => {
       const harness = createHarness({ decisionOverrides: override });
+      await expect(
+        harness.application.request(requestCommand()),
+      ).rejects.toEqual(new ReviewPublicationGateRejectedError(reason));
+    },
+  );
+
+  it.each([
+    [
+      "lifecycle hash",
+      {
+        lifecycleStateHash: hash("f"),
+        commandLedgerWatermark: 2n,
+      },
+      ReviewPublicationGateRejectionReason.LifecycleHashMismatch,
+    ],
+    [
+      "lifecycle watermark",
+      {
+        lifecycleStateHash: hash("d"),
+        commandLedgerWatermark: 3n,
+      },
+      ReviewPublicationGateRejectionReason.LifecycleWatermarkMismatch,
+    ],
+  ] as const)(
+    "reports a granular stale reason when the %s changed",
+    async (_, lifecycle, reason) => {
+      const harness = createHarness({
+        decisionOverrides: {
+          lifecycle: {
+            async resolve() {
+              return {
+                status: CurrentPublicationLifecycleStatus.Current,
+                ...lifecycle,
+              } as const;
+            },
+          },
+        },
+      });
+
       await expect(
         harness.application.request(requestCommand()),
       ).rejects.toEqual(new ReviewPublicationGateRejectedError(reason));

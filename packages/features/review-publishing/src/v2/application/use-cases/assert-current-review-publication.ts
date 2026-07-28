@@ -69,12 +69,16 @@ export async function assertCurrentReviewPublication(input: {
   ) {
     reject(ReviewPublicationGateRejectionReason.RevisionNotCurrent);
   }
+  if (lifecycle.status !== CurrentPublicationLifecycleStatus.Current) {
+    reject(ReviewPublicationGateRejectionReason.LifecycleStatusNotCurrent);
+  }
+  if (lifecycle.lifecycleStateHash !== input.permit.lifecycleStateHash) {
+    reject(ReviewPublicationGateRejectionReason.LifecycleHashMismatch);
+  }
   if (
-    lifecycle.status !== CurrentPublicationLifecycleStatus.Current ||
-    lifecycle.lifecycleStateHash !== input.permit.lifecycleStateHash ||
     lifecycle.commandLedgerWatermark !== input.permit.commandLedgerWatermark
   ) {
-    reject(ReviewPublicationGateRejectionReason.LifecycleNotCurrent);
+    reject(ReviewPublicationGateRejectionReason.LifecycleWatermarkMismatch);
   }
   if (safety.status !== CurrentReviewSafetyDecisionStatus.Allowed) {
     reject(ReviewPublicationGateRejectionReason.SafetyDenied);
