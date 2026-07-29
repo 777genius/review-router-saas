@@ -50,3 +50,9 @@ A self-hosted release is not complete until the final report contains:
 - sandbox E2E run URL or local harness output
 - real repository run URL only if explicitly authorized
 - confirmation that logs do not contain provider credentials or raw source
+
+The reproducible local Compose and review harness evidence is produced by:
+
+```bash
+pnpm self-hosted:e2e
+```

@@ -1431,10 +1431,13 @@ function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function assertDisposableDatabaseUrl(databaseUrl: string): void {
+export function assertDisposableDatabaseUrl(databaseUrl: string): void {
   const parsed = new URL(databaseUrl);
   const database = parsed.pathname.replace(/^\//u, "").toLowerCase();
-  const local = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
+  const local =
+    ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname) ||
+    (parsed.hostname === "postgres" &&
+      process.env.REVIEW_ROUTER_REVIEW_V2_E2E_ALLOW_DOCKER_DATABASE === "1");
   if (!local || (!database.includes("test") && !database.includes("ci"))) {
     throw new Error("review_v2_e2e_requires_disposable_database");
   }
