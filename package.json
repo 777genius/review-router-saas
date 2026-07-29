@@ -29,6 +29,7 @@
     "self-hosted:check": "node scripts/check-self-hosted-readiness.mjs && node scripts/check-self-hosted-compose-contract.mjs",
     "self-hosted:check:smoke": "node scripts/check-self-hosted-readiness-smoke.mjs && node scripts/check-self-hosted-compose-contract.mjs",
     "self-hosted:compose:check": "node scripts/check-self-hosted-compose-contract.mjs",
+    "self-hosted:e2e": "node scripts/run-self-hosted-e2e.mjs",
     "public-beta:check:smoke": "node scripts/check-public-beta-readiness-smoke.mjs",
     "beta:check": "bash scripts/check-beta-readiness.sh",
     "web:smoke": "node scripts/run-with-env.mjs node scripts/check-web-pages.mjs",

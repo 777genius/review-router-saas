@@ -210,6 +210,17 @@ service wiring:
 pnpm self-hosted:compose:check
 ```
 
+Run the complete disposable local E2E gate before a self-hosted release:
+
+```bash
+pnpm self-hosted:e2e
+```
+
+The E2E command generates an isolated temporary env, builds and boots a fresh
+Compose project on free localhost ports, verifies migrations and exact health
+responses, runs the Review v2 and action OIDC harnesses inside the container,
+checks logs for credential material, and removes its database and volumes.
+
 ## 4. Start
 
 From `deploy/self-hosted`:
@@ -238,7 +249,7 @@ docker compose \
   -f deploy/self-hosted/compose.yml \
   ps
 curl -fsS http://127.0.0.1:4000/health
-curl -fsS http://127.0.0.1:3000/status
+curl -fsS http://127.0.0.1:3000/api/health
 ```
 
 Your public reverse proxy should route:

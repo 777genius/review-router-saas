@@ -48,8 +48,12 @@ for (const service of ["web", "api", "worker"]) {
 }
 
 requireHealthcheck("postgres", "pg_isready");
-requireHealthcheck("web", "http://127.0.0.1:3000/status");
+requireHealthcheck("web", "http://127.0.0.1:3000/api/health");
 requireHealthcheck("api", "http://127.0.0.1:4000/health");
+requireHealthcheck("web", "redirect:'manual'");
+requireHealthcheck("api", "redirect:'manual'");
+requireHealthcheck("web", "r.status===200");
+requireHealthcheck("api", "r.status===200");
 requireVolumeMount(
   "postgres",
   "reviewrouter-postgres-data",
