@@ -50,8 +50,8 @@ try {
     "review-router-api",
   );
 
-  runCompose(["run", "--rm", "migrate"]);
-  runCompose([
+  runComposeWithSanitizedOutput(["run", "--rm", "migrate"]);
+  runComposeWithSanitizedOutput([
     "exec",
     "-T",
     "postgres",
@@ -250,6 +250,29 @@ function captureCompose(args, options) {
   return capture("docker", composeArguments(args), testEnv, options);
 }
 
+function runComposeWithSanitizedOutput(args) {
+  const result = spawnSync("docker", composeArguments(args), {
+    cwd: repoRoot,
+    env: testEnv,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  assertCredentialMaterialAbsent(
+    `${stdout}${stderr}`,
+    "self_hosted_e2e_output",
+  );
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+  if (result.status !== 0) {
+    throw new Error(
+      `docker ${composeArguments(args).join(" ")} failed with ${result.status ?? result.signal}`,
+    );
+  }
+  return result;
+}
+
 function run(command, args, env = process.env, options = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
@@ -338,6 +361,10 @@ function assertLogsAreSanitized() {
     "migrate",
     "postgres",
   ]);
+  assertCredentialMaterialAbsent(logs, "self_hosted_logs");
+}
+
+function assertCredentialMaterialAbsent(value, source) {
   const forbiddenValues = [
     secrets.auth,
     secrets.actionSession,
@@ -348,15 +375,15 @@ function assertLogsAreSanitized() {
     secrets.privateKey,
     testEnv.GITHUB_APP_PRIVATE_KEY,
   ];
-  if (forbiddenValues.some((value) => value && logs.includes(value))) {
-    throw new Error("self_hosted_logs_contain_generated_secret");
+  if (forbiddenValues.some((secret) => secret && value.includes(secret))) {
+    throw new Error(`${source}_contains_generated_secret`);
   }
   if (
     /gh[pousr]_[A-Za-z0-9]{20,}|Bearer [A-Za-z0-9._-]{20,}|BEGIN [A-Z ]*PRIVATE KEY|refresh_token|access_token|auth\.json/i.test(
-      logs,
+      value,
     )
   ) {
-    throw new Error("self_hosted_logs_contain_credential_material");
+    throw new Error(`${source}_contains_credential_material`);
   }
 }
 
