@@ -35,6 +35,10 @@ write` is a different permission and does not authorize dispatch.
 Validate configuration without printing values:
 
 ```bash
+# Self-hosted Compose:
+rr_admin env-preflight
+
+# Other deployment compositions:
 pnpm review-v2:admin env-preflight
 ```
 

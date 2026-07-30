@@ -255,7 +255,7 @@ Store only the SHA-256 of the Review v2 operator credential in the shared env:
 
 ```bash
 printf %s "$REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL" \
-  | openssl dgst -sha256
+  | openssl dgst -sha256 -r | awk '{print $1}'
 ```
 
 Keep the plaintext credential outside the Compose env and provide it only to an

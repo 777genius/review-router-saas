@@ -222,7 +222,7 @@ the plaintext outside Compose:
 ```bash
 export REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL="$(openssl rand -base64 48)"
 printf %s "$REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL" \
-  | openssl dgst -sha256
+  | openssl dgst -sha256 -r | awk '{print $1}'
 ```
 
 Set the resulting hex digest as:
