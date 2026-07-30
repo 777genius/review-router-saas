@@ -42,7 +42,7 @@ jobs:
       contents: read
       pull-requests: read
       id-token: write
-    uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1
+    uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@626739854b5c67d94b3f0118738c106b4a232c41
     with:
       control_plane_url: https://api.reviewrouter.example.com
       runtime_config_mode: oidc

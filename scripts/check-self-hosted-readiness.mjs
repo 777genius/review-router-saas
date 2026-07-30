@@ -151,10 +151,10 @@ function requireT0RuntimeContract() {
     "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID",
     "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON",
   );
-  const attestations = requireNonEmptyJsonArray(
+  const attestations = requireProducerReleaseAttestations(
     "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON",
   );
-  requireNonEmptyJsonArray("REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON");
+  requireProviderVoteLanes("REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON");
   requireEqual(
     "REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION",
     reviewV2ProjectionPolicyVersion,
@@ -268,6 +268,98 @@ function requireNonEmptyJsonArray(name) {
   return null;
 }
 
+function requireProducerReleaseAttestations(name) {
+  const attestations = requireNonEmptyJsonArray(name);
+  if (!attestations) return null;
+  const actionCommitShas = new Set();
+  const valid =
+    attestations.length <= 100 &&
+    attestations.every((attestation) => {
+      if (!isProducerReleaseAttestation(attestation)) return false;
+      const actionCommitSha = attestation.actionCommitSha.toLowerCase();
+      if (actionCommitShas.has(actionCommitSha)) return false;
+      actionCommitShas.add(actionCommitSha);
+      return true;
+    });
+  if (!valid) {
+    errors.push(
+      `${name} must contain 1-100 valid, uniquely keyed producer release attestations.`,
+    );
+    return null;
+  }
+  return attestations;
+}
+
+function requireProviderVoteLanes(name) {
+  const lanes = requireNonEmptyJsonArray(name);
+  if (!lanes) return;
+  const providers = new Set();
+  const valid =
+    lanes.length <= 16 &&
+    lanes.every((lane) => {
+      if (
+        !isExactRecord(lane, ["providerKind", "providerVoteIdentityHash"]) ||
+        !["codex", "claude_code", "openrouter"].includes(lane.providerKind) ||
+        !isSha256(lane.providerVoteIdentityHash) ||
+        providers.has(lane.providerKind)
+      ) {
+        return false;
+      }
+      providers.add(lane.providerKind);
+      return true;
+    });
+  if (!valid) {
+    errors.push(
+      `${name} must contain 1-16 valid, uniquely keyed provider vote lanes.`,
+    );
+  }
+}
+
+function isProducerReleaseAttestation(value) {
+  const legacyKeys = [
+    "producerReleaseId",
+    "distributionKind",
+    "actionCommitSha",
+    "runtimeCommitSha",
+    "wrapperEntrypointDigest",
+    "runtimeEntrypointDigest",
+    "schemaDigest",
+    "canonicalizerDigest",
+    "capabilityProfile",
+    "protocolLimitsProfileId",
+    "operationalSloProfileId",
+  ];
+  const currentKeys = [
+    ...legacyKeys,
+    "contextGatewayPolicyVersion",
+    "contextGatewayEntrypointDigest",
+  ];
+  if (!isExactRecord(value, legacyKeys) && !isExactRecord(value, currentKeys)) {
+    return false;
+  }
+  const contextGatewayPolicyVersion = value.contextGatewayPolicyVersion ?? null;
+  const contextGatewayEntrypointDigest =
+    value.contextGatewayEntrypointDigest ?? null;
+  return (
+    isIdentifier(value.producerReleaseId) &&
+    ["hosted_composite", "public_reusable"].includes(value.distributionKind) &&
+    isCommitSha(value.actionCommitSha) &&
+    isCommitSha(value.runtimeCommitSha) &&
+    (value.wrapperEntrypointDigest === null ||
+      isSha256(value.wrapperEntrypointDigest)) &&
+    isSha256(value.runtimeEntrypointDigest) &&
+    ((contextGatewayPolicyVersion === null &&
+      contextGatewayEntrypointDigest === null) ||
+      (isIdentifier(contextGatewayPolicyVersion) &&
+        isSha256(contextGatewayEntrypointDigest))) &&
+    isSha256(value.schemaDigest) &&
+    isSha256(value.canonicalizerDigest) &&
+    value.capabilityProfile === "exact_revision_v2" &&
+    isIdentifier(value.protocolLimitsProfileId) &&
+    isIdentifier(value.operationalSloProfileId)
+  );
+}
+
 function requireBase64Key(name, byteLength) {
   if (!isCanonicalBase64Key(read(name), byteLength, true)) {
     errors.push(`${name} must be a canonical ${byteLength}-byte base64 key.`);
@@ -298,6 +390,23 @@ function isIsoTimestamp(value) {
   if (typeof value !== "string") return false;
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function isIdentifier(value) {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 255 &&
+    value.trim() === value
+  );
+}
+
+function isCommitSha(value) {
+  return typeof value === "string" && /^[a-f0-9]{40}$/u.test(value);
+}
+
+function isSha256(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
 }
 
 function isExactRecord(value, keys) {

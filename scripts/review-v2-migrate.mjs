@@ -171,11 +171,26 @@ runStep(
     FROM "ScmRepositoryIdentity" identity
     WHERE identity."currentRepositoryConnectionId" IS NOT NULL
       AND identity."currentWorkspaceId" IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM "ReviewV2MigrationLedger" ledger
+        WHERE ledger."migrationVersion" = '${migrationVersion}'
+          AND ledger."stepName" =
+                '${reviewV2LegacyAuthorityFenceBackfillStep}'
+          AND ledger."status" = 'running'
+      )
     ON CONFLICT ("scmRepositoryIdentityId", "laneKind") DO NOTHING;
 
     DO $guard$
     BEGIN
       IF EXISTS (
+        SELECT 1
+        FROM "ReviewV2MigrationLedger" ledger
+        WHERE ledger."migrationVersion" = '${migrationVersion}'
+          AND ledger."stepName" =
+                '${reviewV2LegacyAuthorityFenceBackfillStep}'
+          AND ledger."status" = 'running'
+      ) AND EXISTS (
         SELECT 1
         FROM "ScmRepositoryIdentity" identity
         WHERE identity."currentRepositoryConnectionId" IS NOT NULL
@@ -1089,7 +1104,8 @@ function runStep(stepName, body) {
         "completedAt" = statement_timestamp(),
         "lastErrorCode" = NULL
     WHERE "migrationVersion" = '${migrationVersion}'
-      AND "stepName" = '${stepName}';
+      AND "stepName" = '${stepName}'
+      AND "status" = 'running';
     COMMIT;
   `);
 }

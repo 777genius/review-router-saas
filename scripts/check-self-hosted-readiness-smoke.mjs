@@ -188,6 +188,31 @@ const cases = [
     },
   },
   {
+    name: "T0 rejects incomplete producer release attestations",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON must contain 1-100 valid",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
+        JSON.stringify([{ actionCommitSha }]),
+    },
+  },
+  {
+    name: "T0 rejects malformed provider vote lanes",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON must contain 1-16 valid",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON: JSON.stringify([{}]),
+    },
+  },
+  {
     name: "provisioning passes with workflow provisioning enabled",
     expectSuccess: true,
     env: {
