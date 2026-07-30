@@ -217,6 +217,8 @@ export function composeReviewActionV2ProductionRunControl(input: {
       identities: repositories.repositoryIdentities,
       authorities: repositories.mutationAuthorities,
       actionRepositories,
+      releaseAttestations: prerequisites.releaseAttestations,
+      producerReleases: repositories.producerReleases,
       safety: mutationSafetyResolver,
       workflowInventory,
       dispatchCapability,
