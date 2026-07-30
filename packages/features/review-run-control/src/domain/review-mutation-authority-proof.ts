@@ -32,6 +32,12 @@ export enum ReviewMutationAuthorityProofBlocker {
   RegisteredReleaseMissing = "registered_release_missing",
   CompletionWorkerUnavailable = "completion_worker_unavailable",
   DispatchCapabilityUnavailable = "dispatch_capability_unavailable",
+  ExecutionAuthorityUnavailable = "execution_authority_unavailable",
+}
+
+export enum ReviewMutationExecutionAuthorityMode {
+  ManagedDispatch = "managed_dispatch",
+  ClientTriggered = "client_triggered",
 }
 
 declare const reviewMutationAuthorityProofDigestBrand: unique symbol;
@@ -46,7 +52,10 @@ export type ReviewMutationAbortProofFacts = {
 export type ReviewMutationDirectV2InitializationProofFacts = {
   readonly freshV2OnlyProvisioningProven: boolean;
   readonly noLegacyCapabilityEverIssued: boolean;
-  readonly dispatchCapabilityAvailable: boolean;
+  readonly workflowInventoryCompatible: boolean;
+  readonly registeredReleaseSelected: boolean;
+  readonly completionWorkerConfigured: boolean;
+  readonly executionAuthorityMode: ReviewMutationExecutionAuthorityMode | null;
   readonly managedWorkflowInventoryHash: string;
   readonly safetyDecisionEnabled: boolean;
   readonly activationSafetyDecisionHash: string;
@@ -209,9 +218,24 @@ export function reviewMutationAuthorityProofBlockers(
           ReviewMutationAuthorityProofBlocker.LegacyCapabilityPreviouslyIssued,
         );
       }
-      if (!proof.facts.dispatchCapabilityAvailable) {
+      if (!proof.facts.workflowInventoryCompatible) {
         blockers.push(
-          ReviewMutationAuthorityProofBlocker.DispatchCapabilityUnavailable,
+          ReviewMutationAuthorityProofBlocker.WorkflowInventoryIncompatible,
+        );
+      }
+      if (!proof.facts.registeredReleaseSelected) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.RegisteredReleaseMissing,
+        );
+      }
+      if (!proof.facts.completionWorkerConfigured) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.CompletionWorkerUnavailable,
+        );
+      }
+      if (proof.facts.executionAuthorityMode === null) {
+        blockers.push(
+          ReviewMutationAuthorityProofBlocker.ExecutionAuthorityUnavailable,
         );
       }
       if (!proof.facts.safetyDecisionEnabled) {
@@ -361,9 +385,25 @@ function validateUnsealedProof(proof: UnsealedReviewMutationAuthorityProof) {
         "no_legacy_capability_ever_issued",
       );
       assertBoolean(
-        proof.facts.dispatchCapabilityAvailable,
-        "dispatch_capability_available",
+        proof.facts.workflowInventoryCompatible,
+        "workflow_inventory_compatible",
       );
+      assertBoolean(
+        proof.facts.registeredReleaseSelected,
+        "registered_release_selected",
+      );
+      assertBoolean(
+        proof.facts.completionWorkerConfigured,
+        "completion_worker_configured",
+      );
+      if (
+        proof.facts.executionAuthorityMode !== null &&
+        !Object.values(ReviewMutationExecutionAuthorityMode).includes(
+          proof.facts.executionAuthorityMode,
+        )
+      ) {
+        invalid("execution_authority_mode_invalid");
+      }
       assertSha256(
         proof.facts.managedWorkflowInventoryHash,
         "managed_workflow_inventory_hash",

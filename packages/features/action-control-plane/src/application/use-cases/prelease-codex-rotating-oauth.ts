@@ -30,6 +30,7 @@ export type PreleaseCodexRotatingOAuthDependencies = {
   };
   readonly replayNonces: ActionOidcReplayNonceStorePort;
   readonly hostedReviewPreleaseGate?: HostedReviewPreleaseGatePort;
+  readonly reviewIntentAdmissionRequired?: boolean;
   readonly clock: Clock;
 };
 
@@ -89,6 +90,7 @@ export async function preleaseCodexRotatingOAuth(
     repository,
     providerInstanceId: input.providerInstanceId,
     workflowSha: claims.workflow_sha,
+    workflowSchemaVersion: input.workflowSchemaVersion,
   });
   if (!binding) {
     throw new Error("codex_rotating_provider_binding_not_found");
@@ -123,12 +125,13 @@ export async function preleaseCodexRotatingOAuth(
     repository,
     workflowSourceVerifier: dependencies.codexRotatingWorkflowSourceVerifier,
   });
-  const intentRequired = reviewIntentRequired({
-    claims,
-    actionRef: verifiedWorkflow.binding.actionRef,
-    workflowPath: verifiedWorkflow.binding.workflowPath,
-    pullRequestNumber,
-  });
+  const intentRequired =
+    reviewIntentRequired({
+      claims,
+      actionRef: verifiedWorkflow.binding.actionRef,
+      workflowPath: verifiedWorkflow.binding.workflowPath,
+      pullRequestNumber,
+    }) && dependencies.reviewIntentAdmissionRequired !== false;
   if (dependencies.hostedReviewPreleaseGate) {
     const admission = await dependencies.hostedReviewPreleaseGate.evaluate({
       repository,

@@ -12,6 +12,7 @@ import {
 } from "../application/use-cases/manage-review-mutation-authority";
 import {
   ReviewMutationAuthorityProofBlocker,
+  ReviewMutationExecutionAuthorityMode,
   reviewMutationAuthorityProofReference,
   type ReviewMutationAbortProofFacts,
   type ReviewMutationActivationProofFacts,
@@ -381,7 +382,11 @@ class MutableProofFacts implements ReviewMutationAuthorityProofFactsQueryPorts {
       facts: {
         freshV2OnlyProvisioningProven: true,
         noLegacyCapabilityEverIssued: true,
-        dispatchCapabilityAvailable: true,
+        workflowInventoryCompatible: true,
+        registeredReleaseSelected: true,
+        completionWorkerConfigured: true,
+        executionAuthorityMode:
+          ReviewMutationExecutionAuthorityMode.ManagedDispatch,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,

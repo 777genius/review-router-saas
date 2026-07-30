@@ -7,10 +7,9 @@ import {
   LegacyReviewMutationOperation,
 } from "@reviewrouter/features-action-control-plane";
 import {
-  ReviewMutationLaneKind,
   ReviewMutationMode,
   ScmProvider,
-  type ReviewMutationAuthorityQueryPort,
+  type AdmitLegacyReviewMutation,
   type ScmRepositoryIdentityQueryPort,
 } from "@reviewrouter/features-review-run-control";
 
@@ -29,7 +28,10 @@ export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMuta
   constructor(
     private readonly dependencies: {
       readonly repositoryIdentities: ScmRepositoryIdentityQueryPort;
-      readonly mutationAuthorities: ReviewMutationAuthorityQueryPort;
+      readonly legacyAuthorityAdmission: Pick<
+        AdmitLegacyReviewMutation,
+        "admit"
+      >;
       readonly workflowSourceVerifier?: ManagedV2SessionBootstrapSourceVerifierPort;
     },
   ) {}
@@ -45,14 +47,14 @@ export class ReviewRunControlLegacyMutationAdmission implements LegacyReviewMuta
           externalRepositoryId: input.githubRepositoryId,
         },
       );
-    if (!identity) return;
+    if (!identity) {
+      throw new Error("legacy_review_mutation_identity_unavailable");
+    }
 
-    const authority =
-      await this.dependencies.mutationAuthorities.findReviewMutationAuthority({
-        scmRepositoryIdentityId: identity.scmRepositoryIdentityId,
-        laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
-      });
-    if (!authority || authority.mode === ReviewMutationMode.V1Open) return;
+    const authority = await this.dependencies.legacyAuthorityAdmission.admit({
+      scmRepositoryIdentityId: identity.scmRepositoryIdentityId,
+    });
+    if (authority.mode === ReviewMutationMode.V1Open) return;
     if (
       authority.mode !== ReviewMutationMode.Paused &&
       (this.isManagedV2SessionDerivedMutation(input) ||

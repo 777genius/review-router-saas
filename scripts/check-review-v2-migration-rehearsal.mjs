@@ -6,7 +6,9 @@ import { spawnSync } from "node:child_process";
 import dotenv from "dotenv";
 import {
   reviewV2ForeignKeyValuesSql,
+  reviewV2LegacyAuthorityFenceBackfillStep,
   reviewV2MigrationDirectories,
+  reviewV2MigrationSteps,
   reviewV2MigrationVersion,
   reviewV2RepositoryBackfillStep,
 } from "./lib/review-v2-migration-contract.mjs";
@@ -48,6 +50,9 @@ const repositoryCount = 2_500;
 const totalRepositoryCount = repositoryCount + 2;
 const pageSize = 113;
 const interruptedPageCount = 3;
+const completedMigrationSteps = reviewV2MigrationSteps
+  .map((stepName) => `${stepName}:completed`)
+  .join(",");
 
 let created = false;
 try {
@@ -295,17 +300,77 @@ try {
     `,
   );
 
-  for (const actor of ["rehearsal-resume", "rehearsal-idempotent-retry"]) {
-    run(
-      "node",
-      [
-        "scripts/review-v2-migrate.mjs",
-        "--apply",
-        `--actor=${actor}`,
-        `--backfill-page-size=${pageSize}`,
-      ],
-      { ...process.env, DATABASE_URL: databaseUrl.toString() },
-    );
+  run(
+    "node",
+    [
+      "scripts/review-v2-migrate.mjs",
+      "--apply",
+      "--actor=rehearsal-resume",
+      `--backfill-page-size=${pageSize}`,
+    ],
+    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+  );
+
+  const authorityFenceCompletedAt = psql(
+    databaseUrl,
+    `
+      SELECT "completedAt"::text
+      FROM "ReviewV2MigrationLedger"
+      WHERE "migrationVersion" = '${reviewV2MigrationVersion}'
+        AND "stepName" = '${reviewV2LegacyAuthorityFenceBackfillStep}';
+    `,
+    true,
+  );
+
+  psql(
+    databaseUrl,
+    `
+      BEGIN;
+      SET CONSTRAINTS ALL DEFERRED;
+      INSERT INTO "ScmRepositoryIdentity" (
+        "scmRepositoryIdentityId", provider, "normalizedSourceBaseUrl",
+        "externalRepositoryId", version, "currentWorkspaceId",
+        "currentRepositoryConnectionId", "createdAt", "boundAt"
+      ) VALUES (
+        'scm-post-v7', 'github', 'https://github.com', 'post-v7', 1,
+        'ws-rehearsal', 'repo-post-v7', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+      INSERT INTO "RepositoryConnection" (
+        id, "workspaceId", provider, "sourceBaseUrl", "externalRepositoryId",
+        owner, name, "fullName", "defaultBranch", visibility, "setupStatus",
+        "scmRepositoryIdentityId", "createdAt", "updatedAt"
+      ) VALUES (
+        'repo-post-v7', 'ws-rehearsal', 'github', 'https://github.com',
+        'post-v7', 'owner', 'post-v7', 'owner/post-v7', 'main', 'private',
+        'not_configured', 'scm-post-v7', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      );
+      COMMIT;
+    `,
+  );
+
+  run(
+    "node",
+    [
+      "scripts/review-v2-migrate.mjs",
+      "--apply",
+      "--actor=rehearsal-idempotent-retry",
+      `--backfill-page-size=${pageSize}`,
+    ],
+    { ...process.env, DATABASE_URL: databaseUrl.toString() },
+  );
+
+  const authorityFenceCompletedAtAfterRetry = psql(
+    databaseUrl,
+    `
+      SELECT "completedAt"::text
+      FROM "ReviewV2MigrationLedger"
+      WHERE "migrationVersion" = '${reviewV2MigrationVersion}'
+        AND "stepName" = '${reviewV2LegacyAuthorityFenceBackfillStep}';
+    `,
+    true,
+  );
+  if (authorityFenceCompletedAtAfterRetry !== authorityFenceCompletedAt) {
+    fail("Completed authority fence ledger timestamp changed on retry");
   }
 
   const result = psql(
@@ -319,8 +384,9 @@ try {
       SELECT concat_ws('|',
         (SELECT count(*) FROM "RepositoryConnection" WHERE "scmRepositoryIdentityId" IS NOT NULL),
         (SELECT count(*) FROM "ScmRepositoryIdentity" WHERE "currentRepositoryConnectionId" IS NOT NULL),
-        (SELECT count(*) FROM "ReviewV2MigrationLedger"
-         WHERE "migrationVersion" = '${reviewV2MigrationVersion}' AND status = 'completed'),
+        (SELECT string_agg("stepName" || ':' || status, ',' ORDER BY "stepName")
+         FROM "ReviewV2MigrationLedger"
+         WHERE "migrationVersion" = '${reviewV2MigrationVersion}'),
         (SELECT count(*)
          FROM expected
          JOIN pg_class source_table ON source_table.relname = expected.table_name
@@ -342,7 +408,13 @@ try {
            AND "stepName" = '${reviewV2RepositoryBackfillStep}'),
         (SELECT checkpoint->>'quarantinedCount' FROM "ReviewV2MigrationLedger"
          WHERE "migrationVersion" = '${reviewV2MigrationVersion}'
-           AND "stepName" = '${reviewV2RepositoryBackfillStep}')
+           AND "stepName" = '${reviewV2RepositoryBackfillStep}'),
+        (SELECT count(*) FROM "ReviewMutationAuthority"
+         WHERE "laneKind" = 'hosted_reviewrouter_app'
+           AND mode = 'v1_open'),
+        (SELECT count(*) FROM "ReviewMutationAuthority"
+         WHERE "scmRepositoryIdentityId" = 'scm-post-v7'
+           AND "laneKind" = 'hosted_reviewrouter_app')
       )
       FROM expected
       LIMIT 1;
@@ -351,7 +423,7 @@ try {
   );
   if (
     result !==
-    `${totalRepositoryCount}|${totalRepositoryCount}|4|0|1|0|1|${totalRepositoryCount + 1}|1`
+    `${totalRepositoryCount + 1}|${totalRepositoryCount + 1}|${completedMigrationSteps}|0|1|0|1|${totalRepositoryCount + 1}|1|${totalRepositoryCount}|0`
   ) {
     fail(`Unexpected rehearsal state: ${result}`);
   }

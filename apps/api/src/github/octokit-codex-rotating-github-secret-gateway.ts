@@ -390,6 +390,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
     readonly compatible: boolean;
     readonly inventoryHash: string;
     readonly actionCommitSha: string | null;
+    readonly workflowSchemaVersion: number | null;
     readonly defaultBranchHeadSha: string;
   }> {
     const token = await this.mintRepositoryToken({
@@ -565,6 +566,7 @@ export class OctokitCodexRotatingGitHubSecretGateway
         .update(JSON.stringify(inventory), "utf8")
         .digest("hex"),
       actionCommitSha: reviewActionCommitSha,
+      workflowSchemaVersion: defaultInventory.workflowSchemaVersion,
       defaultBranchHeadSha: defaultInventory.headSha,
     };
   }

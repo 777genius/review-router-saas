@@ -26,6 +26,7 @@ export interface CodexRotatingOAuthRepositoryPort {
     readonly repository: ActionRepositoryContext;
     readonly providerInstanceId: string;
     readonly workflowSha: string;
+    readonly workflowSchemaVersion: number;
   }): Promise<CodexRotatingProviderBinding | null>;
 
   acquirePrelease(input: {

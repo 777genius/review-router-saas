@@ -797,7 +797,7 @@ exit 17
       errors: [],
     });
 
-    const futureSchemaWorkflow = renderCodexRotatingAdvisoryWorkflow({
+    const clientTriggeredWorkflow = renderCodexRotatingAdvisoryWorkflow({
       actionRef: `777genius/review-router@${actionSha}`,
       apiUrl: "https://api.reviewrouter.site",
       providerInstanceId: "codex-rotating:1163183284",
@@ -805,9 +805,66 @@ exit 17
       refreshScheduleCron: null,
       reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
     });
+    expect(clientTriggeredWorkflow).toContain("  pull_request:");
+    expect(clientTriggeredWorkflow).not.toContain("  workflow_dispatch:");
+    expect(clientTriggeredWorkflow).toContain(
+      "run-name: ${{ format('ReviewRouter review PR {0} at {1}'",
+    );
+    expect(clientTriggeredWorkflow).not.toContain("review PR #{0}");
+    expect(clientTriggeredWorkflow).toContain(
+      "pr_number: ${{ format('{0}', github.event.pull_request.number) }}",
+    );
+    expect(clientTriggeredWorkflow).toContain(
+      "review_head_sha: ${{ github.event.pull_request.head.sha }}",
+    );
+    expect(clientTriggeredWorkflow).toContain(
+      "github.event.pull_request.head.repo.full_name == github.repository",
+    );
+    expect(clientTriggeredWorkflow).toContain("cancel-in-progress: false");
+    expect(scanCodexRotatingAdvisoryWorkflow(clientTriggeredWorkflow)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        clientTriggeredWorkflow,
+      ),
+    ).toMatchObject({
+      actionRef: `777genius/review-router@${actionSha}`,
+      workflowSchemaVersion: 2,
+    });
+
+    const wrongClientHead = clientTriggeredWorkflow.replace(
+      "review_head_sha: ${{ github.event.pull_request.head.sha }}",
+      "review_head_sha: ${{ github.sha }}",
+    );
+    expect(scanCodexRotatingAdvisoryWorkflow(wrongClientHead).errors).toContain(
+      "t0_review_client_trigger_binding_required",
+    );
     expect(() =>
-      readCanonicalCodexRotatingT0WorkflowSourceMetadata(futureSchemaWorkflow),
-    ).toThrow();
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(wrongClientHead),
+    ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
+
+    const numericClientPullRequest = clientTriggeredWorkflow.replace(
+      "pr_number: ${{ format('{0}', github.event.pull_request.number) }}",
+      "pr_number: ${{ github.event.pull_request.number }}",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(numericClientPullRequest).errors,
+    ).toContain("t0_review_client_trigger_binding_required");
+    expect(() =>
+      readCanonicalCodexRotatingT0WorkflowSourceMetadata(
+        numericClientPullRequest,
+      ),
+    ).toThrow("codex_rotating_t0_workflow_source_not_canonical");
+
+    const cancellableClientWorkflow = clientTriggeredWorkflow.replace(
+      "cancel-in-progress: false",
+      "cancel-in-progress: true",
+    );
+    expect(
+      scanCodexRotatingAdvisoryWorkflow(cancellableClientWorkflow).errors,
+    ).toContain("t0_review_provider_concurrency_required");
 
     const floatingRef = `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@main`;
     expect(() =>

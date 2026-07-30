@@ -5,6 +5,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnvFile } from "./lib/env-file.mjs";
 import { normalizeGitHubAppPermissionProfile } from "./lib/github-app-permission-profiles.mjs";
+import { reviewV2ProjectionPolicyVersion } from "./review-v2-render-env.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultEnvFile = "deploy/self-hosted/.env";
@@ -47,6 +48,7 @@ forbidEqual("REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE", "1");
 forbidProviderSecretsInControlPlane();
 requireGitHubAppPrivateKey();
 requireActionRef();
+requireT0RuntimeContract();
 warnMissingGitHubClientAliases();
 
 if (errors.length > 0) {
@@ -117,15 +119,305 @@ function requireWorkflowProvisioningMode() {
       `REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING must not be active with the ${githubAppPermissionProfile} GitHub App permission profile. Disable workflow provisioning or use the provisioning profile.`,
     );
   }
+}
+
+function requireT0RuntimeContract() {
+  for (const name of [
+    "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
+    "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
+    "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED",
+    "REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED",
+  ]) {
+    requireEqual(name, "1");
+  }
+  requireEqual(
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE",
+    "client_triggered_t0",
+  );
+  for (const name of [
+    "REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED",
+    "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED",
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY",
+  ]) {
+    requireEqual(name, "0");
+  }
+
+  const actionCommitSha = requireT0ActionCommitRef();
+  requireRotatingKeyRing(
+    "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
+  );
+  requireRotatingKeyRing(
+    "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON",
+  );
+  const attestations = requireProducerReleaseAttestations(
+    "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON",
+  );
+  requireProviderVoteLanes("REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON");
+  requireEqual(
+    "REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION",
+    reviewV2ProjectionPolicyVersion,
+  );
+  requireBase64Key("REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64", 32);
+  requireContextReplayKeyRing();
+  requireSha256("REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256");
 
   if (
-    githubAppPermissionProfile === "review-only" &&
-    read("REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY") === "1"
+    actionCommitSha &&
+    attestations &&
+    !attestations.some(
+      (attestation) =>
+        isRecord(attestation) &&
+        typeof attestation.actionCommitSha === "string" &&
+        attestation.actionCommitSha.toLowerCase() === actionCommitSha,
+    )
   ) {
     errors.push(
-      "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY requires the managed-review or provisioning GitHub App permission profile.",
+      "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON must contain REVIEW_ROUTER_ACTION_REF's commit SHA.",
     );
   }
+}
+
+function requireT0ActionCommitRef() {
+  const actionRef = read("REVIEW_ROUTER_ACTION_REF");
+  const actionVersion = read("REVIEW_ROUTER_ACTION_VERSION");
+  const resolved =
+    actionRef ||
+    (actionVersion ? `777genius/review-router@${actionVersion}` : "");
+  const match = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@([a-f0-9]{40})$/i.exec(
+    resolved,
+  );
+  if (!match) {
+    errors.push(
+      "Self-hosted T0 requires REVIEW_ROUTER_ACTION_REF pinned to a full 40-character commit SHA.",
+    );
+    return null;
+  }
+  return match[1].toLowerCase();
+}
+
+function requireRotatingKeyRing(activeKeyName, keysName) {
+  const activeKeyId = read(activeKeyName);
+  if (!activeKeyId) errors.push(`${activeKeyName} is required.`);
+  const keys = requireNonEmptyJsonArray(keysName);
+  if (!keys) return;
+
+  const valid =
+    keys.length <= 10 &&
+    keys.every(
+      (key) =>
+        isExactRecord(key, ["keyId", "secretBase64", "verifyUntil"]) &&
+        typeof key.keyId === "string" &&
+        key.keyId.length > 0 &&
+        isCanonicalBase64Key(key.secretBase64, 32, false) &&
+        (key.verifyUntil === null || isIsoTimestamp(key.verifyUntil)),
+    );
+  if (!valid) {
+    errors.push(
+      `${keysName} must contain 1-10 valid keyId/secretBase64/verifyUntil records.`,
+    );
+    return;
+  }
+  if (activeKeyId && !keys.some((key) => key.keyId === activeKeyId)) {
+    errors.push(`${activeKeyName} must identify a key in ${keysName}.`);
+  }
+}
+
+function requireContextReplayKeyRing() {
+  const activeKeyName = "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID";
+  const keysName = "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON";
+  const activeKeyId = read(activeKeyName);
+  if (!activeKeyId) errors.push(`${activeKeyName} is required.`);
+  const keys = requireNonEmptyJsonArray(keysName);
+  if (!keys) return;
+
+  const valid =
+    keys.length <= 16 &&
+    keys.every(
+      (key) =>
+        isExactRecord(key, ["keyId", "secretBase64"]) &&
+        typeof key.keyId === "string" &&
+        key.keyId.length > 0 &&
+        isCanonicalBase64Key(key.secretBase64, 32, true),
+    );
+  if (!valid) {
+    errors.push(
+      `${keysName} must contain 1-16 valid keyId/secretBase64 records.`,
+    );
+    return;
+  }
+  if (activeKeyId && !keys.some((key) => key.keyId === activeKeyId)) {
+    errors.push(`${activeKeyName} must identify a key in ${keysName}.`);
+  }
+}
+
+function requireNonEmptyJsonArray(name) {
+  const value = read(name);
+  if (!value) {
+    errors.push(`${name} is required.`);
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+  } catch {
+    // Normalized below without exposing the configured value.
+  }
+  errors.push(`${name} must be a non-empty JSON array.`);
+  return null;
+}
+
+function requireProducerReleaseAttestations(name) {
+  const attestations = requireNonEmptyJsonArray(name);
+  if (!attestations) return null;
+  const actionCommitShas = new Set();
+  const valid =
+    attestations.length <= 100 &&
+    attestations.every((attestation) => {
+      if (!isProducerReleaseAttestation(attestation)) return false;
+      const actionCommitSha = attestation.actionCommitSha.toLowerCase();
+      if (actionCommitShas.has(actionCommitSha)) return false;
+      actionCommitShas.add(actionCommitSha);
+      return true;
+    });
+  if (!valid) {
+    errors.push(
+      `${name} must contain 1-100 valid, uniquely keyed producer release attestations.`,
+    );
+    return null;
+  }
+  return attestations;
+}
+
+function requireProviderVoteLanes(name) {
+  const lanes = requireNonEmptyJsonArray(name);
+  if (!lanes) return;
+  const providers = new Set();
+  const valid =
+    lanes.length <= 16 &&
+    lanes.every((lane) => {
+      if (
+        !isExactRecord(lane, ["providerKind", "providerVoteIdentityHash"]) ||
+        !["codex", "claude_code", "openrouter"].includes(lane.providerKind) ||
+        !isSha256(lane.providerVoteIdentityHash) ||
+        providers.has(lane.providerKind)
+      ) {
+        return false;
+      }
+      providers.add(lane.providerKind);
+      return true;
+    });
+  if (!valid) {
+    errors.push(
+      `${name} must contain 1-16 valid, uniquely keyed provider vote lanes.`,
+    );
+  }
+}
+
+function isProducerReleaseAttestation(value) {
+  const legacyKeys = [
+    "producerReleaseId",
+    "distributionKind",
+    "actionCommitSha",
+    "runtimeCommitSha",
+    "wrapperEntrypointDigest",
+    "runtimeEntrypointDigest",
+    "schemaDigest",
+    "canonicalizerDigest",
+    "capabilityProfile",
+    "protocolLimitsProfileId",
+    "operationalSloProfileId",
+  ];
+  const currentKeys = [
+    ...legacyKeys,
+    "contextGatewayPolicyVersion",
+    "contextGatewayEntrypointDigest",
+  ];
+  if (!isExactRecord(value, legacyKeys) && !isExactRecord(value, currentKeys)) {
+    return false;
+  }
+  const contextGatewayPolicyVersion = value.contextGatewayPolicyVersion ?? null;
+  const contextGatewayEntrypointDigest =
+    value.contextGatewayEntrypointDigest ?? null;
+  return (
+    isIdentifier(value.producerReleaseId) &&
+    ["hosted_composite", "public_reusable"].includes(value.distributionKind) &&
+    isCommitSha(value.actionCommitSha) &&
+    isCommitSha(value.runtimeCommitSha) &&
+    (value.wrapperEntrypointDigest === null ||
+      isSha256(value.wrapperEntrypointDigest)) &&
+    isSha256(value.runtimeEntrypointDigest) &&
+    ((contextGatewayPolicyVersion === null &&
+      contextGatewayEntrypointDigest === null) ||
+      (isIdentifier(contextGatewayPolicyVersion) &&
+        isSha256(contextGatewayEntrypointDigest))) &&
+    isSha256(value.schemaDigest) &&
+    isSha256(value.canonicalizerDigest) &&
+    value.capabilityProfile === "exact_revision_v2" &&
+    isIdentifier(value.protocolLimitsProfileId) &&
+    isIdentifier(value.operationalSloProfileId)
+  );
+}
+
+function requireBase64Key(name, byteLength) {
+  if (!isCanonicalBase64Key(read(name), byteLength, true)) {
+    errors.push(`${name} must be a canonical ${byteLength}-byte base64 key.`);
+  }
+}
+
+function requireSha256(name) {
+  if (!/^[a-f0-9]{64}$/i.test(read(name))) {
+    errors.push(`${name} must be a 64-character SHA-256 hex digest.`);
+  }
+}
+
+function isCanonicalBase64Key(value, minimumByteLength, exactLength) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    return false;
+  }
+  const decoded = Buffer.from(value, "base64");
+  const lengthValid = exactLength
+    ? decoded.byteLength === minimumByteLength
+    : decoded.byteLength >= minimumByteLength;
+  return (
+    lengthValid &&
+    decoded.toString("base64").replace(/=+$/u, "") === value.replace(/=+$/u, "")
+  );
+}
+
+function isIsoTimestamp(value) {
+  if (typeof value !== "string") return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function isIdentifier(value) {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 255 &&
+    value.trim() === value
+  );
+}
+
+function isCommitSha(value) {
+  return typeof value === "string" && /^[a-f0-9]{40}$/u.test(value);
+}
+
+function isSha256(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function isExactRecord(value, keys) {
+  return (
+    isRecord(value) &&
+    Object.keys(value).sort().join(",") === [...keys].sort().join(",")
+  );
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function forbidEqual(name, forbidden) {

@@ -1,5 +1,6 @@
 import {
   type CodexRotatingProviderState,
+  codexRotatingCanonicalT0WorkflowSchemaVersions,
   codexRotatingSecretName,
   InMemoryCodexRotatingLeaseStore,
   type CodexRotatingEncryptedWritebackRequest,
@@ -88,14 +89,27 @@ export class InMemoryCodexRotatingOAuthRepository
     readonly repository: ActionRepositoryContext;
     readonly providerInstanceId: string;
     readonly workflowSha: string;
+    readonly workflowSchemaVersion: number;
   }): Promise<CodexRotatingProviderBinding | null> {
+    if (
+      !codexRotatingCanonicalT0WorkflowSchemaVersions.includes(
+        input.workflowSchemaVersion as (typeof codexRotatingCanonicalT0WorkflowSchemaVersions)[number],
+      )
+    ) {
+      return null;
+    }
     const existing = this.providers.get(input.providerInstanceId);
     if (existing) {
+      const binding = {
+        ...existing.binding,
+        workflowSchemaVersion: input.workflowSchemaVersion,
+      };
       this.providers.set(input.providerInstanceId, {
         ...existing,
+        binding,
         repository: input.repository,
       });
-      return existing.binding;
+      return binding;
     }
 
     const binding: CodexRotatingProviderBinding = {
@@ -104,7 +118,7 @@ export class InMemoryCodexRotatingOAuthRepository
       githubRepositoryId: input.repository.githubRepositoryId,
       actionRef: `${input.repository.owner}/review-router@${input.workflowSha}`,
       workflowPath: ".github/workflows/reviewrouter-codex.yml",
-      workflowSchemaVersion: 1,
+      workflowSchemaVersion: input.workflowSchemaVersion,
     };
     this.providers.set(input.providerInstanceId, {
       binding,

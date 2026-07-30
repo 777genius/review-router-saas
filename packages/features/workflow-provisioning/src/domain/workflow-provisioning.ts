@@ -5,7 +5,10 @@ import {
   type ReviewRouterDiscussionMode,
   type ReviewRouterWorkflowStyle,
 } from "./workflow-template";
-import type { CodexRotatingReviewActionV2Mode } from "@reviewrouter/features-codex-oauth-rotating";
+import type {
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
+} from "@reviewrouter/features-codex-oauth-rotating";
 
 export type WorkflowProvisioningStatus =
   | "not_started"
@@ -29,6 +32,7 @@ export type ProvisionWorkflowInput = {
   readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
+  readonly codexRotatingWorkflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
   readonly setupBranch?: string;
   readonly workflowPath?: string;
 };

@@ -10,6 +10,7 @@ import {
   reviewV2CohortEmergencyInitialization,
   reviewV2CohortOperationForCommand,
   reviewV2CohortRolloutModes,
+  reviewV2GlobalEmergencyTransitionForCommand,
   serializeOperatorCliJson,
 } from "./review-action-v2-operator-cli";
 
@@ -167,5 +168,23 @@ describe("review action v2 operator CLI", () => {
       reviewV2CohortEmergencyInitialization({ stopped: false }),
     ).toBeNull();
     expect(reviewV2CohortEmergencyInitialization({ stopped: true })).toBeNull();
+  });
+
+  it("maps only explicit global emergency transitions", () => {
+    expect(
+      reviewV2GlobalEmergencyTransitionForCommand("emergency global open"),
+    ).toEqual({
+      stopped: false,
+      reason: "review-v2-global-emergency-opened",
+    });
+    expect(
+      reviewV2GlobalEmergencyTransitionForCommand("emergency global stop"),
+    ).toEqual({
+      stopped: true,
+      reason: "review-v2-global-emergency-stopped",
+    });
+    expect(
+      reviewV2GlobalEmergencyTransitionForCommand("emergency repository open"),
+    ).toBeNull();
   });
 });

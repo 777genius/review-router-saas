@@ -1,14 +1,25 @@
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ActionControlPlaneRepositoryPort } from "@reviewrouter/features-action-control-plane";
+import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-codex-oauth-rotating";
 import {
+  ProducerReleaseAttestationStatus,
+  ProducerReleaseState,
   ReviewMutationLaneKind,
+  ReviewMutationExecutionAuthorityMode,
   ReviewMutationMode,
   ReviewSafetyDecisionKind,
+  producerReleaseImmutableKey,
+  type ProducerReleaseAttestationPort,
+  type ProducerReleaseQueryPort,
   type ReviewMutationAuthorityProofFactsQueryPorts,
   type ReviewMutationAuthorityQueryPort,
   type ReviewSafetyDecisionResolverPort,
   type ScmRepositoryIdentityQueryPort,
 } from "@reviewrouter/features-review-run-control";
+import {
+  reviewActionV2CanonicalizerDigest,
+  reviewActionV2PublishedSchemaDigest,
+} from "@reviewrouter/protocol-review-action-v2";
 
 const factsVersion = "review-mutation-authority-production-facts-v3";
 
@@ -22,6 +33,7 @@ export interface ManagedReviewWorkflowInventoryInspectionPort {
     readonly compatible: boolean;
     readonly inventoryHash: string;
     readonly actionCommitSha: string | null;
+    readonly workflowSchemaVersion: number | null;
   }>;
 }
 
@@ -39,10 +51,13 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
       readonly identities: ScmRepositoryIdentityQueryPort;
       readonly authorities: ReviewMutationAuthorityQueryPort;
       readonly actionRepositories: ActionControlPlaneRepositoryPort;
+      readonly releaseAttestations: ProducerReleaseAttestationPort;
+      readonly producerReleases: ProducerReleaseQueryPort;
       readonly safety: ReviewSafetyDecisionResolverPort;
       readonly workflowInventory: ManagedReviewWorkflowInventoryInspectionPort;
       readonly dispatchCapability: ReviewV2DispatchCapabilityInspectionPort;
       readonly completionWorkerConfigured: boolean;
+      readonly directV2InitializationEnabled: boolean;
       readonly now: () => Date;
     },
   ) {}
@@ -73,14 +88,8 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
         }),
       ]);
     const now = this.dependencies.now();
-    const registeredReleaseSelected = inventory.actionCommitSha
-      ? (await this.dependencies.prisma.producerRelease.count({
-          where: {
-            actionCommitSha: inventory.actionCommitSha,
-            state: "registered",
-          },
-        })) > 0
-      : false;
+    const registeredReleaseSelected =
+      await this.isExactRegisteredReleaseSelected(inventory.actionCommitSha);
     const noTrackedLegacyActivity = Boolean(
       authority?.mode === ReviewMutationMode.V1Draining &&
       authority.v1AdmissionClosedAt &&
@@ -121,7 +130,17 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
     readonly scmRepositoryIdentityId: string;
   }) {
     const target = await this.resolveTarget(input.scmRepositoryIdentityId);
-    const [inventory, dispatchCapability, safety] = await Promise.all([
+    const [
+      authority,
+      inventory,
+      dispatchCapability,
+      safety,
+      authorizationCount,
+    ] = await Promise.all([
+      this.dependencies.authorities.findReviewMutationAuthority({
+        scmRepositoryIdentityId: input.scmRepositoryIdentityId,
+        laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
+      }),
       this.dependencies.workflowInventory.inspectReviewV2ManagedWorkflowInventory(
         {
           githubInstallationId: target.repository.githubInstallationId,
@@ -138,13 +157,35 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
         decisionKind: ReviewSafetyDecisionKind.MutationEpochActivation,
         target: target.safetyTarget,
       }),
+      this.dependencies.prisma.reviewRunAuthorization.count({
+        where: { scmRepositoryIdentityId: input.scmRepositoryIdentityId },
+      }),
     ]);
+    const registeredReleaseSelected =
+      await this.isExactRegisteredReleaseSelected(inventory.actionCommitSha);
+    const clientTriggeredWorkflowAvailable =
+      inventory.compatible &&
+      inventory.workflowSchemaVersion ===
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2;
+    const executionAuthorityMode = dispatchCapability.available
+      ? ReviewMutationExecutionAuthorityMode.ManagedDispatch
+      : clientTriggeredWorkflowAvailable
+        ? ReviewMutationExecutionAuthorityMode.ClientTriggered
+        : null;
+    const freshV2OnlyProvisioningProven =
+      this.dependencies.directV2InitializationEnabled &&
+      authority === null &&
+      authorizationCount === 0;
     return {
-      factsVersion,
+      factsVersion: "review-mutation-authority-production-facts-v4",
       facts: {
-        freshV2OnlyProvisioningProven: false,
-        noLegacyCapabilityEverIssued: false,
-        dispatchCapabilityAvailable: dispatchCapability.available,
+        freshV2OnlyProvisioningProven,
+        noLegacyCapabilityEverIssued: authority === null,
+        workflowInventoryCompatible: inventory.compatible,
+        registeredReleaseSelected,
+        completionWorkerConfigured:
+          this.dependencies.completionWorkerConfigured,
+        executionAuthorityMode,
         managedWorkflowInventoryHash: inventory.inventoryHash,
         safetyDecisionEnabled: safety.effectAllowed,
         activationSafetyDecisionHash: safety.safetyDecisionHash,
@@ -191,6 +232,30 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
         activationSafetyDecisionHash: safety.safetyDecisionHash,
       },
     } as const;
+  }
+
+  private async isExactRegisteredReleaseSelected(
+    actionCommitSha: string | null,
+  ): Promise<boolean> {
+    if (actionCommitSha === null) return false;
+    const attestation = await this.dependencies.releaseAttestations.attest({
+      actionCommitSha,
+      expectedSchemaDigest: reviewActionV2PublishedSchemaDigest,
+      expectedCanonicalizerDigest: reviewActionV2CanonicalizerDigest,
+    });
+    if (attestation.status !== ProducerReleaseAttestationStatus.Attested) {
+      return false;
+    }
+    const persisted =
+      await this.dependencies.producerReleases.findProducerReleaseById(
+        attestation.release.producerReleaseId,
+      );
+    return (
+      persisted !== null &&
+      persisted.state === ProducerReleaseState.Registered &&
+      producerReleaseImmutableKey(persisted) ===
+        producerReleaseImmutableKey(attestation.release)
+    );
   }
 
   private async resolveTarget(scmRepositoryIdentityId: string) {

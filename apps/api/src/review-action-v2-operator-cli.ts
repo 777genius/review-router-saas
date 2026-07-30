@@ -115,6 +115,23 @@ export function reviewV2CohortEmergencyInitialization(
   } as const;
 }
 
+export function reviewV2GlobalEmergencyTransitionForCommand(command: string) {
+  switch (command) {
+    case "emergency global open":
+      return {
+        stopped: false,
+        reason: "review-v2-global-emergency-opened",
+      } as const;
+    case "emergency global stop":
+      return {
+        stopped: true,
+        reason: "review-v2-global-emergency-stopped",
+      } as const;
+    default:
+      return null;
+  }
+}
+
 type ParsedArguments = Readonly<{
   positionals: readonly string[];
   options: Readonly<Record<string, string | true>>;
@@ -145,6 +162,16 @@ async function main() {
       await authenticateOperator(runtime.digest, process.env);
       requireConfirmation(parsed, "release");
       printJson(await registerRelease(parsed, runtime));
+      return;
+    }
+    const globalEmergencyTransition =
+      reviewV2GlobalEmergencyTransitionForCommand(command);
+    if (globalEmergencyTransition) {
+      await authenticateOperator(runtime.digest, process.env);
+      requireConfirmation(parsed, "global");
+      printJson(
+        await updateGlobalEmergencyControl(runtime, globalEmergencyTransition),
+      );
       return;
     }
 
@@ -209,6 +236,28 @@ async function runMutationCommand(input: {
   } as const;
   if (input.command === "mutation initialize-v1") {
     return input.operator.initializeV1(base);
+  }
+  if (input.command === "mutation initialize-direct-v2") {
+    const preflight = await input.operator.preflight({
+      ...base,
+      operation: ReviewMutationAuthorityCommandKind.DirectV2Initialize,
+    });
+    if (
+      preflight.status !== ReviewMutationAuthorityPreflightStatus.Ready ||
+      !preflight.proof
+    ) {
+      throw new Error(
+        `review_v2_mutation_preflight_blocked:${
+          "blockers" in preflight
+            ? preflight.blockers.join(",")
+            : preflight.status
+        }`,
+      );
+    }
+    return input.operator.initializeDirectV2({
+      ...base,
+      proof: reviewMutationAuthorityProofReference(preflight.proof),
+    });
   }
 
   const authority = await requireAuthority(input.runtime, input.target);
@@ -368,6 +417,29 @@ async function updateRepositoryCohortPolicies(
   return { repository: target.repository.fullName, operation, results };
 }
 
+async function updateGlobalEmergencyControl(
+  runtime: ReturnType<typeof composeReviewActionV2ProductionRunControl>,
+  transition: {
+    readonly stopped: boolean;
+    readonly reason: string;
+  },
+) {
+  const scope = { scope: ReviewSafetyPolicyScope.Global } as const;
+  const existing =
+    await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
+      scope,
+    );
+  if (!existing) {
+    throw new Error("review_v2_global_emergency_control_missing");
+  }
+  return runtime.runControl.safetyControls.setReviewSafetyEmergencyStop({
+    expectedVersion: existing.version,
+    scope,
+    ...transition,
+    updatedBy: "review-v2-operator",
+  });
+}
+
 export function reviewV2CohortOperationForCommand(
   command: string,
 ): ReviewV2CohortOperation | null {
@@ -480,6 +552,22 @@ async function readStatus(
     repository: target.repository.fullName,
     identity: target.identity,
     authority,
+    emergencyControls: {
+      global:
+        await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
+          { scope: ReviewSafetyPolicyScope.Global },
+        ),
+      repository:
+        await runtime.repositories.safetyControls.findReviewSafetyEmergencyControl(
+          {
+            scope: ReviewSafetyPolicyScope.Repository,
+            workspaceId: target.identity.currentWorkspaceId!,
+            repositoryConnectionId:
+              target.identity.currentRepositoryConnectionId!,
+            scmRepositoryIdentityId: target.identity.scmRepositoryIdentityId,
+          },
+        ),
+    },
     policies,
   };
 }
@@ -764,6 +852,7 @@ function printUsage() {
   process.stdout.write(`  env-preflight\n`);
   process.stdout.write(`  status --repo OWNER/REPO\n`);
   process.stdout.write(`  release register --bundle FILE --confirm release\n`);
+  process.stdout.write(`  emergency global open|stop --confirm global\n`);
   process.stdout.write(
     `  cohort stage --repo OWNER/REPO --confirm OWNER/REPO\n`,
   );
@@ -772,6 +861,9 @@ function printUsage() {
   );
   process.stdout.write(
     `  mutation initialize-v1 --repo OWNER/REPO --confirm OWNER/REPO\n`,
+  );
+  process.stdout.write(
+    `  mutation initialize-direct-v2 --repo OWNER/REPO --confirm OWNER/REPO\n`,
   );
   process.stdout.write(
     `  mutation begin-drain --repo OWNER/REPO --release RELEASE_ID --confirm OWNER/REPO [--window-ms N]\n`,

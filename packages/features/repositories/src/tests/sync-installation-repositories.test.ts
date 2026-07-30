@@ -6,6 +6,7 @@ import type {
 } from "../domain/repository-connection";
 import type { GitHubRepositorySourcePort } from "../application/ports/github-repository-source-port";
 import type { RepositoryConnectionRepositoryPort } from "../application/ports/repository-connection-repository-port";
+import type { RepositoryIdentitySynchronizationPort } from "../application/ports/repository-identity-synchronization-port";
 import { syncInstallationRepositories } from "../application/use-cases/sync-installation-repositories";
 
 class StaticGitHubSource implements GitHubRepositorySourcePort {
@@ -83,6 +84,33 @@ describe("syncInstallationRepositories", () => {
     expect(store.lastInput?.syncedAt.toISOString()).toBe(
       "2026-05-03T15:00:00.000Z",
     );
+  });
+
+  it("synchronizes durable repository identities after persisting connections", async () => {
+    const repositories = [repositorySnapshot("1", "alpha")];
+    const store = new CapturingRepositoryStore();
+    const calls: Parameters<
+      RepositoryIdentitySynchronizationPort["synchronizeRepositoryIdentities"]
+    >[0][] = [];
+
+    await syncInstallationRepositories("129154876", {
+      github: new StaticGitHubSource(repositories),
+      repositories: store,
+      repositoryIdentities: {
+        async synchronizeRepositoryIdentities(input) {
+          calls.push(input);
+        },
+      },
+      clock: fixedClock,
+    });
+
+    expect(calls).toEqual([
+      {
+        githubInstallationId: "129154876",
+        repositories,
+        syncedAt: new Date("2026-05-03T15:00:00.000Z"),
+      },
+    ]);
   });
 
   it("applies a deterministic repository sync limit before persistence", async () => {

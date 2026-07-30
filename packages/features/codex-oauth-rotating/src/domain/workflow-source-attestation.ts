@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import {
+  CodexRotatingT0WorkflowSchemaVersion,
   renderCanonicalCodexRotatingT0WorkflowV1,
+  renderCanonicalCodexRotatingT0WorkflowV2,
   type CodexRotatingWorkflowSourceMetadata,
 } from "./codex-oauth-rotating";
 
@@ -14,7 +16,12 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
   const reviewJob = requireMapping(jobs["codex-review"]);
   const reviewInputs = requireMapping(reviewJob.with);
   const workflowSchemaVersion = reviewInputs.workflow_schema_version;
-  if (workflowSchemaVersion !== 1) {
+  if (
+    workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1 &&
+    workflowSchemaVersion !==
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+  ) {
     throw new Error("codex_rotating_t0_workflow_metadata_missing");
   }
 
@@ -28,7 +35,12 @@ export function readCanonicalCodexRotatingT0WorkflowSourceMetadata(
       ? null
       : readCanonicalT0RefreshSchedule(root);
   const reviewSecrets = requireMapping(reviewJob.secrets);
-  const expectedWorkflow = renderCanonicalCodexRotatingT0WorkflowV1({
+  const renderExpected =
+    workflowSchemaVersion ===
+    CodexRotatingT0WorkflowSchemaVersion.DurableDispatchV1
+      ? renderCanonicalCodexRotatingT0WorkflowV1
+      : renderCanonicalCodexRotatingT0WorkflowV2;
+  const expectedWorkflow = renderExpected({
     actionRef,
     apiUrl,
     providerInstanceId,

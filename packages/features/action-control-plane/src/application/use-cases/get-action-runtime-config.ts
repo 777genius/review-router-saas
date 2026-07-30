@@ -30,6 +30,10 @@ const codexRotatingRuntimeWorkflowPaths = new Set([
 export type GetActionRuntimeConfigDependencies = {
   readonly repositories: ActionControlPlaneRepositoryPort;
   readonly sessions: ActionSessionTokenServicePort;
+  readonly defaultProvider?: {
+    readonly model: string;
+    readonly reasoningEffort: ReviewConfiguration["provider"]["reasoningEffort"];
+  };
   readonly entitlements?: ActionEntitlementPolicyPort;
   readonly conflictReviewRuntimeGate?: ActionConflictReviewRuntimeGatePort;
   readonly conflictReviewPostingAvailable?: boolean;
@@ -87,7 +91,9 @@ export async function getActionRuntimeConfig(
       throw new Error("conflict_review_config_snapshot_mismatch");
     }
   }
-  const config = record?.config ?? safeDefaultReviewConfiguration;
+  const config =
+    record?.config ??
+    buildDefaultReviewConfiguration(dependencies.defaultProvider);
   assertStandardRuntimeProviderSupport(config, session);
   if (session.reviewKind === "conflict-head") {
     assertConflictRuntimeProviderSupport(config);
@@ -162,6 +168,24 @@ export async function getActionRuntimeConfig(
     ...(conflictReviewRuntimeConfig
       ? { conflictReview: conflictReviewRuntimeConfig }
       : {}),
+  };
+}
+
+function buildDefaultReviewConfiguration(
+  providerDefaults: GetActionRuntimeConfigDependencies["defaultProvider"],
+): ReviewConfiguration {
+  if (!providerDefaults) {
+    return safeDefaultReviewConfiguration;
+  }
+  const provider = {
+    ...safeDefaultReviewConfiguration.provider,
+    model: providerDefaults.model,
+    reasoningEffort: providerDefaults.reasoningEffort,
+  };
+  return {
+    ...safeDefaultReviewConfiguration,
+    provider,
+    providers: [provider],
   };
 }
 

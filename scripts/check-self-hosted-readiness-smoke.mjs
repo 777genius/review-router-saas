@@ -4,6 +4,30 @@ import { generateKeyPairSync } from "node:crypto";
 
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" });
+const actionCommitSha = "0123456789abcdef0123456789abcdef01234567";
+const signingKey = Buffer.from("s".repeat(32)).toString("base64");
+const contextSessionKey = Buffer.from("c".repeat(32)).toString("base64");
+const contextReplayKey = Buffer.from("r".repeat(32)).toString("base64");
+const signingKeys = JSON.stringify([
+  { keyId: "self-hosted-t0", secretBase64: signingKey, verifyUntil: null },
+]);
+const producerReleaseAttestations = JSON.stringify([
+  {
+    producerReleaseId: "self-hosted-action-v2",
+    distributionKind: "public_reusable",
+    actionCommitSha,
+    runtimeCommitSha: "1".repeat(40),
+    wrapperEntrypointDigest: null,
+    runtimeEntrypointDigest: "2".repeat(64),
+    contextGatewayPolicyVersion: "review-context-gateway.v1",
+    contextGatewayEntrypointDigest: "3".repeat(64),
+    schemaDigest: "4".repeat(64),
+    canonicalizerDigest: "5".repeat(64),
+    capabilityProfile: "exact_revision_v2",
+    protocolLimitsProfileId: "self-hosted-limits-v2",
+    operationalSloProfileId: "self-hosted-slo-v2",
+  },
+]);
 
 const baseEnv = {
   ...process.env,
@@ -26,9 +50,34 @@ const baseEnv = {
   REVIEW_ROUTER_TOKEN_ENCRYPTION_KEY: "e".repeat(48),
   REVIEW_ROUTER_ENABLE_DASHBOARD_MUTATIONS: "1",
   REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE: "0",
-  REVIEW_ROUTER_ACTION_REF:
-    "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+  REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
+  REVIEW_ROUTER_ACTION_REF: `777genius/review-router@${actionCommitSha}`,
   REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
+  REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: "1",
+  REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: "client_triggered_t0",
+  REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "1",
+  REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "1",
+  REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "0",
+  REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED: "0",
+  REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY: "0",
+  REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED: "1",
+  REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID: "self-hosted-t0",
+  REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: signingKeys,
+  REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID: "self-hosted-t0",
+  REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON: signingKeys,
+  REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
+    producerReleaseAttestations,
+  REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON: JSON.stringify([
+    { providerKind: "codex", providerVoteIdentityHash: "6".repeat(64) },
+  ]),
+  REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION:
+    "review-projection-policy.v4-t0",
+  REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64: contextSessionKey,
+  REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID: "context-self-hosted",
+  REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON: JSON.stringify([
+    { keyId: "context-self-hosted", secretBase64: contextReplayKey },
+  ]),
+  REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: "7".repeat(64),
   REVIEW_ROUTER_SELF_HOSTED_ENV_FILE:
     "/tmp/reviewrouter-self-hosted-smoke-env-does-not-exist",
 };
@@ -53,13 +102,114 @@ const cases = [
     },
   },
   {
-    name: "review-only rejects workflow dispatch-ready mode",
-    expectSuccess: false,
+    name: "review-only passes in client-triggered T0 mode",
+    expectSuccess: true,
     env: {
       REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
       REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
       REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+    },
+  },
+  {
+    name: "client-triggered T0 rejects intent admission",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED must be 0.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "managed-review",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED: "1",
+    },
+  },
+  {
+    name: "client-triggered T0 rejects intent ingress",
+    expectSuccess: false,
+    expectedError: "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED must be 0.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "managed-review",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "1",
+    },
+  },
+  {
+    name: "client-triggered T0 rejects server workflow dispatch",
+    expectSuccess: false,
+    expectedError: "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY must be 0.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "managed-review",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
       REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY: "1",
+    },
+  },
+  {
+    name: "client-triggered T0 requires direct initialization opt-in",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED must be 1.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "managed-review",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: "0",
+    },
+  },
+  {
+    name: "client-triggered T0 rejects other provisioning modes",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE must be client_triggered_t0.",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "managed-review",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE:
+        "server_dispatched_t0",
+    },
+  },
+  {
+    name: "T0 rejects malformed capability key rings",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON must contain 1-10 valid",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "managed-review",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON: JSON.stringify([
+        {
+          keyId: "self-hosted-t0",
+          secretBase64: "too-short",
+          verifyUntil: null,
+        },
+      ]),
+    },
+  },
+  {
+    name: "T0 rejects incomplete producer release attestations",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON must contain 1-100 valid",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON:
+        JSON.stringify([{ actionCommitSha }]),
+    },
+  },
+  {
+    name: "T0 rejects malformed provider vote lanes",
+    expectSuccess: false,
+    expectedError:
+      "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON must contain 1-16 valid",
+    env: {
+      REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE: "review-only",
+      REVIEW_ROUTER_ENABLE_WORKFLOW_PROVISIONING: "0",
+      REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
+      REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON: JSON.stringify([{}]),
     },
   },
   {
@@ -87,6 +237,17 @@ for (const testCase of cases) {
   const success = result.status === 0;
   if (success !== testCase.expectSuccess) {
     console.error(`Self-hosted readiness smoke failed: ${testCase.name}`);
+    console.error(result.stdout);
+    console.error(result.stderr);
+    process.exit(1);
+  }
+  if (
+    testCase.expectedError &&
+    !`${result.stdout}${result.stderr}`.includes(testCase.expectedError)
+  ) {
+    console.error(
+      `Self-hosted readiness smoke did not report the expected error: ${testCase.name}`,
+    );
     console.error(result.stdout);
     console.error(result.stderr);
     process.exit(1);

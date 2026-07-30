@@ -40,6 +40,9 @@ export function createInstallationSyncRequestedHandler(
       await syncInstallationRepositories(parsed.data.installationId, {
         github: dependencies.github,
         repositories: dependencies.repositories,
+        ...(dependencies.repositoryIdentities
+          ? { repositoryIdentities: dependencies.repositoryIdentities }
+          : {}),
         clock: dependencies.clock,
         ...(dependencies.syncPolicy
           ? { syncPolicy: dependencies.syncPolicy }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   areWorkflowDocumentsSemanticallyEqual,
   CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   workflowDocumentSemanticSha256,
 } from "@reviewrouter/features-codex-oauth-rotating";
 import {
@@ -190,6 +191,33 @@ describe("renderReviewRouterWorkflow", () => {
       path: defaultInteractionWorkflowPath,
     });
     expect(interactionWorkflow?.operation).not.toBe("delete");
+  });
+
+  it("provisions the client-triggered T0 schema when explicitly selected", () => {
+    const files = renderReviewRouterWorkflowFiles({
+      actionRef:
+        "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+      apiUrl: "https://api.reviewrouter.site",
+      runtimeConfigMode: "oidc",
+      codexRotatingProviderInstanceId: "codex-rotating:123456",
+      codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      codexRotatingWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+    });
+
+    const codexWorkflow = files.find(
+      (file) => file.path === defaultCodexRotatingWorkflowPath,
+    );
+    const content =
+      codexWorkflow && codexWorkflow.operation !== "delete"
+        ? codexWorkflow.content
+        : "";
+    expect(content).toContain("  pull_request:");
+    expect(content).toContain("workflow_schema_version: 2");
+    expect(scanCodexRotatingAdvisoryWorkflow(content)).toEqual({
+      valid: true,
+      errors: [],
+    });
   });
 
   it("renders optional hybrid provider secret inputs only when configured for rotating Codex workflow", () => {

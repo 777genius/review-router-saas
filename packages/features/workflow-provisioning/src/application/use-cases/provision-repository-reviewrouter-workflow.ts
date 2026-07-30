@@ -3,7 +3,10 @@ import type {
   ReviewRouterDiscussionMode,
   ReviewRouterWorkflowStyle,
 } from "../../domain/workflow-template";
-import type { CodexRotatingReviewActionV2Mode } from "@reviewrouter/features-codex-oauth-rotating";
+import type {
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
+} from "@reviewrouter/features-codex-oauth-rotating";
 import { provisionReviewRouterWorkflow } from "./provision-reviewrouter-workflow";
 import type { WorkflowProvisioningRepositoryPort } from "../ports/workflow-provisioning-repository-port";
 import type { WorkflowSetupGatewayPort } from "../ports/workflow-setup-gateway-port";
@@ -21,6 +24,7 @@ export type ProvisionRepositoryReviewRouterWorkflowInput = {
   readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
+  readonly codexRotatingWorkflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
   readonly actor?: string;
 };
 
@@ -84,6 +88,12 @@ export async function provisionRepositoryReviewRouterWorkflow(
         ? {
             codexRotatingReviewActionV2Mode:
               input.codexRotatingReviewActionV2Mode,
+          }
+        : {}),
+      ...(input.codexRotatingWorkflowSchemaVersion !== undefined
+        ? {
+            codexRotatingWorkflowSchemaVersion:
+              input.codexRotatingWorkflowSchemaVersion,
           }
         : {}),
       ...(input.staticRuntimeEnv

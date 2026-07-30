@@ -42,7 +42,7 @@ jobs:
       contents: read
       pull-requests: read
       id-token: write
-    uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1
+    uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@626739854b5c67d94b3f0118738c106b4a232c41
     with:
       control_plane_url: https://api.reviewrouter.example.com
       runtime_config_mode: oidc
@@ -58,18 +58,21 @@ when the action is run through a wrapper.
 
 ## Events
 
-Direct same-repository PR workflows are valid only for `review-only` mode where
-the action performs admission itself:
+Client-triggered Direct V2 uses canonical workflow schema 2. It is valid only
+for same-repository PRs where the action performs OIDC admission itself:
 
 ```yaml
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 ```
 
-Draft review is controlled by the generated workflow or reusable workflow
-`review_drafts` input.
+The generated schema-2 workflow also requires a non-bot same-repository head,
+binds `pr_number` and `review_head_sha` to the pull-request event, grants only
+`contents: read`, `pull-requests: read`, and `id-token: write`, and calls the
+reusable workflow at the registered full 40-character Action SHA. It has no
+`workflow_dispatch` or `pull_request_target` trigger. Draft review is controlled
+by the generated workflow or reusable workflow `review_drafts` input.
 
 When `REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED=1`, the repository must
 use the canonical T0 workflow instead of direct `pull_request` execution:
@@ -94,6 +97,13 @@ The control plane ingests the PR webhook, creates the durable
 number and expected head SHA. A direct `pull_request` workflow cannot be used in
 this mode because it starts before the control plane has bound a durable review
 intent to the GitHub run identity.
+
+Direct V2 initialization is allowed only for a repository with no previous
+legacy mutation lane. Upgrade migration v7 fences all existing repository
+identities as `v1_open`; those repositories must use the drain/activate
+cutover. For repositories onboarded after v7, legacy capability admission and
+Direct V2 initialization race under one repository-scoped database lock. The
+winner is durable and the other path fails closed.
 
 Do not use `pull_request_target` for runner-side provider execution unless the
 workflow never checks out untrusted PR code with secrets. GitHub documents that
@@ -142,7 +152,8 @@ older revision must not publish as fresh findings for the new revision.
 
 ## Permission Profiles
 
-- `review-only`: direct PR workflows. No server-side dispatch.
+- `review-only`: canonical schema-2 client-triggered PR workflows. No
+  server-side dispatch.
 - `managed-review`: server-side durable `workflow_dispatch` and cancellation.
 - `provisioning`: ReviewRouter creates setup PRs and repo secrets.
 - `org-ruleset`: provisioning plus organization ruleset management.
