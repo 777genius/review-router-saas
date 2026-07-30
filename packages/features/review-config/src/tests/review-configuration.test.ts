@@ -400,6 +400,7 @@ describe("review configuration", () => {
       requiredHealthy: boolean;
     };
     type VersionRow = {
+      id: string;
       version: number;
       schemaVersion: number;
       providerKind: string;
@@ -414,6 +415,7 @@ describe("review configuration", () => {
       providerMaxParallel: number;
       inlineMinAgreement: number;
       targetTokensPerBatch: number;
+      reviewLanguage: string | null;
       providers: ProviderRow[];
     };
     type PrismaStub = {
@@ -433,9 +435,15 @@ describe("review configuration", () => {
       };
     };
     const versions: VersionRow[] = [];
+    let transactionAttempts = 0;
     const prisma: PrismaStub = {
-      $transaction: async <T>(callback: (tx: PrismaStub) => Promise<T>) =>
-        callback(prisma),
+      $transaction: async <T>(callback: (tx: PrismaStub) => Promise<T>) => {
+        transactionAttempts += 1;
+        if (transactionAttempts === 1) {
+          throw { code: "P2034" };
+        }
+        return callback(prisma);
+      },
       reviewConfiguration: {
         upsert: async () => ({ id: "review_config_1" }),
         findUnique: async () => ({
@@ -458,6 +466,7 @@ describe("review configuration", () => {
           };
         }) => {
           const record = {
+            id: `version_${versions.length + 1}`,
             version: data.version,
             schemaVersion: data.schemaVersion,
             providerKind: data.providerKind,
@@ -472,6 +481,7 @@ describe("review configuration", () => {
             providerMaxParallel: data.providerMaxParallel,
             inlineMinAgreement: data.inlineMinAgreement,
             targetTokensPerBatch: data.targetTokensPerBatch,
+            reviewLanguage: data.reviewLanguage ?? null,
             providers: data.providers.create,
           };
           versions.push(record);
@@ -529,6 +539,7 @@ describe("review configuration", () => {
     expect(
       versions[0]?.providers.map((provider) => provider.requiredHealthy),
     ).toEqual([true, false]);
+    expect(transactionAttempts).toBe(2);
   });
 
   it("resolves repository config before workspace default and safe default", async () => {

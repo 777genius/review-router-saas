@@ -16,6 +16,7 @@ import {
   type ReviewConfigurationOperatorRepository,
   type ReviewConfigurationRepositoryPort,
   ReviewConfigurationWriteConflictError,
+  resolveReviewConfiguration,
 } from "../index";
 
 const credential = "operator-credential-with-at-least-32-characters";
@@ -24,6 +25,7 @@ const repository = {
   workspaceId: "workspace_1",
   workspaceSlug: "workspace-one",
   provider: "github",
+  sourceBaseUrl: "https://github.com",
   fullName: "777genius/example",
 } satisfies ReviewConfigurationOperatorRepository;
 
@@ -49,6 +51,12 @@ class InMemoryConfigurations implements ReviewConfigurationRepositoryPort {
     }
     const key = reviewConfigurationTargetKey(input.target);
     const records = this.versions.get(key) ?? [];
+    if (
+      input.expectedVersion !== undefined &&
+      (records.at(-1)?.version ?? null) !== input.expectedVersion
+    ) {
+      throw new ReviewConfigurationWriteConflictError();
+    }
     const persisted = {
       version: (records.at(-1)?.version ?? 0) + 1,
       config: input.config,
@@ -78,6 +86,31 @@ function createDependencies(
 ) {
   const configurations = new InMemoryConfigurations();
   const auditLog = new CapturingAuditLog();
+  const mutations = {
+    async commit(
+      input: Parameters<
+        OperatorReviewConfigurationDependencies["mutations"]["commit"]
+      >[0],
+    ) {
+      const current = await resolveReviewConfiguration(input.target, {
+        configurations,
+      });
+      if (current.revisionToken !== input.expectedRevisionToken) {
+        throw new ReviewConfigurationWriteConflictError();
+      }
+      const saved = await configurations.saveNextVersion({
+        target: input.target,
+        config: input.config,
+        expectedVersion:
+          current.source === "repository" ? current.version : null,
+      });
+      await auditLog.record({
+        ...input.auditEvent,
+        metadata: { ...input.auditEvent.metadata, version: saved.version },
+      });
+      return saved;
+    },
+  };
   const dependencies = {
     authorization: new HashedReviewConfigurationOperatorAuthorization(
       "operator:test",
@@ -94,6 +127,7 @@ function createDependencies(
       },
     },
     configurations,
+    mutations,
     audit: auditLog,
   } satisfies OperatorReviewConfigurationDependencies;
   return { dependencies, configurations, auditLog };
@@ -103,8 +137,15 @@ describe("operator review configuration", () => {
   it("rejects invalid credentials without repository lookup or audit output", async () => {
     const { dependencies, auditLog } = createDependencies();
     let repositoryLookups = 0;
+    let rateLimitCalls = 0;
     const guardedDependencies = {
       ...dependencies,
+      rateLimits: {
+        async consume() {
+          rateLimitCalls += 1;
+          return true;
+        },
+      },
       repositories: {
         async findActiveCandidates() {
           repositoryLookups += 1;
@@ -125,6 +166,7 @@ describe("operator review configuration", () => {
     ).rejects.toMatchObject({
       code: ReviewConfigurationOperatorErrorCode.Unauthorized,
     });
+    expect(rateLimitCalls).toBe(0);
     expect(repositoryLookups).toBe(0);
     expect(auditLog.events).toEqual([]);
   });
@@ -266,8 +308,63 @@ describe("operator review configuration", () => {
       ?.at(-1)?.config;
     expect(savedConfig?.providers[0]?.reasoningEffort).toBe("high");
     expect(savedConfig?.providers[1]?.reasoningEffort).toBe("xhigh");
+    expect(savedConfig?.provider).toEqual(savedConfig?.providers[0]);
     expect(auditLog.events).toHaveLength(2);
     expect(auditLog.events[1]?.metadata).toMatchObject({ changed: false });
+  });
+
+  it("preserves a non-Codex primary provider", async () => {
+    const { dependencies, configurations } = createDependencies();
+    const claudeProvider = {
+      ...safeDefaultReviewConfiguration.provider,
+      kind: "claude" as const,
+      authMode: "claude_code_oauth" as const,
+      model: "sonnet",
+      reasoningEffort: "medium" as const,
+    };
+    const codexProvider = {
+      ...safeDefaultReviewConfiguration.provider,
+      requiredHealthy: false,
+    };
+    await configurations.saveNextVersion({
+      target: {
+        scope: "workspace",
+        workspaceId: repository.workspaceId,
+      },
+      config: {
+        ...safeDefaultReviewConfiguration,
+        provider: claudeProvider,
+        providers: [claudeProvider, codexProvider],
+        execution: {
+          providerLimit: 2,
+          providerMaxParallel: 1,
+          inlineMinAgreement: 1,
+        },
+      },
+    });
+
+    await setOperatorReviewReasoningEffort(
+      {
+        credential,
+        repositoryFullName: repository.fullName,
+        provider: "github",
+        effort: ReviewReasoningEffort.High,
+      },
+      dependencies,
+    );
+
+    const savedConfig = configurations.versions
+      .get(
+        reviewConfigurationTargetKey({
+          scope: "repository",
+          workspaceId: repository.workspaceId,
+          repositoryId: repository.id,
+        }),
+      )
+      ?.at(-1)?.config;
+    expect(savedConfig?.provider).toEqual(claudeProvider);
+    expect(savedConfig?.providers[0]).toEqual(claudeProvider);
+    expect(savedConfig?.providers[1]?.reasoningEffort).toBe("high");
   });
 
   it("returns the effective source and records a sanitized read audit", async () => {
@@ -328,6 +425,33 @@ describe("operator review configuration", () => {
     expect(repositoryLookups).toBe(0);
   });
 
+  it("rejects an invalid repository before consuming rate-limit capacity", async () => {
+    const { dependencies } = createDependencies();
+    let rateLimitCalls = 0;
+
+    await expect(
+      getOperatorReviewConfiguration(
+        {
+          credential,
+          repositoryFullName: `owner/${"x".repeat(300)}`,
+          provider: "github",
+        },
+        {
+          ...dependencies,
+          rateLimits: {
+            async consume() {
+              rateLimitCalls += 1;
+              return true;
+            },
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: ReviewConfigurationOperatorErrorCode.InvalidRepository,
+    });
+    expect(rateLimitCalls).toBe(0);
+  });
+
   it("maps an optimistic write conflict to a stable operator error", async () => {
     const { dependencies, configurations, auditLog } = createDependencies();
     configurations.conflictNextSave = true;
@@ -385,10 +509,10 @@ describe("operator review configuration", () => {
 });
 
 describe("hashed operator authorization", () => {
-  it("uses the configured digest and rejects malformed configuration", async () => {
+  it("normalizes configured identity and digest", async () => {
     const authorization = new HashedReviewConfigurationOperatorAuthorization(
-      "operator:test",
-      createHash("sha256").update(credential).digest("hex"),
+      "  operator:test  ",
+      createHash("sha256").update(credential).digest("hex").toUpperCase(),
     );
 
     await expect(
@@ -397,6 +521,13 @@ describe("hashed operator authorization", () => {
         operation: ReviewConfigurationOperatorOperation.Read,
       }),
     ).resolves.toEqual({ operatorId: "operator:test" });
+  });
+
+  it("rejects invalid credentials and malformed configuration", async () => {
+    const authorization = new HashedReviewConfigurationOperatorAuthorization(
+      "operator:test",
+      createHash("sha256").update(credential).digest("hex"),
+    );
     await expect(
       authorization.authenticate({
         credential: `${credential}-wrong`,

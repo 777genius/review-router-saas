@@ -10,22 +10,21 @@ import {
 import { scmProviders } from "@reviewrouter/shared";
 import { z } from "zod";
 
-const repositoryQuerySchema = z
-  .object({
-    repo: z.string().trim().min(3).max(255),
-    provider: z.enum(scmProviders).default("github"),
-    workspace: z.string().trim().min(1).max(120).optional(),
-  })
-  .strict();
+const repositoryQuerySchema = z.strictObject({
+  repo: z.string().trim().min(3).max(255),
+  provider: z.enum(scmProviders).default("github"),
+  workspace: z.string().trim().min(1).max(120).optional(),
+  sourceBaseUrl: z.url().max(500).optional(),
+});
 
-const setReasoningEffortBodySchema = z
-  .object({
-    repository: z.string().trim().min(3).max(255),
-    provider: z.enum(scmProviders).default("github"),
-    workspace: z.string().trim().min(1).max(120).optional(),
-    effort: z.enum(ReviewReasoningEffort),
-  })
-  .strict();
+const setReasoningEffortBodySchema = z.strictObject({
+  repository: z.string().trim().min(3).max(255),
+  provider: z.enum(scmProviders).default("github"),
+  workspace: z.string().trim().min(1).max(120).optional(),
+  sourceBaseUrl: z.url().max(500).optional(),
+  effort: z.enum(ReviewReasoningEffort),
+  reason: z.string().trim().min(1).max(120).optional(),
+});
 
 export async function registerOperatorReviewConfigRoutes(
   app: FastifyInstance,
@@ -43,6 +42,9 @@ export async function registerOperatorReviewConfigRoutes(
           repositoryFullName: query.data.repo,
           provider: query.data.provider,
           ...(query.data.workspace ? { workspace: query.data.workspace } : {}),
+          ...(query.data.sourceBaseUrl
+            ? { sourceBaseUrl: query.data.sourceBaseUrl }
+            : {}),
         },
         dependencies,
       );
@@ -71,6 +73,10 @@ export async function registerOperatorReviewConfigRoutes(
             provider: body.data.provider,
             effort: body.data.effort,
             ...(body.data.workspace ? { workspace: body.data.workspace } : {}),
+            ...(body.data.sourceBaseUrl
+              ? { sourceBaseUrl: body.data.sourceBaseUrl }
+              : {}),
+            ...(body.data.reason ? { reason: body.data.reason } : {}),
           },
           dependencies,
         );

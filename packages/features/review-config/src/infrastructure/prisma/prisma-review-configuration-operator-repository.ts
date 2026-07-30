@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import type { ScmProvider } from "@reviewrouter/shared";
 import type {
   ReviewConfigurationOperatorRepository,
   ReviewConfigurationOperatorRepositoryPort,
@@ -16,11 +17,17 @@ export class PrismaReviewConfigurationOperatorRepository implements ReviewConfig
       where: {
         provider: input.provider,
         fullName: { equals: input.repositoryFullName, mode: "insensitive" },
+        ...(input.sourceBaseUrl
+          ? {
+              sourceBaseUrl: {
+                equals: input.sourceBaseUrl,
+                mode: "insensitive",
+              },
+            }
+          : {}),
         selected: true,
         archived: false,
-        ...(input.provider === "github"
-          ? { installation: { status: "active" } }
-          : { gitlabInstallation: { status: "active" } }),
+        ...activeInstallationFilter(input.provider),
         ...(input.workspace
           ? {
               workspace: {
@@ -36,6 +43,7 @@ export class PrismaReviewConfigurationOperatorRepository implements ReviewConfig
         id: true,
         workspaceId: true,
         provider: true,
+        sourceBaseUrl: true,
         fullName: true,
         workspace: {
           select: {
@@ -51,7 +59,23 @@ export class PrismaReviewConfigurationOperatorRepository implements ReviewConfig
       workspaceId: record.workspaceId,
       workspaceSlug: record.workspace.slug,
       provider: record.provider,
+      sourceBaseUrl: record.sourceBaseUrl,
       fullName: record.fullName,
     }));
   }
+}
+
+function activeInstallationFilter(provider: ScmProvider) {
+  switch (provider) {
+    case "github":
+      return { installation: { status: "active" as const } };
+    case "gitlab":
+      return { gitlabInstallation: { status: "active" as const } };
+    default:
+      return assertNever(provider);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unsupported_scm_provider:${String(value)}`);
 }

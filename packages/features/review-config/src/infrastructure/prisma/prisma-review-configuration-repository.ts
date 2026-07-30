@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   parseReviewConfiguration,
   type ReviewConfiguration,
@@ -22,27 +22,7 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
   async findLatest(
     target: ReviewConfigurationTarget,
   ): Promise<PersistedReviewConfiguration | null> {
-    const record = await this.prisma.reviewConfiguration.findUnique({
-      where: {
-        workspaceId_targetKey: {
-          workspaceId: target.workspaceId,
-          targetKey: reviewConfigurationTargetKey(target),
-        },
-      },
-      select: {
-        versions: {
-          orderBy: { version: "desc" },
-          take: 1,
-          select: versionSelect,
-        },
-      },
-    });
-    const version = record?.versions[0];
-    if (!version) {
-      return null;
-    }
-
-    return toPersistedConfiguration(version);
+    return findLatestReviewConfiguration(this.prisma, target);
   }
 
   async saveNextVersion(input: {
@@ -50,119 +30,194 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
     readonly config: ReviewConfiguration;
     readonly expectedVersion?: number | null;
   }): Promise<PersistedReviewConfiguration> {
-    const config = parseReviewConfiguration(input.config);
-    const targetKey = reviewConfigurationTargetKey(input.target);
-
-    try {
-      return await this.prisma.$transaction(
-        async (tx) => {
-          const configuration = await tx.reviewConfiguration.upsert({
-            where: {
-              workspaceId_targetKey: {
-                workspaceId: input.target.workspaceId,
-                targetKey,
-              },
-            },
-            update: {
-              repositoryId:
-                input.target.scope === "repository"
-                  ? input.target.repositoryId
-                  : null,
-            },
-            create: {
-              workspaceId: input.target.workspaceId,
-              repositoryId:
-                input.target.scope === "repository"
-                  ? input.target.repositoryId
-                  : null,
-              targetKey,
-            },
-            select: { id: true },
-          });
-
-          const latest = await tx.reviewConfigurationVersion.findFirst({
-            where: { configurationId: configuration.id },
-            orderBy: { version: "desc" },
-            select: { version: true },
-          });
-          if (
-            input.expectedVersion !== undefined &&
-            (latest?.version ?? null) !== input.expectedVersion
-          ) {
-            throw new WriteConflict();
-          }
-          const nextVersion = (latest?.version ?? 0) + 1;
-          const saved = await tx.reviewConfigurationVersion.create({
-            data: {
-              configurationId: configuration.id,
-              version: nextVersion,
-              schemaVersion: config.schemaVersion,
-              providerKind: config.provider.kind,
-              providerAuthMode: config.provider.authMode,
-              model: config.provider.model,
-              reasoningEffort: config.provider.reasoningEffort,
-              agenticContext: config.provider.agenticContext,
-              fastMode: config.provider.fastMode,
-              failOnSeverity: config.blockingPolicy.failOnSeverity,
-              inlineMaxComments: config.limits.inlineMaxComments,
-              providerLimit: config.execution.providerLimit,
-              providerMaxParallel: config.execution.providerMaxParallel,
-              inlineMinAgreement: config.execution.inlineMinAgreement,
-              targetTokensPerBatch: config.limits.targetTokensPerBatch,
-              reviewLanguage: config.reviewLanguage ?? null,
-              providers: {
-                create: config.providers.map((provider, index) => ({
-                  order: index,
-                  providerKind: provider.kind,
-                  providerAuthMode: provider.authMode,
-                  model: provider.model,
-                  reasoningEffort: provider.reasoningEffort,
-                  agenticContext: provider.agenticContext,
-                  fastMode: provider.fastMode,
-                  requiredHealthy: provider.requiredHealthy,
-                })),
-              },
-            },
-            select: versionSelect,
-          });
-
-          return toPersistedConfiguration(saved);
-        },
-        { isolationLevel: "Serializable" },
-      );
-    } catch (error) {
-      if (
-        isReviewConfigurationWriteConflictError(error) ||
-        isPrismaWriteConflict(error)
-      ) {
-        throw new WriteConflict();
+    for (let attempt = 1; attempt <= MAX_TRANSACTION_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          (tx) => saveNextReviewConfigurationVersion(tx, input),
+          { isolationLevel: "Serializable" },
+        );
+      } catch (error) {
+        if (
+          isReviewConfigurationWriteConflictError(error) ||
+          isPrismaReviewConfigurationWriteConflict(error)
+        ) {
+          throw new WriteConflict();
+        }
+        if (
+          !isPrismaReviewConfigurationSerializationConflict(error) ||
+          attempt === MAX_TRANSACTION_ATTEMPTS
+        ) {
+          throw error;
+        }
       }
-      throw error;
     }
+    throw new Error("review_configuration_transaction_retry_exhausted");
   }
 
   async deleteTarget(target: ReviewConfigurationTarget): Promise<boolean> {
-    const result = await this.prisma.reviewConfiguration.deleteMany({
-      where: {
-        workspaceId: target.workspaceId,
-        targetKey: reviewConfigurationTargetKey(target),
-      },
-    });
-
-    return result.count > 0;
+    return deleteReviewConfigurationTarget(this.prisma, target);
   }
 }
 
-function isPrismaWriteConflict(error: unknown): boolean {
+export class PrismaReviewConfigurationTransactionRepository implements ReviewConfigurationRepositoryPort {
+  constructor(private readonly prisma: Prisma.TransactionClient) {}
+
+  findLatest(target: ReviewConfigurationTarget) {
+    return findLatestReviewConfiguration(this.prisma, target);
+  }
+
+  saveNextVersion(
+    input: Parameters<ReviewConfigurationRepositoryPort["saveNextVersion"]>[0],
+  ) {
+    return saveNextReviewConfigurationVersion(this.prisma, input);
+  }
+
+  deleteTarget(target: ReviewConfigurationTarget) {
+    return deleteReviewConfigurationTarget(this.prisma, target);
+  }
+}
+
+export function isPrismaReviewConfigurationWriteConflict(
+  error: unknown,
+): boolean {
+  return hasPrismaErrorCode(error, "P2002");
+}
+
+export function isPrismaReviewConfigurationSerializationConflict(
+  error: unknown,
+): boolean {
+  return hasPrismaErrorCode(error, "P2034");
+}
+
+function hasPrismaErrorCode(error: unknown, code: string): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
     "code" in error &&
-    (error.code === "P2002" || error.code === "P2034")
+    error.code === code
   );
 }
 
+const MAX_TRANSACTION_ATTEMPTS = 3;
+
+type ReviewConfigurationPrismaClient = Pick<
+  PrismaClient | Prisma.TransactionClient,
+  "reviewConfiguration" | "reviewConfigurationVersion"
+>;
+
+async function findLatestReviewConfiguration(
+  prisma: ReviewConfigurationPrismaClient,
+  target: ReviewConfigurationTarget,
+): Promise<PersistedReviewConfiguration | null> {
+  const record = await prisma.reviewConfiguration.findUnique({
+    where: {
+      workspaceId_targetKey: {
+        workspaceId: target.workspaceId,
+        targetKey: reviewConfigurationTargetKey(target),
+      },
+    },
+    select: {
+      versions: {
+        orderBy: { version: "desc" },
+        take: 1,
+        select: versionSelect,
+      },
+    },
+  });
+  const version = record?.versions[0];
+  return version ? toPersistedConfiguration(version) : null;
+}
+
+async function saveNextReviewConfigurationVersion(
+  prisma: ReviewConfigurationPrismaClient,
+  input: Parameters<ReviewConfigurationRepositoryPort["saveNextVersion"]>[0],
+): Promise<PersistedReviewConfiguration> {
+  const config = parseReviewConfiguration(input.config);
+  const targetKey = reviewConfigurationTargetKey(input.target);
+  const configuration = await prisma.reviewConfiguration.upsert({
+    where: {
+      workspaceId_targetKey: {
+        workspaceId: input.target.workspaceId,
+        targetKey,
+      },
+    },
+    update: {
+      repositoryId:
+        input.target.scope === "repository" ? input.target.repositoryId : null,
+    },
+    create: {
+      workspaceId: input.target.workspaceId,
+      repositoryId:
+        input.target.scope === "repository" ? input.target.repositoryId : null,
+      targetKey,
+    },
+    select: { id: true },
+  });
+
+  const latest = await prisma.reviewConfigurationVersion.findFirst({
+    where: { configurationId: configuration.id },
+    orderBy: { version: "desc" },
+    select: { version: true },
+  });
+  if (
+    input.expectedVersion !== undefined &&
+    (latest?.version ?? null) !== input.expectedVersion
+  ) {
+    throw new WriteConflict();
+  }
+  const nextVersion = (latest?.version ?? 0) + 1;
+  const saved = await prisma.reviewConfigurationVersion.create({
+    data: {
+      configurationId: configuration.id,
+      version: nextVersion,
+      schemaVersion: config.schemaVersion,
+      providerKind: config.provider.kind,
+      providerAuthMode: config.provider.authMode,
+      model: config.provider.model,
+      reasoningEffort: config.provider.reasoningEffort,
+      agenticContext: config.provider.agenticContext,
+      fastMode: config.provider.fastMode,
+      failOnSeverity: config.blockingPolicy.failOnSeverity,
+      inlineMaxComments: config.limits.inlineMaxComments,
+      providerLimit: config.execution.providerLimit,
+      providerMaxParallel: config.execution.providerMaxParallel,
+      inlineMinAgreement: config.execution.inlineMinAgreement,
+      targetTokensPerBatch: config.limits.targetTokensPerBatch,
+      reviewLanguage: config.reviewLanguage ?? null,
+      providers: {
+        create: config.providers.map((provider, index) => ({
+          order: index,
+          providerKind: provider.kind,
+          providerAuthMode: provider.authMode,
+          model: provider.model,
+          reasoningEffort: provider.reasoningEffort,
+          agenticContext: provider.agenticContext,
+          fastMode: provider.fastMode,
+          requiredHealthy: provider.requiredHealthy,
+        })),
+      },
+    },
+    select: versionSelect,
+  });
+
+  return toPersistedConfiguration(saved);
+}
+
+async function deleteReviewConfigurationTarget(
+  prisma: ReviewConfigurationPrismaClient,
+  target: ReviewConfigurationTarget,
+): Promise<boolean> {
+  const result = await prisma.reviewConfiguration.deleteMany({
+    where: {
+      workspaceId: target.workspaceId,
+      targetKey: reviewConfigurationTargetKey(target),
+    },
+  });
+  return result.count > 0;
+}
+
 const versionSelect = {
+  id: true,
   version: true,
   schemaVersion: true,
   providerKind: true,
@@ -193,6 +248,7 @@ const versionSelect = {
 } as const;
 
 type VersionRecord = {
+  readonly id: string;
   readonly version: number;
   readonly schemaVersion: number;
   readonly providerKind: string;
@@ -224,6 +280,7 @@ function toPersistedConfiguration(
 ): PersistedReviewConfiguration {
   return {
     version: version.version,
+    revisionToken: `db:${version.id}`,
     config: parseReviewConfiguration({
       schemaVersion: 2,
       providers: version.providers.length

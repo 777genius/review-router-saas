@@ -24,6 +24,20 @@ export class ReviewConfigurationOperatorRateLimit implements ReviewConfiguration
             "review_config",
             input.operation,
             hashKeyPart(input.operatorId),
+            "global",
+          ].join(":"),
+          limit: 120,
+          windowMs: 10 * 60 * 1000,
+        },
+        { rateLimits: this.rateLimits, clock: this.clock },
+      );
+      await assertRateLimit(
+        {
+          key: [
+            "operator",
+            "review_config",
+            input.operation,
+            hashKeyPart(input.operatorId),
             hashKeyPart(input.repositoryFullName),
           ].join(":"),
           limit: 60,

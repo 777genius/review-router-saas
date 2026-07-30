@@ -3,6 +3,8 @@ import Fastify from "fastify";
 import {
   HashedReviewConfigurationOperatorAuthorization,
   reviewConfigurationTargetKey,
+  resolveReviewConfiguration,
+  ReviewConfigurationWriteConflictError,
   type OperatorReviewConfigurationDependencies,
   type PersistedReviewConfiguration,
   type ReviewConfigurationRepositoryPort,
@@ -21,6 +23,12 @@ function createDependencies(): OperatorReviewConfigurationDependencies {
     async saveNextVersion(input) {
       const key = reviewConfigurationTargetKey(input.target);
       const records = versions.get(key) ?? [];
+      if (
+        input.expectedVersion !== undefined &&
+        (records.at(-1)?.version ?? null) !== input.expectedVersion
+      ) {
+        throw new ReviewConfigurationWriteConflictError();
+      }
       const persisted = {
         version: (records.at(-1)?.version ?? 0) + 1,
         config: input.config,
@@ -30,6 +38,22 @@ function createDependencies(): OperatorReviewConfigurationDependencies {
     },
     async deleteTarget(target) {
       return versions.delete(reviewConfigurationTargetKey(target));
+    },
+  };
+  const mutations: OperatorReviewConfigurationDependencies["mutations"] = {
+    async commit(input) {
+      const current = await resolveReviewConfiguration(input.target, {
+        configurations,
+      });
+      if (current.revisionToken !== input.expectedRevisionToken) {
+        throw new ReviewConfigurationWriteConflictError();
+      }
+      return configurations.saveNextVersion({
+        target: input.target,
+        config: input.config,
+        expectedVersion:
+          current.source === "repository" ? current.version : null,
+      });
     },
   };
   return {
@@ -46,6 +70,7 @@ function createDependencies(): OperatorReviewConfigurationDependencies {
                 workspaceId: "workspace_1",
                 workspaceSlug: "workspace-one",
                 provider: "github",
+                sourceBaseUrl: "https://github.com",
                 fullName: "777genius/example",
               },
             ]
@@ -58,6 +83,7 @@ function createDependencies(): OperatorReviewConfigurationDependencies {
       },
     },
     configurations,
+    mutations,
     audit: {
       async record() {},
     },

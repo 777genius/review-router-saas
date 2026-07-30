@@ -3,7 +3,7 @@ import type { AuditLogRepositoryPort } from "../../application/ports/audit-log-r
 import type { AuditEventInput } from "../../domain/audit-event";
 
 export class PrismaAuditLogRepository implements AuditLogRepositoryPort {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: Pick<PrismaClient, "auditEvent">) {}
 
   async append(event: AuditEventInput): Promise<void> {
     await this.prisma.auditEvent.create({

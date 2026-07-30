@@ -123,6 +123,7 @@ import {
 } from "./action-memory-routes.js";
 import { registerReviewV2RequestCommandRoutes } from "./review-v2-request-command-routes.js";
 import { registerOperatorReviewConfigRoutes } from "./operator-review-config-routes.js";
+import { PrismaReviewConfigurationOperatorMutation } from "./prisma-review-configuration-operator-mutation.js";
 import { ReviewConfigurationOperatorAudit } from "./review-configuration-operator-audit.js";
 import { ReviewConfigurationOperatorRateLimit } from "./review-configuration-operator-rate-limit.js";
 import {
@@ -225,6 +226,7 @@ export async function createApiApp(
           ),
           repositories: new PrismaReviewConfigurationOperatorRepository(prisma),
           configurations: new PrismaReviewConfigurationRepository(prisma),
+          mutations: new PrismaReviewConfigurationOperatorMutation(prisma),
           rateLimits: new ReviewConfigurationOperatorRateLimit(
             new PrismaRateLimitStore(prisma),
             clock,

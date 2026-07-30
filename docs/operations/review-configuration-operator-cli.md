@@ -17,9 +17,16 @@ GitHub cookies, Prisma, or direct database access.
 - Redirects, URL credentials, query strings, fragments, non-root base paths,
   and non-HTTPS remote URLs are rejected.
 - The credential is never accepted as a command-line argument.
-- Reads and writes are rate-limited and audited without credential values.
+- Failed authentication performs only a local digest comparison and terminates
+  before repository lookup, rate-limit persistence, or audit persistence.
+- Authenticated reads and writes have global and per-repository limits and are
+  audited without credential values.
 - Only selected, non-archived repositories with an active provider
   installation can be changed.
+
+Volumetric unauthenticated traffic belongs at the deployment ingress. Do not add
+one shared anonymous application bucket: an external caller could exhaust it and
+lock out the legitimate operator.
 
 Do not reuse `REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL`. That credential can
 control Review v2 rollout and emergency mutation authority and intentionally has
@@ -32,13 +39,16 @@ From a trusted ReviewRouter checkout:
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-pnpm build
-pnpm link --global
-reviewrouter --help
+pnpm reviewrouter:install
+~/.local/bin/reviewrouter --help
 ```
 
-The `reviewrouter` binary runs the compiled thin client. It does not load the
-server environment or connect to Postgres.
+Add `$HOME/.local/bin` to `PATH` once if it is not already there. The installer
+does not depend on pnpm's global-bin configuration and prints the exact
+installed path. It creates a content-addressed standalone bundle under
+`${XDG_DATA_HOME:-$HOME/.local/share}/reviewrouter` and atomically replaces the
+launcher, so later checkout changes or removal do not alter the installed CLI.
+The thin client does not load the server environment or connect to Postgres.
 
 ## Create A Host-Bound Profile
 
@@ -49,14 +59,15 @@ set -euo pipefail
 umask 077
 profile_dir="${XDG_CONFIG_HOME:-$HOME/.config}/reviewrouter"
 profile_path="$profile_dir/operator.json"
+api_url="https://api.reviewrouter.example.com"
 credential="$(openssl rand -base64 48 | tr -d '\n')"
 mkdir -p "$profile_dir"
-jq -n \
-  --arg apiUrl "https://api.reviewrouter.example.com" \
-  --arg credential "$credential" \
-  '{apiUrl: $apiUrl, credential: $credential}' > "$profile_path"
+printf '%s\n' "$credential" |
+  jq -Rn --arg apiUrl "$api_url" \
+    'input as $credential | {apiUrl: $apiUrl, credential: $credential}' \
+    > "$profile_path"
 chmod 600 "$profile_path"
-printf %s "$credential" | shasum -a 256 | awk '{print $1}'
+printf %s "$credential" | openssl dgst -sha256 -r | awk '{print $1}'
 unset credential
 ```
 
@@ -66,12 +77,13 @@ Store only the printed digest in the API service as:
 REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL_SHA256=<sha256>
 ```
 
-Restart or redeploy the API after setting it. Do not put the plaintext value in
-Render, Compose `.env`, CI secrets, shell history, or GitHub secrets.
+Restart or redeploy the API after setting it. Do not persist the plaintext value
+in server configuration, Compose `.env`, CI/GitHub secrets, or shell history.
 
-For isolated automation, the CLI also accepts
-`REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL` together with an explicit
-`REVIEW_ROUTER_API_URL`. Both must be set; there is no implicit hosted URL.
+For isolated client-side automation, a secret manager may inject the plaintext
+credential ephemerally as
+`REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL`. An explicit
+`REVIEW_ROUTER_API_URL` is also required; there is no implicit hosted URL.
 
 ## Commands
 
@@ -86,10 +98,13 @@ Pin a repository-specific effort:
 ```bash
 reviewrouter config set \
   --repo 777genius/agent-teams-ai \
-  --effort xhigh
+  --effort xhigh \
+  --reason "pin reviewer policy"
 ```
 
 Allowed effort values are `low`, `medium`, `high`, and `xhigh`.
+`--reason` is stored in sanitized audit metadata; when omitted it uses the
+stable `operator_cli_config_set` reason.
 
 If the same repository exists in multiple workspaces, qualify it by workspace
 ID or slug:
@@ -99,6 +114,16 @@ reviewrouter config set \
   --repo Padelapp-Club/monorepository \
   --workspace padelapp \
   --effort high
+```
+
+For GitLab or GitHub Enterprise repositories with the same full name, add the
+SCM host explicitly:
+
+```bash
+reviewrouter config get \
+  --repo group/project \
+  --provider gitlab \
+  --source-base-url https://gitlab.example.com
 ```
 
 Use a non-default profile explicitly when operating another control plane:

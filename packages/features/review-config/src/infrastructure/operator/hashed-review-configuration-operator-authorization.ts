@@ -7,18 +7,19 @@ import {
 
 export class HashedReviewConfigurationOperatorAuthorization implements ReviewConfigurationOperatorAuthorizationPort {
   private readonly expectedDigest: Buffer;
+  private readonly operatorId: string;
 
-  constructor(
-    private readonly operatorId: string,
-    credentialSha256: string,
-  ) {
-    if (!operatorId.trim() || operatorId.length > 120) {
+  constructor(operatorId: string, credentialSha256: string) {
+    const normalizedOperatorId = operatorId.trim();
+    const normalizedCredentialSha256 = credentialSha256.toLowerCase();
+    if (!normalizedOperatorId || normalizedOperatorId.length > 120) {
       throw new Error("review_configuration_operator_id_invalid");
     }
-    if (!/^[a-f0-9]{64}$/.test(credentialSha256)) {
+    if (!/^[a-f0-9]{64}$/.test(normalizedCredentialSha256)) {
       throw new Error("review_configuration_operator_credential_hash_invalid");
     }
-    this.expectedDigest = Buffer.from(credentialSha256, "hex");
+    this.operatorId = normalizedOperatorId;
+    this.expectedDigest = Buffer.from(normalizedCredentialSha256, "hex");
   }
 
   async authenticate(input: {

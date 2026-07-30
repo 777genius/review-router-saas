@@ -12,6 +12,7 @@ import {
   type ReviewConfigurationOperatorAuthorizationPort,
   type ReviewConfigurationOperatorPrincipal,
   type ReviewConfigurationOperatorRateLimitPort,
+  type ReviewConfigurationOperatorMutationPort,
   type ReviewConfigurationOperatorRepository,
   type ReviewConfigurationOperatorRepositoryPort,
 } from "../ports/review-configuration-operator-ports";
@@ -19,7 +20,6 @@ import {
   resolveReviewConfiguration,
   type ResolvedReviewConfigurationSource,
 } from "./resolve-review-configuration";
-import { saveReviewConfiguration } from "./save-review-configuration";
 
 export enum ReviewConfigurationOperatorErrorCode {
   Unauthorized = "unauthorized",
@@ -41,6 +41,7 @@ export class ReviewConfigurationOperatorError extends Error {
 export type OperatorReviewConfiguration = Readonly<{
   repository: string;
   provider: ScmProvider;
+  sourceBaseUrl: string;
   workspaceId: string;
   workspaceSlug: string;
   source: ResolvedReviewConfigurationSource;
@@ -62,6 +63,7 @@ export type OperatorReviewConfigurationDependencies = Readonly<{
   rateLimits: ReviewConfigurationOperatorRateLimitPort;
   repositories: ReviewConfigurationOperatorRepositoryPort;
   configurations: ReviewConfigurationRepositoryPort;
+  mutations: ReviewConfigurationOperatorMutationPort;
   audit: ReviewConfigurationOperatorAuditPort;
 }>;
 
@@ -70,6 +72,8 @@ type OperatorReviewConfigurationInput = Readonly<{
   repositoryFullName: string;
   provider: ScmProvider;
   workspace?: string;
+  sourceBaseUrl?: string;
+  reason?: string;
 }>;
 
 export async function getOperatorReviewConfiguration(
@@ -132,29 +136,7 @@ export async function setOperatorReviewReasoningEffort(
   const alreadyExplicitAndEqual =
     previous.source === "repository" &&
     currentProvider?.reasoningEffort === input.effort;
-  let saved: { readonly version: number; readonly config: ReviewConfiguration };
-  try {
-    saved = alreadyExplicitAndEqual
-      ? { version: previous.version, config: previous.config }
-      : await saveReviewConfiguration(
-          {
-            target,
-            config: updatedConfig,
-            expectedVersion:
-              previous.source === "repository" ? previous.version : null,
-          },
-          dependencies,
-        );
-  } catch (error) {
-    if (isReviewConfigurationWriteConflictError(error)) {
-      throw new ReviewConfigurationOperatorError(
-        ReviewConfigurationOperatorErrorCode.ConfigurationChanged,
-      );
-    }
-    throw error;
-  }
-
-  await dependencies.audit.record({
+  const auditEvent = {
     workspaceId: repository.workspaceId,
     actor: principal.operatorId,
     action: "review_config.operator_reasoning_effort_set",
@@ -167,11 +149,36 @@ export async function setOperatorReviewReasoningEffort(
       changed: !alreadyExplicitAndEqual,
       previousSource: previous.source,
       previousVersion: previous.version,
-      version: saved.version,
-      providers: saved.config.providers.length,
+      providers: updatedConfig.providers.length,
       reviewProvider: "codex-backed",
+      reason: normalizeReason(input.reason),
     },
-  });
+  } as const;
+  let saved: { readonly version: number; readonly config: ReviewConfiguration };
+  try {
+    saved = alreadyExplicitAndEqual
+      ? { version: previous.version, config: previous.config }
+      : await dependencies.mutations.commit({
+          target,
+          expectedRevisionToken: previous.revisionToken,
+          config: updatedConfig,
+          auditEvent,
+        });
+  } catch (error) {
+    if (isReviewConfigurationWriteConflictError(error)) {
+      throw new ReviewConfigurationOperatorError(
+        ReviewConfigurationOperatorErrorCode.ConfigurationChanged,
+      );
+    }
+    throw error;
+  }
+
+  if (alreadyExplicitAndEqual) {
+    await dependencies.audit.record({
+      ...auditEvent,
+      metadata: { ...auditEvent.metadata, version: saved.version },
+    });
+  }
 
   return {
     ...toOperatorReviewConfiguration(repository, {
@@ -185,16 +192,24 @@ export async function setOperatorReviewReasoningEffort(
   };
 }
 
+function normalizeReason(reason: string | undefined): string {
+  const normalized = reason?.trim() || "operator_cli_config_set";
+  return normalized.slice(0, 120);
+}
+
 async function assertRateLimit(
   input: OperatorReviewConfigurationInput,
   principal: ReviewConfigurationOperatorPrincipal,
   operation: ReviewConfigurationOperatorOperation,
   dependencies: Pick<OperatorReviewConfigurationDependencies, "rateLimits">,
 ): Promise<void> {
+  const repositoryFullName = normalizeRepositoryFullName(
+    input.repositoryFullName,
+  );
   const allowed = await dependencies.rateLimits.consume({
     operatorId: principal.operatorId,
     operation,
-    repositoryFullName: input.repositoryFullName.trim().toLowerCase(),
+    repositoryFullName: repositoryFullName.toLowerCase(),
   });
   if (!allowed) {
     throw new ReviewConfigurationOperatorError(
@@ -226,21 +241,16 @@ async function resolveRepository(
   input: OperatorReviewConfigurationInput,
   repositories: ReviewConfigurationOperatorRepositoryPort,
 ): Promise<ReviewConfigurationOperatorRepository> {
-  const repositoryFullName = input.repositoryFullName.trim();
-  if (
-    repositoryFullName.length < 3 ||
-    repositoryFullName.length > 255 ||
-    !repositoryFullName.includes("/") ||
-    /\s/.test(repositoryFullName)
-  ) {
-    throw new ReviewConfigurationOperatorError(
-      ReviewConfigurationOperatorErrorCode.InvalidRepository,
-    );
-  }
+  const repositoryFullName = normalizeRepositoryFullName(
+    input.repositoryFullName,
+  );
   const candidates = await repositories.findActiveCandidates({
     provider: input.provider,
     repositoryFullName,
     ...(input.workspace?.trim() ? { workspace: input.workspace.trim() } : {}),
+    ...(input.sourceBaseUrl?.trim()
+      ? { sourceBaseUrl: input.sourceBaseUrl.trim() }
+      : {}),
   });
   if (candidates.length === 0) {
     throw new ReviewConfigurationOperatorError(
@@ -253,6 +263,21 @@ async function resolveRepository(
     );
   }
   return candidates[0]!;
+}
+
+function normalizeRepositoryFullName(repositoryFullName: string): string {
+  const normalized = repositoryFullName.trim();
+  if (
+    normalized.length < 3 ||
+    normalized.length > 255 ||
+    !normalized.includes("/") ||
+    /\s/.test(normalized)
+  ) {
+    throw new ReviewConfigurationOperatorError(
+      ReviewConfigurationOperatorErrorCode.InvalidRepository,
+    );
+  }
+  return normalized;
 }
 
 function repositoryTarget(repository: ReviewConfigurationOperatorRepository) {
@@ -281,7 +306,7 @@ function withReasoningEffort(
   return {
     ...config,
     providers,
-    provider: providers[0]!,
+    provider: providerIndex === 0 ? providers[0]! : config.provider,
   };
 }
 
@@ -296,6 +321,7 @@ function toOperatorReviewConfiguration(
   return {
     repository: repository.fullName,
     provider: repository.provider,
+    sourceBaseUrl: repository.sourceBaseUrl,
     workspaceId: repository.workspaceId,
     workspaceSlug: repository.workspaceSlug,
     source: resolved.source,

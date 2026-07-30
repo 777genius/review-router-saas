@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { ReviewReasoningEffort } from "@reviewrouter/features-review-config";
-import { isScmProvider, type ScmProvider } from "@reviewrouter/shared";
+import { fileURLToPath } from "node:url";
+import { ReviewReasoningEffort } from "@reviewrouter/features-review-config/review-reasoning-effort";
+import { isScmProvider, type ScmProvider } from "@reviewrouter/shared/scm";
 
 type OperatorCliEnvironment = Readonly<Record<string, string | undefined>>;
 type OperatorCliFetch = typeof fetch;
@@ -43,13 +43,30 @@ export async function executeReviewRouterOperatorCli(
   assertAllowedOptions(
     parsed,
     command === "config get"
-      ? ["repo", "workspace", "provider", "api-url", "profile"]
-      : ["repo", "effort", "workspace", "provider", "api-url", "profile"],
+      ? [
+          "repo",
+          "workspace",
+          "provider",
+          "source-base-url",
+          "api-url",
+          "profile",
+        ]
+      : [
+          "repo",
+          "effort",
+          "reason",
+          "workspace",
+          "provider",
+          "source-base-url",
+          "api-url",
+          "profile",
+        ],
   );
 
   const repository = requireOption(parsed, "repo");
   const provider = parseProvider(readOption(parsed, "provider") ?? "github");
   const workspace = readOption(parsed, "workspace");
+  const sourceBaseUrl = readOption(parsed, "source-base-url");
   const { apiUrl, credential } = await readOperatorProfile(
     parsed,
     env,
@@ -60,6 +77,7 @@ export async function executeReviewRouterOperatorCli(
   if (command === "config get") {
     const query = new URLSearchParams({ repo: repository, provider });
     if (workspace) query.set("workspace", workspace);
+    if (sourceBaseUrl) query.set("sourceBaseUrl", sourceBaseUrl);
     return requestJson(
       new URL(`/api/operator/v1/review-config?${query}`, apiUrl),
       {
@@ -72,6 +90,7 @@ export async function executeReviewRouterOperatorCli(
   }
 
   const effort = parseReasoningEffort(requireOption(parsed, "effort"));
+  const reason = readOption(parsed, "reason");
   return requestJson(
     new URL("/api/operator/v1/review-config", apiUrl),
     {
@@ -84,7 +103,9 @@ export async function executeReviewRouterOperatorCli(
         repository,
         provider,
         effort,
+        ...(reason ? { reason } : {}),
         ...(workspace ? { workspace } : {}),
+        ...(sourceBaseUrl ? { sourceBaseUrl } : {}),
       }),
       redirect: "error",
     },
@@ -291,8 +312,8 @@ function usageText(): string {
   return [
     "ReviewRouter operator CLI",
     "",
-    "  reviewrouter config get --repo OWNER/REPO [--workspace SLUG] [--provider github|gitlab] [--profile PATH]",
-    "  reviewrouter config set --repo OWNER/REPO --effort low|medium|high|xhigh [--workspace SLUG] [--provider github|gitlab] [--profile PATH]",
+    "  reviewrouter config get --repo OWNER/REPO [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
+    "  reviewrouter config set --repo OWNER/REPO --effort low|medium|high|xhigh [--reason TEXT] [--workspace SLUG] [--provider github|gitlab] [--source-base-url URL] [--profile PATH]",
   ].join("\n");
 }
 
@@ -314,7 +335,13 @@ async function main(): Promise<void> {
 }
 
 const entrypoint = process.argv[1];
-if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
+if (
+  entrypoint &&
+  (await realpath(entrypoint).catch(() => path.resolve(entrypoint))) ===
+    (await realpath(fileURLToPath(import.meta.url)).catch(() =>
+      path.resolve(fileURLToPath(import.meta.url)),
+    ))
+) {
   void main().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "unknown_error";
     process.stderr.write(`${message}\n`);

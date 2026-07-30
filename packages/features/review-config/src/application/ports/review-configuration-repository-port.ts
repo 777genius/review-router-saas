@@ -4,6 +4,7 @@ import type { ReviewConfigurationTarget } from "../../domain/review-configuratio
 export type PersistedReviewConfiguration = {
   readonly version: number;
   readonly config: ReviewConfiguration;
+  readonly revisionToken?: string;
 };
 
 export class ReviewConfigurationWriteConflictError extends Error {
@@ -35,6 +36,10 @@ export interface ReviewConfigurationRepositoryPort {
   saveNextVersion(input: {
     readonly target: ReviewConfigurationTarget;
     readonly config: ReviewConfiguration;
+    /**
+     * Omitted disables CAS, null expects no version, and a number expects that
+     * exact latest version. Implementations throw a write conflict on mismatch.
+     */
     readonly expectedVersion?: number | null;
   }): Promise<PersistedReviewConfiguration>;
 

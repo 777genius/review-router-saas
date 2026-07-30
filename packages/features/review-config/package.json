@@ -8,6 +8,11 @@
       "types": "./src/index.ts",
       "production": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./review-reasoning-effort": {
+      "types": "./src/domain/review-reasoning-effort.ts",
+      "production": "./dist/domain/review-reasoning-effort.js",
+      "default": "./src/domain/review-reasoning-effort.ts"
     }
   },
   "dependencies": {
