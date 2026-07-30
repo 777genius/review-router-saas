@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { PrismaClient } from "@reviewrouter/platform-db";
+import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-codex-oauth-rotating";
 import {
   ReviewMutationLaneKind,
+  ReviewMutationExecutionAuthorityMode,
   ReviewMutationMode,
   ReviewSafetyDecisionKind,
   ScmProvider,
@@ -55,12 +57,37 @@ describe("ProductionReviewMutationAuthorityProofFacts", () => {
 
     expect(facts.facts.dispatchCapabilityAvailable).toBe(false);
   });
+
+  it("proves fresh direct V2 with a canonical client-triggered workflow", async () => {
+    const facts = await createFacts({
+      authorityMissing: true,
+      directV2InitializationEnabled: true,
+      dispatchCapabilityAvailable: false,
+    }).inspectDirectV2InitializationFacts({
+      scmRepositoryIdentityId: "identity-1",
+    });
+
+    expect(facts.factsVersion).toBe(
+      "review-mutation-authority-production-facts-v4",
+    );
+    expect(facts.facts).toMatchObject({
+      freshV2OnlyProvisioningProven: true,
+      noLegacyCapabilityEverIssued: true,
+      workflowInventoryCompatible: true,
+      registeredReleaseSelected: true,
+      completionWorkerConfigured: true,
+      executionAuthorityMode:
+        ReviewMutationExecutionAuthorityMode.ClientTriggered,
+    });
+  });
 });
 
 function createFacts(
   input: {
     readonly drainNotBefore?: Date;
     readonly dispatchCapabilityAvailable?: boolean;
+    readonly authorityMissing?: boolean;
+    readonly directV2InitializationEnabled?: boolean;
   } = {},
 ): ProductionReviewMutationAuthorityProofFacts {
   const identity: ScmRepositoryIdentity = {
@@ -95,13 +122,15 @@ function createFacts(
   return new ProductionReviewMutationAuthorityProofFacts({
     prisma: {
       producerRelease: { count: async () => 1 },
+      reviewRunAuthorization: { count: async () => 0 },
     } as unknown as PrismaClient,
     identities: {
       findScmRepositoryIdentityById: async () => identity,
       findScmRepositoryIdentityByExternalIdentity: async () => identity,
     },
     authorities: {
-      findReviewMutationAuthority: async () => authority,
+      findReviewMutationAuthority: async () =>
+        input.authorityMissing ? null : authority,
     },
     actionRepositories: {
       findSelectedRepositoryByGithubId: async () => ({
@@ -134,6 +163,8 @@ function createFacts(
         compatible: true,
         inventoryHash: "a".repeat(64),
         actionCommitSha: "c".repeat(40),
+        workflowSchemaVersion:
+          CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
       }),
     },
     dispatchCapability: {
@@ -142,6 +173,7 @@ function createFacts(
       }),
     },
     completionWorkerConfigured: true,
+    directV2InitializationEnabled: input.directV2InitializationEnabled ?? false,
     now: () => now,
   });
 }

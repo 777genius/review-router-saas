@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -51,6 +51,9 @@ try {
   );
 
   runComposeWithSanitizedOutput(["run", "--rm", "migrate"]);
+  setGlobalReviewV2EmergencyStop(false);
+  runComposeWithSanitizedOutput(["run", "--rm", "migrate"]);
+  setGlobalReviewV2EmergencyStop(true);
   runComposeWithSanitizedOutput([
     "exec",
     "-T",
@@ -118,11 +121,20 @@ function createTestSecrets() {
     webhook: randomSecret(),
     postgres: randomSecret(),
     githubClient: randomSecret(),
+    reviewRunAuthorization: randomBytes(32).toString("base64"),
+    reviewV2Capability: randomBytes(32).toString("base64"),
+    reviewV2ContextSession: randomBytes(32).toString("base64"),
+    reviewV2ContextReplay: randomBytes(32).toString("base64"),
+    reviewV2Operator: randomSecret(),
     privateKey: privateKey.export({ type: "pkcs1", format: "pem" }).toString(),
   };
 }
 
 function createTestEnvironment() {
+  const actionRef =
+    process.env.REVIEW_ROUTER_SELF_HOSTED_E2E_ACTION_REF ??
+    `777genius/review-router@${"a".repeat(40)}`;
+  const actionCommitSha = actionRef.slice(actionRef.lastIndexOf("@") + 1);
   const env = {
     ...process.env,
     NODE_ENV: "production",
@@ -156,10 +168,69 @@ function createTestEnvironment() {
     REVIEW_ROUTER_DISABLE_WORKFLOW_PROVISIONING: "1",
     REVIEW_ROUTER_DISABLE_ACTION_CONTROL_PLANE: "0",
     REVIEW_ROUTER_ACTION_OIDC_AUDIENCE: "reviewrouter",
-    REVIEW_ROUTER_ACTION_REF:
-      process.env.REVIEW_ROUTER_SELF_HOSTED_E2E_ACTION_REF ??
-      "777genius/review-router@v1",
+    REVIEW_ROUTER_ACTION_REF: actionRef,
     REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH: "1",
+    REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: "client_triggered_t0",
+    REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: "0",
+    REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED: "0",
+    REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY: "0",
+    REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED: "1",
+    REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID:
+      "self-hosted-e2e-authorization",
+    REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON: JSON.stringify([
+      {
+        keyId: "self-hosted-e2e-authorization",
+        secretBase64: secrets.reviewRunAuthorization,
+        verifyUntil: null,
+      },
+    ]),
+    REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID:
+      "self-hosted-e2e-capability",
+    REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON: JSON.stringify([
+      {
+        keyId: "self-hosted-e2e-capability",
+        secretBase64: secrets.reviewV2Capability,
+        verifyUntil: null,
+      },
+    ]),
+    REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON: JSON.stringify([
+      {
+        producerReleaseId: "self-hosted-e2e-action-v2",
+        distributionKind: "public_reusable",
+        actionCommitSha,
+        runtimeCommitSha: "b".repeat(40),
+        wrapperEntrypointDigest: null,
+        runtimeEntrypointDigest: "c".repeat(64),
+        contextGatewayPolicyVersion: "review-context-gateway.v1",
+        contextGatewayEntrypointDigest: "d".repeat(64),
+        schemaDigest: "e".repeat(64),
+        canonicalizerDigest: "f".repeat(64),
+        capabilityProfile: "exact_revision_v2",
+        protocolLimitsProfileId: "self-hosted-e2e-limits-v2",
+        operationalSloProfileId: "self-hosted-e2e-slo-v2",
+      },
+    ]),
+    REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON: JSON.stringify([
+      { providerKind: "codex", providerVoteIdentityHash: "1".repeat(64) },
+    ]),
+    REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION:
+      "review-projection-policy.v4-t0",
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64:
+      secrets.reviewV2ContextSession,
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID:
+      "self-hosted-e2e-context",
+    REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON: JSON.stringify([
+      {
+        keyId: "self-hosted-e2e-context",
+        secretBase64: secrets.reviewV2ContextReplay,
+      },
+    ]),
+    REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256: createHash("sha256")
+      .update(secrets.reviewV2Operator, "utf8")
+      .digest("hex"),
     REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
     REVIEW_ROUTER_DEFAULT_MODEL: "gpt-5.5",
     REVIEW_ROUTER_DEFAULT_EFFORT: "medium",
@@ -215,6 +286,25 @@ function writeEnvFile(env) {
     "REVIEW_ROUTER_ACTION_OIDC_AUDIENCE",
     "REVIEW_ROUTER_ACTION_REF",
     "REVIEW_ROUTER_ENABLE_CODEX_ROTATING_OAUTH",
+    "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE",
+    "REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED",
+    "REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED",
+    "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED",
+    "REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED",
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY",
+    "REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED",
+    "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_RUN_AUTHORIZATION_KEYS_JSON",
+    "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_KEYS_JSON",
+    "REVIEW_ROUTER_REVIEW_V2_PRODUCER_RELEASE_ATTESTATIONS_JSON",
+    "REVIEW_ROUTER_REVIEW_V2_PROVIDER_VOTE_LANES_JSON",
+    "REVIEW_ROUTER_REVIEW_V2_PROJECTION_POLICY_VERSION",
+    "REVIEW_ROUTER_REVIEW_V2_CONTEXT_SESSION_SECRET_BASE64",
+    "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_ACTIVE_KEY_ID",
+    "REVIEW_ROUTER_REVIEW_V2_CONTEXT_REPLAY_KEYS_JSON",
+    "REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256",
     "REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK",
     "REVIEW_ROUTER_DEFAULT_MODEL",
     "REVIEW_ROUTER_DEFAULT_EFFORT",
@@ -271,6 +361,23 @@ function runComposeWithSanitizedOutput(args) {
     );
   }
   return result;
+}
+
+function setGlobalReviewV2EmergencyStop(stopped) {
+  runCompose([
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-U",
+    testEnv.POSTGRES_USER,
+    "-d",
+    testEnv.POSTGRES_DB,
+    "-c",
+    `UPDATE "ReviewSafetyEmergencyControl" SET "stopped" = ${stopped ? "true" : "false"}, "updatedAt" = statement_timestamp() WHERE "emergencyControlId" = 'global-review-v2'`,
+  ]);
 }
 
 function run(command, args, env = process.env, options = {}) {
@@ -366,13 +473,7 @@ function assertLogsAreSanitized() {
 
 function assertCredentialMaterialAbsent(value, source) {
   const forbiddenValues = [
-    secrets.auth,
-    secrets.actionSession,
-    secrets.encryption,
-    secrets.webhook,
-    secrets.postgres,
-    secrets.githubClient,
-    secrets.privateKey,
+    ...Object.values(secrets),
     testEnv.GITHUB_APP_PRIVATE_KEY,
   ];
   if (forbiddenValues.some((secret) => secret && value.includes(secret))) {

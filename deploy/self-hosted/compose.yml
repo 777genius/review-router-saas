@@ -1,5 +1,12 @@
 name: reviewrouter-self-hosted
 
+x-reviewrouter-t0-environment: &reviewrouter-t0-environment
+  REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED: ${REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED:?REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED is required}
+  REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE: ${REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE:?REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE is required}
+  REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED: ${REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED:?REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED is required}
+  REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED: ${REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED:?REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED is required}
+  REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY: ${REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY:?REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY is required}
+
 x-reviewrouter-service: &reviewrouter-service
   image: reviewrouter-self-hosted:${REVIEW_ROUTER_IMAGE_TAG:-local}
   build:
@@ -32,8 +39,14 @@ services:
   migrate:
     <<: *reviewrouter-service
     restart: "no"
+    environment:
+      <<: *reviewrouter-t0-environment
     command:
-      ["pnpm", "--filter", "@reviewrouter/platform-db", "db:migrate:deploy"]
+      [
+        "sh",
+        "-lc",
+        "pnpm --filter @reviewrouter/platform-db db:migrate:deploy && node scripts/review-v2-migrate.mjs --apply --actor=self-hosted-compose",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,6 +65,7 @@ services:
         "0.0.0.0",
       ]
     environment:
+      <<: *reviewrouter-t0-environment
       PORT: "3000"
     ports:
       - "${REVIEW_ROUTER_WEB_BIND:-127.0.0.1:3000}:3000"
@@ -73,6 +87,7 @@ services:
     <<: *reviewrouter-service
     command: ["node", "--conditions=production", "apps/api/dist/server.js"]
     environment:
+      <<: *reviewrouter-t0-environment
       HOST: "0.0.0.0"
       PORT: "4000"
     ports:
@@ -94,6 +109,8 @@ services:
   worker:
     <<: *reviewrouter-service
     command: ["node", "--conditions=production", "apps/worker/dist/worker.js"]
+    environment:
+      <<: *reviewrouter-t0-environment
     depends_on:
       migrate:
         condition: service_completed_successfully

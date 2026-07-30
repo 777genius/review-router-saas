@@ -10,6 +10,7 @@ import {
   codexRotatingSecretName,
   codexRotatingTimeoutMinutesVariableName,
   type CodexRotatingReviewActionV2Mode,
+  type CodexRotatingT0WorkflowSchemaVersion,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -29,6 +30,7 @@ export type ReviewRouterWorkflowOptions = {
   readonly forkAgenticSandboxEnabled?: boolean;
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
+  readonly codexRotatingWorkflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
   readonly discussionMode?: ReviewRouterDiscussionMode;
 };
 
@@ -1181,6 +1183,12 @@ export function renderReviewRouterWorkflowFiles(
           actionRef: options.actionRef,
           apiUrl: options.apiUrl,
           providerInstanceId: options.codexRotatingProviderInstanceId,
+          ...(options.codexRotatingWorkflowSchemaVersion !== undefined
+            ? {
+                workflowSchemaVersion:
+                  options.codexRotatingWorkflowSchemaVersion,
+              }
+            : {}),
           ...(options.codexRotatingReviewActionV2Mode
             ? {
                 reviewActionV2Mode: options.codexRotatingReviewActionV2Mode,

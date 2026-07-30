@@ -7,13 +7,16 @@ import {
   reviewV2ForeignKeyValuesSql,
   reviewV2MigrationDirectories,
   reviewV2MigrationVersion,
+  reviewV2LegacyAuthorityFenceBackfillStep,
   reviewV2RepositoryBackfillDefaultPageSize,
   reviewV2RepositoryBackfillMaximumPageSize,
   reviewV2RepositoryBackfillStep,
 } from "./lib/review-v2-migration-contract.mjs";
+import { psqlConnectionUrl } from "./lib/psql-connection-url.mjs";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) fail("DATABASE_URL is required");
+const psqlDatabaseUrl = normalizePsqlConnectionUrl(databaseUrl);
 
 const args = new Set(process.argv.slice(2));
 const migrationVersion = reviewV2MigrationVersion;
@@ -112,18 +115,17 @@ const stopAfterBackfillPages = optionalIntegerArgument(
 runStep(
   "01_expand_guard",
   `
+    ${initialEmergencyStopGuardSql(
+      "01_expand_guard",
+      "review_v2_global_emergency_stop_required",
+    )}
+
     DO $guard$
     BEGIN
       IF to_regclass('public."ReviewExecutionV2"') IS NULL
          OR to_regclass('public."ReviewPublicationAttemptV2"') IS NULL
          OR to_regclass('public."ReviewCompletionProcess"') IS NULL THEN
         RAISE EXCEPTION 'review_v2_expand_schema_missing';
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1 FROM "ReviewSafetyEmergencyControl"
-        WHERE "emergencyControlId" = 'global-review-v2' AND "stopped" = true
-      ) THEN
-        RAISE EXCEPTION 'review_v2_global_emergency_stop_required';
       END IF;
       IF (
         SELECT count(*) FROM pg_indexes
@@ -150,7 +152,49 @@ runStep(
 runRepositoryIdentityBackfill();
 
 runStep(
-  "03_validate_constraints",
+  reviewV2LegacyAuthorityFenceBackfillStep,
+  `
+    INSERT INTO "ReviewMutationAuthority" (
+      "scmRepositoryIdentityId", "laneKind", "version", "epoch", "mode",
+      "initializedAt"
+    )
+    SELECT
+      identity."scmRepositoryIdentityId",
+      'hosted_reviewrouter_app'::"ReviewMutationLaneKindV2",
+      1,
+      0,
+      'v1_open'::"ReviewMutationModeV2",
+      statement_timestamp()
+    FROM "ScmRepositoryIdentity" identity
+    WHERE identity."currentRepositoryConnectionId" IS NOT NULL
+      AND identity."currentWorkspaceId" IS NOT NULL
+    ON CONFLICT ("scmRepositoryIdentityId", "laneKind") DO NOTHING;
+
+    DO $guard$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM "ScmRepositoryIdentity" identity
+        WHERE identity."currentRepositoryConnectionId" IS NOT NULL
+          AND identity."currentWorkspaceId" IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "ReviewMutationAuthority" authority
+            WHERE authority."scmRepositoryIdentityId" =
+                    identity."scmRepositoryIdentityId"
+              AND authority."laneKind" =
+                    'hosted_reviewrouter_app'::"ReviewMutationLaneKindV2"
+          )
+      ) THEN
+        RAISE EXCEPTION 'review_v2_legacy_authority_fence_backfill_incomplete';
+      END IF;
+    END
+    $guard$;
+  `,
+);
+
+runStep(
+  "04_validate_constraints",
   `
     ${foreignKeyDefinitionGuardSql()}
     ${foreignKeyValidationSql()}
@@ -158,23 +202,17 @@ runStep(
 );
 
 runStep(
-  "04_ready_disabled",
+  "05_ready_disabled",
   `
-    DO $guard$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM "ReviewSafetyEmergencyControl"
-        WHERE "emergencyControlId" = 'global-review-v2' AND "stopped" = true
-      ) THEN
-        RAISE EXCEPTION 'review_v2_must_remain_disabled_after_migration';
-      END IF;
-    END
-    $guard$;
+    ${initialEmergencyStopGuardSql(
+      "05_ready_disabled",
+      "review_v2_must_remain_disabled_after_migration",
+    )}
   `,
 );
 
 console.log(
-  `Review v2 migration ${migrationVersion} completed by ${actor}; behavior remains disabled.`,
+  `Review v2 migration ${migrationVersion} applied or verified by ${actor}; the current emergency-control state was preserved.`,
 );
 
 function runRepositoryIdentityBackfill() {
@@ -1053,10 +1091,33 @@ function runStep(stepName, body) {
   `);
 }
 
+function initialEmergencyStopGuardSql(stepName, errorCode) {
+  return `
+    DO $initial_emergency_stop_guard$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM "ReviewV2MigrationLedger"
+        WHERE "migrationVersion" = '${migrationVersion}'
+          AND "stepName" = '${stepName}'
+          AND "status" = 'completed'
+      ) AND NOT EXISTS (
+        SELECT 1
+        FROM "ReviewSafetyEmergencyControl"
+        WHERE "emergencyControlId" = 'global-review-v2'
+          AND "stopped" = true
+      ) THEN
+        RAISE EXCEPTION '${errorCode}';
+      END IF;
+    END
+    $initial_emergency_stop_guard$;
+  `;
+}
+
 function runPsql(sql) {
   const result = spawnSync(
     "psql",
-    [databaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-c", sql],
+    [psqlDatabaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-c", sql],
     { stdio: "inherit" },
   );
   if (result.error) fail(`Unable to start psql: ${result.error.message}`);
@@ -1066,12 +1127,20 @@ function runPsql(sql) {
 function queryScalar(sql) {
   const result = spawnSync(
     "psql",
-    [databaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-qAt", "-c", sql],
+    [psqlDatabaseUrl, "-v", "ON_ERROR_STOP=1", "-X", "-qAt", "-c", sql],
     { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
   );
   if (result.error) fail(`Unable to start psql: ${result.error.message}`);
   if (result.status !== 0) fail(`psql exited with ${result.status}`);
   return result.stdout.trim();
+}
+
+function normalizePsqlConnectionUrl(value) {
+  try {
+    return psqlConnectionUrl(value);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function integerArgument(prefix, defaultValue, minimum, maximum) {

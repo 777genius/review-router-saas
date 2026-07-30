@@ -17,6 +17,7 @@ export * from "./application/ports/producer-release-attestation-ports";
 export * from "./application/use-cases/manage-producer-releases";
 export * from "./application/use-cases/manage-scm-repository-identities";
 export * from "./application/use-cases/manage-review-mutation-authority";
+export * from "./application/use-cases/admit-legacy-review-mutation";
 export * from "./application/services/review-mutation-authority-proof-collector";
 export * from "./application/use-cases/manage-review-safety-controls";
 export * from "./application/use-cases/resolve-review-safety-policy";

@@ -83,6 +83,7 @@ import {
   reviewExecutionFinalizedEventVersion,
 } from "./review-v2-worker-runtime";
 import { createProductionReviewV2WorkerRuntime } from "./review-v2-production-runtime";
+import { PrismaRepositoryIdentitySynchronizer } from "./repository-identity-synchronization";
 
 loadDotenv({ path: "../../.env.local", override: false });
 loadDotenv({ path: "../../.env", override: false });
@@ -275,6 +276,10 @@ function createOutboxHandlers(
         privateKey,
       }),
       repositories: new PrismaRepositoryConnectionRepository(prisma),
+      repositoryIdentities: new PrismaRepositoryIdentitySynchronizer(
+        prisma,
+        clock,
+      ),
       clock,
       syncPolicy: {
         maxRepositories: readPositiveIntegerEnv(

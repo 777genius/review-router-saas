@@ -11,7 +11,7 @@ ENV CI=1 \
     PATH=/pnpm:$PATH
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates openssl \
+  && apt-get install -y --no-install-recommends ca-certificates openssl postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable \
   && corepack prepare pnpm@10.33.0 --activate

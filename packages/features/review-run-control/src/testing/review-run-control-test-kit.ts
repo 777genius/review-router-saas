@@ -12,6 +12,7 @@ import type {
   ReviewMutationDirectV2InitializationProofFacts,
   ReviewMutationResumeProofFacts,
 } from "../domain/review-mutation-authority-proof";
+import { ReviewMutationExecutionAuthorityMode } from "../domain/review-mutation-authority-proof";
 import { ReviewMutationAuthorityInitializationMode } from "../domain/review-run-control-types";
 import {
   JoseRotatingCapabilityCodec,
@@ -153,7 +154,11 @@ export class TestReviewMutationAuthorityProofFacts implements ReviewMutationAuth
       facts: {
         freshV2OnlyProvisioningProven: true,
         noLegacyCapabilityEverIssued: true,
-        dispatchCapabilityAvailable: true,
+        workflowInventoryCompatible: true,
+        registeredReleaseSelected: true,
+        completionWorkerConfigured: true,
+        executionAuthorityMode:
+          ReviewMutationExecutionAuthorityMode.ManagedDispatch,
         managedWorkflowInventoryHash: "a".repeat(64),
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: "b".repeat(64),

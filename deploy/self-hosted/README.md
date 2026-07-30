@@ -14,15 +14,16 @@ The Compose stack starts:
 
 ```text
 postgres - ReviewRouter metadata database
-migrate  - one-shot Prisma migration job
+migrate  - one-shot Prisma plus Review v2 migration/backfill job
 web      - Next.js dashboard and Auth.js routes
 api      - Fastify API, GitHub webhooks, action OIDC/config endpoints
 worker   - outbox, repository sync, and maintenance jobs
 ```
 
 The same Docker image is used for `web`, `api`, `worker`, and `migrate`.
-The image keeps the Prisma CLI available so self-hosted upgrades can run
-migrations without a separate tool container.
+The image keeps the Prisma CLI and PostgreSQL client available so self-hosted
+upgrades can run schema migrations and the Review v2 backfill without a
+separate tool container.
 
 ## Prerequisites
 
@@ -185,7 +186,73 @@ manifest manually.
 
 Enable redirect after installation updates so users return to the dashboard.
 
-## 3. Check Config
+## 3. Configure Direct T0
+
+Self-hosted direct T0 is client-triggered. Readiness requires both explicit
+opt-ins and rejects any server-side intent or dispatch enablement:
+
+```text
+REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED=1
+REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE=client_triggered_t0
+REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED=1
+REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED=1
+REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED=0
+REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED=0
+REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY=0
+REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED=1
+```
+
+In `client_triggered_t0`, the customer workflow starts the review. ReviewRouter
+must not ingest a server-owned intent or dispatch a second workflow. The
+`review-only` GitHub App profile is valid for this mode; use a broader profile
+only when its separate management features are required.
+
+The canonical client-triggered workflow is schema 2. It runs only for same-repo
+`pull_request` events, uses the exact pull-request head SHA and number, grants
+only `contents: read`, `pull-requests: read`, and `id-token: write`, and pins the
+reusable workflow to the full Action commit. Direct initialization rejects any
+other executable workflow inventory.
+
+Pin `REVIEW_ROUTER_ACTION_REF` to the exact 40-character Action commit. Populate
+the authorization and capability key rings, producer release attestations,
+provider vote lanes, context keys, and operator credential hash declared in
+`.env.example`. Generate independent 32-byte base64 secrets for each signing or
+context key:
+
+```bash
+openssl rand -base64 32
+```
+
+The signing key-ring JSON shape is:
+
+```json
+[{ "keyId": "self-hosted-v1", "secretBase64": "...", "verifyUntil": null }]
+```
+
+The context replay key-ring JSON shape is:
+
+```json
+[{ "keyId": "context-v1", "secretBase64": "..." }]
+```
+
+Build producer attestations and provider vote lanes from the validated release
+bundle. Do not invent release digests. The attestation `actionCommitSha` must
+match `REVIEW_ROUTER_ACTION_REF`.
+
+Store only the SHA-256 of the Review v2 operator credential in the shared env:
+
+```bash
+printf %s "$REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL" \
+  | openssl dgst -sha256
+```
+
+Keep the plaintext credential outside the Compose env and provide it only to an
+operator command. The migration/backfill leaves the global Review v2 emergency
+stop active. Follow the
+[Review Action v2 cutover runbook](../../docs/operations/review-action-v2-cutover.md)
+to stage and activate repositories after service health is proven.
+
+## 4. Check Config
 
 From the repository root:
 
@@ -200,8 +267,10 @@ REVIEW_ROUTER_SELF_HOSTED_ENV_FILE=/path/to/reviewrouter.env pnpm self-hosted:ch
 ```
 
 The checker rejects local/non-HTTPS public URLs, missing GitHub App values,
-placeholder secrets, provider credentials in server env, invalid action refs,
-and mismatched permission-profile feature flags.
+placeholder secrets, provider credentials in server env, missing direct-T0
+opt-ins, client-triggered/server-dispatched mode conflicts, unpinned action
+refs, invalid key/config material, release-attestation mismatch, and
+incompatible permission profiles.
 
 Validate the Compose service contract separately when changing Docker or
 service wiring:
@@ -216,12 +285,13 @@ Run the complete disposable local E2E gate before a self-hosted release:
 pnpm self-hosted:e2e
 ```
 
-The E2E command generates an isolated temporary env, builds and boots a fresh
-Compose project on free localhost ports, verifies migrations and exact health
-responses, runs the Review v2 and action OIDC harnesses inside the container,
-checks logs for credential material, and removes its database and volumes.
+The E2E command generates an isolated complete T0 env, builds and boots a fresh
+Compose project on free localhost ports, verifies both migration layers and
+exact health responses, runs the Review v2 and action OIDC harnesses inside the
+container, checks logs for credential material, and removes its database and
+volumes.
 
-## 4. Start
+## 5. Start
 
 From `deploy/self-hosted`:
 
@@ -238,8 +308,14 @@ docker compose \
   up -d --build
 ```
 
-The `migrate` service runs `pnpm db:migrate:deploy` before `web`, `api`, and
-`worker` start.
+The `migrate` service runs Prisma migration deploy and then
+`review-v2-migrate.mjs --apply`. The Review v2 migration is resumable and
+idempotent; `web`, `api`, and `worker` start only after both layers succeed.
+After the migration ledger records completion, normal restarts preserve the
+current emergency-control state instead of requiring the global stop to be
+re-enabled.
+Prisma's `?schema=public` URL parameter is removed only for `psql`; other libpq
+parameters such as `sslmode` are preserved.
 
 Check status:
 
@@ -259,7 +335,7 @@ https://<web-host> -> 127.0.0.1:3000
 https://<api-host> -> 127.0.0.1:4000
 ```
 
-## 5. Upgrade
+## 6. Upgrade
 
 ```bash
 git pull
@@ -270,7 +346,42 @@ docker compose \
   up -d --build
 ```
 
-The migration job is idempotent and runs before app services.
+The migration job is idempotent and runs both Prisma and Review v2 migrations
+before app services.
+
+Migration v7 places every repository identity that already exists at upgrade
+time behind a durable `v1_open` authority fence. This is intentionally
+conservative: an existing repository is never inferred to be fresh-V2 merely
+because its old activity is absent from current tables. Upgrade those
+repositories through the normal drain/activate path. A repository onboarded
+after v7 may use direct initialization only if the schema-2 inventory,
+registered release, worker, safety policy, and no-legacy proof all pass:
+
+```bash
+pnpm review-v2:admin cohort stage \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+
+pnpm review-v2:admin emergency global open \
+  --confirm global
+
+pnpm review-v2:admin mutation initialize-direct-v2 \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Legacy admission and direct initialization use the same repository-scoped
+database lock. The first authority decision wins; a concurrent losing path
+fails closed instead of opening both mutation lanes.
+
+Migration intentionally leaves the global Review v2 emergency stop active.
+Stage at least one repository before running `emergency global open`. The
+global policies remain allowlisted, so opening the global control does not
+enroll unstaged repositories. Restore the kill switch with:
+
+```bash
+pnpm review-v2:admin emergency global stop --confirm global
+```
 
 ## Backups
 
@@ -311,6 +422,20 @@ Keep all services on the same git SHA/image tag.
 - Do not put `CODEX_AUTH_JSON`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
   `CLAUDE_CODE_OAUTH_TOKEN`, or model/provider credentials in this env file.
 - Provider credentials belong in customer GitHub repo/org Actions secrets.
+- Never replace `REVIEWROUTER_CODEX_AUTH_JSON` with a direct
+  `gh secret set`. Rotating auth includes a generation handshake; bypassing it
+  can make queued runs present an older generation. Use
+  `scripts/reseed-codex-rotating-auth.sh` or the dashboard-generated reseed
+  command.
+- Point self-hosted CLI reseeds at this deployment explicitly. Without this
+  override the script intentionally defaults to the hosted ReviewRouter:
+
+  ```bash
+  REVIEW_ROUTER_CODEX_RESEED_API_URL="$REVIEW_ROUTER_PUBLIC_WEB_URL/api/codex-rotating/cli/setup-command" \
+    scripts/reseed-codex-rotating-auth.sh \
+    --repo OWNER/REPOSITORY
+  ```
+
 - Keep Postgres bound to localhost unless you put it on a private network.
 - Use HTTPS for public web/API URLs. Generated customer workflows depend on
   `REVIEW_ROUTER_PUBLIC_API_URL`.

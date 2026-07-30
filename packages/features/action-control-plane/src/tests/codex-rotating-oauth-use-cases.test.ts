@@ -571,6 +571,58 @@ describe("Codex rotating OAuth action control plane", () => {
     expect(replayNonces.tryConsumeNonce).not.toHaveBeenCalled();
   });
 
+  it("allows a canonical client-triggered T0 run when durable intent admission is disabled", async () => {
+    const replayNonces = {
+      tryConsumeNonce: vi.fn().mockResolvedValue(true),
+    };
+    const hostedReviewPreleaseGate = {
+      evaluate: vi.fn().mockResolvedValue({
+        status: "not_applicable" as const,
+      }),
+    };
+    const binding = {
+      providerInstanceId: "codex-rotating:123456",
+      repositoryFullName: "777genius/agent-teams-ai",
+      githubRepositoryId: "123456",
+      actionRef: `777genius/review-router@${workflowSha}`,
+      workflowPath: ".github/workflows/reviewrouter-codex.yml",
+      workflowSchemaVersion: 2,
+    } as const;
+    const dependencies = buildRotatingDependencies({
+      reviewIntentAdmissionRequired: false,
+      replayNonces,
+      hostedReviewPreleaseGate,
+      codexRotatingOAuth: new InMemoryCodexRotatingOAuthRepository([binding]),
+      codexRotatingWorkflowSourceVerifier: {
+        verifyWorkflowSource: vi.fn().mockResolvedValue({
+          binding,
+          workflowSourceSha256:
+            "workflow-source-sha256-012345678901234567890123456789",
+        }),
+      },
+    });
+
+    const result = await preleaseCodexRotatingOAuth(
+      {
+        oidcToken: "jwt",
+        audience: "reviewrouter",
+        providerInstanceId: "codex-rotating:123456",
+        workflowSchemaVersion: 2,
+      },
+      dependencies,
+    );
+
+    expect("status" in result).toBe(false);
+    expect(hostedReviewPreleaseGate.evaluate).toHaveBeenCalledWith({
+      repository,
+      sourceRunId: "9001",
+      sourceRunAttempt: "1",
+      intentRequired: false,
+      now,
+    });
+    expect(replayNonces.tryConsumeNonce).toHaveBeenCalledOnce();
+  });
+
   it("requires a bound intent for managed T0 workflow dispatch", async () => {
     const replayNonces = {
       tryConsumeNonce: vi.fn().mockResolvedValue(true),

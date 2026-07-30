@@ -3,6 +3,7 @@ import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
   parseReviewConfiguration,
   safeDefaultReviewConfiguration,
+  type ReviewConfiguration,
 } from "@reviewrouter/features-review-config";
 import type { Clock } from "@reviewrouter/shared";
 import type {
@@ -119,7 +120,8 @@ const defaultOpenRouterRuntimeConfig = parseReviewConfiguration({
 class InMemoryActionControlPlaneRepository implements ActionControlPlaneRepositoryPort {
   public healthReports: ActionHealthReport[] = [];
   public repository: ActionRepositoryContext | null = repositoryContext;
-  public runtimeConfig = defaultOpenRouterRuntimeConfig;
+  public runtimeConfig: ReviewConfiguration | null =
+    defaultOpenRouterRuntimeConfig;
   public runtimeConfigVersion = 7;
   public runtimeConfigSource: "repository" | "workspace" = "repository";
 
@@ -133,6 +135,9 @@ class InMemoryActionControlPlaneRepository implements ActionControlPlaneReposito
   }
 
   async findRuntimeReviewConfiguration() {
+    if (!this.runtimeConfig) {
+      return null;
+    }
     return {
       source: this.runtimeConfigSource,
       version: this.runtimeConfigVersion,
@@ -1615,6 +1620,41 @@ describe("action control plane", () => {
       },
     });
     expect(JSON.stringify(config)).not.toMatch(/SECRET|PRIVATE_KEY|AUTH_JSON/);
+  });
+
+  it("uses deployment defaults only when no persisted review config exists", async () => {
+    const repositories = new InMemoryActionControlPlaneRepository();
+    repositories.runtimeConfig = null;
+
+    const config = await getActionRuntimeConfig(
+      { sessionToken: "session" },
+      {
+        repositories,
+        sessions: new StaticSessionTokenService({
+          ...sessionClaims,
+          workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        }),
+        defaultProvider: {
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+        },
+        clock,
+      },
+    );
+
+    expect(config).toMatchObject({
+      configVersion: 1,
+      provider: {
+        kind: "codex",
+        authMode: "codex_subscription_oauth_rotating",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      },
+      runtimeEnv: {
+        CODEX_MODEL: "gpt-5.6-sol",
+        CODEX_REASONING_EFFORT: "high",
+      },
+    });
   });
 
   it("checks the conflict runtime gate before rejecting unsupported production providers", async () => {

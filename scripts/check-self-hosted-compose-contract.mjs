@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadEnvFile } from "./lib/env-file.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const composeFile = "deploy/self-hosted/compose.yml";
@@ -25,10 +26,9 @@ requireService("worker");
 requireNamedVolume("reviewrouter-postgres-data");
 
 requireCommand("migrate", [
-  "pnpm",
-  "--filter",
-  "@reviewrouter/platform-db",
-  "db:migrate:deploy",
+  "sh",
+  "-lc",
+  "pnpm --filter @reviewrouter/platform-db db:migrate:deploy && node scripts/review-v2-migrate.mjs --apply --actor=self-hosted-compose",
 ]);
 requireCommand("api", [
   "node",
@@ -66,6 +66,34 @@ requireBuild("web");
 requireBuild("api");
 requireBuild("worker");
 requireBuild("migrate");
+requireDockerfileText("postgresql-client");
+for (const service of ["migrate", "web", "api", "worker"]) {
+  requireEnvironment(
+    service,
+    "REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED",
+    "1",
+  );
+  requireEnvironment(
+    service,
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE",
+    "client_triggered_t0",
+  );
+  requireEnvironment(
+    service,
+    "REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED",
+    "0",
+  );
+  requireEnvironment(
+    service,
+    "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED",
+    "0",
+  );
+  requireEnvironment(
+    service,
+    "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY",
+    "0",
+  );
+}
 requireSelfHostedDependencyIsolation();
 
 if (errors.length > 0) {
@@ -87,14 +115,7 @@ function loadDockerComposeConfig() {
     {
       cwd: repoRoot,
       encoding: "utf8",
-      env: {
-        ...process.env,
-        POSTGRES_PASSWORD:
-          process.env.POSTGRES_PASSWORD ??
-          "reviewrouter-compose-contract-password",
-        REVIEW_ROUTER_SELF_HOSTED_ENV_FILE:
-          process.env.REVIEW_ROUTER_SELF_HOSTED_ENV_FILE ?? "./.env.example",
-      },
+      env: composeEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -111,6 +132,26 @@ function loadDockerComposeConfig() {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
+}
+
+function composeEnvironment() {
+  const configuredEnvFile =
+    process.env.REVIEW_ROUTER_SELF_HOSTED_ENV_FILE?.trim();
+  const envFilePath = configuredEnvFile
+    ? isAbsolute(configuredEnvFile)
+      ? configuredEnvFile
+      : resolve(repoRoot, configuredEnvFile)
+    : resolve(repoRoot, "deploy/self-hosted/.env.example");
+  const fileEnv = loadEnvFile(envFilePath, {});
+  return {
+    ...fileEnv,
+    ...process.env,
+    POSTGRES_PASSWORD:
+      process.env.POSTGRES_PASSWORD ??
+      fileEnv.POSTGRES_PASSWORD ??
+      "reviewrouter-compose-contract-password",
+    REVIEW_ROUTER_SELF_HOSTED_ENV_FILE: configuredEnvFile ?? "./.env.example",
+  };
 }
 
 function requireService(name) {
@@ -190,6 +231,21 @@ function requireBuild(serviceName) {
   ) {
     errors.push(
       `service ${serviceName} must build from deploy/self-hosted/Dockerfile.`,
+    );
+  }
+}
+
+function requireDockerfileText(expectedText) {
+  if (!dockerfile.includes(expectedText)) {
+    errors.push(`self-hosted Dockerfile must include ${expectedText}.`);
+  }
+}
+
+function requireEnvironment(serviceName, name, expected) {
+  const actual = services[serviceName]?.environment?.[name];
+  if (String(actual) !== expected) {
+    errors.push(
+      `service ${serviceName} environment ${name} must be ${expected}.`,
     );
   }
 }

@@ -39,7 +39,7 @@ describe("Review v2 migration contract", () => {
       "000037_finalized_projection_artifact_identity",
       "000038_producer_release_context_gateway_artifact",
     ]);
-    expect(reviewV2MigrationVersion).toBe("review-v2-000029-000038-v6");
+    expect(reviewV2MigrationVersion).toBe("review-v2-000029-000038-v7");
     expect(
       readFileSync(join(process.cwd(), migrationFiles[2]!), "utf8"),
     ).toContain('ADD COLUMN "preparedManifestCanonicalJson" TEXT');

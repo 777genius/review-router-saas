@@ -15,10 +15,12 @@ is one-way: after `v2_active`, failure recovery uses `pause`, not a return to v1
   context gateway policy version and exact committed gateway bundle SHA-256 are
   bound to the immutable producer release. They are not shared API/worker
   environment variables.
-- The production GitHub App registration grants repository `Actions: Read and
-write`, and the target installation has approved that permission update.
-  `Workflows: Read and write` is a different permission and does not authorize
-  workflow dispatch.
+- Managed-dispatch mode requires repository `Actions: Read and write`, and the
+  target installation must approve that permission update. `Workflows: Read and
+write` is a different permission and does not authorize dispatch.
+- Client-triggered Direct V2 accepts the narrower `review-only` App profile. It
+  requires the canonical schema-2 workflow and must keep intent ingress,
+  intent admission, and server-side dispatch disabled.
 - `REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256` is configured. Supply the
   plaintext credential only to the one operator shell process; do not store it in
   the shared Render environment group.
@@ -80,6 +82,14 @@ pnpm review-v2:admin release register \
 
 ## Repository cutover
 
+There are two mutually exclusive entry paths:
+
+- Existing identities, including every identity present during migration v7,
+  are conservatively fenced as `v1_open` and use drain/activate.
+- A repository onboarded after v7 may use `initialize-direct-v2` only when it
+  has never issued a legacy mutation capability and the canonical schema-2
+  workflow inventory and all other proof facts pass.
+
 Use an exact `OWNER/REPO` confirmation on every mutation:
 
 ```bash
@@ -91,6 +101,34 @@ pnpm review-v2:admin mutation initialize-v1 \
   --repo OWNER/REPO \
   --confirm OWNER/REPO
 ```
+
+For an eligible fresh client-triggered repository, use this instead of
+`initialize-v1`:
+
+```bash
+pnpm review-v2:admin mutation initialize-direct-v2 \
+  --repo OWNER/REPO \
+  --confirm OWNER/REPO
+```
+
+Migration leaves the global emergency stop active. After staging the intended
+repository cohort, explicitly open it:
+
+```bash
+pnpm review-v2:admin emergency global open --confirm global
+```
+
+Global T0 policies remain allowlisted, so this does not enroll unstaged
+repositories. Restore the global kill switch immediately when containment is
+required:
+
+```bash
+pnpm review-v2:admin emergency global stop --confirm global
+```
+
+Legacy admission and direct initialization serialize on the same
+repository-scoped database lock. Never reset or delete the authority row to
+force direct initialization.
 
 Provision the generated T0 workflow at the full 40-character Action release SHA
 through the existing workflow-provisioning application service. Verify the
@@ -126,8 +164,10 @@ a shorter override. Do not bypass or backdate the drain.
 After `drainNotBefore`, activation collects and immediately revalidates a
 60-second proof covering legacy admission closure, complete executable-workflow
 authority inventory, exact registered Action SHA, worker configuration,
-repository-scoped GitHub `actions: write` token minting, and safety policy.
-Missing or unapproved dispatch permission returns
+repository-scoped execution authority, and safety policy. Managed dispatch
+requires GitHub `actions: write`; client-triggered schema 2 proves its narrower
+execution authority from the canonical workflow inventory. Missing or
+unapproved managed-dispatch permission returns
 `dispatch_capability_unavailable` and leaves the authority in `v1_draining`.
 Transient GitHub failures abort preflight instead of being misreported as a
 permission denial:

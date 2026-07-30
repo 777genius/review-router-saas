@@ -222,6 +222,8 @@ export function composeReviewActionV2ProductionRunControl(input: {
       dispatchCapability,
       completionWorkerConfigured:
         input.env.REVIEW_ROUTER_REVIEW_V2_WORKER_ENABLED === "1",
+      directV2InitializationEnabled:
+        input.env.REVIEW_ROUTER_REVIEW_V2_DIRECT_INITIALIZATION_ENABLED === "1",
       now: () => clock.now(),
     });
   const runControl = composeReviewRunControl({

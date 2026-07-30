@@ -1,7 +1,9 @@
 import type { PrismaClient } from "@reviewrouter/platform-db";
 import type { ActionControlPlaneRepositoryPort } from "@reviewrouter/features-action-control-plane";
+import { CodexRotatingT0WorkflowSchemaVersion } from "@reviewrouter/features-codex-oauth-rotating";
 import {
   ReviewMutationLaneKind,
+  ReviewMutationExecutionAuthorityMode,
   ReviewMutationMode,
   ReviewSafetyDecisionKind,
   type ReviewMutationAuthorityProofFactsQueryPorts,
@@ -22,6 +24,7 @@ export interface ManagedReviewWorkflowInventoryInspectionPort {
     readonly compatible: boolean;
     readonly inventoryHash: string;
     readonly actionCommitSha: string | null;
+    readonly workflowSchemaVersion: number | null;
   }>;
 }
 
@@ -43,6 +46,7 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
       readonly workflowInventory: ManagedReviewWorkflowInventoryInspectionPort;
       readonly dispatchCapability: ReviewV2DispatchCapabilityInspectionPort;
       readonly completionWorkerConfigured: boolean;
+      readonly directV2InitializationEnabled: boolean;
       readonly now: () => Date;
     },
   ) {}
@@ -121,7 +125,17 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
     readonly scmRepositoryIdentityId: string;
   }) {
     const target = await this.resolveTarget(input.scmRepositoryIdentityId);
-    const [inventory, dispatchCapability, safety] = await Promise.all([
+    const [
+      authority,
+      inventory,
+      dispatchCapability,
+      safety,
+      authorizationCount,
+    ] = await Promise.all([
+      this.dependencies.authorities.findReviewMutationAuthority({
+        scmRepositoryIdentityId: input.scmRepositoryIdentityId,
+        laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
+      }),
       this.dependencies.workflowInventory.inspectReviewV2ManagedWorkflowInventory(
         {
           githubInstallationId: target.repository.githubInstallationId,
@@ -138,13 +152,41 @@ export class ProductionReviewMutationAuthorityProofFacts implements ReviewMutati
         decisionKind: ReviewSafetyDecisionKind.MutationEpochActivation,
         target: target.safetyTarget,
       }),
+      this.dependencies.prisma.reviewRunAuthorization.count({
+        where: { scmRepositoryIdentityId: input.scmRepositoryIdentityId },
+      }),
     ]);
+    const registeredReleaseSelected =
+      inventory.actionCommitSha !== null &&
+      (await this.dependencies.prisma.producerRelease.count({
+        where: {
+          actionCommitSha: inventory.actionCommitSha,
+          state: "registered",
+        },
+      })) > 0;
+    const clientTriggeredWorkflowAvailable =
+      inventory.compatible &&
+      inventory.workflowSchemaVersion ===
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2;
+    const executionAuthorityMode = dispatchCapability.available
+      ? ReviewMutationExecutionAuthorityMode.ManagedDispatch
+      : clientTriggeredWorkflowAvailable
+        ? ReviewMutationExecutionAuthorityMode.ClientTriggered
+        : null;
+    const freshV2OnlyProvisioningProven =
+      this.dependencies.directV2InitializationEnabled &&
+      authority === null &&
+      authorizationCount === 0;
     return {
-      factsVersion,
+      factsVersion: "review-mutation-authority-production-facts-v4",
       facts: {
-        freshV2OnlyProvisioningProven: false,
-        noLegacyCapabilityEverIssued: false,
-        dispatchCapabilityAvailable: dispatchCapability.available,
+        freshV2OnlyProvisioningProven,
+        noLegacyCapabilityEverIssued: authority === null,
+        workflowInventoryCompatible: inventory.compatible,
+        registeredReleaseSelected,
+        completionWorkerConfigured:
+          this.dependencies.completionWorkerConfigured,
+        executionAuthorityMode,
         managedWorkflowInventoryHash: inventory.inventoryHash,
         safetyDecisionEnabled: safety.effectAllowed,
         activationSafetyDecisionHash: safety.safetyDecisionHash,

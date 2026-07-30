@@ -15,6 +15,29 @@ import { ReviewRunControlLegacyMutationAdmission } from "./review-action-v1-muta
 describe("ReviewRunControlLegacyMutationAdmission", () => {
   const workflowSha = "a".repeat(40);
 
+  it("fails closed until the repository has a durable SCM identity", async () => {
+    const admission = new ReviewRunControlLegacyMutationAdmission({
+      repositoryIdentities: {
+        findScmRepositoryIdentityById: async () => null,
+        findScmRepositoryIdentityByExternalIdentity: async () => null,
+      },
+      legacyAuthorityAdmission: {
+        admit: async () => {
+          throw new Error("unexpected_admission");
+        },
+      },
+    });
+
+    await expect(
+      admission.assertLegacyReviewMutationAllowed(
+        sessionExchangeInput(
+          "pull_request",
+          ".github/workflows/reviewrouter.yml",
+        ),
+      ),
+    ).rejects.toThrow("legacy_review_mutation_identity_unavailable");
+  });
+
   it.each([
     ReviewMutationMode.V1Draining,
     ReviewMutationMode.V2Active,
@@ -37,6 +60,10 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
       for (const input of [
         commentTokenInput(
           "workflow_dispatch",
+          ".github/workflows/reviewrouter-codex.yml",
+        ),
+        commentTokenInput(
+          "pull_request",
           ".github/workflows/reviewrouter-codex.yml",
         ),
         commentTokenInput(
@@ -78,7 +105,7 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
     );
   });
 
-  it("allows legacy mutation before an authority exists and while v1 is open", async () => {
+  it("allows legacy mutation only after the durable V1 fence is established", async () => {
     await expect(
       createAdmission(null).assertLegacyReviewMutationAllowed(
         sessionExchangeInput(
@@ -101,6 +128,7 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
 
   it.each([
     ["workflow_dispatch", ".github/workflows/reviewrouter-codex.yml"] as const,
+    ["pull_request", ".github/workflows/reviewrouter-codex.yml"] as const,
     [
       "issue_comment",
       ".github/workflows/reviewrouter-interaction.yml",
@@ -130,9 +158,9 @@ describe("ReviewRunControlLegacyMutationAdmission", () => {
   );
 
   it.each([
-    ["pull_request", ".github/workflows/reviewrouter-codex.yml"] as const,
     ["workflow_dispatch", ".github/workflows/untrusted.yml"] as const,
     ["issue_comment", ".github/workflows/reviewrouter-codex.yml"] as const,
+    ["pull_request", ".github/workflows/untrusted.yml"] as const,
   ])(
     "blocks unmanaged session bootstrap for %s from %s",
     async (eventName, workflowPath) => {
@@ -298,8 +326,24 @@ function createAdmission(
       findScmRepositoryIdentityById: async () => identity,
       findScmRepositoryIdentityByExternalIdentity: async () => identity,
     },
-    mutationAuthorities: {
-      findReviewMutationAuthority: async () => authority,
+    legacyAuthorityAdmission: {
+      admit: async () =>
+        authority ?? {
+          scmRepositoryIdentityId: identity.scmRepositoryIdentityId,
+          laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
+          mode: ReviewMutationMode.V1Open,
+          epoch: 0n,
+          version: 1,
+          drainPolicyVersion: null,
+          activationSafetyDecisionHash: null,
+          drainStartedAt: null,
+          v1AdmissionClosedAt: null,
+          drainNotBefore: null,
+          managedWorkflowInventoryHash: null,
+          initializedAt: new Date("2026-07-22T00:00:00.000Z"),
+          activatedAt: null,
+          pausedAt: null,
+        },
     },
     ...(verification
       ? {

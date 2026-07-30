@@ -337,6 +337,56 @@ export function reviewRunControlRepositoryContract(
       ).resolves.toMatchObject({ epoch: largeEpoch, version: 2 });
     });
 
+    it("serializes competing legacy V1 and Direct V2 initialization", async () => {
+      const harness = await createHarness();
+      const scmRepositoryIdentityId = next("authority-race-scm");
+      await harness.identities.resolveOrRegisterScmRepositoryIdentity({
+        identity: createScmRepositoryIdentity({
+          scmRepositoryIdentityId,
+          provider: ScmProvider.GitHub,
+          sourceBaseUrl: "https://github.com",
+          externalRepositoryId: next("authority-race-external"),
+          createdAt: contractNow(),
+        }),
+      });
+      const legacy: ReviewMutationAuthority = {
+        ...mutationAuthority(scmRepositoryIdentityId),
+        epoch: 0n,
+        mode: ReviewMutationMode.V1Open,
+        managedWorkflowInventoryHash: null,
+        activationSafetyDecisionHash: null,
+        activatedAt: null,
+        pausedAt: null,
+      };
+      const direct: ReviewMutationAuthority = {
+        ...mutationAuthority(scmRepositoryIdentityId),
+        mode: ReviewMutationMode.V2Active,
+        pausedAt: null,
+      };
+
+      const outcomes = await Promise.all([
+        harness.authorities.initializeReviewMutationAuthority(legacy),
+        harness.authorities.initializeReviewMutationAuthority(direct),
+      ]);
+
+      expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(
+        [
+          ReviewMutationAuthorityWriteStatus.Conflict,
+          ReviewMutationAuthorityWriteStatus.Created,
+        ].sort(),
+      );
+      const current = await harness.authorities.findReviewMutationAuthority({
+        scmRepositoryIdentityId,
+        laneKind: ReviewMutationLaneKind.HostedReviewRouterApp,
+      });
+      expect(current?.mode).toBe(
+        outcomes.find(
+          (outcome) =>
+            outcome.status === ReviewMutationAuthorityWriteStatus.Created,
+        )?.authority.mode,
+      );
+    });
+
     it("returns every applicable scoped safety fence so disable wins", async () => {
       const harness = await createHarness();
       const workspaceId = next("safety-workspace");

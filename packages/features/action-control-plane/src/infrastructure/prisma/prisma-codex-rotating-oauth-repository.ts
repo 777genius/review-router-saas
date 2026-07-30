@@ -1,8 +1,8 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import {
   codexRotatingAuthMode,
+  codexRotatingCanonicalT0WorkflowSchemaVersions,
   codexRotatingSecretName,
-  codexRotatingWorkflowSchemaVersion,
   createCodexRotatingSalt,
   type CodexRotatingEncryptedWritebackRequest,
   type CodexRotatingProviderBinding,
@@ -58,7 +58,15 @@ export class PrismaCodexRotatingOAuthRepository
     readonly repository: ActionRepositoryContext;
     readonly providerInstanceId: string;
     readonly workflowSha: string;
+    readonly workflowSchemaVersion: number;
   }): Promise<CodexRotatingProviderBinding | null> {
+    if (
+      !codexRotatingCanonicalT0WorkflowSchemaVersions.includes(
+        input.workflowSchemaVersion as (typeof codexRotatingCanonicalT0WorkflowSchemaVersions)[number],
+      )
+    ) {
+      return null;
+    }
     await this.prisma.codexOAuthProviderInstance.upsert({
       where: { providerInstanceId: input.providerInstanceId },
       update: {
@@ -90,7 +98,7 @@ export class PrismaCodexRotatingOAuthRepository
         : {}),
       workflowPath:
         this.options.workflowPath ?? ".github/workflows/reviewrouter-codex.yml",
-      workflowSchemaVersion: codexRotatingWorkflowSchemaVersion,
+      workflowSchemaVersion: input.workflowSchemaVersion,
     };
   }
 

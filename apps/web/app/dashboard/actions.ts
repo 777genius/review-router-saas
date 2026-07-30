@@ -52,6 +52,8 @@ import {
 } from "@reviewrouter/platform-config";
 import { OctokitRepositoryWorkflowProbe } from "@reviewrouter/features-repo-health";
 import {
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
   OctokitWorkflowSetupGateway,
@@ -649,6 +651,16 @@ async function createSetupPullRequestMutation(
                 ? {
                     codexRotatingProviderInstanceId,
                     forkAgenticSandboxEnabled,
+                    ...(process.env
+                      .REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE ===
+                    "client_triggered_t0"
+                      ? {
+                          codexRotatingReviewActionV2Mode:
+                            CodexRotatingReviewActionV2Mode.T0,
+                          codexRotatingWorkflowSchemaVersion:
+                            CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+                        }
+                      : {}),
                   }
                 : {}),
               actor: actor.actor,

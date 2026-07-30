@@ -88,6 +88,7 @@ import { PrismaReviewExecutionCheckpointRepository } from "@reviewrouter/feature
 import { PrismaReviewRequestedIntentStore } from "@reviewrouter/features-review-executions/composition";
 import { ConsoleLogger } from "@reviewrouter/platform-logger";
 import { SystemClock } from "@reviewrouter/shared";
+import { AdmitLegacyReviewMutation } from "@reviewrouter/features-review-run-control";
 import { createPrismaReviewRunControlRepositories } from "@reviewrouter/features-review-run-control/composition";
 import { PrismaActionEntitlementPolicy } from "./action-entitlement-policy.js";
 import { ActionRateLimitPolicy } from "./action-rate-limit-policy.js";
@@ -277,6 +278,13 @@ export async function createApiApp(
             createPrismaReviewRunControlRepositories(prisma);
           return {
             repositories: new PrismaActionControlPlaneRepository(prisma),
+            defaultProvider: {
+              model:
+                process.env.REVIEW_ROUTER_DEFAULT_MODEL?.trim() || "gpt-5.5",
+              reasoningEffort: readDefaultReasoningEffort(
+                process.env.REVIEW_ROUTER_DEFAULT_EFFORT,
+              ),
+            },
             ...(conflictReviewFallbackEnabled
               ? {
                   conflictReviews: new PrismaConflictReviewRepository(prisma),
@@ -315,8 +323,11 @@ export async function createApiApp(
               new ReviewRunControlLegacyMutationAdmission({
                 repositoryIdentities:
                   reviewRunControlRepositories.repositoryIdentities,
-                mutationAuthorities:
-                  reviewRunControlRepositories.mutationAuthorities,
+                legacyAuthorityAdmission: new AdmitLegacyReviewMutation({
+                  clock,
+                  queries: reviewRunControlRepositories.mutationAuthorities,
+                  commands: reviewRunControlRepositories.mutationAuthorities,
+                }),
                 ...(codexRotatingGitHubSecretGateway
                   ? {
                       workflowSourceVerifier: codexRotatingGitHubSecretGateway,
@@ -350,6 +361,10 @@ export async function createApiApp(
                   codexRotatingCheckoutTokens: codexRotatingGitHubSecretGateway,
                   codexRotatingWorkflowSourceVerifier:
                     codexRotatingGitHubSecretGateway,
+                  reviewIntentAdmissionRequired:
+                    process.env
+                      .REVIEW_ROUTER_REVIEW_V2_INTENT_ADMISSION_REQUIRED !==
+                    "0",
                   hostedReviewPreleaseGate:
                     new ProductionHostedReviewPreleaseGate({
                       requestedIntentQueries: requestedIntentStore,
@@ -702,6 +717,21 @@ function definedOption<const Key extends string>(
   return value
     ? ({ [key]: value } as { readonly [Property in Key]: string })
     : {};
+}
+
+function readDefaultReasoningEffort(
+  value: string | undefined,
+): "low" | "medium" | "high" | "xhigh" {
+  const normalized = value?.trim() || "medium";
+  if (
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
+    return normalized;
+  }
+  throw new Error("review_router_default_effort_invalid");
 }
 
 async function readDatabaseServerTime(prisma: PrismaClient): Promise<Date> {

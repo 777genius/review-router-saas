@@ -13,6 +13,7 @@ import {
 import {
   ReviewMutationAuthorityProofKind,
   ReviewMutationAuthorityProofVersion,
+  ReviewMutationExecutionAuthorityMode,
   sealReviewMutationAuthorityProof,
   type ReviewMutationAbortProofFacts,
   type ReviewMutationActivationProofFacts,
@@ -52,7 +53,7 @@ describe("ReviewMutationAuthority", () => {
     expect(() =>
       initializeDirectV2ReviewMutationAuthority({
         scmRepositoryIdentityId: "scm-1",
-        proof: directV2Proof({ dispatchCapabilityAvailable: false }),
+        proof: directV2Proof({ executionAuthorityMode: null }),
       }),
     ).toThrowError(
       expect.objectContaining({
@@ -70,6 +71,15 @@ describe("ReviewMutationAuthority", () => {
       managedWorkflowInventoryHash: hashA,
       activationSafetyDecisionHash: hashB,
     });
+    expect(
+      initializeDirectV2ReviewMutationAuthority({
+        scmRepositoryIdentityId: "scm-1",
+        proof: directV2Proof({
+          executionAuthorityMode:
+            ReviewMutationExecutionAuthorityMode.ClientTriggered,
+        }),
+      }).authority.mode,
+    ).toBe(ReviewMutationMode.V2Active);
   });
 
   it("drains, only extends the cutoff, activates once, pauses, and resumes with a new epoch", () => {
@@ -318,7 +328,11 @@ function directV2Proof(
       facts: {
         freshV2OnlyProvisioningProven: true,
         noLegacyCapabilityEverIssued: true,
-        dispatchCapabilityAvailable: true,
+        workflowInventoryCompatible: true,
+        registeredReleaseSelected: true,
+        completionWorkerConfigured: true,
+        executionAuthorityMode:
+          ReviewMutationExecutionAuthorityMode.ManagedDispatch,
         managedWorkflowInventoryHash: hashA,
         safetyDecisionEnabled: true,
         activationSafetyDecisionHash: hashB,

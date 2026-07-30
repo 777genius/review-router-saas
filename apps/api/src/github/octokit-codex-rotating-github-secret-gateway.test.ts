@@ -259,7 +259,38 @@ describe("OctokitCodexRotatingGitHubSecretGateway", () => {
       compatible: true,
       inventoryHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       actionCommitSha: expect.stringMatching(/^[a-f0-9]{40}$/),
+      workflowSchemaVersion: 1,
       defaultBranchHeadSha: expect.stringMatching(/^[a-f0-9]{40}$/),
+    });
+  });
+
+  it("reports canonical client-triggered T0 workflow schema v2", async () => {
+    const actionSha = "a".repeat(40);
+    const workflow = renderCodexRotatingAdvisoryWorkflow({
+      actionRef: `777genius/review-router@${actionSha}`,
+      apiUrl: "https://api.reviewrouter.site",
+      providerInstanceId: "codex-rotating:123456",
+      workflowSchemaVersion: 2,
+      refreshScheduleCron: null,
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+    });
+    mockManagedWorkflowInventory({ reviewWorkflow: workflow });
+    const gateway = new OctokitCodexRotatingGitHubSecretGateway({
+      appId: "123",
+      privateKey: "private-key",
+    });
+
+    await expect(
+      gateway.inspectReviewV2ManagedWorkflowInventory({
+        githubInstallationId: "129500385",
+        githubRepositoryId: "123456",
+        repositoryFullName: "777genius/example",
+        owner: "777genius",
+      }),
+    ).resolves.toMatchObject({
+      compatible: true,
+      actionCommitSha: actionSha,
+      workflowSchemaVersion: 2,
     });
   });
 
