@@ -17,6 +17,8 @@
     "@reviewrouter/features-memory": "workspace:*",
     "@reviewrouter/features-outbox": "workspace:*",
     "@reviewrouter/features-rate-limits": "workspace:*",
+    "@reviewrouter/features-audit-log": "workspace:*",
+    "@reviewrouter/features-review-config": "workspace:*",
     "@reviewrouter/features-review-execution-checkpoints": "workspace:*",
     "@reviewrouter/features-review-context-attestation": "workspace:*",
     "@reviewrouter/features-review-evidence": "workspace:*",

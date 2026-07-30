@@ -6,6 +6,27 @@ export type PersistedReviewConfiguration = {
   readonly config: ReviewConfiguration;
 };
 
+export class ReviewConfigurationWriteConflictError extends Error {
+  readonly code = "review_configuration_write_conflict";
+
+  constructor() {
+    super("review_configuration_write_conflict");
+    this.name = "ReviewConfigurationWriteConflictError";
+  }
+}
+
+export function isReviewConfigurationWriteConflictError(
+  error: unknown,
+): error is ReviewConfigurationWriteConflictError {
+  return (
+    error instanceof ReviewConfigurationWriteConflictError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "review_configuration_write_conflict")
+  );
+}
+
 export interface ReviewConfigurationRepositoryPort {
   findLatest(
     target: ReviewConfigurationTarget,
@@ -14,6 +35,7 @@ export interface ReviewConfigurationRepositoryPort {
   saveNextVersion(input: {
     readonly target: ReviewConfigurationTarget;
     readonly config: ReviewConfiguration;
+    readonly expectedVersion?: number | null;
   }): Promise<PersistedReviewConfiguration>;
 
   deleteTarget(target: ReviewConfigurationTarget): Promise<boolean>;

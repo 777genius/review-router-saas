@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
 import { registerApiDemoRoutes } from "@reviewrouter/features-api-demo";
+import { PrismaAuditLogRepository } from "@reviewrouter/features-audit-log";
 import {
   JoseActionSessionTokenService,
   JoseActionConflictReviewPostingSessionTokenService,
@@ -83,6 +84,12 @@ import {
   resolveReviewRouterTrustedActionRefs,
 } from "@reviewrouter/platform-config";
 import { PrismaRateLimitStore } from "@reviewrouter/features-rate-limits";
+import {
+  HashedReviewConfigurationOperatorAuthorization,
+  PrismaReviewConfigurationOperatorRepository,
+  PrismaReviewConfigurationRepository,
+  type OperatorReviewConfigurationDependencies,
+} from "@reviewrouter/features-review-config";
 import { PrismaReviewSnapshotRepository } from "@reviewrouter/features-review-snapshots";
 import { PrismaReviewExecutionCheckpointRepository } from "@reviewrouter/features-review-execution-checkpoints";
 import { PrismaReviewRequestedIntentStore } from "@reviewrouter/features-review-executions/composition";
@@ -115,6 +122,9 @@ import {
   type RegisterActionMemoryRoutesDependencies,
 } from "./action-memory-routes.js";
 import { registerReviewV2RequestCommandRoutes } from "./review-v2-request-command-routes.js";
+import { registerOperatorReviewConfigRoutes } from "./operator-review-config-routes.js";
+import { ReviewConfigurationOperatorAudit } from "./review-configuration-operator-audit.js";
+import { ReviewConfigurationOperatorRateLimit } from "./review-configuration-operator-rate-limit.js";
 import {
   composeReviewActionV2RunControlRoutes,
   type ReviewActionV2RunControlHandlerDependencies,
@@ -141,6 +151,7 @@ export type CreateApiAppOptions = {
   readonly reviewSnapshotReadV2Dependencies?: RegisterReviewSnapshotReadV2RoutesDependencies;
   readonly reviewPublicationRequestV2Dependencies?: RegisterReviewPublicationRequestV2RoutesDependencies;
   readonly actionMemoryDependencies?: RegisterActionMemoryRoutesDependencies;
+  readonly operatorReviewConfigDependencies?: OperatorReviewConfigurationDependencies;
   readonly actionSessionSecret?: string;
   readonly actionOidcAudience?: string;
   readonly actionControlPlaneEnabled?: boolean;
@@ -155,6 +166,8 @@ export async function createApiApp(
   const logger = new ConsoleLogger();
   const app = Fastify({ logger: false });
   const reviewActionV2Env = options.reviewActionV2Env ?? process.env;
+  const operatorCredentialSha256 =
+    readOperatorCredentialSha256(reviewActionV2Env);
   const reviewRunControlV2Enabled =
     options.reviewRunControlV2Enabled ??
     reviewActionV2Env.REVIEW_ROUTER_REVIEW_V2_RUN_CONTROL_ENABLED === "1";
@@ -162,7 +175,8 @@ export async function createApiApp(
     options.prisma ??
     (options.githubWebhookSecret ||
     options.actionSessionSecret ||
-    reviewRunControlV2Enabled
+    reviewRunControlV2Enabled ||
+    operatorCredentialSha256
       ? createPrismaClient()
       : undefined);
   const clock = new SystemClock();
@@ -200,6 +214,32 @@ export async function createApiApp(
     options.healthDependencies ??
       (prisma ? [new PrismaHealthDependency(prisma)] : []),
   );
+
+  const operatorReviewConfigDependencies =
+    options.operatorReviewConfigDependencies ??
+    (prisma && operatorCredentialSha256
+      ? {
+          authorization: new HashedReviewConfigurationOperatorAuthorization(
+            "reviewrouter-operator",
+            operatorCredentialSha256,
+          ),
+          repositories: new PrismaReviewConfigurationOperatorRepository(prisma),
+          configurations: new PrismaReviewConfigurationRepository(prisma),
+          rateLimits: new ReviewConfigurationOperatorRateLimit(
+            new PrismaRateLimitStore(prisma),
+            clock,
+          ),
+          audit: new ReviewConfigurationOperatorAudit(
+            new PrismaAuditLogRepository(prisma),
+          ),
+        }
+      : undefined);
+  if (operatorReviewConfigDependencies) {
+    await registerOperatorReviewConfigRoutes(
+      app,
+      operatorReviewConfigDependencies,
+    );
+  }
 
   const githubWebhookDependencies =
     options.githubWebhookDependencies ??
@@ -717,6 +757,18 @@ function definedOption<const Key extends string>(
   return value
     ? ({ [key]: value } as { readonly [Property in Key]: string })
     : {};
+}
+
+function readOperatorCredentialSha256(
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const value =
+    env.REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL_SHA256?.trim();
+  if (!value) return undefined;
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    throw new Error("review_router_operator_credential_hash_invalid");
+  }
+  return value;
 }
 
 function readDefaultReasoningEffort(

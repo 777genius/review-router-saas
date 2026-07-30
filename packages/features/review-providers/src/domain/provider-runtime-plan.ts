@@ -180,7 +180,7 @@ function validateRuntimePlanProvider(
   };
 }
 
-function isCodexBackedProvider(
+export function isCodexBackedProvider(
   provider: RuntimePlanProviderConfiguration,
 ): boolean {
   return (

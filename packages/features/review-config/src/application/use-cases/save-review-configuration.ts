@@ -12,6 +12,7 @@ export async function saveReviewConfiguration(
   input: {
     readonly target: ReviewConfigurationTarget;
     readonly config: ReviewConfiguration;
+    readonly expectedVersion?: number | null;
   },
   dependencies: {
     readonly configurations: ReviewConfigurationRepositoryPort;
@@ -22,6 +23,9 @@ export async function saveReviewConfiguration(
   return dependencies.configurations.saveNextVersion({
     target: input.target,
     config,
+    ...(input.expectedVersion !== undefined
+      ? { expectedVersion: input.expectedVersion }
+      : {}),
   });
 }
 

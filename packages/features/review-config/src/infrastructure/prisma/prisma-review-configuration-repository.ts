@@ -11,6 +11,10 @@ import type {
   PersistedReviewConfiguration,
   ReviewConfigurationRepositoryPort,
 } from "../../application/ports/review-configuration-repository-port";
+import {
+  isReviewConfigurationWriteConflictError,
+  ReviewConfigurationWriteConflictError as WriteConflict,
+} from "../../application/ports/review-configuration-repository-port";
 
 export class PrismaReviewConfigurationRepository implements ReviewConfigurationRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}
@@ -44,77 +48,97 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
   async saveNextVersion(input: {
     readonly target: ReviewConfigurationTarget;
     readonly config: ReviewConfiguration;
+    readonly expectedVersion?: number | null;
   }): Promise<PersistedReviewConfiguration> {
     const config = parseReviewConfiguration(input.config);
     const targetKey = reviewConfigurationTargetKey(input.target);
 
-    return this.prisma.$transaction(async (tx) => {
-      const configuration = await tx.reviewConfiguration.upsert({
-        where: {
-          workspaceId_targetKey: {
-            workspaceId: input.target.workspaceId,
-            targetKey,
-          },
-        },
-        update: {
-          repositoryId:
-            input.target.scope === "repository"
-              ? input.target.repositoryId
-              : null,
-        },
-        create: {
-          workspaceId: input.target.workspaceId,
-          repositoryId:
-            input.target.scope === "repository"
-              ? input.target.repositoryId
-              : null,
-          targetKey,
-        },
-        select: { id: true },
-      });
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const configuration = await tx.reviewConfiguration.upsert({
+            where: {
+              workspaceId_targetKey: {
+                workspaceId: input.target.workspaceId,
+                targetKey,
+              },
+            },
+            update: {
+              repositoryId:
+                input.target.scope === "repository"
+                  ? input.target.repositoryId
+                  : null,
+            },
+            create: {
+              workspaceId: input.target.workspaceId,
+              repositoryId:
+                input.target.scope === "repository"
+                  ? input.target.repositoryId
+                  : null,
+              targetKey,
+            },
+            select: { id: true },
+          });
 
-      const latest = await tx.reviewConfigurationVersion.findFirst({
-        where: { configurationId: configuration.id },
-        orderBy: { version: "desc" },
-        select: { version: true },
-      });
-      const nextVersion = (latest?.version ?? 0) + 1;
-      const saved = await tx.reviewConfigurationVersion.create({
-        data: {
-          configurationId: configuration.id,
-          version: nextVersion,
-          schemaVersion: config.schemaVersion,
-          providerKind: config.provider.kind,
-          providerAuthMode: config.provider.authMode,
-          model: config.provider.model,
-          reasoningEffort: config.provider.reasoningEffort,
-          agenticContext: config.provider.agenticContext,
-          fastMode: config.provider.fastMode,
-          failOnSeverity: config.blockingPolicy.failOnSeverity,
-          inlineMaxComments: config.limits.inlineMaxComments,
-          providerLimit: config.execution.providerLimit,
-          providerMaxParallel: config.execution.providerMaxParallel,
-          inlineMinAgreement: config.execution.inlineMinAgreement,
-          targetTokensPerBatch: config.limits.targetTokensPerBatch,
-          reviewLanguage: config.reviewLanguage ?? null,
-          providers: {
-            create: config.providers.map((provider, index) => ({
-              order: index,
-              providerKind: provider.kind,
-              providerAuthMode: provider.authMode,
-              model: provider.model,
-              reasoningEffort: provider.reasoningEffort,
-              agenticContext: provider.agenticContext,
-              fastMode: provider.fastMode,
-              requiredHealthy: provider.requiredHealthy,
-            })),
-          },
-        },
-        select: versionSelect,
-      });
+          const latest = await tx.reviewConfigurationVersion.findFirst({
+            where: { configurationId: configuration.id },
+            orderBy: { version: "desc" },
+            select: { version: true },
+          });
+          if (
+            input.expectedVersion !== undefined &&
+            (latest?.version ?? null) !== input.expectedVersion
+          ) {
+            throw new WriteConflict();
+          }
+          const nextVersion = (latest?.version ?? 0) + 1;
+          const saved = await tx.reviewConfigurationVersion.create({
+            data: {
+              configurationId: configuration.id,
+              version: nextVersion,
+              schemaVersion: config.schemaVersion,
+              providerKind: config.provider.kind,
+              providerAuthMode: config.provider.authMode,
+              model: config.provider.model,
+              reasoningEffort: config.provider.reasoningEffort,
+              agenticContext: config.provider.agenticContext,
+              fastMode: config.provider.fastMode,
+              failOnSeverity: config.blockingPolicy.failOnSeverity,
+              inlineMaxComments: config.limits.inlineMaxComments,
+              providerLimit: config.execution.providerLimit,
+              providerMaxParallel: config.execution.providerMaxParallel,
+              inlineMinAgreement: config.execution.inlineMinAgreement,
+              targetTokensPerBatch: config.limits.targetTokensPerBatch,
+              reviewLanguage: config.reviewLanguage ?? null,
+              providers: {
+                create: config.providers.map((provider, index) => ({
+                  order: index,
+                  providerKind: provider.kind,
+                  providerAuthMode: provider.authMode,
+                  model: provider.model,
+                  reasoningEffort: provider.reasoningEffort,
+                  agenticContext: provider.agenticContext,
+                  fastMode: provider.fastMode,
+                  requiredHealthy: provider.requiredHealthy,
+                })),
+              },
+            },
+            select: versionSelect,
+          });
 
-      return toPersistedConfiguration(saved);
-    });
+          return toPersistedConfiguration(saved);
+        },
+        { isolationLevel: "Serializable" },
+      );
+    } catch (error) {
+      if (
+        isReviewConfigurationWriteConflictError(error) ||
+        isPrismaWriteConflict(error)
+      ) {
+        throw new WriteConflict();
+      }
+      throw error;
+    }
   }
 
   async deleteTarget(target: ReviewConfigurationTarget): Promise<boolean> {
@@ -127,6 +151,15 @@ export class PrismaReviewConfigurationRepository implements ReviewConfigurationR
 
     return result.count > 0;
   }
+}
+
+function isPrismaWriteConflict(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "P2002" || error.code === "P2034")
+  );
 }
 
 const versionSelect = {
