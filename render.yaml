@@ -157,7 +157,7 @@ envVarGroups:
       - key: REVIEW_ROUTER_DEFAULT_MODEL
         value: gpt-5.5
       - key: REVIEW_ROUTER_DEFAULT_EFFORT
-        value: medium
+        value: xhigh
       - key: REVIEW_ROUTER_OUTBOX_BATCH_SIZE
         value: "25"
       - key: REVIEW_ROUTER_OUTBOX_PROCESSING_STALE_MS

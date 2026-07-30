@@ -25,6 +25,7 @@ export type RuntimeAuthMode =
 
 export type ProviderCliTool = "codex" | "claude";
 export type RuntimeProviderPrefix = "codex" | "claude" | "openrouter";
+export const defaultProviderReasoningEffort = "xhigh" as const;
 
 export type ProviderCapability =
   | "static_model_catalog"
@@ -238,7 +239,7 @@ export function getDefaultProviderConfigForAuthMode(
   readonly kind: ProviderKind;
   readonly authMode: ProviderAuthMode;
   readonly model: string;
-  readonly reasoningEffort: "medium";
+  readonly reasoningEffort: typeof defaultProviderReasoningEffort;
   readonly agenticContext: boolean;
   readonly fastMode: boolean;
 } {
@@ -247,7 +248,7 @@ export function getDefaultProviderConfigForAuthMode(
     kind,
     authMode,
     model: getProviderCatalogEntry(kind).defaultModel,
-    reasoningEffort: "medium",
+    reasoningEffort: defaultProviderReasoningEffort,
     agenticContext: true,
     fastMode: false,
   };

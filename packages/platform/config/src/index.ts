@@ -43,7 +43,7 @@ export const runtimeEnvSchema = z.object({
   REVIEW_ROUTER_DEFAULT_MODEL: z.string().default("gpt-5.5"),
   REVIEW_ROUTER_DEFAULT_EFFORT: z
     .enum(["low", "medium", "high", "xhigh"])
-    .default("medium"),
+    .default("xhigh"),
 });
 
 export type RuntimeEnv = z.infer<typeof runtimeEnvSchema>;

@@ -233,7 +233,7 @@ function createTestEnvironment() {
       .digest("hex"),
     REVIEW_ROUTER_ENABLE_CONFLICT_REVIEW_FALLBACK: "1",
     REVIEW_ROUTER_DEFAULT_MODEL: "gpt-5.5",
-    REVIEW_ROUTER_DEFAULT_EFFORT: "medium",
+    REVIEW_ROUTER_DEFAULT_EFFORT: "xhigh",
     REVIEW_ROUTER_SELF_HOSTED_ENV_FILE: envFile,
   };
   for (const name of [

@@ -31,7 +31,7 @@ export function getApiDemo(input: GetApiDemoInput): ApiDemoDocument {
     apiUrl: urls.apiUrl,
     actionVersion: input.actionVersion ?? "unconfigured",
     model: input.model ?? "gpt-5.5",
-    effort: input.effort ?? "medium",
+    effort: input.effort ?? "xhigh",
   });
 }
 

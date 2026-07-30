@@ -95,7 +95,7 @@ describe("provider catalog", () => {
       kind: "claude",
       authMode: "claude_code_oauth",
       model: "sonnet",
-      reasoningEffort: "medium",
+      reasoningEffort: "xhigh",
       agenticContext: true,
       fastMode: false,
     });
@@ -116,7 +116,7 @@ describe("provider catalog", () => {
       kind: "openrouter",
       authMode: "openrouter_api_key",
       model: "openai/gpt-5.3-codex",
-      reasoningEffort: "medium",
+      reasoningEffort: "xhigh",
       agenticContext: true,
       fastMode: false,
     });

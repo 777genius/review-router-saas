@@ -349,7 +349,7 @@ describe("renderReviewRouterWorkflow", () => {
           runtimeConfigMode: "oidc",
         }),
       ),
-    ).toBe("7eeca74a1223227b5820dce022f6f770b18009b90534c9770849b150b55b4518");
+    ).toBe("d8fd345029d506b221cabfbe6e53da429f40f9a1876388cb8c52c026112250ee");
     expect(
       areWorkflowDocumentsSemanticallyEqual(
         workflow,
@@ -507,7 +507,7 @@ describe("renderReviewRouterWorkflow", () => {
       "CODEX_MODEL: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
     );
     expect(workflow).toContain(
-      "CODEX_REASONING_EFFORT: ${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}",
+      "CODEX_REASONING_EFFORT: ${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}",
     );
     expect(workflow).not.toContain("REVIEW_ROUTER_THREAD_RESOLVE_TOKEN");
     expect(workflow).toContain(
@@ -554,7 +554,7 @@ describe("renderReviewRouterWorkflow", () => {
       "discussion_model: ${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}",
     );
     expect(interactionWorkflowContent).toContain(
-      "discussion_reasoning_effort: ${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}",
+      "discussion_reasoning_effort: ${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}",
     );
     expect(interactionWorkflowContent).toContain(
       "discussion_max_per_pr: ${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}",

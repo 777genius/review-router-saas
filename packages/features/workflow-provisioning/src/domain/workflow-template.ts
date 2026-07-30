@@ -348,7 +348,7 @@ jobs:
           REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
           REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
           CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
-          CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
+          CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
 `;
 }
@@ -460,7 +460,7 @@ jobs:
           REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
           REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
           CODEX_MODEL: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
-          CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
+          CODEX_REASONING_EFFORT: \${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}
         run: node .reviewrouter-runtime/dist/index.js
 `;
 }
@@ -590,7 +590,7 @@ jobs:
       review_workflow_file: reviewrouter.yml
       discussion_mode: ${discussionModeExpression(options)}
       discussion_model: \${{ vars.REVIEW_CODEX_MODEL || 'gpt-5.5' }}
-      discussion_reasoning_effort: \${{ vars.REVIEW_CODEX_EFFORT || 'medium' }}
+      discussion_reasoning_effort: \${{ vars.REVIEW_CODEX_EFFORT || 'xhigh' }}
       discussion_max_per_pr: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_PR || '20' }}
       discussion_max_per_thread: \${{ vars.REVIEW_ROUTER_DISCUSSION_MAX_PER_THREAD || '5' }}
       discussion_timeout_seconds: \${{ vars.REVIEW_ROUTER_DISCUSSION_TIMEOUT_SECONDS || '60' }}
