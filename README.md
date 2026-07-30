@@ -1,39 +1,87 @@
 # ReviewRouter
 
-ReviewRouter is a local-beta SaaS control plane for AI pull request review.
-It is open source: https://github.com/777genius/review-router.
+ReviewRouter is an open-source control plane for AI pull request review. It can
+run as the hosted ReviewRouter service or as a self-hosted deployment on your
+own infrastructure. The public GitHub Action runtime lives at
+[777genius/review-router](https://github.com/777genius/review-router).
 
-The product does not run customer review workloads in the cloud by default.
-Customer code, diffs, provider secrets, and Codex OAuth files stay inside the
-customer GitHub Actions environment. The SaaS owns GitHub App onboarding,
-repository sync, workflow setup PRs, dashboard-managed review config, audit,
-health, and safe provider setup guidance.
+Review execution stays inside the repository's GitHub Actions runner. Source
+code, diffs, provider credentials, and Codex OAuth files are not sent to the
+control plane by default. The control plane owns authorization, repository and
+revision state, reusable review evidence, publication, audit, and health.
+
+## Deployment Options
+
+| Mode        | Control plane                                | Review execution           | Start here                                                                                 |
+| ----------- | -------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------ |
+| Hosted      | Operated by ReviewRouter                     | Your GitHub Actions runner | [Hosted deployment](./deploy/README.md)                                                    |
+| Self-hosted | Your API, web, worker, Postgres, DNS and TLS | Your GitHub Actions runner | [End-to-end self-hosting guide](./docs/operations/review-router-self-hosted-end-to-end.md) |
+
+The self-hosted control plane is implemented and covered by disposable Compose,
+migration, OIDC, and Review v2 E2E gates. It is currently an operator-managed
+deployment rather than a one-click installer: the operator must configure a
+GitHub App, HTTPS, release attestations, signing keys, and repository activation.
+See the [deployment reference](./deploy/self-hosted/README.md) for the complete
+configuration contract.
 
 ## Current State
 
-Implemented local-beta baseline:
+Implemented:
 
 - GitHub App installation and webhook ingestion
 - repository sync and dashboard repository health
 - workflow setup PR provisioning
 - GitHub Actions OIDC action session exchange
+- first-class Docker Compose self-hosted control plane with migration, web, API,
+  worker, and PostgreSQL services
+- client-triggered Direct V2 review with the least-privilege `review-only`
+  GitHub App profile
+- exact-revision authorization, revision-aware evidence reuse, stale-run
+  fencing, and fail-closed publication
 - versioned workspace default and repository override review config
 - Codex OAuth, Claude Code OAuth, OpenAI API-key, and OpenRouter setup guidance
   without sending secrets to ReviewRouter
 - safe action health reports and repo-health rollups
 - audit log, entitlements, outbox, worker loop, rate limits, and DB-backed
   smoke checks
-- Codex OAuth secret seeding helper at `scripts/seed-codex-auth.sh`
+- Codex OAuth rotating-auth reseed flow with generation confirmation
 
-Not production-complete yet:
+Remaining product work:
 
-- hosted GitHub App lifecycle events and public onboarding polish
-- public onboarding polish
+- one-click self-hosted install and automated release-material distribution
+- public onboarding and operator UX polish
 - payments
 - enterprise SSO
 - production support/admin tooling
 
-## Start Here
+## Self-Hosted Quick Check
+
+The disposable E2E gate needs Docker Compose but does not require a real GitHub
+App or repository:
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm self-hosted:check:smoke
+pnpm self-hosted:e2e
+```
+
+For a real deployment, follow the
+[end-to-end self-hosting guide](./docs/operations/review-router-self-hosted-end-to-end.md).
+Do not start from the Compose file alone: production readiness also requires an
+exact Action release, release attestations, repository authority initialization,
+and a canonical schema-2 workflow.
+
+## Documentation
+
+- [Self-hosted end-to-end guide](./docs/operations/review-router-self-hosted-end-to-end.md)
+- [Self-hosted deployment reference](./deploy/self-hosted/README.md)
+- [Self-hosted workflow contract](./docs/operations/review-router-self-hosted-workflow-contract.md)
+- [Review Action v2 cutover](./docs/operations/review-action-v2-cutover.md)
+- [Self-hosted privacy boundary](./docs/privacy-self-hosted.md)
+- [Self-hosted architecture decision](./docs/adr/ADR-review-router-self-hosted-control-plane.md)
+
+## Contributor Start Here
 
 New implementation agents should read:
 
@@ -43,9 +91,6 @@ New implementation agents should read:
 4. [`ai-docs/LOCAL_SETUP_CHECKLIST.md`](./ai-docs/LOCAL_SETUP_CHECKLIST.md)
 5. [`ai-docs/iterations/00-roadmap.md`](./ai-docs/iterations/00-roadmap.md)
 6. [`ai-docs/appendices/blocker-handling.md`](./ai-docs/appendices/blocker-handling.md)
-
-The current implementation focus is beta hardening across iterations 08-11,
-not rebuilding the foundation from scratch.
 
 For hosted beta handoff, read [`deploy/README.md`](./deploy/README.md) and use
 [`deploy/env.production.example`](./deploy/env.production.example) as the env

@@ -3,9 +3,16 @@
 This runbook activates repository-wide T0 review mutation authority. Activation
 is one-way: after `v2_active`, failure recovery uses `pause`, not a return to v1.
 
+For a self-hosted Compose deployment, run every `review-v2:admin` operation
+through the `rr_admin` container wrapper in the
+[self-hosted end-to-end guide](./review-router-self-hosted-end-to-end.md).
+
 ## Preconditions
 
-- API and worker contain the same release and migration, with both v2 flags `0`.
+- API and worker contain the same release and migration. A server-dispatched
+  rollout keeps both v2 flags `0` until its controlled cutover. A self-hosted
+  client-triggered Direct V2 deployment instead uses the strict T0 flag set in
+  the self-hosted guide and must keep intent ingress and dispatch disabled.
 - The public Action release is committed, built, and represented by a validated
   external release manifest.
 - Authorization and capability key rings are configured.
@@ -28,6 +35,10 @@ write` is a different permission and does not authorize dispatch.
 Validate configuration without printing values:
 
 ```bash
+# Self-hosted Compose:
+rr_admin env-preflight
+
+# Other deployment compositions:
 pnpm review-v2:admin env-preflight
 ```
 
