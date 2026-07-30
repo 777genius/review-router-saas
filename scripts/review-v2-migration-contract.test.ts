@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   reviewV2ForeignKeys,
   reviewV2MigrationDirectories,
+  reviewV2MigrationSteps,
   reviewV2MigrationVersion,
 } from "./lib/review-v2-migration-contract.mjs";
 
@@ -40,6 +41,13 @@ describe("Review v2 migration contract", () => {
       "000038_producer_release_context_gateway_artifact",
     ]);
     expect(reviewV2MigrationVersion).toBe("review-v2-000029-000038-v7");
+    expect(reviewV2MigrationSteps).toEqual([
+      "01_expand_guard",
+      "02_repository_identity_backfill",
+      "03_legacy_authority_fence_backfill",
+      "04_validate_constraints",
+      "05_ready_disabled",
+    ]);
     expect(
       readFileSync(join(process.cwd(), migrationFiles[2]!), "utf8"),
     ).toContain('ADD COLUMN "preparedManifestCanonicalJson" TEXT');

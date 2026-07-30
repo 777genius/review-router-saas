@@ -7,9 +7,19 @@ export const reviewV2MigrationDirectories = Object.freeze([
   "000037_finalized_projection_artifact_identity",
   "000038_producer_release_context_gateway_artifact",
 ]);
+export const reviewV2ExpandGuardStep = "01_expand_guard";
 export const reviewV2RepositoryBackfillStep = "02_repository_identity_backfill";
 export const reviewV2LegacyAuthorityFenceBackfillStep =
   "03_legacy_authority_fence_backfill";
+export const reviewV2ValidateConstraintsStep = "04_validate_constraints";
+export const reviewV2ReadyDisabledStep = "05_ready_disabled";
+export const reviewV2MigrationSteps = Object.freeze([
+  reviewV2ExpandGuardStep,
+  reviewV2RepositoryBackfillStep,
+  reviewV2LegacyAuthorityFenceBackfillStep,
+  reviewV2ValidateConstraintsStep,
+  reviewV2ReadyDisabledStep,
+]);
 export const reviewV2RepositoryBackfillDefaultPageSize = 500;
 export const reviewV2RepositoryBackfillMaximumPageSize = 5_000;
 

@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import {
   reviewV2ForeignKeyValuesSql,
   reviewV2MigrationDirectories,
+  reviewV2MigrationSteps,
   reviewV2MigrationVersion,
   reviewV2RepositoryBackfillStep,
 } from "./lib/review-v2-migration-contract.mjs";
@@ -351,7 +352,7 @@ try {
   );
   if (
     result !==
-    `${totalRepositoryCount}|${totalRepositoryCount}|4|0|1|0|1|${totalRepositoryCount + 1}|1`
+    `${totalRepositoryCount}|${totalRepositoryCount}|${reviewV2MigrationSteps.length}|0|1|0|1|${totalRepositoryCount + 1}|1`
   ) {
     fail(`Unexpected rehearsal state: ${result}`);
   }

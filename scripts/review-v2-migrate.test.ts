@@ -39,10 +39,10 @@ describe("Review v2 migration restart safety", () => {
     );
 
     expect(source).toContain(
-      'initialEmergencyStopGuardSql(\n      "01_expand_guard"',
+      "initialEmergencyStopGuardSql(\n      reviewV2ExpandGuardStep",
     );
     expect(source).toContain(
-      'initialEmergencyStopGuardSql(\n      "05_ready_disabled"',
+      "initialEmergencyStopGuardSql(\n      reviewV2ReadyDisabledStep",
     );
     expect(source).toContain(`AND "status" = 'completed'`);
     expect(source).toContain(

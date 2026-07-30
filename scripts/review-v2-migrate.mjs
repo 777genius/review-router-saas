@@ -5,12 +5,15 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   reviewV2ForeignKeyValuesSql,
+  reviewV2ExpandGuardStep,
   reviewV2MigrationDirectories,
   reviewV2MigrationVersion,
   reviewV2LegacyAuthorityFenceBackfillStep,
+  reviewV2ReadyDisabledStep,
   reviewV2RepositoryBackfillDefaultPageSize,
   reviewV2RepositoryBackfillMaximumPageSize,
   reviewV2RepositoryBackfillStep,
+  reviewV2ValidateConstraintsStep,
 } from "./lib/review-v2-migration-contract.mjs";
 import { psqlConnectionUrl } from "./lib/psql-connection-url.mjs";
 
@@ -113,10 +116,10 @@ const stopAfterBackfillPages = optionalIntegerArgument(
 );
 
 runStep(
-  "01_expand_guard",
+  reviewV2ExpandGuardStep,
   `
     ${initialEmergencyStopGuardSql(
-      "01_expand_guard",
+      reviewV2ExpandGuardStep,
       "review_v2_global_emergency_stop_required",
     )}
 
@@ -194,7 +197,7 @@ runStep(
 );
 
 runStep(
-  "04_validate_constraints",
+  reviewV2ValidateConstraintsStep,
   `
     ${foreignKeyDefinitionGuardSql()}
     ${foreignKeyValidationSql()}
@@ -202,10 +205,10 @@ runStep(
 );
 
 runStep(
-  "05_ready_disabled",
+  reviewV2ReadyDisabledStep,
   `
     ${initialEmergencyStopGuardSql(
-      "05_ready_disabled",
+      reviewV2ReadyDisabledStep,
       "review_v2_must_remain_disabled_after_migration",
     )}
   `,
