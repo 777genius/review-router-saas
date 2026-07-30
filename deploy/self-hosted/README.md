@@ -5,6 +5,11 @@ github.com. Customer code review still runs inside the customer's GitHub
 Actions workflow. The self-hosted server stores metadata, configuration,
 webhook state, sessions, outbox jobs, and health data in Postgres.
 
+For the sequential path from a clean host to the first real review, start with
+the
+[end-to-end self-hosting guide](../../docs/operations/review-router-self-hosted-end-to-end.md).
+This document is the detailed configuration and operations reference.
+
 This guide does not cover GitHub Enterprise Server, air-gapped deployments, or
 cloud review execution.
 
@@ -50,9 +55,11 @@ directories under the parent path.
 cp deploy/self-hosted/.env.example deploy/self-hosted/.env
 ```
 
-Generate secrets:
+Generate a URL-safe PostgreSQL password, then generate every other secret
+independently:
 
 ```bash
+openssl rand -hex 32
 openssl rand -base64 48
 openssl rand -base64 48
 openssl rand -base64 48
@@ -112,20 +119,25 @@ provisioning   Dashboard setup PRs, workflow file updates, and GitHub Actions
 org-ruleset    provisioning plus organization ruleset administration.
 ```
 
-Use `managed-review` for the default self-hosted privacy posture. Use
+Use `review-only` for the client-triggered Direct V2 mode documented here. Use
+`managed-review` only for a separate server-dispatched mode, and use
 `provisioning` only when the dashboard must create setup PRs or repository
 secrets.
 
 Create a manifest with the matching profile:
 
 ```bash
-pnpm github-app:create -- --permission-profile managed-review
+pnpm github-app:create -- \
+  --permission-profile review-only \
+  --web-url https://reviewrouter.example.com \
+  --api-url https://api.reviewrouter.example.com \
+  --name "ReviewRouter Self-Hosted"
 ```
 
 Set the same profile in `.env`:
 
 ```text
-REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE=managed-review
+REVIEW_ROUTER_GITHUB_APP_PERMISSION_PROFILE=review-only
 ```
 
 `review-only` requires:
@@ -335,10 +347,35 @@ https://<web-host> -> 127.0.0.1:3000
 https://<api-host> -> 127.0.0.1:4000
 ```
 
-## 6. Upgrade
+## 6. Operator CLI
+
+Self-hosted admin commands must run inside the API container so they use the
+same database, keys, GitHub App identity, and runtime contract as the service.
+Keep the plaintext operator credential outside the shared env file, export it
+only in the current operator shell, and define:
 
 ```bash
-git pull
+export REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL
+
+rr_admin() {
+  docker compose \
+    --env-file deploy/self-hosted/.env \
+    -f deploy/self-hosted/compose.yml \
+    exec -T \
+    -e REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL \
+    api pnpm review-v2:admin "$@"
+}
+```
+
+Run `rr_admin env-preflight` before a mutation.
+
+## 7. Upgrade
+
+```bash
+git fetch --tags origin
+git checkout <reviewed-commit-or-release>
+git rev-parse HEAD
+pnpm install --frozen-lockfile
 pnpm self-hosted:check
 docker compose \
   --env-file deploy/self-hosted/.env \
@@ -358,14 +395,14 @@ after v7 may use direct initialization only if the schema-2 inventory,
 registered release, worker, safety policy, and no-legacy proof all pass:
 
 ```bash
-pnpm review-v2:admin cohort stage \
+rr_admin cohort stage \
   --repo OWNER/REPO \
   --confirm OWNER/REPO
 
-pnpm review-v2:admin emergency global open \
+rr_admin emergency global open \
   --confirm global
 
-pnpm review-v2:admin mutation initialize-direct-v2 \
+rr_admin mutation initialize-direct-v2 \
   --repo OWNER/REPO \
   --confirm OWNER/REPO
 ```
@@ -380,7 +417,7 @@ global policies remain allowlisted, so opening the global control does not
 enroll unstaged repositories. Restore the kill switch with:
 
 ```bash
-pnpm review-v2:admin emergency global stop --confirm global
+rr_admin emergency global stop --confirm global
 ```
 
 ## Backups

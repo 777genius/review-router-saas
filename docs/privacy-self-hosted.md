@@ -67,7 +67,9 @@ Tests should assert that logs and persisted safe payloads redact:
 ## Operator Guidance
 
 - Store provider credentials in GitHub Actions secrets, not in control-plane env.
-- Use `managed-review` unless dashboard workflow/secret provisioning is required.
+- Use `review-only` for client-triggered Direct V2.
+- Use `managed-review` only when server-side dispatch and cancellation are
+  required.
 - Use `provisioning` only when ReviewRouter must write setup PRs or repository
   secrets.
 - Put the API and web apps behind HTTPS.

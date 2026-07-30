@@ -91,9 +91,11 @@ Self-hosted operators choose one GitHub App permission profile:
 
 `standard` remains an alias for `provisioning` for backward compatibility.
 
-The default self-hosted env example uses `managed-review`. Operators who want
-ReviewRouter to create setup PRs or write repo secrets must explicitly switch
-to `provisioning`.
+The default self-hosted env example uses `review-only` because the default
+Direct V2 mode is client-triggered. Operators who intentionally enable
+server-side dispatch use `managed-review`. Operators who want ReviewRouter to
+create setup PRs or write repo secrets must explicitly switch to
+`provisioning`.
 
 ## Privacy Invariants
 
