@@ -1,4 +1,5 @@
 import {
+  defaultProviderReasoningEffort,
   providerAuthModeBelongsToKind,
   providerAuthModeSchema,
   providerKindSchema,
@@ -12,7 +13,7 @@ export const reviewProviderConfigurationSchema = z
     model: z.string().trim().min(1),
     reasoningEffort: z
       .enum(["low", "medium", "high", "xhigh"])
-      .default("medium"),
+      .default(defaultProviderReasoningEffort),
     agenticContext: z.boolean().default(true),
     fastMode: z.boolean().default(false),
     requiredHealthy: z.boolean().default(false),
@@ -132,7 +133,7 @@ export const safeDefaultReviewConfiguration = parseReviewConfiguration({
       kind: "codex",
       authMode: "codex_subscription_oauth_rotating",
       model: "gpt-5.5",
-      reasoningEffort: "medium",
+      reasoningEffort: defaultProviderReasoningEffort,
       agenticContext: true,
       fastMode: false,
     },

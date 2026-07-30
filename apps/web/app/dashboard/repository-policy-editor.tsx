@@ -125,9 +125,13 @@ function buildProviderAuthOptions(input: {
 
 const reasoningEffortOptions = [
   { value: "low", label: "Low", description: "Faster and cheaper." },
-  { value: "medium", label: "Medium", description: "Balanced default." },
+  { value: "medium", label: "Medium", description: "Balanced review pass." },
   { value: "high", label: "High", description: "Deeper review pass." },
-  { value: "xhigh", label: "XHigh", description: "Maximum reasoning depth." },
+  {
+    value: "xhigh",
+    label: "XHigh",
+    description: "Maximum reasoning depth. Default.",
+  },
 ] as const;
 
 const failOnSeverityOptions = [
@@ -1025,7 +1029,7 @@ export function ReviewConfigForm({
             kind: "openrouter",
             authMode: "openrouter_api_key",
             model: openRouterDefault.value,
-            reasoningEffort: "medium",
+            reasoningEffort: "xhigh",
             agenticContext: true,
             fastMode: false,
             requiredHealthy: false,

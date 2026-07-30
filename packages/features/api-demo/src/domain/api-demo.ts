@@ -473,7 +473,7 @@ export function buildApiDemoOpenApiDocument(input: {
                           actionVersion:
                             "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
                           model: "gpt-5.5",
-                          effort: "medium",
+                          effort: "xhigh",
                         }),
                         checkedAt: "2026-05-04T00:00:00.000Z",
                       },

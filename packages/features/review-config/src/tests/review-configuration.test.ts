@@ -52,7 +52,7 @@ describe("review configuration", () => {
     expect(env).toMatchObject({
       REVIEW_AUTH_MODE: "codex-oauth-rotating",
       CODEX_MODEL: "gpt-5.5",
-      CODEX_REASONING_EFFORT: "medium",
+      CODEX_REASONING_EFFORT: "xhigh",
       CODEX_AGENTIC_CONTEXT: "true",
       CODEX_FAST_MODE: "false",
       REVIEW_PROVIDERS: "codex/gpt-5.5",
@@ -88,7 +88,7 @@ describe("review configuration", () => {
       SYNTHESIS_MODEL: "openrouter/poolside/laguna-m.1:free",
       PROVIDER_LIMIT: "1",
       PROVIDER_MAX_PARALLEL: "1",
-      CODEX_REASONING_EFFORT: "medium",
+      CODEX_REASONING_EFFORT: "xhigh",
       CODEX_AGENTIC_CONTEXT: "true",
     });
     expect(env).not.toHaveProperty("CODEX_MODEL");
@@ -161,6 +161,7 @@ describe("review configuration", () => {
       provider: {
         authMode: "codex_subscription_oauth_rotating",
         model: "gpt-5.4",
+        reasoningEffort: "xhigh",
       },
       providers: [
         {

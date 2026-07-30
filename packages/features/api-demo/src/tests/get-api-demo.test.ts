@@ -64,6 +64,16 @@ describe("getApiDemo", () => {
     );
   });
 
+  it("uses xhigh reasoning for the default review runtime", () => {
+    const demo = getApiDemo({
+      clock: fixedClock,
+      webUrl: "https://web.example.com/",
+      apiUrl: "https://api.example.com/",
+    });
+
+    expect(demo.defaultReviewRuntime.effort).toBe("xhigh");
+  });
+
   it("builds an API index with stable public links", () => {
     const index = getApiDemoIndex({
       webUrl: "https://web.example.com/",

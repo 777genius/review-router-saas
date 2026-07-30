@@ -89,6 +89,7 @@ describe("platform config", () => {
     } as NodeJS.ProcessEnv);
 
     expect(env.REVIEW_ROUTER_ACTION_VERSION).toBe("main");
+    expect(env.REVIEW_ROUTER_DEFAULT_EFFORT).toBe("xhigh");
     expect(resolveReviewRouterActionRef(env)).toBe(
       "777genius/review-router@main",
     );

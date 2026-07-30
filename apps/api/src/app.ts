@@ -722,7 +722,7 @@ function definedOption<const Key extends string>(
 function readDefaultReasoningEffort(
   value: string | undefined,
 ): "low" | "medium" | "high" | "xhigh" {
-  const normalized = value?.trim() || "medium";
+  const normalized = value?.trim() || "xhigh";
   if (
     normalized === "low" ||
     normalized === "medium" ||
