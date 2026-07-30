@@ -78,6 +78,7 @@ and a canonical schema-2 workflow.
 - [Self-hosted deployment reference](./deploy/self-hosted/README.md)
 - [Self-hosted workflow contract](./docs/operations/review-router-self-hosted-workflow-contract.md)
 - [Review Action v2 cutover](./docs/operations/review-action-v2-cutover.md)
+- [Review configuration operator CLI](./docs/operations/review-configuration-operator-cli.md)
 - [Self-hosted privacy boundary](./docs/privacy-self-hosted.md)
 - [Self-hosted architecture decision](./docs/adr/ADR-review-router-self-hosted-control-plane.md)
 
@@ -162,6 +163,21 @@ rotating auth contract is broken.
 Use `--reuse-current-auth` only immediately after creating a known-current
 session in that dedicated home. The default fresh login avoids reseeding stale
 local OAuth state.
+
+## Review Configuration CLI
+
+Platform operators can read or pin a repository's reasoning effort without
+opening the ReviewRouter dashboard or signing in to GitHub:
+
+```bash
+reviewrouter config get --repo OWNER/REPOSITORY
+reviewrouter config set --repo OWNER/REPOSITORY --effort xhigh
+```
+
+The command uses a host-bound local operator profile and a dedicated
+least-privilege server credential. It does not use GitHub OAuth and cannot
+perform Review v2 rollout or emergency-control operations. See the
+[operator CLI runbook](./docs/operations/review-configuration-operator-cli.md).
 
 Draft pull request review is disabled by default. Enable or disable it per
 repository without reprovisioning the workflow:

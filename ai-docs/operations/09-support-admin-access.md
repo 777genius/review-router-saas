@@ -54,6 +54,12 @@ Forbidden without explicit customer/admin action:
 - disconnect installation
 - access provider credentials
 
+The dedicated review-configuration operator CLI is a platform administration
+path, not a support-viewer capability. It may change repository configuration
+only after explicit owner/operator authorization, uses an independent
+least-privilege credential, and records every read and write in the audit log.
+It must never reuse the Review v2 rollout/emergency credential.
+
 ## Audit
 
 Every support access/action should record:

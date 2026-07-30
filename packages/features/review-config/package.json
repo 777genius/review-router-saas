@@ -8,11 +8,17 @@
       "types": "./src/index.ts",
       "production": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./review-reasoning-effort": {
+      "types": "./src/domain/review-reasoning-effort.ts",
+      "production": "./dist/domain/review-reasoning-effort.js",
+      "default": "./src/domain/review-reasoning-effort.ts"
     }
   },
   "dependencies": {
     "@prisma/client": "^7.8.0",
     "@reviewrouter/features-review-providers": "workspace:*",
+    "@reviewrouter/shared": "workspace:*",
     "zod": "^4.4.2"
   },
   "scripts": {

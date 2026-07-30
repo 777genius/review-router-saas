@@ -162,6 +162,9 @@ importers:
       '@reviewrouter/features-api-demo':
         specifier: workspace:*
         version: link:../../packages/features/api-demo
+      '@reviewrouter/features-audit-log':
+        specifier: workspace:*
+        version: link:../../packages/features/audit-log
       '@reviewrouter/features-auth':
         specifier: workspace:*
         version: link:../../packages/features/auth
@@ -189,6 +192,9 @@ importers:
       '@reviewrouter/features-rate-limits':
         specifier: workspace:*
         version: link:../../packages/features/rate-limits
+      '@reviewrouter/features-review-config':
+        specifier: workspace:*
+        version: link:../../packages/features/review-config
       '@reviewrouter/features-review-context-attestation':
         specifier: workspace:*
         version: link:../../packages/features/review-context-attestation
@@ -703,6 +709,9 @@ importers:
       '@reviewrouter/features-review-providers':
         specifier: workspace:*
         version: link:../review-providers
+      '@reviewrouter/shared':
+        specifier: workspace:*
+        version: link:../../shared
       zod:
         specifier: ^4.4.2
         version: 4.4.2

@@ -154,6 +154,8 @@ envVarGroups:
         sync: false
       - key: REVIEW_ROUTER_REVIEW_V2_OPERATOR_CREDENTIAL_SHA256
         sync: false
+      - key: REVIEW_ROUTER_REVIEW_CONFIG_OPERATOR_CREDENTIAL_SHA256
+        sync: false
       - key: REVIEW_ROUTER_DEFAULT_MODEL
         value: gpt-5.5
       - key: REVIEW_ROUTER_DEFAULT_EFFORT

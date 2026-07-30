@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import {
   safeDefaultReviewConfiguration,
   type ReviewConfiguration,
 } from "../../domain/review-configuration";
 import type { ReviewConfigurationTarget } from "../../domain/review-configuration-target";
-import type { ReviewConfigurationRepositoryPort } from "../ports/review-configuration-repository-port";
+import type {
+  PersistedReviewConfiguration,
+  ReviewConfigurationRepositoryPort,
+} from "../ports/review-configuration-repository-port";
 import { mapConfigToRuntimeEnv } from "./map-config-to-runtime-env";
 
 export type ResolvedReviewConfigurationSource =
@@ -14,6 +18,7 @@ export type ResolvedReviewConfigurationSource =
 export type ResolvedReviewConfiguration = {
   readonly version: number;
   readonly source: ResolvedReviewConfigurationSource;
+  readonly revisionToken: string;
   readonly config: ReviewConfiguration;
 };
 
@@ -34,6 +39,7 @@ export async function resolveReviewConfiguration(
       return {
         ...repositoryConfig,
         source: "repository",
+        revisionToken: revisionTokenFor("repository", repositoryConfig),
       };
     }
   }
@@ -46,6 +52,7 @@ export async function resolveReviewConfiguration(
     return {
       ...workspaceConfig,
       source: "workspace",
+      revisionToken: revisionTokenFor("workspace", workspaceConfig),
     };
   }
 
@@ -53,7 +60,22 @@ export async function resolveReviewConfiguration(
     version: 1,
     source: "default",
     config: safeDefaultReviewConfiguration,
+    revisionToken: revisionTokenFor("default", {
+      version: 1,
+      config: safeDefaultReviewConfiguration,
+    }),
   };
+}
+
+function revisionTokenFor(
+  source: ResolvedReviewConfigurationSource,
+  persisted: PersistedReviewConfiguration,
+): string {
+  if (persisted.revisionToken) return persisted.revisionToken;
+  const digest = createHash("sha256")
+    .update(JSON.stringify(persisted.config))
+    .digest("hex");
+  return `logical:${source}:${persisted.version}:${digest}`;
 }
 
 export async function resolveReviewRuntimeEnv(

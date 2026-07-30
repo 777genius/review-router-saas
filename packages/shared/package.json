@@ -8,6 +8,11 @@
       "types": "./src/index.ts",
       "production": "./dist/index.js",
       "default": "./src/index.ts"
+    },
+    "./scm": {
+      "types": "./src/scm/index.ts",
+      "production": "./dist/scm/index.js",
+      "default": "./src/scm/index.ts"
     }
   },
   "scripts": {
