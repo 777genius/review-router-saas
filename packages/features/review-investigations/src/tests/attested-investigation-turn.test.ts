@@ -73,6 +73,16 @@ describe("CommitAttestedInvestigationTurn", () => {
 
     expect(result.state).toBe(ReviewInvestigationState.AwaitingCritic);
     expect(result.satisfiedObligationCount).toBe(1);
+    const acceptedReceipt = (
+      await fixture.store.findById(fixture.planned.investigationId)
+    )?.obligations.find(
+      (item) => item.obligationId === fixture.obligationId,
+    )?.receipt;
+    expect(acceptedReceipt).toMatchObject({
+      operationReceiptIds: [hash("9")],
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: hash("8"),
+    });
     expect(fixture.evidence.verify).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceExecutionId: "execution-1",

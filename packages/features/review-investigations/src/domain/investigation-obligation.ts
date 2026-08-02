@@ -33,6 +33,9 @@ export type InvestigationEvidenceReceipt = Readonly<{
   reviewRevisionHash: string;
   gatewayPolicyVersion: string;
   evidenceDigest: string;
+  operationReceiptIds: readonly string[];
+  acceptedAttestationId: string | null;
+  acceptedAttestationHash: string | null;
   complete: boolean;
   truncated: boolean;
   failed: boolean;
@@ -181,8 +184,13 @@ export function markInvestigationObligationUnresolvable(input: {
   readonly reason: string;
   readonly deterministicPolicy: boolean;
 }): InvestigationObligation {
-  if (!input.deterministicPolicy || input.obligation.state !== InvestigationObligationState.Open) {
-    throw new ReviewInvestigationDomainError("unresolvable_policy_decision_invalid");
+  if (
+    !input.deterministicPolicy ||
+    input.obligation.state !== InvestigationObligationState.Open
+  ) {
+    throw new ReviewInvestigationDomainError(
+      "unresolvable_policy_decision_invalid",
+    );
   }
   assertIdentifier(input.reason, "unresolvable_reason");
   return {
@@ -212,7 +220,9 @@ export function obligationCanonicalObject(
     riskPriority: obligation.riskPriority,
     origin: obligation.origin,
     state: obligation.state,
-    receipt: obligation.receipt ? receiptCanonicalObject(obligation.receipt) : null,
+    receipt: obligation.receipt
+      ? receiptCanonicalObject(obligation.receipt)
+      : null,
     unresolvableReason: obligation.unresolvableReason,
   };
 }
@@ -230,11 +240,31 @@ function assertReceipt(receipt: InvestigationEvidenceReceipt): void {
   assertIdentifier(receipt.operationKey, "operation_key");
   assertIdentifier(receipt.canonicalSubject, "receipt_subject");
   assertDigest(receipt.reviewRevisionHash, "receipt_revision_hash");
-  assertIdentifier(receipt.gatewayPolicyVersion, "receipt_gateway_policy_version");
+  assertIdentifier(
+    receipt.gatewayPolicyVersion,
+    "receipt_gateway_policy_version",
+  );
   assertDigest(receipt.evidenceDigest, "receipt_evidence_digest");
+  if (
+    (receipt.acceptedAttestationId === null) !==
+      (receipt.acceptedAttestationHash === null) ||
+    (receipt.acceptedAttestationId !== null &&
+      receipt.operationReceiptIds.length === 0)
+  ) {
+    throw new ReviewInvestigationDomainError("receipt_provenance_invalid");
+  }
+  if (receipt.acceptedAttestationId !== null) {
+    assertIdentifier(receipt.acceptedAttestationId, "receipt_attestation_id");
+    assertDigest(receipt.acceptedAttestationHash!, "receipt_attestation_hash");
+  }
+  for (const operationReceiptId of receipt.operationReceiptIds) {
+    assertDigest(operationReceiptId, "operation_receipt_id");
+  }
 }
 
-function receiptCanonicalObject(receipt: InvestigationEvidenceReceipt): CanonicalValue {
+function receiptCanonicalObject(
+  receipt: InvestigationEvidenceReceipt,
+): CanonicalValue {
   return {
     receiptId: receipt.receiptId,
     operationKey: receipt.operationKey,
@@ -243,6 +273,9 @@ function receiptCanonicalObject(receipt: InvestigationEvidenceReceipt): Canonica
     reviewRevisionHash: receipt.reviewRevisionHash,
     gatewayPolicyVersion: receipt.gatewayPolicyVersion,
     evidenceDigest: receipt.evidenceDigest,
+    operationReceiptIds: [...receipt.operationReceiptIds].sort(),
+    acceptedAttestationId: receipt.acceptedAttestationId,
+    acceptedAttestationHash: receipt.acceptedAttestationHash,
     complete: receipt.complete,
     truncated: receipt.truncated,
     failed: receipt.failed,

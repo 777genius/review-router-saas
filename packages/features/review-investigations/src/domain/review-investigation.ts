@@ -82,31 +82,35 @@ export type ReviewInvestigation = Readonly<{
   updatedAt: string;
 }>;
 
-export function createReviewInvestigation(input: Omit<
-  ReviewInvestigation,
-  | "version"
-  | "state"
-  | "findings"
-  | "activeTurn"
-  | "semanticTurns"
-  | "operationalAttempts"
-  | "expansionDepth"
-  | "criticCycles"
-  | "criticDecision"
-  | "totalUsageTokens"
-  | "totalDurationMs"
-  | "turnProvenance"
-  | "conclusion"
-  | "certificate"
-  | "nextEligibleAt"
-> & { readonly obligations: readonly InvestigationObligation[] }
+export function createReviewInvestigation(
+  input: Omit<
+    ReviewInvestigation,
+    | "version"
+    | "state"
+    | "findings"
+    | "activeTurn"
+    | "semanticTurns"
+    | "operationalAttempts"
+    | "expansionDepth"
+    | "criticCycles"
+    | "criticDecision"
+    | "totalUsageTokens"
+    | "totalDurationMs"
+    | "turnProvenance"
+    | "conclusion"
+    | "certificate"
+    | "nextEligibleAt"
+  > & { readonly obligations: readonly InvestigationObligation[] },
 ): ReviewInvestigation {
   assertInvestigationScope(input.scope);
   assertInvestigationRevision(input.revision);
   assertInvestigationContract(input.contract);
   assertInvestigationPolicy(input.policy);
   const obligations = mergeInvestigationObligations([], input.obligations);
-  if (obligations.length === 0 || obligations.length > input.policy.maxObligations) {
+  if (
+    obligations.length === 0 ||
+    obligations.length > input.policy.maxObligations
+  ) {
     throw new ReviewInvestigationDomainError("seed_obligation_count_invalid");
   }
   const inventory = obligations.filter(
@@ -136,6 +140,29 @@ export function createReviewInvestigation(input: Omit<
     conclusion: null,
     certificate: null,
     nextEligibleAt: null,
+  };
+}
+
+export function createReplayedReviewInvestigation(
+  input: Parameters<typeof createReviewInvestigation>[0],
+): ReviewInvestigation {
+  const investigation = createReviewInvestigation(input);
+  const inventory = investigation.obligations.find(
+    (item) => item.kind === InvestigationObligationKind.InventoryWitness,
+  )!;
+  if (inventory.state !== InvestigationObligationState.Satisfied) {
+    return investigation;
+  }
+  const hasOpenDiscoveryWork = investigation.obligations.some(
+    (item) =>
+      item.kind !== InvestigationObligationKind.ContextCritic &&
+      item.state === InvestigationObligationState.Open,
+  );
+  return {
+    ...investigation,
+    state: hasOpenDiscoveryWork
+      ? ReviewInvestigationState.AwaitingTurn
+      : ReviewInvestigationState.AwaitingCritic,
   };
 }
 
@@ -242,13 +269,20 @@ export function commitInvestigationTurn(input: {
         }),
     );
   }
-  obligations = [...mergeInvestigationObligations(obligations, input.commit.proposedObligations)];
+  obligations = [
+    ...mergeInvestigationObligations(
+      obligations,
+      input.commit.proposedObligations,
+    ),
+  ];
   if (
     obligations.filter(
       (item) => item.kind === InvestigationObligationKind.InventoryWitness,
     ).length !== 1
   ) {
-    throw new ReviewInvestigationDomainError("inventory_witness_cardinality_invalid");
+    throw new ReviewInvestigationDomainError(
+      "inventory_witness_cardinality_invalid",
+    );
   }
   validateFindingEvidence(
     obligations,
@@ -286,7 +320,11 @@ export function commitInvestigationTurn(input: {
     state: current.state,
     updatedAt: input.committedAt,
   };
-  return decideStateAfterCommit(next, turn.purpose, input.commit.criticDecision);
+  return decideStateAfterCommit(
+    next,
+    turn.purpose,
+    input.commit.criticDecision,
+  );
 }
 
 export function abortInvestigationTurn(input: {
@@ -313,7 +351,9 @@ export function abortInvestigationTurn(input: {
       updatedAt: input.abortedAt,
     };
   }
-  if (input.abort.reason === ReviewInvestigationAbortReason.ConfinementViolation) {
+  if (
+    input.abort.reason === ReviewInvestigationAbortReason.ConfinementViolation
+  ) {
     return transitionToInconclusive(
       { ...current, activeTurn: null, version: current.version + 1 },
       input.abortedAt,
@@ -361,7 +401,9 @@ export function concludeReviewInvestigation(input: {
     input.certificate.investigationId !== current.investigationId ||
     input.certificate.investigationVersion !== current.version
   ) {
-    throw new ReviewInvestigationDomainError("investigation_conclusion_invalid");
+    throw new ReviewInvestigationDomainError(
+      "investigation_conclusion_invalid",
+    );
   }
   const conclusion =
     current.state === ReviewInvestigationState.Inconclusive
@@ -382,7 +424,8 @@ export function concludeReviewInvestigation(input: {
     current.turnProvenance,
   );
   if (
-    input.certificate.terminalProviderKind !== terminalProvenance.providerKind ||
+    input.certificate.terminalProviderKind !==
+      terminalProvenance.providerKind ||
     input.certificate.terminalActualModel !== terminalProvenance.actualModel
   ) {
     throw new ReviewInvestigationDomainError(
@@ -420,7 +463,9 @@ export function investigationDossierCanonicalValue(
     contract: { ...investigation.contract },
     policy: policyCanonicalValue(investigation.policy),
     state: investigation.state,
-    obligations: sortObligations(investigation.obligations).map(obligationCanonicalObject),
+    obligations: sortObligations(investigation.obligations).map(
+      obligationCanonicalObject,
+    ),
     findings: [...investigation.findings]
       .sort((left, right) => left.fingerprint.localeCompare(right.fingerprint))
       .map(findingCanonicalValue),
@@ -451,7 +496,9 @@ export function serializeReviewInvestigation(
   return canonicalJson({
     ...investigationDossierCanonicalValue(investigation),
     dossierDigest: investigation.dossierDigest,
-    certificate: investigation.certificate ? { ...investigation.certificate } : null,
+    certificate: investigation.certificate
+      ? { ...investigation.certificate }
+      : null,
   });
 }
 
@@ -475,7 +522,10 @@ function decideStateAfterCommit(
   );
   if (purpose === ReviewInvestigationTurnPurpose.Critic) {
     if (criticDecision === ContextCriticDecision.Accept && allSatisfied) {
-      return { ...investigation, state: ReviewInvestigationState.ReadyToConclude };
+      return {
+        ...investigation,
+        state: ReviewInvestigationState.ReadyToConclude,
+      };
     }
     if (
       criticDecision === ContextCriticDecision.Veto &&
@@ -487,7 +537,10 @@ function decideStateAfterCommit(
       criticDecision === ContextCriticDecision.Abstain &&
       investigation.criticCycles < investigation.policy.maxCriticCycles
     ) {
-      return { ...investigation, state: ReviewInvestigationState.AwaitingCritic };
+      return {
+        ...investigation,
+        state: ReviewInvestigationState.AwaitingCritic,
+      };
     }
     return transitionToInconclusive(investigation, investigation.updatedAt);
   }
@@ -524,9 +577,11 @@ function validateTurnBounds(
   commit: InvestigationTurnCommit,
 ): void {
   if (
-    commit.proposedObligations.length > investigation.policy.maxProposalsPerTurn ||
+    commit.proposedObligations.length >
+      investigation.policy.maxProposalsPerTurn ||
     commit.closureClaims.length > investigation.policy.maxReceiptsPerTurn ||
-    commit.findings.length + investigation.findings.length > investigation.policy.maxFindings ||
+    commit.findings.length + investigation.findings.length >
+      investigation.policy.maxFindings ||
     !Number.isSafeInteger(commit.usageTokens) ||
     commit.usageTokens < 0 ||
     !Number.isSafeInteger(commit.durationMs) ||
@@ -596,13 +651,19 @@ function mergeFindings(
   current: readonly InvestigationFinding[],
   additions: readonly InvestigationFinding[],
 ): readonly InvestigationFinding[] {
-  const byFingerprint = new Map(current.map((item) => [item.fingerprint, item]));
+  const byFingerprint = new Map(
+    current.map((item) => [item.fingerprint, item]),
+  );
   for (const finding of additions) {
     if (finding.fingerprint.trim().length === 0) {
       throw new ReviewInvestigationDomainError("finding_fingerprint_invalid");
     }
     const existing = byFingerprint.get(finding.fingerprint);
-    if (existing && canonicalJson(findingCanonicalValue(existing)) !== canonicalJson(findingCanonicalValue(finding))) {
+    if (
+      existing &&
+      canonicalJson(findingCanonicalValue(existing)) !==
+        canonicalJson(findingCanonicalValue(finding))
+    ) {
       throw new ReviewInvestigationDomainError("finding_identity_collision");
     }
     byFingerprint.set(finding.fingerprint, {
@@ -620,18 +681,18 @@ function validateFindingEvidence(
   findings: readonly InvestigationFinding[],
   acceptedTurnEvidenceReceiptIds: readonly string[],
 ): void {
-  const acceptedReceipts = new Set(
-    [
-      ...obligations
-        .map((item) => item.receipt?.receiptId ?? null)
-        .filter((item): item is string => item !== null),
-      ...acceptedTurnEvidenceReceiptIds,
-    ],
-  );
+  const acceptedReceipts = new Set([
+    ...obligations
+      .map((item) => item.receipt?.receiptId ?? null)
+      .filter((item): item is string => item !== null),
+    ...acceptedTurnEvidenceReceiptIds,
+  ]);
   for (const finding of findings) {
     if (
       finding.evidenceReceiptIds.length === 0 ||
-      finding.evidenceReceiptIds.some((receiptId) => !acceptedReceipts.has(receiptId)) ||
+      finding.evidenceReceiptIds.some(
+        (receiptId) => !acceptedReceipts.has(receiptId),
+      ) ||
       (finding.line !== null &&
         (!Number.isSafeInteger(finding.line) || finding.line <= 0))
     ) {

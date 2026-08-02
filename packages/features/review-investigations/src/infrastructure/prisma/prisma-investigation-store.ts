@@ -34,7 +34,10 @@ import {
   type InvestigationStorePort,
   type InvestigationStoreTransition,
 } from "../../application/ports/investigation-store-port";
-import { assertInvestigationPolicy, type ReviewInvestigationPolicy } from "../../domain/investigation-policy";
+import {
+  assertInvestigationPolicy,
+  type ReviewInvestigationPolicy,
+} from "../../domain/investigation-policy";
 import {
   createEncryptedInvestigationPrivateMaterial,
   investigationPrivateMaterialEncryptionAlgorithm,
@@ -109,15 +112,20 @@ export class PrismaInvestigationStore
     readonly commandId: string;
     readonly commandHash: string;
   }): Promise<InvestigationStoreCommitResult | null> {
-    const command = await this.prisma.reviewInvestigationCommandReceipt.findUnique({
-      where: { commandId: input.commandId },
-    });
+    const command =
+      await this.prisma.reviewInvestigationCommandReceipt.findUnique({
+        where: { commandId: input.commandId },
+      });
     if (!command) return null;
     if (command.commandHash !== input.commandHash) {
       return result(InvestigationStoreCommitStatus.IdempotencyConflict, null);
     }
-    const investigation = await loadAggregate(this.prisma, command.investigationId);
-    if (!investigation) throw new Error("investigation_command_snapshot_missing");
+    const investigation = await loadAggregate(
+      this.prisma,
+      command.investigationId,
+    );
+    if (!investigation)
+      throw new Error("investigation_command_snapshot_missing");
     return result(InvestigationStoreCommitStatus.Restored, investigation);
   }
 
@@ -220,11 +228,7 @@ export class PrismaInvestigationStore
             input.transition,
             retainUntil,
           );
-          await persistCertificate(
-            transaction,
-            current,
-            input.investigation,
-          );
+          await persistCertificate(transaction, current, input.investigation);
           const updated = await transaction.reviewInvestigation.updateMany({
             where: {
               investigationId: input.investigation.investigationId,
@@ -275,7 +279,10 @@ export class PrismaInvestigationStore
         (await this.findByNaturalIdentity(
           input.investigation.naturalIdentityHash,
         ));
-      return result(InvestigationStoreCommitStatus.ConcurrencyConflict, existing);
+      return result(
+        InvestigationStoreCommitStatus.ConcurrencyConflict,
+        existing,
+      );
     }
   }
 
@@ -290,19 +297,21 @@ export class PrismaInvestigationStore
       return InvestigationPrivateMaterialPersistenceStatus.Created;
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
-      const existing = await this.prisma.reviewInvestigationPrivateMaterial.findFirst({
-        where: {
-          OR: [
-            { privateMaterialId: material.privateMaterialId },
-            {
-              investigationId: material.investigationId,
-              obligationId: material.obligationId,
-            },
-          ],
-        },
-        orderBy: { privateMaterialId: "asc" },
-      });
-      if (!existing) throw new Error("private_material_unique_conflict_missing");
+      const existing =
+        await this.prisma.reviewInvestigationPrivateMaterial.findFirst({
+          where: {
+            OR: [
+              { privateMaterialId: material.privateMaterialId },
+              {
+                investigationId: material.investigationId,
+                obligationId: material.obligationId,
+              },
+            ],
+          },
+          orderBy: { privateMaterialId: "asc" },
+        });
+      if (!existing)
+        throw new Error("private_material_unique_conflict_missing");
       return samePrivateMaterial(toPrivateMaterial(existing), material)
         ? InvestigationPrivateMaterialPersistenceStatus.Idempotent
         : InvestigationPrivateMaterialPersistenceStatus.Conflict;
@@ -314,14 +323,15 @@ export class PrismaInvestigationStore
     readonly obligationId: string | null;
     readonly activeAfter: string;
   }): Promise<EncryptedInvestigationPrivateMaterial | null> {
-    const record = await this.prisma.reviewInvestigationPrivateMaterial.findFirst({
-      where: {
-        investigationId: input.investigationId,
-        obligationId: input.obligationId,
-        expiresAt: { gt: new Date(input.activeAfter) },
-      },
-      orderBy: [{ expiresAt: "desc" }, { privateMaterialId: "asc" }],
-    });
+    const record =
+      await this.prisma.reviewInvestigationPrivateMaterial.findFirst({
+        where: {
+          investigationId: input.investigationId,
+          obligationId: input.obligationId,
+          expiresAt: { gt: new Date(input.activeAfter) },
+        },
+        orderBy: [{ expiresAt: "desc" }, { privateMaterialId: "asc" }],
+      });
     return record ? toPrivateMaterial(record) : null;
   }
 
@@ -330,7 +340,9 @@ export class PrismaInvestigationStore
     readonly limit: number;
   }): Promise<number> {
     assertPruneLimit(input.limit);
-    const removed = await this.prisma.$queryRaw<Array<{ privateMaterialId: string }>>(
+    const removed = await this.prisma.$queryRaw<
+      Array<{ privateMaterialId: string }>
+    >(
       Prisma.sql`
         WITH removable AS (
           SELECT material."privateMaterialId"
@@ -500,7 +512,10 @@ async function loadAggregate(
     : null;
   const receiptById = new Map(receipts.map((item) => [item.receiptId, item]));
   const domainObligations = obligations.map((item) =>
-    toObligation(item, item.receiptId ? receiptById.get(item.receiptId) : undefined),
+    toObligation(
+      item,
+      item.receiptId ? receiptById.get(item.receiptId) : undefined,
+    ),
   );
   if (domainObligations.some((item) => item === null)) {
     throw new Error("investigation_obligation_receipt_missing");
@@ -668,14 +683,20 @@ async function persistObligations(
   transition: InvestigationStoreTransition,
   retainUntil: Date,
 ): Promise<void> {
-  const existingRecords = await transaction.reviewInvestigationObligation.findMany({
-    where: { investigationId: next.investigationId },
-  });
-  const existingById = new Map(existingRecords.map((item) => [item.obligationId, item]));
-  const existingReceipts = await transaction.reviewInvestigationReceipt.findMany({
-    where: { investigationId: next.investigationId },
-  });
-  const receiptById = new Map(existingReceipts.map((item) => [item.receiptId, item]));
+  const existingRecords =
+    await transaction.reviewInvestigationObligation.findMany({
+      where: { investigationId: next.investigationId },
+    });
+  const existingById = new Map(
+    existingRecords.map((item) => [item.obligationId, item]),
+  );
+  const existingReceipts =
+    await transaction.reviewInvestigationReceipt.findMany({
+      where: { investigationId: next.investigationId },
+    });
+  const receiptById = new Map(
+    existingReceipts.map((item) => [item.receiptId, item]),
+  );
   const nextIds = new Set(next.obligations.map((item) => item.obligationId));
   if (existingRecords.some((item) => !nextIds.has(item.obligationId))) {
     throw new Error("investigation_obligation_deletion_forbidden");
@@ -709,11 +730,17 @@ async function persistObligations(
       });
     }
     if (existing?.receiptId) {
-      if (!obligation.receipt || obligation.receipt.receiptId !== existing.receiptId) {
+      if (
+        !obligation.receipt ||
+        obligation.receipt.receiptId !== existing.receiptId
+      ) {
         throw new Error("investigation_receipt_mutation_forbidden");
       }
       const persistedReceipt = receiptById.get(existing.receiptId);
-      if (!persistedReceipt || !sameReceipt(toReceipt(persistedReceipt), obligation.receipt)) {
+      if (
+        !persistedReceipt ||
+        !sameReceipt(toReceipt(persistedReceipt), obligation.receipt)
+      ) {
         throw new Error("investigation_receipt_mutation_forbidden");
       }
     } else if (obligation.receipt) {
@@ -729,6 +756,8 @@ async function persistObligations(
           reviewRevisionHash: obligation.receipt.reviewRevisionHash,
           gatewayPolicyVersion: obligation.receipt.gatewayPolicyVersion,
           evidenceDigest: obligation.receipt.evidenceDigest,
+          operationReceiptIds: [...obligation.receipt.operationReceiptIds],
+          acceptedAttestationHash: obligation.receipt.acceptedAttestationHash,
           complete: obligation.receipt.complete,
           truncated: obligation.receipt.truncated,
           failed: obligation.receipt.failed,
@@ -943,7 +972,8 @@ function assertUpdate(
     next.providerVoteLaneId !== current.providerVoteLaneId ||
     next.contract.coverageContractVersion !==
       current.contract.coverageContractVersion ||
-    next.contract.runtimeProfileVersion !== current.contract.runtimeProfileVersion
+    next.contract.runtimeProfileVersion !==
+      current.contract.runtimeProfileVersion
   ) {
     throw new Error("investigation_immutable_identity_changed");
   }
@@ -974,13 +1004,17 @@ function assertUpdate(
   }
 }
 
-function assertRehydratedAggregate(
-  investigation: ReviewInvestigation,
-): void {
+function assertRehydratedAggregate(investigation: ReviewInvestigation): void {
   assertDigest(investigation.naturalIdentityHash, "natural_identity_hash");
-  assertDigest(investigation.revision.reviewRevisionHash, "review_revision_hash");
+  assertDigest(
+    investigation.revision.reviewRevisionHash,
+    "review_revision_hash",
+  );
   assertDigest(investigation.dossierDigest, "dossier_digest");
-  if (!Number.isSafeInteger(investigation.version) || investigation.version <= 0) {
+  if (
+    !Number.isSafeInteger(investigation.version) ||
+    investigation.version <= 0
+  ) {
     throw new Error("investigation_version_corrupt");
   }
   for (const [field, value] of [
@@ -1067,7 +1101,8 @@ function assertRehydratedAggregate(
     if (obligation.kind === InvestigationObligationKind.InventoryWitness) {
       inventoryWitnessCount += 1;
     }
-    const satisfied = obligation.state === InvestigationObligationState.Satisfied;
+    const satisfied =
+      obligation.state === InvestigationObligationState.Satisfied;
     if (satisfied !== (obligation.receipt !== null)) {
       throw new Error("investigation_obligation_receipt_state_corrupt");
     }
@@ -1152,6 +1187,15 @@ function toReceipt(record: PrismaReceiptRecord): InvestigationEvidenceReceipt {
     reviewRevisionHash: record.reviewRevisionHash,
     gatewayPolicyVersion: record.gatewayPolicyVersion,
     evidenceDigest: record.evidenceDigest,
+    operationReceiptIds: toStringArray(
+      record.operationReceiptIds,
+      "receipt_operation_receipt_ids",
+    ),
+    acceptedAttestationId:
+      record.acceptedAttestationHash === null
+        ? null
+        : record.acceptedAttestationId,
+    acceptedAttestationHash: record.acceptedAttestationHash,
     complete: record.complete,
     truncated: record.truncated,
     failed: record.failed,
@@ -1162,7 +1206,10 @@ function toTurn(record: PrismaTurnRecord): InvestigationTurn {
   if (record.state !== PrismaTurnState.leased) {
     throw new Error("investigation_active_turn_not_leased");
   }
-  const obligationIds = toStringArray(record.obligationIds, "turn_obligation_ids");
+  const obligationIds = toStringArray(
+    record.obligationIds,
+    "turn_obligation_ids",
+  );
   return {
     turnId: record.turnId,
     purpose: fromPrismaTurnPurpose(record.purpose),
@@ -1183,7 +1230,10 @@ function toCertificate(
     certificateId: record.certificateId,
     certificateHash: record.certificateHash,
     investigationId: record.investigationId,
-    investigationVersion: safeNumber(record.terminalVersion, "certificate_version"),
+    investigationVersion: safeNumber(
+      record.terminalVersion,
+      "certificate_version",
+    ),
     dossierDigest: record.dossierDigest,
     reviewRevisionHash: record.reviewRevisionHash,
     stableReviewUnitKey: record.stableReviewUnitKey,
@@ -1453,11 +1503,9 @@ function stringEnumField<T extends Record<string, string>>(
   return candidate as T[keyof T];
 }
 
-function requiredCertificateField(
-  value: string | null,
-  field: string,
-): string {
-  if (value === null) throw new Error(`investigation_certificate_${field}_missing`);
+function requiredCertificateField(value: string | null, field: string): string {
+  if (value === null)
+    throw new Error(`investigation_certificate_${field}_missing`);
   return value;
 }
 
@@ -1470,7 +1518,8 @@ function toStringArray(value: unknown, field: string): readonly string[] {
 
 function isUniqueConstraintError(error: unknown): boolean {
   return (
-    error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002"
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
   );
 }
 
@@ -1478,61 +1527,104 @@ function isRetryablePersistenceConflict(error: unknown): boolean {
   return (
     error instanceof InvestigationWriteRaceError ||
     isUniqueConstraintError(error) ||
-    (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034")
+    (error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2034")
   );
 }
 
 class InvestigationWriteRaceError extends Error {}
 
-const runtimeProfileToPrisma: Readonly<Record<ReviewInvestigationRuntimeProfile, PrismaRuntimeProfile>> = {
-  [ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1]: PrismaRuntimeProfile.gateway_attested_agent_v1,
-  [ReviewInvestigationRuntimeProfile.OrchestratedToolLoopV1]: PrismaRuntimeProfile.orchestrated_tool_loop_v1,
-  [ReviewInvestigationRuntimeProfile.PreassembledContextV1]: PrismaRuntimeProfile.preassembled_context_v1,
-  [ReviewInvestigationRuntimeProfile.PromptOnlyV1]: PrismaRuntimeProfile.prompt_only_v1,
-  [ReviewInvestigationRuntimeProfile.AgenticUnboundedV1]: PrismaRuntimeProfile.agentic_unbounded_v1,
+const runtimeProfileToPrisma: Readonly<
+  Record<ReviewInvestigationRuntimeProfile, PrismaRuntimeProfile>
+> = {
+  [ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1]:
+    PrismaRuntimeProfile.gateway_attested_agent_v1,
+  [ReviewInvestigationRuntimeProfile.OrchestratedToolLoopV1]:
+    PrismaRuntimeProfile.orchestrated_tool_loop_v1,
+  [ReviewInvestigationRuntimeProfile.PreassembledContextV1]:
+    PrismaRuntimeProfile.preassembled_context_v1,
+  [ReviewInvestigationRuntimeProfile.PromptOnlyV1]:
+    PrismaRuntimeProfile.prompt_only_v1,
+  [ReviewInvestigationRuntimeProfile.AgenticUnboundedV1]:
+    PrismaRuntimeProfile.agentic_unbounded_v1,
 };
-const investigationStateToPrisma: Readonly<Record<ReviewInvestigationState, PrismaInvestigationState>> = {
+const investigationStateToPrisma: Readonly<
+  Record<ReviewInvestigationState, PrismaInvestigationState>
+> = {
   [ReviewInvestigationState.Provisional]: PrismaInvestigationState.provisional,
-  [ReviewInvestigationState.AwaitingTurn]: PrismaInvestigationState.awaiting_turn,
+  [ReviewInvestigationState.AwaitingTurn]:
+    PrismaInvestigationState.awaiting_turn,
   [ReviewInvestigationState.TurnLeased]: PrismaInvestigationState.turn_leased,
-  [ReviewInvestigationState.AwaitingCritic]: PrismaInvestigationState.awaiting_critic,
-  [ReviewInvestigationState.ReadyToConclude]: PrismaInvestigationState.ready_to_conclude,
+  [ReviewInvestigationState.AwaitingCritic]:
+    PrismaInvestigationState.awaiting_critic,
+  [ReviewInvestigationState.ReadyToConclude]:
+    PrismaInvestigationState.ready_to_conclude,
   [ReviewInvestigationState.Concluded]: PrismaInvestigationState.concluded,
-  [ReviewInvestigationState.Inconclusive]: PrismaInvestigationState.inconclusive,
+  [ReviewInvestigationState.Inconclusive]:
+    PrismaInvestigationState.inconclusive,
   [ReviewInvestigationState.Superseded]: PrismaInvestigationState.superseded,
   [ReviewInvestigationState.Expired]: PrismaInvestigationState.expired,
 };
-const obligationStateToPrisma: Readonly<Record<InvestigationObligationState, PrismaObligationState>> = {
+const obligationStateToPrisma: Readonly<
+  Record<InvestigationObligationState, PrismaObligationState>
+> = {
   [InvestigationObligationState.Open]: PrismaObligationState.open,
   [InvestigationObligationState.Satisfied]: PrismaObligationState.satisfied,
-  [InvestigationObligationState.Unresolvable]: PrismaObligationState.unresolvable,
+  [InvestigationObligationState.Unresolvable]:
+    PrismaObligationState.unresolvable,
 };
-const obligationKindToPrisma: Readonly<Record<InvestigationObligationKind, PrismaObligationKind>> = {
-  [InvestigationObligationKind.InventoryWitness]: PrismaObligationKind.inventory_witness,
-  [InvestigationObligationKind.ChangedContent]: PrismaObligationKind.changed_content,
+const obligationKindToPrisma: Readonly<
+  Record<InvestigationObligationKind, PrismaObligationKind>
+> = {
+  [InvestigationObligationKind.InventoryWitness]:
+    PrismaObligationKind.inventory_witness,
+  [InvestigationObligationKind.ChangedContent]:
+    PrismaObligationKind.changed_content,
   [InvestigationObligationKind.BaseContent]: PrismaObligationKind.base_content,
-  [InvestigationObligationKind.RelatedManifest]: PrismaObligationKind.related_manifest,
-  [InvestigationObligationKind.DirectReferenceSearch]: PrismaObligationKind.direct_reference_search,
-  [InvestigationObligationKind.DirectCaller]: PrismaObligationKind.direct_caller,
-  [InvestigationObligationKind.DirectCallee]: PrismaObligationKind.direct_callee,
-  [InvestigationObligationKind.TestEvidence]: PrismaObligationKind.test_evidence,
-  [InvestigationObligationKind.SchemaContract]: PrismaObligationKind.schema_contract,
-  [InvestigationObligationKind.ConfigurationContract]: PrismaObligationKind.configuration_contract,
-  [InvestigationObligationKind.MigrationContract]: PrismaObligationKind.migration_contract,
-  [InvestigationObligationKind.GeneratedSource]: PrismaObligationKind.generated_source,
-  [InvestigationObligationKind.DependencyContract]: PrismaObligationKind.dependency_contract,
-  [InvestigationObligationKind.SideEffectParity]: PrismaObligationKind.side_effect_parity,
-  [InvestigationObligationKind.ExternalContract]: PrismaObligationKind.external_contract,
-  [InvestigationObligationKind.BinaryArtifact]: PrismaObligationKind.binary_artifact,
-  [InvestigationObligationKind.ContextCritic]: PrismaObligationKind.context_critic,
+  [InvestigationObligationKind.RelatedManifest]:
+    PrismaObligationKind.related_manifest,
+  [InvestigationObligationKind.DirectReferenceSearch]:
+    PrismaObligationKind.direct_reference_search,
+  [InvestigationObligationKind.DirectCaller]:
+    PrismaObligationKind.direct_caller,
+  [InvestigationObligationKind.DirectCallee]:
+    PrismaObligationKind.direct_callee,
+  [InvestigationObligationKind.TestEvidence]:
+    PrismaObligationKind.test_evidence,
+  [InvestigationObligationKind.SchemaContract]:
+    PrismaObligationKind.schema_contract,
+  [InvestigationObligationKind.ConfigurationContract]:
+    PrismaObligationKind.configuration_contract,
+  [InvestigationObligationKind.MigrationContract]:
+    PrismaObligationKind.migration_contract,
+  [InvestigationObligationKind.GeneratedSource]:
+    PrismaObligationKind.generated_source,
+  [InvestigationObligationKind.DependencyContract]:
+    PrismaObligationKind.dependency_contract,
+  [InvestigationObligationKind.SideEffectParity]:
+    PrismaObligationKind.side_effect_parity,
+  [InvestigationObligationKind.ExternalContract]:
+    PrismaObligationKind.external_contract,
+  [InvestigationObligationKind.BinaryArtifact]:
+    PrismaObligationKind.binary_artifact,
+  [InvestigationObligationKind.ContextCritic]:
+    PrismaObligationKind.context_critic,
 };
-const obligationOriginToPrisma: Readonly<Record<InvestigationObligationOrigin, PrismaObligationOrigin>> = {
-  [InvestigationObligationOrigin.CoverageContract]: PrismaObligationOrigin.coverage_contract,
-  [InvestigationObligationOrigin.DeterministicExpansion]: PrismaObligationOrigin.deterministic_expansion,
-  [InvestigationObligationOrigin.AgentProposal]: PrismaObligationOrigin.agent_proposal,
-  [InvestigationObligationOrigin.CriticProposal]: PrismaObligationOrigin.critic_proposal,
+const obligationOriginToPrisma: Readonly<
+  Record<InvestigationObligationOrigin, PrismaObligationOrigin>
+> = {
+  [InvestigationObligationOrigin.CoverageContract]:
+    PrismaObligationOrigin.coverage_contract,
+  [InvestigationObligationOrigin.DeterministicExpansion]:
+    PrismaObligationOrigin.deterministic_expansion,
+  [InvestigationObligationOrigin.AgentProposal]:
+    PrismaObligationOrigin.agent_proposal,
+  [InvestigationObligationOrigin.CriticProposal]:
+    PrismaObligationOrigin.critic_proposal,
 };
-const receiptKindToPrisma: Readonly<Record<InvestigationReceiptKind, PrismaReceiptKind>> = {
+const receiptKindToPrisma: Readonly<
+  Record<InvestigationReceiptKind, PrismaReceiptKind>
+> = {
   [InvestigationReceiptKind.Blob]: PrismaReceiptKind.blob,
   [InvestigationReceiptKind.Tree]: PrismaReceiptKind.tree,
   [InvestigationReceiptKind.Search]: PrismaReceiptKind.search,
@@ -1540,17 +1632,24 @@ const receiptKindToPrisma: Readonly<Record<InvestigationReceiptKind, PrismaRecei
   [InvestigationReceiptKind.Relation]: PrismaReceiptKind.relation,
   [InvestigationReceiptKind.Critic]: PrismaReceiptKind.critic,
 };
-const turnPurposeToPrisma: Readonly<Record<ReviewInvestigationTurnPurpose, PrismaTurnPurpose>> = {
+const turnPurposeToPrisma: Readonly<
+  Record<ReviewInvestigationTurnPurpose, PrismaTurnPurpose>
+> = {
   [ReviewInvestigationTurnPurpose.Discovery]: PrismaTurnPurpose.discovery,
   [ReviewInvestigationTurnPurpose.Critic]: PrismaTurnPurpose.critic,
 };
-const criticDecisionToPrisma: Readonly<Record<ContextCriticDecision, PrismaCriticDecision>> = {
+const criticDecisionToPrisma: Readonly<
+  Record<ContextCriticDecision, PrismaCriticDecision>
+> = {
   [ContextCriticDecision.Accept]: PrismaCriticDecision.accept,
   [ContextCriticDecision.Veto]: PrismaCriticDecision.veto,
   [ContextCriticDecision.Abstain]: PrismaCriticDecision.abstain,
 };
-const conclusionToPrisma: Readonly<Record<ReviewInvestigationConclusion, PrismaConclusion>> = {
-  [ReviewInvestigationConclusion.VerifiedClean]: PrismaConclusion.verified_clean,
+const conclusionToPrisma: Readonly<
+  Record<ReviewInvestigationConclusion, PrismaConclusion>
+> = {
+  [ReviewInvestigationConclusion.VerifiedClean]:
+    PrismaConclusion.verified_clean,
   [ReviewInvestigationConclusion.Findings]: PrismaConclusion.findings,
   [ReviewInvestigationConclusion.Inconclusive]: PrismaConclusion.inconclusive,
 };
@@ -1565,26 +1664,46 @@ const turnPurposeFromPrisma = invertEnumMap(turnPurposeToPrisma);
 const criticDecisionFromPrisma = invertEnumMap(criticDecisionToPrisma);
 const conclusionFromPrisma = invertEnumMap(conclusionToPrisma);
 
-const toPrismaRuntimeProfile = (value: ReviewInvestigationRuntimeProfile) => runtimeProfileToPrisma[value];
-const fromPrismaRuntimeProfile = (value: PrismaRuntimeProfile) => runtimeProfileFromPrisma[value];
-const toPrismaInvestigationState = (value: ReviewInvestigationState) => investigationStateToPrisma[value];
-const fromPrismaInvestigationState = (value: PrismaInvestigationState) => investigationStateFromPrisma[value];
-const toPrismaObligationState = (value: InvestigationObligationState) => obligationStateToPrisma[value];
-const fromPrismaObligationState = (value: PrismaObligationState) => obligationStateFromPrisma[value];
-const toPrismaObligationKind = (value: InvestigationObligationKind) => obligationKindToPrisma[value];
-const fromPrismaObligationKind = (value: PrismaObligationKind) => obligationKindFromPrisma[value];
-const toPrismaObligationOrigin = (value: InvestigationObligationOrigin) => obligationOriginToPrisma[value];
-const fromPrismaObligationOrigin = (value: PrismaObligationOrigin) => obligationOriginFromPrisma[value];
-const toPrismaReceiptKind = (value: InvestigationReceiptKind) => receiptKindToPrisma[value];
-const fromPrismaReceiptKind = (value: PrismaReceiptKind) => receiptKindFromPrisma[value];
-const toPrismaTurnPurpose = (value: ReviewInvestigationTurnPurpose) => turnPurposeToPrisma[value];
-const fromPrismaTurnPurpose = (value: PrismaTurnPurpose) => turnPurposeFromPrisma[value];
-const toPrismaCriticDecision = (value: ContextCriticDecision) => criticDecisionToPrisma[value];
-const fromPrismaCriticDecision = (value: PrismaCriticDecision) => criticDecisionFromPrisma[value];
-const toPrismaConclusion = (value: ReviewInvestigationConclusion) => conclusionToPrisma[value];
-const fromPrismaConclusion = (value: PrismaConclusion) => conclusionFromPrisma[value];
+const toPrismaRuntimeProfile = (value: ReviewInvestigationRuntimeProfile) =>
+  runtimeProfileToPrisma[value];
+const fromPrismaRuntimeProfile = (value: PrismaRuntimeProfile) =>
+  runtimeProfileFromPrisma[value];
+const toPrismaInvestigationState = (value: ReviewInvestigationState) =>
+  investigationStateToPrisma[value];
+const fromPrismaInvestigationState = (value: PrismaInvestigationState) =>
+  investigationStateFromPrisma[value];
+const toPrismaObligationState = (value: InvestigationObligationState) =>
+  obligationStateToPrisma[value];
+const fromPrismaObligationState = (value: PrismaObligationState) =>
+  obligationStateFromPrisma[value];
+const toPrismaObligationKind = (value: InvestigationObligationKind) =>
+  obligationKindToPrisma[value];
+const fromPrismaObligationKind = (value: PrismaObligationKind) =>
+  obligationKindFromPrisma[value];
+const toPrismaObligationOrigin = (value: InvestigationObligationOrigin) =>
+  obligationOriginToPrisma[value];
+const fromPrismaObligationOrigin = (value: PrismaObligationOrigin) =>
+  obligationOriginFromPrisma[value];
+const toPrismaReceiptKind = (value: InvestigationReceiptKind) =>
+  receiptKindToPrisma[value];
+const fromPrismaReceiptKind = (value: PrismaReceiptKind) =>
+  receiptKindFromPrisma[value];
+const toPrismaTurnPurpose = (value: ReviewInvestigationTurnPurpose) =>
+  turnPurposeToPrisma[value];
+const fromPrismaTurnPurpose = (value: PrismaTurnPurpose) =>
+  turnPurposeFromPrisma[value];
+const toPrismaCriticDecision = (value: ContextCriticDecision) =>
+  criticDecisionToPrisma[value];
+const fromPrismaCriticDecision = (value: PrismaCriticDecision) =>
+  criticDecisionFromPrisma[value];
+const toPrismaConclusion = (value: ReviewInvestigationConclusion) =>
+  conclusionToPrisma[value];
+const fromPrismaConclusion = (value: PrismaConclusion) =>
+  conclusionFromPrisma[value];
 
-function parseTerminalProviderKind(value: string): InvestigationTurnProviderKind {
+function parseTerminalProviderKind(
+  value: string,
+): InvestigationTurnProviderKind {
   if (
     value === InvestigationTurnProviderKind.Codex ||
     value === InvestigationTurnProviderKind.ClaudeCode

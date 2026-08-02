@@ -98,6 +98,8 @@ export class CommitAttestedInvestigationTurn {
           investigation: current,
           operationEvidence,
           digest: this.digest,
+          acceptedAttestationId: command.acceptedAttestationId,
+          acceptedAttestationHash: command.acceptedAttestationHash,
         }),
       })),
     );
@@ -197,6 +199,8 @@ async function closureReceipt(input: {
     VerifiedInvestigationOperationEvidence
   >;
   readonly digest: InvestigationDigestPort;
+  readonly acceptedAttestationId: string;
+  readonly acceptedAttestationHash: string;
 }): Promise<InvestigationEvidenceReceipt> {
   const obligation = input.investigation.obligations.find(
     (item) => item.obligationId === input.claim.obligationId,
@@ -228,6 +232,9 @@ async function closureReceipt(input: {
       input.digest,
       operations.map((item) => item.evidenceDigest).sort(),
     ),
+    operationReceiptIds: [...input.claim.operationReceiptIds].sort(),
+    acceptedAttestationId: input.acceptedAttestationId,
+    acceptedAttestationHash: input.acceptedAttestationHash,
     complete: true,
     truncated: false,
     failed: false,

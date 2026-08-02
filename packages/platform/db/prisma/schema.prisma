@@ -1203,10 +1203,12 @@ model ReviewInvestigationReceipt {
   reviewRevisionHash    String
   gatewayPolicyVersion  String
   evidenceDigest        String
+  operationReceiptIds   Json
   complete              Boolean
   truncated             Boolean
   failed                Boolean
   acceptedAttestationId String?
+  acceptedAttestationHash String?
   acceptedAt            DateTime
   retainUntil           DateTime
 

@@ -5,10 +5,12 @@ import {
   ConcludeReviewInvestigation,
   ContextCriticDecision,
   InvestigationObligationKind,
+  InvestigationReceiptReplayVerdict,
   InvestigationReceiptKind,
   InvestigationTurnProviderKind,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
+  ReplayReviewInvestigation,
   RestoreReviewInvestigation,
   ReviewInvestigationAbortReason,
   ReviewInvestigationConclusion,
@@ -51,10 +53,12 @@ describe("review investigation in-memory vertical slice", () => {
       acceptedAttestationHash: "b".repeat(64),
       terminalOutcomeHash: "c".repeat(64),
     } as const;
-    expect(() => summarizeTerminalDiscoveryProvenance([
-      base,
-      { ...base, turnId: "turn-2", actualModel: "gpt-two" },
-    ])).toThrow("investigation_terminal_provenance_ambiguous");
+    expect(() =>
+      summarizeTerminalDiscoveryProvenance([
+        base,
+        { ...base, turnId: "turn-2", actualModel: "gpt-two" },
+      ]),
+    ).toThrow("investigation_terminal_provenance_ambiguous");
   });
 
   it("keeps runner inventory provisional until the first authenticated witness", async () => {
@@ -163,15 +167,15 @@ describe("review investigation in-memory vertical slice", () => {
     expect(concluded.state).toBe(ReviewInvestigationState.Concluded);
 
     const snapshot = await harness.restore.snapshot(opened.investigationId);
-    expect(snapshot.conclusion).toBe(ReviewInvestigationConclusion.VerifiedClean);
+    expect(snapshot.conclusion).toBe(
+      ReviewInvestigationConclusion.VerifiedClean,
+    );
     expect(snapshot.certificate?.certificateHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(snapshot.certificate?.dossierDigest).toBe(ready.dossierDigest);
     expect(snapshot.certificate?.terminalOutcomeHash).toMatch(
       /^[a-f0-9]{64}$/u,
     );
-    expect(snapshot.certificate?.turnProvenanceHash).toMatch(
-      /^[a-f0-9]{64}$/u,
-    );
+    expect(snapshot.certificate?.turnProvenanceHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(snapshot.certificate?.terminalProviderKind).toBe(
       InvestigationTurnProviderKind.Codex,
     );
@@ -179,18 +183,110 @@ describe("review investigation in-memory vertical slice", () => {
     expect(snapshot.certificate?.criticDecision).toBe(
       ContextCriticDecision.Accept,
     );
+
+    const sourceBeforeReplay = await harness.store.findById(
+      opened.investigationId,
+    );
+    const replay = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ obligation, sourceReceipt, targetRevision }) =>
+          obligation.canonicalSubject === inventorySubject
+            ? {
+                verdict: InvestigationReceiptReplayVerdict.Matched,
+                targetReceipt: {
+                  ...sourceReceipt,
+                  receiptId: `replay-${sourceReceipt.receiptId}`,
+                  reviewRevisionHash: targetRevision.reviewRevisionHash,
+                },
+              }
+            : {
+                verdict: InvestigationReceiptReplayVerdict.Mismatched,
+                targetReceipt: null,
+              },
+      },
+      harness.digest,
+      harness.clock,
+    );
+    const targetRevision = {
+      baseSha: "1".repeat(40),
+      mergeBaseSha: "2".repeat(40),
+      headSha: "4".repeat(40),
+      reviewRevisionHash: "d".repeat(64),
+    };
+    const replayed = await replay.execute({
+      commandId: "replay-selective",
+      sourceInvestigationId: opened.investigationId,
+      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      targetScope: openCommand("unused").scope,
+      targetRevision,
+      targetExecutionId: "execution-target",
+      targetWorkSlotId: "slot-target",
+    });
+    expect(replayed).toMatchObject({
+      state: ReviewInvestigationState.AwaitingTurn,
+      openObligationCount: 1,
+      satisfiedObligationCount: 1,
+    });
+    expect(
+      (await harness.store.findById(replayed.investigationId))
+        ?.totalUsageTokens,
+    ).toBe(0);
+    expect(await harness.store.findById(opened.investigationId)).toEqual(
+      sourceBeforeReplay,
+    );
+
+    const replayAll = new ReplayReviewInvestigation(
+      harness.store,
+      harness.authority,
+      {
+        replay: async ({ sourceReceipt, targetRevision }) => ({
+          verdict: InvestigationReceiptReplayVerdict.Matched,
+          targetReceipt: {
+            ...sourceReceipt,
+            receiptId: `replay-all-${sourceReceipt.receiptId}`,
+            reviewRevisionHash: targetRevision.reviewRevisionHash,
+          },
+        }),
+      },
+      harness.digest,
+      harness.clock,
+    );
+    const fullyReplayed = await replayAll.execute({
+      commandId: "replay-all",
+      sourceInvestigationId: opened.investigationId,
+      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      targetScope: openCommand("unused").scope,
+      targetRevision: {
+        ...targetRevision,
+        headSha: "5".repeat(40),
+        reviewRevisionHash: "9".repeat(64),
+      },
+      targetExecutionId: "execution-target-all",
+      targetWorkSlotId: "slot-target-all",
+    });
+    expect(fullyReplayed).toMatchObject({
+      state: ReviewInvestigationState.AwaitingCritic,
+      openObligationCount: 0,
+      satisfiedObligationCount: 2,
+    });
   });
 
   it("rejects a contradictory critic accept that proposes more work", async () => {
     const harness = createHarness();
-    const opened = await harness.open.execute(openCommand("open-critic-conflict"));
+    const opened = await harness.open.execute(
+      openCommand("open-critic-conflict"),
+    );
     const discovery = await planDiscovery(harness, opened);
     const awaitingCritic = await harness.commit.execute({
       ...emptyCommit(discovery, "commit-before-critic-conflict"),
-      closureClaims: [{
-        obligationId: discovery.turn!.obligationIds[0]!,
-        receipt: receipt("receipt-before-critic-conflict", changedSubject),
-      }],
+      closureClaims: [
+        {
+          obligationId: discovery.turn!.obligationIds[0]!,
+          receipt: receipt("receipt-before-critic-conflict", changedSubject),
+        },
+      ],
     });
     const critic = await harness.plan.execute({
       commandId: "plan-critic-conflict",
@@ -199,16 +295,20 @@ describe("review investigation in-memory vertical slice", () => {
       leaseDurationMs: 60_000,
       maxObligationsForTurn: 10,
     });
-    await expect(harness.commit.execute({
-      ...emptyCommit(critic, "commit-critic-conflict"),
-      criticDecision: ContextCriticDecision.Accept,
-      proposals: [{
-        kind: InvestigationObligationKind.DirectCaller,
-        canonicalSubject: "src/caller.ts",
-        canonicalRequirement: "inspect caller",
-        riskPriority: 90,
-      }],
-    })).rejects.toThrow("critic_output_contradictory");
+    await expect(
+      harness.commit.execute({
+        ...emptyCommit(critic, "commit-critic-conflict"),
+        criticDecision: ContextCriticDecision.Accept,
+        proposals: [
+          {
+            kind: InvestigationObligationKind.DirectCaller,
+            canonicalSubject: "src/caller.ts",
+            canonicalRequirement: "inspect caller",
+            riskPriority: 90,
+          },
+        ],
+      }),
+    ).rejects.toThrow("critic_output_contradictory");
   });
 
   it("concludes with findings only after supporting evidence closes coverage", async () => {
@@ -253,7 +353,9 @@ describe("review investigation in-memory vertical slice", () => {
 
   it("becomes inconclusive instead of clean when semantic coverage is exhausted", async () => {
     const harness = createHarness({ ...policy, maxSemanticTurns: 1 });
-    const opened = await harness.open.execute(openCommand("open-inconclusive", harness.policy));
+    const opened = await harness.open.execute(
+      openCommand("open-inconclusive", harness.policy),
+    );
     const discovery = await planDiscovery(harness, opened);
     const result = await harness.commit.execute(
       emptyCommit(discovery, "commit-incomplete"),
@@ -271,7 +373,9 @@ describe("review investigation in-memory vertical slice", () => {
       certificateTtlMs: 86_400_000,
     });
     const snapshot = await harness.restore.snapshot(opened.investigationId);
-    expect(snapshot.conclusion).toBe(ReviewInvestigationConclusion.Inconclusive);
+    expect(snapshot.conclusion).toBe(
+      ReviewInvestigationConclusion.Inconclusive,
+    );
     expect(snapshot.certificate?.conclusion).toBe(
       ReviewInvestigationConclusion.Inconclusive,
     );
@@ -281,7 +385,9 @@ describe("review investigation in-memory vertical slice", () => {
     const harness = createHarness();
     const opened = await harness.open.execute(openCommand("open-capacity"));
     const discovery = await planDiscovery(harness, opened);
-    const nextEligibleAt = new Date(harness.clock.now().getTime() + 120_000).toISOString();
+    const nextEligibleAt = new Date(
+      harness.clock.now().getTime() + 120_000,
+    ).toISOString();
     const parked = await harness.abort.execute({
       commandId: "abort-capacity",
       investigationId: opened.investigationId,
@@ -316,11 +422,14 @@ describe("review investigation in-memory vertical slice", () => {
     const restoredStore = InMemoryInvestigationStore.fromSnapshot(before);
     expect(restoredStore.exportSnapshot()).toBe(before);
 
-    const restore = new RestoreReviewInvestigation(restoredStore, harness.digest);
+    const restore = new RestoreReviewInvestigation(
+      restoredStore,
+      harness.digest,
+    );
     const restored = await restore.snapshot(opened.investigationId);
     expect(serializeReviewInvestigation(restored)).toBe(
       serializeReviewInvestigation(
-        (await harness.restore.snapshot(opened.investigationId)),
+        await harness.restore.snapshot(opened.investigationId),
       ),
     );
   });
@@ -358,7 +467,9 @@ describe("review investigation in-memory vertical slice", () => {
       { failed: true },
     ]) {
       const harness = createHarness();
-      const opened = await harness.open.execute(openCommand(`invalid-${JSON.stringify(invalid)}`));
+      const opened = await harness.open.execute(
+        openCommand(`invalid-${JSON.stringify(invalid)}`),
+      );
       const discovery = await planDiscovery(harness, opened);
       await expect(
         harness.commit.execute({
@@ -366,7 +477,10 @@ describe("review investigation in-memory vertical slice", () => {
           closureClaims: [
             {
               obligationId: discovery.turn!.obligationIds[0]!,
-              receipt: { ...receipt("invalid-receipt", changedSubject), ...invalid },
+              receipt: {
+                ...receipt("invalid-receipt", changedSubject),
+                ...invalid,
+              },
             },
           ],
         }),
@@ -374,7 +488,9 @@ describe("review investigation in-memory vertical slice", () => {
     }
 
     const harness = createHarness();
-    const opened = await harness.open.execute(openCommand("unreferenced-finding"));
+    const opened = await harness.open.execute(
+      openCommand("unreferenced-finding"),
+    );
     const discovery = await planDiscovery(harness, opened);
     await expect(
       harness.commit.execute({
@@ -398,7 +514,9 @@ describe("review investigation in-memory vertical slice", () => {
 function createHarness(customPolicy: ReviewInvestigationPolicy = policy) {
   const store = new InMemoryInvestigationStore();
   const digest = new NodeSha256InvestigationDigest();
-  const clock = new FixedInvestigationClock(new Date("2026-08-02T10:00:00.000Z"));
+  const clock = new FixedInvestigationClock(
+    new Date("2026-08-02T10:00:00.000Z"),
+  );
   const authority = new CurrentInvestigationExecutionAuthority();
   return {
     store,
@@ -411,29 +529,23 @@ function createHarness(customPolicy: ReviewInvestigationPolicy = policy) {
     plan: new PlanNextInvestigationTurn(store, authority, digest, clock),
     commit: new CommitInvestigationTurn(store, authority, digest, clock),
     abort: new AbortInvestigationTurn(store, digest, clock),
-    conclude: new ConcludeReviewInvestigation(
-      store,
-      authority,
-      digest,
-      clock,
-      {
-        project: async (investigation) => {
-          const canonicalJson = JSON.stringify({
-            findings: investigation.findings,
-            totalUsageTokens: investigation.totalUsageTokens,
-          });
-          return {
-            canonicalJson,
-            terminalOutcomeHash: await digest.digestUtf8(canonicalJson),
-            conclusion:
-              investigation.conclusion ??
-              (investigation.findings.length > 0
-                ? ReviewInvestigationConclusion.Findings
-                : ReviewInvestigationConclusion.VerifiedClean),
-          };
-        },
+    conclude: new ConcludeReviewInvestigation(store, authority, digest, clock, {
+      project: async (investigation) => {
+        const canonicalJson = JSON.stringify({
+          findings: investigation.findings,
+          totalUsageTokens: investigation.totalUsageTokens,
+        });
+        return {
+          canonicalJson,
+          terminalOutcomeHash: await digest.digestUtf8(canonicalJson),
+          conclusion:
+            investigation.conclusion ??
+            (investigation.findings.length > 0
+              ? ReviewInvestigationConclusion.Findings
+              : ReviewInvestigationConclusion.VerifiedClean),
+        };
       },
-    ),
+    }),
   };
 }
 
@@ -555,6 +667,9 @@ function receipt(receiptId: string, canonicalSubject: string) {
     reviewRevisionHash: revisionHash,
     gatewayPolicyVersion: "gateway-v4",
     evidenceDigest: "f".repeat(64),
+    operationReceiptIds: ["7".repeat(64)],
+    acceptedAttestationId: `attestation-${receiptId}`,
+    acceptedAttestationHash: "8".repeat(64),
     complete: true,
     truncated: false,
     failed: false,

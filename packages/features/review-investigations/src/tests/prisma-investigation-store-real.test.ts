@@ -48,7 +48,9 @@ if (databaseUrl) {
 
 describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
   it("encrypts, expires, and prunes private material", async () => {
-    const seed = createInvestigationStoreContractSeed(`private-${randomUUID()}`);
+    const seed = createInvestigationStoreContractSeed(
+      `private-${randomUUID()}`,
+    );
     const harness = await createHarness(seed, 1_000);
     try {
       const store = harness.store as PrismaInvestigationStore;
@@ -146,10 +148,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
       );
 
       await open(protectedStore, protectedSeed, "protected-open");
-      const protectedTurn = planned(
-        protectedSeed,
-        `turn-protected-${suffix}`,
-      );
+      const protectedTurn = planned(protectedSeed, `turn-protected-${suffix}`);
       await plan(protectedStore, protectedTurn, "protected-plan");
       const receipt = evidenceReceipt(protectedSeed);
       const withReceipt = commitInvestigationTurn({
@@ -185,7 +184,9 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
             sanitizedOutcomeHash: null,
           },
         }),
-      ).resolves.toMatchObject({ status: InvestigationStoreCommitStatus.Committed });
+      ).resolves.toMatchObject({
+        status: InvestigationStoreCommitStatus.Committed,
+      });
       const criticTurn = planInvestigationTurn({
         investigation: withReceipt,
         turn: {
@@ -223,8 +224,12 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           limit: 10,
         }),
       ).resolves.toBe(1);
-      await expect(removableStore.findById(removable.investigationId)).resolves.toBeNull();
-      await expect(protectedStore.findById(protectedSeed.investigationId)).resolves.not.toBeNull();
+      await expect(
+        removableStore.findById(removable.investigationId),
+      ).resolves.toBeNull();
+      await expect(
+        protectedStore.findById(protectedSeed.investigationId),
+      ).resolves.not.toBeNull();
     } finally {
       await removableHarness.dispose();
       await protectedHarness.dispose();
@@ -238,7 +243,9 @@ async function createHarness(
 ): Promise<InvestigationStoreContractHarness> {
   const prisma = createPrismaClient({ databaseUrl: databaseUrl!, poolMax: 6 });
   await seedExecution(prisma, seed);
-  const store = new PrismaInvestigationStore(prisma, { operationalRetentionMs });
+  const store = new PrismaInvestigationStore(prisma, {
+    operationalRetentionMs,
+  });
   return {
     store,
     async restart() {
@@ -348,8 +355,12 @@ async function seedExecution(
       actionCommitSha: producerDigest.slice(0, 40),
       runtimeCommitSha: producerDigest.slice(24, 64),
       wrapperEntrypointDigest: producerDigest,
-      runtimeEntrypointDigest: createHash("sha256").update(producerDigest).digest("hex"),
-      schemaDigest: createHash("sha256").update(`schema-${producerDigest}`).digest("hex"),
+      runtimeEntrypointDigest: createHash("sha256")
+        .update(producerDigest)
+        .digest("hex"),
+      schemaDigest: createHash("sha256")
+        .update(`schema-${producerDigest}`)
+        .digest("hex"),
       capabilityProfile: "investigation-test",
       protocolLimitsProfileId: limitsProfileId,
       operationalSloProfileId: sloProfileId,
@@ -374,7 +385,9 @@ async function seedExecution(
       trustDomain: "trusted_local",
       producerReleaseId,
       selectedProtocolVersion: "review-action-v2",
-      schemaDigest: createHash("sha256").update(`schema-${producerDigest}`).digest("hex"),
+      schemaDigest: createHash("sha256")
+        .update(`schema-${producerDigest}`)
+        .digest("hex"),
       protocolLimitsProfileId: limitsProfileId,
       operationalSloProfileId: sloProfileId,
       mutationEpoch: 1n,
@@ -438,26 +451,65 @@ async function seedExecution(
   });
 }
 
-async function cleanup(prisma: PrismaClient, seed: ReviewInvestigation): Promise<void> {
+async function cleanup(
+  prisma: PrismaClient,
+  seed: ReviewInvestigation,
+): Promise<void> {
   await prisma.reviewInvestigation.updateMany({
     where: { investigationId: seed.investigationId },
     data: { activeTurnId: null, certificateId: null },
   });
-  await prisma.reviewInvestigationCommandReceipt.deleteMany({ where: { investigationId: seed.investigationId } });
-  await prisma.reviewInvestigationPrivateMaterial.deleteMany({ where: { investigationId: seed.investigationId } });
-  await prisma.reviewInvestigationObligation.updateMany({ where: { investigationId: seed.investigationId }, data: { receiptId: null, state: "open", unresolvableReason: null } });
-  await prisma.reviewInvestigationReceipt.deleteMany({ where: { investigationId: seed.investigationId } });
-  await prisma.reviewInvestigationTurn.deleteMany({ where: { investigationId: seed.investigationId } });
-  await prisma.reviewInvestigationCertificate.deleteMany({ where: { investigationId: seed.investigationId } });
-  await prisma.reviewInvestigationObligation.deleteMany({ where: { investigationId: seed.investigationId } });
-  await prisma.reviewInvestigation.deleteMany({ where: { investigationId: seed.investigationId } });
-  await prisma.reviewExecutionWorkSlotV2.deleteMany({ where: { executionId: seed.executionId } });
-  await prisma.reviewExecutionV2.deleteMany({ where: { executionId: seed.executionId } });
-  await prisma.reviewRunAuthorization.deleteMany({ where: { authorizationId: `authorization-${seed.investigationId}` } });
-  await prisma.producerRelease.deleteMany({ where: { producerReleaseId: `producer-${seed.investigationId}` } });
-  await prisma.scmRepositoryIdentity.updateMany({ where: { scmRepositoryIdentityId: seed.scope.scmRepositoryIdentityId }, data: { currentWorkspaceId: null, currentRepositoryConnectionId: null, unboundAt: new Date() } });
-  await prisma.repositoryConnection.deleteMany({ where: { id: seed.scope.repositoryConnectionId } });
-  await prisma.scmRepositoryIdentity.deleteMany({ where: { scmRepositoryIdentityId: seed.scope.scmRepositoryIdentityId } });
+  await prisma.reviewInvestigationCommandReceipt.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigationPrivateMaterial.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigationObligation.updateMany({
+    where: { investigationId: seed.investigationId },
+    data: { receiptId: null, state: "open", unresolvableReason: null },
+  });
+  await prisma.reviewInvestigationReceipt.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigationTurn.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigationCertificate.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigationObligation.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewInvestigation.deleteMany({
+    where: { investigationId: seed.investigationId },
+  });
+  await prisma.reviewExecutionWorkSlotV2.deleteMany({
+    where: { executionId: seed.executionId },
+  });
+  await prisma.reviewExecutionV2.deleteMany({
+    where: { executionId: seed.executionId },
+  });
+  await prisma.reviewRunAuthorization.deleteMany({
+    where: { authorizationId: `authorization-${seed.investigationId}` },
+  });
+  await prisma.producerRelease.deleteMany({
+    where: { producerReleaseId: `producer-${seed.investigationId}` },
+  });
+  await prisma.scmRepositoryIdentity.updateMany({
+    where: { scmRepositoryIdentityId: seed.scope.scmRepositoryIdentityId },
+    data: {
+      currentWorkspaceId: null,
+      currentRepositoryConnectionId: null,
+      unboundAt: new Date(),
+    },
+  });
+  await prisma.repositoryConnection.deleteMany({
+    where: { id: seed.scope.repositoryConnectionId },
+  });
+  await prisma.scmRepositoryIdentity.deleteMany({
+    where: { scmRepositoryIdentityId: seed.scope.scmRepositoryIdentityId },
+  });
   await prisma.workspace.deleteMany({ where: { id: seed.scope.workspaceId } });
 }
 
@@ -466,21 +518,99 @@ async function open(
   seed: ReviewInvestigation,
   commandId: string,
 ): Promise<void> {
-  await expect(store.commit({ investigation: seed, expectedVersion: null, commandId, commandHash: "6".repeat(64), transition: { kind: InvestigationStoreTransitionKind.Opened } })).resolves.toMatchObject({ status: InvestigationStoreCommitStatus.Committed });
+  await expect(
+    store.commit({
+      investigation: seed,
+      expectedVersion: null,
+      commandId,
+      commandHash: "6".repeat(64),
+      transition: { kind: InvestigationStoreTransitionKind.Opened },
+    }),
+  ).resolves.toMatchObject({
+    status: InvestigationStoreCommitStatus.Committed,
+  });
 }
 
-function planned(seed: ReviewInvestigation, turnId: string): ReviewInvestigation {
-  return planInvestigationTurn({ investigation: seed, turn: { turnId, purpose: ReviewInvestigationTurnPurpose.Discovery, leasedAtVersion: seed.version + 1, dossierDigest: seed.dossierDigest, obligationIds: seed.obligations.map((item) => item.obligationId), semanticTurnOrdinal: 1, criticCycleOrdinal: 0, leasedAt: "2026-08-02T10:01:00.000Z", expiresAt: "2026-08-02T10:02:00.000Z" } });
+function planned(
+  seed: ReviewInvestigation,
+  turnId: string,
+): ReviewInvestigation {
+  return planInvestigationTurn({
+    investigation: seed,
+    turn: {
+      turnId,
+      purpose: ReviewInvestigationTurnPurpose.Discovery,
+      leasedAtVersion: seed.version + 1,
+      dossierDigest: seed.dossierDigest,
+      obligationIds: seed.obligations.map((item) => item.obligationId),
+      semanticTurnOrdinal: 1,
+      criticCycleOrdinal: 0,
+      leasedAt: "2026-08-02T10:01:00.000Z",
+      expiresAt: "2026-08-02T10:02:00.000Z",
+    },
+  });
 }
 
-async function plan(store: PrismaInvestigationStore, next: ReviewInvestigation, commandId: string): Promise<void> {
-  await expect(store.commit({ investigation: next, expectedVersion: next.version - 1, commandId, commandHash: "7".repeat(64), transition: { kind: InvestigationStoreTransitionKind.TurnPlanned, turnId: next.activeTurn!.turnId } })).resolves.toMatchObject({ status: InvestigationStoreCommitStatus.Committed });
+async function plan(
+  store: PrismaInvestigationStore,
+  next: ReviewInvestigation,
+  commandId: string,
+): Promise<void> {
+  await expect(
+    store.commit({
+      investigation: next,
+      expectedVersion: next.version - 1,
+      commandId,
+      commandHash: "7".repeat(64),
+      transition: {
+        kind: InvestigationStoreTransitionKind.TurnPlanned,
+        turnId: next.activeTurn!.turnId,
+      },
+    }),
+  ).resolves.toMatchObject({
+    status: InvestigationStoreCommitStatus.Committed,
+  });
 }
 
-async function abort(store: PrismaInvestigationStore, current: ReviewInvestigation, next: ReviewInvestigation, commandId: string): Promise<void> {
-  await expect(store.commit({ investigation: next, expectedVersion: current.version, commandId, commandHash: "9".repeat(64), transition: { kind: InvestigationStoreTransitionKind.TurnAborted, turnId: current.activeTurn!.turnId, reason: ReviewInvestigationAbortReason.ConfinementViolation } })).resolves.toMatchObject({ status: InvestigationStoreCommitStatus.Committed });
+async function abort(
+  store: PrismaInvestigationStore,
+  current: ReviewInvestigation,
+  next: ReviewInvestigation,
+  commandId: string,
+): Promise<void> {
+  await expect(
+    store.commit({
+      investigation: next,
+      expectedVersion: current.version,
+      commandId,
+      commandHash: "9".repeat(64),
+      transition: {
+        kind: InvestigationStoreTransitionKind.TurnAborted,
+        turnId: current.activeTurn!.turnId,
+        reason: ReviewInvestigationAbortReason.ConfinementViolation,
+      },
+    }),
+  ).resolves.toMatchObject({
+    status: InvestigationStoreCommitStatus.Committed,
+  });
 }
 
-function evidenceReceipt(seed: ReviewInvestigation): InvestigationEvidenceReceipt {
-  return { receiptId: `receipt-${seed.investigationId}`, operationKey: `operation-${seed.investigationId}`, kind: InvestigationReceiptKind.Tree, canonicalSubject: seed.obligations[0]!.canonicalSubject, reviewRevisionHash: seed.revision.reviewRevisionHash, gatewayPolicyVersion: seed.contract.gatewayPolicyVersion, evidenceDigest: "a".repeat(64), complete: true, truncated: false, failed: false };
+function evidenceReceipt(
+  seed: ReviewInvestigation,
+): InvestigationEvidenceReceipt {
+  return {
+    receiptId: `receipt-${seed.investigationId}`,
+    operationKey: `operation-${seed.investigationId}`,
+    kind: InvestigationReceiptKind.Tree,
+    canonicalSubject: seed.obligations[0]!.canonicalSubject,
+    reviewRevisionHash: seed.revision.reviewRevisionHash,
+    gatewayPolicyVersion: seed.contract.gatewayPolicyVersion,
+    evidenceDigest: "a".repeat(64),
+    operationReceiptIds: [],
+    acceptedAttestationId: null,
+    acceptedAttestationHash: null,
+    complete: true,
+    truncated: false,
+    failed: false,
+  };
 }
