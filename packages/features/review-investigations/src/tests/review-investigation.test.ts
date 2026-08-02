@@ -223,6 +223,10 @@ describe("review investigation in-memory vertical slice", () => {
       targetRevision,
       targetExecutionId: "execution-target",
       targetWorkSlotId: "slot-target",
+      replayProofs: sourceBeforeReplay!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-${obligation.obligationId}`,
+      })),
     });
     expect(replayed).toMatchObject({
       state: ReviewInvestigationState.AwaitingTurn,
@@ -265,6 +269,10 @@ describe("review investigation in-memory vertical slice", () => {
       },
       targetExecutionId: "execution-target-all",
       targetWorkSlotId: "slot-target-all",
+      replayProofs: sourceBeforeReplay!.obligations.map((obligation) => ({
+        obligationId: obligation.obligationId,
+        replayProofId: `proof-all-${obligation.obligationId}`,
+      })),
     });
     expect(fullyReplayed).toMatchObject({
       state: ReviewInvestigationState.AwaitingCritic,

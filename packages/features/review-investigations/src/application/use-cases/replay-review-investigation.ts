@@ -50,6 +50,10 @@ export type ReplayReviewInvestigationCommand = Readonly<{
   targetRevision: ReviewInvestigationRevision;
   targetExecutionId: string;
   targetWorkSlotId: string;
+  replayProofs: readonly Readonly<{
+    obligationId: string;
+    replayProofId: string;
+  }>[];
 }>;
 
 export class ReplayReviewInvestigation {
@@ -166,6 +170,13 @@ export class ReplayReviewInvestigation {
     command: ReplayReviewInvestigationCommand,
   ): Promise<readonly InvestigationObligation[]> {
     const replayed: InvestigationObligation[] = [];
+    const proofByObligationId = new Map<string, string>();
+    for (const proof of command.replayProofs) {
+      if (proofByObligationId.has(proof.obligationId)) {
+        throw new Error("investigation_replay_proof_duplicate");
+      }
+      proofByObligationId.set(proof.obligationId, proof.replayProofId);
+    }
     for (const obligation of source.obligations) {
       let target = createInvestigationObligation({
         obligationId: obligation.obligationId,
@@ -185,11 +196,13 @@ export class ReplayReviewInvestigation {
         obligation.receipt !== null &&
         obligation.receipt.acceptedAttestationId !== null &&
         obligation.receipt.acceptedAttestationHash !== null &&
-        obligation.receipt.operationReceiptIds.length > 0
+        obligation.receipt.operationReceiptIds.length > 0 &&
+        proofByObligationId.has(obligation.obligationId)
       ) {
         const result = await this.replay.replay({
           sourceInvestigationId: source.investigationId,
           sourceCertificateHash: command.sourceCertificateHash,
+          replayProofId: proofByObligationId.get(obligation.obligationId)!,
           obligation,
           sourceReceipt: obligation.receipt,
           targetRevision: command.targetRevision,
