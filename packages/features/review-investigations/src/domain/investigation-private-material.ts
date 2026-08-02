@@ -54,8 +54,14 @@ export function createEncryptedInvestigationPrivateMaterial(
     input.byteCount,
     "private_material_ciphertext",
   );
-  const createdAt = parseTimestamp(input.createdAt, "private_material_created_at");
-  const expiresAt = parseTimestamp(input.expiresAt, "private_material_expires_at");
+  const createdAt = parseTimestamp(
+    input.createdAt,
+    "private_material_created_at",
+  );
+  const expiresAt = parseTimestamp(
+    input.expiresAt,
+    "private_material_expires_at",
+  );
   if (expiresAt <= createdAt) {
     throw new ReviewInvestigationDomainError("private_material_expiry_invalid");
   }

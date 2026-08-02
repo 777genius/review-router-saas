@@ -7,7 +7,11 @@ export type CanonicalValue =
   | { readonly [key: string]: CanonicalValue };
 
 export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "string") {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "string"
+  ) {
     return JSON.stringify(value);
   }
   if (typeof value === "number") {
@@ -34,10 +38,17 @@ export function assertIdentifier(value: string, field: string): void {
     value.length < 1 ||
     value.length > 512 ||
     value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/u.test(value)
+    containsControlCharacter(value)
   ) {
     throw new ReviewInvestigationDomainError(`${field}_invalid`);
   }
+}
+
+function containsControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
 }
 
 export function assertDigest(value: string, field: string): void {

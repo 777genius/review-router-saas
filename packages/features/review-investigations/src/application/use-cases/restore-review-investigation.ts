@@ -16,7 +16,9 @@ export class RestoreReviewInvestigation {
     private readonly digest: InvestigationDigestPort,
   ) {}
 
-  async execute(investigationId: string): Promise<ReviewInvestigationReadModel> {
+  async execute(
+    investigationId: string,
+  ): Promise<ReviewInvestigationReadModel> {
     const investigation = await this.require(investigationId);
     const expected = await digestCanonical(
       this.digest,

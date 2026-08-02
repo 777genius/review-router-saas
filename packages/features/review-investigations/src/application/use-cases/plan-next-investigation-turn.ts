@@ -58,8 +58,14 @@ export class PlanNextInvestigationTurn {
     if (current.version !== command.expectedVersion) {
       throw new Error("investigation_concurrency_conflict");
     }
-    await requireCurrentExecution({ authority: this.authority, investigation: current });
-    if (!Number.isSafeInteger(command.leaseDurationMs) || command.leaseDurationMs <= 0) {
+    await requireCurrentExecution({
+      authority: this.authority,
+      investigation: current,
+    });
+    if (
+      !Number.isSafeInteger(command.leaseDurationMs) ||
+      command.leaseDurationMs <= 0
+    ) {
       throw new Error("turn_lease_duration_invalid");
     }
     if (
@@ -105,10 +111,16 @@ export class PlanNextInvestigationTurn {
       leasedAtVersion: current.version + 1,
       dossierDigest: current.dossierDigest,
       obligationIds,
-      semanticTurnOrdinal: current.semanticTurns + (purpose === ReviewInvestigationTurnPurpose.Discovery ? 1 : 0),
-      criticCycleOrdinal: current.criticCycles + (purpose === ReviewInvestigationTurnPurpose.Critic ? 1 : 0),
+      semanticTurnOrdinal:
+        current.semanticTurns +
+        (purpose === ReviewInvestigationTurnPurpose.Discovery ? 1 : 0),
+      criticCycleOrdinal:
+        current.criticCycles +
+        (purpose === ReviewInvestigationTurnPurpose.Critic ? 1 : 0),
       leasedAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + command.leaseDurationMs).toISOString(),
+      expiresAt: new Date(
+        now.getTime() + command.leaseDurationMs,
+      ).toISOString(),
     };
     let next = planInvestigationTurn({ investigation: current, turn });
     next = await withCurrentDossierDigest(this.digest, next);

@@ -71,8 +71,7 @@ export function toInvestigationReadModel(
     terminalActualModel: investigation.certificate?.terminalActualModel ?? null,
     terminalObservationCanonicalJson:
       investigation.certificate?.terminalObservationCanonicalJson ?? null,
-    terminalOutcomeHash:
-      investigation.certificate?.terminalOutcomeHash ?? null,
+    terminalOutcomeHash: investigation.certificate?.terminalOutcomeHash ?? null,
     conclusion: investigation.conclusion,
   };
 }
@@ -81,7 +80,8 @@ function count(
   investigation: ReviewInvestigation,
   state: InvestigationObligationState,
 ): number {
-  return investigation.obligations.filter((item) => item.state === state).length;
+  return investigation.obligations.filter((item) => item.state === state)
+    .length;
 }
 
 function nextAction(
@@ -92,7 +92,8 @@ function nextAction(
     case ReviewInvestigationState.Provisional:
       return ReviewInvestigationNextActionKind.RunTurn;
     case ReviewInvestigationState.TurnLeased:
-      return investigation.activeTurn?.purpose === ReviewInvestigationTurnPurpose.Critic
+      return investigation.activeTurn?.purpose ===
+        ReviewInvestigationTurnPurpose.Critic
         ? ReviewInvestigationNextActionKind.RunCritic
         : ReviewInvestigationNextActionKind.RunTurn;
     case ReviewInvestigationState.AwaitingCritic:

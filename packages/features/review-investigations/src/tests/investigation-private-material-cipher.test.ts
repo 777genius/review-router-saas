@@ -31,7 +31,10 @@ describe("AesGcmInvestigationPrivateMaterialCipher", () => {
     );
 
     await expect(
-      rotated.decrypt({ material, associatedDataCanonicalJson: associatedData }),
+      rotated.decrypt({
+        material,
+        associatedDataCanonicalJson: associatedData,
+      }),
     ).resolves.toBe(plaintext);
     expect(JSON.stringify(material)).not.toContain("private symbol lookup");
     expect(material.keyId).toBe("key-old");
@@ -72,7 +75,9 @@ describe("AesGcmInvestigationPrivateMaterialCipher", () => {
         material,
         associatedDataCanonicalJson: '{"investigationId":"investigation-2"}',
       }),
-    ).rejects.toThrow("investigation_private_material_associated_data_mismatch");
+    ).rejects.toThrow(
+      "investigation_private_material_associated_data_mismatch",
+    );
 
     const tampered = Buffer.from(material.ciphertextBase64Url, "base64url");
     tampered[0] = tampered[0]! ^ 1;

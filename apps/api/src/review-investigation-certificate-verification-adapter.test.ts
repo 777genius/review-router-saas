@@ -28,10 +28,14 @@ describe("ReviewInvestigationCertificateVerificationAdapter", () => {
       storeWith(investigation),
       digest,
     );
-    await expect(adapter.verifyAcceptedCertificate(query(
-      investigation.certificate!.certificateHash,
-      investigation.certificate!.terminalOutcomeHash,
-    ))).resolves.toEqual({
+    await expect(
+      adapter.verifyAcceptedCertificate(
+        query(
+          investigation.certificate!.certificateHash,
+          investigation.certificate!.terminalOutcomeHash,
+        ),
+      ),
+    ).resolves.toEqual({
       status: InvestigationCertificateVerificationStatus.Accepted,
       reason: InvestigationCertificateVerificationDenialReason.None,
       acceptedCertificateHash: investigation.certificate!.certificateHash,
@@ -45,13 +49,15 @@ describe("ReviewInvestigationCertificateVerificationAdapter", () => {
       storeWith(investigation),
       new NodeSha256InvestigationDigest(),
     );
-    await expect(adapter.verifyAcceptedCertificate({
-      ...query(
-        investigation.certificate!.certificateHash,
-        investigation.certificate!.terminalOutcomeHash,
-      ),
-      terminalOutcomeHash: h("9"),
-    })).resolves.toMatchObject({
+    await expect(
+      adapter.verifyAcceptedCertificate({
+        ...query(
+          investigation.certificate!.certificateHash,
+          investigation.certificate!.terminalOutcomeHash,
+        ),
+        terminalOutcomeHash: h("9"),
+      }),
+    ).resolves.toMatchObject({
       status: InvestigationCertificateVerificationStatus.Denied,
       reason:
         InvestigationCertificateVerificationDenialReason.TerminalOutcomeMismatch,
@@ -61,7 +67,8 @@ describe("ReviewInvestigationCertificateVerificationAdapter", () => {
   it("rejects a rehashed certificate whose model disagrees with the turn ledger", async () => {
     const investigation = await certificateBackedInvestigation();
     const digest = new NodeSha256InvestigationDigest();
-    const { certificateHash: _, ...candidate } = investigation.certificate!;
+    const { certificateHash, ...candidate } = investigation.certificate!;
+    void certificateHash;
     const tamperedCandidate = {
       ...candidate,
       terminalActualModel: "gpt-other",
@@ -76,10 +83,11 @@ describe("ReviewInvestigationCertificateVerificationAdapter", () => {
       storeWith({ ...investigation, certificate }),
       digest,
     );
-    await expect(adapter.verifyAcceptedCertificate(query(
-      certificate.certificateHash,
-      certificate.terminalOutcomeHash,
-    ))).resolves.toMatchObject({
+    await expect(
+      adapter.verifyAcceptedCertificate(
+        query(certificate.certificateHash, certificate.terminalOutcomeHash),
+      ),
+    ).resolves.toMatchObject({
       status: InvestigationCertificateVerificationStatus.Denied,
       reason: InvestigationCertificateVerificationDenialReason.NotAccepted,
     });
@@ -113,7 +121,9 @@ function query(certificateHash: string, terminalOutcomeHash: string) {
 
 async function certificateBackedInvestigation(): Promise<ReviewInvestigation> {
   const digest = new NodeSha256InvestigationDigest();
-  const terminalObservationCanonicalJson = JSON.stringify({ payloadVersion: 2 });
+  const terminalObservationCanonicalJson = JSON.stringify({
+    payloadVersion: 2,
+  });
   const candidate = {
     certificateId: "certificate-1",
     investigationId: "investigation-1",
@@ -174,29 +184,30 @@ async function certificateBackedInvestigation(): Promise<ReviewInvestigation> {
       headSha: "3".repeat(40),
       reviewRevisionHash: h("4"),
     },
-    turnProvenance: [{
-      turnId: "turn-1",
-      purpose: ReviewInvestigationTurnPurpose.Discovery,
-      actualProviderKind: InvestigationTurnProviderKind.Codex,
-      actualModel: "gpt-test",
-      runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
-      inputTokens: 10,
-      cachedInputTokens: 0,
-      outputTokens: 5,
-      reasoningOutputTokens: 0,
-      totalTokens: 15,
-      durationMs: 100,
-      acceptedAttestationId: "attestation-1",
-      acceptedAttestationHash: h("8"),
-      terminalOutcomeHash: h("9"),
-    }],
+    turnProvenance: [
+      {
+        turnId: "turn-1",
+        purpose: ReviewInvestigationTurnPurpose.Discovery,
+        actualProviderKind: InvestigationTurnProviderKind.Codex,
+        actualModel: "gpt-test",
+        runtimeProfile:
+          ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        reasoningOutputTokens: 0,
+        totalTokens: 15,
+        durationMs: 100,
+        acceptedAttestationId: "attestation-1",
+        acceptedAttestationHash: h("8"),
+        terminalOutcomeHash: h("9"),
+      },
+    ],
     certificate,
   } as unknown as ReviewInvestigation;
 }
 
-function storeWith(
-  investigation: ReviewInvestigation,
-): InvestigationStorePort {
+function storeWith(investigation: ReviewInvestigation): InvestigationStorePort {
   return {
     findByCertificateId: async () => investigation,
   } as unknown as InvestigationStorePort;

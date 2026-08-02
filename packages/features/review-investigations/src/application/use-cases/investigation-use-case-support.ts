@@ -1,4 +1,7 @@
-import { canonicalJson, type CanonicalValue } from "../../domain/canonicalization";
+import {
+  canonicalJson,
+  type CanonicalValue,
+} from "../../domain/canonicalization";
 import {
   investigationDossierCanonicalValue,
   type ReviewInvestigation,
@@ -38,11 +41,7 @@ export async function requireCurrentExecution(input: {
   readonly authority: InvestigationExecutionAuthorityPort;
   readonly investigation: Pick<
     ReviewInvestigation,
-    | "scope"
-    | "revision"
-    | "executionId"
-    | "workSlotId"
-    | "providerVoteLaneId"
+    "scope" | "revision" | "executionId" | "workSlotId" | "providerVoteLaneId"
   >;
 }): Promise<void> {
   const verdict = await input.authority.check(input.investigation);
@@ -63,7 +62,8 @@ export async function commitOrThrow(input: {
   switch (result.status) {
     case InvestigationStoreCommitStatus.Committed:
     case InvestigationStoreCommitStatus.Restored:
-      if (result.investigation === null) throw new Error("store_snapshot_missing");
+      if (result.investigation === null)
+        throw new Error("store_snapshot_missing");
       return result.investigation;
     case InvestigationStoreCommitStatus.ConcurrencyConflict:
       throw new Error("investigation_concurrency_conflict");

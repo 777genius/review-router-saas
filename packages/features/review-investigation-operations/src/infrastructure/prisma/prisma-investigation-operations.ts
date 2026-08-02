@@ -76,7 +76,7 @@ export class PrismaInvestigationOperations
           select: { payloadHash: true },
         });
       if (raced.payloadHash !== payloadHash)
-        throw new Error("telemetry_sample_id_conflict");
+        throw new Error("telemetry_sample_id_conflict", { cause: error });
     }
   }
 

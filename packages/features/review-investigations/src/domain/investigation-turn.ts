@@ -1,4 +1,7 @@
-import type { InvestigationEvidenceReceipt, InvestigationObligation } from "./investigation-obligation";
+import type {
+  InvestigationEvidenceReceipt,
+  InvestigationObligation,
+} from "./investigation-obligation";
 import type { CanonicalValue } from "./canonicalization";
 import {
   ContextCriticDecision,
@@ -101,7 +104,9 @@ export type InvestigationTurnAbort = Readonly<{
   nextEligibleAt: string | null;
 }>;
 
-export function findingCanonicalValue(finding: InvestigationFinding): CanonicalValue {
+export function findingCanonicalValue(
+  finding: InvestigationFinding,
+): CanonicalValue {
   return {
     fingerprint: finding.fingerprint,
     severity: finding.severity,

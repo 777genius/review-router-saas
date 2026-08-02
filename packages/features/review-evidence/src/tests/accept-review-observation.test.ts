@@ -247,11 +247,13 @@ describe("AcceptReviewObservation", () => {
       }),
     );
 
-    const result = await fixture.useCase.execute(command({
-      investigationCertificateId: "certificate-1",
-      investigationCertificateHash: hash("8"),
-      payload: payload({ normalizedFindings: [] }),
-    }));
+    const result = await fixture.useCase.execute(
+      command({
+        investigationCertificateId: "certificate-1",
+        investigationCertificateHash: hash("8"),
+        payload: payload({ normalizedFindings: [] }),
+      }),
+    );
     expect(result.status).toBe(AcceptReviewObservationStatus.Accepted);
     expect(verifyAcceptedCertificate).toHaveBeenCalledOnce();
     expect(fixture.store.all()).toHaveLength(1);
@@ -260,14 +262,20 @@ describe("AcceptReviewObservation", () => {
   it("keeps investigation certificate acceptance disabled by default", async () => {
     const verifyAcceptedCertificate = vi.fn();
     const fixture = setup(undefined, { verifyAcceptedCertificate });
-    fixture.attempts.put(attemptFacts({
-      executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
-    }));
-    await expect(fixture.useCase.execute(command({
-      investigationCertificateId: "certificate-1",
-      investigationCertificateHash: hash("8"),
-      payload: payload({ normalizedFindings: [] }),
-    }))).resolves.toEqual({
+    fixture.attempts.put(
+      attemptFacts({
+        executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+      }),
+    );
+    await expect(
+      fixture.useCase.execute(
+        command({
+          investigationCertificateId: "certificate-1",
+          investigationCertificateHash: hash("8"),
+          payload: payload({ normalizedFindings: [] }),
+        }),
+      ),
+    ).resolves.toEqual({
       status: AcceptReviewObservationStatus.Rejected,
       reason:
         AcceptReviewObservationRejectionReason.InvestigationCertificatePathDisabled,
@@ -332,9 +340,11 @@ describe("AcceptReviewObservation", () => {
 });
 
 function setup(
-  contextAttestations: ConstructorParameters<
-    typeof AcceptReviewObservation
-  >[0]["contextAttestations"] | undefined = undefined,
+  contextAttestations:
+    | ConstructorParameters<
+        typeof AcceptReviewObservation
+      >[0]["contextAttestations"]
+    | undefined = undefined,
   investigationCertificates: ConstructorParameters<
     typeof AcceptReviewObservation
   >[0]["investigationCertificates"] = {

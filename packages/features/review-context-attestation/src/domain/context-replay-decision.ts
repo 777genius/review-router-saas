@@ -153,9 +153,7 @@ function selectedSourceEvents(
   selectedReceiptIds: ReadonlySet<string>,
 ): readonly ContextGatewayV4Event[] | null {
   const successful = events.filter(
-    (
-      event,
-    ): event is ContextGatewayV4Event & { operationReceiptId: string } =>
+    (event): event is ContextGatewayV4Event & { operationReceiptId: string } =>
       event.outcome === ContextGatewayV4OutcomeKind.Succeeded &&
       event.operationReceiptId !== null,
   );
@@ -206,18 +204,17 @@ function v4ComparableResult(
   if (result === null) return null;
   switch (event.operationKind) {
     case ContextGatewayV4OperationKind.FileRead: {
-      const { treeOid: _treeOid, ...comparable } = result;
+      const { treeOid, ...comparable } = result;
+      void treeOid;
       return comparable;
     }
     case ContextGatewayV4OperationKind.DirectoryList:
     case ContextGatewayV4OperationKind.TextSearch:
     case ContextGatewayV4OperationKind.CanonicalInventory: {
-      const {
-        treeOid: _treeOid,
-        queryDigest: _queryDigest,
-        nextCursorHash: _nextCursorHash,
-        ...comparable
-      } = result;
+      const { treeOid, queryDigest, nextCursorHash, ...comparable } = result;
+      void treeOid;
+      void queryDigest;
+      void nextCursorHash;
       return comparable;
     }
     case ContextGatewayV4OperationKind.GitFact:

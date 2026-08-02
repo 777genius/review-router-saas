@@ -77,7 +77,10 @@ export class OpenReviewInvestigation {
       commandHash,
     });
     if (restored) return toInvestigationReadModel(restored);
-    await requireCurrentExecution({ authority: this.authority, investigation: command });
+    await requireCurrentExecution({
+      authority: this.authority,
+      investigation: command,
+    });
     const naturalIdentityHash = await digestCanonical(this.digest, {
       scope: { ...command.scope },
       revision: { ...command.revision },
@@ -89,7 +92,10 @@ export class OpenReviewInvestigation {
       runtimeProfileVersion: command.contract.runtimeProfileVersion,
     });
     const receipts = new Map(
-      command.initialReceipts.map((receipt) => [receipt.canonicalSubject, receipt]),
+      command.initialReceipts.map((receipt) => [
+        receipt.canonicalSubject,
+        receipt,
+      ]),
     );
     const obligations = await Promise.all(
       command.seedObligations.map(async (seed) => {

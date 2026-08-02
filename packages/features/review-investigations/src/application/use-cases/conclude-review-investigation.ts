@@ -67,8 +67,14 @@ export class ConcludeReviewInvestigation {
     if (current.version !== command.expectedVersion) {
       throw new Error("investigation_concurrency_conflict");
     }
-    await requireCurrentExecution({ authority: this.authority, investigation: current });
-    if (!Number.isSafeInteger(command.certificateTtlMs) || command.certificateTtlMs <= 0) {
+    await requireCurrentExecution({
+      authority: this.authority,
+      investigation: current,
+    });
+    if (
+      !Number.isSafeInteger(command.certificateTtlMs) ||
+      command.certificateTtlMs <= 0
+    ) {
       throw new Error("certificate_ttl_invalid");
     }
     const now = this.clock.now();
@@ -153,7 +159,9 @@ export class ConcludeReviewInvestigation {
       criticAttestationHash: criticProvenance?.acceptedAttestationHash ?? null,
       criticDecision: current.criticDecision,
       issuedAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + command.certificateTtlMs).toISOString(),
+      expiresAt: new Date(
+        now.getTime() + command.certificateTtlMs,
+      ).toISOString(),
     };
     const certificate: ReviewInvestigationCertificate = {
       ...candidate,

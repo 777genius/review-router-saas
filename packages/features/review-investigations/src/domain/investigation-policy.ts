@@ -1,7 +1,4 @@
-import {
-  assertPositiveInteger,
-  type CanonicalValue,
-} from "./canonicalization";
+import { assertPositiveInteger, type CanonicalValue } from "./canonicalization";
 
 export type ReviewInvestigationPolicy = Readonly<{
   policyId: string;

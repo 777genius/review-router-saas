@@ -14,9 +14,7 @@ import {
   type EncryptedInvestigationPrivateMaterial,
 } from "../../domain/investigation-private-material";
 
-export class AesGcmInvestigationPrivateMaterialCipher
-  implements InvestigationPrivateMaterialCipherPort
-{
+export class AesGcmInvestigationPrivateMaterialCipher implements InvestigationPrivateMaterialCipherPort {
   private readonly keys: ReadonlyMap<string, Buffer>;
 
   constructor(
@@ -85,7 +83,9 @@ export class AesGcmInvestigationPrivateMaterialCipher
     readonly material: EncryptedInvestigationPrivateMaterial;
     readonly associatedDataCanonicalJson: string;
   }): Promise<string> {
-    const material = createEncryptedInvestigationPrivateMaterial(input.material);
+    const material = createEncryptedInvestigationPrivateMaterial(
+      input.material,
+    );
     const key = this.keys.get(material.keyId);
     if (!key) {
       throw new Error("investigation_private_material_key_unavailable");
@@ -95,7 +95,9 @@ export class AesGcmInvestigationPrivateMaterialCipher
       "investigation_private_material_associated_data",
     );
     if (!sameHash(sha256(associatedData), material.associatedDataHash)) {
-      throw new Error("investigation_private_material_associated_data_mismatch");
+      throw new Error(
+        "investigation_private_material_associated_data_mismatch",
+      );
     }
     const decipher = createDecipheriv(
       "aes-256-gcm",

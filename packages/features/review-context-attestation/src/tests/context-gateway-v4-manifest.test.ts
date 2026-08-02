@@ -64,10 +64,13 @@ describe("ContextGatewayV4Manifest", () => {
 
   it("replays only the selected receipt group and ignores revision tree identity", () => {
     const source = createContextGatewayV4Manifest(candidate(validEvents()));
-    const targetEvents = rechain([
-      successPage(1, 0, false, hash("target-seed")),
-      successPage(2, 1, true, hash("unused")),
-    ], hash("target-seed"));
+    const targetEvents = rechain(
+      [
+        successPage(1, 0, false, hash("target-seed")),
+        successPage(2, 1, true, hash("unused")),
+      ],
+      hash("target-seed"),
+    );
     const target = createContextGatewayV4Manifest({
       ...candidate(targetEvents),
       checkoutTreeOid: "c".repeat(40),

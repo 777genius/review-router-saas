@@ -430,7 +430,8 @@ function validateInvestigationCertificateReference(
     );
   }
   if (
-    candidate.executionProfile === ProviderExecutionProfile.InvestigationGatewayV1
+    candidate.executionProfile ===
+    ProviderExecutionProfile.InvestigationGatewayV1
       ? !hasId
       : hasId
   ) {

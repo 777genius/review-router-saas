@@ -63,11 +63,24 @@ export function parseInvestigationTurnObservation(
 ): InvestigationTurnObservation {
   const root = record(value, "turn_observation");
   exactKeys(root, [
-    "outputVersion", "findings", "obligationProposals", "closureClaims",
-    "unresolvableClaims", "criticDecision", "observationVersion",
-    "invocationId", "turnId", "dossierVersion", "purpose",
-    "actualProviderKind", "actualModel", "runtimeProfile", "usage",
-    "durationMs", "schemaComplete", "streamComplete",
+    "outputVersion",
+    "findings",
+    "obligationProposals",
+    "closureClaims",
+    "unresolvableClaims",
+    "criticDecision",
+    "observationVersion",
+    "invocationId",
+    "turnId",
+    "dossierVersion",
+    "purpose",
+    "actualProviderKind",
+    "actualModel",
+    "runtimeProfile",
+    "usage",
+    "durationMs",
+    "schemaComplete",
+    "streamComplete",
     "contextAttestationReference",
   ]);
   if (
@@ -80,8 +93,11 @@ export function parseInvestigationTurnObservation(
   }
   const usage = record(root.usage, "turn_usage");
   exactKeys(usage, [
-    "inputTokens", "cachedInputTokens", "outputTokens",
-    "reasoningOutputTokens", "totalTokens",
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+    "totalTokens",
   ]);
   const parsedUsage = Object.freeze({
     inputTokens: nonNegativeInteger(usage.inputTokens, "input_tokens"),
@@ -109,7 +125,11 @@ export function parseInvestigationTurnObservation(
     findings: boundedArray(root.findings, "findings").map((item) => {
       const finding = record(item, "finding");
       exactKeys(finding, [
-        "severity", "title", "body", "path", "line",
+        "severity",
+        "title",
+        "body",
+        "path",
+        "line",
         "evidenceOperationReceiptIds",
       ]);
       return Object.freeze({
@@ -133,7 +153,10 @@ export function parseInvestigationTurnObservation(
     ).map((item) => {
       const proposal = record(item, "obligation_proposal");
       exactKeys(proposal, [
-        "kind", "canonicalSubject", "canonicalRequirement", "riskPriority",
+        "kind",
+        "canonicalSubject",
+        "canonicalRequirement",
+        "riskPriority",
       ]);
       return Object.freeze({
         kind: enumValue(
@@ -180,7 +203,9 @@ export function parseInvestigationTurnObservation(
     ).map((item) => {
       const claim = record(item, "unresolvable_claim");
       exactKeys(claim, [
-        "obligationId", "reason", "evidenceOperationReceiptIds",
+        "obligationId",
+        "reason",
+        "evidenceOperationReceiptIds",
       ]);
       return Object.freeze({
         obligationId: digest(claim.obligationId, "obligation_id"),
@@ -194,7 +219,11 @@ export function parseInvestigationTurnObservation(
     criticDecision:
       root.criticDecision === null
         ? null
-        : enumValue(root.criticDecision, ContextCriticDecision, "critic_decision"),
+        : enumValue(
+            root.criticDecision,
+            ContextCriticDecision,
+            "critic_decision",
+          ),
     observationVersion: investigationTurnObservationVersion,
     invocationId: text(root.invocationId, "invocation_id", 512),
     turnId: text(root.turnId, "turn_id", 256),
@@ -249,7 +278,10 @@ function record(value: unknown, field: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function exactKeys(value: Record<string, unknown>, expected: readonly string[]) {
+function exactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+) {
   const actual = Object.keys(value).sort();
   const sorted = [...expected].sort();
   if (
@@ -269,7 +301,8 @@ function boundedArray(value: unknown, field: string): readonly unknown[] {
 
 function digestArray(value: unknown, field: string): readonly string[] {
   const items = boundedArray(value, field).map((item) => digest(item, field));
-  if (new Set(items).size !== items.length) throw new Error(`${field}_duplicate`);
+  if (new Set(items).size !== items.length)
+    throw new Error(`${field}_duplicate`);
   return Object.freeze(items);
 }
 

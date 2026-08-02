@@ -80,10 +80,16 @@ export class CommitInvestigationTurn {
     if (restored) return toInvestigationReadModel(restored);
     const current = await this.store.findById(command.investigationId);
     if (current === null) throw new Error("investigation_missing");
-    if (current.version !== command.expectedVersion || current.activeTurn === null) {
+    if (
+      current.version !== command.expectedVersion ||
+      current.activeTurn === null
+    ) {
       throw new Error("investigation_concurrency_conflict");
     }
-    await requireCurrentExecution({ authority: this.authority, investigation: current });
+    await requireCurrentExecution({
+      authority: this.authority,
+      investigation: current,
+    });
     const origin = proposalOriginForTurn(current.activeTurn.purpose);
     const proposedObligations = await Promise.all(
       command.proposals.map(async (proposal) => {

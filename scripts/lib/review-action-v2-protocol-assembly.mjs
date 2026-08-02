@@ -918,10 +918,7 @@ function requestSchema(contract, operation) {
         pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       },
       ...Object.fromEntries(
-        fields.map((field) => [
-          field.name,
-          fieldJsonSchema(field, contract),
-        ]),
+        fields.map((field) => [field.name, fieldJsonSchema(field, contract)]),
       ),
     },
     ...allOrNoneRequestFieldGroupsSchema(operation, contract),
@@ -1131,8 +1128,7 @@ function fieldJsonSchema(fieldOrType, contract) {
       );
     }
     schema = { enum: descriptor.values };
-  }
-  else if (base === "identifier")
+  } else if (base === "identifier")
     schema = {
       type: "string",
       minLength: 1,

@@ -33,13 +33,18 @@ export type SeedInvestigationObligation = Readonly<{
   riskPriority: number;
 }>;
 
-export function assertInvestigationScope(scope: ReviewInvestigationScope): void {
+export function assertInvestigationScope(
+  scope: ReviewInvestigationScope,
+): void {
   assertIdentifier(scope.workspaceId, "workspace_id");
   assertIdentifier(scope.repositoryConnectionId, "repository_connection_id");
   assertIdentifier(scope.scmRepositoryIdentityId, "scm_repository_identity_id");
   assertIdentifier(scope.trustDomain, "trust_domain");
   assertDigest(scope.authorizationScopeHash, "authorization_scope_hash");
-  if (!Number.isSafeInteger(scope.pullRequestNumber) || scope.pullRequestNumber <= 0) {
+  if (
+    !Number.isSafeInteger(scope.pullRequestNumber) ||
+    scope.pullRequestNumber <= 0
+  ) {
     throw new Error("pull_request_number_invalid");
   }
 }

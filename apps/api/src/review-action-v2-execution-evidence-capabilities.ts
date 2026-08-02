@@ -19,8 +19,7 @@ const investigationTurnRole = "review_investigation_turn_v1";
 const attachmentRole = "review_evidence_attachment_v1";
 const contextGatewaySealRole = "review_context_gateway_seal_v1";
 const contextReplayRole = "review_context_replay_v1";
-const investigationReceiptReplayRole =
-  "review_investigation_receipt_replay_v1";
+const investigationReceiptReplayRole = "review_investigation_receipt_replay_v1";
 const publicationRole = "review_publication_permit_v1";
 const nullValue = "~";
 
@@ -59,8 +58,7 @@ export type ReviewActionV2InvestigationTurnAuthority = Readonly<{
 }>;
 
 export type VerifiedReviewActionV2InvestigationTurnCapability =
-  ReviewActionV2InvestigationTurnAuthority &
-    Readonly<{ capabilityId: string }>;
+  ReviewActionV2InvestigationTurnAuthority & Readonly<{ capabilityId: string }>;
 
 export type ReviewActionV2ReusableAttachmentAuthority = Readonly<{
   authorizationId: string;
@@ -962,7 +960,9 @@ function parseSha256ArrayJson(value: unknown): readonly string[] {
     !Array.isArray(parsed) ||
     parsed.length === 0 ||
     parsed.length > 2_000 ||
-    parsed.some((entry) => typeof entry !== "string" || !/^[a-f0-9]{64}$/.test(entry)) ||
+    parsed.some(
+      (entry) => typeof entry !== "string" || !/^[a-f0-9]{64}$/.test(entry),
+    ) ||
     new Set(parsed).size !== parsed.length ||
     JSON.stringify([...parsed].sort()) !== value
   ) {

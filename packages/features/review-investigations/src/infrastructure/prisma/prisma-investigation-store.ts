@@ -11,7 +11,6 @@ import {
   ReviewInvestigationTurnPurposeV1 as PrismaTurnPurpose,
   ReviewInvestigationTurnStateV1 as PrismaTurnState,
   type PrismaClient,
-  type ReviewInvestigation as PrismaInvestigationRecord,
   type ReviewInvestigationCertificate as PrismaCertificateRecord,
   type ReviewInvestigationObligation as PrismaObligationRecord,
   type ReviewInvestigationPrivateMaterial as PrismaPrivateMaterialRecord,
@@ -175,13 +174,19 @@ export class PrismaInvestigationStore
       take: input.limit,
     });
     const candidates = await Promise.all(
-      records.map((record) => loadAggregate(this.prisma, record.investigationId)),
+      records.map((record) =>
+        loadAggregate(this.prisma, record.investigationId),
+      ),
     );
     return candidates
-      .filter((candidate): candidate is ReviewInvestigation => candidate !== null)
-      .sort((left, right) =>
-        right.certificate!.issuedAt.localeCompare(left.certificate!.issuedAt) ||
-        left.investigationId.localeCompare(right.investigationId),
+      .filter(
+        (candidate): candidate is ReviewInvestigation => candidate !== null,
+      )
+      .sort(
+        (left, right) =>
+          right.certificate!.issuedAt.localeCompare(
+            left.certificate!.issuedAt,
+          ) || left.investigationId.localeCompare(right.investigationId),
       );
   }
 
@@ -343,7 +348,9 @@ export class PrismaInvestigationStore
           orderBy: { privateMaterialId: "asc" },
         });
       if (!existing)
-        throw new Error("private_material_unique_conflict_missing");
+        throw new Error("private_material_unique_conflict_missing", {
+          cause: error,
+        });
       return samePrivateMaterial(toPrivateMaterial(existing), material)
         ? InvestigationPrivateMaterialPersistenceStatus.Idempotent
         : InvestigationPrivateMaterialPersistenceStatus.Conflict;

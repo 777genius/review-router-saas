@@ -82,7 +82,8 @@ describe("Review Action v2 route registrars", () => {
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({
       requestId:
-        reviewActionV2GoldenFixtures.review_investigation_open.request.requestId,
+        reviewActionV2GoldenFixtures.review_investigation_open.request
+          .requestId,
       error: {
         errorCode: ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
         retryClass: "never",
@@ -154,7 +155,8 @@ describe("Review Action v2 route registrars", () => {
     expect(response.json()).toMatchObject({
       protocolVersion: "2",
       requestId:
-        reviewActionV2GoldenFixtures.review_investigation_open.request.requestId,
+        reviewActionV2GoldenFixtures.review_investigation_open.request
+          .requestId,
       serverTime: serverTime.toISOString(),
       result: {
         status: ReviewInvestigationOpenResultStatus.Opened,

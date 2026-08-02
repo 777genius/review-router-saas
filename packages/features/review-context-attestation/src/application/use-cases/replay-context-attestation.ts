@@ -90,8 +90,7 @@ export class ReplayContextAttestation {
         replayProofId: this.dependencies.identities.nextReplayProofId(),
         sourceAttestationId: source.attestationId,
         sourceAttestationHash: source.attestationHash,
-        sourceOperationReceiptIdsHash:
-          target.sourceOperationReceiptIdsHash,
+        sourceOperationReceiptIdsHash: target.sourceOperationReceiptIdsHash,
         targetExecutionId: target.targetExecutionId,
         targetWorkSlotId: target.targetWorkSlotId,
         targetReviewRevisionHash: target.targetRevision.reviewRevisionHash,

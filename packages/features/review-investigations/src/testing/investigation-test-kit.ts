@@ -16,9 +16,7 @@ export class FixedInvestigationClock implements InvestigationClockPort {
   }
 }
 
-export class CurrentInvestigationExecutionAuthority
-  implements InvestigationExecutionAuthorityPort
-{
+export class CurrentInvestigationExecutionAuthority implements InvestigationExecutionAuthorityPort {
   verdict = InvestigationExecutionAuthorityVerdict.Current;
 
   async check(): Promise<InvestigationExecutionAuthorityVerdict> {

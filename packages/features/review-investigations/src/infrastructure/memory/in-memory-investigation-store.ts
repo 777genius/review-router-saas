@@ -68,8 +68,7 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
       .filter(
         (item) =>
           item.certificate !== null &&
-          item.revision.reviewRevisionHash !==
-            input.targetReviewRevisionHash &&
+          item.revision.reviewRevisionHash !== input.targetReviewRevisionHash &&
           item.stableReviewUnitKey === input.stableReviewUnitKey &&
           item.providerVoteLaneId === input.providerVoteLaneId &&
           item.contract.producerReleaseId === input.producerReleaseId &&
@@ -83,9 +82,11 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
           item.scope.authorizationScopeHash ===
             input.scope.authorizationScopeHash,
       )
-      .sort((left, right) =>
-        right.certificate!.issuedAt.localeCompare(left.certificate!.issuedAt) ||
-        left.investigationId.localeCompare(right.investigationId),
+      .sort(
+        (left, right) =>
+          right.certificate!.issuedAt.localeCompare(
+            left.certificate!.issuedAt,
+          ) || left.investigationId.localeCompare(right.investigationId),
       )
       .slice(0, input.limit)
       .map((item) => clone(item));
@@ -114,7 +115,9 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
           ),
         };
       }
-      const existing = this.investigations.get(input.investigation.investigationId);
+      const existing = this.investigations.get(
+        input.investigation.investigationId,
+      );
       const byNaturalIdentity = this.naturalIdentityIndex.get(
         input.investigation.naturalIdentityHash,
       );
@@ -147,8 +150,8 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
 
   exportSnapshot(): string {
     return JSON.stringify({
-      investigations: [...this.investigations.entries()].sort(([left], [right]) =>
-        left.localeCompare(right),
+      investigations: [...this.investigations.entries()].sort(
+        ([left], [right]) => left.localeCompare(right),
       ),
       naturalIdentityIndex: [...this.naturalIdentityIndex.entries()].sort(
         ([left], [right]) => left.localeCompare(right),

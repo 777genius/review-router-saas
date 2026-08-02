@@ -13,12 +13,10 @@ import {
   TargetReplayProofVerificationStatus,
   VerifyTargetReplayProof,
   canonicalContextAttestationManifest,
-  canonicalContextDependencyManifest,
   canonicalContextDependencyOperation,
   canonicalContextDependencyResult,
   contextGatewayV4PolicyVersion,
   createContextAttestationManifest,
-  createContextDependencyManifest,
   isLegacyContextDependencyManifest,
   type ContextAttestationStorePort,
   type ContextAttestationManifest,
@@ -904,8 +902,7 @@ async function commitReceiptReplay(
               replayBinaryHash: authority.gatewayBinaryHash,
               replayPolicyVersion: authority.gatewayPolicyVersion,
               reusePolicyVectorHash: authority.reusePolicyVectorHash,
-              sourceOperationReceiptIds:
-                authority.sourceOperationReceiptIds,
+              sourceOperationReceiptIds: authority.sourceOperationReceiptIds,
               sourceOperationReceiptIdsHash:
                 authority.sourceOperationReceiptIdsHash,
               proofLifetimeMs: d.config.replayProofLifetimeMs,
@@ -946,19 +943,36 @@ function assertReceiptReplayRequestAuthority(
   request: ReviewContextReceiptReplayCommitRequest,
   authority: ReviewActionV2InvestigationReceiptReplayAuthority,
 ): void {
-  requireEqual(authority.attestationId, request.attestationId,
-    "investigation_receipt_replay_attestation_id_mismatch");
-  requireEqual(authority.attestationHash, request.attestationHash,
-    "investigation_receipt_replay_attestation_hash_mismatch");
-  requireEqual(authority.targetExecutionId, request.executionId,
-    "investigation_receipt_replay_execution_mismatch");
-  requireEqual(authority.targetWorkSlotId, request.workSlotId,
-    "investigation_receipt_replay_slot_mismatch");
-  requireEqual(authority.targetReviewRevisionHash,
+  requireEqual(
+    authority.attestationId,
+    request.attestationId,
+    "investigation_receipt_replay_attestation_id_mismatch",
+  );
+  requireEqual(
+    authority.attestationHash,
+    request.attestationHash,
+    "investigation_receipt_replay_attestation_hash_mismatch",
+  );
+  requireEqual(
+    authority.targetExecutionId,
+    request.executionId,
+    "investigation_receipt_replay_execution_mismatch",
+  );
+  requireEqual(
+    authority.targetWorkSlotId,
+    request.workSlotId,
+    "investigation_receipt_replay_slot_mismatch",
+  );
+  requireEqual(
+    authority.targetReviewRevisionHash,
     request.targetReviewRevisionHash,
-    "investigation_receipt_replay_revision_mismatch");
-  requireEqual(authority.targetCheckoutTreeOid, request.targetCheckoutTreeOid,
-    "investigation_receipt_replay_tree_mismatch");
+    "investigation_receipt_replay_revision_mismatch",
+  );
+  requireEqual(
+    authority.targetCheckoutTreeOid,
+    request.targetCheckoutTreeOid,
+    "investigation_receipt_replay_tree_mismatch",
+  );
 }
 
 async function verifyInvestigationReceiptReplayAuthorityCurrent(input: {
@@ -1246,7 +1260,10 @@ async function prepareInvestigationReceiptReplay(
   const release = await d.producerReleases.resolve({
     producerReleaseId: target.manifest.producerReleaseId,
   });
-  const scopeHash = await authorizationScopeHash(target.authorization, d.digest);
+  const scopeHash = await authorizationScopeHash(
+    target.authorization,
+    d.digest,
+  );
   const policy = await d.reusePolicy.resolveReviewReusePolicy({
     scope: {
       workspaceId: target.authorization.workspaceId,
@@ -1263,7 +1280,8 @@ async function prepareInvestigationReceiptReplay(
     },
     providerKind: target.manifest.providerKind,
     taskKindSet: target.manifest.taskKindSet,
-    trustDomain: target.authorization.trustDomain as unknown as ReviewTrustDomain,
+    trustDomain: target.authorization
+      .trustDomain as unknown as ReviewTrustDomain,
     producerReleaseId: target.manifest.producerReleaseId,
   });
   if (
@@ -1348,31 +1366,30 @@ async function prepareInvestigationReceiptReplay(
     new Date(input.sourceCertificateExpiresAt),
     new Date(now.getTime() + d.config.replayCapabilityLifetimeMs),
   );
-  const replayCapability =
-    await d.capabilities.issueInvestigationReceiptReplay(
-      {
-        sourceCertificateId: input.sourceCertificateId,
-        sourceCertificateHash: input.sourceCertificateHash,
-        attestationId,
-        attestationHash,
-        sourceOperationReceiptIds,
-        sourceOperationReceiptIdsHash,
-        contextReplayPlanHash: replayPlanHash,
-        targetExecutionId: input.targetExecutionId,
-        targetWorkSlotId: input.targetWorkSlotId,
-        targetReviewRevisionHash: input.targetReviewRevisionHash,
-        targetCheckoutTreeOid: targetTree,
-        gatewayPolicyVersion: attestation.manifest.gatewayPolicyVersion,
-        gatewayBinaryHash: attestation.manifest.gatewayBinaryHash,
-        reusePolicyVectorHash,
-        providerKind: target.manifest.providerKind,
-        taskKindSet: target.manifest.taskKindSet,
-        producerReleaseId: target.manifest.producerReleaseId,
-        requestedModel: target.manifest.requestedModel,
-        expiresAt,
-      },
-      now,
-    );
+  const replayCapability = await d.capabilities.issueInvestigationReceiptReplay(
+    {
+      sourceCertificateId: input.sourceCertificateId,
+      sourceCertificateHash: input.sourceCertificateHash,
+      attestationId,
+      attestationHash,
+      sourceOperationReceiptIds,
+      sourceOperationReceiptIdsHash,
+      contextReplayPlanHash: replayPlanHash,
+      targetExecutionId: input.targetExecutionId,
+      targetWorkSlotId: input.targetWorkSlotId,
+      targetReviewRevisionHash: input.targetReviewRevisionHash,
+      targetCheckoutTreeOid: targetTree,
+      gatewayPolicyVersion: attestation.manifest.gatewayPolicyVersion,
+      gatewayBinaryHash: attestation.manifest.gatewayBinaryHash,
+      reusePolicyVectorHash,
+      providerKind: target.manifest.providerKind,
+      taskKindSet: target.manifest.taskKindSet,
+      producerReleaseId: target.manifest.producerReleaseId,
+      requestedModel: target.manifest.requestedModel,
+      expiresAt,
+    },
+    now,
+  );
   return Object.freeze({
     contextAttestationId: attestationId,
     contextAttestationHash: attestationHash,
@@ -1387,10 +1404,12 @@ function selectGatewayV4ReplayOperations(
   manifest: ContextGatewayV4Manifest,
   material: GatewayV4ReplayMaterial,
   selectedReceiptIds: readonly string[],
-): readonly Readonly<{
-  operationKind: ContextGatewayV4OperationKind;
-  replayInput: Readonly<Record<string, unknown>>;
-}>[] | null {
+):
+  | readonly Readonly<{
+      operationKind: ContextGatewayV4OperationKind;
+      replayInput: Readonly<Record<string, unknown>>;
+    }>[]
+  | null {
   const successful = manifest.events.filter(
     (event) => event.outcome === ContextGatewayV4OutcomeKind.Succeeded,
   );
@@ -1433,20 +1452,25 @@ function selectGatewayV4ReplayOperations(
       const first = events.find((event) => event.result?.pageOrdinal === 0);
       const entry = first ? entryBySequence.get(first.sequence) : null;
       if (!entry) return null;
-      const { cursor: _cursor, ...replayInput } = entry.replayInput;
-      operations.push(Object.freeze({
-        operationKind: kind,
-        replayInput: Object.freeze(replayInput),
-      }));
+      const { cursor, ...replayInput } = entry.replayInput;
+      void cursor;
+      operations.push(
+        Object.freeze({
+          operationKind: kind,
+          replayInput: Object.freeze(replayInput),
+        }),
+      );
       continue;
     }
     for (const event of events) {
       const entry = entryBySequence.get(event.sequence);
       if (!entry) return null;
-      operations.push(Object.freeze({
-        operationKind: kind,
-        replayInput: entry.replayInput,
-      }));
+      operations.push(
+        Object.freeze({
+          operationKind: kind,
+          replayInput: entry.replayInput,
+        }),
+      );
     }
   }
   return Object.freeze(operations);
@@ -1472,7 +1496,10 @@ function gatewayV4ReplayGroupKey(
         queryDigest: result.queryDigest,
       } as never);
     case ContextGatewayV4OperationKind.GitFact:
-      return stableJson({ kind: event.operationKind, fact: result.fact } as never);
+      return stableJson({
+        kind: event.operationKind,
+        fact: result.fact,
+      } as never);
     case ContextGatewayV4OperationKind.UnsupportedTool:
       return `unsupported:${event.sequence}`;
   }
@@ -2084,8 +2111,11 @@ function parseReplayMaterial(
   if (!isLegacyContextDependencyManifest(manifest)) {
     return parseGatewayV4ReplayMaterial(value, parsed, manifest, session);
   }
-  const root = exactRecord(parsed, ["materialVersion", "sourceDependencies"],
-    "context_replay_material_invalid");
+  const root = exactRecord(
+    parsed,
+    ["materialVersion", "sourceDependencies"],
+    "context_replay_material_invalid",
+  );
   if (
     root.materialVersion !== replayMaterialVersion ||
     !Array.isArray(root.sourceDependencies) ||
@@ -2153,7 +2183,7 @@ function parseGatewayV4ReplayMaterial(
   parsed: unknown,
   manifest: ContextGatewayV4Manifest,
   session: GatewaySession,
-): (ReplayMaterial & { readonly canonicalJson: string }) {
+): ReplayMaterial & { readonly canonicalJson: string } {
   if (isRecordWithKeys(parsed, ["materialVersion", "sourceDependencies"])) {
     const legacy = parsed as Record<string, unknown>;
     if (
@@ -2267,7 +2297,11 @@ function normalizeGatewayV4ReplayInput(
       }
       break;
     case ContextGatewayV4OperationKind.GitFact:
-      if (!['merge_base', 'changed_paths', 'diff_stat'].includes(String(input.fact))) {
+      if (
+        !["merge_base", "changed_paths", "diff_stat"].includes(
+          String(input.fact),
+        )
+      ) {
         throw invalidReplayMaterial();
       }
       break;
@@ -2276,10 +2310,7 @@ function normalizeGatewayV4ReplayInput(
     case ContextGatewayV4OperationKind.UnsupportedTool:
       throw invalidReplayMaterial();
   }
-  if (
-    input.cursor !== undefined &&
-    typeof input.cursor !== "string"
-  ) {
+  if (input.cursor !== undefined && typeof input.cursor !== "string") {
     throw invalidReplayMaterial();
   }
   return Object.freeze({ ...input });
@@ -2292,9 +2323,23 @@ function gatewayV4ReplayInputKeys(
     case ContextGatewayV4OperationKind.FileRead:
       return ["maxBytes", "path", "revision", "startByte"];
     case ContextGatewayV4OperationKind.DirectoryList:
-      return ["cursor", "includeHidden", "maxDepth", "pageSize", "path", "revision"];
+      return [
+        "cursor",
+        "includeHidden",
+        "maxDepth",
+        "pageSize",
+        "path",
+        "revision",
+      ];
     case ContextGatewayV4OperationKind.TextSearch:
-      return ["caseSensitive", "cursor", "pageSize", "paths", "query", "revision"];
+      return [
+        "caseSensitive",
+        "cursor",
+        "pageSize",
+        "paths",
+        "query",
+        "revision",
+      ];
     case ContextGatewayV4OperationKind.CanonicalInventory:
       return ["cursor", "pageSize"];
     case ContextGatewayV4OperationKind.GitFact:
@@ -2311,7 +2356,10 @@ function gatewayV4OperationKey(
   switch (kind) {
     case ContextGatewayV4OperationKind.FileRead:
       return sha256Utf8(
-        stableJson({ kind, inputHash: sha256Utf8(stableJson(replayInput as never)) } as never),
+        stableJson({
+          kind,
+          inputHash: sha256Utf8(stableJson(replayInput as never)),
+        } as never),
       );
     case ContextGatewayV4OperationKind.DirectoryList:
     case ContextGatewayV4OperationKind.CanonicalInventory:
@@ -2357,8 +2405,9 @@ function isRecordWithKeys(value: unknown, keys: readonly string[]): boolean {
     value !== null &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.keys(value as Record<string, unknown>).sort().join("\0") ===
-      [...keys].sort().join("\0")
+    Object.keys(value as Record<string, unknown>)
+      .sort()
+      .join("\0") === [...keys].sort().join("\0")
   );
 }
 

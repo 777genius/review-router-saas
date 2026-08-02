@@ -9,7 +9,11 @@ import {
   InvestigationObligationOrigin,
   obligationIdentity,
 } from "../domain/investigation-obligation";
-import { planInvestigationTurn, createReviewInvestigation, serializeReviewInvestigation } from "../domain/review-investigation";
+import {
+  planInvestigationTurn,
+  createReviewInvestigation,
+  serializeReviewInvestigation,
+} from "../domain/review-investigation";
 import {
   InvestigationObligationKind,
   ReviewInvestigationRuntimeProfile,
@@ -218,7 +222,9 @@ function planned(
 function digest(value: string): string {
   let output = "";
   for (let index = 0; index < 64; index += 1) {
-    output += ((value.charCodeAt(index % value.length) + index) % 16).toString(16);
+    output += ((value.charCodeAt(index % value.length) + index) % 16).toString(
+      16,
+    );
   }
   return output;
 }

@@ -185,11 +185,12 @@ describe("ReviewSafetyPolicy resolution", () => {
       rolloutMode: ReviewSafetyRolloutMode.Enabled,
     });
 
-    const disabled =
-      await kit.control.safetyResolver.resolveReviewSafetyPolicy({
+    const disabled = await kit.control.safetyResolver.resolveReviewSafetyPolicy(
+      {
         decisionKind: ReviewSafetyDecisionKind.InvestigationExecution,
         target,
-      });
+      },
+    );
     expect(disabled.effectAllowed).toBe(false);
     expect(disabled.capabilityDecisions).toMatchObject([
       {
@@ -206,11 +207,10 @@ describe("ReviewSafetyPolicy resolution", () => {
       rolloutMode: ReviewSafetyRolloutMode.Shadow,
       updatedBy: "operator",
     });
-    const shadow =
-      await kit.control.safetyResolver.resolveReviewSafetyPolicy({
-        decisionKind: ReviewSafetyDecisionKind.InvestigationExecution,
-        target,
-      });
+    const shadow = await kit.control.safetyResolver.resolveReviewSafetyPolicy({
+      decisionKind: ReviewSafetyDecisionKind.InvestigationExecution,
+      target,
+    });
     expect(shadow).toMatchObject({
       effectAllowed: false,
       shadow: true,

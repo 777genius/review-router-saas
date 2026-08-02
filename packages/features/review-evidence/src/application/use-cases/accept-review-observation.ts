@@ -185,7 +185,9 @@ export class AcceptReviewObservation {
       preparedPayload.canonicalBytes,
     );
     assertSha256(payloadHash, "payload_hash");
-    if (facts.executionProfile === ProviderExecutionProfile.InvestigationGatewayV1) {
+    if (
+      facts.executionProfile === ProviderExecutionProfile.InvestigationGatewayV1
+    ) {
       if (!this.dependencies.investigationCertificateAcceptanceEnabled) {
         return rejected(
           AcceptReviewObservationRejectionReason.InvestigationCertificatePathDisabled,
@@ -325,7 +327,7 @@ async function verifyInvestigationCertificate(
     ReviewObservationQualityFlag.InvestigationFindings,
   );
   if (
-    (findingCount > 0) !== findings ||
+    findingCount > 0 !== findings ||
     (inconclusive && findings && findingCount === 0)
   ) {
     return AcceptReviewObservationRejectionReason.InvestigationCertificateReferenceInvalid;
@@ -346,7 +348,8 @@ async function verifyInvestigationCertificate(
     producerReleaseId: facts.producerReleaseId,
     nowMs,
   });
-  return decision.status === InvestigationCertificateVerificationStatus.Accepted &&
+  return decision.status ===
+    InvestigationCertificateVerificationStatus.Accepted &&
     decision.acceptedCertificateHash === command.investigationCertificateHash &&
     decision.conclusion === expectedConclusion
     ? AcceptReviewObservationRejectionReason.None

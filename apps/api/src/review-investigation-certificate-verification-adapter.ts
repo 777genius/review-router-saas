@@ -24,9 +24,8 @@ export class ReviewInvestigationCertificateVerificationAdapter implements Accept
     const investigation = await this.store.findByCertificateId(
       query.certificateId,
     );
-    if (!investigation) return denied(
-      InvestigationCertificateVerificationDenialReason.NotFound,
-    );
+    if (!investigation)
+      return denied(InvestigationCertificateVerificationDenialReason.NotFound);
     const certificate = investigation.certificate;
     if (
       !certificate ||
@@ -35,12 +34,17 @@ export class ReviewInvestigationCertificateVerificationAdapter implements Accept
         ReviewInvestigationState.Inconclusive,
       ].includes(investigation.state)
     ) {
-      return denied(InvestigationCertificateVerificationDenialReason.NotAccepted);
+      return denied(
+        InvestigationCertificateVerificationDenialReason.NotAccepted,
+      );
     }
     if (certificate.certificateHash !== query.certificateHash) {
-      return denied(InvestigationCertificateVerificationDenialReason.HashMismatch);
+      return denied(
+        InvestigationCertificateVerificationDenialReason.HashMismatch,
+      );
     }
-    const { certificateHash: _, ...candidate } = certificate;
+    const { certificateHash, ...candidate } = certificate;
+    void certificateHash;
     const terminalProvenance = summarizeTerminalDiscoveryProvenance(
       investigation.turnProvenance,
     );
@@ -58,7 +62,9 @@ export class ReviewInvestigationCertificateVerificationAdapter implements Accept
       certificate.terminalProviderKind !== terminalProvenance.providerKind ||
       certificate.terminalActualModel !== terminalProvenance.actualModel
     ) {
-      return denied(InvestigationCertificateVerificationDenialReason.NotAccepted);
+      return denied(
+        InvestigationCertificateVerificationDenialReason.NotAccepted,
+      );
     }
     if (new Date(certificate.expiresAt).getTime() <= query.nowMs) {
       return denied(InvestigationCertificateVerificationDenialReason.Expired);
@@ -73,7 +79,9 @@ export class ReviewInvestigationCertificateVerificationAdapter implements Accept
       investigation.scope.authorizationScopeHash !==
         query.scope.authorizationScopeHash
     ) {
-      return denied(InvestigationCertificateVerificationDenialReason.ScopeMismatch);
+      return denied(
+        InvestigationCertificateVerificationDenialReason.ScopeMismatch,
+      );
     }
     if (
       investigation.revision.baseSha !== query.revision.baseSha ||
@@ -81,10 +89,14 @@ export class ReviewInvestigationCertificateVerificationAdapter implements Accept
       investigation.revision.headSha !== query.revision.headSha ||
       certificate.reviewRevisionHash !== query.revision.reviewRevisionHash
     ) {
-      return denied(InvestigationCertificateVerificationDenialReason.RevisionMismatch);
+      return denied(
+        InvestigationCertificateVerificationDenialReason.RevisionMismatch,
+      );
     }
     if (certificate.providerVoteLaneId !== query.providerVoteIdentityHash) {
-      return denied(InvestigationCertificateVerificationDenialReason.VoteLaneMismatch);
+      return denied(
+        InvestigationCertificateVerificationDenialReason.VoteLaneMismatch,
+      );
     }
     if (certificate.terminalOutcomeHash !== query.terminalOutcomeHash) {
       return denied(

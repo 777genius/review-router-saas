@@ -24,7 +24,9 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
     const now = this.clock.nowMs();
     const sourceOperationReceiptIdsHash = await this.digest.digestUtf8(
       canonicalJson({
-        operationReceiptIds: [...input.sourceReceipt.operationReceiptIds].sort(),
+        operationReceiptIds: [
+          ...input.sourceReceipt.operationReceiptIds,
+        ].sort(),
       }),
     );
     if (
