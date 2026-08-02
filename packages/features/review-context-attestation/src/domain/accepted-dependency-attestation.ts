@@ -1,8 +1,9 @@
 import {
-  canonicalContextDependencyManifestBytes,
-  createContextDependencyManifest,
-  type ContextDependencyManifest,
-} from "./context-dependency-manifest";
+  canonicalContextAttestationManifestBytes,
+  contextAttestationManifestEventCount,
+  createContextAttestationManifest,
+  type ContextAttestationManifest,
+} from "./context-attestation-manifest";
 import {
   GatewaySessionState,
   acceptGatewaySession,
@@ -23,7 +24,7 @@ export type AcceptedDependencyAttestation = Readonly<{
   sourceFencingToken: string;
   sourceReviewRevisionHash: string;
   trustedCapabilityProfile: string;
-  manifest: ContextDependencyManifest;
+  manifest: ContextAttestationManifest;
   actualModel: string;
   terminalOutcomeHash: string;
   replayMaterialHash: string;
@@ -35,7 +36,7 @@ export type AcceptDependencyAttestationCandidate = Readonly<{
   attestationId: string;
   attestationHash: string;
   session: GatewaySession;
-  manifest: ContextDependencyManifest;
+  manifest: ContextAttestationManifest;
   actualModel: string;
   terminalOutcomeHash: string;
   replayMaterialHash: string;
@@ -75,7 +76,7 @@ export function createAcceptedDependencyAttestation(
   ) {
     throw new Error("context_attestation_retention_invalid");
   }
-  const manifest = createContextDependencyManifest(candidate.manifest);
+  const manifest = createContextAttestationManifest(candidate.manifest);
   if (
     manifest.gatewayBinaryHash !== candidate.session.gatewayBinaryHash ||
     manifest.gatewayPolicyVersion !== candidate.session.gatewayPolicyVersion ||
@@ -84,7 +85,10 @@ export function createAcceptedDependencyAttestation(
   ) {
     throw new Error("context_attestation_gateway_binding_mismatch");
   }
-  if (manifest.dependencies.length !== candidate.session.eventCount) {
+  if (
+    contextAttestationManifestEventCount(manifest) !==
+    candidate.session.eventCount
+  ) {
     throw new Error("context_attestation_event_count_mismatch");
   }
 
@@ -115,7 +119,7 @@ export function createAcceptedDependencyAttestation(
 export function canonicalAcceptedDependencyAttestationBytes(
   candidate: Omit<AcceptedDependencyAttestation, "attestationHash">,
 ): Uint8Array {
-  const manifestBytes = canonicalContextDependencyManifestBytes(
+  const manifestBytes = canonicalContextAttestationManifestBytes(
     candidate.manifest,
   );
   const envelope = JSON.stringify({

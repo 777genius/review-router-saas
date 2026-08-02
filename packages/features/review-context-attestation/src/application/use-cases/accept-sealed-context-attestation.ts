@@ -4,6 +4,7 @@ import {
   type AcceptedDependencyAttestation,
 } from "../../domain/accepted-dependency-attestation";
 import { sealGatewaySession } from "../../domain/gateway-session";
+import { contextAttestationManifestEventCount } from "../../domain/context-attestation-manifest";
 import { createEncryptedContextReplayMaterial } from "../../domain/encrypted-context-replay-material";
 import {
   ContextAttestationPersistenceStatus,
@@ -90,7 +91,7 @@ export class AcceptSealedContextAttestation {
     let sealed;
     try {
       sealed = sealGatewaySession(session, {
-        eventCount: transcript.manifest.dependencies.length,
+        eventCount: contextAttestationManifestEventCount(transcript.manifest),
         sealedAtMs: nowMs,
       });
     } catch {

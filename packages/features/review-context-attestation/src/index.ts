@@ -1,5 +1,7 @@
 export * from "./domain/accepted-dependency-attestation";
 export * from "./domain/context-dependency-manifest";
+export * from "./domain/context-attestation-manifest";
+export * from "./domain/context-gateway-v4-manifest";
 export * from "./domain/encrypted-context-replay-material";
 export * from "./domain/context-replay-decision";
 export * from "./domain/gateway-session";

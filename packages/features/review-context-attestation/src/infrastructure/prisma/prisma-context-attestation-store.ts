@@ -15,10 +15,11 @@ import {
   type AcceptedDependencyAttestation,
 } from "../../domain/accepted-dependency-attestation";
 import {
-  canonicalContextDependencyManifest,
-  createContextDependencyManifest,
-  type ContextDependencyManifest,
-} from "../../domain/context-dependency-manifest";
+  canonicalContextAttestationManifest,
+  contextAttestationManifestEventCount,
+  createContextAttestationManifest,
+  type ContextAttestationManifest,
+} from "../../domain/context-attestation-manifest";
 import {
   contextReplayMaterialEncryptionAlgorithm,
   createEncryptedContextReplayMaterial,
@@ -359,7 +360,7 @@ function toAttestationCreateInput(
     attestationHash: attestation.attestationHash,
     manifestVersion: attestation.manifest.manifestVersion,
     authenticatedChainHash: attestation.manifest.authenticatedChainHash,
-    dependencyCount: attestation.manifest.dependencies.length,
+    dependencyCount: contextAttestationManifestEventCount(attestation.manifest),
     operationManifestJson: toJson(attestation.manifest),
     actualModel: attestation.actualModel,
     terminalOutcomeHash: attestation.terminalOutcomeHash,
@@ -560,9 +561,9 @@ function toReplayProof(
   );
 }
 
-function decodeManifest(value: Prisma.JsonValue): ContextDependencyManifest {
-  return createContextDependencyManifest(
-    value as unknown as ContextDependencyManifest,
+function decodeManifest(value: Prisma.JsonValue): ContextAttestationManifest {
+  return createContextAttestationManifest(
+    value as unknown as ContextAttestationManifest,
   );
 }
 
@@ -674,8 +675,8 @@ function sameAttestationIntent(
     left.sourceFencingToken === right.sourceFencingToken &&
     left.sourceReviewRevisionHash === right.sourceReviewRevisionHash &&
     left.trustedCapabilityProfile === right.trustedCapabilityProfile &&
-    canonicalContextDependencyManifest(left.manifest) ===
-      canonicalContextDependencyManifest(right.manifest) &&
+    canonicalContextAttestationManifest(left.manifest) ===
+      canonicalContextAttestationManifest(right.manifest) &&
     left.actualModel === right.actualModel &&
     left.terminalOutcomeHash === right.terminalOutcomeHash
   );
@@ -694,7 +695,7 @@ function validAcceptanceAggregate(input: {
     input.acceptedSession.sessionId === sessionId &&
     sameOpening(input.expectedSession, input.acceptedSession) &&
     input.expectedSession.eventCount ===
-      input.attestation.manifest.dependencies.length &&
+      contextAttestationManifestEventCount(input.attestation.manifest) &&
     input.acceptedSession.eventCount === input.expectedSession.eventCount &&
     input.acceptedSession.sealedAtMs === input.expectedSession.sealedAtMs &&
     input.attestation.sessionId === sessionId &&

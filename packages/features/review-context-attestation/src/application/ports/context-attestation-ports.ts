@@ -1,5 +1,5 @@
 import type { AcceptedDependencyAttestation } from "../../domain/accepted-dependency-attestation";
-import type { ContextDependencyManifest } from "../../domain/context-dependency-manifest";
+import type { ContextAttestationManifest } from "../../domain/context-attestation-manifest";
 import type { EncryptedContextReplayMaterial } from "../../domain/encrypted-context-replay-material";
 import type {
   ContextAttestationRevision,
@@ -40,7 +40,7 @@ export interface TrustedGatewaySessionOpeningFactsPort {
 export type TrustedSealedGatewayTranscript = Readonly<{
   sessionId: string;
   confinementProofHash: string;
-  manifest: ContextDependencyManifest;
+  manifest: ContextAttestationManifest;
   actualModel: string;
   terminalOutcomeHash: string;
   providerSucceeded: boolean;

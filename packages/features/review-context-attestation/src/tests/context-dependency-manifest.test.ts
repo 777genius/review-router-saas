@@ -278,6 +278,10 @@ describe("AcceptedDependencyAttestation", () => {
 
     expect(accepted.session.state).toBe(GatewaySessionState.Accepted);
     expect(accepted.attestation.sourceFencingToken).toBe("1");
+    expect(accepted.attestation.manifest.manifestVersion).toBe(2);
+    if (accepted.attestation.manifest.manifestVersion !== 2) {
+      throw new Error("legacy_manifest_expected");
+    }
     expect(accepted.attestation.manifest.dependencies).toHaveLength(1);
   });
 });

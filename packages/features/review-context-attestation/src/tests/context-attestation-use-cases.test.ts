@@ -7,6 +7,8 @@ import {
   AcceptedContextAttestationVerificationStatus,
   ContextDependencyKind,
   ContextFileKind,
+  ContextGatewayV4OperationKind,
+  ContextGatewayV4OutcomeKind,
   ContextProviderKind,
   InMemoryContextAttestationStore,
   OpenContextGatewaySession,
@@ -17,6 +19,9 @@ import {
   VerifyAcceptedContextAttestation,
   VerifyTargetReplayProof,
   contextDependencyManifestVersion,
+  contextGatewayV4ManifestVersion,
+  contextGatewayV4PolicyVersion,
+  createContextGatewayV4Manifest,
   createContextDependencyManifest,
   type ContextAttestationRevision,
   type ContextDependencyManifest,
@@ -233,6 +238,140 @@ describe("context attestation application flow", () => {
     ).resolves.toMatchObject({
       status: TargetReplayProofVerificationStatus.Denied,
     });
+  });
+
+  it("accepts a complete v4 event manifest and keeps v4 replay disabled", async () => {
+    let nowMs = 1_000;
+    const store = new InMemoryContextAttestationStore();
+    const identities = sequentialIdentities();
+    const sourceRevision = revision("a", "d");
+    const openingFacts = {
+      scope: {
+        workspaceId: "workspace-v4",
+        repositoryConnectionId: "connection-v4",
+        scmRepositoryIdentityId: "repository-v4",
+        pullRequestNumber: 43,
+      },
+      sourceRevision,
+      sourceExecutionId: "execution-v4",
+      sourceWorkSlotId: "slot-v4",
+      attemptId: "attempt-v4",
+      sourceLeaseId: "lease-v4",
+      sourceFencingToken: "2",
+      providerKind: ContextProviderKind.Codex,
+      requestedModel: "gpt-5.3-codex",
+      trustedCapabilityProfile: "investigation-gateway-v4",
+      gatewayBinaryHash: hash("c"),
+      gatewayPolicyVersion: contextGatewayV4PolicyVersion,
+      producerReleaseId: "release-v4",
+      selectedProtocolVersion: "review-action-v2",
+      confinementProofHash: hash("e"),
+      eventChainSeedHash: hash("0"),
+      sessionLifetimeMs: 60_000,
+    };
+    const open = new OpenContextGatewaySession({
+      openingFacts: { resolveOpeningFacts: async () => openingFacts },
+      store,
+      identities,
+      clock: { nowMs: () => nowMs },
+    });
+    const opened = await open.execute({
+      attemptId: openingFacts.attemptId,
+      leaseCapabilityId: "lease-capability-v4",
+      confinementEvidenceId: "confinement-v4",
+    });
+    expect(opened.status).toBe(OpenContextGatewaySessionStatus.Opened);
+    const eventHash = hash("7");
+    const v4Manifest = createContextGatewayV4Manifest({
+      manifestVersion: contextGatewayV4ManifestVersion,
+      gatewayPolicyVersion: contextGatewayV4PolicyVersion,
+      gatewayBinaryHash: openingFacts.gatewayBinaryHash,
+      checkoutTreeOid: sourceRevision.checkoutTreeOid,
+      eventChainSeedHash: openingFacts.eventChainSeedHash,
+      authenticatedChainHash: eventHash,
+      complete: true,
+      confinementTainted: false,
+      terminalFailureClass: null,
+      events: [
+        {
+          sequence: 1,
+          previousEventHash: openingFacts.eventChainSeedHash,
+          eventHash,
+          operationKey: hash("8"),
+          operationKind: ContextGatewayV4OperationKind.GitFact,
+          outcome: ContextGatewayV4OutcomeKind.Succeeded,
+          failureClass: null,
+          operation: {
+            kind: ContextGatewayV4OperationKind.GitFact,
+            fact: "merge_base",
+          },
+          result: {
+            complete: true,
+            fact: "merge_base",
+            itemCount: 1,
+            resultHash: hash("9"),
+          },
+          operationReceiptId: hash("a"),
+          sanitizedReason: null,
+        },
+      ],
+    });
+    nowMs = 2_000;
+    const accept = new AcceptSealedContextAttestation({
+      transcripts: {
+        loadSealedTranscript: async ({ sessionId }) => ({
+          sessionId,
+          confinementProofHash: openingFacts.confinementProofHash,
+          manifest: v4Manifest,
+          actualModel: "gpt-5.3-codex",
+          terminalOutcomeHash: hash("f"),
+          providerSucceeded: true,
+          schemaValidated: true,
+          fullyConsumed: true,
+          replayMaterial: encryptedReplayMaterial(sessionId),
+        }),
+      },
+      store,
+      identities,
+      digest: {
+        digest: async (bytes) =>
+          createHash("sha256").update(bytes).digest("hex"),
+      },
+      clock: { nowMs: () => nowMs },
+      reuseTtlMs: 30_000,
+    });
+    const accepted = await accept.execute({
+      sessionId: opened.session!.sessionId,
+      sealCapabilityId: "seal-v4",
+    });
+    expect(accepted.status).toBe(AcceptSealedContextAttestationStatus.Accepted);
+    expect(accepted.attestation?.manifest.manifestVersion).toBe(3);
+
+    const replay = new ReplayContextAttestation({
+      store,
+      targetFacts: {
+        resolveTargetReplayFacts: async () => ({
+          targetExecutionId: "execution-target-v4",
+          targetWorkSlotId: "slot-target-v4",
+          targetRevision: revision("b", "e"),
+          replayBinaryHash: hash("c"),
+          replayPolicyVersion: contextGatewayV4PolicyVersion,
+          reusePolicyVectorHash: hash("b"),
+          proofLifetimeMs: 60_000,
+        }),
+      },
+      identities,
+      clock: { nowMs: () => nowMs },
+    });
+    const replayed = await replay.execute({
+      sourceAttestationId: accepted.attestation!.attestationId,
+      sourceAttestationHash: accepted.attestation!.attestationHash,
+      targetExecutionId: "execution-target-v4",
+      targetWorkSlotId: "slot-target-v4",
+      replayCapabilityId: "replay-v4",
+      replayedManifest: manifest(revision("b", "e").checkoutTreeOid, hash("b")),
+    });
+    expect(replayed.status).toBe(ReplayContextAttestationStatus.Denied);
   });
 
   it("denies replay when a dependency result changed", async () => {

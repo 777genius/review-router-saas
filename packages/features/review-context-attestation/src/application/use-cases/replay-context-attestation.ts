@@ -16,6 +16,7 @@ import {
   type TrustedTargetReplayFactsPort,
 } from "../ports/context-attestation-ports";
 import type { ContextDependencyManifest } from "../../domain/context-dependency-manifest";
+import { isLegacyContextDependencyManifest } from "../../domain/context-attestation-manifest";
 
 export enum ReplayContextAttestationStatus {
   Accepted = "accepted",
@@ -64,7 +65,8 @@ export class ReplayContextAttestation {
       target.targetWorkSlotId !== command.targetWorkSlotId ||
       !Number.isSafeInteger(target.proofLifetimeMs) ||
       target.proofLifetimeMs <= 0 ||
-      target.proofLifetimeMs > targetReplayProofMaxLifetimeMs
+      target.proofLifetimeMs > targetReplayProofMaxLifetimeMs ||
+      !isLegacyContextDependencyManifest(source.manifest)
     ) {
       return result(ReplayContextAttestationStatus.Denied, null, null);
     }
