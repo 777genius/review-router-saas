@@ -15,7 +15,9 @@ import {
   ReviewInvestigationNextActionKind,
   ReviewInvestigationRuntimeProfile,
   ReviewInvestigationState,
+  ReviewInvestigationTurnPurpose,
   serializeReviewInvestigation,
+  summarizeTerminalDiscoveryProvenance,
   type CommitInvestigationTurnCommand,
   type OpenReviewInvestigationCommand,
   type ReviewInvestigationPolicy,
@@ -32,6 +34,29 @@ const inventorySubject = "inventory:canonical";
 const changedSubject = "src/service.ts@head";
 
 describe("review investigation in-memory vertical slice", () => {
+  it("fails closed when discovery turns report mixed terminal models", () => {
+    const base = {
+      turnId: "turn-1",
+      purpose: ReviewInvestigationTurnPurpose.Discovery,
+      actualProviderKind: InvestigationTurnProviderKind.Codex,
+      actualModel: "gpt-one",
+      runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
+      inputTokens: 1,
+      cachedInputTokens: 0,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+      totalTokens: 2,
+      durationMs: 1,
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: "b".repeat(64),
+      terminalOutcomeHash: "c".repeat(64),
+    } as const;
+    expect(() => summarizeTerminalDiscoveryProvenance([
+      base,
+      { ...base, turnId: "turn-2", actualModel: "gpt-two" },
+    ])).toThrow("investigation_terminal_provenance_ambiguous");
+  });
+
   it("keeps runner inventory provisional until the first authenticated witness", async () => {
     const harness = createHarness();
     const opened = await harness.open.execute({
@@ -147,6 +172,10 @@ describe("review investigation in-memory vertical slice", () => {
     expect(snapshot.certificate?.turnProvenanceHash).toMatch(
       /^[a-f0-9]{64}$/u,
     );
+    expect(snapshot.certificate?.terminalProviderKind).toBe(
+      InvestigationTurnProviderKind.Codex,
+    );
+    expect(snapshot.certificate?.terminalActualModel).toBe("gpt-test");
     expect(snapshot.certificate?.criticDecision).toBe(
       ContextCriticDecision.Accept,
     );

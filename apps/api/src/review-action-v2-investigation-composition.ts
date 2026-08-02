@@ -713,6 +713,8 @@ function present<
     investigationCanonicalJson: canonicalJson(readModel),
     certificateId: readModel.certificateId,
     certificateHash: readModel.certificateHash,
+    terminalProviderKind: readModel.terminalProviderKind,
+    terminalActualModel: readModel.terminalActualModel,
     terminalObservationCanonicalJson:
       readModel.terminalObservationCanonicalJson,
     terminalOutcomeHash: readModel.terminalOutcomeHash,

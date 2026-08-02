@@ -17,6 +17,7 @@ import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
 import type { InvestigationTerminalProjectionPort } from "../ports/investigation-terminal-projection-port";
+import { summarizeTerminalDiscoveryProvenance } from "../../domain/investigation-turn";
 import {
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
@@ -90,6 +91,9 @@ export class ConcludeReviewInvestigation {
     const criticProvenance = [...current.turnProvenance]
       .reverse()
       .find((item) => item.purpose === ReviewInvestigationTurnPurpose.Critic);
+    const terminalProvenance = summarizeTerminalDiscoveryProvenance(
+      current.turnProvenance,
+    );
     const candidate: ReviewInvestigationCertificateCandidate = {
       certificateId: `certificate-${current.investigationId.slice(-32)}`,
       investigationId: current.investigationId,
@@ -141,6 +145,8 @@ export class ConcludeReviewInvestigation {
         this.digest,
         current.turnProvenance,
       ),
+      terminalProviderKind: terminalProvenance.providerKind,
+      terminalActualModel: terminalProvenance.actualModel,
       terminalOutcomeHash: projection.terminalOutcomeHash,
       terminalObservationCanonicalJson: projection.canonicalJson,
       criticAttestationId: criticProvenance?.acceptedAttestationId ?? null,

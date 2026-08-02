@@ -41,6 +41,8 @@ const commonResultFields = Object.freeze([
   }),
   Object.freeze({ name: "certificateId", type: "nullable_identifier" }),
   Object.freeze({ name: "certificateHash", type: "nullable_hash" }),
+  Object.freeze({ name: "terminalProviderKind", type: "nullable_string" }),
+  Object.freeze({ name: "terminalActualModel", type: "nullable_string" }),
   Object.freeze({
     name: "terminalObservationCanonicalJson",
     type: "nullable_canonical_json",

@@ -3,6 +3,7 @@ import {
   ReviewInvestigationConclusion,
   ReviewInvestigationState,
   canonicalInvestigationCertificateCandidate,
+  summarizeTerminalDiscoveryProvenance,
   type InvestigationDigestPort,
 } from "@reviewrouter/features-review-investigations";
 import {
@@ -40,6 +41,9 @@ export class ReviewInvestigationCertificateVerificationAdapter implements Accept
       return denied(InvestigationCertificateVerificationDenialReason.HashMismatch);
     }
     const { certificateHash: _, ...candidate } = certificate;
+    const terminalProvenance = summarizeTerminalDiscoveryProvenance(
+      investigation.turnProvenance,
+    );
     if (
       (await this.digest.digestUtf8(
         canonicalInvestigationCertificateCandidate(candidate),
@@ -50,7 +54,9 @@ export class ReviewInvestigationCertificateVerificationAdapter implements Accept
       certificate.investigationId !== investigation.investigationId ||
       certificate.investigationVersion + 1 !== investigation.version ||
       certificate.conclusion !== investigation.conclusion ||
-      certificate.criticDecision !== investigation.criticDecision
+      certificate.criticDecision !== investigation.criticDecision ||
+      certificate.terminalProviderKind !== terminalProvenance.providerKind ||
+      certificate.terminalActualModel !== terminalProvenance.actualModel
     ) {
       return denied(InvestigationCertificateVerificationDenialReason.NotAccepted);
     }

@@ -5,6 +5,7 @@ import {
   ReviewInvestigationTurnPurpose,
 } from "../domain/review-investigation-types";
 import type { ReviewInvestigationConclusion } from "../domain/review-investigation-types";
+import type { InvestigationTurnProviderKind } from "../domain/review-investigation-types";
 import type { ReviewInvestigation } from "../domain/review-investigation";
 import type { InvestigationTurn } from "../domain/investigation-turn";
 
@@ -25,6 +26,8 @@ export type ReviewInvestigationReadModel = Readonly<{
   turn: InvestigationTurn | null;
   certificateId: string | null;
   certificateHash: string | null;
+  terminalProviderKind: InvestigationTurnProviderKind | null;
+  terminalActualModel: string | null;
   terminalObservationCanonicalJson: string | null;
   terminalOutcomeHash: string | null;
   conclusion: ReviewInvestigationConclusion | null;
@@ -63,6 +66,9 @@ export function toInvestigationReadModel(
     turn: investigation.activeTurn ? { ...investigation.activeTurn } : null,
     certificateId: investigation.certificate?.certificateId ?? null,
     certificateHash: investigation.certificate?.certificateHash ?? null,
+    terminalProviderKind:
+      investigation.certificate?.terminalProviderKind ?? null,
+    terminalActualModel: investigation.certificate?.terminalActualModel ?? null,
     terminalObservationCanonicalJson:
       investigation.certificate?.terminalObservationCanonicalJson ?? null,
     terminalOutcomeHash:

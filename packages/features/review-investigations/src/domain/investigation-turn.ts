@@ -73,6 +73,28 @@ export function turnProvenanceCanonicalValue(
   return { ...provenance };
 }
 
+export function summarizeTerminalDiscoveryProvenance(
+  provenance: readonly InvestigationTurnProvenance[],
+): Readonly<{
+  providerKind: InvestigationTurnProviderKind | null;
+  actualModel: string | null;
+}> {
+  const discovery = provenance.filter(
+    (item) => item.purpose === ReviewInvestigationTurnPurpose.Discovery,
+  );
+  const providerKinds = new Set(
+    discovery.map((item) => item.actualProviderKind),
+  );
+  const actualModels = new Set(discovery.map((item) => item.actualModel));
+  if (providerKinds.size > 1 || actualModels.size > 1) {
+    throw new Error("investigation_terminal_provenance_ambiguous");
+  }
+  return Object.freeze({
+    providerKind: discovery[0]?.actualProviderKind ?? null,
+    actualModel: discovery[0]?.actualModel ?? null,
+  });
+}
+
 export type InvestigationTurnAbort = Readonly<{
   turnId: string;
   reason: ReviewInvestigationAbortReason;

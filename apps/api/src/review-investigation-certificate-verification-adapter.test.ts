@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   ReviewInvestigationConclusion,
   ContextCriticDecision,
+  InvestigationTurnProviderKind,
+  ReviewInvestigationRuntimeProfile,
   ReviewInvestigationState,
+  ReviewInvestigationTurnPurpose,
   canonicalInvestigationCertificateCandidate,
   type InvestigationStorePort,
   type ReviewInvestigation,
@@ -52,6 +55,33 @@ describe("ReviewInvestigationCertificateVerificationAdapter", () => {
       status: InvestigationCertificateVerificationStatus.Denied,
       reason:
         InvestigationCertificateVerificationDenialReason.TerminalOutcomeMismatch,
+    });
+  });
+
+  it("rejects a rehashed certificate whose model disagrees with the turn ledger", async () => {
+    const investigation = await certificateBackedInvestigation();
+    const digest = new NodeSha256InvestigationDigest();
+    const { certificateHash: _, ...candidate } = investigation.certificate!;
+    const tamperedCandidate = {
+      ...candidate,
+      terminalActualModel: "gpt-other",
+    };
+    const certificate = {
+      ...tamperedCandidate,
+      certificateHash: await digest.digestUtf8(
+        canonicalInvestigationCertificateCandidate(tamperedCandidate),
+      ),
+    };
+    const adapter = new ReviewInvestigationCertificateVerificationAdapter(
+      storeWith({ ...investigation, certificate }),
+      digest,
+    );
+    await expect(adapter.verifyAcceptedCertificate(query(
+      certificate.certificateHash,
+      certificate.terminalOutcomeHash,
+    ))).resolves.toMatchObject({
+      status: InvestigationCertificateVerificationStatus.Denied,
+      reason: InvestigationCertificateVerificationDenialReason.NotAccepted,
     });
   });
 });
@@ -106,6 +136,8 @@ async function certificateBackedInvestigation(): Promise<ReviewInvestigation> {
     coverageStateHash: h("e"),
     contextAttestationSetHash: h("f"),
     turnProvenanceHash: h("0"),
+    terminalProviderKind: InvestigationTurnProviderKind.Codex,
+    terminalActualModel: "gpt-test",
     terminalOutcomeHash: await digest.digestUtf8(
       terminalObservationCanonicalJson,
     ),
@@ -142,6 +174,22 @@ async function certificateBackedInvestigation(): Promise<ReviewInvestigation> {
       headSha: "3".repeat(40),
       reviewRevisionHash: h("4"),
     },
+    turnProvenance: [{
+      turnId: "turn-1",
+      purpose: ReviewInvestigationTurnPurpose.Discovery,
+      actualProviderKind: InvestigationTurnProviderKind.Codex,
+      actualModel: "gpt-test",
+      runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 5,
+      reasoningOutputTokens: 0,
+      totalTokens: 15,
+      durationMs: 100,
+      acceptedAttestationId: "attestation-1",
+      acceptedAttestationHash: h("8"),
+      terminalOutcomeHash: h("9"),
+    }],
     certificate,
   } as unknown as ReviewInvestigation;
 }

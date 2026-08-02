@@ -236,6 +236,8 @@ function activeReadModel(): ReviewInvestigationReadModel {
     turn: aggregate.activeTurn,
     certificateId: null,
     certificateHash: null,
+    terminalProviderKind: null,
+    terminalActualModel: null,
     terminalObservationCanonicalJson: null,
     terminalOutcomeHash: null,
     conclusion: null,

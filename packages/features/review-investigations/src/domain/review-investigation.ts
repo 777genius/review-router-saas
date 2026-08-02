@@ -34,6 +34,7 @@ import {
   type InvestigationTurnAbort,
   type InvestigationTurnCommit,
   type InvestigationTurnProvenance,
+  summarizeTerminalDiscoveryProvenance,
   turnProvenanceCanonicalValue,
 } from "./investigation-turn";
 import {
@@ -376,6 +377,17 @@ export function concludeReviewInvestigation(input: {
   }
   if (input.certificate.conclusion !== conclusion) {
     throw new ReviewInvestigationDomainError("certificate_conclusion_mismatch");
+  }
+  const terminalProvenance = summarizeTerminalDiscoveryProvenance(
+    current.turnProvenance,
+  );
+  if (
+    input.certificate.terminalProviderKind !== terminalProvenance.providerKind ||
+    input.certificate.terminalActualModel !== terminalProvenance.actualModel
+  ) {
+    throw new ReviewInvestigationDomainError(
+      "certificate_terminal_provenance_mismatch",
+    );
   }
   return {
     ...current,

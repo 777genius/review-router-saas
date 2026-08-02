@@ -47,10 +47,11 @@ import {
   type InvestigationObligation,
 } from "../../domain/investigation-obligation";
 import type { ReviewInvestigationCertificate } from "../../domain/investigation-certificate";
-import type {
-  InvestigationFinding,
-  InvestigationTurn,
-  InvestigationTurnProvenance,
+import {
+  summarizeTerminalDiscoveryProvenance,
+  type InvestigationFinding,
+  type InvestigationTurn,
+  type InvestigationTurnProvenance,
 } from "../../domain/investigation-turn";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import {
@@ -802,6 +803,8 @@ async function persistCertificate(
       coverageStateHash: certificate.coverageStateHash,
       contextAttestationSetHash: certificate.contextAttestationSetHash,
       turnProvenanceHash: certificate.turnProvenanceHash,
+      terminalProviderKind: certificate.terminalProviderKind,
+      terminalActualModel: certificate.terminalActualModel,
       terminalOutcomeHash: certificate.terminalOutcomeHash,
       terminalObservationCanonicalJson:
         certificate.terminalObservationCanonicalJson,
@@ -1041,12 +1044,19 @@ function assertRehydratedAggregate(
     }
   }
   if (investigation.certificate) {
+    const terminalProvenance = summarizeTerminalDiscoveryProvenance(
+      investigation.turnProvenance,
+    );
     if (
       investigation.certificate.investigationId !==
         investigation.investigationId ||
       investigation.certificate.investigationVersion + 1 !==
         investigation.version ||
-      investigation.certificate.conclusion !== investigation.conclusion
+      investigation.certificate.conclusion !== investigation.conclusion ||
+      investigation.certificate.terminalProviderKind !==
+        terminalProvenance.providerKind ||
+      investigation.certificate.terminalActualModel !==
+        terminalProvenance.actualModel
     ) {
       throw new Error("investigation_certificate_binding_corrupt");
     }
@@ -1201,6 +1211,11 @@ function toCertificate(
       record.turnProvenanceHash,
       "turn_provenance_hash",
     ),
+    terminalProviderKind:
+      record.terminalProviderKind === null
+        ? null
+        : parseTerminalProviderKind(record.terminalProviderKind),
+    terminalActualModel: record.terminalActualModel,
     terminalOutcomeHash: requiredCertificateField(
       record.terminalOutcomeHash,
       "terminal_outcome_hash",
@@ -1568,6 +1583,16 @@ const toPrismaCriticDecision = (value: ContextCriticDecision) => criticDecisionT
 const fromPrismaCriticDecision = (value: PrismaCriticDecision) => criticDecisionFromPrisma[value];
 const toPrismaConclusion = (value: ReviewInvestigationConclusion) => conclusionToPrisma[value];
 const fromPrismaConclusion = (value: PrismaConclusion) => conclusionFromPrisma[value];
+
+function parseTerminalProviderKind(value: string): InvestigationTurnProviderKind {
+  if (
+    value === InvestigationTurnProviderKind.Codex ||
+    value === InvestigationTurnProviderKind.ClaudeCode
+  ) {
+    return value;
+  }
+  throw new Error("investigation_terminal_provider_kind_invalid");
+}
 
 function invertEnumMap<DomainValue extends string, PrismaValue extends string>(
   mapping: Readonly<Record<DomainValue, PrismaValue>>,

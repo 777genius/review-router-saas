@@ -1,6 +1,9 @@
 import { canonicalJson, type CanonicalValue } from "./canonicalization";
-import type { ReviewInvestigationConclusion } from "./review-investigation-types";
-import type { ContextCriticDecision } from "./review-investigation-types";
+import type {
+  ContextCriticDecision,
+  InvestigationTurnProviderKind,
+  ReviewInvestigationConclusion,
+} from "./review-investigation-types";
 
 export type ReviewInvestigationCertificate = Readonly<{
   certificateId: string;
@@ -25,6 +28,8 @@ export type ReviewInvestigationCertificate = Readonly<{
   coverageStateHash: string;
   contextAttestationSetHash: string;
   turnProvenanceHash: string;
+  terminalProviderKind: InvestigationTurnProviderKind | null;
+  terminalActualModel: string | null;
   terminalOutcomeHash: string;
   terminalObservationCanonicalJson: string;
   criticAttestationId: string | null;

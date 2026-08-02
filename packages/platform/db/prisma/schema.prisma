@@ -1259,6 +1259,8 @@ model ReviewInvestigationCertificate {
   coverageStateHash       String?
   contextAttestationSetHash String?
   turnProvenanceHash      String?
+  terminalProviderKind    String?
+  terminalActualModel     String?
   terminalOutcomeHash     String?
   terminalObservationCanonicalJson String?
   criticAttestationId     String?
