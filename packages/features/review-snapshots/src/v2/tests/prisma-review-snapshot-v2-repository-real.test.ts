@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   createPrismaClient,
@@ -29,6 +29,8 @@ describeWithDatabase("review snapshot v2 Prisma repository contract", () => {
   const protocolLimitsProfileId = `${prefix}-limits`;
   const operationalSloProfileId = `${prefix}-slo`;
   const producerReleaseId = `${prefix}-producer`;
+  const fixtureHash = (label: string): string =>
+    createHash("sha256").update(`${prefix}:${label}`).digest("hex");
   let prisma: PrismaClient;
   let repository: PrismaReviewSnapshotV2Repository;
 
@@ -40,7 +42,7 @@ describeWithDatabase("review snapshot v2 Prisma repository contract", () => {
     await prisma.reviewProtocolLimitsV2.create({
       data: {
         protocolLimitsProfileId,
-        limitsDigest: hash("a"),
+        limitsDigest: fixtureHash("limits"),
         maxWorkSlots: 10,
         maxAttemptsPerSlot: 10,
         maxObservationBytes: 1_000_000,
@@ -60,7 +62,7 @@ describeWithDatabase("review snapshot v2 Prisma repository contract", () => {
     await prisma.reviewOperationalSloProfileV2.create({
       data: {
         operationalSloProfileId,
-        sloDigest: hash("b"),
+        sloDigest: fixtureHash("slo"),
         integrationEventDeliveryMs: 1_000,
         outboxClaimAgeMs: 1_000,
         missingCompletionProcessMs: 1_000,
@@ -78,11 +80,11 @@ describeWithDatabase("review snapshot v2 Prisma repository contract", () => {
       data: {
         producerReleaseId,
         distributionKind: "hosted_composite",
-        actionCommitSha: "a".repeat(40),
-        runtimeCommitSha: "b".repeat(40),
-        wrapperEntrypointDigest: hash("c"),
-        runtimeEntrypointDigest: hash("d"),
-        schemaDigest: hash("e"),
+        actionCommitSha: fixtureHash("action-commit").slice(0, 40),
+        runtimeCommitSha: fixtureHash("runtime-commit").slice(0, 40),
+        wrapperEntrypointDigest: fixtureHash("wrapper-entrypoint"),
+        runtimeEntrypointDigest: fixtureHash("runtime-entrypoint"),
+        schemaDigest: fixtureHash("schema"),
         capabilityProfile: "snapshot-v2-test",
         protocolLimitsProfileId,
         operationalSloProfileId,
