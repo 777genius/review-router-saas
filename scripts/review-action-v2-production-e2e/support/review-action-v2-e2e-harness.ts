@@ -430,6 +430,8 @@ export class ReviewActionV2E2EHarness {
         actualModel: "gpt-5-codex",
         contextDependencyAttestationId: null,
         contextDependencyAttestationHash: null,
+        investigationCertificateId: null,
+        investigationCertificateHash: null,
         payloadCanonicalJson,
         payloadHash,
         qualityFlags: [],
@@ -653,6 +655,8 @@ export class ReviewActionV2E2EHarness {
           observation.contextDependencyAttestationId,
         contextDependencyAttestationHash:
           observation.contextDependencyAttestationHash,
+        investigationCertificateId: observation.investigationCertificateId,
+        investigationCertificateHash: observation.investigationCertificateHash,
         payloadCanonicalJson: canonicalJson(observation.payloadJson),
         payloadHash: observation.payloadHash,
         qualityFlags: [],
