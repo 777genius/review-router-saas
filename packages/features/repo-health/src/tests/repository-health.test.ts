@@ -410,6 +410,36 @@ describe("repository health", () => {
     });
   });
 
+  it("recognizes the immutable T0 reusable workflow ref as current", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const workflow = `uses: 777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${sha}\n`;
+    const probe = new OctokitRepositoryWorkflowProbe({
+      createRequester: async () => ({
+        request: async () => ({
+          data: {
+            type: "file",
+            encoding: "base64",
+            content: Buffer.from(workflow).toString("base64"),
+          },
+        }),
+      }),
+    });
+
+    await expect(
+      probe.probeWorkflow({
+        githubInstallationId: "129",
+        owner: "777genius",
+        name: "example",
+        defaultBranch: "main",
+        workflowPath: ".github/workflows/reviewrouter-codex.yml",
+        expectedActionRef: `777genius/review-router@${sha}`,
+      }),
+    ).resolves.toEqual({
+      status: "present",
+      expectedActionRefFound: true,
+    });
+  });
+
   it("checks expected workflow capability markers without returning raw YAML", async () => {
     const workflow = [
       "uses: 777genius/review-router/.github/workflows/reviewrouter-reusable.yml@v1",

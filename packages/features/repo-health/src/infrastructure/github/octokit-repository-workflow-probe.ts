@@ -128,6 +128,7 @@ function expectedReusableWorkflowRefs(actionRef: string): readonly string[] {
   }
   return [
     `777genius/review-router/.github/workflows/reviewrouter-reusable.yml@${runtimeRef}`,
+    `777genius/review-router/.github/workflows/reviewrouter-t0-reusable.yml@${runtimeRef}`,
   ];
 }
 

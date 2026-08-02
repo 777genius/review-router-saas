@@ -12,117 +12,51 @@ These runbooks are written for local/private beta. They must stay
 metadata-only: do not paste provider secrets, raw webhook payloads, repository
 code, pull request diffs, prompts, or model responses into tickets or logs.
 
-## Fresh Repository E2E Smoke
+## App-First Repository E2E
 
-Use this before showing the MVP to a new tester or after changing GitHub App,
-workflow provisioning, provider setup, action runtime config, or action version
-resolution.
+Run this gate before every SaaS organization rollout and after changes to the
+GitHub App, workflow provisioning, rotating provider setup, Action runtime, or
+control-plane Action ref. Use only a clearly disposable repository.
 
-Setup-only smoke:
-
-```bash
-node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
-```
-
-Full review smoke with Codex OAuth seeding and an intentional blocking finding:
+Before opening the review fixture PR, enroll that disposable repository with
+`review-v2:admin cohort stage` and `mutation initialize-direct-v2`. Never bypass
+the T0 authority gate by reverting the workflow to rotating schema v1.
 
 ```bash
-REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E=1 \
+REVIEW_ROUTER_CODEX_ROTATING_E2E_OWNER=OWNER \
+REVIEW_ROUTER_CODEX_ROTATING_E2E_REPO_NAME=rr-codex-rotating-e2e \
+REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF=OWNER/review-router@FULL_40_CHAR_SHA \
+pnpm subscription-runtime:live-e2e
 ```
 
-Useful overrides:
+The production gate is complete only when all of these are proven:
 
-```bash
-REVIEW_ROUTER_FRESH_E2E_OWNER=777genius
-REVIEW_ROUTER_FRESH_E2E_REPO_NAME=rr-saas-fresh-e2e-manual
-REVIEW_ROUTER_FRESH_E2E_VISIBILITY=public
-REVIEW_ROUTER_FRESH_E2E_INSTALL_TIMEOUT_MS=90000
-REVIEW_ROUTER_ACTION_REF=777genius/review-router@main
-```
+1. the production GitHub App creates the setup PR
+2. `.github/workflows/reviewrouter-codex.yml` is client-triggered T0 schema v2,
+   calls the immutable `reviewrouter-t0-reusable.yml`, uses the
+   repository-scoped `provider_instance_id`, OIDC `id-token: write`, and
+   `REVIEWROUTER_CODEX_AUTH_JSON`
+3. `.github/workflows/reviewrouter.yml`, `pull_request_target`, rotating schema
+   v1/direct mode, direct `CODEX_AUTH_JSON`, and review publication through
+   `github.token` are absent
+4. two real pull requests complete rotating writeback without leaking auth or
+   producing artifacts
+5. every ReviewRouter advisory and inline finding has the exact author
+   `${GITHUB_APP_SLUG}[bot]`; `github-actions[bot]` fails the gate
+6. the actual check-run context is recorded before required checks are changed
 
-Expected setup-only result:
+Do not use `spike:github:fresh-repo:e2e` as SaaS rollout evidence. It exercises
+the historical direct workflow and cannot prove App-first publication identity.
 
-1. disposable repo is created
-2. ReviewRouter GitHub App installation is discovered
-3. repositories sync into the local database
-4. setup PR is created and mergeable
-5. setup PR is merged
-6. workflow probe reports `present` and `expectedActionRefFound=true`
+If setup fails, verify App installation selection and accepted permissions,
+then rerun repository sync. If review fails, inspect the safe Action summary,
+the exact control-plane/Action ref match, provider generation, and App comment
+token issuance. Never repair rotating OAuth by copying `CODEX_AUTH_JSON` or by
+pinning a legacy Action release.
 
-Expected full-review result:
-
-1. setup-only result succeeds first
-2. `scripts/seed-codex-auth.sh` writes `CODEX_AUTH_JSON` directly to the disposable repo Actions secret
-3. intentional auth-bypass PR is opened
-4. GitHub Actions run starts for workflow `ReviewRouter`
-5. run fails intentionally because a critical finding is found
-6. inline review comment is present on `auth.js:5`
-
-Cleanup:
-
-The script never deletes GitHub repositories automatically. Delete disposable
-repos manually if needed:
-
-```bash
-gh repo delete OWNER/REPO --yes
-```
-
-Do not add automatic deletion to the beta script unless the operator explicitly
-accepts the `delete_repo` scope tradeoff.
-
-## Fresh Repository E2E Failed
-
-Use the JSON object printed by the script first. It includes the target repo,
-setup PR URL, review PR URL, run URL, and safe error summary when available.
-
-If App installation is not found:
-
-1. check the GitHub App is installed for the owner or selected repository
-2. check the App has `contents`, `workflows`, `pull_requests`, `issues`, and `metadata` permissions
-3. wait one minute and rerun, because GitHub installation visibility can lag
-4. run `node scripts/run-with-env.mjs pnpm spike:github:list-installations`
-
-If setup PR is not mergeable:
-
-1. open the setup PR URL from script output
-2. check branch protection and required checks on the disposable repo
-3. verify `.github/workflows/reviewrouter.yml` is the only intended file
-4. rerun with a fresh disposable repo name if GitHub mergeability stays `UNKNOWN`
-
-If workflow probe says missing after merge:
-
-1. confirm setup PR was merged into the default branch
-2. confirm default branch is `main`
-3. confirm the workflow file path is `.github/workflows/reviewrouter.yml`
-4. check the expected action ref in `.env.local` or `REVIEW_ROUTER_ACTION_REF`
-5. run the repo health smoke against the same repo:
-
-```bash
-REVIEW_ROUTER_TARGET_REPO=OWNER/REPO \
-  node scripts/run-with-env.mjs pnpm spike:repo-health:e2e
-```
-
-If full review does not start:
-
-1. confirm Actions are enabled on the disposable repo
-2. confirm the review PR branch exists
-3. open the Actions tab and filter by workflow `ReviewRouter`
-4. check whether GitHub skipped the workflow because the PR is from a fork
-
-If full review starts but has no inline comment:
-
-1. open the run URL and inspect the action summary
-2. confirm `CODEX_AUTH_JSON` was seeded in the target repo, not the SaaS repo
-3. confirm the action ref points to a runtime that includes current ReviewRouter fixes
-4. confirm the expected fixture still changes `auth.js` line 5
-5. rerun the full-review smoke once to exclude transient Codex/provider failure
-
-If Codex auth fails:
-
-1. run `codex` locally and confirm the current machine is still logged in
-2. run `bash scripts/seed-codex-auth.sh --dry-run` with the target repo env
-3. reseed the repo or org selected-repo secret with `scripts/seed-codex-auth.sh`
-4. do not paste `auth.json` into logs or the SaaS dashboard
+Delete a one-off disposable repository after the rollout batch. Reusable named
+canaries may be retained only when their purpose and owner are recorded.
 
 ## GitHub Webhook Failing
 

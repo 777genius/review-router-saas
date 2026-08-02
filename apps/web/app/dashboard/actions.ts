@@ -548,8 +548,19 @@ async function createSetupPullRequestMutation(
     const codexRotatingSecretInputs = codexRotatingProviderInstanceId
       ? codexRotatingWorkflowSecretInputs(resolvedRuntime.config)
       : null;
+    const codexRotatingV2Provisioning =
+      codexRotatingProviderInstanceId &&
+      process.env.REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE ===
+        "client_triggered_t0"
+        ? {
+            codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+            codexRotatingWorkflowSchemaVersion:
+              CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+          }
+        : null;
     const forkAgenticSandboxEnabled =
-      codexRotatingProviderInstanceId !== undefined;
+      codexRotatingProviderInstanceId !== undefined &&
+      codexRotatingV2Provisioning === null;
     const conflictReviewFallbackAllowed = codexRotatingProviderInstanceId
       ? false
       : isConflictReviewFallbackAllowedForRepository(repository.fullName);
@@ -568,6 +579,7 @@ async function createSetupPullRequestMutation(
               codexRotatingProviderInstanceId,
               forkAgenticSandboxEnabled,
               ...(codexRotatingSecretInputs ?? {}),
+              ...(codexRotatingV2Provisioning ?? {}),
             }
           : {}),
         ...(workflowProviderKind ? { providerKind: workflowProviderKind } : {}),
@@ -651,16 +663,7 @@ async function createSetupPullRequestMutation(
                 ? {
                     codexRotatingProviderInstanceId,
                     forkAgenticSandboxEnabled,
-                    ...(process.env
-                      .REVIEW_ROUTER_REVIEW_V2_WORKFLOW_PROVISIONING_MODE ===
-                    "client_triggered_t0"
-                      ? {
-                          codexRotatingReviewActionV2Mode:
-                            CodexRotatingReviewActionV2Mode.T0,
-                          codexRotatingWorkflowSchemaVersion:
-                            CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
-                        }
-                      : {}),
+                    ...(codexRotatingV2Provisioning ?? {}),
                   }
                 : {}),
               actor: actor.actor,

@@ -9,8 +9,8 @@ import {
   codexRotatingReviewDraftsVariableName,
   codexRotatingSecretName,
   codexRotatingTimeoutMinutesVariableName,
-  type CodexRotatingReviewActionV2Mode,
-  type CodexRotatingT0WorkflowSchemaVersion,
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   renderCodexRotatingAdvisoryWorkflow,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
@@ -856,7 +856,43 @@ export function getCodexRotatingWorkflowSetupContentMarkerGroups(input: {
   readonly claudeCodeOAuthTokenSecret?: boolean | undefined;
   readonly openRouterApiKeySecret?: boolean | undefined;
   readonly forkAgenticSandboxEnabled?: boolean | undefined;
+  readonly reviewActionV2Mode?: CodexRotatingReviewActionV2Mode | undefined;
+  readonly workflowSchemaVersion?:
+    | CodexRotatingT0WorkflowSchemaVersion
+    | undefined;
 }): readonly (readonly string[])[] {
+  if (
+    input.reviewActionV2Mode === CodexRotatingReviewActionV2Mode.T0 &&
+    input.workflowSchemaVersion ===
+      CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2
+  ) {
+    const markers = [
+      "name: ReviewRouter Codex OAuth",
+      "run-name: ${{ format('ReviewRouter review PR {0} at {1}'",
+      "pull_request:",
+      "permissions: {}\n\njobs:",
+      "github.event_name == 'pull_request'",
+      "    permissions:\n      contents: read\n      pull-requests: read\n      id-token: write",
+      ".github/workflows/reviewrouter-t0-reusable.yml@",
+      `provider_instance_id: ${JSON.stringify(input.providerInstanceId)}`,
+      "workflow_schema_version: 2",
+      `max_changed_lines: \${{ vars.${codexRotatingMaxChangedLinesVariableName} }}`,
+      `review_timeout_minutes: \${{ fromJSON(vars.${codexRotatingTimeoutMinutesVariableName} || '60') }}`,
+      `CODEX_AUTH_JSON: \${{ secrets.${codexRotatingSecretName} }}`,
+    ];
+
+    if (input.claudeCodeOAuthTokenSecret === true) {
+      markers.push(
+        "CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+      );
+    }
+    if (input.openRouterApiKeySecret === true) {
+      markers.push("OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}");
+    }
+
+    return [markers];
+  }
+
   const markers = [
     "name: ReviewRouter Codex OAuth",
     "permissions: {}\n\njobs:",

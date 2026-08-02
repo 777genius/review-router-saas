@@ -57,20 +57,18 @@ fi
 case "${REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB:-none}" in
   none | 0 | false)
     ;;
-  setup)
-    run_step "fresh repository GitHub setup E2E" run_with_env spike:github:fresh-repo:e2e
+  setup | review)
+    printf 'REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=%s is a legacy direct-workflow gate and cannot prove SaaS App identity. Use app-first.\n' "${REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB}" >&2
+    exit 2
     ;;
-  review)
-    run_step "fresh repository GitHub full review E2E" env REVIEW_ROUTER_FRESH_E2E_MODE=review node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
-    ;;
-  codex-rotating)
-    run_step "Codex rotating OAuth GitHub live E2E" node scripts/run-with-env.mjs pnpm spike:github:codex-rotating:e2e
+  app-first | codex-rotating)
+    run_step "App-first Codex rotating GitHub live E2E" env REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E=1 node scripts/run-with-env.mjs pnpm subscription-runtime:live-e2e
     ;;
   memory)
     run_step "disposable repository GitHub memory E2E" env REVIEW_ROUTER_GITHUB_MEMORY_E2E=1 node scripts/run-with-env.mjs pnpm spike:github-memory:e2e
     ;;
   *)
-    printf 'REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB must be none, setup, review, codex-rotating, or memory\n' >&2
+    printf 'REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB must be none, app-first, codex-rotating, or memory\n' >&2
     exit 2
     ;;
 esac

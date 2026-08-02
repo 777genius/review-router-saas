@@ -249,24 +249,24 @@ REVIEW_ROUTER_TARGET_REPO=owner/repo \
   node scripts/run-with-env.mjs pnpm spike:repo-health:e2e
 ```
 
-Fresh repository E2E:
+App-first Codex rotating live E2E in a disposable repository:
 
 ```bash
-node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
+REVIEW_ROUTER_RUN_SUBSCRIPTION_RUNTIME_LIVE_E2E=1 \
+REVIEW_ROUTER_CODEX_ROTATING_E2E_OWNER=owner \
+REVIEW_ROUTER_CODEX_ROTATING_E2E_REPO_NAME=rr-codex-rotating-e2e \
+REVIEW_ROUTER_CODEX_ROTATING_E2E_ACTION_REF=owner/review-router@FULL_40_CHAR_SHA \
+pnpm subscription-runtime:live-e2e
 ```
 
-Full review E2E with Codex OAuth and a real inline finding:
-
-```bash
-REVIEW_ROUTER_FRESH_E2E_MODE=review \
-  node scripts/run-with-env.mjs pnpm spike:github:fresh-repo:e2e
-```
+This gate verifies the rotating workflow, real writeback, and the exact GitHub
+App comment author. The historical `spike:github:fresh-repo:e2e` direct workflow
+is not valid SaaS rollout evidence.
 
 The same real GitHub smokes can be included in `beta:check`:
 
 ```bash
-REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=setup pnpm beta:check
-REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=review pnpm beta:check
+REVIEW_ROUTER_BETA_CHECK_REAL_GITHUB=codex-rotating pnpm beta:check
 ```
 
 The fresh E2E script creates real GitHub repositories and does not delete them
