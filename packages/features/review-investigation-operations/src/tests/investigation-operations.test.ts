@@ -38,7 +38,7 @@ import { InMemoryInvestigationOperations } from "../infrastructure/memory/in-mem
 const release = "reviewrouter-action-fixture.1";
 const thresholds = {
   minSeededSamples: 4,
-  minShadowSamples: 0,
+  minShadowSamples: 1,
   maxUnexplainedDisagreements: 0,
   maxP95TotalTokens: 10_000,
   maxP95DurationMs: 60_000,
@@ -65,8 +65,8 @@ describe("review investigation operations", () => {
 
     expect(first.reportHash).toBe(second.reportHash);
     expect(first.body).toMatchObject({
-      decision: InvestigationPromotionDecision.Eligible,
-      blockers: [],
+      decision: InvestigationPromotionDecision.Blocked,
+      blockers: [InvestigationPromotionBlocker.InsufficientShadowSamples],
       metrics: {
         seededSamples: 4,
         expectedDefects: 5,
@@ -115,6 +115,21 @@ describe("review investigation operations", () => {
         }),
       ]),
     );
+  });
+
+  it("requires non-zero seeded and shadow evidence thresholds", async () => {
+    const operations = new InMemoryInvestigationOperations();
+    await expect(
+      new GenerateInvestigationPromotionReport(
+        operations,
+        digest,
+        operations,
+      ).execute({
+        generatedAt: "2026-08-02T12:00:00.000Z",
+        producerReleaseId: release,
+        thresholds: { ...thresholds, minShadowSamples: 0 },
+      }),
+    ).rejects.toThrow("promotion_evidence_threshold_zero");
   });
 
   it("keeps append idempotent and rejects conflicting sample identity", async () => {

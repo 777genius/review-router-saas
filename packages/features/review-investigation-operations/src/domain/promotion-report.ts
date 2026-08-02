@@ -65,6 +65,18 @@ export function evaluatePromotion(input: {
   readonly thresholds: InvestigationPromotionThresholds;
   readonly samples: readonly InvestigationTelemetrySample[];
 }): InvestigationPromotionReportBody {
+  if (
+    !input.generatedAt.endsWith("Z") ||
+    !Number.isFinite(Date.parse(input.generatedAt))
+  ) {
+    throw new Error("promotion_generated_at_invalid");
+  }
+  if (
+    !input.producerReleaseId ||
+    input.producerReleaseId.trim() !== input.producerReleaseId
+  ) {
+    throw new Error("promotion_producer_release_invalid");
+  }
   input.samples.forEach(validateTelemetrySample);
   validateThresholds(input.thresholds);
   const samples = [...input.samples].sort((a, b) =>
@@ -174,6 +186,9 @@ function validateThresholds(value: InvestigationPromotionThresholds): void {
     if (!Number.isSafeInteger(number) || number < 0) {
       throw new Error(`${field}_invalid`);
     }
+  }
+  if (value.minSeededSamples === 0 || value.minShadowSamples === 0) {
+    throw new Error("promotion_evidence_threshold_zero");
   }
 }
 
