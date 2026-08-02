@@ -364,6 +364,14 @@ export const reviewActionV2TransportContract = Object.freeze({
             commonCommandErrors,
           ],
           [
+            "review_investigation_replay",
+            "/api/action/v2/review-investigations/replay",
+            15_000,
+            524_288,
+            [200, 201],
+            commonCommandErrors,
+          ],
+          [
             "review_investigation_conclude",
             "/api/action/v2/review-investigations/conclude",
             10_000,

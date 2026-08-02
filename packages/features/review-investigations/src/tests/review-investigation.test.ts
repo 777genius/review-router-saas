@@ -191,7 +191,12 @@ describe("review investigation in-memory vertical slice", () => {
       harness.store,
       harness.authority,
       {
-        replay: async ({ obligation, sourceReceipt, targetRevision }) =>
+        replay: async ({
+          obligation,
+          sourceReceipt,
+          targetRevision,
+          replayProofId,
+        }) =>
           obligation.canonicalSubject === inventorySubject
             ? {
                 verdict: InvestigationReceiptReplayVerdict.Matched,
@@ -199,6 +204,7 @@ describe("review investigation in-memory vertical slice", () => {
                   ...sourceReceipt,
                   receiptId: `replay-${sourceReceipt.receiptId}`,
                   reviewRevisionHash: targetRevision.reviewRevisionHash,
+                  replayProofId,
                 },
               }
             : {
@@ -245,12 +251,13 @@ describe("review investigation in-memory vertical slice", () => {
       harness.store,
       harness.authority,
       {
-        replay: async ({ sourceReceipt, targetRevision }) => ({
+        replay: async ({ sourceReceipt, targetRevision, replayProofId }) => ({
           verdict: InvestigationReceiptReplayVerdict.Matched,
           targetReceipt: {
             ...sourceReceipt,
             receiptId: `replay-all-${sourceReceipt.receiptId}`,
             reviewRevisionHash: targetRevision.reviewRevisionHash,
+            replayProofId,
           },
         }),
       },
@@ -678,6 +685,7 @@ function receipt(receiptId: string, canonicalSubject: string) {
     operationReceiptIds: ["7".repeat(64)],
     acceptedAttestationId: `attestation-${receiptId}`,
     acceptedAttestationHash: "8".repeat(64),
+    replayProofId: null,
     complete: true,
     truncated: false,
     failed: false,

@@ -14,12 +14,19 @@ export type RegisterReviewInvestigationV2RoutesDependencies =
     readonly commitTurn?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationTurnCommit>;
     readonly abortTurn?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationTurnAbort>;
     readonly conclude?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationConclude>;
+    readonly replay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationReplay>;
   };
 
 export async function registerReviewInvestigationV2Routes(
   app: FastifyInstance,
   dependencies: RegisterReviewInvestigationV2RoutesDependencies,
 ): Promise<void> {
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewInvestigationReplay,
+    dependencies,
+    dependencies.replay,
+  );
   registerReviewActionV2Operation(
     app,
     ReviewActionV2OperationId.ReviewInvestigationOpen,

@@ -235,6 +235,7 @@ async function closureReceipt(input: {
     operationReceiptIds: [...input.claim.operationReceiptIds].sort(),
     acceptedAttestationId: input.acceptedAttestationId,
     acceptedAttestationHash: input.acceptedAttestationHash,
+    replayProofId: null,
     complete: true,
     truncated: false,
     failed: false,

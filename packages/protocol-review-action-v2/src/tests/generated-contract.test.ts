@@ -130,7 +130,7 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toThrow("protocol_contract_operation_id_duplicate");
   });
 
-  it("publishes all twenty-five strict operation schemas and fixtures", async () => {
+  it("publishes all twenty-six strict operation schemas and fixtures", async () => {
     const schema = JSON.parse(
       await readFile(
         new URL("../generated/review-action-v2.schema.json", import.meta.url),
@@ -138,9 +138,9 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ) as { readonly $defs: Readonly<Record<string, unknown>> };
 
-    expect(reviewActionV2Operations).toHaveLength(25);
-    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(25);
-    expect(Object.keys(schema.$defs)).toHaveLength(50);
+    expect(reviewActionV2Operations).toHaveLength(26);
+    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(26);
+    expect(Object.keys(schema.$defs)).toHaveLength(52);
     expect(sha256(canonicalJson(schema))).toBe(
       reviewActionV2PublishedSchemaDigest,
     );
@@ -397,6 +397,7 @@ describe("generated Review Action v2 negotiation contract", () => {
       ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
       ReviewActionV2OperationId.ReviewInvestigationTurnCommit,
       ReviewActionV2OperationId.ReviewInvestigationTurnAbort,
+      ReviewActionV2OperationId.ReviewInvestigationReplay,
       ReviewActionV2OperationId.ReviewInvestigationConclude,
     ]);
     expect(Object.values(ReviewInvestigationNextAction)).toEqual([
@@ -590,7 +591,7 @@ describe("generated Review Action v2 negotiation contract", () => {
       contextDependencyAttestationId: expect.any(Object),
       contextDependencyAttestationHash: expect.any(Object),
     });
-    expect(commitSchema?.allOf).toHaveLength(1);
+    expect(commitSchema?.allOf).toHaveLength(2);
   });
 
   it("keeps the generated manifest canonicalizer byte-identical to Review Evidence", async () => {

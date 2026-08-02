@@ -14,6 +14,7 @@ export const reviewActionV2OperationOrder = Object.freeze([
   "review_investigation_turn_plan",
   "review_investigation_turn_commit",
   "review_investigation_turn_abort",
+  "review_investigation_replay",
   "review_investigation_conclude",
   "review_invocation_lease_acquire",
   "review_invocation_lease_renew",

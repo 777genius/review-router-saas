@@ -609,6 +609,7 @@ function evidenceReceipt(
     operationReceiptIds: [],
     acceptedAttestationId: null,
     acceptedAttestationHash: null,
+    replayProofId: null,
     complete: true,
     truncated: false,
     failed: false,

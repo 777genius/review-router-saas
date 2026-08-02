@@ -1209,12 +1209,14 @@ model ReviewInvestigationReceipt {
   failed                Boolean
   acceptedAttestationId String?
   acceptedAttestationHash String?
+  replayProofId          String?
   acceptedAt            DateTime
   retainUntil           DateTime
 
   @@unique([investigationId, obligationId], map: "ReviewInvestigationReceipt_obligation_key")
   @@index([reviewRevisionHash, canonicalSubject], map: "ReviewInvestigationReceipt_revision_subject_idx")
   @@index([acceptedAttestationId], map: "ReviewInvestigationReceipt_attestation_idx")
+  @@index([replayProofId], map: "ReviewInvestigationReceipt_replay_proof_idx")
   @@index([retainUntil, receiptId], map: "ReviewInvestigationReceipt_retention_idx")
 }
 

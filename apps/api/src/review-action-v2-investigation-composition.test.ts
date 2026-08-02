@@ -19,6 +19,7 @@ import {
   reviewActionV2PublishedSchemaDigest,
   type ReviewActionV2RequestMap,
   type ReviewInvestigationTurnPlanRequest,
+  type ReviewInvestigationReplayRequest,
 } from "@reviewrouter/protocol-review-action-v2";
 import {
   ReviewRunAuthorizationState,
@@ -59,6 +60,7 @@ describe("Review Action v2 investigation composition", () => {
           commitTurn: {} as never,
           abortTurn: {} as never,
           conclude: {} as never,
+          replay: {} as never,
         },
         capabilities: {
           issueInvestigationTurn: vi
@@ -113,6 +115,118 @@ describe("Review Action v2 investigation composition", () => {
       ],
     });
   });
+
+  it("binds replay to the authorized target revision and source scope", async () => {
+    const source = {
+      ...activeInvestigation(),
+      state: ReviewInvestigationState.Concluded,
+      activeTurn: null,
+      revision: {
+        ...activeInvestigation().revision,
+        headSha: "4".repeat(40),
+        reviewRevisionHash: sha("source-revision"),
+      },
+      scope: {
+        ...activeInvestigation().scope,
+        authorizationScopeHash: await authorizationScopeHash(),
+      },
+    } as ReviewInvestigation;
+    const replayExecute = vi.fn().mockResolvedValue(activeReadModel());
+    const routes = composeReviewActionV2InvestigationRoutes({
+      enabled: true,
+      runtime: {
+        readServerTime: async () => now,
+        createRequestId: () => "request-generated",
+      },
+      handlers: {
+        authorizations: {
+          async resolveReviewRunAuthorizationToken() {
+            return {
+              status: ReviewRunAuthorizationTokenResolutionStatus.Valid,
+              authorization: authorization as unknown as ReviewRunAuthorization,
+            };
+          },
+        },
+        authorizationQueries: {} as never,
+        executionQueries: {
+          findExecution: vi.fn().mockResolvedValue({
+            execution: {
+              authorizationId: authorization.authorizationId,
+              workspaceId: authorization.workspaceId,
+              repositoryConnectionId: authorization.repositoryConnectionId,
+              scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+              pullRequestNumber: authorization.pullRequestNumber,
+              revision: {
+                reviewRevisionHash: authorization.reviewRevisionHash,
+              },
+            },
+          }),
+        } as never,
+        investigations: {
+          open: {} as never,
+          restore: { snapshot: vi.fn().mockResolvedValue(source) } as never,
+          planTurn: {} as never,
+          commitTurn: {} as never,
+          abortTurn: {} as never,
+          conclude: {} as never,
+          replay: { execute: replayExecute } as never,
+        },
+        capabilities: {} as never,
+        digest,
+        now: () => now,
+      },
+    });
+    const targetScope = {
+      workspaceId: authorization.workspaceId,
+      repositoryConnectionId: authorization.repositoryConnectionId,
+      scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+      pullRequestNumber: authorization.pullRequestNumber,
+      trustDomain: authorization.trustDomain,
+      authorizationScopeHash: await authorizationScopeHash(),
+    };
+    const targetRevision = {
+      baseSha: authorization.baseSha,
+      mergeBaseSha: authorization.mergeBaseSha,
+      headSha: authorization.headSha,
+      reviewRevisionHash: authorization.reviewRevisionHash,
+    };
+    const replayProofs = [
+      { obligationId: sha("obligation"), replayProofId: "proof-1" },
+    ];
+    const request = await withBodyHash(
+      ReviewActionV2OperationId.ReviewInvestigationReplay,
+      {
+        ...envelope("replay-investigation"),
+        authorizationToken: "authorization-token",
+        authorizationId: authorization.authorizationId,
+        idempotencyKey: "replay-1",
+        requestBodyHash: sha("placeholder"),
+        sourceInvestigationId: source.investigationId,
+        sourceCertificateHash: sha("certificate"),
+        targetExecutionId: "execution-target",
+        targetWorkSlotId: "slot-target",
+        targetScopeCanonicalJson: canonicalJson(targetScope),
+        targetScopeHash: sha(canonicalJson(targetScope)),
+        targetRevisionCanonicalJson: canonicalJson(targetRevision),
+        targetRevisionHash: sha(canonicalJson(targetRevision)),
+        replayProofsCanonicalJson: canonicalJson(replayProofs),
+        replayProofsHash: sha(canonicalJson(replayProofs)),
+      } satisfies ReviewInvestigationReplayRequest,
+    );
+
+    await expect(routes.replay!.execute(request)).resolves.toMatchObject({
+      statusCode: 201,
+      result: { status: ReviewInvestigationMutationResultStatus.Applied },
+    });
+    expect(replayExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceInvestigationId: source.investigationId,
+        targetExecutionId: "execution-target",
+        targetRevision,
+        replayProofs,
+      }),
+    );
+  });
 });
 
 const now = new Date("2026-08-02T10:00:00.000Z");
@@ -131,6 +245,17 @@ const authorization = {
   headSha: "3".repeat(40),
   reviewRevisionHash: revisionHash,
 } as const;
+
+async function authorizationScopeHash(): Promise<string> {
+  return digest.digestUtf8(
+    canonicalJson({
+      workspaceId: authorization.workspaceId,
+      repositoryConnectionId: authorization.repositoryConnectionId,
+      scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+      pullRequestNumber: authorization.pullRequestNumber,
+    }),
+  );
+}
 
 function activeInvestigation(): ReviewInvestigation {
   const obligationId = sha("obligation");

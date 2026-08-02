@@ -203,6 +203,8 @@ export class ReplayReviewInvestigation {
           sourceInvestigationId: source.investigationId,
           sourceCertificateHash: command.sourceCertificateHash,
           replayProofId: proofByObligationId.get(obligation.obligationId)!,
+          targetExecutionId: command.targetExecutionId,
+          targetWorkSlotId: command.targetWorkSlotId,
           obligation,
           sourceReceipt: obligation.receipt,
           targetRevision: command.targetRevision,

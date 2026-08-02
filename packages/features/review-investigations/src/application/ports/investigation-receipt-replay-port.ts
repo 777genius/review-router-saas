@@ -27,6 +27,8 @@ export interface InvestigationReceiptReplayPort {
     readonly sourceInvestigationId: string;
     readonly sourceCertificateHash: string;
     readonly replayProofId: string;
+    readonly targetExecutionId: string;
+    readonly targetWorkSlotId: string;
     readonly obligation: InvestigationObligation;
     readonly sourceReceipt: InvestigationEvidenceReceipt;
     readonly targetRevision: ReviewInvestigationRevision;

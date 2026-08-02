@@ -36,6 +36,7 @@ export type InvestigationEvidenceReceipt = Readonly<{
   operationReceiptIds: readonly string[];
   acceptedAttestationId: string | null;
   acceptedAttestationHash: string | null;
+  replayProofId: string | null;
   complete: boolean;
   truncated: boolean;
   failed: boolean;
@@ -257,6 +258,12 @@ function assertReceipt(receipt: InvestigationEvidenceReceipt): void {
     assertIdentifier(receipt.acceptedAttestationId, "receipt_attestation_id");
     assertDigest(receipt.acceptedAttestationHash!, "receipt_attestation_hash");
   }
+  if (receipt.replayProofId !== null) {
+    assertIdentifier(receipt.replayProofId, "receipt_replay_proof_id");
+    if (receipt.acceptedAttestationId === null) {
+      throw new ReviewInvestigationDomainError("receipt_replay_proof_invalid");
+    }
+  }
   for (const operationReceiptId of receipt.operationReceiptIds) {
     assertDigest(operationReceiptId, "operation_receipt_id");
   }
@@ -276,6 +283,7 @@ function receiptCanonicalObject(
     operationReceiptIds: [...receipt.operationReceiptIds].sort(),
     acceptedAttestationId: receipt.acceptedAttestationId,
     acceptedAttestationHash: receipt.acceptedAttestationHash,
+    replayProofId: receipt.replayProofId,
     complete: receipt.complete,
     truncated: receipt.truncated,
     failed: receipt.failed,

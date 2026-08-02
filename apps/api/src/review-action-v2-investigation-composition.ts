@@ -7,6 +7,7 @@ import {
   InvestigationReceiptKind,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
+  ReplayReviewInvestigation,
   RestoreReviewInvestigation,
   ReviewInvestigationAbortReason,
   ReviewInvestigationConclusion,
@@ -17,9 +18,12 @@ import {
   type InvestigationClockPort,
   type InvestigationExecutionAuthorityPort,
   type InvestigationStorePort,
+  type InvestigationReceiptReplayPort,
   type InvestigationTurnEvidencePort,
   type InvestigationTerminalProjectionPort,
   type ReviewInvestigation,
+  type ReviewInvestigationRevision,
+  type ReviewInvestigationScope,
   type ReviewInvestigationContract,
   type ReviewInvestigationPolicy,
   type ReviewInvestigationReadModel,
@@ -72,6 +76,7 @@ import {
   type ReviewInvestigationConcludeRequest,
   type ReviewInvestigationOpenRequest,
   type ReviewInvestigationRestoreRequest,
+  type ReviewInvestigationReplayRequest,
   type ReviewInvestigationTurnAbortRequest,
   type ReviewInvestigationTurnCommitRequest,
   type ReviewInvestigationTurnPlanRequest,
@@ -93,6 +98,7 @@ export type ReviewInvestigationUseCases = Readonly<{
   commitTurn: CommitAttestedInvestigationTurn;
   abortTurn: AbortInvestigationTurn;
   conclude: ConcludeReviewInvestigation;
+  replay: ReplayReviewInvestigation;
 }>;
 
 export type ReviewActionV2InvestigationHandlerDependencies = Readonly<{
@@ -111,6 +117,7 @@ export function composeReviewInvestigationUseCases(input: {
   readonly evidence: InvestigationTurnEvidencePort;
   readonly clock: InvestigationClockPort;
   readonly terminalProjection: InvestigationTerminalProjectionPort;
+  readonly receiptReplay: InvestigationReceiptReplayPort;
 }): ReviewInvestigationUseCases {
   const digest = new NodeSha256InvestigationDigest();
   const commit = new CommitInvestigationTurn(
@@ -146,6 +153,13 @@ export function composeReviewInvestigationUseCases(input: {
       digest,
       input.clock,
       input.terminalProjection,
+    ),
+    replay: new ReplayReviewInvestigation(
+      input.store,
+      input.authority,
+      input.receiptReplay,
+      digest,
+      input.clock,
     ),
   });
 }
@@ -232,6 +246,9 @@ export function composeReviewActionV2InvestigationRoutes(input: {
     ),
     abortTurn: enabled((request: ReviewInvestigationTurnAbortRequest) =>
       abortTurn(request, d),
+    ),
+    replay: enabled((request: ReviewInvestigationReplayRequest) =>
+      replay(request, d),
     ),
     conclude: enabled((request: ReviewInvestigationConcludeRequest) =>
       conclude(request, d),
@@ -682,6 +699,104 @@ async function conclude(
     investigationId: request.investigationId,
     expectedVersion: decimal(request.expectedVersion, "expected_version"),
     certificateTtlMs: request.certificateTtlMs,
+  });
+  return {
+    statusCode: 201 as const,
+    result: present(result, ReviewInvestigationMutationResultStatus.Applied),
+  };
+}
+
+async function replay(
+  request: ReviewInvestigationReplayRequest,
+  d: ReviewActionV2InvestigationHandlerDependencies,
+) {
+  await assertBodyHash(
+    ReviewActionV2OperationId.ReviewInvestigationReplay,
+    request,
+    d,
+  );
+  const authorization = await requireAuthorization(
+    request.authorizationToken,
+    d,
+  );
+  requireEqual(
+    authorization.authorizationId,
+    request.authorizationId,
+    "authorization_id_mismatch",
+  );
+  await requireExecution(request.targetExecutionId, authorization, d);
+  const targetScope = await canonicalDocument<ReviewInvestigationScope>(
+    request.targetScopeCanonicalJson,
+    request.targetScopeHash,
+    d,
+  );
+  const targetRevision = await canonicalDocument<ReviewInvestigationRevision>(
+    request.targetRevisionCanonicalJson,
+    request.targetRevisionHash,
+    d,
+  );
+  const replayProofs = await canonicalDocument<
+    readonly Readonly<{ obligationId: string; replayProofId: string }>[]
+  >(request.replayProofsCanonicalJson, request.replayProofsHash, d);
+  const expectedScope: ReviewInvestigationScope = {
+    workspaceId: authorization.workspaceId,
+    repositoryConnectionId: authorization.repositoryConnectionId,
+    scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+    pullRequestNumber: authorization.pullRequestNumber,
+    trustDomain: authorization.trustDomain,
+    authorizationScopeHash: await d.digest.digestUtf8(
+      canonicalJson({
+        workspaceId: authorization.workspaceId,
+        repositoryConnectionId: authorization.repositoryConnectionId,
+        scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+        pullRequestNumber: authorization.pullRequestNumber,
+      }),
+    ),
+  };
+  const expectedRevision: ReviewInvestigationRevision = {
+    baseSha: authorization.baseSha,
+    mergeBaseSha: authorization.mergeBaseSha,
+    headSha: authorization.headSha,
+    reviewRevisionHash: authorization.reviewRevisionHash,
+  };
+  requireEqual(
+    canonicalJson(targetScope),
+    canonicalJson(expectedScope),
+    "target_scope_mismatch",
+  );
+  requireEqual(
+    canonicalJson(targetRevision),
+    canonicalJson(expectedRevision),
+    "target_revision_mismatch",
+  );
+  const source = await d.investigations.restore.snapshot(
+    request.sourceInvestigationId,
+  );
+  if (
+    source.scope.workspaceId !== expectedScope.workspaceId ||
+    source.scope.repositoryConnectionId !==
+      expectedScope.repositoryConnectionId ||
+    source.scope.scmRepositoryIdentityId !==
+      expectedScope.scmRepositoryIdentityId ||
+    source.scope.pullRequestNumber !== expectedScope.pullRequestNumber ||
+    source.scope.trustDomain !== expectedScope.trustDomain ||
+    source.scope.authorizationScopeHash !== expectedScope.authorizationScopeHash
+  ) {
+    throw failure(
+      403,
+      ReviewActionV2ProtocolErrorCode.Forbidden,
+      "investigation_replay_scope_mismatch",
+    );
+  }
+  const result = await d.investigations.replay.execute({
+    commandId: request.idempotencyKey,
+    sourceInvestigationId: request.sourceInvestigationId,
+    sourceCertificateHash: request.sourceCertificateHash,
+    targetScope,
+    targetRevision,
+    targetExecutionId: request.targetExecutionId,
+    targetWorkSlotId: request.targetWorkSlotId,
+    replayProofs,
   });
   return {
     statusCode: 201 as const,

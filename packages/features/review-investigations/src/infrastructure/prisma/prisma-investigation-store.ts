@@ -758,6 +758,7 @@ async function persistObligations(
           evidenceDigest: obligation.receipt.evidenceDigest,
           operationReceiptIds: [...obligation.receipt.operationReceiptIds],
           acceptedAttestationHash: obligation.receipt.acceptedAttestationHash,
+          replayProofId: obligation.receipt.replayProofId,
           complete: obligation.receipt.complete,
           truncated: obligation.receipt.truncated,
           failed: obligation.receipt.failed,
@@ -1196,6 +1197,7 @@ function toReceipt(record: PrismaReceiptRecord): InvestigationEvidenceReceipt {
         ? null
         : record.acceptedAttestationId,
     acceptedAttestationHash: record.acceptedAttestationHash,
+    replayProofId: record.replayProofId,
     complete: record.complete,
     truncated: record.truncated,
     failed: record.failed,

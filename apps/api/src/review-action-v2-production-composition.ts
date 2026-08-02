@@ -112,6 +112,7 @@ import {
   reviewActionV2ProjectionPolicyVersion,
 } from "./review-action-v2-projection-policy.js";
 import { ReviewContextAttestationEvidenceAdapter } from "./review-context-attestation-evidence-adapter.js";
+import { ContextAttestationInvestigationReceiptReplayAdapter } from "./review-investigation-receipt-replay-adapter.js";
 import {
   composeReviewActionV2ContextAttestationRoutes,
   createReviewActionV2ContextReplayCoordinator,
@@ -582,6 +583,11 @@ export function composeReviewActionV2ProductionRoutes(input: {
         clock,
         terminalProjection: new ReviewEvidenceInvestigationTerminalProjection(
           digest,
+        ),
+        receiptReplay: new ContextAttestationInvestigationReceiptReplayAdapter(
+          contextAttestationStore,
+          { nowMs: () => clock.now().getTime() },
+          new NodeSha256InvestigationDigest(),
         ),
       }),
       capabilities,
