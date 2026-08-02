@@ -37,6 +37,18 @@ statuses: write
 
 Every permission must be explained in onboarding. The accepted permission rationale is detailed in [ADR-014](./014-one-click-workflow-provisioning.md) and [GitHub Permission Matrix](../architecture/14-github-permission-matrix.md).
 
+## Review Publication Identity Invariant
+
+SaaS production reviews, summaries, and inline findings are published with a
+repository-scoped installation token minted by the shared ReviewRouter GitHub
+App. Their exact GitHub author must be the configured `${GITHUB_APP_SLUG}[bot]`.
+
+The default Actions token may be used by a generated workflow for bounded
+preflight reads, but it is not a production review-publication identity. A new
+ReviewRouter comment from `github-actions[bot]` proves a legacy or broken
+publication path and blocks rollout. Reading historical Actions-authored threads
+for migration does not relax this invariant.
+
 ## Consequences
 
 Positive:

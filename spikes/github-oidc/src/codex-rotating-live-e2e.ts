@@ -12,6 +12,8 @@ import {
   syncInstallationRepositories,
 } from "../../../packages/features/repositories/src/index.ts";
 import {
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   OctokitWorkflowSetupGateway,
   PrismaWorkflowProvisioningRepository,
   provisionReviewRouterWorkflow,
@@ -24,6 +26,10 @@ import {
 import { resolveCodexRotatingSeedScriptDescriptor } from "../../../apps/web/src/server/codex-rotating-seed-script.ts";
 import { createGitHubApp, findInstallationForRepo } from "./github-app.js";
 import { loadAppProfile, loadEnvFiles } from "./config.js";
+import {
+  assertGitHubAppCommentAuthor,
+  expectedGitHubAppBotLogin,
+} from "./review-comment-identity.js";
 
 type RepositoryView = {
   readonly nameWithOwner: string;
@@ -110,6 +116,7 @@ const runTimeoutMs = Number(
 );
 const workdir = mkdtempSync(join(tmpdir(), "reviewrouter-codex-rotating-e2e-"));
 const profile = loadAppProfile();
+const expectedCommentAuthor = expectedGitHubAppBotLogin(profile.APP_SLUG);
 const app = createGitHubApp(profile);
 let prisma = createPrismaClient();
 const created = {
@@ -599,6 +606,10 @@ async function provisionRotatingWorkflow(input: {
       apiUrl,
       runtimeConfigMode: "oidc",
       codexRotatingProviderInstanceId: input.providerInstanceId,
+      codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      codexRotatingWorkflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+      forkAgenticSandboxEnabled: false,
     },
     {
       setupGateway: new OctokitWorkflowSetupGateway(octokit),
@@ -713,7 +724,19 @@ async function isRotatingWorkflowCurrentOnDefaultBranch(
     return false;
   }
   const workflow = Buffer.from(result.stdout.trim(), "base64").toString("utf8");
-  return workflow.includes(actionRef) && workflow.includes(providerInstanceId);
+  const [actionRepository, actionCommitSha] = actionRef.split("@");
+  return (
+    workflow.includes(
+      `${actionRepository}/.github/workflows/reviewrouter-t0-reusable.yml@${actionCommitSha}`,
+    ) &&
+    workflow.includes(`provider_instance_id: "${providerInstanceId}"`) &&
+    workflow.includes("workflow_schema_version: 2") &&
+    workflow.includes(
+      "CODEX_AUTH_JSON: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+    ) &&
+    !workflow.includes("pull_request_target:") &&
+    !workflow.includes("mode: codex-oauth-rotating")
+  );
 }
 
 async function runReviewPullRequest(input: {
@@ -957,7 +980,14 @@ async function waitForReviewRouterComment(
     const comment = comments.find((candidate) =>
       candidate.body.includes("<!-- reviewrouter:codex-oauth-rotating"),
     );
-    if (comment) return comment;
+    if (comment) {
+      assertGitHubAppCommentAuthor({
+        actualLogin: comment.user.login,
+        expectedLogin: expectedCommentAuthor,
+        surface: "advisory",
+      });
+      return comment;
+    }
     await sleep(3_000);
   }
   throw new Error("ReviewRouter rotating advisory comment was not posted");
@@ -971,7 +1001,19 @@ async function waitForReviewRouterInlineComments(
     const comments = JSON.parse(
       run("gh", ["api", `repos/${targetRepo}/pulls/${prNumber}/comments`]),
     ) as ReviewCommentView[];
-    const reviewRouterComments = comments.filter(isExpectedReviewRouterFinding);
+    const markerComments = comments.filter((comment) =>
+      comment.body.includes("<!-- review-router-inline:"),
+    );
+    for (const comment of markerComments) {
+      assertGitHubAppCommentAuthor({
+        actualLogin: comment.user.login,
+        expectedLogin: expectedCommentAuthor,
+        surface: "inline",
+      });
+    }
+    const reviewRouterComments = markerComments.filter(
+      isExpectedReviewRouterFinding,
+    );
     if (reviewRouterComments.length > 0) return reviewRouterComments;
     await sleep(3_000);
   }

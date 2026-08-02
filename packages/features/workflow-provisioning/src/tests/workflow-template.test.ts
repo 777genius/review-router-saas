@@ -385,6 +385,27 @@ describe("renderReviewRouterWorkflow", () => {
     ]);
   });
 
+  it("exports distinct readiness markers for client-triggered T0 schema v2", () => {
+    const markers = getCodexRotatingWorkflowSetupContentMarkerGroups({
+      providerInstanceId: "codex-rotating:123456",
+      reviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+      workflowSchemaVersion:
+        CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+    });
+
+    expect(markers).toEqual([
+      expect.arrayContaining([
+        "pull_request:",
+        ".github/workflows/reviewrouter-t0-reusable.yml@",
+        'provider_instance_id: "codex-rotating:123456"',
+        "workflow_schema_version: 2",
+        "CODEX_AUTH_JSON: ${{ secrets.REVIEWROUTER_CODEX_AUTH_JSON }}",
+      ]),
+    ]);
+    expect(markers[0]).not.toContain("pull_request_target:");
+    expect(markers[0]).not.toContain("mode: codex-oauth-rotating");
+  });
+
   it("renders a review-only pull request workflow", () => {
     const workflow = renderReviewRouterWorkflow({
       ...workflowOptions,

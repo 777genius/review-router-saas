@@ -1,6 +1,8 @@
 import type { RepositoryWorkflowProbePort } from "@reviewrouter/features-repo-health";
 import type { ProviderKind } from "@reviewrouter/features-review-providers";
 import {
+  type CodexRotatingReviewActionV2Mode,
+  type CodexRotatingT0WorkflowSchemaVersion,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
   getCodexRotatingWorkflowSetupContentMarkerGroups,
@@ -21,6 +23,8 @@ export type WorkflowSetupReadinessInput = {
   readonly codexRotatingProviderInstanceId?: string;
   readonly codexRotatingClaudeCodeOAuthTokenSecret?: boolean;
   readonly codexRotatingOpenRouterApiKeySecret?: boolean;
+  readonly codexRotatingReviewActionV2Mode?: CodexRotatingReviewActionV2Mode;
+  readonly codexRotatingWorkflowSchemaVersion?: CodexRotatingT0WorkflowSchemaVersion;
 };
 
 export async function isWorkflowSetupAlreadyCurrent(
@@ -53,6 +57,8 @@ export async function isWorkflowSetupAlreadyCurrent(
                 input.codexRotatingOpenRouterApiKeySecret === true,
               forkAgenticSandboxEnabled:
                 input.forkAgenticSandboxEnabled === true,
+              reviewActionV2Mode: input.codexRotatingReviewActionV2Mode,
+              workflowSchemaVersion: input.codexRotatingWorkflowSchemaVersion,
             }),
         }
       : input.providerKind || input.conflictReviewFallbackEnabled === true

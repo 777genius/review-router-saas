@@ -5,6 +5,8 @@ import type {
   RepositoryWorkflowProbePort,
 } from "@reviewrouter/features-repo-health";
 import {
+  CodexRotatingReviewActionV2Mode,
+  CodexRotatingT0WorkflowSchemaVersion,
   defaultCodexRotatingWorkflowPath,
   defaultWorkflowPath,
 } from "@reviewrouter/features-workflow-provisioning";
@@ -267,6 +269,41 @@ describe("workflow setup readiness", () => {
         "mode: fork-agentic-sandbox",
         "REVIEW_ROUTER_PR_WORKSPACE: ${{ github.workspace }}/safe-workspace",
       ]),
+    );
+  });
+
+  it("requires client-triggered T0 schema-v2 markers before skipping migration", async () => {
+    const probe = new CapturingWorkflowProbe({
+      status: "present",
+      expectedActionRefFound: true,
+      expectedContentMarkersFound: true,
+    });
+
+    await expect(
+      isWorkflowSetupAlreadyCurrent(
+        {
+          ...readinessInput,
+          actionRef:
+            "777genius/review-router@0123456789abcdef0123456789abcdef01234567",
+          codexRotatingProviderInstanceId: "codex-rotating:123456",
+          codexRotatingReviewActionV2Mode: CodexRotatingReviewActionV2Mode.T0,
+          codexRotatingWorkflowSchemaVersion:
+            CodexRotatingT0WorkflowSchemaVersion.ClientTriggeredV2,
+        },
+        { workflowProbe: probe },
+      ),
+    ).resolves.toBe(true);
+
+    expect(probe.input?.expectedContentMarkerGroups?.[0]).toEqual(
+      expect.arrayContaining([
+        "pull_request:",
+        ".github/workflows/reviewrouter-t0-reusable.yml@",
+        'provider_instance_id: "codex-rotating:123456"',
+        "workflow_schema_version: 2",
+      ]),
+    );
+    expect(probe.input?.expectedContentMarkerGroups?.[0]).not.toContain(
+      "pull_request_target:",
     );
   });
 });
