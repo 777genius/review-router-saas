@@ -1,4 +1,5 @@
 import type { ReviewInvestigation } from "../../domain/review-investigation";
+import type { ReviewInvestigationScope } from "../../domain/coverage-contract";
 import type { ReviewInvestigationAbortReason } from "../../domain/review-investigation-types";
 
 export enum InvestigationStoreCommitStatus {
@@ -52,6 +53,14 @@ export interface InvestigationStorePort {
   findByCertificateId(
     certificateId: string,
   ): Promise<ReviewInvestigation | null>;
+  findReplayCandidates(input: {
+    readonly scope: ReviewInvestigationScope;
+    readonly targetReviewRevisionHash: string;
+    readonly stableReviewUnitKey: string;
+    readonly providerVoteLaneId: string;
+    readonly producerReleaseId: string;
+    readonly limit: number;
+  }): Promise<readonly ReviewInvestigation[]>;
   commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;

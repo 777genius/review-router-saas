@@ -115,6 +115,7 @@ import { ReviewContextAttestationEvidenceAdapter } from "./review-context-attest
 import { ContextAttestationInvestigationReceiptReplayAdapter } from "./review-investigation-receipt-replay-adapter.js";
 import {
   composeReviewActionV2ContextAttestationRoutes,
+  createInvestigationReceiptReplayPreparationPort,
   createReviewActionV2ContextReplayCoordinator,
   readReviewActionV2ContextCrypto,
 } from "./review-action-v2-context-attestation-composition.js";
@@ -162,6 +163,8 @@ export const reviewInvestigationRecordingEnabledEnv =
   "REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED";
 export const reviewInvestigationShadowEnabledEnv =
   "REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED";
+export const reviewInvestigationCrossRevisionReplayEnabledEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED";
 
 type ReviewActionV2RouteRuntime = Pick<
   RegisterReviewRunControlV2RoutesDependencies,
@@ -593,6 +596,13 @@ export function composeReviewActionV2ProductionRoutes(input: {
       capabilities,
       digest,
       now: () => clock.now(),
+      crossRevisionReplayEnabled:
+        input.env[reviewInvestigationCrossRevisionReplayEnabledEnv] === "1",
+      replayPreparation: (target) =>
+        createInvestigationReceiptReplayPreparationPort(
+          target,
+          contextAttestationHandlers,
+        ),
     },
   });
 

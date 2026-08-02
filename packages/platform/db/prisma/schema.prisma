@@ -866,6 +866,7 @@ model ReviewContextTargetReplayProof {
   replayProofId            String                             @id
   sourceAttestationId      String
   sourceAttestationHash    String
+  sourceOperationReceiptIdsHash String?
   targetExecutionId        String
   targetWorkSlotId         String
   targetReviewRevisionHash String
@@ -877,7 +878,7 @@ model ReviewContextTargetReplayProof {
   expiresAt                DateTime
   sourceAttestation        ReviewContextDependencyAttestation @relation(fields: [sourceAttestationId], references: [attestationId], onDelete: Restrict)
 
-  @@unique([sourceAttestationId, targetExecutionId, targetWorkSlotId, targetReviewRevisionHash, reusePolicyVectorHash])
+  @@unique([sourceAttestationId, targetExecutionId, targetWorkSlotId, targetReviewRevisionHash, reusePolicyVectorHash, sourceOperationReceiptIdsHash])
   @@index([targetExecutionId, targetWorkSlotId, expiresAt])
   @@index([expiresAt, replayProofId])
 }

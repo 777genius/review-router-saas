@@ -1,6 +1,8 @@
 import {
+  ContextDependencyReplayDenialReason,
   ContextDependencyReplayStatus,
   decideContextDependencyReplay,
+  decideContextGatewayV4Replay,
   type ContextDependencyReplayDecision,
 } from "../../domain/context-replay-decision";
 import {
@@ -15,8 +17,10 @@ import {
   type ContextAttestationStorePort,
   type TrustedTargetReplayFactsPort,
 } from "../ports/context-attestation-ports";
-import type { ContextDependencyManifest } from "../../domain/context-dependency-manifest";
-import { isLegacyContextDependencyManifest } from "../../domain/context-attestation-manifest";
+import {
+  isLegacyContextDependencyManifest,
+  type ContextAttestationManifest,
+} from "../../domain/context-attestation-manifest";
 
 export enum ReplayContextAttestationStatus {
   Accepted = "accepted",
@@ -47,7 +51,7 @@ export class ReplayContextAttestation {
     readonly targetExecutionId: string;
     readonly targetWorkSlotId: string;
     readonly replayCapabilityId: string;
-    readonly replayedManifest: ContextDependencyManifest;
+    readonly replayedManifest: ContextAttestationManifest;
   }): Promise<ReplayContextAttestationResult> {
     const nowMs = this.dependencies.clock.nowMs();
     const [source, target] = await Promise.all([
@@ -65,14 +69,14 @@ export class ReplayContextAttestation {
       target.targetWorkSlotId !== command.targetWorkSlotId ||
       !Number.isSafeInteger(target.proofLifetimeMs) ||
       target.proofLifetimeMs <= 0 ||
-      target.proofLifetimeMs > targetReplayProofMaxLifetimeMs ||
-      !isLegacyContextDependencyManifest(source.manifest)
+      target.proofLifetimeMs > targetReplayProofMaxLifetimeMs
     ) {
       return result(ReplayContextAttestationStatus.Denied, null, null);
     }
-    const replayDecision = decideContextDependencyReplay(
+    const replayDecision = replayDecisionFor(
       source.manifest,
       command.replayedManifest,
+      target.sourceOperationReceiptIds,
     );
     if (replayDecision.status !== ContextDependencyReplayStatus.Matched) {
       return result(
@@ -86,6 +90,8 @@ export class ReplayContextAttestation {
         replayProofId: this.dependencies.identities.nextReplayProofId(),
         sourceAttestationId: source.attestationId,
         sourceAttestationHash: source.attestationHash,
+        sourceOperationReceiptIdsHash:
+          target.sourceOperationReceiptIdsHash,
         targetExecutionId: target.targetExecutionId,
         targetWorkSlotId: target.targetWorkSlotId,
         targetReviewRevisionHash: target.targetRevision.reviewRevisionHash,
@@ -117,6 +123,36 @@ export class ReplayContextAttestation {
       persisted.value,
     );
   }
+}
+
+function replayDecisionFor(
+  source: ContextAttestationManifest,
+  target: ContextAttestationManifest,
+  sourceOperationReceiptIds: readonly string[],
+): ContextDependencyReplayDecision {
+  if (
+    isLegacyContextDependencyManifest(source) &&
+    isLegacyContextDependencyManifest(target) &&
+    sourceOperationReceiptIds.length === 0
+  ) {
+    return decideContextDependencyReplay(source, target);
+  }
+  if (
+    !isLegacyContextDependencyManifest(source) &&
+    !isLegacyContextDependencyManifest(target) &&
+    sourceOperationReceiptIds.length > 0
+  ) {
+    return decideContextGatewayV4Replay(
+      source,
+      target,
+      sourceOperationReceiptIds,
+    );
+  }
+  return Object.freeze({
+    status: ContextDependencyReplayStatus.Denied,
+    reason: ContextDependencyReplayDenialReason.ManifestVersionMismatch,
+    mismatchedOperationKey: null,
+  });
 }
 
 function result(

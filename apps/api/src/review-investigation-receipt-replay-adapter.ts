@@ -22,6 +22,11 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
       ? await this.store.findAcceptedAttestation(proof.sourceAttestationId)
       : null;
     const now = this.clock.nowMs();
+    const sourceOperationReceiptIdsHash = await this.digest.digestUtf8(
+      canonicalJson({
+        operationReceiptIds: [...input.sourceReceipt.operationReceiptIds].sort(),
+      }),
+    );
     if (
       proof === null ||
       source === null ||
@@ -30,6 +35,7 @@ export class ContextAttestationInvestigationReceiptReplayAdapter implements Inve
       proof.sourceAttestationId !== input.sourceReceipt.acceptedAttestationId ||
       proof.sourceAttestationHash !==
         input.sourceReceipt.acceptedAttestationHash ||
+      proof.sourceOperationReceiptIdsHash !== sourceOperationReceiptIdsHash ||
       source.attestationHash !== proof.sourceAttestationHash ||
       source.reuseExpiresAtMs <= now ||
       proof.expiresAtMs <= now ||

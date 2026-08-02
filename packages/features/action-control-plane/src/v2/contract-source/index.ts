@@ -364,6 +364,14 @@ export const reviewActionV2TransportContract = Object.freeze({
             commonCommandErrors,
           ],
           [
+            "review_investigation_replay_prepare",
+            "/api/action/v2/review-investigations/replay/prepare",
+            10_000,
+            262_144,
+            [200],
+            commonReadErrors,
+          ],
+          [
             "review_investigation_replay",
             "/api/action/v2/review-investigations/replay",
             15_000,
@@ -426,6 +434,14 @@ export const reviewActionV2TransportContract = Object.freeze({
             262_144,
             [200],
             commonReadErrors,
+          ],
+          [
+            "review_context_receipt_replay_commit",
+            "/api/action/v2/review-context/receipt-replay/commit",
+            15_000,
+            4_194_304,
+            [200, 201],
+            contextAttestationCommitErrors,
           ],
           [
             "review_context_replay_commit",

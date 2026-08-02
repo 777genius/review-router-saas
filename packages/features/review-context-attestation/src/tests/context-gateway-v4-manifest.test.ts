@@ -11,6 +11,10 @@ import {
   successfulContextGatewayV4Receipts,
   type ContextGatewayV4Event,
 } from "../domain/context-gateway-v4-manifest";
+import {
+  ContextDependencyReplayStatus,
+  decideContextGatewayV4Replay,
+} from "../domain/context-replay-decision";
 
 describe("ContextGatewayV4Manifest", () => {
   it("accepts recoverable rejection followed by a complete authenticated page chain", () => {
@@ -56,6 +60,45 @@ describe("ContextGatewayV4Manifest", () => {
     expect(() =>
       createContextGatewayV4Manifest(candidate([first, gap])),
     ).toThrow("context_gateway_v4_file_range_gap");
+  });
+
+  it("replays only the selected receipt group and ignores revision tree identity", () => {
+    const source = createContextGatewayV4Manifest(candidate(validEvents()));
+    const targetEvents = rechain([
+      successPage(1, 0, false, hash("target-seed")),
+      successPage(2, 1, true, hash("unused")),
+    ], hash("target-seed"));
+    const target = createContextGatewayV4Manifest({
+      ...candidate(targetEvents),
+      checkoutTreeOid: "c".repeat(40),
+      eventChainSeedHash: hash("target-seed"),
+      authenticatedChainHash: targetEvents.at(-1)!.eventHash,
+    });
+
+    expect(
+      decideContextGatewayV4Replay(source, target, [hash("receipt-1")]),
+    ).toMatchObject({ status: ContextDependencyReplayStatus.Matched });
+
+    const changed = targetEvents.map((entry, index) =>
+      index === 1
+        ? Object.freeze({
+            ...entry,
+            result: Object.freeze({
+              ...entry.result,
+              aggregateHash: hash("changed-aggregate"),
+            }),
+          })
+        : entry,
+    );
+    const changedTarget = createContextGatewayV4Manifest({
+      ...candidate(changed),
+      checkoutTreeOid: "c".repeat(40),
+      eventChainSeedHash: hash("target-seed"),
+      authenticatedChainHash: changed.at(-1)!.eventHash,
+    });
+    expect(
+      decideContextGatewayV4Replay(source, changedTarget, [hash("receipt-1")]),
+    ).toMatchObject({ status: ContextDependencyReplayStatus.Denied });
   });
 });
 
@@ -171,6 +214,24 @@ function event(
     ...input,
     eventHash: hash(`event-${input.sequence}`),
     operationKey: hash(`operation-${input.sequence}`),
+  });
+}
+
+function rechain(
+  events: readonly ContextGatewayV4Event[],
+  seed: string,
+): ContextGatewayV4Event[] {
+  let previous = seed;
+  return events.map((entry, index) => {
+    const eventHash = hash(`target-event-${index}`);
+    const chained = Object.freeze({
+      ...entry,
+      sequence: index + 1,
+      previousEventHash: previous,
+      eventHash,
+    });
+    previous = eventHash;
+    return chained;
   });
 }
 

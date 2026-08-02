@@ -7,6 +7,7 @@ export type TargetReplayProof = Readonly<{
   replayProofId: string;
   sourceAttestationId: string;
   sourceAttestationHash: string;
+  sourceOperationReceiptIdsHash: string | null;
   targetExecutionId: string;
   targetWorkSlotId: string;
   targetReviewRevisionHash: string;
@@ -28,6 +29,12 @@ export function createTargetReplayProof(
   assertIdentifier(candidate.replayProofId, "target_replay_proof_id");
   assertIdentifier(candidate.sourceAttestationId, "source_attestation_id");
   assertSha256(candidate.sourceAttestationHash, "source_attestation_hash");
+  if (candidate.sourceOperationReceiptIdsHash !== null) {
+    assertSha256(
+      candidate.sourceOperationReceiptIdsHash,
+      "source_operation_receipt_ids_hash",
+    );
+  }
   assertIdentifier(candidate.targetExecutionId, "target_execution_id");
   assertIdentifier(candidate.targetWorkSlotId, "target_work_slot_id");
   assertSha256(

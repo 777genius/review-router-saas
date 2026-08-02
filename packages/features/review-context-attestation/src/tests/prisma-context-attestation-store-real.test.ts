@@ -207,6 +207,7 @@ describeDatabase("PrismaContextAttestationStore PostgreSQL invariants", () => {
       replayProofId: `proof-first-${randomUUID()}`,
       sourceAttestationId: accepted.value.attestationId,
       sourceAttestationHash: accepted.value.attestationHash,
+      sourceOperationReceiptIdsHash: null,
       targetExecutionId: `target-execution-${randomUUID()}`,
       targetWorkSlotId: "target-slot",
       targetReviewRevisionHash: digest("target-revision"),

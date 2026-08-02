@@ -60,6 +60,37 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
     return clone(investigation ?? null);
   }
 
+  async findReplayCandidates(
+    input: Parameters<InvestigationStorePort["findReplayCandidates"]>[0],
+  ): Promise<readonly ReviewInvestigation[]> {
+    await this.transactionTail;
+    return [...this.investigations.values()]
+      .filter(
+        (item) =>
+          item.certificate !== null &&
+          item.revision.reviewRevisionHash !==
+            input.targetReviewRevisionHash &&
+          item.stableReviewUnitKey === input.stableReviewUnitKey &&
+          item.providerVoteLaneId === input.providerVoteLaneId &&
+          item.contract.producerReleaseId === input.producerReleaseId &&
+          item.scope.workspaceId === input.scope.workspaceId &&
+          item.scope.repositoryConnectionId ===
+            input.scope.repositoryConnectionId &&
+          item.scope.scmRepositoryIdentityId ===
+            input.scope.scmRepositoryIdentityId &&
+          item.scope.pullRequestNumber === input.scope.pullRequestNumber &&
+          item.scope.trustDomain === input.scope.trustDomain &&
+          item.scope.authorizationScopeHash ===
+            input.scope.authorizationScopeHash,
+      )
+      .sort((left, right) =>
+        right.certificate!.issuedAt.localeCompare(left.certificate!.issuedAt) ||
+        left.investigationId.localeCompare(right.investigationId),
+      )
+      .slice(0, input.limit)
+      .map((item) => clone(item));
+  }
+
   async commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;

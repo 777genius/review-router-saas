@@ -7,6 +7,7 @@ import {
   InvestigationReceiptKind,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
+  PrepareReviewInvestigationReplay,
   ReplayReviewInvestigation,
   RestoreReviewInvestigation,
   ReviewInvestigationAbortReason,
@@ -19,6 +20,7 @@ import {
   type InvestigationExecutionAuthorityPort,
   type InvestigationStorePort,
   type InvestigationReceiptReplayPort,
+  type InvestigationReplayPreparationPort,
   type InvestigationTurnEvidencePort,
   type InvestigationTerminalProjectionPort,
   type ReviewInvestigation,
@@ -31,7 +33,9 @@ import {
   type InvestigationEvidenceReceipt,
 } from "@reviewrouter/features-review-investigations";
 import {
+  ProviderExecutionProfile,
   ReviewFindingSeverity,
+  normalizeProviderInvocationManifest,
   reviewEvidencePayloadVersion,
   prepareReviewObservationPayload,
 } from "@reviewrouter/features-review-evidence";
@@ -47,6 +51,7 @@ import {
   ReviewExecutionState,
   ReviewInvocationLeaseState,
   type ReviewExecutionQueryPort,
+  type ReviewExecutionSnapshot,
 } from "@reviewrouter/features-review-executions";
 import {
   ReviewRunAuthorizationState,
@@ -67,6 +72,7 @@ import {
   ReviewInvestigationMutationResultStatus,
   ReviewInvestigationNextAction,
   ReviewInvestigationOpenResultStatus,
+  ReviewInvestigationReplayPrepareResultStatus,
   ReviewInvestigationPublishedRuntimeProfile,
   ReviewInvestigationPublishedConclusion,
   ReviewInvestigationPublishedState,
@@ -77,6 +83,7 @@ import {
   type ReviewInvestigationOpenRequest,
   type ReviewInvestigationRestoreRequest,
   type ReviewInvestigationReplayRequest,
+  type ReviewInvestigationReplayPrepareRequest,
   type ReviewInvestigationTurnAbortRequest,
   type ReviewInvestigationTurnCommitRequest,
   type ReviewInvestigationTurnPlanRequest,
@@ -99,6 +106,9 @@ export type ReviewInvestigationUseCases = Readonly<{
   abortTurn: AbortInvestigationTurn;
   conclude: ConcludeReviewInvestigation;
   replay: ReplayReviewInvestigation;
+  prepareReplay: (
+    preparation: InvestigationReplayPreparationPort,
+  ) => PrepareReviewInvestigationReplay;
 }>;
 
 export type ReviewActionV2InvestigationHandlerDependencies = Readonly<{
@@ -109,6 +119,14 @@ export type ReviewActionV2InvestigationHandlerDependencies = Readonly<{
   capabilities: ReviewActionV2ExecutionEvidenceCapabilityAdapter;
   digest: ReviewActionV2DigestPort;
   now: () => Date;
+  crossRevisionReplayEnabled: boolean;
+  replayPreparation: (input: {
+    readonly authorization: ReviewRunAuthorization;
+    readonly snapshot: ReviewExecutionSnapshot;
+    readonly workSlotId: string;
+    readonly manifest: ReturnType<typeof normalizeProviderInvocationManifest>;
+    readonly providerVoteIdentityHash: string;
+  }) => InvestigationReplayPreparationPort;
 }>;
 
 export function composeReviewInvestigationUseCases(input: {
@@ -161,6 +179,13 @@ export function composeReviewInvestigationUseCases(input: {
       digest,
       input.clock,
     ),
+    prepareReplay: (preparation) =>
+      new PrepareReviewInvestigationReplay(
+        input.store,
+        input.authority,
+        preparation,
+        input.clock,
+      ),
   });
 }
 
@@ -249,6 +274,9 @@ export function composeReviewActionV2InvestigationRoutes(input: {
     ),
     replay: enabled((request: ReviewInvestigationReplayRequest) =>
       replay(request, d),
+    ),
+    prepareReplay: enabled((request: ReviewInvestigationReplayPrepareRequest) =>
+      prepareReplay(request, d),
     ),
     conclude: enabled((request: ReviewInvestigationConcludeRequest) =>
       conclude(request, d),
@@ -703,6 +731,171 @@ async function conclude(
   return {
     statusCode: 201 as const,
     result: present(result, ReviewInvestigationMutationResultStatus.Applied),
+  };
+}
+
+async function prepareReplay(
+  request: ReviewInvestigationReplayPrepareRequest,
+  d: ReviewActionV2InvestigationHandlerDependencies,
+) {
+  await assertBodyHash(
+    ReviewActionV2OperationId.ReviewInvestigationReplayPrepare,
+    request,
+    d,
+  );
+  if (!d.crossRevisionReplayEnabled) {
+    return {
+      statusCode: 200 as const,
+      result: {
+        status: ReviewInvestigationReplayPrepareResultStatus.Rejected,
+        sourceInvestigationId: null,
+        sourceCertificateId: null,
+        sourceCertificateHash: null,
+        replayPreparationCanonicalJson: null,
+        replayPreparationHash: null,
+      },
+    };
+  }
+  const authorization = await requireAuthorization(
+    request.authorizationToken,
+    d,
+  );
+  requireEqual(
+    authorization.authorizationId,
+    request.authorizationId,
+    "authorization_id_mismatch",
+  );
+  requireEqual(
+    authorization.reviewRevisionHash,
+    request.targetReviewRevisionHash,
+    "target_review_revision_mismatch",
+  );
+  const snapshot = await requireExecution(
+    request.targetExecutionId,
+    authorization,
+    d,
+  );
+  const slot = snapshot.execution.workSlots.find(
+    (candidate) => candidate.workSlotId === request.targetWorkSlotId,
+  );
+  if (!slot) {
+    throw failure(
+      404,
+      ReviewActionV2ProtocolErrorCode.NotFound,
+      "work_slot_missing",
+    );
+  }
+  requireEqual(
+    slot.shardKey,
+    request.stableReviewUnitKey,
+    "stable_review_unit_mismatch",
+  );
+  requireEqual(
+    slot.providerVoteIdentityHash,
+    request.providerVoteLaneId,
+    "provider_vote_lane_mismatch",
+  );
+  requireEqual(
+    await d.digest.digestUtf8(request.providerManifestCanonicalJson),
+    request.providerManifestHash,
+    "provider_manifest_hash_mismatch",
+  );
+  let manifest;
+  try {
+    manifest = normalizeProviderInvocationManifest(
+      JSON.parse(request.providerManifestCanonicalJson),
+    );
+  } catch {
+    throw failure(
+      400,
+      ReviewActionV2ProtocolErrorCode.InvalidRequest,
+      "provider_manifest_invalid",
+    );
+  }
+  requireEqual(
+    canonicalJson(manifest),
+    request.providerManifestCanonicalJson,
+    "provider_manifest_not_canonical",
+  );
+  if (
+    manifest.executionProfile !==
+      ProviderExecutionProfile.InvestigationGatewayV1 ||
+    manifest.producerReleaseId !== authorization.producerReleaseId ||
+    manifest.selectedProtocolVersion !== authorization.selectedProtocolVersion ||
+    manifest.scopeHash !==
+      (await d.digest.digestUtf8(
+        canonicalJson({
+          workspaceId: authorization.workspaceId,
+          repositoryConnectionId: authorization.repositoryConnectionId,
+          scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+          pullRequestNumber: authorization.pullRequestNumber,
+        }),
+      ))
+  ) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      "investigation_replay_manifest_mismatch",
+    );
+  }
+  const targetScope = await investigationScope(authorization, d.digest);
+  const targetRevision = investigationRevision(authorization);
+  const result = await d.investigations
+    .prepareReplay(
+      d.replayPreparation({
+        authorization,
+        snapshot,
+        workSlotId: request.targetWorkSlotId,
+        manifest,
+        providerVoteIdentityHash: request.providerVoteLaneId,
+      }),
+    )
+    .execute({
+      targetScope,
+      targetRevision,
+      targetExecutionId: request.targetExecutionId,
+      targetWorkSlotId: request.targetWorkSlotId,
+      stableReviewUnitKey: request.stableReviewUnitKey,
+      providerVoteLaneId: request.providerVoteLaneId,
+      producerReleaseId: authorization.producerReleaseId,
+    });
+  if (result.status === "missing") {
+    return {
+      statusCode: 200 as const,
+      result: {
+        status: ReviewInvestigationReplayPrepareResultStatus.Missing,
+        sourceInvestigationId: null,
+        sourceCertificateId: null,
+        sourceCertificateHash: null,
+        replayPreparationCanonicalJson: null,
+        replayPreparationHash: null,
+      },
+    };
+  }
+  const replayPreparationCanonicalJson = canonicalJson({
+    obligations: result.obligations.map((item) => ({
+      obligationId: item.obligationId,
+      contextAttestationId: item.replay.contextAttestationId,
+      contextAttestationHash: item.replay.contextAttestationHash,
+      sourceOperationReceiptIdsHash:
+        item.replay.sourceOperationReceiptIdsHash,
+      replayCapability: item.replay.replayCapability,
+      replayPlanCanonicalJson: item.replay.replayPlanCanonicalJson,
+      replayPlanHash: item.replay.replayPlanHash,
+    })),
+  });
+  return {
+    statusCode: 200 as const,
+    result: {
+      status: ReviewInvestigationReplayPrepareResultStatus.Prepared,
+      sourceInvestigationId: result.sourceInvestigationId,
+      sourceCertificateId: result.sourceCertificateId,
+      sourceCertificateHash: result.sourceCertificateHash,
+      replayPreparationCanonicalJson,
+      replayPreparationHash: await d.digest.digestUtf8(
+        replayPreparationCanonicalJson,
+      ),
+    },
   };
 }
 
@@ -1199,6 +1392,38 @@ function receiptKind(
     case ContextGatewayV4OperationKind.UnsupportedTool:
       throw new Error("unsupported_tool_cannot_produce_evidence");
   }
+}
+
+async function investigationScope(
+  authorization: ReviewRunAuthorization,
+  digest: ReviewActionV2DigestPort,
+): Promise<ReviewInvestigationScope> {
+  return Object.freeze({
+    workspaceId: authorization.workspaceId,
+    repositoryConnectionId: authorization.repositoryConnectionId,
+    scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+    pullRequestNumber: authorization.pullRequestNumber,
+    trustDomain: authorization.trustDomain,
+    authorizationScopeHash: await digest.digestUtf8(
+      canonicalJson({
+        workspaceId: authorization.workspaceId,
+        repositoryConnectionId: authorization.repositoryConnectionId,
+        scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+        pullRequestNumber: authorization.pullRequestNumber,
+      }),
+    ),
+  });
+}
+
+function investigationRevision(
+  authorization: ReviewRunAuthorization,
+): ReviewInvestigationRevision {
+  return Object.freeze({
+    baseSha: authorization.baseSha,
+    mergeBaseSha: authorization.mergeBaseSha,
+    headSha: authorization.headSha,
+    reviewRevisionHash: authorization.reviewRevisionHash,
+  });
 }
 
 function decimal(value: string, field: string): number {

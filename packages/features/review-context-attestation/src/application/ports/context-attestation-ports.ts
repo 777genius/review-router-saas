@@ -135,6 +135,8 @@ export type TargetReplayFacts = Readonly<{
   replayBinaryHash: string;
   replayPolicyVersion: string;
   reusePolicyVectorHash: string;
+  sourceOperationReceiptIds: readonly string[];
+  sourceOperationReceiptIdsHash: string | null;
   proofLifetimeMs: number;
 }>;
 

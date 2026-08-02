@@ -265,6 +265,8 @@ export class PrismaContextAttestationStore implements ContextAttestationStorePor
                 targetWorkSlotId: proof.targetWorkSlotId,
                 targetReviewRevisionHash: proof.targetReviewRevisionHash,
                 reusePolicyVectorHash: proof.reusePolicyVectorHash,
+                sourceOperationReceiptIdsHash:
+                  proof.sourceOperationReceiptIdsHash,
               },
             ],
           },
@@ -302,6 +304,8 @@ function sameReplayProof(
   return (
     left.sourceAttestationId === right.sourceAttestationId &&
     left.sourceAttestationHash === right.sourceAttestationHash &&
+    left.sourceOperationReceiptIdsHash ===
+      right.sourceOperationReceiptIdsHash &&
     left.targetExecutionId === right.targetExecutionId &&
     left.targetWorkSlotId === right.targetWorkSlotId &&
     left.targetReviewRevisionHash === right.targetReviewRevisionHash &&
@@ -398,6 +402,7 @@ function toReplayProofCreateInput(
     replayProofId: proof.replayProofId,
     sourceAttestationId: proof.sourceAttestationId,
     sourceAttestationHash: proof.sourceAttestationHash,
+    sourceOperationReceiptIdsHash: proof.sourceOperationReceiptIdsHash,
     targetExecutionId: proof.targetExecutionId,
     targetWorkSlotId: proof.targetWorkSlotId,
     targetReviewRevisionHash: proof.targetReviewRevisionHash,
@@ -419,6 +424,7 @@ function replayProofTargetWhere(
     targetWorkSlotId: proof.targetWorkSlotId,
     targetReviewRevisionHash: proof.targetReviewRevisionHash,
     reusePolicyVectorHash: proof.reusePolicyVectorHash,
+    sourceOperationReceiptIdsHash: proof.sourceOperationReceiptIdsHash,
   };
 }
 
@@ -441,6 +447,7 @@ async function lockContextReplayTarget(
     proof.targetWorkSlotId,
     proof.targetReviewRevisionHash,
     proof.reusePolicyVectorHash,
+    proof.sourceOperationReceiptIdsHash ?? "legacy_full_attestation",
   ]);
   await transaction.$executeRaw(
     Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`review-context-replay:${identity}`}, 0))`,
@@ -543,6 +550,7 @@ function toReplayProof(
       replayProofId: record.replayProofId,
       sourceAttestationId: record.sourceAttestationId,
       sourceAttestationHash: record.sourceAttestationHash,
+      sourceOperationReceiptIdsHash: record.sourceOperationReceiptIdsHash,
       targetExecutionId: record.targetExecutionId,
       targetWorkSlotId: record.targetWorkSlotId,
       targetReviewRevisionHash: record.targetReviewRevisionHash,

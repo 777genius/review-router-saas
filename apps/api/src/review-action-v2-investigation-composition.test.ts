@@ -61,6 +61,7 @@ describe("Review Action v2 investigation composition", () => {
           abortTurn: {} as never,
           conclude: {} as never,
           replay: {} as never,
+          prepareReplay: vi.fn() as never,
         },
         capabilities: {
           issueInvestigationTurn: vi
@@ -69,6 +70,8 @@ describe("Review Action v2 investigation composition", () => {
         } as never,
         digest,
         now: () => now,
+        crossRevisionReplayEnabled: false,
+        replayPreparation: vi.fn() as never,
       },
     });
     const request = await withBodyHash(
@@ -170,10 +173,13 @@ describe("Review Action v2 investigation composition", () => {
           abortTurn: {} as never,
           conclude: {} as never,
           replay: { execute: replayExecute } as never,
+          prepareReplay: vi.fn() as never,
         },
         capabilities: {} as never,
         digest,
         now: () => now,
+        crossRevisionReplayEnabled: false,
+        replayPreparation: vi.fn() as never,
       },
     });
     const targetScope = {

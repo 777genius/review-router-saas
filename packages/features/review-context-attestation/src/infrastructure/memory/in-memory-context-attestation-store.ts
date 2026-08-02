@@ -213,6 +213,7 @@ function replayTargetKey(proof: TargetReplayProof): string {
     proof.targetWorkSlotId,
     proof.targetReviewRevisionHash,
     proof.reusePolicyVectorHash,
+    proof.sourceOperationReceiptIdsHash ?? "legacy_full_attestation",
   ].join("\0");
 }
 
@@ -276,6 +277,8 @@ function sameReplayProof(
   return (
     left.sourceAttestationId === right.sourceAttestationId &&
     left.sourceAttestationHash === right.sourceAttestationHash &&
+    left.sourceOperationReceiptIdsHash ===
+      right.sourceOperationReceiptIdsHash &&
     left.targetExecutionId === right.targetExecutionId &&
     left.targetWorkSlotId === right.targetWorkSlotId &&
     left.targetReviewRevisionHash === right.targetReviewRevisionHash &&

@@ -11,12 +11,19 @@ export type RegisterReviewContextAttestationV2RoutesDependencies =
     readonly openGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextGatewayOpen>;
     readonly sealGateway?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextGatewaySeal>;
     readonly commitReplay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextReplayCommit>;
+    readonly commitReceiptReplay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewContextReceiptReplayCommit>;
   };
 
 export async function registerReviewContextAttestationV2Routes(
   app: FastifyInstance,
   dependencies: RegisterReviewContextAttestationV2RoutesDependencies,
 ): Promise<void> {
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewContextReceiptReplayCommit,
+    dependencies,
+    dependencies.commitReceiptReplay,
+  );
   registerReviewActionV2Operation(
     app,
     ReviewActionV2OperationId.ReviewContextGatewayOpen,

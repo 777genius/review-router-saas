@@ -8,6 +8,7 @@ import {
   InvestigationReceiptReplayVerdict,
 } from "@reviewrouter/features-review-investigations";
 import { NodeSha256InvestigationDigest } from "@reviewrouter/features-review-investigations/composition";
+import { canonicalJson } from "@reviewrouter/features-review-run-control";
 import { ContextAttestationInvestigationReceiptReplayAdapter } from "./review-investigation-receipt-replay-adapter.js";
 
 describe("ContextAttestationInvestigationReceiptReplayAdapter", () => {
@@ -66,6 +67,9 @@ const proof = {
   replayProofId: "proof-1",
   sourceAttestationId: "attestation-1",
   sourceAttestationHash: hash("attestation"),
+  sourceOperationReceiptIdsHash: hash(
+    canonicalJson({ operationReceiptIds: [hash("operation-receipt")] }),
+  ),
   targetExecutionId: "execution-target",
   targetWorkSlotId: "slot-target",
   targetReviewRevisionHash: hash("target-revision"),

@@ -153,6 +153,38 @@ export class PrismaInvestigationStore
     return record ? loadAggregate(this.prisma, record.investigationId) : null;
   }
 
+  async findReplayCandidates(
+    input: Parameters<InvestigationStorePort["findReplayCandidates"]>[0],
+  ): Promise<readonly ReviewInvestigation[]> {
+    const records = await this.prisma.reviewInvestigation.findMany({
+      where: {
+        workspaceId: input.scope.workspaceId,
+        repositoryConnectionId: input.scope.repositoryConnectionId,
+        scmRepositoryIdentityId: input.scope.scmRepositoryIdentityId,
+        pullRequestNumber: input.scope.pullRequestNumber,
+        trustDomain: input.scope.trustDomain,
+        authorizationScopeHash: input.scope.authorizationScopeHash,
+        reviewRevisionHash: { not: input.targetReviewRevisionHash },
+        stableReviewUnitKey: input.stableReviewUnitKey,
+        providerVoteLaneId: input.providerVoteLaneId,
+        producerReleaseId: input.producerReleaseId,
+        certificateId: { not: null },
+      },
+      select: { investigationId: true },
+      orderBy: [{ updatedAt: "desc" }, { investigationId: "asc" }],
+      take: input.limit,
+    });
+    const candidates = await Promise.all(
+      records.map((record) => loadAggregate(this.prisma, record.investigationId)),
+    );
+    return candidates
+      .filter((candidate): candidate is ReviewInvestigation => candidate !== null)
+      .sort((left, right) =>
+        right.certificate!.issuedAt.localeCompare(left.certificate!.issuedAt) ||
+        left.investigationId.localeCompare(right.investigationId),
+      );
+  }
+
   async commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;

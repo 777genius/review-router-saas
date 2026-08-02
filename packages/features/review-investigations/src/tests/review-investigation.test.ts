@@ -10,6 +10,8 @@ import {
   InvestigationTurnProviderKind,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
+  PrepareReviewInvestigationReplay,
+  PrepareReviewInvestigationReplayStatus,
   ReplayReviewInvestigation,
   RestoreReviewInvestigation,
   ReviewInvestigationAbortReason,
@@ -187,6 +189,48 @@ describe("review investigation in-memory vertical slice", () => {
     const sourceBeforeReplay = await harness.store.findById(
       opened.investigationId,
     );
+    const preparation = new PrepareReviewInvestigationReplay(
+      harness.store,
+      harness.authority,
+      {
+        prepare: async ({ sourceReceipt }) => ({
+          contextAttestationId: sourceReceipt.acceptedAttestationId!,
+          contextAttestationHash: sourceReceipt.acceptedAttestationHash!,
+          sourceOperationReceiptIdsHash: "8".repeat(64),
+          replayCapability: "receipt-replay-capability",
+          replayPlanCanonicalJson: "{}",
+          replayPlanHash: "9".repeat(64),
+        }),
+      },
+      harness.clock,
+    );
+    await expect(
+      preparation.execute({
+        targetScope: openCommand("unused").scope,
+        targetRevision: {
+          baseSha: "1".repeat(40),
+          mergeBaseSha: "2".repeat(40),
+          headSha: "4".repeat(40),
+          reviewRevisionHash: "d".repeat(64),
+        },
+        targetExecutionId: "execution-target-prepare",
+        targetWorkSlotId: "slot-target-prepare",
+        stableReviewUnitKey: sourceBeforeReplay!.stableReviewUnitKey,
+        providerVoteLaneId: sourceBeforeReplay!.providerVoteLaneId,
+        producerReleaseId: "producer-test",
+      }),
+    ).resolves.toMatchObject({
+      status: PrepareReviewInvestigationReplayStatus.Prepared,
+      sourceInvestigationId: opened.investigationId,
+      sourceCertificateHash: snapshot.certificate!.certificateHash,
+      obligations: expect.arrayContaining([
+        expect.objectContaining({
+          replay: expect.objectContaining({
+            replayCapability: "receipt-replay-capability",
+          }),
+        }),
+      ]),
+    });
     const replay = new ReplayReviewInvestigation(
       harness.store,
       harness.authority,

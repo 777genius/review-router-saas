@@ -3,6 +3,8 @@ import {
   AcceptSealedContextAttestation,
   AcceptSealedContextAttestationStatus,
   ContextDependencyKind,
+  ContextGatewayV4OperationKind,
+  ContextGatewayV4OutcomeKind,
   ContextProviderKind,
   OpenContextGatewaySession,
   OpenContextGatewaySessionStatus,
@@ -14,6 +16,7 @@ import {
   canonicalContextDependencyManifest,
   canonicalContextDependencyOperation,
   canonicalContextDependencyResult,
+  contextGatewayV4PolicyVersion,
   createContextAttestationManifest,
   createContextDependencyManifest,
   isLegacyContextDependencyManifest,
@@ -25,6 +28,11 @@ import {
   type GatewaySession,
   type TargetReplayProof,
 } from "@reviewrouter/features-review-context-attestation";
+import type {
+  InvestigationReplayPreparationPort,
+  PreparedInvestigationReceiptReplay,
+} from "@reviewrouter/features-review-investigations";
+import { InvestigationTurnProviderKind } from "@reviewrouter/features-review-investigations";
 import { AesGcmContextReplayMaterialCipher } from "@reviewrouter/features-review-context-attestation/composition";
 import {
   ProviderExecutionProfile,
@@ -68,6 +76,7 @@ import {
   ReviewActionV2ProtocolErrorCode,
   ReviewContextGatewayOpenResultStatus,
   ReviewContextGatewaySealResultStatus,
+  ReviewContextReceiptReplayCommitResultStatus,
   ReviewContextReplayCommitResultStatus,
   canonicalizeReviewContextConfinementEvidence,
   canonicalizeReviewContextGatewayEvent,
@@ -79,10 +88,12 @@ import {
   type ReviewActionV2RequestMap,
   type ReviewContextGatewayOpenRequest,
   type ReviewContextGatewaySealRequest,
+  type ReviewContextReceiptReplayCommitRequest,
   type ReviewContextReplayCommitRequest,
 } from "@reviewrouter/protocol-review-action-v2";
 import {
   type ReviewActionV2ContextReplayAuthority,
+  type ReviewActionV2InvestigationReceiptReplayAuthority,
   type ReviewActionV2ExecutionEvidenceCapabilityAdapter,
   type ReviewActionV2ReusableAttachmentAuthority,
   type VerifiedReviewActionV2LeaseCapability,
@@ -184,6 +195,14 @@ export interface ReviewActionV2ContextReplayCoordinatorPort {
   }): Promise<void>;
 }
 
+export type ReviewActionV2InvestigationReplayTarget = Readonly<{
+  authorization: ReviewRunAuthorization;
+  snapshot: ReviewExecutionSnapshot;
+  workSlotId: string;
+  manifest: ProviderInvocationManifest;
+  providerVoteIdentityHash: string;
+}>;
+
 export type ReviewActionV2ContextAttestationHandlerDependencies = Readonly<{
   authorizations: ReviewActionV2ContextAuthorizationResolverPort;
   executionQueries: ReviewExecutionQueryPort;
@@ -271,6 +290,10 @@ export function composeReviewActionV2ContextAttestationRoutes(input: {
     commitReplay: enabled((request: ReviewContextReplayCommitRequest) =>
       commitReplay(request, handlers),
     ),
+    commitReceiptReplay: enabled(
+      (request: ReviewContextReceiptReplayCommitRequest) =>
+        commitReceiptReplay(request, handlers),
+    ),
   };
 }
 
@@ -291,6 +314,17 @@ export function createReviewActionV2ContextReplayCoordinator(
         ReviewActionV2ContextReplayCoordinatorPort["assertCurrentPolicy"]
       >[0],
     ) => assertCurrentContextReusePolicy(input, dependencies),
+  });
+}
+
+export function createInvestigationReceiptReplayPreparationPort(
+  target: ReviewActionV2InvestigationReplayTarget,
+  d: ReviewActionV2ContextAttestationHandlerDependencies,
+): InvestigationReplayPreparationPort {
+  return Object.freeze({
+    prepare: (
+      input: Parameters<InvestigationReplayPreparationPort["prepare"]>[0],
+    ) => prepareInvestigationReceiptReplay(input, target, d),
   });
 }
 
@@ -696,6 +730,8 @@ async function commitReplay(
               replayBinaryHash: replayAuthority.gatewayBinaryHash,
               replayPolicyVersion: replayAuthority.gatewayPolicyVersion,
               reusePolicyVectorHash: replayAuthority.reusePolicyVectorHash,
+              sourceOperationReceiptIds: [],
+              sourceOperationReceiptIdsHash: null,
               proofLifetimeMs: d.config.replayProofLifetimeMs,
             }
           : null,
@@ -758,6 +794,239 @@ async function commitReplay(
       attachmentCapability,
     },
   };
+}
+
+async function commitReceiptReplay(
+  request: ReviewContextReceiptReplayCommitRequest,
+  d: ReviewActionV2ContextAttestationHandlerDependencies,
+) {
+  await assertBodyHash(
+    ReviewActionV2OperationId.ReviewContextReceiptReplayCommit,
+    request,
+    d.digest,
+  );
+  const now = d.now();
+  const authorization = await requireAuthorization(
+    request.authorizationToken,
+    d,
+  );
+  await requireExecution(
+    request.executionId,
+    authorization,
+    d.executionQueries,
+  );
+  let authority: ReviewActionV2InvestigationReceiptReplayAuthority;
+  try {
+    authority = await d.capabilities.verifyInvestigationReceiptReplay(
+      request.replayCapability,
+      now,
+    );
+  } catch {
+    throw failure(
+      401,
+      ReviewActionV2ProtocolErrorCode.InvalidAuthentication,
+      "investigation_receipt_replay_capability_invalid",
+    );
+  }
+  assertReceiptReplayRequestAuthority(request, authority);
+  const targetTree =
+    await d.checkoutTrees.resolveCheckoutTreeOid(authorization);
+  requireEqual(
+    targetTree,
+    request.targetCheckoutTreeOid,
+    "investigation_receipt_replay_target_tree_stale",
+  );
+  const replayedManifest = parseContextManifest(
+    request.replayResultCanonicalJson,
+    "investigation_receipt_replay_result_invalid",
+  );
+  if (isLegacyContextDependencyManifest(replayedManifest)) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.StalePrecondition,
+      "investigation_receipt_replay_manifest_invalid",
+    );
+  }
+  await requireHash(
+    request.replayResultCanonicalJson,
+    request.replayResultHash,
+    "investigation_receipt_replay_result_hash_mismatch",
+    d.digest,
+  );
+  requireEqual(
+    replayedManifest.checkoutTreeOid,
+    request.targetCheckoutTreeOid,
+    "investigation_receipt_replay_tree_mismatch",
+  );
+  requireEqual(
+    replayedManifest.gatewayPolicyVersion,
+    authority.gatewayPolicyVersion,
+    "investigation_receipt_replay_policy_mismatch",
+  );
+  requireEqual(
+    replayedManifest.gatewayBinaryHash,
+    authority.gatewayBinaryHash,
+    "investigation_receipt_replay_binary_mismatch",
+  );
+  verifySyntheticGatewayV4ReplayChain(
+    replayedManifest,
+    authority.contextReplayPlanHash,
+    authority.attestationId,
+    request.targetReviewRevisionHash,
+    request.targetCheckoutTreeOid,
+  );
+  if (
+    !(await verifyInvestigationReceiptReplayAuthorityCurrent({
+      authorization,
+      authority,
+      dependencies: d,
+    }))
+  ) {
+    return receiptReplayDenied();
+  }
+  const replay = new ReplayContextAttestation({
+    store: d.store,
+    targetFacts: {
+      resolveTargetReplayFacts: async (command) =>
+        command.targetExecutionId === request.executionId &&
+        command.targetWorkSlotId === request.workSlotId &&
+        command.replayCapabilityId === authority.capabilityId
+          ? {
+              targetExecutionId: request.executionId,
+              targetWorkSlotId: request.workSlotId,
+              targetRevision: {
+                baseSha: authorization.baseSha,
+                mergeBaseSha: authorization.mergeBaseSha,
+                headSha: authorization.headSha,
+                reviewRevisionHash: authorization.reviewRevisionHash,
+                checkoutTreeOid: request.targetCheckoutTreeOid,
+              },
+              replayBinaryHash: authority.gatewayBinaryHash,
+              replayPolicyVersion: authority.gatewayPolicyVersion,
+              reusePolicyVectorHash: authority.reusePolicyVectorHash,
+              sourceOperationReceiptIds:
+                authority.sourceOperationReceiptIds,
+              sourceOperationReceiptIdsHash:
+                authority.sourceOperationReceiptIdsHash,
+              proofLifetimeMs: d.config.replayProofLifetimeMs,
+            }
+          : null,
+    },
+    identities: contextIdentities(d),
+    clock: { nowMs: () => d.now().getTime() },
+  });
+  const outcome = await replay.execute({
+    sourceAttestationId: request.attestationId,
+    sourceAttestationHash: request.attestationHash,
+    targetExecutionId: request.executionId,
+    targetWorkSlotId: request.workSlotId,
+    replayCapabilityId: requiredString(
+      authority.capabilityId,
+      "investigation_receipt_replay_capability_id_missing",
+    ),
+    replayedManifest,
+  });
+  const proofHash = outcome.proof
+    ? await hashReplayProof(outcome.proof, d.digest)
+    : null;
+  return {
+    statusCode:
+      outcome.status === ReplayContextAttestationStatus.Accepted
+        ? (201 as const)
+        : (200 as const),
+    result: {
+      status: mapReceiptReplayStatus(outcome.status),
+      replayProofId: outcome.proof?.replayProofId ?? null,
+      replayProofHash: proofHash,
+    },
+  };
+}
+
+function assertReceiptReplayRequestAuthority(
+  request: ReviewContextReceiptReplayCommitRequest,
+  authority: ReviewActionV2InvestigationReceiptReplayAuthority,
+): void {
+  requireEqual(authority.attestationId, request.attestationId,
+    "investigation_receipt_replay_attestation_id_mismatch");
+  requireEqual(authority.attestationHash, request.attestationHash,
+    "investigation_receipt_replay_attestation_hash_mismatch");
+  requireEqual(authority.targetExecutionId, request.executionId,
+    "investigation_receipt_replay_execution_mismatch");
+  requireEqual(authority.targetWorkSlotId, request.workSlotId,
+    "investigation_receipt_replay_slot_mismatch");
+  requireEqual(authority.targetReviewRevisionHash,
+    request.targetReviewRevisionHash,
+    "investigation_receipt_replay_revision_mismatch");
+  requireEqual(authority.targetCheckoutTreeOid, request.targetCheckoutTreeOid,
+    "investigation_receipt_replay_tree_mismatch");
+}
+
+async function verifyInvestigationReceiptReplayAuthorityCurrent(input: {
+  readonly authorization: ReviewRunAuthorization;
+  readonly authority: ReviewActionV2InvestigationReceiptReplayAuthority;
+  readonly dependencies: ReviewActionV2ContextAttestationHandlerDependencies;
+}): Promise<boolean> {
+  const { authorization, authority, dependencies: d } = input;
+  const attestation = await d.store.findAcceptedAttestation(
+    authority.attestationId,
+  );
+  const session = attestation
+    ? await d.store.findSession(attestation.sessionId)
+    : null;
+  const release = await d.producerReleases.resolve({
+    producerReleaseId: authority.producerReleaseId,
+  });
+  const scopeHash = await authorizationScopeHash(authorization, d.digest);
+  const policy = await d.reusePolicy.resolveReviewReusePolicy({
+    scope: {
+      workspaceId: authorization.workspaceId,
+      repositoryConnectionId: authorization.repositoryConnectionId,
+      scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+      pullRequestNumber: authorization.pullRequestNumber,
+      authorizationScopeHash: scopeHash,
+    },
+    revision: {
+      baseSha: authorization.baseSha,
+      mergeBaseSha: authorization.mergeBaseSha,
+      headSha: authorization.headSha,
+      reviewRevisionHash: authorization.reviewRevisionHash,
+    },
+    providerKind: authority.providerKind,
+    taskKindSet: authority.taskKindSet,
+    trustDomain: authorization.trustDomain as unknown as ReviewTrustDomain,
+    producerReleaseId: authority.producerReleaseId,
+  });
+  if (
+    !attestation ||
+    !session ||
+    !release ||
+    !policy ||
+    attestation.attestationHash !== authority.attestationHash ||
+    attestation.reuseExpiresAtMs <= d.now().getTime() ||
+    attestation.actualModel !== authority.requestedModel ||
+    policy.safetyDecision.contextGatewayReuseMode !==
+      ReviewReuseEffectMode.Enabled ||
+    release.capabilityProfile !== session.trustedCapabilityProfile ||
+    release.contextGatewayPolicyVersion !== authority.gatewayPolicyVersion ||
+    release.contextGatewayEntrypointDigest !== authority.gatewayBinaryHash
+  ) {
+    return false;
+  }
+  const currentVector = await d.digest.digestUtf8(
+    canonicalizeReviewContextReusePolicyVector({
+      safetyDecision: policy.safetyDecision,
+      compatibility: policy.compatibility,
+      eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+      gatewayPolicyVersion: session.gatewayPolicyVersion,
+      gatewayBinaryHash: session.gatewayBinaryHash,
+      trustedCapabilityProfile: session.trustedCapabilityProfile,
+      producerReleaseId: authority.producerReleaseId,
+      providerKind: authority.providerKind,
+      requestedModel: authority.requestedModel,
+      actualModel: attestation.actualModel,
+    }),
+  );
+  return currentVector === authority.reusePolicyVectorHash;
 }
 
 async function verifyReplayAuthorityCurrent(input: {
@@ -863,6 +1132,7 @@ async function prepareReplay(
       gatewaySecretIdentity(session),
     ),
   );
+  if (!("sourceDependencies" in parsed)) return null;
   const replayQueries = new Map(
     parsed.sourceDependencies.map((entry) => [
       entry.operationKey,
@@ -937,6 +1207,289 @@ async function prepareReplay(
     contextReplayPlanCanonicalJson,
     contextReplayPlanHash,
   });
+}
+
+async function prepareInvestigationReceiptReplay(
+  input: Parameters<InvestigationReplayPreparationPort["prepare"]>[0],
+  target: ReviewActionV2InvestigationReplayTarget,
+  d: ReviewActionV2ContextAttestationHandlerDependencies,
+): Promise<PreparedInvestigationReceiptReplay | null> {
+  const attestationId = input.sourceReceipt.acceptedAttestationId;
+  const attestationHash = input.sourceReceipt.acceptedAttestationHash;
+  if (!attestationId || !attestationHash) return null;
+  const [attestation, material, targetTree] = await Promise.all([
+    d.store.findAcceptedAttestation(attestationId),
+    d.store.findReplayMaterialByAttestationId(attestationId),
+    d.checkoutTrees.resolveCheckoutTreeOid(target.authorization),
+  ]);
+  const now = d.now();
+  if (
+    !attestation ||
+    !material ||
+    !targetTree ||
+    attestation.attestationHash !== attestationHash ||
+    attestation.reuseExpiresAtMs <= now.getTime() ||
+    Date.parse(input.sourceCertificateExpiresAt) <= now.getTime() ||
+    attestation.manifest.manifestVersion !== 3 ||
+    attestation.manifest.gatewayPolicyVersion !==
+      contextGatewayV4PolicyVersion ||
+    !investigationProviderMatches(
+      input.sourceTerminalProviderKind,
+      target.manifest.providerKind,
+    ) ||
+    input.sourceTerminalActualModel !== target.manifest.requestedModel
+  ) {
+    return null;
+  }
+  const session = await d.store.findSession(attestation.sessionId);
+  if (!session) return null;
+  const release = await d.producerReleases.resolve({
+    producerReleaseId: target.manifest.producerReleaseId,
+  });
+  const scopeHash = await authorizationScopeHash(target.authorization, d.digest);
+  const policy = await d.reusePolicy.resolveReviewReusePolicy({
+    scope: {
+      workspaceId: target.authorization.workspaceId,
+      repositoryConnectionId: target.authorization.repositoryConnectionId,
+      scmRepositoryIdentityId: target.authorization.scmRepositoryIdentityId,
+      pullRequestNumber: target.authorization.pullRequestNumber,
+      authorizationScopeHash: scopeHash,
+    },
+    revision: {
+      baseSha: target.authorization.baseSha,
+      mergeBaseSha: target.authorization.mergeBaseSha,
+      headSha: target.authorization.headSha,
+      reviewRevisionHash: target.authorization.reviewRevisionHash,
+    },
+    providerKind: target.manifest.providerKind,
+    taskKindSet: target.manifest.taskKindSet,
+    trustDomain: target.authorization.trustDomain as unknown as ReviewTrustDomain,
+    producerReleaseId: target.manifest.producerReleaseId,
+  });
+  if (
+    !release ||
+    !policy ||
+    policy.safetyDecision.contextGatewayReuseMode !==
+      ReviewReuseEffectMode.Enabled ||
+    release.capabilityProfile !== session.trustedCapabilityProfile ||
+    release.contextGatewayPolicyVersion !==
+      attestation.manifest.gatewayPolicyVersion ||
+    release.contextGatewayEntrypointDigest !==
+      attestation.manifest.gatewayBinaryHash
+  ) {
+    return null;
+  }
+  let plaintext: string;
+  try {
+    plaintext = await d.cipher.decrypt({
+      material,
+      associatedDataCanonicalJson: replayMaterialAssociatedData(session),
+    });
+  } catch {
+    return null;
+  }
+  const replayMaterial = parseReplayMaterial(
+    plaintext,
+    attestation.manifest,
+    session,
+    deriveGatewaySessionSecret(
+      d.sessionSecretKey,
+      gatewaySecretIdentity(session),
+    ),
+  );
+  if (!("entries" in replayMaterial)) return null;
+  const sourceOperationReceiptIds = [
+    ...new Set(input.sourceReceipt.operationReceiptIds),
+  ].sort();
+  if (
+    sourceOperationReceiptIds.length !==
+    input.sourceReceipt.operationReceiptIds.length
+  ) {
+    return null;
+  }
+  const operations = selectGatewayV4ReplayOperations(
+    attestation.manifest,
+    replayMaterial,
+    sourceOperationReceiptIds,
+  );
+  if (!operations || operations.length === 0) return null;
+  const sourceOperationReceiptIdsHash = await d.digest.digestUtf8(
+    canonicalJson({ operationReceiptIds: sourceOperationReceiptIds }),
+  );
+  const plan = Object.freeze({
+    planVersion: 2 as const,
+    attestationId,
+    attestationHash,
+    gatewayPolicyVersion: attestation.manifest.gatewayPolicyVersion,
+    gatewayBinaryHash: attestation.manifest.gatewayBinaryHash,
+    sourceOperationReceiptIds,
+    sourceOperationReceiptIdsHash,
+    operations,
+  });
+  const replayPlanCanonicalJson = stableJson(plan as never);
+  const replayPlanHash = await d.digest.digestUtf8(replayPlanCanonicalJson);
+  const reusePolicyVectorHash = await d.digest.digestUtf8(
+    canonicalizeReviewContextReusePolicyVector({
+      safetyDecision: policy.safetyDecision,
+      compatibility: policy.compatibility,
+      eligibilityPolicyVersion: reviewReuseEligibilityPolicyVersion,
+      gatewayPolicyVersion: session.gatewayPolicyVersion,
+      gatewayBinaryHash: session.gatewayBinaryHash,
+      trustedCapabilityProfile: session.trustedCapabilityProfile,
+      producerReleaseId: target.manifest.producerReleaseId,
+      providerKind: target.manifest.providerKind,
+      requestedModel: target.manifest.requestedModel,
+      actualModel: attestation.actualModel,
+    }),
+  );
+  const expiresAt = minDate(
+    target.authorization.expiresAt,
+    new Date(attestation.reuseExpiresAtMs),
+    new Date(input.sourceCertificateExpiresAt),
+    new Date(now.getTime() + d.config.replayCapabilityLifetimeMs),
+  );
+  const replayCapability =
+    await d.capabilities.issueInvestigationReceiptReplay(
+      {
+        sourceCertificateId: input.sourceCertificateId,
+        sourceCertificateHash: input.sourceCertificateHash,
+        attestationId,
+        attestationHash,
+        sourceOperationReceiptIds,
+        sourceOperationReceiptIdsHash,
+        contextReplayPlanHash: replayPlanHash,
+        targetExecutionId: input.targetExecutionId,
+        targetWorkSlotId: input.targetWorkSlotId,
+        targetReviewRevisionHash: input.targetReviewRevisionHash,
+        targetCheckoutTreeOid: targetTree,
+        gatewayPolicyVersion: attestation.manifest.gatewayPolicyVersion,
+        gatewayBinaryHash: attestation.manifest.gatewayBinaryHash,
+        reusePolicyVectorHash,
+        providerKind: target.manifest.providerKind,
+        taskKindSet: target.manifest.taskKindSet,
+        producerReleaseId: target.manifest.producerReleaseId,
+        requestedModel: target.manifest.requestedModel,
+        expiresAt,
+      },
+      now,
+    );
+  return Object.freeze({
+    contextAttestationId: attestationId,
+    contextAttestationHash: attestationHash,
+    sourceOperationReceiptIdsHash,
+    replayCapability,
+    replayPlanCanonicalJson,
+    replayPlanHash,
+  });
+}
+
+function selectGatewayV4ReplayOperations(
+  manifest: ContextGatewayV4Manifest,
+  material: GatewayV4ReplayMaterial,
+  selectedReceiptIds: readonly string[],
+): readonly Readonly<{
+  operationKind: ContextGatewayV4OperationKind;
+  replayInput: Readonly<Record<string, unknown>>;
+}>[] | null {
+  const successful = manifest.events.filter(
+    (event) => event.outcome === ContextGatewayV4OutcomeKind.Succeeded,
+  );
+  const eventByReceipt = new Map(
+    successful.map((event) => [event.operationReceiptId!, event]),
+  );
+  if (selectedReceiptIds.some((receiptId) => !eventByReceipt.has(receiptId))) {
+    return null;
+  }
+  const selectedGroups = new Set(
+    selectedReceiptIds.map((receiptId) =>
+      gatewayV4ReplayGroupKey(eventByReceipt.get(receiptId)!),
+    ),
+  );
+  const entryBySequence = new Map(
+    material.entries.map((entry) => [entry.sequence, entry]),
+  );
+  const groups = new Map<string, typeof successful>();
+  for (const event of successful) {
+    const key = gatewayV4ReplayGroupKey(event);
+    if (!selectedGroups.has(key)) continue;
+    const group = groups.get(key) ?? [];
+    group.push(event);
+    groups.set(key, group);
+  }
+  const orderedGroups = [...groups.values()].sort(
+    (left, right) => left[0]!.sequence - right[0]!.sequence,
+  );
+  const operations: Array<{
+    operationKind: ContextGatewayV4OperationKind;
+    replayInput: Readonly<Record<string, unknown>>;
+  }> = [];
+  for (const events of orderedGroups) {
+    const kind = events[0]!.operationKind;
+    if (
+      kind === ContextGatewayV4OperationKind.DirectoryList ||
+      kind === ContextGatewayV4OperationKind.TextSearch ||
+      kind === ContextGatewayV4OperationKind.CanonicalInventory
+    ) {
+      const first = events.find((event) => event.result?.pageOrdinal === 0);
+      const entry = first ? entryBySequence.get(first.sequence) : null;
+      if (!entry) return null;
+      const { cursor: _cursor, ...replayInput } = entry.replayInput;
+      operations.push(Object.freeze({
+        operationKind: kind,
+        replayInput: Object.freeze(replayInput),
+      }));
+      continue;
+    }
+    for (const event of events) {
+      const entry = entryBySequence.get(event.sequence);
+      if (!entry) return null;
+      operations.push(Object.freeze({
+        operationKind: kind,
+        replayInput: entry.replayInput,
+      }));
+    }
+  }
+  return Object.freeze(operations);
+}
+
+function gatewayV4ReplayGroupKey(
+  event: ContextGatewayV4Manifest["events"][number],
+): string {
+  const result = event.result;
+  if (!result) return `failed:${event.sequence}`;
+  switch (event.operationKind) {
+    case ContextGatewayV4OperationKind.FileRead:
+      return stableJson({
+        kind: event.operationKind,
+        pathHash: result.pathHash,
+        revision: result.revision,
+      } as never);
+    case ContextGatewayV4OperationKind.DirectoryList:
+    case ContextGatewayV4OperationKind.TextSearch:
+    case ContextGatewayV4OperationKind.CanonicalInventory:
+      return stableJson({
+        kind: event.operationKind,
+        queryDigest: result.queryDigest,
+      } as never);
+    case ContextGatewayV4OperationKind.GitFact:
+      return stableJson({ kind: event.operationKind, fact: result.fact } as never);
+    case ContextGatewayV4OperationKind.UnsupportedTool:
+      return `unsupported:${event.sequence}`;
+  }
+}
+
+function investigationProviderMatches(
+  source: InvestigationTurnProviderKind | null,
+  target: ReviewProviderKind,
+): boolean {
+  switch (source) {
+    case InvestigationTurnProviderKind.Codex:
+      return target === ReviewProviderKind.Codex;
+    case InvestigationTurnProviderKind.ClaudeCode:
+      return target === ReviewProviderKind.ClaudeCode;
+    case null:
+      return false;
+  }
 }
 
 async function verifyContextAttachment(
@@ -1493,7 +2046,7 @@ function parseContextManifest(value: string, issue: string) {
   return manifest;
 }
 
-type ReplayMaterial = Readonly<{
+type LegacyReplayMaterial = Readonly<{
   materialVersion: typeof replayMaterialVersion;
   sourceDependencies: readonly Readonly<{
     sequence: number;
@@ -1501,6 +2054,20 @@ type ReplayMaterial = Readonly<{
     replayQuery: string | null;
   }>[];
 }>;
+
+type GatewayV4ReplayMaterial = Readonly<{
+  replayMaterialVersion: 2;
+  sessionId: string;
+  entries: readonly Readonly<{
+    sequence: number;
+    operationReceiptId: string;
+    operationKey: string;
+    operationKind: ContextGatewayV4OperationKind;
+    replayInput: Readonly<Record<string, unknown>>;
+  }>[];
+}>;
+
+type ReplayMaterial = LegacyReplayMaterial | GatewayV4ReplayMaterial;
 
 function parseReplayMaterial(
   value: string,
@@ -1514,30 +2081,11 @@ function parseReplayMaterial(
   } catch {
     throw invalidReplayMaterial();
   }
-  const root = exactRecord(
-    parsed,
-    ["materialVersion", "sourceDependencies"],
-    "context_replay_material_invalid",
-  );
   if (!isLegacyContextDependencyManifest(manifest)) {
-    if (
-      root.materialVersion !== replayMaterialVersion ||
-      !Array.isArray(root.sourceDependencies) ||
-      root.sourceDependencies.length !== 0
-    ) {
-      throw invalidReplayMaterial();
-    }
-    const canonical = stableJson({
-      materialVersion: replayMaterialVersion,
-      sourceDependencies: [],
-    });
-    if (canonical !== value) throw invalidReplayMaterial();
-    return Object.freeze({
-      materialVersion: replayMaterialVersion,
-      sourceDependencies: Object.freeze([]),
-      canonicalJson: canonical,
-    });
+    return parseGatewayV4ReplayMaterial(value, parsed, manifest, session);
   }
+  const root = exactRecord(parsed, ["materialVersion", "sourceDependencies"],
+    "context_replay_material_invalid");
   if (
     root.materialVersion !== replayMaterialVersion ||
     !Array.isArray(root.sourceDependencies) ||
@@ -1598,6 +2146,220 @@ function parseReplayMaterial(
   const canonical = stableJson(normalized as never);
   if (canonical !== value) throw invalidReplayMaterial();
   return Object.freeze({ ...normalized, canonicalJson: canonical });
+}
+
+function parseGatewayV4ReplayMaterial(
+  value: string,
+  parsed: unknown,
+  manifest: ContextGatewayV4Manifest,
+  session: GatewaySession,
+): (ReplayMaterial & { readonly canonicalJson: string }) {
+  if (isRecordWithKeys(parsed, ["materialVersion", "sourceDependencies"])) {
+    const legacy = parsed as Record<string, unknown>;
+    if (
+      legacy.materialVersion !== replayMaterialVersion ||
+      !Array.isArray(legacy.sourceDependencies) ||
+      legacy.sourceDependencies.length !== 0 ||
+      stableJson(legacy as never) !== value
+    ) {
+      throw invalidReplayMaterial();
+    }
+    return Object.freeze({
+      materialVersion: replayMaterialVersion,
+      sourceDependencies: Object.freeze([]),
+      canonicalJson: value,
+    });
+  }
+  const root = exactRecord(
+    parsed,
+    ["entries", "replayMaterialVersion", "sessionId"],
+    "context_replay_material_invalid",
+  );
+  const successful = manifest.events.filter(
+    (event) => event.outcome === ContextGatewayV4OutcomeKind.Succeeded,
+  );
+  if (
+    root.replayMaterialVersion !== 2 ||
+    root.sessionId !== session.sessionId ||
+    !Array.isArray(root.entries) ||
+    root.entries.length !== successful.length
+  ) {
+    throw invalidReplayMaterial();
+  }
+  const entries = root.entries.map((candidate, index) => {
+    const row = exactRecord(
+      candidate,
+      [
+        "operationKey",
+        "operationKind",
+        "operationReceiptId",
+        "replayInput",
+        "sequence",
+      ],
+      "context_replay_material_invalid",
+    );
+    const event = successful[index];
+    if (
+      !event ||
+      row.sequence !== event.sequence ||
+      row.operationReceiptId !== event.operationReceiptId ||
+      row.operationKey !== event.operationKey ||
+      row.operationKind !== event.operationKind ||
+      !Object.values(ContextGatewayV4OperationKind).includes(
+        row.operationKind as ContextGatewayV4OperationKind,
+      )
+    ) {
+      throw invalidReplayMaterial();
+    }
+    const operationKind = row.operationKind as ContextGatewayV4OperationKind;
+    const replayInput = normalizeGatewayV4ReplayInput(
+      operationKind,
+      row.replayInput,
+    );
+    if (
+      gatewayV4OperationKey(operationKind, replayInput) !== event.operationKey
+    ) {
+      throw invalidReplayMaterial();
+    }
+    return Object.freeze({
+      sequence: event.sequence,
+      operationReceiptId: event.operationReceiptId!,
+      operationKey: event.operationKey,
+      operationKind,
+      replayInput,
+    });
+  });
+  const normalized = Object.freeze({
+    replayMaterialVersion: 2 as const,
+    sessionId: session.sessionId,
+    entries: Object.freeze(entries),
+  });
+  const canonicalJson = stableJson(normalized as never);
+  if (canonicalJson !== value) throw invalidReplayMaterial();
+  return Object.freeze({ ...normalized, canonicalJson });
+}
+
+function normalizeGatewayV4ReplayInput(
+  kind: ContextGatewayV4OperationKind,
+  value: unknown,
+): Readonly<Record<string, unknown>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidReplayMaterial();
+  }
+  const input = value as Record<string, unknown>;
+  const allowed = gatewayV4ReplayInputKeys(kind);
+  if (Object.keys(input).some((key) => !allowed.includes(key))) {
+    throw invalidReplayMaterial();
+  }
+  switch (kind) {
+    case ContextGatewayV4OperationKind.FileRead:
+    case ContextGatewayV4OperationKind.DirectoryList:
+      requireReplayString(input.path);
+      break;
+    case ContextGatewayV4OperationKind.TextSearch:
+      requireReplayString(input.query);
+      if (
+        input.paths !== undefined &&
+        (!Array.isArray(input.paths) ||
+          input.paths.some((path) => typeof path !== "string"))
+      ) {
+        throw invalidReplayMaterial();
+      }
+      break;
+    case ContextGatewayV4OperationKind.GitFact:
+      if (!['merge_base', 'changed_paths', 'diff_stat'].includes(String(input.fact))) {
+        throw invalidReplayMaterial();
+      }
+      break;
+    case ContextGatewayV4OperationKind.CanonicalInventory:
+      break;
+    case ContextGatewayV4OperationKind.UnsupportedTool:
+      throw invalidReplayMaterial();
+  }
+  if (
+    input.cursor !== undefined &&
+    typeof input.cursor !== "string"
+  ) {
+    throw invalidReplayMaterial();
+  }
+  return Object.freeze({ ...input });
+}
+
+function gatewayV4ReplayInputKeys(
+  kind: ContextGatewayV4OperationKind,
+): readonly string[] {
+  switch (kind) {
+    case ContextGatewayV4OperationKind.FileRead:
+      return ["maxBytes", "path", "revision", "startByte"];
+    case ContextGatewayV4OperationKind.DirectoryList:
+      return ["cursor", "includeHidden", "maxDepth", "pageSize", "path", "revision"];
+    case ContextGatewayV4OperationKind.TextSearch:
+      return ["caseSensitive", "cursor", "pageSize", "paths", "query", "revision"];
+    case ContextGatewayV4OperationKind.CanonicalInventory:
+      return ["cursor", "pageSize"];
+    case ContextGatewayV4OperationKind.GitFact:
+      return ["fact"];
+    case ContextGatewayV4OperationKind.UnsupportedTool:
+      return [];
+  }
+}
+
+function gatewayV4OperationKey(
+  kind: ContextGatewayV4OperationKind,
+  replayInput: Readonly<Record<string, unknown>>,
+): string {
+  switch (kind) {
+    case ContextGatewayV4OperationKind.FileRead:
+      return sha256Utf8(
+        stableJson({ kind, inputHash: sha256Utf8(stableJson(replayInput as never)) } as never),
+      );
+    case ContextGatewayV4OperationKind.DirectoryList:
+    case ContextGatewayV4OperationKind.CanonicalInventory:
+      return gatewayV4HashedInputOperationKey(kind, replayInput, false);
+    case ContextGatewayV4OperationKind.TextSearch:
+      return gatewayV4HashedInputOperationKey(kind, replayInput, true);
+    case ContextGatewayV4OperationKind.GitFact:
+      return sha256Utf8(stableJson({ kind, fact: replayInput.fact } as never));
+    case ContextGatewayV4OperationKind.UnsupportedTool:
+      throw invalidReplayMaterial();
+  }
+}
+
+function gatewayV4HashedInputOperationKey(
+  kind: ContextGatewayV4OperationKind,
+  replayInput: Readonly<Record<string, unknown>>,
+  redactQuery: boolean,
+): string {
+  const normalized = {
+    ...replayInput,
+    ...(redactQuery ? { query: sha256Utf8(String(replayInput.query)) } : {}),
+    cursor:
+      typeof replayInput.cursor === "string"
+        ? sha256Utf8(replayInput.cursor)
+        : null,
+  };
+  return sha256Utf8(
+    stableJson({
+      kind,
+      inputHash: sha256Utf8(stableJson(normalized as never)),
+    } as never),
+  );
+}
+
+function requireReplayString(value: unknown): void {
+  if (typeof value !== "string" || value.length === 0) {
+    throw invalidReplayMaterial();
+  }
+}
+
+function isRecordWithKeys(value: unknown, keys: readonly string[]): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).sort().join("\0") ===
+      [...keys].sort().join("\0")
+  );
 }
 
 function verifyGatewayTranscript(
@@ -1706,6 +2468,46 @@ function verifySyntheticReplayChain(
       throw replayChainInvalid();
     }
     previous = dependency.eventHash;
+  }
+  if (manifest.authenticatedChainHash !== previous) {
+    throw replayChainInvalid();
+  }
+}
+
+function verifySyntheticGatewayV4ReplayChain(
+  manifest: ContextGatewayV4Manifest,
+  planHash: string,
+  attestationId: string,
+  targetReviewRevisionHash: string,
+  targetCheckoutTreeOid: string,
+): void {
+  let previous = sha256Utf8(
+    canonicalizeReviewContextReplayChainSeed({
+      planHash,
+      attestationId,
+      targetReviewRevisionHash,
+      targetCheckoutTreeOid,
+    }),
+  );
+  if (manifest.eventChainSeedHash !== previous) throw replayChainInvalid();
+  for (const event of manifest.events) {
+    if (
+      event.outcome !== ContextGatewayV4OutcomeKind.Succeeded ||
+      event.previousEventHash !== previous
+    ) {
+      throw replayChainInvalid();
+    }
+    const expected = sha256Utf8(
+      canonicalizeReviewContextReplayEvent({
+        sequence: event.sequence,
+        previousEventHash: event.previousEventHash,
+        operationKey: event.operationKey,
+        operation: event.operation,
+        result: event.result,
+      }),
+    );
+    if (!sameHex(expected, event.eventHash)) throw replayChainInvalid();
+    previous = event.eventHash;
   }
   if (manifest.authenticatedChainHash !== previous) {
     throw replayChainInvalid();
@@ -1975,6 +2777,7 @@ async function hashReplayProof(
       replayProofId: proof.replayProofId,
       sourceAttestationId: proof.sourceAttestationId,
       sourceAttestationHash: proof.sourceAttestationHash,
+      sourceOperationReceiptIdsHash: proof.sourceOperationReceiptIdsHash,
       targetExecutionId: proof.targetExecutionId,
       targetWorkSlotId: proof.targetWorkSlotId,
       targetReviewRevisionHash: proof.targetReviewRevisionHash,
@@ -2045,6 +2848,30 @@ function replayDenied() {
       replayProofId: null,
       replayProofHash: null,
       attachmentCapability: null,
+    },
+  };
+}
+
+function mapReceiptReplayStatus(status: ReplayContextAttestationStatus) {
+  switch (status) {
+    case ReplayContextAttestationStatus.Accepted:
+      return ReviewContextReceiptReplayCommitResultStatus.Accepted;
+    case ReplayContextAttestationStatus.Idempotent:
+      return ReviewContextReceiptReplayCommitResultStatus.Idempotent;
+    case ReplayContextAttestationStatus.Denied:
+      return ReviewContextReceiptReplayCommitResultStatus.Denied;
+    case ReplayContextAttestationStatus.Conflict:
+      return ReviewContextReceiptReplayCommitResultStatus.Conflict;
+  }
+}
+
+function receiptReplayDenied() {
+  return {
+    statusCode: 200 as const,
+    result: {
+      status: ReviewContextReceiptReplayCommitResultStatus.Denied,
+      replayProofId: null,
+      replayProofHash: null,
     },
   };
 }

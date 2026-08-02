@@ -19,6 +19,8 @@ const investigationTurnRole = "review_investigation_turn_v1";
 const attachmentRole = "review_evidence_attachment_v1";
 const contextGatewaySealRole = "review_context_gateway_seal_v1";
 const contextReplayRole = "review_context_replay_v1";
+const investigationReceiptReplayRole =
+  "review_investigation_receipt_replay_v1";
 const publicationRole = "review_publication_permit_v1";
 const nullValue = "~";
 
@@ -124,6 +126,29 @@ export type ReviewActionV2ContextReplayAuthority = Readonly<{
   gatewayBinaryHash: string;
   reusePolicyVectorHash: string;
   attachment: ReviewActionV2ReusableAttachmentAuthority;
+  expiresAt: Date;
+}>;
+
+export type ReviewActionV2InvestigationReceiptReplayAuthority = Readonly<{
+  capabilityId?: string;
+  sourceCertificateId: string;
+  sourceCertificateHash: string;
+  attestationId: string;
+  attestationHash: string;
+  sourceOperationReceiptIds: readonly string[];
+  sourceOperationReceiptIdsHash: string;
+  contextReplayPlanHash: string;
+  targetExecutionId: string;
+  targetWorkSlotId: string;
+  targetReviewRevisionHash: string;
+  targetCheckoutTreeOid: string;
+  gatewayPolicyVersion: string;
+  gatewayBinaryHash: string;
+  reusePolicyVectorHash: string;
+  providerKind: ProviderInvocationManifest["providerKind"];
+  taskKindSet: ProviderInvocationManifest["taskKindSet"];
+  producerReleaseId: string;
+  requestedModel: string;
   expiresAt: Date;
 }>;
 
@@ -571,6 +596,104 @@ export class ReviewActionV2ExecutionEvidenceCapabilityAdapter {
     });
   }
 
+  async issueInvestigationReceiptReplay(
+    authority: ReviewActionV2InvestigationReceiptReplayAuthority,
+    issuedAt: Date,
+  ): Promise<string> {
+    const identity = await this.prepareIdentity();
+    return (
+      await this.codec.sign({
+        capabilityId: identity.capabilityId,
+        kind: CapabilityKind.InvocationLease,
+        audience: CapabilityAudience.ReviewInvocationLease,
+        issuer: this.issuer,
+        subject: authority.attestationId,
+        issuedAt,
+        notBefore: issuedAt,
+        ownershipExpiresAt: null,
+        expiresAt: authority.expiresAt,
+        payload: {
+          role: investigationReceiptReplayRole,
+          source_certificate_id: authority.sourceCertificateId,
+          source_certificate_hash: authority.sourceCertificateHash,
+          attestation_id: authority.attestationId,
+          attestation_hash: authority.attestationHash,
+          source_operation_receipt_ids_json: JSON.stringify(
+            authority.sourceOperationReceiptIds,
+          ),
+          source_operation_receipt_ids_hash:
+            authority.sourceOperationReceiptIdsHash,
+          context_replay_plan_hash: authority.contextReplayPlanHash,
+          target_execution_id: authority.targetExecutionId,
+          target_work_slot_id: authority.targetWorkSlotId,
+          target_review_revision_hash: authority.targetReviewRevisionHash,
+          target_checkout_tree_oid: authority.targetCheckoutTreeOid,
+          gateway_policy_version: authority.gatewayPolicyVersion,
+          gateway_binary_hash: authority.gatewayBinaryHash,
+          reuse_policy_vector_hash: authority.reusePolicyVectorHash,
+          provider_kind: authority.providerKind,
+          task_kinds: authority.taskKindSet.join(","),
+          producer_release_id: authority.producerReleaseId,
+          requested_model: authority.requestedModel,
+        },
+      })
+    ).token;
+  }
+
+  async verifyInvestigationReceiptReplay(
+    token: string,
+    now: Date,
+  ): Promise<ReviewActionV2InvestigationReceiptReplayAuthority> {
+    const claims = await this.codec.verify({
+      token,
+      expectedIssuer: this.issuer,
+      expectedAudience: CapabilityAudience.ReviewInvocationLease,
+      expectedKind: CapabilityKind.InvocationLease,
+      now,
+    });
+    const payload = claims.payload;
+    if (
+      payload.role !== investigationReceiptReplayRole ||
+      claims.subject !== payload.attestation_id ||
+      claims.ownershipExpiresAt !== null
+    ) {
+      throw new Error(
+        "review_investigation_receipt_replay_capability_claims_invalid",
+      );
+    }
+    const sourceOperationReceiptIds = parseSha256ArrayJson(
+      payload.source_operation_receipt_ids_json,
+    );
+    return Object.freeze({
+      capabilityId: claims.capabilityId,
+      sourceCertificateId: string(payload.source_certificate_id),
+      sourceCertificateHash: sha256(payload.source_certificate_hash),
+      attestationId: string(payload.attestation_id),
+      attestationHash: sha256(payload.attestation_hash),
+      sourceOperationReceiptIds,
+      sourceOperationReceiptIdsHash: sha256(
+        payload.source_operation_receipt_ids_hash,
+      ),
+      contextReplayPlanHash: sha256(payload.context_replay_plan_hash),
+      targetExecutionId: string(payload.target_execution_id),
+      targetWorkSlotId: string(payload.target_work_slot_id),
+      targetReviewRevisionHash: sha256(payload.target_review_revision_hash),
+      targetCheckoutTreeOid: commitSha(payload.target_checkout_tree_oid),
+      gatewayPolicyVersion: string(payload.gateway_policy_version),
+      gatewayBinaryHash: sha256(payload.gateway_binary_hash),
+      reusePolicyVectorHash: sha256(payload.reuse_policy_vector_hash),
+      providerKind: string(
+        payload.provider_kind,
+      ) as ProviderInvocationManifest["providerKind"],
+      taskKindSet: string(payload.task_kinds).split(
+        ",",
+      ) as ProviderInvocationManifest["taskKindSet"],
+      producerReleaseId: string(payload.producer_release_id),
+      requestedModel: string(payload.requested_model),
+      expiresAt: new Date(claims.expiresAt),
+    });
+  }
+
   async issuePublicationPermit(
     permit: PublicationPermit,
     issuedAt: Date,
@@ -820,6 +943,32 @@ function sha256(value: unknown): string {
   if (!/^[a-f0-9]{64}$/.test(parsed))
     throw new Error("review_action_v2_capability_hash_invalid");
   return parsed;
+}
+function parseSha256ArrayJson(value: unknown): readonly string[] {
+  if (
+    typeof value !== "string" ||
+    value.length < 4 ||
+    value.length > 128 * 1024
+  ) {
+    throw new Error("review_action_v2_capability_hash_array_invalid");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("review_action_v2_capability_hash_array_invalid");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    parsed.length > 2_000 ||
+    parsed.some((entry) => typeof entry !== "string" || !/^[a-f0-9]{64}$/.test(entry)) ||
+    new Set(parsed).size !== parsed.length ||
+    JSON.stringify([...parsed].sort()) !== value
+  ) {
+    throw new Error("review_action_v2_capability_hash_array_invalid");
+  }
+  return Object.freeze([...parsed]);
 }
 function nullableSha256(value: unknown): string | null {
   return value === nullValue ? null : sha256(value);

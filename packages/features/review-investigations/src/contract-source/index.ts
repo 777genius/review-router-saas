@@ -79,6 +79,10 @@ export const reviewInvestigationsActionContractFragment = Object.freeze({
       ]),
     }),
     Object.freeze({
+      typeName: "ReviewInvestigationReplayPrepareResultStatus",
+      values: Object.freeze(["prepared", "missing", "rejected"]),
+    }),
+    Object.freeze({
       typeName: "ReviewInvestigationNextAction",
       values: Object.freeze(Object.values(ReviewInvestigationNextActionKind)),
     }),
@@ -275,6 +279,46 @@ export const reviewInvestigationsActionContractFragment = Object.freeze({
       ]),
       resultStatusEnum: "ReviewInvestigationMutationResultStatus",
       resultFields: commonResultFields,
+    }),
+    Object.freeze({
+      operationId: "review_investigation_replay_prepare",
+      requestTypeName: "ReviewInvestigationReplayPrepareRequest",
+      resultTypeName: "ReviewInvestigationReplayPrepareResult",
+      callerAuthority: "run_authorization",
+      mutability: "read",
+      naturalIdempotencyPreimage: Object.freeze([
+        "target_execution_id",
+        "target_work_slot_id",
+        "target_review_revision_hash",
+        "stable_review_unit_key",
+        "provider_vote_lane_id",
+        "provider_manifest_hash",
+      ]),
+      semanticRetryClass: "read_only",
+      requestFields: Object.freeze([
+        Object.freeze({ name: "authorizationId", type: "identifier" }),
+        Object.freeze({ name: "targetExecutionId", type: "identifier" }),
+        Object.freeze({ name: "targetWorkSlotId", type: "identifier" }),
+        Object.freeze({ name: "targetReviewRevisionHash", type: "hash" }),
+        Object.freeze({ name: "stableReviewUnitKey", type: "identifier" }),
+        Object.freeze({ name: "providerVoteLaneId", type: "identifier" }),
+        Object.freeze({
+          name: "providerManifestCanonicalJson",
+          type: "canonical_json",
+        }),
+        Object.freeze({ name: "providerManifestHash", type: "hash" }),
+      ]),
+      resultStatusEnum: "ReviewInvestigationReplayPrepareResultStatus",
+      resultFields: Object.freeze([
+        Object.freeze({ name: "sourceInvestigationId", type: "nullable_identifier" }),
+        Object.freeze({ name: "sourceCertificateId", type: "nullable_identifier" }),
+        Object.freeze({ name: "sourceCertificateHash", type: "nullable_hash" }),
+        Object.freeze({
+          name: "replayPreparationCanonicalJson",
+          type: "nullable_canonical_json",
+        }),
+        Object.freeze({ name: "replayPreparationHash", type: "nullable_hash" }),
+      ]),
     }),
     Object.freeze({
       operationId: "review_investigation_replay",

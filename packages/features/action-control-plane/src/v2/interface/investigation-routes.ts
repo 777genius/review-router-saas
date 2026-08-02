@@ -15,12 +15,19 @@ export type RegisterReviewInvestigationV2RoutesDependencies =
     readonly abortTurn?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationTurnAbort>;
     readonly conclude?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationConclude>;
     readonly replay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationReplay>;
+    readonly prepareReplay?: ReviewActionV2EnabledHandler<ReviewActionV2OperationId.ReviewInvestigationReplayPrepare>;
   };
 
 export async function registerReviewInvestigationV2Routes(
   app: FastifyInstance,
   dependencies: RegisterReviewInvestigationV2RoutesDependencies,
 ): Promise<void> {
+  registerReviewActionV2Operation(
+    app,
+    ReviewActionV2OperationId.ReviewInvestigationReplayPrepare,
+    dependencies,
+    dependencies.prepareReplay,
+  );
   registerReviewActionV2Operation(
     app,
     ReviewActionV2OperationId.ReviewInvestigationReplay,
