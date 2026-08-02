@@ -1,7 +1,9 @@
 import type {
+  ReviewInvestigationContract,
   ReviewInvestigationRevision,
   ReviewInvestigationScope,
 } from "../../domain/coverage-contract";
+import { canonicalJson } from "../../domain/canonicalization";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import {
   InvestigationObligationKind,
@@ -49,6 +51,7 @@ export class PrepareReviewInvestigationReplay {
     readonly stableReviewUnitKey: string;
     readonly providerVoteLaneId: string;
     readonly producerReleaseId: string;
+    readonly targetContract: ReviewInvestigationContract;
   }): Promise<PrepareReviewInvestigationReplayResult> {
     await requireCurrentExecution({
       authority: this.authority,
@@ -95,13 +98,17 @@ export class PrepareReviewInvestigationReplay {
     command: {
       readonly targetRevision: ReviewInvestigationRevision;
       readonly producerReleaseId: string;
+      readonly targetContract: ReviewInvestigationContract;
     },
   ): boolean {
     return (
       candidate.certificate !== null &&
-      Date.parse(candidate.certificate.expiresAt) > this.clock.now().getTime() &&
+      Date.parse(candidate.certificate.expiresAt) >
+        this.clock.now().getTime() &&
       candidate.certificate.producerReleaseId === command.producerReleaseId &&
       candidate.contract.producerReleaseId === command.producerReleaseId &&
+      canonicalJson(candidate.contract) ===
+        canonicalJson(command.targetContract) &&
       candidate.revision.reviewRevisionHash !==
         command.targetRevision.reviewRevisionHash &&
       [
@@ -149,21 +156,21 @@ export class PrepareReviewInvestigationReplay {
           sourceCertificateExpiresAt: candidate.certificate!.expiresAt,
           sourceTerminalProviderKind:
             candidate.certificate!.terminalProviderKind,
-          sourceTerminalActualModel:
-            candidate.certificate!.terminalActualModel,
+          sourceTerminalActualModel: candidate.certificate!.terminalActualModel,
           targetExecutionId: command.targetExecutionId,
           targetWorkSlotId: command.targetWorkSlotId,
-          targetReviewRevisionHash:
-            command.targetRevision.reviewRevisionHash,
+          targetReviewRevisionHash: command.targetRevision.reviewRevisionHash,
           sourceReceipt: receipt,
         });
         cache.set(key, replay);
       }
       if (replay !== null) {
-        prepared.push(Object.freeze({
-          obligationId: obligation.obligationId,
-          replay,
-        }));
+        prepared.push(
+          Object.freeze({
+            obligationId: obligation.obligationId,
+            replay,
+          }),
+        );
       }
     }
     return prepared;

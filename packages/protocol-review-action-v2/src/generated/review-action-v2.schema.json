@@ -11695,7 +11695,9 @@
         "stableReviewUnitKey",
         "providerVoteLaneId",
         "providerManifestCanonicalJson",
-        "providerManifestHash"
+        "providerManifestHash",
+        "coverageContractCanonicalJson",
+        "coverageContractHash"
       ],
       "properties": {
         "protocolVersion": {
@@ -11756,6 +11758,14 @@
           "minLength": 2
         },
         "providerManifestHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "coverageContractCanonicalJson": {
+          "type": "string",
+          "minLength": 2
+        },
+        "coverageContractHash": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
         }

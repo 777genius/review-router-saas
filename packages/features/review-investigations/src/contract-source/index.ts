@@ -307,11 +307,22 @@ export const reviewInvestigationsActionContractFragment = Object.freeze({
           type: "canonical_json",
         }),
         Object.freeze({ name: "providerManifestHash", type: "hash" }),
+        Object.freeze({
+          name: "coverageContractCanonicalJson",
+          type: "canonical_json",
+        }),
+        Object.freeze({ name: "coverageContractHash", type: "hash" }),
       ]),
       resultStatusEnum: "ReviewInvestigationReplayPrepareResultStatus",
       resultFields: Object.freeze([
-        Object.freeze({ name: "sourceInvestigationId", type: "nullable_identifier" }),
-        Object.freeze({ name: "sourceCertificateId", type: "nullable_identifier" }),
+        Object.freeze({
+          name: "sourceInvestigationId",
+          type: "nullable_identifier",
+        }),
+        Object.freeze({
+          name: "sourceCertificateId",
+          type: "nullable_identifier",
+        }),
         Object.freeze({ name: "sourceCertificateHash", type: "nullable_hash" }),
         Object.freeze({
           name: "replayPreparationCanonicalJson",
@@ -380,9 +391,7 @@ export const reviewInvestigationsActionContractFragment = Object.freeze({
         Object.freeze({ name: "certificateTtlMs", type: "positive_integer" }),
       ]),
       resultStatusEnum: "ReviewInvestigationMutationResultStatus",
-      resultFields: Object.freeze([
-        ...commonResultFields,
-      ]),
+      resultFields: Object.freeze([...commonResultFields]),
     }),
   ]),
 });

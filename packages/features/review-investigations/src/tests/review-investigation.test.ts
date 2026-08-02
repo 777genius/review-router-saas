@@ -218,6 +218,7 @@ describe("review investigation in-memory vertical slice", () => {
         stableReviewUnitKey: sourceBeforeReplay!.stableReviewUnitKey,
         providerVoteLaneId: sourceBeforeReplay!.providerVoteLaneId,
         producerReleaseId: "producer-test",
+        targetContract: sourceBeforeReplay!.contract,
       }),
     ).resolves.toMatchObject({
       status: PrepareReviewInvestigationReplayStatus.Prepared,
@@ -230,6 +231,28 @@ describe("review investigation in-memory vertical slice", () => {
           }),
         }),
       ]),
+    });
+    await expect(
+      preparation.execute({
+        targetScope: openCommand("unused").scope,
+        targetRevision: {
+          baseSha: "1".repeat(40),
+          mergeBaseSha: "2".repeat(40),
+          headSha: "4".repeat(40),
+          reviewRevisionHash: "d".repeat(64),
+        },
+        targetExecutionId: "execution-target-prepare",
+        targetWorkSlotId: "slot-target-prepare",
+        stableReviewUnitKey: sourceBeforeReplay!.stableReviewUnitKey,
+        providerVoteLaneId: sourceBeforeReplay!.providerVoteLaneId,
+        producerReleaseId: "producer-test",
+        targetContract: {
+          ...sourceBeforeReplay!.contract,
+          criticPolicyVersion: "review-investigation-critic.v2",
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: PrepareReviewInvestigationReplayStatus.Missing,
     });
     const replay = new ReplayReviewInvestigation(
       harness.store,

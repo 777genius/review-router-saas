@@ -800,6 +800,11 @@ async function prepareReplay(
     request.providerManifestHash,
     "provider_manifest_hash_mismatch",
   );
+  const targetContract = await canonicalDocument<ReviewInvestigationContract>(
+    request.coverageContractCanonicalJson,
+    request.coverageContractHash,
+    d,
+  );
   let manifest;
   try {
     manifest = normalizeProviderInvocationManifest(
@@ -821,7 +826,8 @@ async function prepareReplay(
     manifest.executionProfile !==
       ProviderExecutionProfile.InvestigationGatewayV1 ||
     manifest.producerReleaseId !== authorization.producerReleaseId ||
-    manifest.selectedProtocolVersion !== authorization.selectedProtocolVersion ||
+    manifest.selectedProtocolVersion !==
+      authorization.selectedProtocolVersion ||
     manifest.scopeHash !==
       (await d.digest.digestUtf8(
         canonicalJson({
@@ -858,6 +864,7 @@ async function prepareReplay(
       stableReviewUnitKey: request.stableReviewUnitKey,
       providerVoteLaneId: request.providerVoteLaneId,
       producerReleaseId: authorization.producerReleaseId,
+      targetContract,
     });
   if (result.status === "missing") {
     return {
@@ -877,8 +884,7 @@ async function prepareReplay(
       obligationId: item.obligationId,
       contextAttestationId: item.replay.contextAttestationId,
       contextAttestationHash: item.replay.contextAttestationHash,
-      sourceOperationReceiptIdsHash:
-        item.replay.sourceOperationReceiptIdsHash,
+      sourceOperationReceiptIdsHash: item.replay.sourceOperationReceiptIdsHash,
       replayCapability: item.replay.replayCapability,
       replayPlanCanonicalJson: item.replay.replayPlanCanonicalJson,
       replayPlanHash: item.replay.replayPlanHash,

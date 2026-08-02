@@ -1,9 +1,9 @@
 {
   "contractSourceVersion": 1,
   "protocolVersion": "2",
-  "schemaDigest": "6201c08fbf194e8f73dfe3e730e1b9f869711639c4e2071d3fe3ec2090b299bc",
-  "goldenFixtureDigest": "2b23719c7b8ead969ed46748ad0798b416da642ae03322456f84129b665f0c2f",
-  "canonicalizerDigest": "aeff2c49f07df28e987a9781d12fe5361e1e10b40ab0c186386176ac7a6d0208",
+  "schemaDigest": "60049e46b2c91f93bd012a244c109ca5363e38c7bd9969ff7b4ae0b99a828d45",
+  "goldenFixtureDigest": "a00ddff4ccdd64adcb060f3a22a6d51daff843bb94bde5d079b6e0a5ce3e1be0",
+  "canonicalizerDigest": "0e8e308c509826c113a98a6a9e93194087b01664bda2986d7b54c1a53f8c58cd",
   "canonicalizerGoldenFixtureDigest": "9f638db73ec3696da7f3aa842ed10b7cf7c466986dfbd45b1a602e3b08d75c57",
   "negotiationBridge": {
     "operationId": "review_run_authorize",
