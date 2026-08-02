@@ -94,6 +94,7 @@ describe("review action v2 operator CLI", () => {
     const deferredCapabilities = [
       ReviewSafetyCapability.PromptOnlyReuse,
       ReviewSafetyCapability.ContextGatewayReuse,
+      ReviewSafetyCapability.ReviewInvestigationV1,
     ] as const;
     for (const capability of deferredCapabilities) {
       expect(reviewV2CohortRolloutModes(capability)).toBeNull();

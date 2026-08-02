@@ -130,7 +130,7 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toThrow("protocol_contract_operation_id_duplicate");
   });
 
-  it("publishes all twenty-six strict operation schemas and fixtures", async () => {
+  it("publishes all twenty-eight strict operation schemas and fixtures", async () => {
     const schema = JSON.parse(
       await readFile(
         new URL("../generated/review-action-v2.schema.json", import.meta.url),
@@ -138,9 +138,9 @@ describe("generated Review Action v2 negotiation contract", () => {
       ),
     ) as { readonly $defs: Readonly<Record<string, unknown>> };
 
-    expect(reviewActionV2Operations).toHaveLength(26);
-    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(26);
-    expect(Object.keys(schema.$defs)).toHaveLength(52);
+    expect(reviewActionV2Operations).toHaveLength(28);
+    expect(Object.keys(reviewActionV2GoldenFixtures)).toHaveLength(28);
+    expect(Object.keys(schema.$defs)).toHaveLength(56);
     expect(sha256(canonicalJson(schema))).toBe(
       reviewActionV2PublishedSchemaDigest,
     );
@@ -240,6 +240,7 @@ describe("generated Review Action v2 negotiation contract", () => {
     ).toEqual([
       ReviewActionV2OperationId.ReviewContextGatewayOpen,
       ReviewActionV2OperationId.ReviewContextGatewaySeal,
+      ReviewActionV2OperationId.ReviewContextReceiptReplayCommit,
       ReviewActionV2OperationId.ReviewContextReplayCommit,
     ]);
 
@@ -391,12 +392,15 @@ describe("generated Review Action v2 negotiation contract", () => {
     const fragment = sources.semanticFragments.find(
       (candidate) => candidate.boundedContext === "review_investigations",
     );
-    expect(fragment?.operations.map((operation) => operation.operationId)).toEqual([
+    expect(
+      fragment?.operations.map((operation) => operation.operationId),
+    ).toEqual([
       ReviewActionV2OperationId.ReviewInvestigationOpen,
       ReviewActionV2OperationId.ReviewInvestigationRestore,
       ReviewActionV2OperationId.ReviewInvestigationTurnPlan,
       ReviewActionV2OperationId.ReviewInvestigationTurnCommit,
       ReviewActionV2OperationId.ReviewInvestigationTurnAbort,
+      ReviewActionV2OperationId.ReviewInvestigationReplayPrepare,
       ReviewActionV2OperationId.ReviewInvestigationReplay,
       ReviewActionV2OperationId.ReviewInvestigationConclude,
     ]);
