@@ -46,9 +46,12 @@ export type CommitInvestigationTurnCommand = Readonly<{
   }>[];
   proposals: readonly SeedInvestigationObligation[];
   findings: readonly InvestigationFinding[];
+  acceptedEvidenceReceiptIds?: readonly string[];
   criticDecision: ContextCriticDecision | null;
   usageTokens: number;
   durationMs: number;
+  acceptedAttestationId?: string | null;
+  sanitizedOutcomeHash?: string | null;
 }>;
 
 export class CommitInvestigationTurn {
@@ -103,6 +106,7 @@ export class CommitInvestigationTurn {
         unresolvableDecisions: command.unresolvableDecisions,
         proposedObligations,
         findings: command.findings,
+        acceptedEvidenceReceiptIds: command.acceptedEvidenceReceiptIds ?? [],
         criticDecision: command.criticDecision,
         usageTokens: command.usageTokens,
         durationMs: command.durationMs,
@@ -119,8 +123,8 @@ export class CommitInvestigationTurn {
       transition: {
         kind: InvestigationStoreTransitionKind.TurnCommitted,
         turnId: command.turnId,
-        acceptedAttestationId: null,
-        sanitizedOutcomeHash: null,
+        acceptedAttestationId: command.acceptedAttestationId ?? null,
+        sanitizedOutcomeHash: command.sanitizedOutcomeHash ?? null,
       },
     });
     return toInvestigationReadModel(committed);

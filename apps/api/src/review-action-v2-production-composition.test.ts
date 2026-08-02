@@ -37,6 +37,7 @@ describe("Review Action v2 production composition", () => {
     ).toEqual({
       runControl: runtime,
       execution: runtime,
+      investigation: runtime,
       contextAttestation: runtime,
       evidence: runtime,
       snapshot: runtime,

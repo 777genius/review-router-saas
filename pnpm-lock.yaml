@@ -207,6 +207,9 @@ importers:
       '@reviewrouter/features-review-executions':
         specifier: workspace:*
         version: link:../../packages/features/review-executions
+      '@reviewrouter/features-review-investigations':
+        specifier: workspace:*
+        version: link:../../packages/features/review-investigations
       '@reviewrouter/features-review-publishing':
         specifier: workspace:*
         version: link:../../packages/features/review-publishing

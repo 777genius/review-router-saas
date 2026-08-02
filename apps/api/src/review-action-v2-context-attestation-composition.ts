@@ -10,12 +10,17 @@ import {
   ReplayContextAttestationStatus,
   TargetReplayProofVerificationStatus,
   VerifyTargetReplayProof,
+  canonicalContextAttestationManifest,
   canonicalContextDependencyManifest,
   canonicalContextDependencyOperation,
   canonicalContextDependencyResult,
+  createContextAttestationManifest,
   createContextDependencyManifest,
+  isLegacyContextDependencyManifest,
   type ContextAttestationStorePort,
+  type ContextAttestationManifest,
   type ContextDependencyManifest,
+  type ContextGatewayV4Manifest,
   type ContextReplayMaterialCipherPort,
   type GatewaySession,
   type TargetReplayProof,
@@ -626,6 +631,13 @@ async function commitReplay(
     request.replayResultCanonicalJson,
     "context_replay_result_invalid",
   );
+  if (!isLegacyContextDependencyManifest(replayedManifest)) {
+    throw failure(
+      412,
+      ReviewActionV2ProtocolErrorCode.CapabilityDisabled,
+      "context_gateway_v4_replay_disabled",
+    );
+  }
   await requireHash(
     request.replayResultCanonicalJson,
     request.replayResultHash,
@@ -831,6 +843,8 @@ async function prepareReplay(
     dependencies: d,
   });
   if (!current) return null;
+  // Gateway v4 replay is intentionally disabled until receipt replay ships.
+  if (attestation.manifest.manifestVersion !== 2) return null;
   let plaintext: string;
   try {
     plaintext = await d.cipher.decrypt({
@@ -1459,9 +1473,9 @@ async function assertSealAuthority(input: {
 }
 
 function parseContextManifest(value: string, issue: string) {
-  let manifest: ContextDependencyManifest;
+  let manifest: ContextAttestationManifest;
   try {
-    manifest = createContextDependencyManifest(JSON.parse(value));
+    manifest = createContextAttestationManifest(JSON.parse(value));
   } catch (error) {
     throw failure(
       422,
@@ -1469,7 +1483,7 @@ function parseContextManifest(value: string, issue: string) {
       compactIssues([issue, safeContextManifestIssue(error)]),
     );
   }
-  if (canonicalContextDependencyManifest(manifest) !== value) {
+  if (canonicalContextAttestationManifest(manifest) !== value) {
     throw failure(
       400,
       ReviewActionV2ProtocolErrorCode.InvalidRequest,
@@ -1490,7 +1504,7 @@ type ReplayMaterial = Readonly<{
 
 function parseReplayMaterial(
   value: string,
-  manifest: ContextDependencyManifest,
+  manifest: ContextAttestationManifest,
   session: GatewaySession,
   sessionSecret: Buffer,
 ): ReplayMaterial & { readonly canonicalJson: string } {
@@ -1505,6 +1519,25 @@ function parseReplayMaterial(
     ["materialVersion", "sourceDependencies"],
     "context_replay_material_invalid",
   );
+  if (!isLegacyContextDependencyManifest(manifest)) {
+    if (
+      root.materialVersion !== replayMaterialVersion ||
+      !Array.isArray(root.sourceDependencies) ||
+      root.sourceDependencies.length !== 0
+    ) {
+      throw invalidReplayMaterial();
+    }
+    const canonical = stableJson({
+      materialVersion: replayMaterialVersion,
+      sourceDependencies: [],
+    });
+    if (canonical !== value) throw invalidReplayMaterial();
+    return Object.freeze({
+      materialVersion: replayMaterialVersion,
+      sourceDependencies: Object.freeze([]),
+      canonicalJson: canonical,
+    });
+  }
   if (
     root.materialVersion !== replayMaterialVersion ||
     !Array.isArray(root.sourceDependencies) ||
@@ -1569,9 +1602,13 @@ function parseReplayMaterial(
 
 function verifyGatewayTranscript(
   session: GatewaySession,
-  manifest: ContextDependencyManifest,
+  manifest: ContextAttestationManifest,
   sessionSecret: Buffer,
 ): void {
+  if (!isLegacyContextDependencyManifest(manifest)) {
+    verifyGatewayV4Transcript(session, manifest, sessionSecret);
+    return;
+  }
   let previous = session.eventChainSeedHash;
   for (const dependency of manifest.dependencies) {
     if (dependency.previousEventHash !== previous) {
@@ -1594,6 +1631,41 @@ function verifyGatewayTranscript(
       throw transcriptChainInvalid();
     }
     previous = dependency.eventHash;
+  }
+  if (manifest.authenticatedChainHash !== previous) {
+    throw transcriptChainInvalid();
+  }
+}
+
+function verifyGatewayV4Transcript(
+  session: GatewaySession,
+  manifest: ContextGatewayV4Manifest,
+  sessionSecret: Buffer,
+): void {
+  let previous = session.eventChainSeedHash;
+  for (const event of manifest.events) {
+    if (event.previousEventHash !== previous) {
+      throw transcriptChainInvalid();
+    }
+    const expected = hmacHex(
+      sessionSecret,
+      stableJson({
+        sessionId: session.sessionId,
+        sequence: event.sequence,
+        previousEventHash: event.previousEventHash,
+        operationKey: event.operationKey,
+        outcome: event.outcome,
+        failureClass: event.failureClass,
+        operation: event.operation,
+        result: event.result,
+        operationReceiptId: event.operationReceiptId,
+        sanitizedReason: event.sanitizedReason,
+      } as never),
+    );
+    if (!sameHex(expected, event.eventHash)) {
+      throw transcriptChainInvalid();
+    }
+    previous = event.eventHash;
   }
   if (manifest.authenticatedChainHash !== previous) {
     throw transcriptChainInvalid();

@@ -9,10 +9,12 @@ import type {
   RegisterReviewContextAttestationV2RoutesDependencies,
   RegisterReviewEvidenceV2RoutesDependencies,
   RegisterReviewExecutionV2RoutesDependencies,
+  RegisterReviewInvestigationV2RoutesDependencies,
   RegisterReviewPublicationRequestV2RoutesDependencies,
   RegisterReviewRunControlV2RoutesDependencies,
   RegisterReviewSnapshotReadV2RoutesDependencies,
 } from "@reviewrouter/features-action-control-plane/v2";
+import { PrismaInvestigationStore } from "@reviewrouter/features-review-investigations/composition";
 import { ReviewActionV2RouteFailure } from "@reviewrouter/features-action-control-plane/v2";
 import {
   ActualModelCompatibilityMode,
@@ -126,6 +128,12 @@ import {
   type TrustedProducerReleaseMaterializerPort,
 } from "./review-action-v2-run-control-composition.js";
 import { composeReviewActionV2SnapshotPublicationRoutes } from "./review-action-v2-production-composition-snapshot-publication.js";
+import {
+  ProductionInvestigationExecutionAuthority,
+  ProductionInvestigationTurnEvidence,
+  composeReviewActionV2InvestigationRoutes,
+  composeReviewInvestigationUseCases,
+} from "./review-action-v2-investigation-composition.js";
 import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-rotating-github-secret-gateway.js";
 import { ProductionReviewMutationAuthorityProofFacts } from "./review-action-v2-mutation-proof-facts.js";
 import { OctokitReviewV2DispatchCapabilityInspector } from "./github/octokit-review-v2-dispatch-capability-inspector.js";
@@ -144,6 +152,8 @@ export const reviewActionV2IntentIngressEnabledEnv =
   "REVIEW_ROUTER_REVIEW_V2_INTENT_INGRESS_ENABLED";
 export const reviewActionV2WorkflowDispatchReadyEnv =
   "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY";
+export const reviewInvestigationRecordingEnabledEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED";
 
 type ReviewActionV2RouteRuntime = Pick<
   RegisterReviewRunControlV2RoutesDependencies,
@@ -153,6 +163,7 @@ type ReviewActionV2RouteRuntime = Pick<
 export type ReviewActionV2ProductionRoutes = Readonly<{
   runControl: RegisterReviewRunControlV2RoutesDependencies;
   execution: RegisterReviewExecutionV2RoutesDependencies;
+  investigation: RegisterReviewInvestigationV2RoutesDependencies;
   contextAttestation: RegisterReviewContextAttestationV2RoutesDependencies;
   evidence: RegisterReviewEvidenceV2RoutesDependencies;
   snapshot: RegisterReviewSnapshotReadV2RoutesDependencies;
@@ -278,6 +289,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
     return Object.freeze({
       runControl: input.runtime,
       execution: input.runtime,
+      investigation: input.runtime,
       contextAttestation: input.runtime,
       evidence: input.runtime,
       snapshot: input.runtime,
@@ -533,6 +545,33 @@ export function composeReviewActionV2ProductionRoutes(input: {
     contextPolicy: contextReplay,
     now: () => clock.now(),
   });
+  const investigationStore = new PrismaInvestigationStore(input.prisma, {
+    operationalRetentionMs: productionTiming.retentionDurationMs,
+  });
+  const investigation = composeReviewActionV2InvestigationRoutes({
+    enabled: input.env[reviewInvestigationRecordingEnabledEnv] === "1",
+    runtime: input.runtime,
+    handlers: {
+      authorizations: runControl.authorizations,
+      authorizationQueries: repositories.authorizations,
+      executionQueries: executionStore,
+      investigations: composeReviewInvestigationUseCases({
+        store: investigationStore,
+        authority: new ProductionInvestigationExecutionAuthority(
+          executionStore,
+          repositories.authorizations,
+        ),
+        evidence: new ProductionInvestigationTurnEvidence(
+          contextAttestationStore,
+          () => clock.now(),
+        ),
+        clock,
+      }),
+      capabilities,
+      digest,
+      now: () => clock.now(),
+    },
+  });
 
   return Object.freeze({
     runControl: composeReviewActionV2RunControlRoutes({
@@ -557,6 +596,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
         }),
       },
     }),
+    investigation,
     contextAttestation,
     evidence: composeReviewActionV2EvidenceRoutes({
       enabled: true,

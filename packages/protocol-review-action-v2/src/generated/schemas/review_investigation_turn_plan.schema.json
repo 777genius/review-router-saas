@@ -240,6 +240,14 @@
                       "type": "null"
                     }
                   ]
+                },
+                "turnBriefCanonicalJson": {
+                  "type": "string",
+                  "minLength": 2
+                },
+                "turnBriefHash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
                 }
               }
             }

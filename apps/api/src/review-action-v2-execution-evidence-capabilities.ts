@@ -15,6 +15,7 @@ import type {
 } from "@reviewrouter/features-review-executions";
 
 const leaseRole = "review_execution_lease_v1";
+const investigationTurnRole = "review_investigation_turn_v1";
 const attachmentRole = "review_evidence_attachment_v1";
 const contextGatewaySealRole = "review_context_gateway_seal_v1";
 const contextReplayRole = "review_context_replay_v1";
@@ -42,6 +43,22 @@ export type VerifiedReviewActionV2LeaseCapability = Readonly<{
   ownershipExpiresAt: Date;
   resultReportUntil: Date;
 }>;
+
+export type ReviewActionV2InvestigationTurnAuthority = Readonly<{
+  authorizationId: string;
+  executionId: string;
+  workSlotId: string;
+  reviewRevisionHash: string;
+  investigationId: string;
+  investigationVersion: number;
+  dossierDigest: string;
+  turnId: string;
+  expiresAt: Date;
+}>;
+
+export type VerifiedReviewActionV2InvestigationTurnCapability =
+  ReviewActionV2InvestigationTurnAuthority &
+    Readonly<{ capabilityId: string }>;
 
 export type ReviewActionV2ReusableAttachmentAuthority = Readonly<{
   authorizationId: string;
@@ -228,6 +245,83 @@ export class ReviewActionV2ExecutionEvidenceCapabilityAdapter {
       attemptId: nullableString(payload.attempt_id),
       ownershipExpiresAt: new Date(claims.ownershipExpiresAt),
       resultReportUntil: new Date(claims.expiresAt),
+    });
+  }
+
+  async issueInvestigationTurn(
+    authority: ReviewActionV2InvestigationTurnAuthority,
+    issuedAt: Date,
+  ): Promise<string> {
+    const identity = await this.prepareIdentity();
+    const signed = await this.codec.sign({
+      capabilityId: identity.capabilityId,
+      kind: CapabilityKind.InvocationLease,
+      audience: CapabilityAudience.ReviewInvocationLease,
+      issuer: this.issuer,
+      subject: authority.turnId,
+      issuedAt,
+      notBefore: issuedAt,
+      ownershipExpiresAt: authority.expiresAt,
+      expiresAt: authority.expiresAt,
+      payload: {
+        role: investigationTurnRole,
+        authorization_id: authority.authorizationId,
+        execution_id: authority.executionId,
+        work_slot_id: authority.workSlotId,
+        review_revision_hash: authority.reviewRevisionHash,
+        investigation_id: authority.investigationId,
+        investigation_version: String(authority.investigationVersion),
+        dossier_digest: authority.dossierDigest,
+        turn_id: authority.turnId,
+      },
+    });
+    return signed.token;
+  }
+
+  async verifyInvestigationTurn(
+    token: string,
+    now: Date,
+  ): Promise<VerifiedReviewActionV2InvestigationTurnCapability> {
+    const claims = await this.codec.verify({
+      token,
+      expectedIssuer: this.issuer,
+      expectedAudience: CapabilityAudience.ReviewInvocationLease,
+      expectedKind: CapabilityKind.InvocationLease,
+      now,
+    });
+    const payload = exactPayload(claims.payload, [
+      "role",
+      "authorization_id",
+      "execution_id",
+      "work_slot_id",
+      "review_revision_hash",
+      "investigation_id",
+      "investigation_version",
+      "dossier_digest",
+      "turn_id",
+    ]);
+    if (
+      string(payload.role) !== investigationTurnRole ||
+      claims.subject !== string(payload.turn_id) ||
+      claims.ownershipExpiresAt === null
+    ) {
+      throw new Error("review_action_v2_investigation_turn_claims_invalid");
+    }
+    const version = Number(string(payload.investigation_version));
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw new Error("review_action_v2_investigation_turn_version_invalid");
+    }
+    return Object.freeze({
+      capabilityId: claims.capabilityId,
+      authorizationId: string(payload.authorization_id),
+      executionId: string(payload.execution_id),
+      workSlotId: string(payload.work_slot_id),
+      reviewRevisionHash: sha256(payload.review_revision_hash),
+      investigationId: string(payload.investigation_id),
+      investigationVersion: version,
+      dossierDigest: sha256(payload.dossier_digest),
+      turnId: string(payload.turn_id),
+      expiresAt: new Date(claims.expiresAt),
     });
   }
 

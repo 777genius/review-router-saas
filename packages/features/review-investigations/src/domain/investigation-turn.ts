@@ -41,6 +41,7 @@ export type InvestigationTurnCommit = Readonly<{
   }>[];
   proposedObligations: readonly InvestigationObligation[];
   findings: readonly InvestigationFinding[];
+  acceptedEvidenceReceiptIds?: readonly string[];
   criticDecision: ContextCriticDecision | null;
   usageTokens: number;
   durationMs: number;

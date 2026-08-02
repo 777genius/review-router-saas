@@ -184,6 +184,11 @@ export const reviewInvestigationsActionContractFragment = Object.freeze({
         Object.freeze({ name: "turnId", type: "nullable_identifier" }),
         Object.freeze({ name: "turnCapability", type: "nullable_token" }),
         Object.freeze({ name: "turnExpiresAt", type: "nullable_timestamp" }),
+        Object.freeze({
+          name: "turnBriefCanonicalJson",
+          type: "canonical_json",
+        }),
+        Object.freeze({ name: "turnBriefHash", type: "hash" }),
       ]),
     }),
     Object.freeze({

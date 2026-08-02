@@ -236,7 +236,11 @@ export function commitInvestigationTurn(input: {
   ) {
     throw new ReviewInvestigationDomainError("inventory_witness_cardinality_invalid");
   }
-  validateFindingEvidence(obligations, input.commit.findings);
+  validateFindingEvidence(
+    obligations,
+    input.commit.findings,
+    input.commit.acceptedEvidenceReceiptIds ?? [],
+  );
   const findings = mergeFindings(current.findings, input.commit.findings);
   const next: ReviewInvestigation = {
     ...current,
@@ -529,11 +533,15 @@ function mergeFindings(
 function validateFindingEvidence(
   obligations: readonly InvestigationObligation[],
   findings: readonly InvestigationFinding[],
+  acceptedTurnEvidenceReceiptIds: readonly string[],
 ): void {
   const acceptedReceipts = new Set(
-    obligations
-      .map((item) => item.receipt?.receiptId ?? null)
-      .filter((item): item is string => item !== null),
+    [
+      ...obligations
+        .map((item) => item.receipt?.receiptId ?? null)
+        .filter((item): item is string => item !== null),
+      ...acceptedTurnEvidenceReceiptIds,
+    ],
   );
   for (const finding of findings) {
     if (
