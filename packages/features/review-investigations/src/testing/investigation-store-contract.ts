@@ -155,6 +155,7 @@ export function createInvestigationStoreContractSeed(
       scmRepositoryIdentityId: `repository-${suffix}`,
       pullRequestNumber: 42,
       trustDomain: "trusted-local",
+      authorizationScopeHash: digest(`authorization-scope-${suffix}`),
     },
     revision: {
       baseSha: "1".repeat(40),

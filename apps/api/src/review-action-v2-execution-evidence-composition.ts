@@ -1468,6 +1468,8 @@ async function commitEvidence(
     transportAttemptCount: request.transportAttemptCount,
     contextDependencyAttestationId: request.contextDependencyAttestationId,
     contextDependencyAttestationHash: request.contextDependencyAttestationHash,
+    investigationCertificateId: request.investigationCertificateId,
+    investigationCertificateHash: request.investigationCertificateHash,
   });
   return {
     statusCode:

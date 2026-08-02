@@ -145,6 +145,7 @@ function activeInvestigation(): ReviewInvestigation {
       scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
       pullRequestNumber: authorization.pullRequestNumber,
       trustDomain: authorization.trustDomain,
+      authorizationScopeHash: sha("authorization-scope"),
     },
     revision: {
       baseSha: authorization.baseSha,
@@ -233,6 +234,11 @@ function activeReadModel(): ReviewInvestigationReadModel {
     nextEligibleAt: null,
     nextAction: ReviewInvestigationNextActionKind.RunTurn,
     turn: aggregate.activeTurn,
+    certificateId: null,
+    certificateHash: null,
+    terminalObservationCanonicalJson: null,
+    terminalOutcomeHash: null,
+    conclusion: null,
   };
 }
 

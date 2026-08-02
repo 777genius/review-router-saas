@@ -919,6 +919,8 @@ function sourceObservation(input: {
     transportAttemptCount: 1,
     contextDependencyAttestationId: input.attestationId,
     contextDependencyAttestationHash: input.attestationHash,
+    investigationCertificateId: null,
+    investigationCertificateHash: null,
     trustDomain: EvidenceTrustDomain.TrustedManaged,
     createdAtMs: now.getTime(),
     reuseExpiresAtMs: now.getTime() + 3_600_000,

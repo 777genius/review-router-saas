@@ -2,7 +2,9 @@ import type { InvestigationEvidenceReceipt, InvestigationObligation } from "./in
 import type { CanonicalValue } from "./canonicalization";
 import {
   ContextCriticDecision,
+  InvestigationTurnProviderKind,
   ReviewInvestigationAbortReason,
+  ReviewInvestigationRuntimeProfile,
   ReviewInvestigationTurnPurpose,
 } from "./review-investigation-types";
 
@@ -45,7 +47,31 @@ export type InvestigationTurnCommit = Readonly<{
   criticDecision: ContextCriticDecision | null;
   usageTokens: number;
   durationMs: number;
+  provenance: InvestigationTurnProvenance | null;
 }>;
+
+export type InvestigationTurnProvenance = Readonly<{
+  turnId: string;
+  purpose: ReviewInvestigationTurnPurpose;
+  actualProviderKind: InvestigationTurnProviderKind;
+  actualModel: string;
+  runtimeProfile: ReviewInvestigationRuntimeProfile;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  durationMs: number;
+  acceptedAttestationId: string;
+  acceptedAttestationHash: string;
+  terminalOutcomeHash: string;
+}>;
+
+export function turnProvenanceCanonicalValue(
+  provenance: InvestigationTurnProvenance,
+): CanonicalValue {
+  return { ...provenance };
+}
 
 export type InvestigationTurnAbort = Readonly<{
   turnId: string;

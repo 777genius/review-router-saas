@@ -50,6 +50,16 @@ export class InMemoryInvestigationStore implements InvestigationStorePort {
     return id ? clone(this.investigations.get(id) ?? null) : null;
   }
 
+  async findByCertificateId(
+    certificateId: string,
+  ): Promise<ReviewInvestigation | null> {
+    await this.transactionTail;
+    const investigation = [...this.investigations.values()].find(
+      (item) => item.certificate?.certificateId === certificateId,
+    );
+    return clone(investigation ?? null);
+  }
+
   async commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;

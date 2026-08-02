@@ -1,6 +1,7 @@
 import { canonicalJson, type CanonicalValue } from "./canonicalization";
 import {
   ContextCriticDecision,
+  InvestigationTurnProviderKind,
   InvestigationObligationKind,
   ReviewInvestigationRuntimeProfile,
   ReviewInvestigationTurnPurpose,
@@ -8,10 +9,7 @@ import {
 
 export const investigationTurnObservationVersion = 1 as const;
 
-export enum InvestigationTurnProviderKind {
-  Codex = "codex",
-  ClaudeCode = "claude_code",
-}
+export { InvestigationTurnProviderKind } from "./review-investigation-types";
 
 export type InvestigationTurnObservation = Readonly<{
   outputVersion: 1;

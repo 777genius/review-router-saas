@@ -8,10 +8,15 @@ import {
   concludeReviewInvestigation,
   type ReviewInvestigation,
 } from "../../domain/review-investigation";
-import { ReviewInvestigationConclusion } from "../../domain/review-investigation-types";
+import {
+  ReviewInvestigationConclusion,
+  ReviewInvestigationState,
+  ReviewInvestigationTurnPurpose,
+} from "../../domain/review-investigation-types";
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
 import type { InvestigationExecutionAuthorityPort } from "../ports/execution-authority-port";
+import type { InvestigationTerminalProjectionPort } from "../ports/investigation-terminal-projection-port";
 import {
   InvestigationStoreTransitionKind,
   type InvestigationStorePort,
@@ -41,6 +46,7 @@ export class ConcludeReviewInvestigation {
     private readonly authority: InvestigationExecutionAuthorityPort,
     private readonly digest: InvestigationDigestPort,
     private readonly clock: InvestigationClockPort,
+    private readonly terminalProjection: InvestigationTerminalProjectionPort,
   ) {}
 
   async execute(
@@ -66,9 +72,24 @@ export class ConcludeReviewInvestigation {
     }
     const now = this.clock.now();
     const conclusion =
-      current.findings.length > 0
-        ? ReviewInvestigationConclusion.Findings
-        : ReviewInvestigationConclusion.VerifiedClean;
+      current.state === ReviewInvestigationState.Inconclusive
+        ? ReviewInvestigationConclusion.Inconclusive
+        : current.findings.length > 0
+          ? ReviewInvestigationConclusion.Findings
+          : ReviewInvestigationConclusion.VerifiedClean;
+    const projection = await this.terminalProjection.project(current);
+    if (projection.conclusion !== conclusion) {
+      throw new Error("investigation_terminal_projection_conclusion_mismatch");
+    }
+    if (
+      current.turnProvenance.length !==
+      current.semanticTurns + current.criticCycles
+    ) {
+      throw new Error("investigation_turn_provenance_incomplete");
+    }
+    const criticProvenance = [...current.turnProvenance]
+      .reverse()
+      .find((item) => item.purpose === ReviewInvestigationTurnPurpose.Critic);
     const candidate: ReviewInvestigationCertificateCandidate = {
       certificateId: `certificate-${current.investigationId.slice(-32)}`,
       investigationId: current.investigationId,
@@ -99,6 +120,32 @@ export class ConcludeReviewInvestigation {
           .filter((item): item is string => item !== null)
           .sort(),
       ),
+      scopeHash: await digestCanonical(this.digest, current.scope),
+      coverageStateHash: await digestCanonical(
+        this.digest,
+        current.obligations.map((item) => ({
+          obligationId: item.obligationId,
+          state: item.state,
+        })),
+      ),
+      contextAttestationSetHash: await digestCanonical(
+        this.digest,
+        current.turnProvenance
+          .map((item) => ({
+            id: item.acceptedAttestationId,
+            hash: item.acceptedAttestationHash,
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id)),
+      ),
+      turnProvenanceHash: await digestCanonical(
+        this.digest,
+        current.turnProvenance,
+      ),
+      terminalOutcomeHash: projection.terminalOutcomeHash,
+      terminalObservationCanonicalJson: projection.canonicalJson,
+      criticAttestationId: criticProvenance?.acceptedAttestationId ?? null,
+      criticAttestationHash: criticProvenance?.acceptedAttestationHash ?? null,
+      criticDecision: current.criticDecision,
       issuedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + command.certificateTtlMs).toISOString(),
     };

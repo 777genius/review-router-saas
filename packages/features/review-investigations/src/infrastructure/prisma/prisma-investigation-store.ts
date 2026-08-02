@@ -50,10 +50,12 @@ import type { ReviewInvestigationCertificate } from "../../domain/investigation-
 import type {
   InvestigationFinding,
   InvestigationTurn,
+  InvestigationTurnProvenance,
 } from "../../domain/investigation-turn";
 import type { ReviewInvestigation } from "../../domain/review-investigation";
 import {
   ContextCriticDecision,
+  InvestigationTurnProviderKind,
   InvestigationObligationKind,
   InvestigationObligationState,
   ReviewInvestigationConclusion,
@@ -127,6 +129,16 @@ export class PrismaInvestigationStore
   ): Promise<ReviewInvestigation | null> {
     const record = await this.prisma.reviewInvestigation.findUnique({
       where: { naturalIdentityHash },
+      select: { investigationId: true },
+    });
+    return record ? loadAggregate(this.prisma, record.investigationId) : null;
+  }
+
+  async findByCertificateId(
+    certificateId: string,
+  ): Promise<ReviewInvestigation | null> {
+    const record = await this.prisma.reviewInvestigationCertificate.findUnique({
+      where: { certificateId },
       select: { investigationId: true },
     });
     return record ? loadAggregate(this.prisma, record.investigationId) : null;
@@ -502,6 +514,10 @@ async function loadAggregate(
       scmRepositoryIdentityId: record.scmRepositoryIdentityId,
       pullRequestNumber: record.pullRequestNumber,
       trustDomain: record.trustDomain,
+      authorizationScopeHash: requiredCertificateField(
+        record.authorizationScopeHash,
+        "authorization_scope_hash",
+      ),
     },
     revision: {
       baseSha: record.baseSha,
@@ -536,6 +552,15 @@ async function loadAggregate(
       record.criticDecision === null
         ? null
         : fromPrismaCriticDecision(record.criticDecision),
+    totalUsageTokens: safeNumber(
+      record.totalUsageTokens,
+      "investigation_total_usage_tokens",
+    ),
+    totalDurationMs: safeNumber(
+      record.totalDurationMs,
+      "investigation_total_duration_ms",
+    ),
+    turnProvenance: toTurnProvenance(record.turnProvenance),
     conclusion:
       record.conclusion === null
         ? null
@@ -773,6 +798,19 @@ async function persistCertificate(
       findingSetHash: certificate.findingSetHash,
       obligationSetHash: certificate.obligationSetHash,
       receiptSetHash: certificate.receiptSetHash,
+      scopeHash: certificate.scopeHash,
+      coverageStateHash: certificate.coverageStateHash,
+      contextAttestationSetHash: certificate.contextAttestationSetHash,
+      turnProvenanceHash: certificate.turnProvenanceHash,
+      terminalOutcomeHash: certificate.terminalOutcomeHash,
+      terminalObservationCanonicalJson:
+        certificate.terminalObservationCanonicalJson,
+      criticAttestationId: certificate.criticAttestationId,
+      criticAttestationHash: certificate.criticAttestationHash,
+      criticDecision:
+        certificate.criticDecision === null
+          ? null
+          : toPrismaCriticDecision(certificate.criticDecision),
       issuedAt: new Date(certificate.issuedAt),
       expiresAt: new Date(certificate.expiresAt),
     },
@@ -791,6 +829,7 @@ function toMainCreate(
     scmRepositoryIdentityId: investigation.scope.scmRepositoryIdentityId,
     pullRequestNumber: investigation.scope.pullRequestNumber,
     trustDomain: investigation.scope.trustDomain,
+    authorizationScopeHash: investigation.scope.authorizationScopeHash,
     baseSha: investigation.revision.baseSha,
     mergeBaseSha: investigation.revision.mergeBaseSha,
     headSha: investigation.revision.headSha,
@@ -820,6 +859,10 @@ function toMainCreate(
       investigation.criticDecision === null
         ? null
         : toPrismaCriticDecision(investigation.criticDecision),
+    totalUsageTokens: BigInt(investigation.totalUsageTokens),
+    totalDurationMs: BigInt(investigation.totalDurationMs),
+    turnProvenance:
+      investigation.turnProvenance as unknown as Prisma.InputJsonValue,
     conclusion:
       investigation.conclusion === null
         ? null
@@ -862,6 +905,10 @@ function mainScalarData(
       investigation.criticDecision === null
         ? null
         : toPrismaCriticDecision(investigation.criticDecision),
+    totalUsageTokens: BigInt(investigation.totalUsageTokens),
+    totalDurationMs: BigInt(investigation.totalDurationMs),
+    turnProvenance:
+      investigation.turnProvenance as unknown as Prisma.InputJsonValue,
     conclusion:
       investigation.conclusion === null
         ? null
@@ -938,6 +985,8 @@ function assertRehydratedAggregate(
     ["operational_attempts", investigation.operationalAttempts],
     ["expansion_depth", investigation.expansionDepth],
     ["critic_cycles", investigation.criticCycles],
+    ["total_usage_tokens", investigation.totalUsageTokens],
+    ["total_duration_ms", investigation.totalDurationMs],
   ] as const) {
     assertNonNegativeInteger(value, field);
   }
@@ -959,11 +1008,37 @@ function assertRehydratedAggregate(
     (investigation.certificate !== null &&
       ![
         ReviewInvestigationState.Concluded,
+        ReviewInvestigationState.Inconclusive,
         ReviewInvestigationState.Expired,
         ReviewInvestigationState.Superseded,
       ].includes(investigation.state))
   ) {
     throw new Error("investigation_certificate_state_corrupt");
+  }
+  if (
+    investigation.turnProvenance.length >
+      investigation.semanticTurns + investigation.criticCycles ||
+    new Set(investigation.turnProvenance.map((item) => item.turnId)).size !==
+      investigation.turnProvenance.length
+  ) {
+    throw new Error("investigation_turn_provenance_corrupt");
+  }
+  for (const provenance of investigation.turnProvenance) {
+    assertDigest(
+      provenance.acceptedAttestationHash,
+      "accepted_attestation_hash",
+    );
+    assertDigest(provenance.terminalOutcomeHash, "terminal_outcome_hash");
+    if (
+      provenance.runtimeProfile !== investigation.runtimeProfile ||
+      provenance.totalTokens !==
+        provenance.inputTokens +
+          provenance.outputTokens +
+          provenance.reasoningOutputTokens ||
+      provenance.cachedInputTokens > provenance.inputTokens
+    ) {
+      throw new Error("investigation_turn_provenance_binding_corrupt");
+    }
   }
   if (investigation.certificate) {
     if (
@@ -1113,6 +1188,33 @@ function toCertificate(
     findingSetHash: record.findingSetHash,
     obligationSetHash: record.obligationSetHash,
     receiptSetHash: record.receiptSetHash,
+    scopeHash: requiredCertificateField(record.scopeHash, "scope_hash"),
+    coverageStateHash: requiredCertificateField(
+      record.coverageStateHash,
+      "coverage_state_hash",
+    ),
+    contextAttestationSetHash: requiredCertificateField(
+      record.contextAttestationSetHash,
+      "context_attestation_set_hash",
+    ),
+    turnProvenanceHash: requiredCertificateField(
+      record.turnProvenanceHash,
+      "turn_provenance_hash",
+    ),
+    terminalOutcomeHash: requiredCertificateField(
+      record.terminalOutcomeHash,
+      "terminal_outcome_hash",
+    ),
+    terminalObservationCanonicalJson: requiredCertificateField(
+      record.terminalObservationCanonicalJson,
+      "terminal_observation_canonical_json",
+    ),
+    criticAttestationId: record.criticAttestationId,
+    criticAttestationHash: record.criticAttestationHash,
+    criticDecision:
+      record.criticDecision === null
+        ? null
+        : fromPrismaCriticDecision(record.criticDecision),
     issuedAt: record.issuedAt.toISOString(),
     expiresAt: record.expiresAt.toISOString(),
   };
@@ -1214,6 +1316,50 @@ function toFindings(value: Prisma.JsonValue): readonly InvestigationFinding[] {
   });
 }
 
+function toTurnProvenance(
+  value: Prisma.JsonValue,
+): readonly InvestigationTurnProvenance[] {
+  if (!Array.isArray(value)) {
+    throw new Error("investigation_turn_provenance_corrupt");
+  }
+  return value.map((item) => {
+    if (!isObject(item)) {
+      throw new Error("investigation_turn_provenance_item_corrupt");
+    }
+    const purpose = stringEnumField(
+      item,
+      "purpose",
+      ReviewInvestigationTurnPurpose,
+    );
+    const actualProviderKind = stringEnumField(
+      item,
+      "actualProviderKind",
+      InvestigationTurnProviderKind,
+    );
+    const runtimeProfile = stringEnumField(
+      item,
+      "runtimeProfile",
+      ReviewInvestigationRuntimeProfile,
+    );
+    return {
+      turnId: stringField(item, "turnId"),
+      purpose,
+      actualProviderKind,
+      actualModel: stringField(item, "actualModel"),
+      runtimeProfile,
+      inputTokens: numberField(item, "inputTokens"),
+      cachedInputTokens: numberField(item, "cachedInputTokens"),
+      outputTokens: numberField(item, "outputTokens"),
+      reasoningOutputTokens: numberField(item, "reasoningOutputTokens"),
+      totalTokens: numberField(item, "totalTokens"),
+      durationMs: numberField(item, "durationMs"),
+      acceptedAttestationId: stringField(item, "acceptedAttestationId"),
+      acceptedAttestationHash: stringField(item, "acceptedAttestationHash"),
+      terminalOutcomeHash: stringField(item, "terminalOutcomeHash"),
+    };
+  });
+}
+
 function assertObligationIdentity(
   record: PrismaObligationRecord,
   obligation: InvestigationObligation,
@@ -1278,6 +1424,26 @@ function numberField(value: Record<string, unknown>, field: string): number {
     throw new Error(`${field}_corrupt`);
   }
   return candidate;
+}
+
+function stringEnumField<T extends Record<string, string>>(
+  value: Record<string, unknown>,
+  field: string,
+  source: T,
+): T[keyof T] {
+  const candidate = stringField(value, field);
+  if (!Object.values(source).includes(candidate)) {
+    throw new Error(`${field}_corrupt`);
+  }
+  return candidate as T[keyof T];
+}
+
+function requiredCertificateField(
+  value: string | null,
+  field: string,
+): string {
+  if (value === null) throw new Error(`investigation_certificate_${field}_missing`);
+  return value;
 }
 
 function toStringArray(value: unknown, field: string): readonly string[] {

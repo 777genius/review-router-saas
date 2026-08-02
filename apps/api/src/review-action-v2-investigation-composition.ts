@@ -9,6 +9,7 @@ import {
   PlanNextInvestigationTurn,
   RestoreReviewInvestigation,
   ReviewInvestigationAbortReason,
+  ReviewInvestigationConclusion,
   ReviewInvestigationNextActionKind,
   ReviewInvestigationRuntimeProfile,
   canonicalInvestigationTurnObservation,
@@ -17,6 +18,7 @@ import {
   type InvestigationExecutionAuthorityPort,
   type InvestigationStorePort,
   type InvestigationTurnEvidencePort,
+  type InvestigationTerminalProjectionPort,
   type ReviewInvestigation,
   type ReviewInvestigationContract,
   type ReviewInvestigationPolicy,
@@ -24,6 +26,11 @@ import {
   type SeedInvestigationObligation,
   type InvestigationEvidenceReceipt,
 } from "@reviewrouter/features-review-investigations";
+import {
+  ReviewFindingSeverity,
+  reviewEvidencePayloadVersion,
+  prepareReviewObservationPayload,
+} from "@reviewrouter/features-review-evidence";
 import { NodeSha256InvestigationDigest } from "@reviewrouter/features-review-investigations/composition";
 import {
   ContextGatewayV4OperationKind,
@@ -57,6 +64,7 @@ import {
   ReviewInvestigationNextAction,
   ReviewInvestigationOpenResultStatus,
   ReviewInvestigationPublishedRuntimeProfile,
+  ReviewInvestigationPublishedConclusion,
   ReviewInvestigationPublishedState,
   ReviewInvestigationRestoreResultStatus,
   canonicalizeReviewActionV2Request,
@@ -102,6 +110,7 @@ export function composeReviewInvestigationUseCases(input: {
   readonly authority: InvestigationExecutionAuthorityPort;
   readonly evidence: InvestigationTurnEvidencePort;
   readonly clock: InvestigationClockPort;
+  readonly terminalProjection: InvestigationTerminalProjectionPort;
 }): ReviewInvestigationUseCases {
   const digest = new NodeSha256InvestigationDigest();
   const commit = new CommitInvestigationTurn(
@@ -136,8 +145,62 @@ export function composeReviewInvestigationUseCases(input: {
       input.authority,
       digest,
       input.clock,
+      input.terminalProjection,
     ),
   });
+}
+
+export class ReviewEvidenceInvestigationTerminalProjection implements InvestigationTerminalProjectionPort {
+  constructor(private readonly digest: ReviewActionV2DigestPort) {}
+
+  async project(investigation: ReviewInvestigation) {
+    const conclusion =
+      investigation.conclusion ??
+      (investigation.findings.length > 0
+        ? ReviewInvestigationConclusion.Findings
+        : ReviewInvestigationConclusion.VerifiedClean);
+    const prepared = prepareReviewObservationPayload({
+      payloadVersion: reviewEvidencePayloadVersion,
+      normalizedFindings: investigation.findings.map((finding) => ({
+        category: "review_investigation",
+        normalizedFailureModeHash: finding.fingerprint,
+        severity: findingSeverity(finding.severity),
+        title: finding.title,
+        message: finding.body,
+        evidence: [...finding.evidenceReceiptIds],
+        path: finding.path,
+        startLine: finding.line,
+        endLine: finding.line,
+        placementConfidence: finding.line === null ? null : 1,
+        suggestion: null,
+      })),
+      normalizedLifecycleRevalidations: [],
+      safeUsage: {
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: investigation.totalUsageTokens,
+      },
+    });
+    const canonicalJson = new TextDecoder().decode(prepared.canonicalBytes);
+    return Object.freeze({
+      canonicalJson,
+      terminalOutcomeHash: await this.digest.digest(prepared.canonicalBytes),
+      conclusion,
+    });
+  }
+}
+
+function findingSeverity(value: string): ReviewFindingSeverity {
+  switch (value) {
+    case ReviewFindingSeverity.Critical:
+      return ReviewFindingSeverity.Critical;
+    case ReviewFindingSeverity.Major:
+      return ReviewFindingSeverity.Major;
+    case ReviewFindingSeverity.Minor:
+      return ReviewFindingSeverity.Minor;
+    default:
+      throw new Error("investigation_finding_severity_unsupported");
+  }
 }
 
 export function composeReviewActionV2InvestigationRoutes(input: {
@@ -351,6 +414,14 @@ async function open(
       scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
       pullRequestNumber: authorization.pullRequestNumber,
       trustDomain: authorization.trustDomain,
+      authorizationScopeHash: await d.digest.digestUtf8(
+        canonicalJson({
+          workspaceId: authorization.workspaceId,
+          repositoryConnectionId: authorization.repositoryConnectionId,
+          scmRepositoryIdentityId: authorization.scmRepositoryIdentityId,
+          pullRequestNumber: authorization.pullRequestNumber,
+        }),
+      ),
     },
     revision: {
       baseSha: authorization.baseSha,
@@ -640,6 +711,13 @@ function present<
     nextAction:
       readModel.nextAction as unknown as ReviewInvestigationNextAction,
     investigationCanonicalJson: canonicalJson(readModel),
+    certificateId: readModel.certificateId,
+    certificateHash: readModel.certificateHash,
+    terminalObservationCanonicalJson:
+      readModel.terminalObservationCanonicalJson,
+    terminalOutcomeHash: readModel.terminalOutcomeHash,
+    investigationConclusion:
+      readModel.conclusion as unknown as ReviewInvestigationPublishedConclusion | null,
   };
 }
 

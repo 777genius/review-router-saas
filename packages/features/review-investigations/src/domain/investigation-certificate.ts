@@ -1,5 +1,6 @@
-import type { CanonicalValue } from "./canonicalization";
+import { canonicalJson, type CanonicalValue } from "./canonicalization";
 import type { ReviewInvestigationConclusion } from "./review-investigation-types";
+import type { ContextCriticDecision } from "./review-investigation-types";
 
 export type ReviewInvestigationCertificate = Readonly<{
   certificateId: string;
@@ -20,6 +21,15 @@ export type ReviewInvestigationCertificate = Readonly<{
   findingSetHash: string;
   obligationSetHash: string;
   receiptSetHash: string;
+  scopeHash: string;
+  coverageStateHash: string;
+  contextAttestationSetHash: string;
+  turnProvenanceHash: string;
+  terminalOutcomeHash: string;
+  terminalObservationCanonicalJson: string;
+  criticAttestationId: string | null;
+  criticAttestationHash: string | null;
+  criticDecision: ContextCriticDecision | null;
   issuedAt: string;
   expiresAt: string;
 }>;
@@ -33,4 +43,10 @@ export function certificateCandidateCanonicalValue(
   candidate: ReviewInvestigationCertificateCandidate,
 ): CanonicalValue {
   return { ...candidate };
+}
+
+export function canonicalInvestigationCertificateCandidate(
+  candidate: ReviewInvestigationCertificateCandidate,
+): string {
+  return canonicalJson(certificateCandidateCanonicalValue(candidate));
 }

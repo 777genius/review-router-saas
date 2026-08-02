@@ -217,6 +217,38 @@
                       "type": "null"
                     }
                   ]
+                },
+                "terminalObservationCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalOutcomeHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "investigationConclusion": {
+                  "anyOf": [
+                    {
+                      "enum": ["verified_clean", "findings", "inconclusive"]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }

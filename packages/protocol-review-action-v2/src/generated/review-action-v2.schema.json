@@ -6994,6 +6994,62 @@
                       "type": "null"
                     }
                   ]
+                },
+                "certificateId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "certificateHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalObservationCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalOutcomeHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "investigationConclusion": {
+                  "anyOf": [
+                    {
+                      "enum": ["verified_clean", "findings", "inconclusive"]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -7865,6 +7921,62 @@
                       "type": "null"
                     }
                   ]
+                },
+                "certificateId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "certificateHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalObservationCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalOutcomeHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "investigationConclusion": {
+                  "anyOf": [
+                    {
+                      "enum": ["verified_clean", "findings", "inconclusive"]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -8647,6 +8759,62 @@
                     {
                       "type": "string",
                       "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "certificateId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "certificateHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalObservationCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalOutcomeHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "investigationConclusion": {
+                  "anyOf": [
+                    {
+                      "enum": ["verified_clean", "findings", "inconclusive"]
                     },
                     {
                       "type": "null"
@@ -9635,6 +9803,62 @@
                       "type": "null"
                     }
                   ]
+                },
+                "certificateId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "certificateHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalObservationCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalOutcomeHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "investigationConclusion": {
+                  "anyOf": [
+                    {
+                      "enum": ["verified_clean", "findings", "inconclusive"]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -10577,6 +10801,62 @@
                       "type": "null"
                     }
                   ]
+                },
+                "certificateId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256,
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "certificateHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalObservationCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalOutcomeHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "investigationConclusion": {
+                  "anyOf": [
+                    {
+                      "enum": ["verified_clean", "findings", "inconclusive"]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -11489,6 +11769,38 @@
                     {
                       "type": "string",
                       "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalObservationCanonicalJson": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "terminalOutcomeHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "investigationConclusion": {
+                  "anyOf": [
+                    {
+                      "enum": ["verified_clean", "findings", "inconclusive"]
                     },
                     {
                       "type": "null"
@@ -18354,6 +18666,8 @@
         "actualModel",
         "contextDependencyAttestationId",
         "contextDependencyAttestationHash",
+        "investigationCertificateId",
+        "investigationCertificateHash",
         "payloadCanonicalJson",
         "payloadHash",
         "qualityFlags",
@@ -18456,6 +18770,30 @@
             }
           ]
         },
+        "investigationCertificateId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "investigationCertificateHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "payloadCanonicalJson": {
           "type": "string",
           "minLength": 2
@@ -18511,6 +18849,42 @@
                   "type": "null"
                 },
                 "contextDependencyAttestationHash": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "required": [
+                "investigationCertificateId",
+                "investigationCertificateHash"
+              ],
+              "properties": {
+                "investigationCertificateId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+                },
+                "investigationCertificateHash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            {
+              "required": [
+                "investigationCertificateId",
+                "investigationCertificateHash"
+              ],
+              "properties": {
+                "investigationCertificateId": {
+                  "type": "null"
+                },
+                "investigationCertificateHash": {
                   "type": "null"
                 }
               }

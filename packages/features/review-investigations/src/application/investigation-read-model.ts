@@ -4,6 +4,7 @@ import {
   ReviewInvestigationState,
   ReviewInvestigationTurnPurpose,
 } from "../domain/review-investigation-types";
+import type { ReviewInvestigationConclusion } from "../domain/review-investigation-types";
 import type { ReviewInvestigation } from "../domain/review-investigation";
 import type { InvestigationTurn } from "../domain/investigation-turn";
 
@@ -22,6 +23,11 @@ export type ReviewInvestigationReadModel = Readonly<{
   nextEligibleAt: string | null;
   nextAction: ReviewInvestigationNextActionKind;
   turn: InvestigationTurn | null;
+  certificateId: string | null;
+  certificateHash: string | null;
+  terminalObservationCanonicalJson: string | null;
+  terminalOutcomeHash: string | null;
+  conclusion: ReviewInvestigationConclusion | null;
 }>;
 
 export function toInvestigationReadModel(
@@ -55,6 +61,13 @@ export function toInvestigationReadModel(
         ? ReviewInvestigationNextActionKind.AwaitCapacity
         : nextAction(investigation),
     turn: investigation.activeTurn ? { ...investigation.activeTurn } : null,
+    certificateId: investigation.certificate?.certificateId ?? null,
+    certificateHash: investigation.certificate?.certificateHash ?? null,
+    terminalObservationCanonicalJson:
+      investigation.certificate?.terminalObservationCanonicalJson ?? null,
+    terminalOutcomeHash:
+      investigation.certificate?.terminalOutcomeHash ?? null,
+    conclusion: investigation.conclusion,
   };
 }
 
@@ -81,9 +94,12 @@ function nextAction(
     case ReviewInvestigationState.ReadyToConclude:
       return ReviewInvestigationNextActionKind.Conclude;
     case ReviewInvestigationState.Concluded:
-    case ReviewInvestigationState.Inconclusive:
     case ReviewInvestigationState.Superseded:
     case ReviewInvestigationState.Expired:
       return ReviewInvestigationNextActionKind.Terminal;
+    case ReviewInvestigationState.Inconclusive:
+      return investigation.certificate === null
+        ? ReviewInvestigationNextActionKind.Conclude
+        : ReviewInvestigationNextActionKind.Terminal;
   }
 }

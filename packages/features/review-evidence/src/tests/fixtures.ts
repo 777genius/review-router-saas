@@ -168,6 +168,11 @@ export function observation(
     ProviderExecutionProfile.ContextGatewayV1
       ? "context-attestation-1"
       : null;
+  const investigationCertificateId =
+    sourceManifest.executionProfile ===
+    ProviderExecutionProfile.InvestigationGatewayV1
+      ? "investigation-certificate-1"
+      : null;
   return createReviewObservation({
     observationId: "observation-1",
     scope: scope(),
@@ -205,6 +210,9 @@ export function observation(
     contextDependencyAttestationId,
     contextDependencyAttestationHash:
       contextDependencyAttestationId === null ? null : hash("7"),
+    investigationCertificateId,
+    investigationCertificateHash:
+      investigationCertificateId === null ? null : hash("8"),
     trustDomain: ReviewTrustDomain.TrustedManaged,
     createdAtMs: nowMs,
     reuseExpiresAtMs: nowMs + 7 * dayMs,

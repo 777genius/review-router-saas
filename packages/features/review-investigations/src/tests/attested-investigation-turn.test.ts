@@ -149,6 +149,7 @@ async function createFixture() {
       scmRepositoryIdentityId: "identity-1",
       pullRequestNumber: 1,
       trustDomain: "trusted_managed",
+      authorizationScopeHash: hash("9"),
     },
     revision: {
       baseSha: "1".repeat(40),

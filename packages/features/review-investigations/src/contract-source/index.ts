@@ -15,6 +15,7 @@ export {
 
 import {
   ReviewInvestigationAbortReason,
+  ReviewInvestigationConclusion,
   ReviewInvestigationNextActionKind,
   ReviewInvestigationRuntimeProfile,
   ReviewInvestigationState,
@@ -37,6 +38,18 @@ const commonResultFields = Object.freeze([
   Object.freeze({
     name: "investigationCanonicalJson",
     type: "nullable_canonical_json",
+  }),
+  Object.freeze({ name: "certificateId", type: "nullable_identifier" }),
+  Object.freeze({ name: "certificateHash", type: "nullable_hash" }),
+  Object.freeze({
+    name: "terminalObservationCanonicalJson",
+    type: "nullable_canonical_json",
+  }),
+  Object.freeze({ name: "terminalOutcomeHash", type: "nullable_hash" }),
+  Object.freeze({
+    name: "investigationConclusion",
+    type: "nullable_enum",
+    enumTypeName: "ReviewInvestigationPublishedConclusion",
   }),
 ]);
 
@@ -78,6 +91,10 @@ export const reviewInvestigationsActionContractFragment = Object.freeze({
     Object.freeze({
       typeName: "ReviewInvestigationPublishedAbortReason",
       values: Object.freeze(Object.values(ReviewInvestigationAbortReason)),
+    }),
+    Object.freeze({
+      typeName: "ReviewInvestigationPublishedConclusion",
+      values: Object.freeze(Object.values(ReviewInvestigationConclusion)),
     }),
   ]),
   operations: Object.freeze([
@@ -279,8 +296,6 @@ export const reviewInvestigationsActionContractFragment = Object.freeze({
       resultStatusEnum: "ReviewInvestigationMutationResultStatus",
       resultFields: Object.freeze([
         ...commonResultFields,
-        Object.freeze({ name: "certificateId", type: "nullable_identifier" }),
-        Object.freeze({ name: "certificateHash", type: "nullable_hash" }),
       ]),
     }),
   ]),

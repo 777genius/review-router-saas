@@ -9,7 +9,10 @@ import {
   commitInvestigationTurn,
   proposalOriginForTurn,
 } from "../../domain/review-investigation";
-import type { InvestigationFinding } from "../../domain/investigation-turn";
+import type {
+  InvestigationFinding,
+  InvestigationTurnProvenance,
+} from "../../domain/investigation-turn";
 import type { ContextCriticDecision } from "../../domain/review-investigation-types";
 import type { InvestigationClockPort } from "../ports/clock-port";
 import type { InvestigationDigestPort } from "../ports/digest-port";
@@ -52,6 +55,7 @@ export type CommitInvestigationTurnCommand = Readonly<{
   durationMs: number;
   acceptedAttestationId?: string | null;
   sanitizedOutcomeHash?: string | null;
+  provenance?: InvestigationTurnProvenance | null;
 }>;
 
 export class CommitInvestigationTurn {
@@ -110,6 +114,7 @@ export class CommitInvestigationTurn {
         criticDecision: command.criticDecision,
         usageTokens: command.usageTokens,
         durationMs: command.durationMs,
+        provenance: command.provenance ?? null,
       },
       committedAt: this.clock.now().toISOString(),
     });

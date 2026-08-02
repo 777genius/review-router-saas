@@ -149,6 +149,22 @@ export class CommitAttestedInvestigationTurn {
       durationMs: command.observation.durationMs,
       acceptedAttestationId: command.acceptedAttestationId,
       sanitizedOutcomeHash: command.turnObservationHash,
+      provenance: {
+        turnId: command.turnId,
+        purpose: command.observation.purpose,
+        actualProviderKind: command.observation.actualProviderKind,
+        actualModel: command.observation.actualModel,
+        runtimeProfile: command.observation.runtimeProfile,
+        inputTokens: command.observation.usage.inputTokens,
+        cachedInputTokens: command.observation.usage.cachedInputTokens,
+        outputTokens: command.observation.usage.outputTokens,
+        reasoningOutputTokens: command.observation.usage.reasoningOutputTokens,
+        totalTokens: command.observation.usage.totalTokens,
+        durationMs: command.observation.durationMs,
+        acceptedAttestationId: command.acceptedAttestationId,
+        acceptedAttestationHash: command.acceptedAttestationHash,
+        terminalOutcomeHash,
+      },
     };
     return this.commit.execute(commitCommand);
   }

@@ -168,6 +168,7 @@ describeDatabase("PrismaInvestigationStore PostgreSQL invariants", () => {
           criticDecision: null,
           usageTokens: 10,
           durationMs: 10,
+          provenance: null,
         },
         committedAt: "2026-08-02T10:03:00.000Z",
       });

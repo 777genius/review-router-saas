@@ -14,7 +14,10 @@ import type {
   RegisterReviewRunControlV2RoutesDependencies,
   RegisterReviewSnapshotReadV2RoutesDependencies,
 } from "@reviewrouter/features-action-control-plane/v2";
-import { PrismaInvestigationStore } from "@reviewrouter/features-review-investigations/composition";
+import {
+  NodeSha256InvestigationDigest,
+  PrismaInvestigationStore,
+} from "@reviewrouter/features-review-investigations/composition";
 import { ReviewActionV2RouteFailure } from "@reviewrouter/features-action-control-plane/v2";
 import {
   ActualModelCompatibilityMode,
@@ -131,12 +134,14 @@ import { composeReviewActionV2SnapshotPublicationRoutes } from "./review-action-
 import {
   ProductionInvestigationExecutionAuthority,
   ProductionInvestigationTurnEvidence,
+  ReviewEvidenceInvestigationTerminalProjection,
   composeReviewActionV2InvestigationRoutes,
   composeReviewInvestigationUseCases,
 } from "./review-action-v2-investigation-composition.js";
 import { OctokitCodexRotatingGitHubSecretGateway } from "./github/octokit-codex-rotating-github-secret-gateway.js";
 import { ProductionReviewMutationAuthorityProofFacts } from "./review-action-v2-mutation-proof-facts.js";
 import { OctokitReviewV2DispatchCapabilityInspector } from "./github/octokit-review-v2-dispatch-capability-inspector.js";
+import { ReviewInvestigationCertificateVerificationAdapter } from "./review-investigation-certificate-verification-adapter.js";
 
 export const reviewActionV2CapabilityActiveKeyIdEnv =
   "REVIEW_ROUTER_REVIEW_V2_CAPABILITY_ACTIVE_KEY_ID";
@@ -154,6 +159,8 @@ export const reviewActionV2WorkflowDispatchReadyEnv =
   "REVIEW_ROUTER_REVIEW_V2_WORKFLOW_DISPATCH_READY";
 export const reviewInvestigationRecordingEnabledEnv =
   "REVIEW_ROUTER_REVIEW_INVESTIGATION_RECORDING_ENABLED";
+export const reviewInvestigationShadowEnabledEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED";
 
 type ReviewActionV2RouteRuntime = Pick<
   RegisterReviewRunControlV2RoutesDependencies,
@@ -392,6 +399,9 @@ export function composeReviewActionV2ProductionRoutes(input: {
   const contextAttestationStore = new PrismaContextAttestationStore(
     input.prisma,
   );
+  const investigationStore = new PrismaInvestigationStore(input.prisma, {
+    operationalRetentionMs: productionTiming.retentionDurationMs,
+  });
   const contextAttestationVerifier = new VerifyAcceptedContextAttestation({
     store: contextAttestationStore,
     clock: { nowMs: () => clock.now().getTime() },
@@ -421,6 +431,13 @@ export function composeReviewActionV2ProductionRoutes(input: {
     contextAttestations: new ReviewContextAttestationEvidenceAdapter(
       contextAttestationVerifier,
     ),
+    investigationCertificates:
+      new ReviewInvestigationCertificateVerificationAdapter(
+        investigationStore,
+        new NodeSha256InvestigationDigest(),
+      ),
+    investigationCertificateAcceptanceEnabled:
+      input.env[reviewInvestigationShadowEnabledEnv] === "1",
     digest,
     clock: { nowMs: () => clock.now().getTime() },
     reuseTtlMs: productionTiming.evidenceReuseTtlMs,
@@ -545,9 +562,6 @@ export function composeReviewActionV2ProductionRoutes(input: {
     contextPolicy: contextReplay,
     now: () => clock.now(),
   });
-  const investigationStore = new PrismaInvestigationStore(input.prisma, {
-    operationalRetentionMs: productionTiming.retentionDurationMs,
-  });
   const investigation = composeReviewActionV2InvestigationRoutes({
     enabled: input.env[reviewInvestigationRecordingEnabledEnv] === "1",
     runtime: input.runtime,
@@ -566,6 +580,9 @@ export function composeReviewActionV2ProductionRoutes(input: {
           () => clock.now(),
         ),
         clock,
+        terminalProjection: new ReviewEvidenceInvestigationTerminalProjection(
+          digest,
+        ),
       }),
       capabilities,
       digest,

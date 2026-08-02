@@ -49,6 +49,9 @@ export interface InvestigationStorePort {
   findByNaturalIdentity(
     naturalIdentityHash: string,
   ): Promise<ReviewInvestigation | null>;
+  findByCertificateId(
+    certificateId: string,
+  ): Promise<ReviewInvestigation | null>;
   commit(input: {
     readonly investigation: ReviewInvestigation;
     readonly expectedVersion: number | null;

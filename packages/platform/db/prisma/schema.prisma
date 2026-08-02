@@ -767,6 +767,8 @@ model ReviewEvidenceObservation {
   transportAttemptCount            Int
   contextDependencyAttestationId   String?
   contextDependencyAttestationHash String?
+  investigationCertificateId       String?
+  investigationCertificateHash     String?
   createdAt                        DateTime
   reuseExpiresAt                   DateTime
   retainUntil                      DateTime
@@ -778,6 +780,7 @@ model ReviewEvidenceObservation {
   @@index([retainUntil, observationId])
   @@index([sourceExecutionId])
   @@index([contextDependencyAttestationId])
+  @@index([investigationCertificateId])
 }
 
 model ReviewContextGatewaySession {
@@ -1099,6 +1102,7 @@ model ReviewInvestigation {
   scmRepositoryIdentityId     String
   pullRequestNumber           Int
   trustDomain                 String
+  authorizationScopeHash     String?
   baseSha                     String
   mergeBaseSha                String
   headSha                     String
@@ -1124,6 +1128,9 @@ model ReviewInvestigation {
   expansionDepth              Int                                  @default(0)
   criticCycles                Int                                  @default(0)
   criticDecision              ReviewInvestigationCriticDecisionV1?
+  totalUsageTokens            BigInt                               @default(0)
+  totalDurationMs             BigInt                               @default(0)
+  turnProvenance              Json
   conclusion                  ReviewInvestigationConclusionV1?
   certificateId               String?                              @unique(map: "ReviewInvestigation_certificateId_key")
   dossierDigest               String
@@ -1248,6 +1255,15 @@ model ReviewInvestigationCertificate {
   findingSetHash          String
   obligationSetHash       String
   receiptSetHash          String
+  scopeHash               String?
+  coverageStateHash       String?
+  contextAttestationSetHash String?
+  turnProvenanceHash      String?
+  terminalOutcomeHash     String?
+  terminalObservationCanonicalJson String?
+  criticAttestationId     String?
+  criticAttestationHash   String?
+  criticDecision          ReviewInvestigationCriticDecisionV1?
   issuedAt                DateTime
   expiresAt               DateTime
 

@@ -6,6 +6,7 @@ import {
   ContextCriticDecision,
   InvestigationObligationKind,
   InvestigationReceiptKind,
+  InvestigationTurnProviderKind,
   OpenReviewInvestigation,
   PlanNextInvestigationTurn,
   RestoreReviewInvestigation,
@@ -97,6 +98,7 @@ describe("review investigation in-memory vertical slice", () => {
       criticDecision: null,
       usageTokens: 1_200,
       durationMs: 5_000,
+      provenance: provenance(discovery, 1_200, 5_000),
     };
     const awaitingCritic = await harness.commit.execute(discoveryCommand);
     expect(awaitingCritic.state).toBe(ReviewInvestigationState.AwaitingCritic);
@@ -123,6 +125,7 @@ describe("review investigation in-memory vertical slice", () => {
       criticDecision: ContextCriticDecision.Accept,
       usageTokens: 500,
       durationMs: 2_000,
+      provenance: provenance(critic, 500, 2_000),
     });
     expect(ready.state).toBe(ReviewInvestigationState.ReadyToConclude);
 
@@ -138,6 +141,45 @@ describe("review investigation in-memory vertical slice", () => {
     expect(snapshot.conclusion).toBe(ReviewInvestigationConclusion.VerifiedClean);
     expect(snapshot.certificate?.certificateHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(snapshot.certificate?.dossierDigest).toBe(ready.dossierDigest);
+    expect(snapshot.certificate?.terminalOutcomeHash).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(snapshot.certificate?.turnProvenanceHash).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(snapshot.certificate?.criticDecision).toBe(
+      ContextCriticDecision.Accept,
+    );
+  });
+
+  it("rejects a contradictory critic accept that proposes more work", async () => {
+    const harness = createHarness();
+    const opened = await harness.open.execute(openCommand("open-critic-conflict"));
+    const discovery = await planDiscovery(harness, opened);
+    const awaitingCritic = await harness.commit.execute({
+      ...emptyCommit(discovery, "commit-before-critic-conflict"),
+      closureClaims: [{
+        obligationId: discovery.turn!.obligationIds[0]!,
+        receipt: receipt("receipt-before-critic-conflict", changedSubject),
+      }],
+    });
+    const critic = await harness.plan.execute({
+      commandId: "plan-critic-conflict",
+      investigationId: opened.investigationId,
+      expectedVersion: awaitingCritic.version,
+      leaseDurationMs: 60_000,
+      maxObligationsForTurn: 10,
+    });
+    await expect(harness.commit.execute({
+      ...emptyCommit(critic, "commit-critic-conflict"),
+      criticDecision: ContextCriticDecision.Accept,
+      proposals: [{
+        kind: InvestigationObligationKind.DirectCaller,
+        canonicalSubject: "src/caller.ts",
+        canonicalRequirement: "inspect caller",
+        riskPriority: 90,
+      }],
+    })).rejects.toThrow("critic_output_contradictory");
   });
 
   it("concludes with findings only after supporting evidence closes coverage", async () => {
@@ -191,10 +233,19 @@ describe("review investigation in-memory vertical slice", () => {
     expect(result).toMatchObject({
       state: ReviewInvestigationState.Inconclusive,
       openObligationCount: 1,
-      nextAction: ReviewInvestigationNextActionKind.Terminal,
+      nextAction: ReviewInvestigationNextActionKind.Conclude,
+    });
+    await harness.conclude.execute({
+      commandId: "certify-inconclusive",
+      investigationId: opened.investigationId,
+      expectedVersion: result.version,
+      certificateTtlMs: 86_400_000,
     });
     const snapshot = await harness.restore.snapshot(opened.investigationId);
     expect(snapshot.conclusion).toBe(ReviewInvestigationConclusion.Inconclusive);
+    expect(snapshot.certificate?.conclusion).toBe(
+      ReviewInvestigationConclusion.Inconclusive,
+    );
   });
 
   it("parks capacity failures without consuming semantic turns or tight-looping", async () => {
@@ -331,7 +382,29 @@ function createHarness(customPolicy: ReviewInvestigationPolicy = policy) {
     plan: new PlanNextInvestigationTurn(store, authority, digest, clock),
     commit: new CommitInvestigationTurn(store, authority, digest, clock),
     abort: new AbortInvestigationTurn(store, digest, clock),
-    conclude: new ConcludeReviewInvestigation(store, authority, digest, clock),
+    conclude: new ConcludeReviewInvestigation(
+      store,
+      authority,
+      digest,
+      clock,
+      {
+        project: async (investigation) => {
+          const canonicalJson = JSON.stringify({
+            findings: investigation.findings,
+            totalUsageTokens: investigation.totalUsageTokens,
+          });
+          return {
+            canonicalJson,
+            terminalOutcomeHash: await digest.digestUtf8(canonicalJson),
+            conclusion:
+              investigation.conclusion ??
+              (investigation.findings.length > 0
+                ? ReviewInvestigationConclusion.Findings
+                : ReviewInvestigationConclusion.VerifiedClean),
+          };
+        },
+      },
+    ),
   };
 }
 
@@ -347,6 +420,7 @@ function openCommand(
       scmRepositoryIdentityId: "scm-test",
       pullRequestNumber: 42,
       trustDomain: "trusted-local",
+      authorizationScopeHash: "e".repeat(64),
     },
     revision: {
       baseSha: "1".repeat(40),
@@ -416,7 +490,31 @@ function emptyCommit(
     criticDecision: null,
     usageTokens: 100,
     durationMs: 100,
+    provenance: provenance(planned, 100, 100),
   };
+}
+
+function provenance(
+  planned: Awaited<ReturnType<PlanNextInvestigationTurn["execute"]>>,
+  totalTokens: number,
+  durationMs: number,
+) {
+  return {
+    turnId: planned.turn!.turnId,
+    purpose: planned.turn!.purpose,
+    actualProviderKind: InvestigationTurnProviderKind.Codex,
+    actualModel: "gpt-test",
+    runtimeProfile: ReviewInvestigationRuntimeProfile.GatewayAttestedAgentV1,
+    inputTokens: totalTokens,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens,
+    durationMs,
+    acceptedAttestationId: `attestation-${planned.turn!.turnId}`,
+    acceptedAttestationHash: "b".repeat(64),
+    terminalOutcomeHash: "c".repeat(64),
+  } as const;
 }
 
 function receipt(receiptId: string, canonicalSubject: string) {

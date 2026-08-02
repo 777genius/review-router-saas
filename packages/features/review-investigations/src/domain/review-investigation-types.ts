@@ -96,6 +96,11 @@ export enum ReviewInvestigationTurnPurpose {
   Critic = "critic",
 }
 
+export enum InvestigationTurnProviderKind {
+  Codex = "codex",
+  ClaudeCode = "claude_code",
+}
+
 export enum ReviewInvestigationNextActionKind {
   RunTurn = "run_turn",
   RunCritic = "run_critic",

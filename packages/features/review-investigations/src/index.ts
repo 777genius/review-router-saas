@@ -14,6 +14,7 @@ export * from "./application/ports/execution-authority-port";
 export * from "./application/ports/investigation-store-port";
 export * from "./application/ports/investigation-private-material-ports";
 export * from "./application/ports/investigation-turn-evidence-port";
+export * from "./application/ports/investigation-terminal-projection-port";
 export * from "./application/use-cases/open-review-investigation";
 export * from "./application/use-cases/restore-review-investigation";
 export * from "./application/use-cases/plan-next-investigation-turn";

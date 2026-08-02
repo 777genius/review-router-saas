@@ -33,6 +33,8 @@ import {
   type InvestigationTurn,
   type InvestigationTurnAbort,
   type InvestigationTurnCommit,
+  type InvestigationTurnProvenance,
+  turnProvenanceCanonicalValue,
 } from "./investigation-turn";
 import {
   ContextCriticDecision,
@@ -68,6 +70,9 @@ export type ReviewInvestigation = Readonly<{
   expansionDepth: number;
   criticCycles: number;
   criticDecision: ContextCriticDecision | null;
+  totalUsageTokens: number;
+  totalDurationMs: number;
+  turnProvenance: readonly InvestigationTurnProvenance[];
   conclusion: ReviewInvestigationConclusion | null;
   certificate: ReviewInvestigationCertificate | null;
   dossierDigest: string;
@@ -87,6 +92,9 @@ export function createReviewInvestigation(input: Omit<
   | "expansionDepth"
   | "criticCycles"
   | "criticDecision"
+  | "totalUsageTokens"
+  | "totalDurationMs"
+  | "turnProvenance"
   | "conclusion"
   | "certificate"
   | "nextEligibleAt"
@@ -121,6 +129,9 @@ export function createReviewInvestigation(input: Omit<
     expansionDepth: 0,
     criticCycles: 0,
     criticDecision: null,
+    totalUsageTokens: 0,
+    totalDurationMs: 0,
+    turnProvenance: [],
     conclusion: null,
     certificate: null,
     nextEligibleAt: null,
@@ -202,6 +213,8 @@ export function commitInvestigationTurn(input: {
   ) {
     throw new ReviewInvestigationDomainError("critic_veto_evidence_required");
   }
+  validateCriticOutput(turn.purpose, input.commit);
+  validateTurnProvenance(current, turn, input.commit);
   let obligations = [...current.obligations];
   for (const claim of input.commit.closureClaims) {
     obligations = replaceObligation(
@@ -264,6 +277,11 @@ export function commitInvestigationTurn(input: {
       turn.purpose === ReviewInvestigationTurnPurpose.Critic
         ? input.commit.criticDecision
         : current.criticDecision,
+    totalUsageTokens: current.totalUsageTokens + input.commit.usageTokens,
+    totalDurationMs: current.totalDurationMs + input.commit.durationMs,
+    turnProvenance: input.commit.provenance
+      ? [...current.turnProvenance, { ...input.commit.provenance }]
+      : current.turnProvenance,
     state: current.state,
     updatedAt: input.committedAt,
   };
@@ -333,17 +351,23 @@ export function concludeReviewInvestigation(input: {
 }): ReviewInvestigation {
   const current = input.investigation;
   if (
-    current.state !== ReviewInvestigationState.ReadyToConclude ||
+    ![
+      ReviewInvestigationState.ReadyToConclude,
+      ReviewInvestigationState.Inconclusive,
+    ].includes(current.state) ||
     current.activeTurn !== null ||
+    current.certificate !== null ||
     input.certificate.investigationId !== current.investigationId ||
     input.certificate.investigationVersion !== current.version
   ) {
     throw new ReviewInvestigationDomainError("investigation_conclusion_invalid");
   }
   const conclusion =
-    current.findings.length > 0
-      ? ReviewInvestigationConclusion.Findings
-      : ReviewInvestigationConclusion.VerifiedClean;
+    current.state === ReviewInvestigationState.Inconclusive
+      ? ReviewInvestigationConclusion.Inconclusive
+      : current.findings.length > 0
+        ? ReviewInvestigationConclusion.Findings
+        : ReviewInvestigationConclusion.VerifiedClean;
   if (
     conclusion === ReviewInvestigationConclusion.VerifiedClean &&
     current.criticDecision !== ContextCriticDecision.Accept
@@ -356,7 +380,10 @@ export function concludeReviewInvestigation(input: {
   return {
     ...current,
     version: current.version + 1,
-    state: ReviewInvestigationState.Concluded,
+    state:
+      conclusion === ReviewInvestigationConclusion.Inconclusive
+        ? ReviewInvestigationState.Inconclusive
+        : ReviewInvestigationState.Concluded,
     conclusion,
     certificate: { ...input.certificate },
     updatedAt: input.concludedAt,
@@ -393,6 +420,11 @@ export function investigationDossierCanonicalValue(
     expansionDepth: investigation.expansionDepth,
     criticCycles: investigation.criticCycles,
     criticDecision: investigation.criticDecision,
+    totalUsageTokens: investigation.totalUsageTokens,
+    totalDurationMs: investigation.totalDurationMs,
+    turnProvenance: investigation.turnProvenance.map(
+      turnProvenanceCanonicalValue,
+    ),
     conclusion: investigation.conclusion,
     certificateHash: investigation.certificate?.certificateHash ?? null,
     nextEligibleAt: investigation.nextEligibleAt,
@@ -489,6 +521,47 @@ function validateTurnBounds(
     commit.durationMs < 0
   ) {
     throw new ReviewInvestigationDomainError("turn_bounds_exceeded");
+  }
+}
+
+function validateCriticOutput(
+  purpose: ReviewInvestigationTurnPurpose,
+  commit: InvestigationTurnCommit,
+): void {
+  if (purpose !== ReviewInvestigationTurnPurpose.Critic) return;
+  if (
+    commit.closureClaims.length > 0 ||
+    commit.unresolvableDecisions.length > 0 ||
+    (commit.criticDecision === ContextCriticDecision.Accept &&
+      (commit.proposedObligations.length > 0 || commit.findings.length > 0)) ||
+    (commit.criticDecision === ContextCriticDecision.Abstain &&
+      (commit.proposedObligations.length > 0 || commit.findings.length > 0))
+  ) {
+    throw new ReviewInvestigationDomainError("critic_output_contradictory");
+  }
+}
+
+function validateTurnProvenance(
+  investigation: ReviewInvestigation,
+  turn: InvestigationTurn,
+  commit: InvestigationTurnCommit,
+): void {
+  const provenance = commit.provenance;
+  if (provenance === null) return;
+  if (
+    provenance.turnId !== turn.turnId ||
+    provenance.purpose !== turn.purpose ||
+    provenance.runtimeProfile !== investigation.runtimeProfile ||
+    provenance.totalTokens !== commit.usageTokens ||
+    provenance.durationMs !== commit.durationMs ||
+    provenance.totalTokens !==
+      provenance.inputTokens +
+        provenance.outputTokens +
+        provenance.reasoningOutputTokens ||
+    provenance.cachedInputTokens > provenance.inputTokens ||
+    investigation.turnProvenance.some((item) => item.turnId === turn.turnId)
+  ) {
+    throw new ReviewInvestigationDomainError("turn_provenance_invalid");
   }
 }
 
