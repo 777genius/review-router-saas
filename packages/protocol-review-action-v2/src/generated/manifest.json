@@ -1,9 +1,9 @@
 {
   "contractSourceVersion": 1,
   "protocolVersion": "2",
-  "schemaDigest": "47f75e597fcdfb3e4bb81cb1dc0ca542fcaf2afaa2583cd298c5baa08c292672",
-  "goldenFixtureDigest": "350be1cfd3931cb85df896ed6f04b565ce436ff11d4ad0eca9ff074d6fc6c8ee",
-  "canonicalizerDigest": "bddff10721f69d688eadf21c54d689ae657d53c498e8eb4478ff3d566def74a1",
+  "schemaDigest": "5f81380522a0830d96ff280e1f825b09e8e6a62c96258380132489e6812d4038",
+  "goldenFixtureDigest": "6dffaa4a6ae3ca04bfa05eb8580c72b0967d6825c271ed2df5f6d793b99acc20",
+  "canonicalizerDigest": "369414747d438f5766a637eb6f890d4c0c548ab53e97d3b94acf7cbd767bf036",
   "canonicalizerGoldenFixtureDigest": "9f638db73ec3696da7f3aa842ed10b7cf7c466986dfbd45b1a602e3b08d75c57",
   "negotiationBridge": {
     "operationId": "review_run_authorize",
@@ -564,6 +564,489 @@
       "transportAudience": "review_action_v2",
       "defaultTimeoutMs": 10000,
       "bodyLimitBytes": 524288,
+      "successStatuses": [200, 201],
+      "statusMapping": [
+        {
+          "errorCode": "invalid_request",
+          "retryClass": "never",
+          "httpStatus": 400
+        },
+        {
+          "errorCode": "invalid_authentication",
+          "retryClass": "never",
+          "httpStatus": 401
+        },
+        {
+          "errorCode": "forbidden",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "capability_disabled",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "not_found",
+          "retryClass": "never",
+          "httpStatus": 404
+        },
+        {
+          "errorCode": "idempotency_conflict",
+          "retryClass": "never",
+          "httpStatus": 409
+        },
+        {
+          "errorCode": "resource_gone",
+          "retryClass": "never",
+          "httpStatus": 410
+        },
+        {
+          "errorCode": "stale_precondition",
+          "retryClass": "never",
+          "httpStatus": 412
+        },
+        {
+          "errorCode": "limit_exceeded",
+          "retryClass": "never",
+          "httpStatus": 413
+        },
+        {
+          "errorCode": "invariant_violation",
+          "retryClass": "never",
+          "httpStatus": 422
+        },
+        {
+          "errorCode": "capacity_limited",
+          "retryClass": "same_request",
+          "httpStatus": 429
+        },
+        {
+          "errorCode": "ambiguous_outcome",
+          "retryClass": "same_request",
+          "httpStatus": 500
+        }
+      ]
+    },
+    {
+      "operationId": "review_investigation_open",
+      "boundedContext": "review_investigations",
+      "method": "POST",
+      "path": "/api/action/v2/review-investigations/open",
+      "callerAuthority": "run_authorization",
+      "mutability": "command",
+      "naturalIdempotencyPreimage": [
+        "execution_id",
+        "work_slot_id",
+        "review_revision_hash",
+        "stable_review_unit_key",
+        "provider_vote_lane_id",
+        "coverage_contract_hash",
+        "runtime_profile_version"
+      ],
+      "semanticRetryClass": "same_request",
+      "transportAudience": "review_action_v2",
+      "defaultTimeoutMs": 10000,
+      "bodyLimitBytes": 524288,
+      "successStatuses": [200, 201],
+      "statusMapping": [
+        {
+          "errorCode": "invalid_request",
+          "retryClass": "never",
+          "httpStatus": 400
+        },
+        {
+          "errorCode": "invalid_authentication",
+          "retryClass": "never",
+          "httpStatus": 401
+        },
+        {
+          "errorCode": "forbidden",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "capability_disabled",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "not_found",
+          "retryClass": "never",
+          "httpStatus": 404
+        },
+        {
+          "errorCode": "idempotency_conflict",
+          "retryClass": "never",
+          "httpStatus": 409
+        },
+        {
+          "errorCode": "resource_gone",
+          "retryClass": "never",
+          "httpStatus": 410
+        },
+        {
+          "errorCode": "stale_precondition",
+          "retryClass": "never",
+          "httpStatus": 412
+        },
+        {
+          "errorCode": "limit_exceeded",
+          "retryClass": "never",
+          "httpStatus": 413
+        },
+        {
+          "errorCode": "invariant_violation",
+          "retryClass": "never",
+          "httpStatus": 422
+        },
+        {
+          "errorCode": "capacity_limited",
+          "retryClass": "same_request",
+          "httpStatus": 429
+        },
+        {
+          "errorCode": "ambiguous_outcome",
+          "retryClass": "same_request",
+          "httpStatus": 500
+        }
+      ]
+    },
+    {
+      "operationId": "review_investigation_restore",
+      "boundedContext": "review_investigations",
+      "method": "POST",
+      "path": "/api/action/v2/review-investigations/restore",
+      "callerAuthority": "run_authorization",
+      "mutability": "read",
+      "naturalIdempotencyPreimage": [
+        "authorization_id",
+        "investigation_id",
+        "review_revision_hash"
+      ],
+      "semanticRetryClass": "read_only",
+      "transportAudience": "review_action_v2",
+      "defaultTimeoutMs": 5000,
+      "bodyLimitBytes": 32768,
+      "successStatuses": [200],
+      "statusMapping": [
+        {
+          "errorCode": "invalid_request",
+          "retryClass": "never",
+          "httpStatus": 400
+        },
+        {
+          "errorCode": "invalid_authentication",
+          "retryClass": "never",
+          "httpStatus": 401
+        },
+        {
+          "errorCode": "forbidden",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "capability_disabled",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "not_found",
+          "retryClass": "never",
+          "httpStatus": 404
+        },
+        {
+          "errorCode": "resource_gone",
+          "retryClass": "never",
+          "httpStatus": 410
+        },
+        {
+          "errorCode": "stale_precondition",
+          "retryClass": "never",
+          "httpStatus": 412
+        },
+        {
+          "errorCode": "limit_exceeded",
+          "retryClass": "never",
+          "httpStatus": 413
+        },
+        {
+          "errorCode": "capacity_limited",
+          "retryClass": "same_request",
+          "httpStatus": 429
+        },
+        {
+          "errorCode": "service_unavailable",
+          "retryClass": "read_only",
+          "httpStatus": 503
+        }
+      ]
+    },
+    {
+      "operationId": "review_investigation_turn_plan",
+      "boundedContext": "review_investigations",
+      "method": "POST",
+      "path": "/api/action/v2/review-investigations/turns/plan",
+      "callerAuthority": "run_authorization",
+      "mutability": "command",
+      "naturalIdempotencyPreimage": [
+        "investigation_id",
+        "expected_version",
+        "dossier_digest",
+        "turn_budget_hash"
+      ],
+      "semanticRetryClass": "same_request",
+      "transportAudience": "review_action_v2",
+      "defaultTimeoutMs": 10000,
+      "bodyLimitBytes": 65536,
+      "successStatuses": [200, 201, 202],
+      "statusMapping": [
+        {
+          "errorCode": "invalid_request",
+          "retryClass": "never",
+          "httpStatus": 400
+        },
+        {
+          "errorCode": "invalid_authentication",
+          "retryClass": "never",
+          "httpStatus": 401
+        },
+        {
+          "errorCode": "forbidden",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "capability_disabled",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "not_found",
+          "retryClass": "never",
+          "httpStatus": 404
+        },
+        {
+          "errorCode": "idempotency_conflict",
+          "retryClass": "never",
+          "httpStatus": 409
+        },
+        {
+          "errorCode": "resource_gone",
+          "retryClass": "never",
+          "httpStatus": 410
+        },
+        {
+          "errorCode": "stale_precondition",
+          "retryClass": "never",
+          "httpStatus": 412
+        },
+        {
+          "errorCode": "limit_exceeded",
+          "retryClass": "never",
+          "httpStatus": 413
+        },
+        {
+          "errorCode": "invariant_violation",
+          "retryClass": "never",
+          "httpStatus": 422
+        },
+        {
+          "errorCode": "capacity_limited",
+          "retryClass": "same_request",
+          "httpStatus": 429
+        },
+        {
+          "errorCode": "ambiguous_outcome",
+          "retryClass": "same_request",
+          "httpStatus": 500
+        }
+      ]
+    },
+    {
+      "operationId": "review_investigation_turn_commit",
+      "boundedContext": "review_investigations",
+      "method": "POST",
+      "path": "/api/action/v2/review-investigations/turns/commit",
+      "callerAuthority": "run_authorization_and_lease_capability",
+      "mutability": "command",
+      "naturalIdempotencyPreimage": [
+        "investigation_id",
+        "expected_version",
+        "turn_id",
+        "source_lease_id",
+        "fencing_token",
+        "turn_observation_hash",
+        "accepted_attestation_hash"
+      ],
+      "semanticRetryClass": "same_request",
+      "transportAudience": "review_action_v2",
+      "defaultTimeoutMs": 15000,
+      "bodyLimitBytes": 2097152,
+      "successStatuses": [200, 201, 202],
+      "statusMapping": [
+        {
+          "errorCode": "invalid_request",
+          "retryClass": "never",
+          "httpStatus": 400
+        },
+        {
+          "errorCode": "invalid_authentication",
+          "retryClass": "never",
+          "httpStatus": 401
+        },
+        {
+          "errorCode": "forbidden",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "capability_disabled",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "not_found",
+          "retryClass": "never",
+          "httpStatus": 404
+        },
+        {
+          "errorCode": "idempotency_conflict",
+          "retryClass": "never",
+          "httpStatus": 409
+        },
+        {
+          "errorCode": "resource_gone",
+          "retryClass": "never",
+          "httpStatus": 410
+        },
+        {
+          "errorCode": "stale_precondition",
+          "retryClass": "never",
+          "httpStatus": 412
+        },
+        {
+          "errorCode": "limit_exceeded",
+          "retryClass": "never",
+          "httpStatus": 413
+        },
+        {
+          "errorCode": "invariant_violation",
+          "retryClass": "never",
+          "httpStatus": 422
+        },
+        {
+          "errorCode": "capacity_limited",
+          "retryClass": "same_request",
+          "httpStatus": 429
+        },
+        {
+          "errorCode": "ambiguous_outcome",
+          "retryClass": "same_request",
+          "httpStatus": 500
+        }
+      ]
+    },
+    {
+      "operationId": "review_investigation_turn_abort",
+      "boundedContext": "review_investigations",
+      "method": "POST",
+      "path": "/api/action/v2/review-investigations/turns/abort",
+      "callerAuthority": "run_authorization_and_lease_capability",
+      "mutability": "command",
+      "naturalIdempotencyPreimage": [
+        "investigation_id",
+        "expected_version",
+        "turn_id",
+        "source_lease_id",
+        "fencing_token",
+        "abort_reason"
+      ],
+      "semanticRetryClass": "same_request",
+      "transportAudience": "review_action_v2",
+      "defaultTimeoutMs": 10000,
+      "bodyLimitBytes": 65536,
+      "successStatuses": [200, 202],
+      "statusMapping": [
+        {
+          "errorCode": "invalid_request",
+          "retryClass": "never",
+          "httpStatus": 400
+        },
+        {
+          "errorCode": "invalid_authentication",
+          "retryClass": "never",
+          "httpStatus": 401
+        },
+        {
+          "errorCode": "forbidden",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "capability_disabled",
+          "retryClass": "never",
+          "httpStatus": 403
+        },
+        {
+          "errorCode": "not_found",
+          "retryClass": "never",
+          "httpStatus": 404
+        },
+        {
+          "errorCode": "idempotency_conflict",
+          "retryClass": "never",
+          "httpStatus": 409
+        },
+        {
+          "errorCode": "resource_gone",
+          "retryClass": "never",
+          "httpStatus": 410
+        },
+        {
+          "errorCode": "stale_precondition",
+          "retryClass": "never",
+          "httpStatus": 412
+        },
+        {
+          "errorCode": "limit_exceeded",
+          "retryClass": "never",
+          "httpStatus": 413
+        },
+        {
+          "errorCode": "invariant_violation",
+          "retryClass": "never",
+          "httpStatus": 422
+        },
+        {
+          "errorCode": "capacity_limited",
+          "retryClass": "same_request",
+          "httpStatus": 429
+        },
+        {
+          "errorCode": "ambiguous_outcome",
+          "retryClass": "same_request",
+          "httpStatus": 500
+        }
+      ]
+    },
+    {
+      "operationId": "review_investigation_conclude",
+      "boundedContext": "review_investigations",
+      "method": "POST",
+      "path": "/api/action/v2/review-investigations/conclude",
+      "callerAuthority": "run_authorization",
+      "mutability": "command",
+      "naturalIdempotencyPreimage": [
+        "investigation_id",
+        "expected_version",
+        "dossier_digest",
+        "certificate_ttl_ms"
+      ],
+      "semanticRetryClass": "same_request",
+      "transportAudience": "review_action_v2",
+      "defaultTimeoutMs": 10000,
+      "bodyLimitBytes": 65536,
       "successStatuses": [200, 201],
       "statusMapping": [
         {

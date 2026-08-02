@@ -145,6 +145,7 @@ export const providerInvocationManifestV1CanonicalizerDescriptor = {
         "prompt_only_envelope_v1",
         "agentic_unbounded_v1",
         "context_gateway_v1",
+        "investigation_gateway_v1",
       ],
       unknownValue: "unknown",
       unknownErrorCode: "provider_execution_profile_unknown",
@@ -328,7 +329,8 @@ export type ProviderInvocationManifestV1 = Readonly<{
   readonly executionProfile:
     | "prompt_only_envelope_v1"
     | "agentic_unbounded_v1"
-    | "context_gateway_v1";
+    | "context_gateway_v1"
+    | "investigation_gateway_v1";
   readonly baseTreeHash: string | null;
   readonly environmentContractHash: string;
 }>;

@@ -754,6 +754,15 @@ importers:
         specifier: workspace:*
         version: link:../../platform/db
 
+  packages/features/review-investigations:
+    dependencies:
+      '@prisma/client':
+        specifier: 7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(typescript@6.0.3))(typescript@6.0.3)
+      '@reviewrouter/platform-db':
+        specifier: workspace:*
+        version: link:../../platform/db
+
   packages/features/review-processes:
     dependencies:
       '@prisma/client':

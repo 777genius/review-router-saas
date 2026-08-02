@@ -1,0 +1,66 @@
+export type CanonicalValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly CanonicalValue[]
+  | { readonly [key: string]: CanonicalValue };
+
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new ReviewInvestigationDomainError("non_finite_canonical_number");
+    }
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (typeof value !== "object") {
+    throw new ReviewInvestigationDomainError("unsupported_canonical_value");
+  }
+  const record = value as Readonly<Record<string, unknown>>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+export function assertIdentifier(value: string, field: string): void {
+  if (
+    value.length < 1 ||
+    value.length > 512 ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new ReviewInvestigationDomainError(`${field}_invalid`);
+  }
+}
+
+export function assertDigest(value: string, field: string): void {
+  if (!/^[a-f0-9]{64}$/u.test(value)) {
+    throw new ReviewInvestigationDomainError(`${field}_invalid`);
+  }
+}
+
+export function assertNonNegativeInteger(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ReviewInvestigationDomainError(`${field}_invalid`);
+  }
+}
+
+export function assertPositiveInteger(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ReviewInvestigationDomainError(`${field}_invalid`);
+  }
+}
+
+export class ReviewInvestigationDomainError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "ReviewInvestigationDomainError";
+  }
+}

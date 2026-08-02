@@ -23,6 +23,7 @@ export enum ProviderExecutionProfile {
   PromptOnlyEnvelopeV1 = "prompt_only_envelope_v1",
   AgenticUnboundedV1 = "agentic_unbounded_v1",
   ContextGatewayV1 = "context_gateway_v1",
+  InvestigationGatewayV1 = "investigation_gateway_v1",
   Unknown = "unknown",
 }
 
@@ -44,6 +45,8 @@ export enum ReviewObservationQualityFlag {
   ContextInspectionIncomplete = "context_inspection_incomplete",
   ContextAttestationUnavailable = "context_attestation_unavailable",
   CrossRevisionReuseDisabled = "cross_revision_reuse_disabled",
+  InvestigationFindings = "investigation_findings",
+  InvestigationInconclusive = "investigation_inconclusive",
   Unknown = "unknown",
 }
 

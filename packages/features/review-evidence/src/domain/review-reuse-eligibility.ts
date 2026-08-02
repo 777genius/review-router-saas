@@ -419,6 +419,10 @@ function qualityPenalty(
         return total + 50;
       case ReviewObservationQualityFlag.CrossRevisionReuseDisabled:
         return total + 1;
+      case ReviewObservationQualityFlag.InvestigationFindings:
+        return total;
+      case ReviewObservationQualityFlag.InvestigationInconclusive:
+        return total + 100;
       case ReviewObservationQualityFlag.Unknown:
         return total + 1_000;
     }

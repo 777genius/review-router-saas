@@ -1,0 +1,556 @@
+import {
+  canonicalJson,
+  ReviewInvestigationDomainError,
+  type CanonicalValue,
+} from "./canonicalization";
+import {
+  assertInvestigationContract,
+  assertInvestigationRevision,
+  assertInvestigationScope,
+  type ReviewInvestigationContract,
+  type ReviewInvestigationRevision,
+  type ReviewInvestigationScope,
+} from "./coverage-contract";
+import type { ReviewInvestigationCertificate } from "./investigation-certificate";
+import {
+  InvestigationObligationOrigin,
+  markInvestigationObligationUnresolvable,
+  mergeInvestigationObligations,
+  obligationCanonicalObject,
+  satisfyInvestigationObligation,
+  sortObligations,
+  type InvestigationObligation,
+} from "./investigation-obligation";
+import {
+  assertInvestigationPolicy,
+  policyCanonicalValue,
+  type ReviewInvestigationPolicy,
+} from "./investigation-policy";
+import {
+  findingCanonicalValue,
+  turnCanonicalValue,
+  type InvestigationFinding,
+  type InvestigationTurn,
+  type InvestigationTurnAbort,
+  type InvestigationTurnCommit,
+} from "./investigation-turn";
+import {
+  ContextCriticDecision,
+  InvestigationObligationKind,
+  InvestigationObligationState,
+  ReviewInvestigationAbortReason,
+  ReviewInvestigationConclusion,
+  ReviewInvestigationRuntimeProfile,
+  ReviewInvestigationState,
+  ReviewInvestigationTurnPurpose,
+} from "./review-investigation-types";
+
+export type ReviewInvestigation = Readonly<{
+  investigationId: string;
+  naturalIdentityHash: string;
+  version: number;
+  scope: ReviewInvestigationScope;
+  revision: ReviewInvestigationRevision;
+  executionId: string;
+  workSlotId: string;
+  stableReviewUnitKey: string;
+  providerVoteLaneId: string;
+  providerStrategyId: string;
+  runtimeProfile: ReviewInvestigationRuntimeProfile;
+  contract: ReviewInvestigationContract;
+  policy: ReviewInvestigationPolicy;
+  state: ReviewInvestigationState;
+  obligations: readonly InvestigationObligation[];
+  findings: readonly InvestigationFinding[];
+  activeTurn: InvestigationTurn | null;
+  semanticTurns: number;
+  operationalAttempts: number;
+  expansionDepth: number;
+  criticCycles: number;
+  criticDecision: ContextCriticDecision | null;
+  conclusion: ReviewInvestigationConclusion | null;
+  certificate: ReviewInvestigationCertificate | null;
+  dossierDigest: string;
+  nextEligibleAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export function createReviewInvestigation(input: Omit<
+  ReviewInvestigation,
+  | "version"
+  | "state"
+  | "findings"
+  | "activeTurn"
+  | "semanticTurns"
+  | "operationalAttempts"
+  | "expansionDepth"
+  | "criticCycles"
+  | "criticDecision"
+  | "conclusion"
+  | "certificate"
+  | "nextEligibleAt"
+> & { readonly obligations: readonly InvestigationObligation[] }
+): ReviewInvestigation {
+  assertInvestigationScope(input.scope);
+  assertInvestigationRevision(input.revision);
+  assertInvestigationContract(input.contract);
+  assertInvestigationPolicy(input.policy);
+  const obligations = mergeInvestigationObligations([], input.obligations);
+  if (obligations.length === 0 || obligations.length > input.policy.maxObligations) {
+    throw new ReviewInvestigationDomainError("seed_obligation_count_invalid");
+  }
+  const inventory = obligations.filter(
+    (item) => item.kind === InvestigationObligationKind.InventoryWitness,
+  );
+  if (inventory.length !== 1) {
+    throw new ReviewInvestigationDomainError("inventory_witness_required");
+  }
+  return {
+    ...input,
+    version: 1,
+    state:
+      inventory[0]!.state === InvestigationObligationState.Satisfied
+        ? ReviewInvestigationState.AwaitingTurn
+        : ReviewInvestigationState.Provisional,
+    obligations,
+    findings: [],
+    activeTurn: null,
+    semanticTurns: 0,
+    operationalAttempts: 0,
+    expansionDepth: 0,
+    criticCycles: 0,
+    criticDecision: null,
+    conclusion: null,
+    certificate: null,
+    nextEligibleAt: null,
+  };
+}
+
+export function planInvestigationTurn(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly turn: InvestigationTurn;
+}): ReviewInvestigation {
+  const current = input.investigation;
+  const expectedPurpose =
+    current.state === ReviewInvestigationState.AwaitingCritic
+      ? ReviewInvestigationTurnPurpose.Critic
+      : ReviewInvestigationTurnPurpose.Discovery;
+  if (
+    current.activeTurn !== null ||
+    ![
+      ReviewInvestigationState.Provisional,
+      ReviewInvestigationState.AwaitingTurn,
+      ReviewInvestigationState.AwaitingCritic,
+    ].includes(current.state) ||
+    input.turn.purpose !== expectedPurpose ||
+    input.turn.leasedAtVersion !== current.version + 1 ||
+    input.turn.dossierDigest !== current.dossierDigest
+  ) {
+    throw new ReviewInvestigationDomainError("turn_plan_invalid");
+  }
+  if (
+    expectedPurpose === ReviewInvestigationTurnPurpose.Discovery &&
+    current.semanticTurns >= current.policy.maxSemanticTurns
+  ) {
+    return transitionToInconclusive(current, input.turn.leasedAt);
+  }
+  if (
+    expectedPurpose === ReviewInvestigationTurnPurpose.Critic &&
+    current.criticCycles >= current.policy.maxCriticCycles
+  ) {
+    return transitionToInconclusive(current, input.turn.leasedAt);
+  }
+  return {
+    ...current,
+    version: current.version + 1,
+    state: ReviewInvestigationState.TurnLeased,
+    activeTurn: { ...input.turn },
+    nextEligibleAt: null,
+    updatedAt: input.turn.leasedAt,
+  };
+}
+
+export function commitInvestigationTurn(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly commit: InvestigationTurnCommit;
+  readonly committedAt: string;
+}): ReviewInvestigation {
+  const current = input.investigation;
+  const turn = current.activeTurn;
+  if (
+    current.state !== ReviewInvestigationState.TurnLeased ||
+    turn === null ||
+    turn.turnId !== input.commit.turnId
+  ) {
+    throw new ReviewInvestigationDomainError("turn_commit_invalid");
+  }
+  validateTurnBounds(current, input.commit);
+  if (
+    (turn.purpose === ReviewInvestigationTurnPurpose.Discovery &&
+      input.commit.criticDecision !== null) ||
+    (turn.purpose === ReviewInvestigationTurnPurpose.Critic &&
+      input.commit.criticDecision === null)
+  ) {
+    throw new ReviewInvestigationDomainError("turn_critic_decision_invalid");
+  }
+  if (
+    turn.purpose === ReviewInvestigationTurnPurpose.Critic &&
+    input.commit.criticDecision === ContextCriticDecision.Veto &&
+    input.commit.proposedObligations.length === 0 &&
+    input.commit.findings.length === 0
+  ) {
+    throw new ReviewInvestigationDomainError("critic_veto_evidence_required");
+  }
+  let obligations = [...current.obligations];
+  for (const claim of input.commit.closureClaims) {
+    obligations = replaceObligation(
+      obligations,
+      claim.obligationId,
+      (obligation) =>
+        satisfyInvestigationObligation({
+          obligation,
+          receipt: claim.receipt,
+          reviewRevisionHash: current.revision.reviewRevisionHash,
+          gatewayPolicyVersion: current.contract.gatewayPolicyVersion,
+        }),
+    );
+  }
+  for (const decision of input.commit.unresolvableDecisions) {
+    obligations = replaceObligation(
+      obligations,
+      decision.obligationId,
+      (obligation) =>
+        markInvestigationObligationUnresolvable({
+          obligation,
+          reason: decision.reason,
+          deterministicPolicy: decision.deterministicPolicy,
+        }),
+    );
+  }
+  obligations = [...mergeInvestigationObligations(obligations, input.commit.proposedObligations)];
+  if (
+    obligations.filter(
+      (item) => item.kind === InvestigationObligationKind.InventoryWitness,
+    ).length !== 1
+  ) {
+    throw new ReviewInvestigationDomainError("inventory_witness_cardinality_invalid");
+  }
+  validateFindingEvidence(obligations, input.commit.findings);
+  const findings = mergeFindings(current.findings, input.commit.findings);
+  const next: ReviewInvestigation = {
+    ...current,
+    version: current.version + 1,
+    obligations,
+    findings,
+    activeTurn: null,
+    semanticTurns:
+      turn.purpose === ReviewInvestigationTurnPurpose.Discovery
+        ? current.semanticTurns + 1
+        : current.semanticTurns,
+    expansionDepth:
+      input.commit.proposedObligations.length > 0
+        ? current.expansionDepth + 1
+        : current.expansionDepth,
+    criticCycles:
+      turn.purpose === ReviewInvestigationTurnPurpose.Critic
+        ? current.criticCycles + 1
+        : current.criticCycles,
+    criticDecision:
+      turn.purpose === ReviewInvestigationTurnPurpose.Critic
+        ? input.commit.criticDecision
+        : current.criticDecision,
+    state: current.state,
+    updatedAt: input.committedAt,
+  };
+  return decideStateAfterCommit(next, turn.purpose, input.commit.criticDecision);
+}
+
+export function abortInvestigationTurn(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly abort: InvestigationTurnAbort;
+  readonly abortedAt: string;
+}): ReviewInvestigation {
+  const current = input.investigation;
+  if (
+    current.state !== ReviewInvestigationState.TurnLeased ||
+    current.activeTurn?.turnId !== input.abort.turnId
+  ) {
+    throw new ReviewInvestigationDomainError("turn_abort_invalid");
+  }
+  if (
+    input.abort.reason === ReviewInvestigationAbortReason.StaleExecution ||
+    input.abort.reason === ReviewInvestigationAbortReason.SupersededExecution
+  ) {
+    return {
+      ...current,
+      version: current.version + 1,
+      state: ReviewInvestigationState.Superseded,
+      activeTurn: null,
+      updatedAt: input.abortedAt,
+    };
+  }
+  if (input.abort.reason === ReviewInvestigationAbortReason.ConfinementViolation) {
+    return transitionToInconclusive(
+      { ...current, activeTurn: null, version: current.version + 1 },
+      input.abortedAt,
+    );
+  }
+  const operationalAttempts = current.operationalAttempts + 1;
+  if (operationalAttempts >= current.policy.maxOperationalAttempts) {
+    return transitionToInconclusive(
+      {
+        ...current,
+        activeTurn: null,
+        operationalAttempts,
+        version: current.version + 1,
+      },
+      input.abortedAt,
+    );
+  }
+  return {
+    ...current,
+    version: current.version + 1,
+    state:
+      current.activeTurn.purpose === ReviewInvestigationTurnPurpose.Critic
+        ? ReviewInvestigationState.AwaitingCritic
+        : ReviewInvestigationState.AwaitingTurn,
+    activeTurn: null,
+    operationalAttempts,
+    nextEligibleAt: input.abort.nextEligibleAt,
+    updatedAt: input.abortedAt,
+  };
+}
+
+export function concludeReviewInvestigation(input: {
+  readonly investigation: ReviewInvestigation;
+  readonly certificate: ReviewInvestigationCertificate;
+  readonly concludedAt: string;
+}): ReviewInvestigation {
+  const current = input.investigation;
+  if (
+    current.state !== ReviewInvestigationState.ReadyToConclude ||
+    current.activeTurn !== null ||
+    input.certificate.investigationId !== current.investigationId ||
+    input.certificate.investigationVersion !== current.version
+  ) {
+    throw new ReviewInvestigationDomainError("investigation_conclusion_invalid");
+  }
+  const conclusion =
+    current.findings.length > 0
+      ? ReviewInvestigationConclusion.Findings
+      : ReviewInvestigationConclusion.VerifiedClean;
+  if (
+    conclusion === ReviewInvestigationConclusion.VerifiedClean &&
+    current.criticDecision !== ContextCriticDecision.Accept
+  ) {
+    throw new ReviewInvestigationDomainError("verified_clean_critic_required");
+  }
+  if (input.certificate.conclusion !== conclusion) {
+    throw new ReviewInvestigationDomainError("certificate_conclusion_mismatch");
+  }
+  return {
+    ...current,
+    version: current.version + 1,
+    state: ReviewInvestigationState.Concluded,
+    conclusion,
+    certificate: { ...input.certificate },
+    updatedAt: input.concludedAt,
+  };
+}
+
+export function investigationDossierCanonicalValue(
+  investigation: ReviewInvestigation,
+): Readonly<Record<string, CanonicalValue>> {
+  return {
+    investigationId: investigation.investigationId,
+    naturalIdentityHash: investigation.naturalIdentityHash,
+    version: investigation.version,
+    scope: { ...investigation.scope },
+    revision: { ...investigation.revision },
+    executionId: investigation.executionId,
+    workSlotId: investigation.workSlotId,
+    stableReviewUnitKey: investigation.stableReviewUnitKey,
+    providerVoteLaneId: investigation.providerVoteLaneId,
+    providerStrategyId: investigation.providerStrategyId,
+    runtimeProfile: investigation.runtimeProfile,
+    contract: { ...investigation.contract },
+    policy: policyCanonicalValue(investigation.policy),
+    state: investigation.state,
+    obligations: sortObligations(investigation.obligations).map(obligationCanonicalObject),
+    findings: [...investigation.findings]
+      .sort((left, right) => left.fingerprint.localeCompare(right.fingerprint))
+      .map(findingCanonicalValue),
+    activeTurn: investigation.activeTurn
+      ? turnCanonicalValue(investigation.activeTurn)
+      : null,
+    semanticTurns: investigation.semanticTurns,
+    operationalAttempts: investigation.operationalAttempts,
+    expansionDepth: investigation.expansionDepth,
+    criticCycles: investigation.criticCycles,
+    criticDecision: investigation.criticDecision,
+    conclusion: investigation.conclusion,
+    certificateHash: investigation.certificate?.certificateHash ?? null,
+    nextEligibleAt: investigation.nextEligibleAt,
+    createdAt: investigation.createdAt,
+    updatedAt: investigation.updatedAt,
+  };
+}
+
+export function serializeReviewInvestigation(
+  investigation: ReviewInvestigation,
+): string {
+  return canonicalJson({
+    ...investigationDossierCanonicalValue(investigation),
+    dossierDigest: investigation.dossierDigest,
+    certificate: investigation.certificate ? { ...investigation.certificate } : null,
+  });
+}
+
+function decideStateAfterCommit(
+  investigation: ReviewInvestigation,
+  purpose: ReviewInvestigationTurnPurpose,
+  criticDecision: ContextCriticDecision | null,
+): ReviewInvestigation {
+  if (
+    investigation.obligations.length > investigation.policy.maxObligations ||
+    investigation.expansionDepth > investigation.policy.maxExpansionDepth ||
+    investigation.findings.length > investigation.policy.maxFindings ||
+    investigation.obligations.some(
+      (item) => item.state === InvestigationObligationState.Unresolvable,
+    )
+  ) {
+    return transitionToInconclusive(investigation, investigation.updatedAt);
+  }
+  const allSatisfied = investigation.obligations.every(
+    (item) => item.state === InvestigationObligationState.Satisfied,
+  );
+  if (purpose === ReviewInvestigationTurnPurpose.Critic) {
+    if (criticDecision === ContextCriticDecision.Accept && allSatisfied) {
+      return { ...investigation, state: ReviewInvestigationState.ReadyToConclude };
+    }
+    if (
+      criticDecision === ContextCriticDecision.Veto &&
+      investigation.criticCycles < investigation.policy.maxCriticCycles
+    ) {
+      return { ...investigation, state: ReviewInvestigationState.AwaitingTurn };
+    }
+    if (
+      criticDecision === ContextCriticDecision.Abstain &&
+      investigation.criticCycles < investigation.policy.maxCriticCycles
+    ) {
+      return { ...investigation, state: ReviewInvestigationState.AwaitingCritic };
+    }
+    return transitionToInconclusive(investigation, investigation.updatedAt);
+  }
+  if (allSatisfied) {
+    return {
+      ...investigation,
+      state:
+        investigation.findings.length > 0
+          ? ReviewInvestigationState.ReadyToConclude
+          : ReviewInvestigationState.AwaitingCritic,
+    };
+  }
+  if (investigation.semanticTurns >= investigation.policy.maxSemanticTurns) {
+    return transitionToInconclusive(investigation, investigation.updatedAt);
+  }
+  return { ...investigation, state: ReviewInvestigationState.AwaitingTurn };
+}
+
+function transitionToInconclusive(
+  investigation: ReviewInvestigation,
+  at: string,
+): ReviewInvestigation {
+  return {
+    ...investigation,
+    state: ReviewInvestigationState.Inconclusive,
+    conclusion: ReviewInvestigationConclusion.Inconclusive,
+    activeTurn: null,
+    updatedAt: at,
+  };
+}
+
+function validateTurnBounds(
+  investigation: ReviewInvestigation,
+  commit: InvestigationTurnCommit,
+): void {
+  if (
+    commit.proposedObligations.length > investigation.policy.maxProposalsPerTurn ||
+    commit.closureClaims.length > investigation.policy.maxReceiptsPerTurn ||
+    commit.findings.length + investigation.findings.length > investigation.policy.maxFindings ||
+    !Number.isSafeInteger(commit.usageTokens) ||
+    commit.usageTokens < 0 ||
+    !Number.isSafeInteger(commit.durationMs) ||
+    commit.durationMs < 0
+  ) {
+    throw new ReviewInvestigationDomainError("turn_bounds_exceeded");
+  }
+}
+
+function replaceObligation(
+  obligations: readonly InvestigationObligation[],
+  obligationId: string,
+  update: (obligation: InvestigationObligation) => InvestigationObligation,
+): InvestigationObligation[] {
+  let found = false;
+  const result = obligations.map((obligation) => {
+    if (obligation.obligationId !== obligationId) return obligation;
+    found = true;
+    return update(obligation);
+  });
+  if (!found) throw new ReviewInvestigationDomainError("obligation_unknown");
+  return [...sortObligations(result)];
+}
+
+function mergeFindings(
+  current: readonly InvestigationFinding[],
+  additions: readonly InvestigationFinding[],
+): readonly InvestigationFinding[] {
+  const byFingerprint = new Map(current.map((item) => [item.fingerprint, item]));
+  for (const finding of additions) {
+    if (finding.fingerprint.trim().length === 0) {
+      throw new ReviewInvestigationDomainError("finding_fingerprint_invalid");
+    }
+    const existing = byFingerprint.get(finding.fingerprint);
+    if (existing && canonicalJson(findingCanonicalValue(existing)) !== canonicalJson(findingCanonicalValue(finding))) {
+      throw new ReviewInvestigationDomainError("finding_identity_collision");
+    }
+    byFingerprint.set(finding.fingerprint, {
+      ...finding,
+      evidenceReceiptIds: [...finding.evidenceReceiptIds].sort(),
+    });
+  }
+  return [...byFingerprint.values()].sort((left, right) =>
+    left.fingerprint.localeCompare(right.fingerprint),
+  );
+}
+
+function validateFindingEvidence(
+  obligations: readonly InvestigationObligation[],
+  findings: readonly InvestigationFinding[],
+): void {
+  const acceptedReceipts = new Set(
+    obligations
+      .map((item) => item.receipt?.receiptId ?? null)
+      .filter((item): item is string => item !== null),
+  );
+  for (const finding of findings) {
+    if (
+      finding.evidenceReceiptIds.length === 0 ||
+      finding.evidenceReceiptIds.some((receiptId) => !acceptedReceipts.has(receiptId)) ||
+      (finding.line !== null &&
+        (!Number.isSafeInteger(finding.line) || finding.line <= 0))
+    ) {
+      throw new ReviewInvestigationDomainError("finding_evidence_invalid");
+    }
+  }
+}
+
+export function proposalOriginForTurn(
+  purpose: ReviewInvestigationTurnPurpose,
+): InvestigationObligationOrigin {
+  return purpose === ReviewInvestigationTurnPurpose.Critic
+    ? InvestigationObligationOrigin.CriticProposal
+    : InvestigationObligationOrigin.AgentProposal;
+}

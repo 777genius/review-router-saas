@@ -15,6 +15,7 @@ const contractSourceProducers = [
   "@reviewrouter/features-review-run-control",
   "@reviewrouter/features-review-executions",
   "@reviewrouter/features-review-evidence",
+  "@reviewrouter/features-review-investigations",
   "@reviewrouter/features-review-snapshots",
   "@reviewrouter/features-review-publishing",
   "@reviewrouter/features-action-control-plane",

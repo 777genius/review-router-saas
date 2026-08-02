@@ -71,6 +71,7 @@ export function reviewV2CohortRolloutModes(
           }
         : null;
     case ReviewSafetyCapability.PromptOnlyReuse:
+    case ReviewSafetyCapability.ReviewInvestigationV1:
       return null;
     case ReviewSafetyCapability.ContextGatewayReuse: {
       switch (operation) {

@@ -60,6 +60,7 @@ export enum AcceptReviewObservationRejectionReason {
   EvidenceWritesDisabled = "evidence_writes_disabled",
   ResultNotReusableSuccess = "result_not_reusable_success",
   ContextAttestationNotAccepted = "context_attestation_not_accepted",
+  InvestigationCertificatePathDisabled = "investigation_certificate_path_disabled",
 }
 
 export type AcceptReviewObservationCommand = Readonly<{
@@ -154,6 +155,14 @@ export class AcceptReviewObservation {
     ) {
       return rejected(
         AcceptReviewObservationRejectionReason.ResultNotReusableSuccess,
+      );
+    }
+    if (
+      facts.executionProfile ===
+      ProviderExecutionProfile.InvestigationGatewayV1
+    ) {
+      return rejected(
+        AcceptReviewObservationRejectionReason.InvestigationCertificatePathDisabled,
       );
     }
     const safetyDecision =
@@ -274,7 +283,7 @@ async function verifyContextAttestation(
   if (facts.executionProfile !== ProviderExecutionProfile.ContextGatewayV1) {
     return !hasId;
   }
-  if (attestationId === null || attestationHash === null) return true;
+  if (attestationId === null || attestationHash === null) return false;
   assertIdentifier(attestationId, "context_dependency_attestation_id");
   assertSha256(attestationHash, "context_dependency_attestation_hash");
   const decision = await attestations.verifyAcceptedAttestation({

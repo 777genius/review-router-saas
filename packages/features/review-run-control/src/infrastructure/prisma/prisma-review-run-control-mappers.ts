@@ -328,6 +328,8 @@ function reviewSafetyCapabilityToDomain(value: string): ReviewSafetyCapability {
   switch (value) {
     case "run_authorization_v2":
       return ReviewSafetyCapability.RunAuthorizationV2;
+    case "review_investigation_v1":
+      return ReviewSafetyCapability.ReviewInvestigationV1;
     case "evidence_writes_v2":
       return ReviewSafetyCapability.EvidenceWritesV2;
     case "evidence_reuse_v2":

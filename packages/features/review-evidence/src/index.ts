@@ -7,6 +7,7 @@ export * from "./domain/review-reuse-eligibility";
 
 export * from "./application/ports/clock-port";
 export * from "./application/ports/context-attestation-verification-port";
+export * from "./application/ports/investigation-certificate-verification-port";
 export * from "./application/ports/review-evidence-safety-port";
 export * from "./application/ports/review-execution-attempt-facts-port";
 export * from "./application/ports/review-observation-ports";

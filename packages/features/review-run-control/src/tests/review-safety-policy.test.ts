@@ -175,6 +175,54 @@ describe("ReviewSafetyPolicy resolution", () => {
       matchingChange.safetyDecisionHash,
     );
   });
+
+  it("negotiates investigation execution independently from legacy run authorization", async () => {
+    const kit = createReviewRunControlTestKit();
+    await openGlobalEmergency(kit);
+    await putPolicy(kit, {
+      expectedVersion: 0,
+      scope: { scope: ReviewSafetyPolicyScope.Global },
+      rolloutMode: ReviewSafetyRolloutMode.Enabled,
+    });
+
+    const disabled =
+      await kit.control.safetyResolver.resolveReviewSafetyPolicy({
+        decisionKind: ReviewSafetyDecisionKind.InvestigationExecution,
+        target,
+      });
+    expect(disabled.effectAllowed).toBe(false);
+    expect(disabled.capabilityDecisions).toMatchObject([
+      {
+        capability: ReviewSafetyCapability.ReviewInvestigationV1,
+        effectiveMode: ReviewSafetyRolloutMode.Disabled,
+      },
+    ]);
+    expect((await resolveRunAuthorization(kit)).effectAllowed).toBe(true);
+
+    await kit.control.safetyControls.updateReviewSafetyPolicy({
+      expectedVersion: 0,
+      scope: { scope: ReviewSafetyPolicyScope.Global },
+      capability: ReviewSafetyCapability.ReviewInvestigationV1,
+      rolloutMode: ReviewSafetyRolloutMode.Shadow,
+      updatedBy: "operator",
+    });
+    const shadow =
+      await kit.control.safetyResolver.resolveReviewSafetyPolicy({
+        decisionKind: ReviewSafetyDecisionKind.InvestigationExecution,
+        target,
+      });
+    expect(shadow).toMatchObject({
+      effectAllowed: false,
+      shadow: true,
+      capabilityDecisions: [
+        {
+          capability: ReviewSafetyCapability.ReviewInvestigationV1,
+          effectiveMode: ReviewSafetyRolloutMode.Shadow,
+        },
+      ],
+    });
+    expect((await resolveRunAuthorization(kit)).effectAllowed).toBe(true);
+  });
 });
 
 async function openGlobalEmergency(

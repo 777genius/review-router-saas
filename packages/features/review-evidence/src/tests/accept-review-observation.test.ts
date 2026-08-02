@@ -211,7 +211,7 @@ describe("AcceptReviewObservation", () => {
     );
   });
 
-  it("accepts a fresh context-gateway observation without reusable attestation", async () => {
+  it("rejects a context-gateway observation without an accepted attestation", async () => {
     const verifyAcceptedAttestation = vi.fn();
     const fixture = setup({ verifyAcceptedAttestation });
     fixture.attempts.put(
@@ -222,13 +222,28 @@ describe("AcceptReviewObservation", () => {
 
     const result = await fixture.useCase.execute(command());
 
-    expect(result.status).toBe(AcceptReviewObservationStatus.Accepted);
-    expect(result.observation).toMatchObject({
-      executionProfile: ProviderExecutionProfile.ContextGatewayV1,
-      contextDependencyAttestationId: null,
-      contextDependencyAttestationHash: null,
+    expect(result).toEqual({
+      status: AcceptReviewObservationStatus.Rejected,
+      reason:
+        AcceptReviewObservationRejectionReason.ContextAttestationNotAccepted,
     });
     expect(verifyAcceptedAttestation).not.toHaveBeenCalled();
+  });
+
+  it("keeps the investigation certificate path disabled until certificate verification is wired", async () => {
+    const fixture = setup();
+    fixture.attempts.put(
+      attemptFacts({
+        executionProfile: ProviderExecutionProfile.InvestigationGatewayV1,
+      }),
+    );
+
+    await expect(fixture.useCase.execute(command())).resolves.toEqual({
+      status: AcceptReviewObservationStatus.Rejected,
+      reason:
+        AcceptReviewObservationRejectionReason.InvestigationCertificatePathDisabled,
+    });
+    expect(fixture.store.all()).toHaveLength(0);
   });
 
   it("rejects an incomplete context attestation reference", async () => {

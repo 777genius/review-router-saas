@@ -1090,6 +1090,184 @@ model ReviewExecutionObservationRefV2 {
   @@index([observationId])
 }
 
+model ReviewInvestigation {
+  investigationId             String                               @id
+  naturalIdentityHash         String                               @unique(map: "ReviewInvestigation_naturalIdentityHash_key")
+  version                     BigInt                               @default(1)
+  workspaceId                 String
+  repositoryConnectionId      String
+  scmRepositoryIdentityId     String
+  pullRequestNumber           Int
+  trustDomain                 String
+  baseSha                     String
+  mergeBaseSha                String
+  headSha                     String
+  reviewRevisionHash          String
+  executionId                 String
+  workSlotId                  String
+  stableReviewUnitKey         String
+  providerVoteLaneId          String
+  providerStrategyId          String
+  runtimeProfile              ReviewInvestigationRuntimeProfileV1
+  coverageContractVersion     String
+  expansionRulesVersion       String
+  criticPolicyVersion         String
+  gatewayPolicyVersion        String
+  producerReleaseId           String
+  runtimeProfileVersion       String
+  policy                      Json
+  state                       ReviewInvestigationStateV1
+  findings                    Json
+  activeTurnId                String?                              @unique(map: "ReviewInvestigation_activeTurnId_key")
+  semanticTurns               Int                                  @default(0)
+  operationalAttempts         Int                                  @default(0)
+  expansionDepth              Int                                  @default(0)
+  criticCycles                Int                                  @default(0)
+  criticDecision              ReviewInvestigationCriticDecisionV1?
+  conclusion                  ReviewInvestigationConclusionV1?
+  certificateId               String?                              @unique(map: "ReviewInvestigation_certificateId_key")
+  dossierDigest               String
+  nextEligibleAt              DateTime?
+  supersededByInvestigationId String?
+  createdAt                   DateTime
+  updatedAt                   DateTime
+  retainUntil                 DateTime
+
+  @@unique([executionId, workSlotId, providerVoteLaneId, stableReviewUnitKey, coverageContractVersion, runtimeProfileVersion], map: "ReviewInvestigation_natural_scope_key")
+  @@index([executionId, workSlotId, state], map: "ReviewInvestigation_execution_slot_state_idx")
+  @@index([state, nextEligibleAt, investigationId], map: "ReviewInvestigation_state_eligibility_idx")
+  @@index([reviewRevisionHash, stableReviewUnitKey], map: "ReviewInvestigation_revision_unit_idx")
+  @@index([retainUntil, investigationId], map: "ReviewInvestigation_retention_idx")
+}
+
+model ReviewInvestigationObligation {
+  investigationId         String
+  obligationId            String
+  coverageContractVersion String
+  stableReviewUnitKey     String
+  kind                    ReviewInvestigationObligationKindV1
+  canonicalSubject        String
+  canonicalRequirement    String
+  riskPriority            Int
+  origin                  ReviewInvestigationObligationOriginV1
+  state                   ReviewInvestigationObligationStateV1
+  receiptId               String?                               @unique(map: "ReviewInvestigationObligation_receiptId_key")
+  unresolvableReason      String?
+  createdAt               DateTime
+  updatedAt               DateTime
+
+  @@id([investigationId, obligationId])
+  @@index([investigationId, state, riskPriority, obligationId], map: "ReviewInvestigationObligation_state_priority_idx")
+}
+
+model ReviewInvestigationTurn {
+  turnId                String                           @id
+  investigationId       String
+  turnOrdinal           Int
+  purpose               ReviewInvestigationTurnPurposeV1
+  state                 ReviewInvestigationTurnStateV1
+  leasedAtVersion       BigInt
+  dossierDigest         String
+  obligationIds         Json
+  semanticTurnOrdinal   Int
+  criticCycleOrdinal    Int
+  acceptedAttestationId String?                          @unique(map: "ReviewInvestigationTurn_attestation_key")
+  sanitizedOutcomeHash  String?
+  abortReason           String?
+  leasedAt              DateTime
+  expiresAt             DateTime
+  completedAt           DateTime?
+  retainUntil           DateTime
+
+  @@unique([investigationId, turnOrdinal], map: "ReviewInvestigationTurn_investigation_ordinal_key")
+  @@index([investigationId, state, expiresAt], map: "ReviewInvestigationTurn_active_recovery_idx")
+  @@index([expiresAt, turnId], map: "ReviewInvestigationTurn_expiry_idx")
+  @@index([retainUntil, turnId], map: "ReviewInvestigationTurn_retention_idx")
+}
+
+model ReviewInvestigationReceipt {
+  receiptId             String                           @id
+  investigationId       String
+  obligationId          String
+  turnId                String?
+  operationKey          String
+  kind                  ReviewInvestigationReceiptKindV1
+  canonicalSubject      String
+  reviewRevisionHash    String
+  gatewayPolicyVersion  String
+  evidenceDigest        String
+  complete              Boolean
+  truncated             Boolean
+  failed                Boolean
+  acceptedAttestationId String?
+  acceptedAt            DateTime
+  retainUntil           DateTime
+
+  @@unique([investigationId, obligationId], map: "ReviewInvestigationReceipt_obligation_key")
+  @@index([reviewRevisionHash, canonicalSubject], map: "ReviewInvestigationReceipt_revision_subject_idx")
+  @@index([acceptedAttestationId], map: "ReviewInvestigationReceipt_attestation_idx")
+  @@index([retainUntil, receiptId], map: "ReviewInvestigationReceipt_retention_idx")
+}
+
+model ReviewInvestigationPrivateMaterial {
+  /// Migration also enforces one investigation-level row when obligationId is null.
+  privateMaterialId   String   @id
+  investigationId     String
+  obligationId        String?
+  encryptionAlgorithm String
+  encryptionKeyId     String
+  nonce               Bytes
+  authTag             Bytes
+  ciphertext          Bytes
+  associatedDataHash  String
+  plaintextHash       String
+  byteCount           Int
+  createdAt           DateTime
+  expiresAt           DateTime
+
+  @@unique([investigationId, obligationId], map: "ReviewInvestigationPrivateMaterial_obligation_key")
+  @@index([expiresAt, privateMaterialId], map: "ReviewInvestigationPrivateMaterial_expiry_idx")
+}
+
+model ReviewInvestigationCertificate {
+  certificateId           String                          @id
+  certificateHash         String                          @unique(map: "ReviewInvestigationCertificate_hash_key")
+  investigationId         String
+  terminalVersion         BigInt
+  dossierDigest           String
+  reviewRevisionHash      String
+  stableReviewUnitKey     String
+  providerVoteLaneId      String
+  coverageContractVersion String
+  expansionRulesVersion   String
+  gatewayPolicyVersion    String
+  criticPolicyVersion     String
+  runtimeProfileVersion   String
+  producerReleaseId       String
+  conclusion              ReviewInvestigationConclusionV1
+  findingSetHash          String
+  obligationSetHash       String
+  receiptSetHash          String
+  issuedAt                DateTime
+  expiresAt               DateTime
+
+  @@unique([investigationId, terminalVersion], map: "ReviewInvestigationCertificate_terminal_key")
+  @@index([reviewRevisionHash, stableReviewUnitKey], map: "ReviewInvestigationCertificate_revision_unit_idx")
+  @@index([expiresAt, certificateId], map: "ReviewInvestigationCertificate_expiry_idx")
+}
+
+model ReviewInvestigationCommandReceipt {
+  commandId        String   @id
+  investigationId  String
+  commandHash      String
+  resultingVersion BigInt
+  createdAt        DateTime
+  retainUntil      DateTime
+
+  @@index([investigationId, resultingVersion], map: "ReviewInvestigationCommandReceipt_version_idx")
+  @@index([retainUntil, commandId], map: "ReviewInvestigationCommandReceipt_retention_idx")
+}
+
 model FinalizedReviewProjectionArtifactV2 {
   artifactId                      String
   executionId                     String                @id
@@ -1754,6 +1932,7 @@ enum ReviewSafetyRolloutModeV2 {
 
 enum ReviewSafetyCapabilityV2 {
   run_authorization_v2
+  review_investigation_v1
   evidence_writes_v2
   evidence_reuse_v2
   prompt_only_reuse
@@ -1786,6 +1965,93 @@ enum ProviderExecutionProfileV2 {
   prompt_only_envelope_v1
   agentic_unbounded_v1
   context_gateway_v1
+  investigation_gateway_v1
+}
+
+enum ReviewInvestigationStateV1 {
+  provisional
+  awaiting_turn
+  turn_leased
+  awaiting_critic
+  ready_to_conclude
+  concluded
+  inconclusive
+  superseded
+  expired
+}
+
+enum ReviewInvestigationObligationStateV1 {
+  open
+  satisfied
+  unresolvable
+}
+
+enum ReviewInvestigationObligationKindV1 {
+  inventory_witness
+  changed_content
+  base_content
+  related_manifest
+  direct_reference_search
+  direct_caller
+  direct_callee
+  test_evidence
+  schema_contract
+  configuration_contract
+  migration_contract
+  generated_source
+  dependency_contract
+  side_effect_parity
+  external_contract
+  binary_artifact
+  context_critic
+}
+
+enum ReviewInvestigationObligationOriginV1 {
+  coverage_contract
+  deterministic_expansion
+  agent_proposal
+  critic_proposal
+}
+
+enum ReviewInvestigationRuntimeProfileV1 {
+  gateway_attested_agent_v1
+  orchestrated_tool_loop_v1
+  preassembled_context_v1
+  prompt_only_v1
+  agentic_unbounded_v1
+}
+
+enum ReviewInvestigationCriticDecisionV1 {
+  accept
+  veto
+  abstain
+}
+
+enum ReviewInvestigationConclusionV1 {
+  verified_clean
+  findings
+  inconclusive
+}
+
+enum ReviewInvestigationTurnPurposeV1 {
+  discovery
+  critic
+}
+
+enum ReviewInvestigationTurnStateV1 {
+  leased
+  committed
+  aborted
+  expired
+}
+
+enum ReviewInvestigationReceiptKindV1 {
+  blob
+  tree
+  search
+  git_fact
+  relation
+  critic
 }
 
 enum ReviewContextGatewaySessionStateV1 {

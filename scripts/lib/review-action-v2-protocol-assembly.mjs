@@ -9,6 +9,12 @@ export const reviewActionV2OperationOrder = Object.freeze([
   "review_execution_observation_attach",
   "review_execution_observation_adopt",
   "review_execution_finalize",
+  "review_investigation_open",
+  "review_investigation_restore",
+  "review_investigation_turn_plan",
+  "review_investigation_turn_commit",
+  "review_investigation_turn_abort",
+  "review_investigation_conclude",
   "review_invocation_lease_acquire",
   "review_invocation_lease_renew",
   "review_invocation_lease_release",
@@ -37,6 +43,7 @@ const fieldTypes = new Set([
   "boolean",
   "canonical_json",
   "decimal",
+  "enum",
   "git_oid",
   "hash",
   "hash_array",
@@ -45,6 +52,7 @@ const fieldTypes = new Set([
   "non_negative_integer",
   "nullable_canonical_json",
   "nullable_decimal",
+  "nullable_enum",
   "nullable_hash",
   "nullable_identifier",
   "nullable_non_negative_integer",
@@ -67,7 +75,7 @@ export function assembleReviewActionV2Contract(input) {
   ) {
     throw new Error("protocol_assembly_transport_identity_invalid");
   }
-  if (!Array.isArray(semanticFragments) || semanticFragments.length !== 6) {
+  if (!Array.isArray(semanticFragments) || semanticFragments.length !== 7) {
     throw new Error("protocol_assembly_fragment_count_invalid");
   }
 
@@ -597,7 +605,13 @@ export function parseReviewActionV2Request<Operation extends ReviewActionV2Opera
     validateField("oidcToken", "token", input.oidcToken, issues);
     validateProtocolOffers(input.supportedProtocols, issues);
   }
-  for (const field of descriptor.requestFields) validateField(field.name, field.type, input[field.name], issues);
+  for (const field of descriptor.requestFields) validateField(
+    field.name,
+    field.type,
+    input[field.name],
+    issues,
+    "enumValues" in field ? field.enumValues : undefined,
+  );
   for (const group of descriptor.allOrNoneRequestFieldGroups) {
     const nullCount = group.filter((field) => input[field] === null).length;
     if (nullCount !== 0 && nullCount !== group.length) {
@@ -692,7 +706,7 @@ function toRetryClass(value: string): ReviewActionV2RetryClass {
   }
 }
 
-function validateField(name: string, type: string, value: unknown, issues: string[]): void {
+function validateField(name: string, type: string, value: unknown, issues: string[], enumValues?: readonly string[]): void {
   const nullable = type.startsWith("nullable_");
   if (nullable && value === null) return;
   const base = nullable ? type.slice("nullable_".length) : type;
@@ -701,6 +715,7 @@ function validateField(name: string, type: string, value: unknown, issues: strin
   else if (base === "hash") valid = typeof value === "string" && digestPattern.test(value);
   else if (base === "git_oid") valid = typeof value === "string" && gitOidPattern.test(value);
   else if (base === "decimal") valid = typeof value === "string" && decimalPattern.test(value);
+  else if (base === "enum") valid = typeof value === "string" && Array.isArray(enumValues) && enumValues.includes(value);
   else if (base === "identifier") valid = typeof value === "string" && identifierPattern.test(value);
   else if (base === "positive_integer") valid = Number.isSafeInteger(value) && (value as number) > 0;
   else if (base === "non_negative_integer") valid = Number.isSafeInteger(value) && (value as number) >= 0;
@@ -777,7 +792,16 @@ function generatedOperationDescriptorsSource(operations, enums) {
     bodyLimitBytes: operation.bodyLimitBytes,
     successStatuses: operation.successStatuses,
     errorCodes: operation.errorCodes,
-    requestFields: operation.requestFields,
+    requestFields: operation.requestFields.map((field) => ({
+      ...field,
+      ...(field.type.replace(/^nullable_/u, "") === "enum"
+        ? {
+            enumValues: enums.find(
+              (descriptor) => descriptor.typeName === field.enumTypeName,
+            ).values,
+          }
+        : {}),
+    })),
     allOrNoneRequestFieldGroups: operation.allOrNoneRequestFieldGroups ?? [],
     resultStatuses: enums.find(
       (descriptor) => descriptor.typeName === operation.resultStatusEnum,
@@ -820,10 +844,10 @@ function generatedOperationTypes(operation) {
     ...operation.requestFields,
   ];
   const requestBody = requestFields
-    .map((field) => `  readonly ${field.name}: ${fieldTsType(field.type)};`)
+    .map((field) => `  readonly ${field.name}: ${fieldTsType(field)};`)
     .join("\n");
   const resultBody = operation.resultFields
-    .map((field) => `  readonly ${field.name}?: ${fieldTsType(field.type)};`)
+    .map((field) => `  readonly ${field.name}?: ${fieldTsType(field)};`)
     .join("\n");
   return `export type ${operation.requestTypeName} = ReviewActionV2RequestEnvelope & {\n${requestBody}\n};\n\nexport type ${operation.resultTypeName} = {\n  readonly status: ${operation.resultStatusEnum};\n${resultBody}\n};`;
 }
@@ -893,7 +917,7 @@ function requestSchema(contract, operation) {
       ...Object.fromEntries(
         fields.map((field) => [
           field.name,
-          fieldJsonSchema(field.type, contract),
+          fieldJsonSchema(field, contract),
         ]),
       ),
     },
@@ -918,7 +942,7 @@ function allOrNoneRequestFieldGroupsSchema(operation, contract) {
               return [
                 name,
                 fieldJsonSchema(
-                  field.type.replace(/^nullable_/u, ""),
+                  { ...field, type: field.type.replace(/^nullable_/u, "") },
                   contract,
                 ),
               ];
@@ -961,7 +985,7 @@ function successResponseSchema(contract, operation) {
           ...Object.fromEntries(
             operation.resultFields.map((field) => [
               field.name,
-              fieldJsonSchema(field.type, contract),
+              fieldJsonSchema(field, contract),
             ]),
           ),
         },
@@ -1039,7 +1063,7 @@ function createPublishedFixtures(contract, schemaDigest) {
         requestId: `rr_fixture_${String(index + 1).padStart(2, "0")}`,
       };
       for (const field of authorityFieldsFor(operation.callerAuthority)) {
-        request[field.name] = sampleValue(field.type, field.name, index);
+        request[field.name] = sampleValue(field, field.name, index, contract);
       }
       if (
         operation.mutability !== "read" &&
@@ -1055,7 +1079,7 @@ function createPublishedFixtures(contract, schemaDigest) {
         ];
       }
       for (const field of operation.requestFields) {
-        request[field.name] = sampleValue(field.type, field.name, index);
+        request[field.name] = sampleValue(field, field.name, index, contract);
       }
       const status = contract.enums.find(
         (descriptor) => descriptor.typeName === operation.resultStatusEnum,
@@ -1077,7 +1101,10 @@ function createPublishedFixtures(contract, schemaDigest) {
   );
 }
 
-function fieldJsonSchema(type, contract) {
+function fieldJsonSchema(fieldOrType, contract) {
+  const field =
+    typeof fieldOrType === "string" ? { type: fieldOrType } : fieldOrType;
+  const type = field.type;
   const nullable = type.startsWith("nullable_");
   const base = nullable ? type.slice("nullable_".length) : type;
   let schema;
@@ -1091,6 +1118,17 @@ function fieldJsonSchema(type, contract) {
     };
   else if (base === "decimal")
     schema = { type: "string", pattern: "^(0|[1-9][0-9]*)$" };
+  else if (base === "enum") {
+    const descriptor = contract.enums.find(
+      (candidate) => candidate.typeName === field.enumTypeName,
+    );
+    if (!descriptor) {
+      throw new Error(
+        `protocol_assembly_enum_field_ref_undeclared:${field.enumTypeName}`,
+      );
+    }
+    schema = { enum: descriptor.values };
+  }
   else if (base === "identifier")
     schema = {
       type: "string",
@@ -1171,13 +1209,17 @@ function authorityFieldsFor(authority) {
   throw new Error(`protocol_assembly_caller_authority_invalid:${authority}`);
 }
 
-function fieldTsType(type) {
+function fieldTsType(fieldOrType) {
+  const field =
+    typeof fieldOrType === "string" ? { type: fieldOrType } : fieldOrType;
+  const type = field.type;
   const nullable = type.startsWith("nullable_");
   const base = nullable ? type.slice("nullable_".length) : type;
   let result;
   if (["positive_integer", "non_negative_integer"].includes(base))
     result = "number";
   else if (base === "boolean") result = "boolean";
+  else if (base === "enum") result = field.enumTypeName;
   else if (["hash_array", "identifier_array"].includes(base))
     result = "readonly string[]";
   else if (base === "protocol_offers")
@@ -1314,13 +1356,27 @@ function normalizeCanonicalizerField(field, value) {
   return normalized;
 }
 
-function sampleValue(type, name, index) {
+function sampleValue(fieldOrType, name, index, contract) {
+  const field =
+    typeof fieldOrType === "string" ? { type: fieldOrType } : fieldOrType;
+  const type = field.type;
   const nullable = type.startsWith("nullable_");
   if (nullable) return null;
   if (type === "boolean") return true;
   if (type === "hash") return sampleHash(index + name.length);
   if (type === "git_oid") return sampleGitOid(index + name.length);
   if (type === "decimal") return String(index + 1);
+  if (type === "enum") {
+    const descriptor = contract.enums.find(
+      (candidate) => candidate.typeName === field.enumTypeName,
+    );
+    if (!descriptor) {
+      throw new Error(
+        `protocol_assembly_enum_field_ref_undeclared:${field.enumTypeName}`,
+      );
+    }
+    return descriptor.values[0];
+  }
   if (type === "positive_integer") return index + 1;
   if (type === "non_negative_integer") return index;
   if (type === "timestamp") return "2026-01-01T00:00:00.000Z";
@@ -1483,9 +1539,17 @@ function assertSemanticOperation(operation, enumsByName) {
     operation.naturalIdempotencyPreimage,
     `idempotency_preimage:${operation.operationId}`,
   );
-  assertFields(operation.requestFields, `${operation.operationId}:request`);
+  assertFields(
+    operation.requestFields,
+    `${operation.operationId}:request`,
+    enumsByName,
+  );
   assertAllOrNoneRequestFieldGroups(operation);
-  assertFields(operation.resultFields, `${operation.operationId}:result`);
+  assertFields(
+    operation.resultFields,
+    `${operation.operationId}:result`,
+    enumsByName,
+  );
 }
 
 function assertAllOrNoneRequestFieldGroups(operation) {
@@ -1560,7 +1624,7 @@ function assertTransportBinding(binding, declaredErrorCodes) {
   }
 }
 
-function assertFields(fields, label) {
+function assertFields(fields, label, enumsByName) {
   if (!Array.isArray(fields))
     throw new Error(`protocol_assembly_fields_invalid:${label}`);
   assertUniqueStrings(
@@ -1572,6 +1636,21 @@ function assertFields(fields, label) {
     assertIdentifier(field.name, `field_name:${label}`);
     if (!fieldTypes.has(field.type)) {
       throw new Error(`protocol_assembly_field_type_undeclared:${field.type}`);
+    }
+    const baseType = field.type.replace(/^nullable_/u, "");
+    if (baseType === "enum") {
+      if (
+        typeof field.enumTypeName !== "string" ||
+        !enumsByName.has(field.enumTypeName)
+      ) {
+        throw new Error(
+          `protocol_assembly_enum_field_ref_undeclared:${field.enumTypeName}`,
+        );
+      }
+    } else if (field.enumTypeName !== undefined) {
+      throw new Error(
+        `protocol_assembly_enum_field_ref_unexpected:${field.name}`,
+      );
     }
   }
 }

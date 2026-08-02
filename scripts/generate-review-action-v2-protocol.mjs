@@ -710,6 +710,10 @@ export async function loadCompiledContractSources() {
   const contextAttestation = await importCompiledContractSourceFile(
     "../packages/features/review-context-attestation/dist/contract-source/index.js",
   );
+  const investigations = await importCompiledContractSource(
+    "../packages/features/review-investigations/package.json",
+    "@reviewrouter/features-review-investigations/contract-source",
+  );
   const executions = await importCompiledContractSource(
     "../packages/features/review-executions/package.json",
     "@reviewrouter/features-review-executions/contract-source",
@@ -728,6 +732,7 @@ export async function loadCompiledContractSources() {
     semanticFragments: [
       runControl.reviewRunControlActionContractFragment,
       executions.reviewExecutionsActionContractFragment,
+      investigations.reviewInvestigationsActionContractFragment,
       contextAttestation.reviewContextAttestationActionContractFragment,
       evidence.reviewEvidenceActionContractFragment,
       snapshots.reviewSnapshotV2ActionContractFragment,
