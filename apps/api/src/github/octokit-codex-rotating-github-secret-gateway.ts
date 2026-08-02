@@ -7,7 +7,10 @@ import {
   readCodexRotatingWorkflowSourceMetadata,
   scanCodexRotatingAdvisoryWorkflow,
 } from "@reviewrouter/features-codex-oauth-rotating";
-import { renderCanonicalCodexRotatingInteractionWorkflowV1 } from "@reviewrouter/features-workflow-provisioning";
+import {
+  renderCanonicalCodexRotatingInteractionWorkflowV1,
+  renderCanonicalCodexRotatingInteractionWorkflowV2,
+} from "@reviewrouter/features-workflow-provisioning";
 import { REVIEW_ROUTER_ACTION_REPOSITORY } from "@reviewrouter/platform-config";
 import {
   managedCodexWorkflowPath,
@@ -365,18 +368,26 @@ export class OctokitCodexRotatingGitHubSecretGateway
     if (input.workflowPath === managedCodexWorkflowPath) {
       return { compatible: true };
     }
-    const expectedInteractionWorkflow =
+    const expectedInteractionWorkflows = [
+      renderCanonicalCodexRotatingInteractionWorkflowV2({
+        actionRef: metadata.actionRef,
+        apiUrl: this.expectedApiUrl,
+        runtimeConfigMode: "oidc",
+      }),
       renderCanonicalCodexRotatingInteractionWorkflowV1({
         actionRef: metadata.actionRef,
         apiUrl: this.expectedApiUrl,
         runtimeConfigMode: "oidc",
-      });
+      }),
+    ];
     return {
       compatible:
         claimedWorkflow !== null &&
-        areWorkflowDocumentsSemanticallyEqual(
-          claimedWorkflow,
-          expectedInteractionWorkflow,
+        expectedInteractionWorkflows.some((expectedInteractionWorkflow) =>
+          areWorkflowDocumentsSemanticallyEqual(
+            claimedWorkflow,
+            expectedInteractionWorkflow,
+          ),
         ),
     };
   }
@@ -1180,7 +1191,7 @@ function inspectReviewV2InteractionWorkflow(
 
   const expectedWorkflow =
     expectedActionRef && expectedActionCommitSha
-      ? renderCanonicalCodexRotatingInteractionWorkflowV1({
+      ? renderCanonicalCodexRotatingInteractionWorkflowV2({
           actionRef: expectedActionRef,
           apiUrl: expectedApiUrl,
           runtimeConfigMode: "oidc",

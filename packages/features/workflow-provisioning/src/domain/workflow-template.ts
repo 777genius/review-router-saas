@@ -92,6 +92,8 @@ const interactionMemoryRuntimeEnvBlock = `${reviewMemoryRuntimeEnvBlock}
       REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"`;
 const interactionJobGuardExpression =
   "github.event_name == 'workflow_dispatch' || ((github.event_name != 'issue_comment' || github.event.issue.pull_request) && github.event.comment.user.type != 'Bot')";
+const actionsCheckoutV6Commit = "d23441a48e516b6c34aea4fa41551a30e30af803";
+const actionsSetupNodeV6Commit = "249970729cb0ef3589644e2896645e5dc5ba9c38";
 
 function discussionModeExpression(
   options: Pick<ReviewRouterWorkflowOptions, "discussionMode">,
@@ -356,7 +358,7 @@ jobs:
 export function renderCodexRotatingInteractionWorkflow(
   options: ReviewRouterWorkflowOptions,
 ): string {
-  return renderCanonicalCodexRotatingInteractionWorkflowV1(options);
+  return renderCanonicalCodexRotatingInteractionWorkflowV2(options);
 }
 
 /**
@@ -365,6 +367,23 @@ export function renderCodexRotatingInteractionWorkflow(
  */
 export function renderCanonicalCodexRotatingInteractionWorkflowV1(
   options: ReviewRouterWorkflowOptions,
+): string {
+  return renderCanonicalCodexRotatingInteractionWorkflow(options, false);
+}
+
+/**
+ * App-first interaction authority with immutable third-party actions and a
+ * read-only GitHub token. Repository writes are issued only through App OIDC.
+ */
+export function renderCanonicalCodexRotatingInteractionWorkflowV2(
+  options: ReviewRouterWorkflowOptions,
+): string {
+  return renderCanonicalCodexRotatingInteractionWorkflow(options, true);
+}
+
+function renderCanonicalCodexRotatingInteractionWorkflow(
+  options: ReviewRouterWorkflowOptions,
+  appFirstV2: boolean,
 ): string {
   const runtimeRef = extractReusableRuntimeRef(options.actionRef);
 
@@ -377,18 +396,31 @@ on:
     types: [created, edited]
   workflow_dispatch:
 
-permissions:
+${
+  appFirstV2
+    ? "permissions: {}"
+    : `permissions:
   actions: write
   contents: read
   pull-requests: write
   issues: write
-  id-token: write
+  id-token: write`
+}
 
 jobs:
   interaction:
     name: interaction
     runs-on: ubuntu-24.04
-    if: \${{ ${interactionJobGuardExpression} }}
+    if: \${{ ${interactionJobGuardExpression} }}${
+      appFirstV2
+        ? `
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      id-token: write`
+        : ""
+    }
     env:
       RR_RUNTIME_REF: ${JSON.stringify(runtimeRef)}
       REVIEWROUTER_API_URL: ${JSON.stringify(options.apiUrl)}
@@ -405,7 +437,7 @@ jobs:
       REVIEW_ROUTER_MEMORY_COMMAND_ENDPOINT: "/api/action/v1/memory-commands"
     steps:
       - name: Checkout ReviewRouter interaction runtime
-        uses: actions/checkout@v6
+        uses: actions/checkout@${appFirstV2 ? actionsCheckoutV6Commit : "v6"}
         with:
           repository: ${reusableWorkflowRuntimeRepository}
           ref: \${{ env.RR_RUNTIME_REF }}
@@ -413,7 +445,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@${appFirstV2 ? actionsSetupNodeV6Commit : "v6"}
         with:
           node-version: "24"
 
