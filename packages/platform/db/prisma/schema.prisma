@@ -1291,6 +1291,33 @@ model ReviewInvestigationCommandReceipt {
   @@index([retainUntil, commandId], map: "ReviewInvestigationCommandReceipt_retention_idx")
 }
 
+model ReviewInvestigationTelemetrySample {
+  sampleId              String                               @id
+  producerReleaseId     String
+  source                ReviewInvestigationTelemetrySourceV1
+  repositoryScopeHash   String
+  reviewRevisionHash    String
+  stableReviewUnitHash  String
+  payload               Json
+  payloadHash           String
+  collectedAt           DateTime
+  createdAt             DateTime                             @default(now())
+
+  @@index([producerReleaseId, collectedAt, sampleId], map: "ReviewInvestigationTelemetry_release_idx")
+  @@index([repositoryScopeHash, collectedAt], map: "ReviewInvestigationTelemetry_scope_idx")
+}
+
+model ReviewInvestigationPromotionReport {
+  reportHash        String   @id
+  producerReleaseId String
+  generatedAt       DateTime
+  canonicalJson     String
+  body              Json
+  createdAt         DateTime @default(now())
+
+  @@index([producerReleaseId, generatedAt, reportHash], map: "ReviewInvestigationPromotion_release_idx")
+}
+
 model FinalizedReviewProjectionArtifactV2 {
   artifactId                      String
   executionId                     String                @id
@@ -2001,6 +2028,12 @@ enum ReviewInvestigationStateV1 {
   inconclusive
   superseded
   expired
+}
+
+enum ReviewInvestigationTelemetrySourceV1 {
+  disposable_fixture
+  shadow
+  allowlisted
 }
 
 enum ReviewInvestigationObligationStateV1 {

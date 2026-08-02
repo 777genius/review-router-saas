@@ -14,11 +14,24 @@ import {
 import {
   assertReviewIntentRolloutConfiguration,
   composeReviewActionV2ProductionRoutes,
+  readInvestigationRolloutPolicy,
   reviewActionV2CapabilityActiveKeyIdEnv,
   reviewActionV2CapabilityKeysEnv,
   reviewActionV2ProjectionPolicyVersionEnv,
   reviewActionV2ProviderVoteLanesEnv,
+  reviewInvestigationContextCriticEnabledEnv,
+  reviewInvestigationEmergencyDisabledEnv,
+  reviewInvestigationProductionEffectsEnabledEnv,
+  reviewInvestigationRecordingEnabledEnv,
+  reviewInvestigationShadowEnabledEnv,
+  reviewInvestigationVerifiedCleanEnabledEnv,
 } from "./review-action-v2-production-composition.js";
+import {
+  InvestigationRolloutCapability,
+  InvestigationRolloutDecision,
+  InvestigationRolloutProvider,
+  evaluateInvestigationRollout,
+} from "@reviewrouter/features-review-investigation-operations";
 import { reviewActionV2ProjectionPolicyVersion } from "./review-action-v2-projection-policy.js";
 
 const runtime = {
@@ -165,6 +178,35 @@ describe("Review Action v2 production composition", () => {
         REVIEW_ROUTER_OUTBOX_FENCED_TAKEOVER_ENABLED: "1",
       }),
     ).not.toThrow();
+  });
+
+  it("validates investigation flag dependencies and emergency rollback", () => {
+    expect(() =>
+      readInvestigationRolloutPolicy({
+        [reviewInvestigationVerifiedCleanEnabledEnv]: "1",
+      }),
+    ).toThrow("rollout_dependency_missing:verified_clean:context_critic");
+    const policy = readInvestigationRolloutPolicy({
+      [reviewInvestigationRecordingEnabledEnv]: "1",
+      [reviewInvestigationShadowEnabledEnv]: "1",
+      [reviewInvestigationContextCriticEnabledEnv]: "1",
+      [reviewInvestigationProductionEffectsEnabledEnv]: "1",
+      [reviewInvestigationVerifiedCleanEnabledEnv]: "1",
+      [reviewInvestigationEmergencyDisabledEnv]: "1",
+    });
+    expect(
+      evaluateInvestigationRollout(
+        policy,
+        InvestigationRolloutCapability.ProductionEffects,
+        {
+          workspaceId: "workspace-1",
+          repositoryConnectionId: "repository-1",
+          provider: InvestigationRolloutProvider.Codex,
+          trustDomain: "trusted",
+          producerReleaseId: "release-1",
+        },
+      ),
+    ).toBe(InvestigationRolloutDecision.EmergencyDisabled);
   });
 });
 

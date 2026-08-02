@@ -24,6 +24,7 @@
     "@reviewrouter/features-review-evidence": "workspace:*",
     "@reviewrouter/features-review-executions": "workspace:*",
     "@reviewrouter/features-review-investigations": "workspace:*",
+    "@reviewrouter/features-review-investigation-operations": "workspace:*",
     "@reviewrouter/features-review-publishing": "workspace:*",
     "@reviewrouter/features-review-run-control": "workspace:*",
     "@reviewrouter/features-review-snapshots": "workspace:*",

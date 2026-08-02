@@ -18,6 +18,11 @@ import {
   NodeSha256InvestigationDigest,
   PrismaInvestigationStore,
 } from "@reviewrouter/features-review-investigations/composition";
+import {
+  createInvestigationRolloutPolicy,
+  InvestigationRolloutCapability,
+  type InvestigationRolloutPolicy,
+} from "@reviewrouter/features-review-investigation-operations";
 import { ReviewActionV2RouteFailure } from "@reviewrouter/features-action-control-plane/v2";
 import {
   ActualModelCompatibilityMode,
@@ -165,6 +170,14 @@ export const reviewInvestigationShadowEnabledEnv =
   "REVIEW_ROUTER_REVIEW_INVESTIGATION_SHADOW_ENABLED";
 export const reviewInvestigationCrossRevisionReplayEnabledEnv =
   "REVIEW_ROUTER_REVIEW_INVESTIGATION_CROSS_REVISION_REPLAY_ENABLED";
+export const reviewInvestigationContextCriticEnabledEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_CONTEXT_CRITIC_ENABLED";
+export const reviewInvestigationVerifiedCleanEnabledEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_VERIFIED_CLEAN_ENABLED";
+export const reviewInvestigationProductionEffectsEnabledEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_PRODUCTION_EFFECTS_ENABLED";
+export const reviewInvestigationEmergencyDisabledEnv =
+  "REVIEW_ROUTER_REVIEW_INVESTIGATION_EMERGENCY_DISABLED";
 
 type ReviewActionV2RouteRuntime = Pick<
   RegisterReviewRunControlV2RoutesDependencies,
@@ -317,6 +330,7 @@ export function composeReviewActionV2ProductionRoutes(input: {
     throw new Error("review_action_v2_github_app_private_key_missing");
   }
   assertReviewIntentRolloutConfiguration(input.env);
+  const investigationRollout = readInvestigationRolloutPolicy(input.env);
 
   const {
     clock,
@@ -567,7 +581,10 @@ export function composeReviewActionV2ProductionRoutes(input: {
     now: () => clock.now(),
   });
   const investigation = composeReviewActionV2InvestigationRoutes({
-    enabled: input.env[reviewInvestigationRecordingEnabledEnv] === "1",
+    enabled: investigationCapabilityEnabled(
+      investigationRollout,
+      InvestigationRolloutCapability.Recording,
+    ),
     runtime: input.runtime,
     handlers: {
       authorizations: runControl.authorizations,
@@ -596,8 +613,10 @@ export function composeReviewActionV2ProductionRoutes(input: {
       capabilities,
       digest,
       now: () => clock.now(),
-      crossRevisionReplayEnabled:
-        input.env[reviewInvestigationCrossRevisionReplayEnabledEnv] === "1",
+      crossRevisionReplayEnabled: investigationCapabilityEnabled(
+        investigationRollout,
+        InvestigationRolloutCapability.CrossRevisionReplay,
+      ),
       replayPreparation: (target) =>
         createInvestigationReceiptReplayPreparationPort(
           target,
@@ -644,6 +663,54 @@ export function composeReviewActionV2ProductionRoutes(input: {
     snapshot: snapshotPublication.snapshot,
     publication: snapshotPublication.publication,
   });
+}
+
+export function readInvestigationRolloutPolicy(
+  env: Readonly<Record<string, string | undefined>>,
+): InvestigationRolloutPolicy {
+  const enabled = (
+    [
+      [
+        reviewInvestigationRecordingEnabledEnv,
+        InvestigationRolloutCapability.Recording,
+      ],
+      [
+        reviewInvestigationShadowEnabledEnv,
+        InvestigationRolloutCapability.Shadow,
+      ],
+      [
+        reviewInvestigationContextCriticEnabledEnv,
+        InvestigationRolloutCapability.ContextCritic,
+      ],
+      [
+        reviewInvestigationVerifiedCleanEnabledEnv,
+        InvestigationRolloutCapability.VerifiedClean,
+      ],
+      [
+        reviewInvestigationCrossRevisionReplayEnabledEnv,
+        InvestigationRolloutCapability.CrossRevisionReplay,
+      ],
+      [
+        reviewInvestigationProductionEffectsEnabledEnv,
+        InvestigationRolloutCapability.ProductionEffects,
+      ],
+    ] as const
+  )
+    .filter(([name]) => env[name] === "1")
+    .map(([, capability]) => capability);
+  return createInvestigationRolloutPolicy({
+    emergencyDisabled: env[reviewInvestigationEmergencyDisabledEnv] === "1",
+    enabledCapabilities: enabled,
+  });
+}
+
+function investigationCapabilityEnabled(
+  policy: InvestigationRolloutPolicy,
+  capability: InvestigationRolloutCapability,
+): boolean {
+  return (
+    !policy.emergencyDisabled && policy.enabledCapabilities.has(capability)
+  );
 }
 
 export function assertReviewIntentRolloutConfiguration(

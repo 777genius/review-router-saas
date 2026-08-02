@@ -53,8 +53,10 @@ adapters map their native errors and capabilities exhaustively.
 
 Review Run Control remains the rollout authority. The six investigation flags
 are recording, shadow, critic, verified clean, cross-revision replay, and
-production effects. All default to disabled until their implementation phase
-adds an explicit policy adapter.
+production effects. `review-investigation-operations` owns their fail-closed
+dependency graph, cohort selectors, emergency override, sanitized telemetry,
+operator read model, and immutable promotion report. All flags default to
+disabled.
 
 Emergency disable wins before authorization, turn planning, certificate
 issuance, evidence acceptance, finalization, and SCM mutation. Rollback disables
